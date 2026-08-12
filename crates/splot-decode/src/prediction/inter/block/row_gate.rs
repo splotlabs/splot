@@ -231,7 +231,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             return bounds;
         }
         for entry in &row.entries {
-            if let Some(super::ReconCommand::Inter(command)) = entry.command.as_ref() {
+            if let Some(super::ReconCommand::Inter(command)) = entry.command() {
                 self.note_block(command, &mut bounds);
             }
         }

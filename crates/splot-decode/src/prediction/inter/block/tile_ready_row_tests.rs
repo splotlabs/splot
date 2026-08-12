@@ -25,8 +25,6 @@ fn terminal_row(error: crate::DecodeError) -> ReconRow {
         ordinal: 0,
         superblocks: Vec::new(),
         entries: Vec::new(),
-        motion_queue: Vec::new(),
-        pending_inter: Vec::new(),
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
         motion_grids: Vec::new(),
@@ -212,7 +210,7 @@ fn ready_row_pipeline_calls_a_terminal_parser_exactly_once() {
 
 #[test]
 fn recon_row_entry_stays_compact() {
-    assert_eq!(core::mem::size_of::<ReconRowEntry>(), 392);
+    assert_eq!(core::mem::size_of::<ReconRowEntry>(), 424);
 }
 
 #[test]

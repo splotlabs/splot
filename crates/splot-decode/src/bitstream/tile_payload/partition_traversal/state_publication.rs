@@ -38,6 +38,13 @@ impl DecodedLeafPublication {
         self.superblock_origin
     }
 
+    pub(crate) const fn block_origin(self) -> [usize; 2] {
+        [
+            self.superblock_origin[0] + self.sub_block_origin[0],
+            self.superblock_origin[1] + self.sub_block_origin[1],
+        ]
+    }
+
     /// The leaf's position and size in 4x4 units when it codes the luma plane —
     /// § 5.20.4.1 invokes the § 7.22 motion-field storage only for those leaves.
     pub(crate) fn luma_tree_block(self) -> Option<(usize, usize, usize, usize)> {

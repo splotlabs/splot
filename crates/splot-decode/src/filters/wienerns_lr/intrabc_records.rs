@@ -160,9 +160,39 @@ pub(crate) struct IntrabcPredictionGeometry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IntrabcInfoSyntax {
     intrabc_mode: usize,
-    ref_mv_idx: usize,
+    ref_selection: IntrabcRefSelection,
     mv_precision: u8,
-    max_bvp_drl_bits_minus_1: u32,
+}
+
+/// Parser-bounded § 5.20.5.4 reference-BV selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IntrabcRefSelection {
+    index: u8,
+    max_bvp_drl_bits_minus_1: u8,
+}
+
+impl IntrabcRefSelection {
+    pub(crate) const fn new(max_bvp_drl_bits_minus_1: u32, index: usize) -> Option<Self> {
+        if max_bvp_drl_bits_minus_1 > 2 || index > max_bvp_drl_bits_minus_1 as usize + 1 {
+            return None;
+        }
+        Some(Self {
+            index: index as u8,
+            max_bvp_drl_bits_minus_1: max_bvp_drl_bits_minus_1 as u8,
+        })
+    }
+
+    pub(crate) const fn index(self) -> usize {
+        self.index as usize
+    }
+
+    pub(crate) const fn max_count(self) -> usize {
+        self.max_bvp_drl_bits_minus_1 as usize + 2
+    }
+
+    const fn max_bvp_drl_bits_minus_1(self) -> u32 {
+        self.max_bvp_drl_bits_minus_1 as u32
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -708,12 +738,12 @@ pub(crate) fn resolve_pending_intrabc_info(
 }
 
 impl PendingIntrabcInfo {
-    pub(crate) const fn ref_mv_idx(self) -> usize {
-        self.syntax.ref_mv_idx
+    pub(crate) const fn ref_selection(self) -> IntrabcRefSelection {
+        self.syntax.ref_selection
     }
 
     pub(crate) const fn max_bvp_drl_bits_minus_1(self) -> u32 {
-        self.syntax.max_bvp_drl_bits_minus_1
+        self.syntax.ref_selection.max_bvp_drl_bits_minus_1()
     }
 
     pub(crate) const fn morph_pred(self) -> bool {
@@ -772,11 +802,12 @@ fn read_intrabc_info_syntax(
             MV_PRECISION_ONE_PEL
         };
     }
+    let ref_selection = IntrabcRefSelection::new(max_bvp_drl_bits_minus_1, ref_mv_idx)
+        .ok_or_else(intrabc_state_error)?;
     Ok(IntrabcInfoSyntax {
         intrabc_mode,
-        ref_mv_idx,
+        ref_selection,
         mv_precision,
-        max_bvp_drl_bits_minus_1,
     })
 }
 

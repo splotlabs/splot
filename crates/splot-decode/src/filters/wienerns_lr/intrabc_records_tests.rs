@@ -16,8 +16,8 @@ use super::*;
 use crate::bitstream::tile_payload::{FrameCdfSubset, MvCdfSelector};
 use crate::error::DecodeError;
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
-    DrlReorderMode, IntrabcStackAdmission, IntrabcStackGeometry,
-    build_intrabc_ref_mv_stack_from_candidates, intrabc_ref_stack_admission_from_candidates,
+    DrlReorderMode, IntrabcStackGeometry, build_intrabc_ref_mv_stack_from_candidates,
+    select_intrabc_ref_mv_for_test,
 };
 
 const BLOCK_16X16: usize = 6;
@@ -89,21 +89,14 @@ fn read_intrabc_info_record(
         .inter
         .as_ref()
         .is_some_and(|inter| inter.enable_refmvbank);
-    let pred_mv = match intrabc_ref_stack_admission_from_candidates(
+    let pred_mv = select_intrabc_ref_mv_for_test(
         &[],
         stack_geometry,
         &spatial,
         enable_refmvbank,
         drl_reorder,
-        pending.ref_mv_idx(),
-    ) {
-        IntrabcStackAdmission::Admit { selected } => selected,
-        IntrabcStackAdmission::Defer => {
-            return Err(
-                crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into(),
-            );
-        }
-    };
+        pending.ref_selection().index(),
+    );
     Ok(resolve_pending_intrabc_info(pending, pred_mv))
 }
 
@@ -163,6 +156,47 @@ fn selectable_morph_fixture() -> (SequenceHeader, FrameHeaderCore) {
     sequence.inter.as_mut().unwrap().enable_bawp = true;
     core.allow_screen_content_tools = Some(true);
     (sequence, core)
+}
+
+#[test]
+fn parser_bounds_every_intrabc_reference_selection() {
+    for max_bvp_drl_bits_minus_1 in 0..=2 {
+        for expected_index in 0..=max_bvp_drl_bits_minus_1 as usize + 1 {
+            let (mut sequence, core) = selectable_fixture();
+            sequence
+                .inter
+                .as_mut()
+                .unwrap()
+                .seq_max_bvp_drl_bits_minus_1 = max_bvp_drl_bits_minus_1;
+            let mut steps = vec![(Some(TileCdfSelector::IntrabcMode), 1)];
+            for bit in 0..=max_bvp_drl_bits_minus_1 {
+                steps.push((None, u32::from((bit as usize) < expected_index)));
+                if bit as usize == expected_index {
+                    break;
+                }
+            }
+            let payload = encode_steps(&steps);
+            let mut symbols = decoder(&payload);
+            let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+            let syntax = read_intrabc_info_syntax(
+                &mut cdfs,
+                &mut symbols,
+                &sequence,
+                &core,
+                ByteOffset::new(0),
+            )
+            .unwrap();
+
+            assert_eq!(syntax.ref_selection.index(), expected_index);
+            assert_eq!(
+                syntax.ref_selection.max_count(),
+                max_bvp_drl_bits_minus_1 as usize + 2
+            );
+        }
+    }
+
+    assert!(IntrabcRefSelection::new(3, 0).is_none());
+    assert!(IntrabcRefSelection::new(2, 4).is_none());
 }
 
 fn assert_invalid_block_vector_error(error: &DecodeError) {
@@ -475,7 +509,7 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
             (19, 8) => Some(Mv { row: 0, col: -3072 }),
             _ => None,
         });
-    let admission = intrabc_ref_stack_admission_from_candidates(
+    let selected = select_intrabc_ref_mv_for_test(
         &[],
         IntrabcStackGeometry {
             mi_row: geometry.block.row,
@@ -490,11 +524,8 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
         &spatial,
         true,
         DrlReorderMode::Always,
-        pending.ref_mv_idx(),
+        pending.ref_selection().index(),
     );
-    let IntrabcStackAdmission::Admit { selected } = admission else {
-        panic!("two live spatial candidates must admit the requested IntrABC reference")
-    };
     let info = resolve_pending_intrabc_info(pending, selected);
 
     assert_eq!(
@@ -1008,7 +1039,7 @@ fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
     let spatial = state
         .capture_spatial_intrabc_probes(geometry)
         .resolve(|_, _| None);
-    let admission = intrabc_ref_stack_admission_from_candidates(
+    let selected = select_intrabc_ref_mv_for_test(
         &[Mv { row: 4, col: -316 }],
         IntrabcStackGeometry {
             mi_row: geometry.block.row,
@@ -1023,11 +1054,8 @@ fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
         &spatial,
         true,
         DrlReorderMode::Disabled,
-        pending.ref_mv_idx(),
+        pending.ref_selection().index(),
     );
-    let IntrabcStackAdmission::Admit { selected } = admission else {
-        panic!("the live bank candidate must admit the requested IntrABC reference")
-    };
     let info = resolve_pending_intrabc_info(pending, selected);
 
     assert_eq!(info.block_mv, IntrabcBlockVector { row: 0, col: -312 });

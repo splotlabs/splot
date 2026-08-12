@@ -93,8 +93,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     let ReconRow {
         mut superblocks,
         mut entries,
-        mut motion_queue,
-        mut pending_inter,
         mut residual_blocks,
         mut temporal,
         mut motion_grids,
@@ -132,7 +130,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             if let Some(clear) = temporal_clear {
                 motion.fold_unit(ordinal, core::slice::from_ref(&clear));
             }
-            if let Some(command) = entry.command.take() {
+            if let Some(command) = entry.take_command() {
                 match command {
                     ReconCommand::GeneralIntra(command) => {
                         let _scope =
@@ -218,8 +216,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     *decoded_any |= row_has_entries;
     superblocks.clear();
     entries.clear();
-    motion_queue.clear();
-    pending_inter.clear();
     residual_blocks.clear();
     temporal.clear();
     motion_grids.clear();
@@ -227,8 +223,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     Ok(ReconRowBuffers {
         superblocks,
         entries,
-        motion_queue,
-        pending_inter,
         residual_blocks,
         temporal,
         motion_grids,

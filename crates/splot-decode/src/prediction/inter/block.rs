@@ -1408,12 +1408,8 @@ fn decode_block<T: ReconSample>(
             bit_depth,
             tile_offset,
         )?;
-        let mut motion = LeafMotion {
-            mi_row,
-            mi_col,
-            kind: LeafMotionKind::Reseed,
-        };
-        if !frontier.is_chroma_part() {
+        let luma_tree = !frontier.is_chroma_part();
+        if luma_tree {
             y_smooth.record(mi_row, mi_col, n4w, n4h, leaf.y_mode_is_smooth());
             mv_grid.record_flags(
                 mi_row,
@@ -1427,11 +1423,15 @@ fn decode_block<T: ReconSample>(
                 },
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
-            motion = non_inter_leaf_motion(mi_row, mi_col, n4w, n4h);
         }
+        let command = ReconCommand::GeneralIntra(command);
         return Ok((
             leaf,
-            ParsedLeaf::recon(ReconCommand::GeneralIntra(command), motion),
+            if luma_tree {
+                ParsedLeaf::non_inter(command, n4w, n4h)
+            } else {
+                ParsedLeaf::reseed(command)
+            },
         ));
     }
     if num_total_refs == 0 {
@@ -1778,7 +1778,6 @@ fn decode_block<T: ReconSample>(
             pending_inter_leaf(
                 syntax,
                 placed_geometry,
-                PendingInterKind::Single,
                 block_qindex,
                 frame_mv_precision(core)?,
             ),
@@ -2042,30 +2041,15 @@ fn decode_block<T: ReconSample>(
         residual,
     };
     mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
-    let kind = if tip_ref {
-        PendingInterKind::Tip
-    } else {
-        PendingInterKind::Single
-    };
     Ok((
         non_intra_leaf_mode(frontier),
         pending_inter_leaf(
             syntax,
             placed_geometry,
-            kind,
             block_qindex,
             frame_mv_precision(core)?,
         ),
     ))
-}
-
-/// § 7.12 work of a leaf that publishes a zero motion record.
-const fn non_inter_leaf_motion(mi_row: usize, mi_col: usize, n4w: usize, n4h: usize) -> LeafMotion {
-    LeafMotion {
-        mi_row,
-        mi_col,
-        kind: LeafMotionKind::NonInter { n4w, n4h },
-    }
 }
 
 const fn inter_skip_txfm_ctx(neighbour_skip_ctx: usize, skip_mode: bool) -> usize {
@@ -2126,9 +2110,9 @@ use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
-    LeafMotion, LeafMotionKind, MvResolutionState, ParsedLeaf, PendingInterKind,
-    PendingIntrabcBlock, PendingMotionBlock, SingleMotionSyntax, WarpDeltaSyntax, WarpModelSource,
-    WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf, resolve_parsed_leaves,
+    LeafResolveRecord, MvResolutionState, ParsedLeaf, PendingIntrabcBlock, SingleMotionSyntax,
+    WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf,
+    resolve_parsed_leaves,
 };
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{

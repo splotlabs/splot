@@ -374,7 +374,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                                 self.params.bit_depth,
                             )
                         });
-                        if row.entries.iter().any(|entry| entry.command.is_some()) {
+                        if row.entries.iter().any(|entry| entry.command().is_some()) {
                             return Err(inter_internal!(
                                 "inter_admission_band_command_remaining",
                                 self.tile_offset
@@ -881,7 +881,6 @@ fn supports_owned_bands(
         return Err("partial_tile");
     }
     for row in &parsed.rows {
-        let mut pending = row.pending_inter.iter();
         if row.terminal.is_some() {
             return Err("terminal");
         }
@@ -897,7 +896,7 @@ fn supports_owned_bands(
                 .get(superblock.entries.clone())
                 .ok_or("entry_range")?;
             for entry in entries {
-                match entry.command.as_ref() {
+                match entry.command() {
                     Some(ReconCommand::Inter(command))
                         if !command.reads_current_frame()
                             && command.prepass_write_is_contained(
@@ -912,15 +911,15 @@ fn supports_owned_bands(
                     Some(ReconCommand::Inter(_)) => return Err("unbounded_inter"),
                     Some(ReconCommand::GeneralIntra(_)) => return Err("general_intra"),
                     Some(ReconCommand::Intrabc(_)) => return Err("intrabc"),
-                    None if pending.next().is_some_and(|pending| {
-                        pending.prepass_write_is_contained(
+                    None if entry.resolve_record().is_some_and(|record| {
+                        record.prepass_write_is_contained(
                             superblock.origin,
                             params.sb_h4,
                             info,
                             &row.residual_blocks,
                         )
                     }) => {}
-                    None => return Err("unbounded_pending_inter"),
+                    None => return Err("unbounded_resolve_record"),
                 }
             }
         }

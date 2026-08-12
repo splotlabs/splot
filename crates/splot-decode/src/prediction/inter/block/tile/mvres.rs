@@ -69,15 +69,14 @@ fn derive_row_motion<T: ReconSample>(
     let capacity = row.entries.iter().fold(0usize, |capacity, entry| {
         capacity.saturating_add(
             entry
-                .command
-                .as_ref()
+                .command()
                 .map_or(0, ReconCommand::temporal_record_capacity),
         )
     });
     let _ = row.temporal.try_reserve(capacity);
     let mut failure = None;
     for entry in &mut row.entries {
-        let Some(ReconCommand::Inter(command)) = entry.command.as_ref() else {
+        let Some(ReconCommand::Inter(command)) = entry.command() else {
             if let Some(clear) = entry.temporal_clear_record(
                 shared.mi_rows,
                 shared.mi_cols,
