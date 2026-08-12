@@ -54,6 +54,7 @@ pub(crate) struct FrameCandidateCoeffFacts {
     enable_inter_ist: bool,
     enable_chroma_dctonly: bool,
     enable_cctx: bool,
+    reduced_tx_part_set: bool,
 }
 
 impl FrameCandidateCoeffFacts {
@@ -65,6 +66,7 @@ impl FrameCandidateCoeffFacts {
         enable_inter_ist: bool,
         enable_chroma_dctonly: bool,
         enable_cctx: bool,
+        reduced_tx_part_set: bool,
     ) -> Self {
         Self {
             enable_fsc,
@@ -72,6 +74,7 @@ impl FrameCandidateCoeffFacts {
             enable_inter_ist,
             enable_chroma_dctonly,
             enable_cctx,
+            reduced_tx_part_set,
         }
     }
 
@@ -83,6 +86,7 @@ impl FrameCandidateCoeffFacts {
             tq.enable_inter_ist,
             tq.enable_chroma_dctonly,
             tq.enable_cctx,
+            tq.reduced_tx_part_set,
         )
     }
 }
@@ -166,6 +170,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             enable_inter_ist: coeff.enable_inter_ist,
             enable_chroma_dctonly: coeff.enable_chroma_dctonly,
             enable_cctx: coeff.enable_cctx,
+            reduced_tx_part_set: coeff.reduced_tx_part_set,
             reduced_tx_set,
             lossless_array: lossless.lossless_array,
             allow_tcq: lossless.allow_tcq,

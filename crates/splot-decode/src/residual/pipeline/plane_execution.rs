@@ -416,7 +416,6 @@ impl ResidualPlanePlan {
             work_unit,
             symbols,
             coeff_ctx,
-            self.tx_size,
             self.x,
             self.y,
             self.block_ctx.frame_mi_cols().saturating_mul(4),
@@ -428,12 +427,17 @@ impl ResidualPlanePlan {
             self.fsc_mode,
             policy,
         )?;
-        let single = blocks.len() == 1;
-        let mut units = LumaTransformPartitionUnits::new();
-        for block in blocks {
-            if !single {
-                self.transform_unit_plan(&block)?;
-            }
+        self.retain_partitioned_luma(blocks, palette_color_map, deblock)
+    }
+
+    pub(super) fn retain_partitioned_luma(
+        self,
+        blocks: LumaTransformPartitionUnits<PositionedLumaCoeffBlock>,
+        palette_color_map: Option<&[u8]>,
+        deblock: &mut DeblockRecorder<'_>,
+    ) -> core::result::Result<ParsedResidualPlane, GeneralIntraResidualError> {
+        let units = blocks.try_map(|block| {
+            self.transform_unit_plan(&block)?;
             let unit_palette_color_map =
                 self.palette_color_map_for_unit(palette_color_map, &block)?;
             let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
@@ -447,11 +451,11 @@ impl ResidualPlanePlan {
                 block.tx_size,
                 block.coeffs.eob,
             );
-            units.push(ParsedTransformUnit {
+            Ok::<_, GeneralIntraResidualError>(ParsedTransformUnit {
                 block,
                 palette_color_map: unit_palette_color_map,
-            })?;
-        }
+            })
+        })?;
         Ok(ParsedResidualPlane {
             plane: self,
             kind: ParsedResidualPlaneKind::PartitionedLuma(units),
@@ -555,7 +559,7 @@ impl ParsedResidualPlane {
         }
     }
 
-    fn reconstruct<T: ReconSample>(
+    pub(super) fn reconstruct<T: ReconSample>(
         self,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -607,13 +611,8 @@ impl ParsedResidualPlane {
                 Ok(())
             }
             ParsedResidualPlaneKind::PartitionedLuma(units) => {
-                let single = units.len() == 1;
                 for unit in units {
-                    let plan = if single {
-                        self.plane
-                    } else {
-                        self.plane.transform_unit_plan(&unit.block)?
-                    };
+                    let plan = self.plane.transform_unit_plan(&unit.block)?;
                     plan.reconstruct(
                         scratch,
                         workspace,

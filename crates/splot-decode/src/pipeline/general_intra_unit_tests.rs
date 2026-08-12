@@ -234,6 +234,32 @@ fn palette_first_line_copy_is_a_typed_conformance_error() {
 }
 
 #[test]
+fn invalid_transform_partition_dimensions_are_a_typed_conformance_error() {
+    let offset = ByteOffset::new(42);
+    let error = general_intra_residual_error(
+        GeneralIntraResidualError::InvalidTransformPartitionDimensions {
+            width: 4,
+            height: 1,
+        },
+        offset,
+    );
+
+    assert!(matches!(
+        &error,
+        DecodeError::MalformedSource { issue }
+            if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
+                && issue.rule_id().is_none()
+                && issue.spec_section() == Some("6.19.6.3")
+                && issue.offset() == Some(offset)
+                && issue.message().contains("invalid dimensions 4x1")
+    ));
+    assert!(matches!(
+        DecodeDiagnosticReport::from_decode_error(&error).map(|report| report.details),
+        Some(DecodeDiagnosticDetails::MalformedSource(_))
+    ));
+}
+
+#[test]
 fn palette_entropy_failures_are_typed_internal_and_fail_atomic() {
     let offset = ByteOffset::new(42);
     let selector = TileCdfSelector::IdentityRowY { ctx: usize::MAX };
@@ -472,18 +498,18 @@ fn luma_modes_with_parts(
 
 #[test]
 fn luma_tx_partition_context_uses_current_block_lossless_flag() {
-    let block_size_index = 6;
+    let block_size = BlockSize::new(6).expect("valid block size");
 
     assert_eq!(
-        luma_tx_partition_context(Some(TxMode::Select), block_size_index, false),
-        Some(LumaTransformPartitionContext::new(block_size_index))
+        luma_tx_partition_context(Some(TxMode::Select), block_size, false),
+        Some(LumaTransformPartitionContext::new(block_size))
     );
     assert_eq!(
-        luma_tx_partition_context(Some(TxMode::Select), block_size_index, true),
+        luma_tx_partition_context(Some(TxMode::Select), block_size, true),
         None
     );
     assert_eq!(
-        luma_tx_partition_context(Some(TxMode::Largest), block_size_index, false),
+        luma_tx_partition_context(Some(TxMode::Largest), block_size, false),
         None
     );
 }

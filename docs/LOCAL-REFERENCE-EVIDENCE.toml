@@ -11534,3 +11534,109 @@ output_scope = "6,912-byte raw I420 output for two 48x48 frames, identical at on
 kind = "digest-equality"
 left = "avm-extendwarp-global-raw-sha256"
 right = "splot-extendwarp-global-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-reduced-txpart-d135-intra-64x64-q160"
+feature_id = "DECODE-GENERAL-INTRA-TRANSFORM-UNIT-PREDICTION"
+decoder_support_rows = ["general-intra-transform-unit-prediction"]
+kind = "reference-output-agreement"
+summary = "A pinned-AVM D135 intra stream isolates SequenceHeader reduced_tx_part_set selecting the reduced §5.20.6.3 partition CDF. Exact base fails entropy termination at one and eight threads; fixed splot matches AVM byte-for-byte at both thread widths."
+recorded_at = "2026-08-12"
+command = '''AVM_ROOT=<pinned AVM checkout at 457cd58681a747465661baccb1f32095bc5b7774> python3 tools/decoder-fixtures/generate.py coverage-fixtures --only syn-reduced-txpart-d135-intra-64x64-q160 --stage <stage>; repeat generation is built into the pinned recipe. The generator first decodes tests/conformance/vectors/valid/syn-lossless-nondc-luma-d135-chroma-follow-intra-64x64.ivf with avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 --limit=1, then invokes the exact TX_PARTITION_INTRA avmenc flag vector with --codec=av2 --ivf -D --cpu-used=0 --end-usage=q --qp=160 --kf-max-dist=0 -t 1 --i420 -w 64 -h 64. Decode the generated IVF with pinned/current avmdec and splot decode --threads 1/8 --output-format raw; compare byte-for-byte.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-reduced-txpart-d135-intra-64x64-q160.ivf"
+sha256 = "fb5d3cd1abeb033e8de489f9daa90dbfbbc5c624ab92fb927c860d860420dfa7"
+size_bytes = 66
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774 decoded the project fixture SHA-256 2a63d996496f52ead5aca0799e6215d9ac5cfefcdb6c69b4d7f507243ad0e6f4 to source SHA-256 5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1. Pinned avmenc SHA-256 78cc04f0c46d7afd0d5a5b838f7939b7cbc506c19b377e0cfc59eb8722d769c2 and avmdec SHA-256 8867cf0672ff3fb86d70eae504e54d49649fa6c142b5ab73f2a39f9536e246c6 produced two byte-identical encodes from the exact generator recipe; no syntax was hand-edited. The 22-byte IVF record payload SHA-256 is 8ae7459b3ba330320eaa0f2e9fbad3cc6c79d03cdcac0171f196f4562eeeeb4a. AVM trace SHA-256 cacde0da746b7fd66cb0326ca64a24f42631e843086b1b4c6017a70e749d33b3 records key frame, BLOCK_64X64, D135, TX_64X32, HORZ and reduced partition symbol 1. Exact base 4a08d15bf390f7fd2b8de09120b719a99db982cb failed at one and eight threads before output with decode/malformed-source §8.2.4, byte offset 64, SymbolMaxBits -24 at byte 66.0. The same recipe with only reduced_tx_part_set=0 produced byte-distinct control IVF SHA-256 01b26c7f9468a079ffb798398aad63b2224354498790189d7260ffccee64db59, identical raw output, and successful exact-base one/eight-thread decode. A 96-stream official-AVMenc geometry/QP sweep did not isolate one-axis suppression, which remains writer-proven."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned unmodified AVM decoder; current AVM revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03 produced the same output."
+command_summary = "avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-reduced-txpart-intra-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "608619fe3b10c3464841b2269baa417c29d48d7e4793ca38913a68c107caa0a9"
+output_scope = "Complete 6,144-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree threads SequenceHeader reduced_tx_part_set into the general-intra reader independently from frame reduced_tx_set."
+command_summary = "Splot raw-output decodes of {fixture:input} at one and eight threads."
+output_digest_id = "splot-reduced-txpart-intra-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "608619fe3b10c3464841b2269baa417c29d48d7e4793ca38913a68c107caa0a9"
+output_scope = "Complete 6,144-byte raw I420 output at both thread counts"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-reduced-txpart-intra-raw-sha256"
+right = "splot-reduced-txpart-intra-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-2frame-reduced-txpart-inter-64x64-q160"
+feature_id = "DECODE-SELECTABLE-TRANSFORM-RECORDS"
+decoder_support_rows = ["selectable-transform-records"]
+kind = "reference-output-agreement"
+summary = "A pinned-AVM two-frame stream independently reaches the inter §5.20.6.3 reduced partition CDF. Exact base fails entropy termination at one and eight threads; fixed splot matches AVM byte-for-byte at both thread widths."
+recorded_at = "2026-08-12"
+command = '''AVM_ROOT=<pinned AVM checkout at 457cd58681a747465661baccb1f32095bc5b7774> python3 tools/decoder-fixtures/generate.py coverage-fixtures --only syn-2frame-reduced-txpart-inter-64x64-q160 --stage <stage>; repeat generation is built into the pinned recipe. The generator decodes the project D135 source, uses FFmpeg 8.1.2 to duplicate it and add four luma levels to the top half of frame 1, then invokes the exact TX_PARTITION_INTER avmenc flag vector with --codec=av2 --ivf -D --cpu-used=0 --end-usage=q --qp=160 -t 1 --i420 -w 64 -h 64. Decode with pinned/current avmdec and splot decode --threads 1/8 --output-format raw; compare byte-for-byte.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-reduced-txpart-inter-64x64-q160.ivf"
+sha256 = "06fbf0a02c027d3336e9c90e1b8f35c0ed21c367196129266b14504a34a0fe96"
+size_bytes = 104
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "The exact generator recipe produces source frame SHA-256 values 5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1 and a9737f02c3d0b7cbd208527ad35b750d0866f8c6c6a8c1d1b17d6ea63f2b6355; the concatenated 12,288-byte source is 9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3. Pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774, avmenc SHA-256 78cc04f0c46d7afd0d5a5b838f7939b7cbc506c19b377e0cfc59eb8722d769c2, and avmdec SHA-256 8867cf0672ff3fb86d70eae504e54d49649fa6c142b5ab73f2a39f9536e246c6 produced two identical IVFs. Record payload hashes are 4a9725d6e680fef401c8e5d1a80e633bd680ab1953770815a74c9d0786157bc1 and 97041d05700728439c0c7dca64565f24ea10a2a9fcc4358d05c82b96d520391d; concatenated payload SHA-256 is 7374cd9013e372f6cea09b7ad4deea52a025373589a5ac439cbed60c7b8bd28f. AVM trace SHA-256 32453fd5d10f17eec9f69551cb3408d2794e91bfb658965ac64761bb538ab2a3 records frame 1 as inter mode 13, BLOCK_64X64, TX_64X32, HORZ, reduced symbol 1. Because frame 1 routes through the inter residual pipeline and frame 0 has no transform partition, this is independent code-path proof for filters/wienerns_lr/tx_records.rs; the general-intra partition reader is not called. Exact base 4a08d15bf390f7fd2b8de09120b719a99db982cb failed at one and eight threads before output with decode/malformed-source §8.2.4, byte offset 101, nonzero exit padding at byte 103.2. The full-set control IVF SHA-256 176aa168708fd3afbe5b842ef364bafa19d1e07c4b58ddcdad6793cdec020ec6 is byte-distinct, output-identical, and exact-base clean at one and eight threads. The one-axis limitation is identical to the intra evidence."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned unmodified AVM decoder; current AVM revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03 produced the same output."
+command_summary = "avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-reduced-txpart-inter-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree threads SequenceHeader reduced_tx_part_set into the independent inter transform-record reader."
+command_summary = "Splot raw-output decodes of {fixture:input} at one and eight threads."
+output_digest_id = "splot-reduced-txpart-inter-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3"
+output_scope = "Complete 12,288-byte raw I420 output at both thread counts"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-reduced-txpart-inter-raw-sha256"
+right = "splot-reduced-txpart-inter-raw-sha256"

@@ -1,16 +1,207 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::span::ByteOffset;
+use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use splot_recon::ReconError;
 
 use super::super::derive_wienerns_lr_tx_skip_grid_retention;
 use super::*;
+use crate::bitstream::tile_payload::{encode_symbol_sequence, make_test_work_unit};
 
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
 const TX_64X64: usize = 4;
+const TX_8X8: usize = 1;
 const TX_8X32: usize = 15;
 const TX_4X32: usize = 19;
+
+#[test]
+fn inter_partition_reader_uses_sequence_selected_reduced_cdf() {
+    for reduced_tx_part_set in [false, true] {
+        let payload = encode_symbol_sequence(&[
+            (
+                TileCdfSelector::TxDoPartition {
+                    fsc_mode: 0,
+                    is_inter: 1,
+                    txfm_split_group: 3,
+                },
+                1,
+            ),
+            (
+                TileCdfSelector::TxPartitionType {
+                    fsc_mode: 0,
+                    is_inter: 1,
+                    ctx: 3,
+                    reduced: reduced_tx_part_set,
+                },
+                3,
+            ),
+        ]);
+        let mut work_unit = make_test_work_unit(&payload, CdfUpdateMode::Disabled);
+        let mut symbols = SymbolDecoder::with_base_and_config(
+            &payload,
+            ByteOffset::new(0),
+            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+        )
+        .unwrap();
+        let grid = SelectableLumaTxGrid::new(4, 4).unwrap();
+
+        assert_eq!(
+            read_tx_partition_symbols(
+                &mut work_unit,
+                &mut symbols,
+                &grid,
+                0,
+                0,
+                TX_16X16,
+                6,
+                0,
+                true,
+                reduced_tx_part_set,
+                ByteOffset::new(0),
+            )
+            .unwrap(),
+            Some(TX_PARTITION_HORZ4)
+        );
+        symbols.exit_symbol().unwrap();
+    }
+}
+
+#[test]
+fn inter_reduced_partition_set_suppresses_one_axis_four_way_symbol() {
+    for (reduced_tx_part_set, sequence, expected) in [
+        (
+            false,
+            vec![
+                (
+                    TileCdfSelector::TxDoPartition {
+                        fsc_mode: 0,
+                        is_inter: 1,
+                        txfm_split_group: 8,
+                    },
+                    1,
+                ),
+                (
+                    TileCdfSelector::Tx2Or3PartitionType {
+                        fsc_mode: 0,
+                        is_inter: 1,
+                        ctx: 0,
+                    },
+                    1,
+                ),
+            ],
+            TX_PARTITION_HORZ4,
+        ),
+        (
+            true,
+            vec![(
+                TileCdfSelector::TxDoPartition {
+                    fsc_mode: 0,
+                    is_inter: 1,
+                    txfm_split_group: 8,
+                },
+                1,
+            )],
+            TX_PARTITION_HORZ,
+        ),
+    ] {
+        let payload = encode_symbol_sequence(&sequence);
+        let mut work_unit = make_test_work_unit(&payload, CdfUpdateMode::Disabled);
+        let mut symbols = SymbolDecoder::with_base_and_config(
+            &payload,
+            ByteOffset::new(0),
+            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+        )
+        .unwrap();
+        let grid = SelectableLumaTxGrid::new(8, 1).unwrap();
+
+        assert_eq!(
+            read_tx_partition_symbols(
+                &mut work_unit,
+                &mut symbols,
+                &grid,
+                0,
+                0,
+                TX_4X32,
+                19,
+                0,
+                true,
+                reduced_tx_part_set,
+                ByteOffset::new(0),
+            )
+            .unwrap(),
+            Some(expected)
+        );
+        symbols.exit_symbol().unwrap();
+    }
+}
+
+#[test]
+fn writer_produced_inter_narrow_four_and_five_way_partitions_are_malformed() {
+    for (symbol, expected) in [(3, (0, 2)), (4, (2, 0)), (5, (0, 1)), (6, (1, 0))] {
+        let payload = encode_symbol_sequence(&[
+            (
+                TileCdfSelector::TxDoPartition {
+                    fsc_mode: 0,
+                    is_inter: 1,
+                    txfm_split_group: 1,
+                },
+                1,
+            ),
+            (
+                TileCdfSelector::TxPartitionType {
+                    fsc_mode: 0,
+                    is_inter: 1,
+                    ctx: 0,
+                    reduced: false,
+                },
+                symbol,
+            ),
+        ]);
+        let mut work_unit = make_test_work_unit(&payload, CdfUpdateMode::Disabled);
+        let mut symbols = SymbolDecoder::with_base_and_config(
+            &payload,
+            ByteOffset::new(41),
+            SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+        )
+        .unwrap();
+        let mut grid = SelectableLumaTxGrid::new(2, 2).unwrap();
+        let partition = read_tx_partition_symbols(
+            &mut work_unit,
+            &mut symbols,
+            &grid,
+            0,
+            0,
+            TX_8X8,
+            3,
+            0,
+            true,
+            false,
+            ByteOffset::new(41),
+        )
+        .unwrap()
+        .unwrap();
+        symbols.exit_symbol().unwrap();
+
+        let geometry = apply_tx_partition(&mut grid, 0, 0, TX_8X8, partition).unwrap_err();
+        assert_eq!(
+            geometry,
+            SelectableTransformRecordError::EmptyTransform {
+                h4: expected.0,
+                w4: expected.1,
+            }
+        );
+        let error = selectable_transform_partition_error(geometry, ByteOffset::new(41));
+        match error {
+            crate::error::DecodeError::MalformedSource { issue } => {
+                assert_eq!(issue.spec_section(), Some("6.19.6.3"));
+                assert_eq!(issue.offset(), Some(ByteOffset::new(41)));
+            }
+            other => panic!("unexpected decode error: {other:?}"),
+        }
+    }
+}
 
 /// The AV2 §7.13.2.1 PER-TRANSFORM far-edge availability (`num4AboveRight`) for the
 /// LEFT `TX_16X8` of a `BLOCK_32X8` `V_PRED` coding block at MI(224,30) must be the

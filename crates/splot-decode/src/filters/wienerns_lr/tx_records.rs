@@ -145,6 +145,19 @@ fn selectable_transform_record_error(
     }
 }
 
+fn selectable_transform_partition_error(
+    error: SelectableTransformRecordError,
+    tile_offset: ByteOffset,
+) -> crate::error::DecodeError {
+    match error {
+        SelectableTransformRecordError::EmptyTransform { .. }
+        | SelectableTransformRecordError::InvalidTxSize { .. } => {
+            crate::pipeline::malformed_tile_payload(tile_offset, "6.19.6.3", error)
+        }
+        _ => selectable_transform_record_error(error),
+    }
+}
+
 fn selectable_allocation_error() -> crate::error::DecodeError {
     splot_recon::ReconError::WorkspaceAllocationFailed {
         plane: splot_recon::PlaneId::Y,
@@ -730,6 +743,7 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
                 .ok_or_else(selectable_state_error)?;
             for row in (frontier.r..row_end).step_by(tx_h4) {
                 for col in (frontier.c..col_end).step_by(tx_w4) {
+                    let reduced_tx_part_set = work_unit.coeff_frame_facts().reduced_tx_part_set();
                     let Some(tx_partition) = read_tx_partition_symbols(
                         work_unit,
                         symbols,
@@ -740,13 +754,13 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
                         b_size,
                         fsc_mode,
                         true,
+                        reduced_tx_part_set,
                         tile_offset,
                     )?
                     else {
                         continue;
                     };
-                    apply_tx_partition(grid, row, col, max_tx_size, tx_partition)
-                        .map_err(selectable_transform_record_error)?;
+                    apply_tx_partition_at(grid, row, col, max_tx_size, tx_partition, tile_offset)?;
                 }
             }
         }
@@ -784,6 +798,7 @@ fn read_tx_partition_symbols(
     mi_size: usize,
     fsc_mode: u8,
     is_inter: bool,
+    reduced_tx_part_set: bool,
     tile_offset: ByteOffset,
 ) -> Result<Option<usize>> {
     if row >= grid.rows || col >= grid.cols {
@@ -834,7 +849,7 @@ fn read_tx_partition_symbols(
                         fsc_mode: tx_fsc_mode,
                         is_inter: tx_is_inter,
                         ctx,
-                        reduced: false,
+                        reduced: reduced_tx_part_set,
                     },
                     tile_offset,
                     "5.20.6.3",
@@ -848,7 +863,7 @@ fn read_tx_partition_symbols(
                 )
                 .map_err(selectable_transform_record_error)?;
                 if let Some(vert_or_horz_ctx) = vert_or_horz_group.checked_sub(1) {
-                    let tx_2or3 = if work_unit.coeff_frame_facts().reduced_tx_set() != 0 {
+                    let tx_2or3 = if reduced_tx_part_set {
                         0
                     } else {
                         read_tx_symbol(
@@ -886,6 +901,18 @@ fn read_tx_partition_symbols(
     }
 
     Ok(Some(tx_partition))
+}
+
+fn apply_tx_partition_at(
+    grid: &mut SelectableLumaTxGrid,
+    row: usize,
+    col: usize,
+    tx_size: usize,
+    tx_partition: usize,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    apply_tx_partition(grid, row, col, tx_size, tx_partition)
+        .map_err(|error| selectable_transform_partition_error(error, tile_offset))
 }
 
 fn apply_tx_partition(

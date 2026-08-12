@@ -155,6 +155,7 @@ pub(crate) fn make_work_unit_at(
             enable_inter_ist: false,
             enable_chroma_dctonly: false,
             enable_cctx: false,
+            reduced_tx_part_set: false,
             reduced_tx_set: 0,
             lossless_array: [false; MAX_SEGMENTS],
             allow_tcq: false,

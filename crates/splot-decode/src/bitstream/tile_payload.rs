@@ -62,10 +62,10 @@ pub(crate) use general_intra_residual::{
     FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope, FrameQuantizerSnapshot,
     FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope, GeneralIntraResidualError,
     LumaCoeffBlock, LumaTransformPartitionContext, LumaTransformPartitionUnits,
-    LumaTransformTypeContext, PositionedLumaCoeffBlock, TransformPartitionUnsupported,
-    TransformToolResidualPolicy, current_frame_qm_segment_id,
-    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
-    is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_into,
+    LumaTransformTypeContext, PositionedLumaCoeffBlock, TransformToolResidualPolicy,
+    current_frame_qm_segment_id, decode_general_intra_luma_partition_coeffs,
+    decode_general_intra_plane_coeffs, is_cctx_geometry_allowed,
+    reconstruct_general_intra_chroma_cctx_pair_into,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
@@ -224,6 +224,7 @@ pub(crate) struct TileCoeffFrameFacts {
     enable_inter_ist: bool,
     enable_chroma_dctonly: bool,
     enable_cctx: bool,
+    reduced_tx_part_set: bool,
     reduced_tx_set: usize,
     lossless_array: [bool; MAX_SEGMENTS],
     allow_tcq: bool,
@@ -238,6 +239,7 @@ pub(crate) struct TileCoeffFrameFactsInput {
     pub(crate) enable_inter_ist: bool,
     pub(crate) enable_chroma_dctonly: bool,
     pub(crate) enable_cctx: bool,
+    pub(crate) reduced_tx_part_set: bool,
     pub(crate) reduced_tx_set: usize,
     pub(crate) lossless_array: [bool; MAX_SEGMENTS],
     pub(crate) allow_tcq: bool,
@@ -254,6 +256,7 @@ impl TileCoeffFrameFacts {
             enable_inter_ist: input.enable_inter_ist,
             enable_chroma_dctonly: input.enable_chroma_dctonly,
             enable_cctx: input.enable_cctx,
+            reduced_tx_part_set: input.reduced_tx_part_set,
             reduced_tx_set: input.reduced_tx_set,
             lossless_array: input.lossless_array,
             allow_tcq: input.allow_tcq,
@@ -269,6 +272,7 @@ impl TileCoeffFrameFacts {
             enable_inter_ist: false,
             enable_chroma_dctonly: false,
             enable_cctx: false,
+            reduced_tx_part_set: false,
             reduced_tx_set: 0,
             lossless_array: [false; MAX_SEGMENTS],
             allow_tcq: false,
@@ -305,6 +309,11 @@ impl TileCoeffFrameFacts {
     #[must_use]
     pub(crate) const fn reduced_tx_set(self) -> usize {
         self.reduced_tx_set
+    }
+
+    #[must_use]
+    pub(crate) const fn reduced_tx_part_set(self) -> bool {
+        self.reduced_tx_part_set
     }
 
     #[must_use]

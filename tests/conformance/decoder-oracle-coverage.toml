@@ -667,6 +667,13 @@ fixtureable = true
 spec_sections = ["5.20.6.3", "5.20.7.24"]
 
 [[capability]]
+id = "transform.tx_partition_reduced"
+name = "Sequence-selected reduced transform-partition set"
+category = "transform"
+fixtureable = true
+spec_sections = ["5.4.8", "5.20.6.3", "6.4.8", "6.19.2.1"]
+
+[[capability]]
 id = "coeff.all_zero"
 name = "All-zero (skipped) transform block"
 category = "coeff"
