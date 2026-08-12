@@ -319,7 +319,9 @@ fn cfl_prediction_into<T: ReconSample>(
     } else {
         predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?
     };
-    let luma_ac = luma_ac.ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+    let luma_ac = luma_ac.ok_or(GeneralIntraResidualError::InvalidReconstructionState {
+        context: "CfL luma AC",
+    })?;
     apply_cfl_prediction(
         workspace,
         plane_id,
@@ -370,9 +372,11 @@ fn apply_cfl_prediction<T: ReconSample>(
     )?;
     let max = i32::from(bit_depth.max_sample());
     let dc = i32::from(dc.to_u16());
-    let luma_ac = luma_ac
-        .get(..width.saturating_mul(height))
-        .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+    let luma_ac = luma_ac.get(..width.saturating_mul(height)).ok_or(
+        GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CfL luma AC length",
+        },
+    )?;
     prediction.clear();
     prediction.reserve(luma_ac.len());
     for &ac in luma_ac {

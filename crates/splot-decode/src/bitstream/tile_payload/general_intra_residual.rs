@@ -501,8 +501,6 @@ pub(crate) enum GeneralIntraResidualError {
     },
     #[error("general intra reconstruction state is invalid: {context}")]
     InvalidReconstructionState { context: &'static str },
-    #[error("general intra luma nonzero coefficient pass produced an unexpected branch result")]
-    UnexpectedBranch,
     #[error("general intra luma reconstruction expected {expected} quant entries, got {actual}")]
     QuantLength { expected: usize, actual: usize },
     #[error("general intra reconstruction expected {expected} prediction samples, got {actual}")]

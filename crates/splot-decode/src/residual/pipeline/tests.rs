@@ -873,6 +873,47 @@ fn palette_map_is_sliced_for_each_partitioned_transform_size() {
 }
 
 #[test]
+fn invalid_palette_unit_geometry_is_reconstruction_state() {
+    let ctx = ctx(BlockRect::new(2, 3, 16, 16), BitDepth::Ten);
+    let palette = LumaPalette::from_size_symbol(Symbol::new(2), [16, 64, 128, 240, 0, 0, 0, 0]);
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx,
+        RectLumaPlan::Palette {
+            palette,
+            use_tcq: false,
+        },
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect("palette rect plan");
+    let plane = plan.plane_plan(PlaneId::Y).expect("luma plane");
+    let parent_width = 1usize << plane.tx.width_log2();
+    let parent_height = 1usize << plane.tx.height_log2();
+    let parent_map = vec![3; parent_width * parent_height];
+
+    for (x, y, expected_context) in [
+        (plane.x - 1, plane.y, "palette transform X origin"),
+        (plane.x, plane.y - 1, "palette transform Y origin"),
+        (plane.x + parent_width, plane.y, "palette transform extent"),
+    ] {
+        let block = PositionedLumaCoeffBlock {
+            x,
+            y,
+            tx_size: 0,
+            middle: false,
+            coeffs: empty_luma_coeffs(),
+        };
+        assert!(matches!(
+            plane.palette_color_map_for_unit(Some(&parent_map), &block),
+            Err(GeneralIntraResidualError::InvalidReconstructionState { context })
+                if context == expected_context
+        ));
+    }
+}
+
+#[test]
 fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
     let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
     let plan = GeneralIntraResidualPlan::rect(

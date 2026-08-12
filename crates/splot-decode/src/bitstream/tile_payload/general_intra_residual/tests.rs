@@ -1905,6 +1905,37 @@ fn cctx_minus30_rotates_saved_chroma_dequant_pair() {
 }
 
 #[test]
+fn invalid_cctx_state_preserves_coefficient_pairs() {
+    let mut u = [11, 12];
+    let mut v = [21, 22];
+    for cctx_type in [0, 7] {
+        let before = (u, v);
+        let result = apply_cross_chroma_transform(cctx_type, BitDepth::Eight, &mut u, &mut v);
+
+        assert!(matches!(
+            result,
+            Err(GeneralIntraResidualError::InvalidReconstructionState {
+                context: "CCTX type"
+            })
+        ));
+        assert_eq!((u, v), before);
+    }
+
+    let mut short_u = [31];
+    let mut long_v = [41, 42];
+    let before = (short_u, long_v);
+    let result = apply_cross_chroma_transform(1, BitDepth::Eight, &mut short_u, &mut long_v);
+
+    assert!(matches!(
+        result,
+        Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CCTX coefficient lengths"
+        })
+    ));
+    assert_eq!((short_u, long_v), before);
+}
+
+#[test]
 fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     let u_block = LumaCoeffBlock {
         eob: 7,

@@ -196,8 +196,11 @@ impl ResidualPlanePlan {
         let block_ctx = self.block_ctx;
         match self.unit_directional_replan(luma_context) {
             ResidualReconstructionPlan::LumaPalette { palette, use_tcq } => {
-                let color_map =
-                    palette_color_map.ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+                let color_map = palette_color_map.ok_or(
+                    GeneralIntraResidualError::InvalidReconstructionState {
+                        context: "luma palette color map",
+                    },
+                )?;
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_palette_block_into(
                     workspace,
                     coeffs,
@@ -772,7 +775,9 @@ impl ResidualPlanePlan {
                 )
             }
             ResidualReconstructionPlan::ChromaDirectional { .. } => {
-                Err(GeneralIntraResidualError::UnexpectedBranch)
+                Err(GeneralIntraResidualError::InvalidReconstructionState {
+                    context: "directional chroma dispatch",
+                })
             }
             ResidualReconstructionPlan::ChromaCfl {
                 params,

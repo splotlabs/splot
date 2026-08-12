@@ -915,7 +915,11 @@ fn inter_residual_reconstruction_error(error: GeneralIntraResidualError) -> Deco
 #[test]
 fn inter_residual_reconstruction_failures_keep_their_public_error_category() {
     assert!(matches!(
-        inter_residual_reconstruction_error(GeneralIntraResidualError::UnexpectedBranch),
+        inter_residual_reconstruction_error(
+            GeneralIntraResidualError::InvalidReconstructionState {
+                context: "inter residual test",
+            },
+        ),
         DecodeError::HeaderState {
             source: DecodeHeaderStateError::InvalidInterResidualReconstruction,
         }

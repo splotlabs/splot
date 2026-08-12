@@ -682,22 +682,6 @@ fn coefficient_defensive_eof_keeps_each_syntax_owner() {
 }
 
 #[test]
-fn unexpected_general_intra_branch_is_internal_state() {
-    let error = general_intra_residual_error(
-        GeneralIntraResidualError::UnexpectedBranch,
-        ByteOffset::new(42),
-    );
-
-    assert!(matches!(
-        error,
-        DecodeError::InternalState {
-            reason: "general_intra_luma_coeff_unexpected_branch",
-            byte_offset,
-        } if byte_offset == ByteOffset::new(42)
-    ));
-}
-
-#[test]
 fn general_intra_recon_command_is_send() {
     fn assert_send<T: Send>() {}
 

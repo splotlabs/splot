@@ -40,18 +40,22 @@ impl ResidualPlanePlan {
         let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
         let unit_width = 1usize << log2_width;
         let unit_height = 1usize << log2_height;
-        let local_x = block
-            .x
-            .checked_sub(self.x)
-            .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
-        let local_y = block
-            .y
-            .checked_sub(self.y)
-            .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+        let local_x = block.x.checked_sub(self.x).ok_or(
+            GeneralIntraResidualError::InvalidReconstructionState {
+                context: "palette transform X origin",
+            },
+        )?;
+        let local_y = block.y.checked_sub(self.y).ok_or(
+            GeneralIntraResidualError::InvalidReconstructionState {
+                context: "palette transform Y origin",
+            },
+        )?;
         if local_x.saturating_add(unit_width) > parent_width
             || local_y.saturating_add(unit_height) > parent_height
         {
-            return Err(GeneralIntraResidualError::UnexpectedBranch);
+            return Err(GeneralIntraResidualError::InvalidReconstructionState {
+                context: "palette transform extent",
+            });
         }
         let mut unit_map = Vec::with_capacity(unit_width.saturating_mul(unit_height));
         for row in 0..unit_height {

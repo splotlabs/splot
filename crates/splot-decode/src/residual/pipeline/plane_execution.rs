@@ -484,9 +484,11 @@ impl ParsedGeneralIntraResidual {
                     continue;
                 }
                 CctxRole::PairV => {
-                    let u = pending_u
-                        .take()
-                        .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+                    let u = pending_u.take().ok_or(
+                        GeneralIntraResidualError::InvalidReconstructionState {
+                            context: "CCTX pending U plane",
+                        },
+                    )?;
                     reconstruct_chroma_pair(
                         scratch,
                         workspace,
@@ -638,7 +640,9 @@ impl ParsedResidualPlane {
                 coeffs,
                 palette_color_map: None,
             } => Ok((self.plane, coeffs)),
-            _ => Err(GeneralIntraResidualError::UnexpectedBranch),
+            _ => Err(GeneralIntraResidualError::InvalidReconstructionState {
+                context: "CCTX chroma plane kind",
+            }),
         }
     }
 }

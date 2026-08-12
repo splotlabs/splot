@@ -210,7 +210,9 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
         return Ok(());
     }
     if bit_depth != sink.info().bit_depth() {
-        return Err(GeneralIntraResidualError::UnexpectedBranch);
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "inter residual bit depth",
+        });
     }
     reconstruct_inter_coeff_block_residual_rect_into(
         sink, block, plane_id, x, y, block_size, qindex, use_tcq, use_ddt, bit_depth,
