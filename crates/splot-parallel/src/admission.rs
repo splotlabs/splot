@@ -10,6 +10,8 @@
 //! [`Condition`]s it needs, it is spawned only once every condition already
 //! holds, and the publisher that satisfies the last condition is what admits it.
 //!
+//! Feature tracking: `INFRA-DECODE-FRAME-PIPELINING`.
+//!
 //! # Ordering guarantee
 //!
 //! Admissible jobs queue in a min-heap keyed by `order_key`, ties broken by
@@ -58,6 +60,11 @@
 //! made them. It gives up only the `order_key`, entering the pool in call order
 //! instead of the heap's, which is a scheduling preference and not a
 //! correctness property.
+//!
+//! [`Admit::continue_ready`] records a single proven-ready serial successor for
+//! the current job instead. The successor runs on the same worker only after
+//! the predecessor returns and the post-body drain exposes other ready work;
+//! a fixed budget returns long chains to normal ordered submission.
 //!
 //! Nothing is lost to [`AdmissionScheduler::finish`] either: it reports jobs
 //! that never became admissible, and a job spawned this way was admissible when
@@ -190,10 +197,10 @@ pub trait Admit<'job>: Sync {
     /// budget is spent, the remaining job is submitted normally under
     /// `order_key`, so a long chain cannot monopolize one worker. Use this only
     /// when the successor is the current job's single serial continuation and
-    /// no scheduler priority decision is required before it runs.
-    fn continue_ready(&self, order_key: u64, job: Job<'job>) {
-        self.submit(order_key, &[], job);
-    }
+    /// no scheduler priority decision is required before it runs. Register the
+    /// continuation as the predecessor's final action: a later panic unwinds
+    /// and drops the not-yet-started successor with it.
+    fn continue_ready(&self, order_key: u64, job: Job<'job>);
 }
 
 /// Test-only tally of the work the drain and fast paths are meant to avoid.
@@ -824,7 +831,8 @@ mod tests {
     use crate::thread_count::ThreadCount;
     use core::num::NonZeroUsize;
     use std::cell::Cell;
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::Barrier;
+    use std::sync::atomic::AtomicUsize;
 
     std::thread_local! {
         static CONTINUATION_TEST_DEPTH: Cell<usize> = const { Cell::new(0) };
@@ -1029,29 +1037,25 @@ mod tests {
 
     #[test]
     fn independent_work_can_run_during_an_inline_chain() {
-        let observed = AtomicBool::new(false);
+        let rendezvous = Barrier::new(2);
         let scheduler = AdmissionScheduler::new();
         let pool = pool(2);
         pool.install(|| {
             ready_task_scope(|scope| {
-                let observed = &observed;
+                let rendezvous = &rendezvous;
                 scheduler.submit(
                     scope,
                     0,
                     &[],
                     Box::new(move |admit| {
-                        let independent = observed;
+                        let independent = rendezvous;
                         admit.spawn_ready(Box::new(move |_| {
-                            independent.store(true, Ordering::Release);
+                            independent.wait();
                         }));
                         admit.continue_ready(
                             1,
                             Box::new(move |_| {
-                                let started = std::time::Instant::now();
-                                while !observed.load(Ordering::Acquire) {
-                                    assert!(started.elapsed() < std::time::Duration::from_secs(1));
-                                    std::thread::yield_now();
-                                }
+                                rendezvous.wait();
                             }),
                         );
                     }),
@@ -1060,7 +1064,6 @@ mod tests {
         })
         .unwrap();
         scheduler.finish().unwrap();
-        assert!(observed.load(Ordering::Acquire));
     }
 
     #[test]
