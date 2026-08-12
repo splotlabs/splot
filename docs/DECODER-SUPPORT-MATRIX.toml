@@ -1027,15 +1027,15 @@ notes = "Supports the luma palette token parser, ColorOrder derivation, edge pad
 id = "general-intra-luma-coeffs"
 name = "General intra luma coefficient decode"
 feature_id = "DECODE-GENERAL-INTRA-LUMA-COEFFS"
-spec_sections = ["5.20.7.27", "8.3.2"]
-parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md"
+spec_sections = ["5.20.7.27", "5.20.7.28", "6.19.7.23", "6.19.7.24", "8.2.4", "8.3.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/06-syntax-structures-semantics.md; docs/spec/av2/1.0.0/08-parsing-process.md"
 decode_module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs; crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs"
 tier = "tier1-intra"
 status = "partial"
-self_contained_tests = ["crates/splot-decode/src/pipeline/general_intra_tests.rs::luma_skip_fixture_decodes_skip_branch_through_general_path", "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_nonzero_intra_frame_decodes_to_oracle", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest", "cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
-diagnostics = ["decode/unsupported-feature"]
+self_contained_tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::golomb_prefix_boundary_is_writer_backed", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::strict_quant_magnitude_bounds_include_both_signs", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::strict_quant_bound_is_checked_after_hidden_parity_and_tcq", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::coefficient_parse_failures_have_typed_recursive_taxonomy", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::coefficient_entropy_and_geometry_failures_are_typed_header_state", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::coefficient_defensive_eof_keeps_each_syntax_owner", "crates/splot-decode/src/output/raw_tests.rs::truncated_palette_tile_terminal_fails_closed_before_raw_output", "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_nonzero_intra_frame_decodes_to_oracle", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest", "cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask decoder-fixtures verify", "cargo test -p splot-cli --test decoder_oracle --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = ["decode/malformed-source", "decode/unsupported-feature"]
 local_reference_evidence = []
-notes = "Current runtime plane coefficient decode handles the direct all-zero path and routes nonzero blocks through staged ordinary or FSC decoding; oracle tests protect reconstructed output."
+notes = "The all-zero, staged ordinary, and FSC coefficient parsers share a recursive error classifier across general-intra and inter. Reserved Pt512 is malformed under §6.19.7.23, overlong Golomb is malformed under §6.19.7.24, and the strict -(1 << 20) < Quant < (1 << 20) bound is checked after hidden-parity and TCQ adjustment and before sign/write. Allocation remains a reconstruction resource failure; CDF/arithmetic state and geometry/table/scan/context escapes are narrow typed header-state invariants without global reason ids. Defensive direct read EOF retains the owning syntax section, but the live SymbolDecoder zero-pads and detects actual truncation through terminal exit_symbol §8.2.4. The pinned 68-byte AVM extended-Golomb fixture is deterministic, strict-clean, and byte-exact at one and eight threads. The row stays partial because general_intra_luma_coeff_state remains a separate unsupported capability boundary."
 
 [[row]]
 id = "general-intra-frame-recon"

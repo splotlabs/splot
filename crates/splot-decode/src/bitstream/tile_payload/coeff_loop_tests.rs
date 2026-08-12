@@ -233,3 +233,78 @@ fn live_eob_read_reports_truncation_and_wrapped_offsets() {
         } if offset == ByteOffset::new(32)
     ));
 }
+
+#[test]
+fn coefficient_error_classifier_preserves_leaf_taxonomy() {
+    let pt512 = CoeffLoopContextError::InvalidPt512EobExtra { eob_pt_extra: 3 };
+    assert_eq!(
+        classify_coeff_parse_error(&pt512, "5.20.7.27"),
+        CoeffParseErrorClass::Malformed {
+            spec_section: "6.19.7.23"
+        }
+    );
+
+    let golomb = read_quant::CoeffReadQuantError::OverlongGolombPrefix { index: 0 };
+    assert_eq!(
+        classify_coeff_parse_error(&golomb, "5.20.7.27"),
+        CoeffParseErrorClass::Malformed {
+            spec_section: "6.19.7.24"
+        }
+    );
+
+    let magnitude = quant_state::CoeffQuantStateWriteError::QuantMagnitudeOutOfRange {
+        index: 0,
+        magnitude: 1 << 20,
+    };
+    assert_eq!(
+        classify_coeff_parse_error(&magnitude, "5.20.7.27"),
+        CoeffParseErrorClass::Malformed {
+            spec_section: "6.19.7.23"
+        }
+    );
+
+    let entropy = BlockSymbolTraceReadError::Cdf(TileCdfError::UnexpectedSelector);
+    assert_eq!(
+        classify_coeff_parse_error(&entropy, "5.20.7.27"),
+        CoeffParseErrorClass::EntropyState
+    );
+
+    let invariant = CoeffLoopContextError::InvalidEobPoint { eob_pt: 12 };
+    assert_eq!(
+        classify_coeff_parse_error(&invariant, "5.20.7.27"),
+        CoeffParseErrorClass::CoefficientState
+    );
+
+    let mut allocation = Vec::<u8>::new();
+    let allocation = allocation.try_reserve(usize::MAX).unwrap_err();
+    assert_eq!(
+        classify_coeff_parse_error(&allocation, "5.20.7.27"),
+        CoeffParseErrorClass::Allocation
+    );
+}
+
+#[test]
+fn coefficient_error_classifier_keeps_defensive_eof_syntax_specific() {
+    let eof = CoreError::UnexpectedEof {
+        offset: ByteOffset::new(23),
+        needed: 1,
+    };
+    assert_eq!(
+        classify_coeff_parse_error(&eof, "5.20.6.3"),
+        CoeffParseErrorClass::Malformed {
+            spec_section: "5.20.6.3"
+        }
+    );
+
+    let read_quant = read_quant::CoeffReadQuantError::LiteralRead {
+        index: 0,
+        syntax: "coeff_rem",
+        source: eof,
+    };
+    assert_eq!(
+        classify_coeff_parse_error(&read_quant, "5.20.7.27"),
+        CoeffParseErrorClass::Malformed {
+            spec_section: "5.20.7.28"
+        }
+    );
+}

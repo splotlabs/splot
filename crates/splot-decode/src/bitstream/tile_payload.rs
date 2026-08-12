@@ -47,7 +47,15 @@ pub(crate) use cdf::{
     COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, FrameCdfSubset,
     MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
 };
-pub(crate) use coeff_loop::{CoeffLoopContextError, read_quant::CoeffReadQuantError};
+#[cfg(test)]
+pub(crate) use coeff_loop::{
+    CoeffLoopContextError,
+    ordinary_pass::{CoeffOrdinaryBranchError, CoeffOrdinaryPassError},
+    quant_pass::CoeffQuantPassError,
+    quant_state::CoeffQuantStateWriteError,
+    read_quant::CoeffReadQuantError,
+};
+pub(crate) use coeff_loop::{CoeffParseErrorClass, classify_coeff_parse_error};
 pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState, TileCoeffStateError};
 #[cfg(test)]
 pub(crate) use general_intra_block::GeneralIntraLumaBlockMode;

@@ -8,11 +8,11 @@ use splot_recon::{
 
 use super::*;
 use crate::bitstream::tile_payload::{
-    BlockSize, BlockSymbolTraceReadError, CflParams, GeneralIntraBlockModes,
+    BlockSize, BlockSymbolTraceReadError, CflParams, CoeffParseErrorClass, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     GeneralIntraLeafMode, IntraYMode, IntraYModeClass, IsCflContext, LumaTransformPartitionContext,
     LumaTransformTypeContext, MrlSelection, SupportedChromaMode, TransformToolResidualPolicy,
-    read_lossless_luma_tx_size,
+    classify_coeff_parse_error, read_lossless_luma_tx_size,
 };
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
@@ -1015,19 +1015,20 @@ fn general_intra_residual_error(
     offset: ByteOffset,
 ) -> DecodeError {
     match error {
-        GeneralIntraResidualError::AllZeroRead { .. }
+        error @ (GeneralIntraResidualError::AllZeroRead { .. }
         | GeneralIntraResidualError::NonZeroStart { .. }
         | GeneralIntraResidualError::StagedNonZeroPass { .. }
         | GeneralIntraResidualError::StagedFscPass { .. }
-        | GeneralIntraResidualError::TransformPartitionRead { .. }
-        | GeneralIntraResidualError::TransformPartitionGeometry { .. }
-        | GeneralIntraResidualError::TransformTypeRead { .. }
-        | GeneralIntraResidualError::CctxTypeRead { .. } => general_intra_at!(
-            "general_intra_luma_coeff_parse",
-            offset,
-            "general intra luma transform-block coefficient syntax could not be parsed from the tile payload",
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
+        | GeneralIntraResidualError::CctxTypeRead { .. }) => {
+            general_intra_coeff_error(&error, offset, GENERAL_INTRA_RESIDUAL_SPEC_SECTION)
+        }
+        error @ (GeneralIntraResidualError::TransformPartitionRead { .. }
+        | GeneralIntraResidualError::TransformPartitionGeometry { .. }) => {
+            general_intra_coeff_error(&error, offset, "5.20.6.3")
+        }
+        error @ GeneralIntraResidualError::TransformTypeRead { .. } => {
+            general_intra_coeff_error(&error, offset, "5.20.8.2")
+        }
         GeneralIntraResidualError::InvalidTransformPartitionDimensions { .. } => {
             malformed_tile_payload(offset, "6.19.6.3", error)
         }
@@ -1090,6 +1091,29 @@ fn general_intra_residual_error(
             missing_capability_message!("intra.luma.directional.above_edge", neighbour = "corner",),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
+    }
+}
+
+fn general_intra_coeff_error(
+    error: &(dyn std::error::Error + 'static),
+    offset: ByteOffset,
+    syntax_spec_section: &'static str,
+) -> DecodeError {
+    match classify_coeff_parse_error(error, syntax_spec_section) {
+        CoeffParseErrorClass::Allocation => splot_recon::ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "general-intra coefficient parse state",
+        }
+        .into(),
+        CoeffParseErrorClass::Malformed { spec_section } => {
+            malformed_tile_payload(offset, spec_section, error)
+        }
+        CoeffParseErrorClass::EntropyState => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraCoefficientEntropyState.into()
+        }
+        CoeffParseErrorClass::CoefficientState => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraCoefficientState.into()
+        }
     }
 }
 

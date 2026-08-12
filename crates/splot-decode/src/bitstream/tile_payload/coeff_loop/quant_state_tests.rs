@@ -71,3 +71,71 @@ fn hidden_parity_overflow_is_reported() {
         })
     ));
 }
+
+#[test]
+fn strict_quant_magnitude_bounds_include_both_signs() {
+    let dc = entry(0, 0);
+    for (sign, expected) in [(false, (1 << 20) - 1), (true, -((1 << 20) - 1))] {
+        let mut state = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
+            is_hidden: false,
+            sum_abs1: 0,
+            use_tcq: false,
+            lossless: false,
+        });
+        assert_eq!(
+            state
+                .apply_entry(0, dc, sign, input((1 << 20) - 1))
+                .unwrap()
+                .quant(),
+            expected
+        );
+    }
+
+    for sign in [false, true] {
+        let mut state = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
+            is_hidden: false,
+            sum_abs1: 0,
+            use_tcq: false,
+            lossless: false,
+        });
+        assert!(matches!(
+            state.apply_entry(0, dc, sign, input(1 << 20)),
+            Err(CoeffQuantStateWriteError::QuantMagnitudeOutOfRange {
+                index: 0,
+                magnitude: 1_048_576,
+            })
+        ));
+    }
+}
+
+#[test]
+fn strict_quant_bound_is_checked_after_hidden_parity_and_tcq() {
+    let dc = entry(0, 0);
+    let mut hidden = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
+        is_hidden: true,
+        sum_abs1: 0,
+        use_tcq: false,
+        lossless: false,
+    });
+    assert!(matches!(
+        hidden.apply_entry(0, dc, false, input(1 << 19)),
+        Err(CoeffQuantStateWriteError::QuantMagnitudeOutOfRange {
+            magnitude: 1_048_576,
+            ..
+        })
+    ));
+
+    let mut tcq = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
+        is_hidden: false,
+        sum_abs1: 0,
+        use_tcq: true,
+        lossless: false,
+    });
+    assert!(matches!(
+        tcq.apply_entry(0, dc, false, input(1 << 19)),
+        Err(CoeffQuantStateWriteError::QuantMagnitudeOutOfRange {
+            magnitude: 1_048_576,
+            ..
+        })
+    ));
+}

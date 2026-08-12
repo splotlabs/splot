@@ -168,7 +168,7 @@ fn reserved_pt512_eob_literal_is_malformed_residual_syntax() {
     assert!(matches!(
         error,
         crate::DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
+            if issue.offset() == Some(offset) && issue.spec_section() == Some("6.19.7.23")
     ));
 }
 
@@ -182,7 +182,24 @@ fn overlong_golomb_prefix_is_malformed_read_quant_syntax() {
     assert!(matches!(
         error,
         crate::DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_READ_QUANT)
+            if issue.offset() == Some(offset) && issue.spec_section() == Some("6.19.7.24")
+    ));
+}
+
+#[test]
+fn quant_magnitude_escape_is_malformed_coefficient_semantics() {
+    let offset = ByteOffset::new(42);
+    let parse_error =
+        crate::bitstream::tile_payload::CoeffQuantStateWriteError::QuantMagnitudeOutOfRange {
+            index: 0,
+            magnitude: 1 << 20,
+        };
+
+    let error = residual_read_error(&parse_error, SPEC_RESIDUAL, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some("6.19.7.23")
     ));
 }
 
@@ -202,7 +219,7 @@ fn read_quant_eof_uses_read_quant_spec_section() {
     assert!(matches!(
         error,
         crate::DecodeError::MalformedSource { issue }
-            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_READ_QUANT)
+            if issue.offset() == Some(offset) && issue.spec_section() == Some("5.20.7.28")
     ));
 }
 

@@ -141,6 +141,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-golomb-lossless-mono-16x16.ivf"
+description = "Pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774 deterministic 68-byte 8-bit monochrome lossless key frame from the project-owned flat-96 recipe in tools/decoder-fixtures/generate.py. Instrumented AVM enters the §5.20.7.28 extended-Golomb branch exactly once with m=1, cMax=5, q=5, and prefix 1 (trace SHA-256 6a9933e1cbb196fface5ca35cd0dfed61a03ea40723ca6af62c8741eb59cd312; local provenance SHA-256 8436f8216811c27854b52fa8837aa91f7d878301f571be7b02dd52d90a0e8721). Two clean producer runs are byte-identical; the 24-byte direct OBU SHA-256 is c3007e484b13b81bfea7d7e2f148db22ece6d847aa12c7d6920adaf05e9484e3. It validates strict-clean, and AVM plus splot at one and eight threads emit the same 256-byte raw SHA-256 673f62a095962fe0413e3fa044af24b3f8ec6919a0b61132187e7257ad38afb1."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-lossless-cardinal-y-v-intra-64x64.ivf"
 description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned horizontal luma gradient with flat chroma and broad decode tools disabled. The stream carries non-DPCM V_PRED luma syntax (§ 5.20.5.5, use_dpcm_y=0, y_mode=V_PRED) plus nonzero lossless residual coefficients; avmdec and splot decode byte-exact to raw SHA-256 1ed57e96fd8e3107284d54007af41a0974ea5f75b2adb16de2d3c9943dc5a7fc; validates clean."
 expect = "clean"
