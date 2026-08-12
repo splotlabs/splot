@@ -31,10 +31,11 @@
 //! (`av2_common_int.h:4283`), then accumulate decoded IntrABC block vectors under
 //! the `decide_rmb_unit_update_count` per-unit budget (`mvref_common.c:4589`).
 //!
-//! This module models the spatial scan, bank fill, and default-BVP fill, and
-//! DEFERS (returns no admissible stack) only when `ref_mv_idx` selects beyond
-//! the derived stack.
+//! This module models the spatial scan, bank fill, and default-BVP fill. The
+//! parser carries a bounded selection, and the four default BVPs make every
+//! reachable selection total.
 
+use super::intrabc_records::IntrabcRefSelection;
 use crate::prediction::inter::Mv;
 
 const REF_MV_BANK_SIZE: usize = 4;
@@ -597,6 +598,7 @@ fn lookup_in_grid(
     lookup(row, col)
 }
 
+#[cfg(test)]
 pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
     bank_candidates: &[Mv],
     geometry: IntrabcStackGeometry,
@@ -607,7 +609,62 @@ pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
     let max_count = usize::try_from(geometry.max_bvp_drl_bits_minus_1)
         .ok()
         .and_then(|bits| bits.checked_add(2))
-        .unwrap_or(REF_MV_BANK_SIZE);
+        .unwrap_or(REF_MV_BANK_SIZE)
+        .min(REF_MV_BANK_SIZE);
+    build_intrabc_ref_mv_stack(
+        bank_candidates,
+        geometry,
+        enable_refmvbank,
+        spatial,
+        spatial_comparisons,
+        max_count,
+    )
+    .as_slice()
+    .to_vec()
+}
+
+struct IntrabcRefMvStack {
+    entries: [Mv; REF_MV_BANK_SIZE],
+    len: usize,
+}
+
+impl IntrabcRefMvStack {
+    const fn new() -> Self {
+        Self {
+            entries: [Mv { row: 0, col: 0 }; REF_MV_BANK_SIZE],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, mv: Mv, max_count: usize) {
+        if self.len < max_count {
+            self.entries[self.len] = mv;
+            self.len += 1;
+        }
+    }
+
+    fn as_slice(&self) -> &[Mv] {
+        &self.entries[..self.len]
+    }
+
+    const fn selected(&self, selection: IntrabcRefSelection) -> Mv {
+        match selection.index() {
+            0 => self.entries[0],
+            1 => self.entries[1],
+            2 => self.entries[2],
+            _ => self.entries[3],
+        }
+    }
+}
+
+fn build_intrabc_ref_mv_stack(
+    bank_candidates: &[Mv],
+    geometry: IntrabcStackGeometry,
+    enable_refmvbank: bool,
+    spatial: &[Mv],
+    spatial_comparisons: u32,
+    max_count: usize,
+) -> IntrabcRefMvStack {
     let block_w = i32::try_from(geometry.n4w.saturating_mul(4)).unwrap_or(i32::MAX);
     let block_h = i32::try_from(geometry.n4h.saturating_mul(4)).unwrap_or(i32::MAX);
     let mi_row = i32::try_from(geometry.mi_row).unwrap_or(i32::MAX);
@@ -621,23 +678,23 @@ pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
         frame_w: geometry.frame_w,
         frame_h: geometry.frame_h,
     };
-    let mut stack: Vec<Mv> = Vec::new();
+    let mut stack = IntrabcRefMvStack::new();
 
     for &cand in spatial {
-        if stack.len() >= max_count {
+        if stack.len >= max_count {
             break;
         }
-        stack.push(cand);
+        stack.push(cand, max_count);
     }
 
     let mut comparisons = spatial_comparisons;
     if enable_refmvbank {
         for &cand in bank_candidates {
-            if stack.len() >= max_count {
+            if stack.len >= max_count {
                 break;
             }
-            if check_rmb_cand(cand, &stack, bounds, &mut comparisons) {
-                stack.push(cand);
+            if check_rmb_cand(cand, stack.as_slice(), bounds, &mut comparisons) {
+                stack.push(cand, max_count);
             }
         }
     }
@@ -652,10 +709,10 @@ pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
         add_to_ref_bv(-w, 0),
     ];
     for mv in defaults {
-        if stack.len() >= max_count {
+        if stack.len >= max_count {
             break;
         }
-        stack.push(mv);
+        stack.push(mv, max_count);
     }
     stack
 }
@@ -694,37 +751,52 @@ pub(crate) fn sort_nearest_max_weight_to_slot0(candidates: &mut [WeightedBv]) {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IntrabcStackAdmission {
-    Admit { selected: Mv },
-    Defer,
-}
-
-pub(crate) fn intrabc_ref_stack_admission_from_candidates(
+pub(crate) fn select_intrabc_ref_mv_from_candidates(
     bank_candidates: &[Mv],
     geometry: IntrabcStackGeometry,
     spatial: &SpatialIntrabcScan,
     enable_refmvbank: bool,
     drl_reorder: DrlReorderMode,
-    ref_mv_idx: usize,
-) -> IntrabcStackAdmission {
+    selection: IntrabcRefSelection,
+) -> Mv {
     let mut ordered: Vec<WeightedBv> = spatial.candidates.clone();
     let nearest_len = spatial.nearest_len.min(ordered.len());
     if drl_reorder.use_sort(nearest_len) && nearest_len > 1 {
         sort_nearest_max_weight_to_slot0(&mut ordered[..nearest_len]);
     }
     let sorted: Vec<Mv> = ordered.iter().map(|entry| entry.mv).collect();
-    let real_stack = build_intrabc_ref_mv_stack_from_candidates(
+    build_intrabc_ref_mv_stack(
         bank_candidates,
         geometry,
         enable_refmvbank,
         &sorted,
         spatial.comparisons,
-    );
-    match real_stack.get(ref_mv_idx).copied() {
-        Some(selected) => IntrabcStackAdmission::Admit { selected },
-        None => IntrabcStackAdmission::Defer,
-    }
+        selection.max_count(),
+    )
+    .selected(selection)
+}
+
+#[cfg(test)]
+pub(crate) fn select_intrabc_ref_mv_for_test(
+    bank_candidates: &[Mv],
+    geometry: IntrabcStackGeometry,
+    spatial: &SpatialIntrabcScan,
+    enable_refmvbank: bool,
+    drl_reorder: DrlReorderMode,
+    ref_mv_idx: usize,
+) -> Mv {
+    let Some(selection) = IntrabcRefSelection::new(geometry.max_bvp_drl_bits_minus_1, ref_mv_idx)
+    else {
+        return Mv { row: 0, col: 0 };
+    };
+    select_intrabc_ref_mv_from_candidates(
+        bank_candidates,
+        geometry,
+        spatial,
+        enable_refmvbank,
+        drl_reorder,
+        selection,
+    )
 }
 
 const INTRABC_DELAY_PIXELS: i32 = 256;

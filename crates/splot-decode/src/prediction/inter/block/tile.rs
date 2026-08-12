@@ -321,8 +321,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         let ReconRowBuffers {
             superblocks,
             entries,
-            motion_queue,
-            pending_inter,
             residual_blocks,
             temporal,
             motion_grids,
@@ -334,8 +332,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             ordinal: self.parser_ordinal,
             superblocks,
             entries,
-            motion_queue,
-            pending_inter,
             residual_blocks,
             temporal,
             motion_grids,
@@ -424,15 +420,11 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     leaf.dependency,
                     ReconRowEntry {
                         publication,
-                        command: leaf.command,
+                        state: Some(ReconEntryState::Resolve(Some(leaf.resolve))),
                         motion: None,
                         temporal: 0..0,
                     },
                 );
-                recon_row.motion_queue.push(leaf.motion);
-                if let Some(pending) = leaf.pending {
-                    recon_row.pending_inter.push(pending);
-                }
             };
             match granularity {
                 ParserGranularity::Row => {
@@ -541,8 +533,6 @@ impl TileResolveState {
         tile_offset: ByteOffset,
     ) -> Result<()> {
         resolve_parsed_leaves(
-            &mut row.motion_queue,
-            &mut row.pending_inter,
             &mut row.entries,
             &mut MvResolutionState {
                 grid,
@@ -614,14 +604,61 @@ fn resolve_parser_step(
 
 pub(super) struct ReconRowEntry {
     pub(super) publication: DecodedLeafPublication,
-    pub(super) command: Option<ReconCommand>,
+    state: Option<ReconEntryState>,
     /// The refinement grid the motion pass derived, which is the only grid the
     /// entry's prediction may sample through.
     motion: Option<NonZeroUsize>,
     pub(super) temporal: Range<usize>,
 }
 
+enum ReconEntryState {
+    Resolve(Option<LeafResolveRecord>),
+    Command(Option<ReconCommand>),
+}
+
 impl ReconRowEntry {
+    pub(super) fn command(&self) -> Option<&ReconCommand> {
+        match self.state.as_ref()? {
+            ReconEntryState::Command(Some(command))
+            | ReconEntryState::Resolve(Some(
+                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
+            )) => Some(command),
+            ReconEntryState::Resolve(
+                Some(LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)) | None,
+            )
+            | ReconEntryState::Command(None) => None,
+        }
+    }
+
+    pub(super) fn resolve_record(&self) -> Option<&LeafResolveRecord> {
+        match self.state.as_ref()? {
+            ReconEntryState::Resolve(Some(resolve)) => Some(resolve),
+            ReconEntryState::Resolve(None) | ReconEntryState::Command(_) => None,
+        }
+    }
+
+    pub(super) fn take_resolve(&mut self) -> Option<LeafResolveRecord> {
+        self.take_state(ReconEntryState::as_resolve)
+    }
+
+    pub(super) fn store_command(&mut self, command: ReconCommand) {
+        self.state = Some(ReconEntryState::Command(Some(command)));
+    }
+
+    pub(super) fn take_command(&mut self) -> Option<ReconCommand> {
+        self.take_state(ReconEntryState::as_command)
+    }
+
+    fn take_state<T>(
+        &mut self,
+        extract: impl FnOnce(&mut ReconEntryState) -> Option<T>,
+    ) -> Option<T> {
+        let state = self.state.as_mut()?;
+        let value = extract(state)?;
+        self.state = None;
+        Some(value)
+    }
+
     /// The § 7.22 record a non-inter luma-tree leaf stores: every covered 8x8
     /// cell is reset to "no reference", clearing earlier inter writes there.
     pub(super) fn temporal_clear_record(
@@ -631,7 +668,7 @@ impl ReconRowEntry {
         current_order_hint: u32,
     ) -> Option<TemporalMotionBlock> {
         if !matches!(
-            self.command,
+            self.command(),
             Some(ReconCommand::GeneralIntra(_) | ReconCommand::Intrabc(_))
         ) {
             return None;
@@ -671,6 +708,22 @@ impl ReconRowEntry {
     }
 }
 
+impl ReconEntryState {
+    fn as_resolve(&mut self) -> Option<LeafResolveRecord> {
+        match self {
+            Self::Resolve(resolve) => resolve.take(),
+            Self::Command(_) => None,
+        }
+    }
+
+    fn as_command(&mut self) -> Option<ReconCommand> {
+        match self {
+            Self::Command(command) => command.take(),
+            Self::Resolve(_) => None,
+        }
+    }
+}
+
 pub(super) struct ReconSuperblock {
     pub(super) origin: [usize; 2],
     dependency: ReconDependency,
@@ -702,11 +755,6 @@ pub(super) struct ReconRow {
     pub(super) ordinal: usize,
     pub(super) superblocks: Vec<ReconSuperblock>,
     pub(super) entries: Vec<ReconRowEntry>,
-    /// One § 7.12 work item per parsed leaf, drained by the resolve pass
-    /// before the row leaves the parser.
-    pub(super) motion_queue: Vec<LeafMotion>,
-    /// The inter leaves' § 7.12 records, in the queue's own order.
-    pub(super) pending_inter: Vec<PendingMotionBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) motion_grids: Vec<Option<super::super::mc::CompoundMotionGrid>>,
@@ -737,8 +785,6 @@ impl ReconRow {
 pub(super) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
     pub(super) entries: Vec<ReconRowEntry>,
-    pub(super) motion_queue: Vec<LeafMotion>,
-    pub(super) pending_inter: Vec<PendingMotionBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) motion_grids: Vec<Option<super::super::mc::CompoundMotionGrid>>,
@@ -1070,8 +1116,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
             capacity.saturating_add(
                 entry
-                    .command
-                    .as_ref()
+                    .command()
                     .map_or(0, ReconCommand::temporal_record_capacity),
             )
         });
@@ -1083,7 +1128,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             break;
         };
         for (offset, entry) in entries.iter_mut().enumerate() {
-            let safe = entry.command.as_ref().is_some_and(|command| {
+            let safe = entry.command().is_some_and(|command| {
                 select_prepass_entry(
                     command.dependency(),
                     matches!(
@@ -1101,10 +1146,12 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             if !safe {
                 break 'superblocks;
             }
-            let command = match entry.command.take() {
+            let command = match entry.take_command() {
                 Some(ReconCommand::Inter(command)) => command,
                 command => {
-                    entry.command = command;
+                    if let Some(command) = command {
+                        entry.store_command(command);
+                    }
                     break 'superblocks;
                 }
             };
@@ -1170,7 +1217,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     row.motion_folded = row
         .entries
         .iter()
-        .all(|entry| !matches!(entry.command, Some(ReconCommand::Inter(_))));
+        .all(|entry| !matches!(entry.command(), Some(ReconCommand::Inter(_))));
     if row.motion_folded {
         for entry in &mut row.entries {
             if let Some(clear) = entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint) {

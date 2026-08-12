@@ -159,7 +159,7 @@ fn no_spatial() -> SpatialIntrabcScan {
 #[test]
 fn admission_admits_frontier_mi_0_112_default_only() {
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[Mv { row: -512, col: 0 }],
             frontier_geometry(0, 112),
             &no_spatial(),
@@ -167,16 +167,14 @@ fn admission_admits_frontier_mi_0_112_default_only() {
             DrlReorderMode::Always,
             3,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: 0, col: -256 },
-        }
+        Mv { row: 0, col: -256 }
     );
 }
 
 #[test]
 fn admission_selects_frontier_mi_0_232_bank_reordered_bv() {
     let decide = |enable_refmvbank| {
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[Mv { row: 0, col: -256 }, Mv { row: -512, col: 0 }],
             frontier_geometry(0, 232),
             &no_spatial(),
@@ -185,18 +183,8 @@ fn admission_selects_frontier_mi_0_232_bank_reordered_bv() {
             2,
         )
     };
-    assert_eq!(
-        decide(true),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: 0, col: -3072 },
-        }
-    );
-    assert_eq!(
-        decide(false),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -512, col: 0 },
-        }
-    );
+    assert_eq!(decide(true), Mv { row: 0, col: -3072 });
+    assert_eq!(decide(false), Mv { row: -512, col: 0 });
 }
 
 #[test]
@@ -228,7 +216,7 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
         ]
     );
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &bank_candidates,
             frontier_geometry(0, 240),
             &spatial,
@@ -236,9 +224,7 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
             DrlReorderMode::Always,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: 0, col: -3072 },
-        }
+        Mv { row: 0, col: -3072 }
     );
 }
 
@@ -253,7 +239,7 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &unsorted,
@@ -261,13 +247,11 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
             DrlReorderMode::Always,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -512, col: 0 },
-        },
+        Mv { row: -512, col: 0 },
         "the §7.12.2.19 sort must move the weight-1 candidate to slot 0 (not a passthrough)"
     );
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &unsorted,
@@ -275,9 +259,7 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
             DrlReorderMode::Always,
             1,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: 0, col: -64 },
-        }
+        Mv { row: 0, col: -64 }
     );
 }
 
@@ -292,7 +274,7 @@ fn admission_no_op_swap_when_slot0_already_max() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &tie,
@@ -300,9 +282,7 @@ fn admission_no_op_swap_when_slot0_already_max() {
             DrlReorderMode::Always,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -1024, col: 0 },
-        },
+        Mv { row: -1024, col: 0 },
         "equal weights must keep the lowest index in slot 0 (strict `>` tie-break)"
     );
     let frontier = SpatialIntrabcScan {
@@ -314,7 +294,7 @@ fn admission_no_op_swap_when_slot0_already_max() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &frontier,
@@ -322,9 +302,7 @@ fn admission_no_op_swap_when_slot0_already_max() {
             DrlReorderMode::Always,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -1024, col: 0 },
-        },
+        Mv { row: -1024, col: 0 },
         "the max-weight slot-0 entry stays put (no swap)"
     );
 }
@@ -341,7 +319,7 @@ fn admission_sort_respects_drl_reorder_mode() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &scan,
@@ -349,13 +327,11 @@ fn admission_sort_respects_drl_reorder_mode() {
             DrlReorderMode::Disabled,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: 0, col: -64 },
-        },
+        Mv { row: 0, col: -64 },
         "DRL_REORDER_DISABLED must NOT sort (slot 0 stays scan-order-first)"
     );
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &scan,
@@ -363,13 +339,11 @@ fn admission_sort_respects_drl_reorder_mode() {
             DrlReorderMode::Constraint,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: 0, col: -64 },
-        },
+        Mv { row: 0, col: -64 },
         "DRL_REORDER_CONSTRAINT with nearest < 4 must NOT sort"
     );
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &scan,
@@ -377,9 +351,7 @@ fn admission_sort_respects_drl_reorder_mode() {
             DrlReorderMode::Always,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -512, col: 0 },
-        },
+        Mv { row: -512, col: 0 },
         "DRL_REORDER_ALWAYS must sort the weight-1 candidate into slot 0"
     );
 }
@@ -395,7 +367,7 @@ fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &scan,
@@ -403,9 +375,7 @@ fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
             DrlReorderMode::Always,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: 0, col: -64 },
-        },
+        Mv { row: 0, col: -64 },
         "§7.12.2.19 sorts only the step-15 nearest prefix, not scan-col tail entries"
     );
 }
@@ -417,8 +387,8 @@ fn admission_admits_single_spatial_candidate() {
         nearest_len: 1,
         comparisons: 0,
     };
-    assert!(matches!(
-        intrabc_ref_stack_admission_from_candidates(
+    assert_eq!(
+        select_intrabc_ref_mv_for_test(
             &[],
             frontier_geometry(0, 240),
             &one,
@@ -426,8 +396,8 @@ fn admission_admits_single_spatial_candidate() {
             DrlReorderMode::Always,
             0,
         ),
-        IntrabcStackAdmission::Admit { .. }
-    ));
+        Mv { row: 0, col: -64 }
+    );
 }
 
 #[test]
@@ -552,17 +522,8 @@ fn admission_selects_frontier_mi_32_56_step8_bv() {
         ]
     );
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
-            &[],
-            geometry,
-            &spatial,
-            true,
-            DrlReorderMode::Always,
-            0,
-        ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -512, col: 0 },
-        }
+        select_intrabc_ref_mv_for_test(&[], geometry, &spatial, true, DrlReorderMode::Always, 0,),
+        Mv { row: -512, col: 0 }
     );
 }
 
@@ -804,30 +765,12 @@ fn admission_admits_frontier_mi_192_112_no_op_weight_sort() {
         max_bvp_drl_bits_minus_1: 2,
     };
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
-            &[],
-            geometry,
-            &scan,
-            true,
-            DrlReorderMode::Always,
-            1,
-        ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -512, col: 0 },
-        },
+        select_intrabc_ref_mv_for_test(&[], geometry, &scan, true, DrlReorderMode::Always, 1,),
+        Mv { row: -512, col: 0 },
     );
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
-            &[],
-            geometry,
-            &scan,
-            true,
-            DrlReorderMode::Always,
-            0,
-        ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -1024, col: 0 },
-        },
+        select_intrabc_ref_mv_for_test(&[], geometry, &scan, true, DrlReorderMode::Always, 0,),
+        Mv { row: -1024, col: 0 },
     );
 }
 

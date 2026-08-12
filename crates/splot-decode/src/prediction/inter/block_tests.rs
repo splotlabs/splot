@@ -100,8 +100,8 @@ use crate::bitstream::tile_payload::{
 };
 use crate::error::{DecodeError, DecodeHeaderStateError};
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
-    DrlReorderMode, IntrabcStackAdmission, IntrabcStackGeometry, SpatialScanGeometry,
-    capture_spatial_intrabc_probes, intrabc_ref_stack_admission_from_candidates,
+    DrlReorderMode, IntrabcStackGeometry, SpatialScanGeometry, capture_spatial_intrabc_probes,
+    select_intrabc_ref_mv_for_test,
 };
 use crate::prediction::inter::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, Mv, PlacedInterBlock,
@@ -483,7 +483,7 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
     )
     .resolve(|_, _| None);
     assert_eq!(
-        intrabc_ref_stack_admission_from_candidates(
+        select_intrabc_ref_mv_for_test(
             &[],
             IntrabcStackGeometry {
                 mi_row: 0,
@@ -500,9 +500,7 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
             DrlReorderMode::Disabled,
             0,
         ),
-        IntrabcStackAdmission::Admit {
-            selected: Mv { row: -1024, col: 0 }
-        }
+        Mv { row: -1024, col: 0 }
     );
 
     let grid = NeighbourMvGrid::new(64, 64).ok_or("valid neighbour grid")?;

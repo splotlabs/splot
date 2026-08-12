@@ -404,13 +404,13 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                     temporal_first(compound.ref_frame0),
                     temporal_first(compound.ref_frame1),
                 ],
+                use_refinemv,
+                refinemv_switchable,
             },
             blend: compound_blend,
             interp,
             use_amvd,
             precision,
-            use_refinemv,
-            refinemv_switchable,
         },
         skip,
         mi_rows,
@@ -574,8 +574,6 @@ pub(super) struct ParsedCompoundBlock {
     pub(super) interp: ReconInterpolationFilter,
     pub(super) use_amvd: bool,
     pub(super) precision: BlockPrecisionRecord,
-    pub(super) use_refinemv: bool,
-    pub(super) refinemv_switchable: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -611,8 +609,6 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         interp,
         use_amvd,
         precision,
-        use_refinemv,
-        refinemv_switchable,
     } = parsed;
     let (mi_row, mi_col, n4w, n4h) = (
         block_ctx.mi_row,
@@ -652,7 +648,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     };
     let sub_pu_size = compound_deblock_sub_pu_size(
         motion.use_optflow,
-        use_refinemv,
+        motion.use_refinemv,
         n4w * MI_SIZE,
         n4h * MI_SIZE,
     );
@@ -730,11 +726,6 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
             PlacedInterGeometry {
                 interintra_chroma: false,
                 ..placed_geometry
-            },
-            PendingInterKind::Compound {
-                reference_pair,
-                use_refinemv,
-                refinemv_switchable,
             },
             block_qindex,
             frame_precision,
@@ -1045,6 +1036,8 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
                 jmvd_scale_mode: 0,
                 temporal_allowed: true,
                 temporal_first: [false; 2],
+                use_refinemv: false,
+                refinemv_switchable: false,
             },
             blend: mc::CompoundBlend::average_with_implicit_mask(
                 CompoundBlendToolConfig::from_sequence(sequence).implicit_mask,
@@ -1052,8 +1045,6 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
             interp: ReconInterpolationFilter::EightTapSharp,
             use_amvd: false,
             precision: BlockPrecisionRecord::most_probable(precision),
-            use_refinemv: false,
-            refinemv_switchable: false,
         },
         skip,
         mi_rows,
