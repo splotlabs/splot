@@ -105,6 +105,8 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::AdmissionMetrics;
+use crate::admission_metrics::AdmissionDiagnosticCounters;
 use crate::completion::CompletionCell;
 use crate::error::ParallelError;
 use crate::pool::{TaskScope, notify_installed_pool_progress};
@@ -293,11 +295,15 @@ struct ReadyQueue {
     entries: Mutex<BinaryHeap<Reverse<ReadyEntry>>>,
     #[cfg(test)]
     counters: AdmissionCounters,
+    diagnostics: Option<AdmissionDiagnosticCounters>,
 }
 
 impl ReadyQueue {
     /// Queues one generation of a slot for the next drain.
     fn push(&self, entry: ReadyEntry) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.note_heap_push();
+        }
         self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -306,11 +312,18 @@ impl ReadyQueue {
 
     /// Takes the queued slot with the lowest `order_key`.
     fn pop(&self) -> Option<ReadyEntry> {
-        self.entries
+        let entry = self
+            .entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop()
-            .map(|Reverse(entry)| entry)
+            .map(|Reverse(entry)| entry);
+        if entry.is_some()
+            && let Some(diagnostics) = &self.diagnostics
+        {
+            diagnostics.note_heap_pop();
+        }
+        entry
     }
 }
 
@@ -467,6 +480,9 @@ impl<'job> SchedulerSlots<'job> {
         slot.job = Some(job);
         slot.waiter = Some(Arc::clone(&waiter));
         self.occupied_indices.push(index);
+        if let Some(diagnostics) = &ready.diagnostics {
+            diagnostics.note_slot(self.occupied_indices.len());
+        }
         #[cfg(test)]
         {
             self.peak_occupied = self.peak_occupied.max(self.occupied_indices.len());
@@ -588,7 +604,6 @@ impl<'job> SchedulerSlots<'job> {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Default)]
 pub struct AdmissionScheduler<'job> {
     slots: Mutex<SchedulerSlots<'job>>,
     ready: Arc<ReadyQueue>,
@@ -602,6 +617,27 @@ impl<'job> AdmissionScheduler<'job> {
             slots: Mutex::new(SchedulerSlots::default()),
             ready: Arc::new(ReadyQueue::default()),
         }
+    }
+
+    /// Creates an empty scheduler that records diagnostic counters.
+    #[must_use]
+    pub fn with_metrics() -> Self {
+        Self {
+            slots: Mutex::new(SchedulerSlots::default()),
+            ready: Arc::new(ReadyQueue {
+                diagnostics: Some(AdmissionDiagnosticCounters::default()),
+                ..ReadyQueue::default()
+            }),
+        }
+    }
+
+    /// Returns this scheduler's current diagnostic counters.
+    #[must_use]
+    pub fn metrics(&self) -> AdmissionMetrics {
+        self.ready.diagnostics.as_ref().map_or_else(
+            AdmissionMetrics::default,
+            AdmissionDiagnosticCounters::snapshot,
+        )
     }
 
     /// Submits `job` under `order_key`, to run once every entry of `conditions`
@@ -623,6 +659,9 @@ impl<'job> AdmissionScheduler<'job> {
     ) where
         'job: 'scope,
     {
+        if let Some(diagnostics) = &self.ready.diagnostics {
+            diagnostics.note_submission(conditions.len());
+        }
         #[cfg(test)]
         {
             self.ready
@@ -646,6 +685,12 @@ impl<'job> AdmissionScheduler<'job> {
             }
         }
         let queued = token.satisfy_reporting();
+        if queued
+            && !conditions.is_empty()
+            && let Some(diagnostics) = &self.ready.diagnostics
+        {
+            diagnostics.note_immediately_satisfied();
+        }
         drop(token);
         if queued {
             self.admit_ready(scope);
@@ -797,6 +842,9 @@ impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
 
     fn spawn_ready(&self, job: Job<'job>) {
         let scheduler = self.scheduler;
+        if let Some(diagnostics) = &scheduler.ready.diagnostics {
+            diagnostics.note_direct();
+        }
         #[cfg(test)]
         scheduler
             .ready
@@ -820,6 +868,12 @@ impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
             self.scheduler
                 .submit(self.scope, next.order_key, &[], next.job);
         }
+    }
+}
+
+impl Default for AdmissionScheduler<'_> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1940,6 +1994,48 @@ mod tests {
             scheduled[1] - direct[1],
             16,
             "each fast-path job skips one ready-heap push, and so one pop"
+        );
+    }
+
+    #[test]
+    fn optional_metrics_cover_condition_and_ready_paths() {
+        let settled = CompletionCell::new();
+        assert!(settled.set(()).is_ok());
+        let scheduler = AdmissionScheduler::with_metrics();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    1,
+                    &[Condition::Completion(&settled)],
+                    Box::new(|_| {}),
+                );
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(|admit| admit.spawn_ready(Box::new(|_| {}))),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+
+        assert_eq!(
+            scheduler.metrics(),
+            AdmissionMetrics {
+                total_jobs: 2,
+                conditions_registered: 1,
+                conditionless_jobs: 1,
+                immediately_satisfied_jobs: 1,
+                scheduler_slots: 2,
+                peak_scheduler_slots: 1,
+                ready_heap_pushes: 2,
+                ready_heap_pops: 2,
+                direct_jobs: 1,
+                parallel_batches: 0,
+            }
         );
     }
 

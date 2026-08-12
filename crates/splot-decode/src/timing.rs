@@ -19,9 +19,32 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("SPLOT_DECODE_TIMING").is_some())
+}
+
+/// Emits one decode's dependency-admission counters.
+pub(crate) fn report_admission(metrics: splot_parallel::AdmissionMetrics) {
+    if !enabled() {
+        return;
+    }
+    eprintln!(
+        "splot.decode_timing admission total_jobs={} conditions_registered={} \
+         conditionless_jobs={} immediately_satisfied_jobs={} scheduler_slots={} \
+         peak_scheduler_slots={} ready_heap_pushes={} ready_heap_pops={} direct_jobs={} \
+         parallel_batches={}",
+        metrics.total_jobs,
+        metrics.conditions_registered,
+        metrics.conditionless_jobs,
+        metrics.immediately_satisfied_jobs,
+        metrics.scheduler_slots,
+        metrics.peak_scheduler_slots,
+        metrics.ready_heap_pushes,
+        metrics.ready_heap_pops,
+        metrics.direct_jobs,
+        metrics.parallel_batches,
+    );
 }
 
 pub(crate) fn start() -> Option<Instant> {
