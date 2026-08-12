@@ -38,7 +38,6 @@ use super::{
     BawpSyntax, CcsoGridHandle, InterBlock, InterIntraPrediction, InterReferenceState,
     InterResidual, InterResidualBlock, MotionFieldHandle, Mv, PlacedInterBlock,
     SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc,
-    unsupported_at,
 };
 use crate::bitstream::tile_payload::{
     BlockSize, BlockSymbolTraceReadError, CoeffContextReset, DecodeBlockFrontier,

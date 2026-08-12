@@ -3,7 +3,7 @@
 
 use splot_core::headers::sequence::DrlReorder;
 pub(crate) use splot_recon::IDENTITY_WARP_PARAMS as DEFAULT_WARP_PARAMS;
-use splot_recon::math::{round2_signed, round2_signed_i32};
+use splot_recon::math::round2_signed;
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
 use super::{CompoundOrderHint, Mv, mc::CWP_EQUAL};
@@ -2075,18 +2075,18 @@ fn clip_and_clamp_projected_mv(block: &MvBlockContext, row: i64, col: i64) -> Mv
 }
 
 pub(crate) fn reduce_warp_model(params: &mut [i32; 6]) {
-    let max_value = (1i32 << (WARPEDMODEL_PREC_BITS - 1)) - (1i32 << WARP_PARAM_REDUCE_BITS);
+    let max_value = (1i64 << (WARPEDMODEL_PREC_BITS - 1)) - (1i64 << WARP_PARAM_REDUCE_BITS);
     let min_value = -max_value;
     for (index, param) in params.iter_mut().enumerate().skip(2) {
         let offset = if index == 2 || index == 5 {
-            1i32 << WARPEDMODEL_PREC_BITS
+            1i64 << WARPEDMODEL_PREC_BITS
         } else {
             0
         };
-        let original = *param - offset;
+        let original = i64::from(*param) - offset;
         let clamped = original.clamp(min_value, max_value);
-        *param =
-            (round2_signed_i32(clamped, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS) + offset;
+        *param = ((round2_signed(clamped, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS)
+            + offset) as i32;
     }
 }
 
