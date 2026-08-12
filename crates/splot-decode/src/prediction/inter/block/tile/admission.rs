@@ -755,7 +755,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
         if !commit.decoded_any {
             self.finished.store(true, Ordering::Release);
-            return Err(no_decoded_block_error(self.tile_offset));
+            return Err(no_decoded_block_error());
         }
         self.finished.store(true, Ordering::Release);
         let mut commit = holder.take().ok_or(inter_internal!(

@@ -102,6 +102,9 @@ pub enum DecodeHeaderStateError {
     /// A successfully parsed inter frame did not carry complete frame-header state.
     #[error("inter-frame header state is incomplete")]
     IncompleteInterFrame,
+    /// An inter tile's parser was reused after its traversal had finished.
+    #[error("inter-tile traversal state is inconsistent")]
+    InvalidInterTileTraversalState,
     /// A complete inter header was missing mandatory frame-tool state.
     #[error("inter-frame tool state is incomplete")]
     IncompleteInterFrameTools,
