@@ -182,6 +182,18 @@ pub trait Admit<'job>: Sync {
     /// the pool in call order rather than competing with the heap's queued jobs,
     /// so reserve it for work whose start order is a matter of indifference.
     fn spawn_ready(&self, job: Job<'job>);
+
+    /// Runs one proven-ready serial successor on this worker after the current
+    /// job returns and the scheduler has exposed any other ready work.
+    ///
+    /// At most a small fixed number of successive links run inline. Once that
+    /// budget is spent, the remaining job is submitted normally under
+    /// `order_key`, so a long chain cannot monopolize one worker. Use this only
+    /// when the successor is the current job's single serial continuation and
+    /// no scheduler priority decision is required before it runs.
+    fn continue_ready(&self, order_key: u64, job: Job<'job>) {
+        self.submit(order_key, &[], job);
+    }
 }
 
 /// Test-only tally of the work the drain and fast paths are meant to avoid.
@@ -201,6 +213,46 @@ struct AdmissionCounters {
     submitted: AtomicUsize,
     conditionless: AtomicUsize,
     direct: AtomicUsize,
+    continued: AtomicUsize,
+    continuation_fallbacks: AtomicUsize,
+    maximum_continuation_burst: AtomicUsize,
+}
+
+const CONTINUATION_BUDGET: usize = 8;
+
+struct OrderedJob<'job> {
+    order_key: u64,
+    job: Job<'job>,
+}
+
+struct ContinuationSlot<'job> {
+    pending: Mutex<Option<OrderedJob<'job>>>,
+}
+
+impl Default for ContinuationSlot<'_> {
+    fn default() -> Self {
+        Self {
+            pending: Mutex::new(None),
+        }
+    }
+}
+
+impl<'job> ContinuationSlot<'job> {
+    fn put(&self, next: OrderedJob<'job>) -> Result<(), OrderedJob<'job>> {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if pending.is_some() {
+            return Err(next);
+        }
+        *pending = Some(next);
+        Ok(())
+    }
+
+    fn take(&self) -> Option<OrderedJob<'job>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
 }
 
 /// One slot occupancy's identity, incremented before an index is reused.
@@ -609,11 +661,7 @@ impl<'job> AdmissionScheduler<'job> {
                 continue;
             };
             scope.spawn(move |scope| {
-                job(&ScopeAdmit {
-                    scheduler: self,
-                    scope,
-                });
-                self.admit_ready(scope);
+                self.run_job(scope, job);
                 self.recycle_token(token);
             });
             spawned += 1;
@@ -632,6 +680,47 @@ impl<'job> AdmissionScheduler<'job> {
             }
         }
         spawned
+    }
+
+    fn run_job<'scope>(&'scope self, scope: &TaskScope<'_, 'scope>, mut job: Job<'job>)
+    where
+        'job: 'scope,
+    {
+        let continuations = ContinuationSlot::default();
+        let admit = ScopeAdmit {
+            scheduler: self,
+            scope,
+            continuations: &continuations,
+        };
+        let mut continued = 0;
+        loop {
+            job(&admit);
+            self.admit_ready(scope);
+            let Some(next) = continuations.take() else {
+                break;
+            };
+            if continued >= CONTINUATION_BUDGET {
+                #[cfg(test)]
+                self.ready
+                    .counters
+                    .continuation_fallbacks
+                    .fetch_add(1, Ordering::Relaxed);
+                self.submit(scope, next.order_key, &[], next.job);
+                break;
+            }
+            continued += 1;
+            #[cfg(test)]
+            self.ready
+                .counters
+                .continued
+                .fetch_add(1, Ordering::Relaxed);
+            job = next.job;
+        }
+        #[cfg(test)]
+        self.ready
+            .counters
+            .maximum_continuation_burst
+            .fetch_max(continued, Ordering::Relaxed);
     }
 
     /// Reports jobs that were never admitted and releases them.
@@ -686,6 +775,7 @@ impl<'job> AdmissionScheduler<'job> {
 struct ScopeAdmit<'a, 'handle, 'scope, 'job> {
     scheduler: &'scope AdmissionScheduler<'job>,
     scope: &'a TaskScope<'handle, 'scope>,
+    continuations: &'a ContinuationSlot<'job>,
 }
 
 impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
@@ -707,9 +797,22 @@ impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
             .direct
             .fetch_add(1, Ordering::Relaxed);
         self.scope.spawn(move |scope| {
-            job(&ScopeAdmit { scheduler, scope });
-            scheduler.admit_ready(scope);
+            scheduler.run_job(scope, job);
         });
+    }
+
+    fn continue_ready(&self, order_key: u64, job: Job<'job>) {
+        let next = OrderedJob { order_key, job };
+        if let Err(next) = self.continuations.put(next) {
+            #[cfg(test)]
+            self.scheduler
+                .ready
+                .counters
+                .continuation_fallbacks
+                .fetch_add(1, Ordering::Relaxed);
+            self.scheduler
+                .submit(self.scope, next.order_key, &[], next.job);
+        }
     }
 }
 
@@ -720,7 +823,20 @@ mod tests {
     use crate::pool::{WorkerPool, ready_task_scope};
     use crate::thread_count::ThreadCount;
     use core::num::NonZeroUsize;
-    use std::sync::atomic::AtomicUsize;
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    std::thread_local! {
+        static CONTINUATION_TEST_DEPTH: Cell<usize> = const { Cell::new(0) };
+    }
+
+    struct ContinuationDepthGuard;
+
+    impl Drop for ContinuationDepthGuard {
+        fn drop(&mut self) {
+            CONTINUATION_TEST_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
 
     fn pool(threads: usize) -> WorkerPool {
         WorkerPool::new(ThreadCount::Fixed(NonZeroUsize::new(threads).unwrap())).unwrap()
@@ -775,6 +891,212 @@ mod tests {
             counters.conditionless.load(Ordering::Relaxed),
             counters.direct.load(Ordering::Relaxed),
         ]
+    }
+
+    fn continue_chain<'job>(admit: &dyn Admit<'job>, visits: &'job [AtomicUsize], index: usize) {
+        visits[index].fetch_add(1, Ordering::AcqRel);
+        if index + 1 < visits.len() {
+            admit.continue_ready(
+                index as u64 + 1,
+                Box::new(move |admit| continue_chain(admit, visits, index + 1)),
+            );
+        }
+    }
+
+    fn run_continuation_chain(jobs: usize) -> ([usize; 3], Vec<usize>) {
+        let visits: Vec<_> = (0..jobs).map(|_| AtomicUsize::new(0)).collect();
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(|admit| continue_chain(admit, &visits, 0)),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        let counters = &scheduler.ready.counters;
+        let metrics = [
+            counters.continued.load(Ordering::Relaxed),
+            counters.continuation_fallbacks.load(Ordering::Relaxed),
+            counters.maximum_continuation_burst.load(Ordering::Relaxed),
+        ];
+        let visits = visits
+            .iter()
+            .map(|count| count.load(Ordering::Acquire))
+            .collect();
+        (metrics, visits)
+    }
+
+    #[test]
+    fn a_one_link_continuation_runs_once_inline() {
+        let (metrics, visits) = run_continuation_chain(2);
+        assert_eq!(visits, [1, 1]);
+        assert_eq!(metrics, [1, 0, 1]);
+    }
+
+    #[test]
+    fn a_long_continuation_chain_is_iterative_and_exactly_once() {
+        const JOBS: usize = 100_000;
+        let (metrics, visits) = run_continuation_chain(JOBS);
+        assert!(visits.iter().all(|visits| *visits == 1));
+        assert_eq!(metrics[2], CONTINUATION_BUDGET);
+        assert!(metrics[1] > 0);
+    }
+
+    #[test]
+    fn the_continuation_budget_falls_back_on_the_next_link() {
+        let (within, _) = run_continuation_chain(CONTINUATION_BUDGET + 1);
+        assert_eq!(within, [CONTINUATION_BUDGET, 0, CONTINUATION_BUDGET]);
+
+        let (over, _) = run_continuation_chain(CONTINUATION_BUDGET + 2);
+        assert_eq!(over, [CONTINUATION_BUDGET, 1, CONTINUATION_BUDGET]);
+    }
+
+    #[test]
+    fn a_failure_in_the_middle_settles_without_running_a_successor() {
+        fn link<'job>(
+            admit: &dyn Admit<'job>,
+            visits: &'job [AtomicUsize],
+            failed: &'job CompletionCell<usize>,
+            index: usize,
+        ) {
+            visits[index].fetch_add(1, Ordering::AcqRel);
+            if index == 2 {
+                let _ = failed.set(index);
+            } else if index + 1 < visits.len() {
+                admit.continue_ready(
+                    index as u64 + 1,
+                    Box::new(move |admit| link(admit, visits, failed, index + 1)),
+                );
+            }
+        }
+        let visits: Vec<_> = (0..5).map(|_| AtomicUsize::new(0)).collect();
+        let failed = CompletionCell::new();
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(|admit| link(admit, &visits, &failed, 0)),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert_eq!(failed.get(), Some(&2));
+        assert_eq!(
+            visits
+                .iter()
+                .map(|visits| visits.load(Ordering::Acquire))
+                .collect::<Vec<_>>(),
+            [1, 1, 1, 0, 0]
+        );
+    }
+
+    #[test]
+    fn a_panicking_inline_continuation_unwinds_through_the_scope() {
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[],
+                        Box::new(|admit| {
+                            admit.continue_ready(1, Box::new(|_| panic!("continuation")));
+                        }),
+                    );
+                })
+            })
+        }))
+        .expect_err("the scope must not swallow an inline continuation's panic");
+        assert_eq!(
+            panicked.downcast_ref::<&str>().copied(),
+            Some("continuation")
+        );
+        scheduler.finish().unwrap();
+    }
+
+    #[test]
+    fn independent_work_can_run_during_an_inline_chain() {
+        let observed = AtomicBool::new(false);
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                let observed = &observed;
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(move |admit| {
+                        let independent = observed;
+                        admit.spawn_ready(Box::new(move |_| {
+                            independent.store(true, Ordering::Release);
+                        }));
+                        admit.continue_ready(
+                            1,
+                            Box::new(move |_| {
+                                let started = std::time::Instant::now();
+                                while !observed.load(Ordering::Acquire) {
+                                    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+                                    std::thread::yield_now();
+                                }
+                            }),
+                        );
+                    }),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert!(observed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn continuation_depth_does_not_grow_with_chain_length() {
+        fn link<'job>(admit: &dyn Admit<'job>, maximum: &'job AtomicUsize, remaining: usize) {
+            let depth = CONTINUATION_TEST_DEPTH.with(|depth| {
+                let next = depth.get() + 1;
+                depth.set(next);
+                next
+            });
+            let _active = ContinuationDepthGuard;
+            maximum.fetch_max(depth, Ordering::AcqRel);
+            if remaining > 1 {
+                admit.continue_ready(
+                    remaining as u64,
+                    Box::new(move |admit| link(admit, maximum, remaining - 1)),
+                );
+            }
+        }
+
+        let maximum = AtomicUsize::new(0);
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(|admit| link(admit, &maximum, 10_000)),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert_eq!(maximum.load(Ordering::Acquire), 1);
     }
 
     /// Submission and slot-storage metrics, read after the scope has joined.

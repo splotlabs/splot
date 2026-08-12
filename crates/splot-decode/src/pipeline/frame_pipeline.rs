@@ -392,7 +392,6 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
     filter_gate: Option<Arc<CompletionCell<()>>>,
     filter_done: Arc<CompletionCell<()>>,
     prepared: Vec<CompletionCell<()>>,
-    committed: Vec<CompletionCell<()>>,
     frontier_done: Vec<CompletionCell<()>>,
     filtered: Vec<CompletionCell<()>>,
     filter_error: Mutex<Option<DecodeError>>,
@@ -409,16 +408,30 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             &precompute_conditions,
             Box::new(move |admit| row.precompute(index, admit)),
         );
-        let prepared = Condition::Completion(&self.prepared[index]);
-        let previous = (index > 0).then(|| Condition::Completion(&self.committed[index - 1]));
-        let commit_conditions = [prepared, previous.unwrap_or(prepared)];
-        let commit_conditions = &commit_conditions[..=usize::from(previous.is_some())];
+        if index == 0 {
+            let commit = Arc::clone(self);
+            admit.submit(
+                self.batch_key(index, 2),
+                &[Condition::Completion(&self.prepared[index])],
+                Box::new(move |admit| commit.commit(index, admit)),
+            );
+        }
+    }
+
+    fn continue_commit(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
         let commit = Arc::clone(self);
-        admit.submit(
-            self.batch_key(index, 2),
-            commit_conditions,
-            Box::new(move |admit| commit.commit(index, admit)),
-        );
+        let job = Box::new(move |admit: &dyn splot_parallel::Admit<'_>| {
+            commit.commit(index, admit);
+        });
+        if self.prepared[index].is_set() {
+            admit.continue_ready(self.batch_key(index, 2), job);
+        } else {
+            admit.submit(
+                self.batch_key(index, 2),
+                &[Condition::Completion(&self.prepared[index])],
+                job,
+            );
+        }
     }
 
     /// Order key for one batch's `slot`-th link, in submission order.
@@ -509,9 +522,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
 
     fn commit(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
         if self.failed.load(Ordering::Acquire) {
-            if let Some(committed) = self.committed.get(index) {
-                let _ = committed.set(());
-            }
             return;
         }
         match self.walk.commit(index) {
@@ -535,8 +545,9 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             }
             Err(error) => self.fail(error, admit),
         }
-        if let Some(committed) = self.committed.get(index) {
-            let _ = committed.set(());
+        let next = index.saturating_add(1);
+        if !self.failed.load(Ordering::Acquire) && next < self.walk.len() {
+            self.continue_commit(next, admit);
         }
     }
 
@@ -631,7 +642,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         for completion in self
             .prepared
             .iter()
-            .chain(&self.committed)
             .chain(&self.frontier_done)
             .chain(&self.filtered)
         {
@@ -739,9 +749,6 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 };
             let frame = Arc::new(ScheduledFrame {
                 prepared: (0..scheduled.len())
-                    .map(|_| CompletionCell::new())
-                    .collect(),
-                committed: (0..scheduled.len())
                     .map(|_| CompletionCell::new())
                     .collect(),
                 frontier_done: (0..scheduled.frontier_len())
