@@ -22,6 +22,7 @@
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 pub mod admission;
+mod admission_metrics;
 pub mod completion;
 pub mod error;
 pub mod frame_delay;
@@ -32,6 +33,7 @@ pub mod thread_count;
 pub mod watermark;
 
 pub use admission::{AdmissionScheduler, AdmissionWaiter, Admit, CompletionSource, Condition, Job};
+pub use admission_metrics::AdmissionMetrics;
 pub use completion::CompletionCell;
 pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;

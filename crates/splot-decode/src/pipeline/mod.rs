@@ -553,8 +553,11 @@ fn decode_frames_from_plan_impl<'job>(
             None,
         );
     }
-    let admission: splot_parallel::AdmissionScheduler<'job> =
-        splot_parallel::AdmissionScheduler::new();
+    let admission: splot_parallel::AdmissionScheduler<'job> = if crate::timing::enabled() {
+        splot_parallel::AdmissionScheduler::with_metrics()
+    } else {
+        splot_parallel::AdmissionScheduler::new()
+    };
     let decoded = splot_parallel::ready_task_scope(|scope| {
         drive_frames(
             parsed,
@@ -569,13 +572,15 @@ fn decode_frames_from_plan_impl<'job>(
             Some(&admission),
         )
     })?;
-    match decoded {
+    let result = match decoded {
         Err(error) => Err(error),
         Ok(frames) => {
             admission.finish()?;
             Ok(frames)
         }
-    }
+    };
+    crate::timing::report_admission(admission.metrics());
+    result
 }
 
 /// Owns the decode scratch and the in-flight ring for one decode, and resolves

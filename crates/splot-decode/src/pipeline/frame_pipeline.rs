@@ -400,20 +400,37 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
 }
 
 impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
-    fn submit_batch(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
-        let precompute_conditions = self.walk.conditions(index);
-        let row = Arc::clone(self);
-        admit.submit(
-            self.batch_key(index, 1),
-            &precompute_conditions,
-            Box::new(move |admit| row.precompute(index, admit)),
-        );
-        if index == 0 {
+    fn submit_batches(
+        self: &Arc<Self>,
+        batches: core::ops::Range<usize>,
+        admit: &dyn splot_parallel::Admit<'_>,
+    ) {
+        let starts_commit = batches.start == 0 && !batches.is_empty();
+        let mut ready_key = None;
+        let mut ready = Vec::<splot_parallel::Job<'_>>::new();
+        for index in batches {
+            let conditions = self.walk.conditions(index);
+            let row = Arc::clone(self);
+            let job: splot_parallel::Job<'_> = Box::new(move |admit| row.precompute(index, admit));
+            if conditions.is_empty() {
+                ready_key.get_or_insert_with(|| self.batch_key(index, 1));
+                ready.push(job);
+            } else {
+                if let Some(order_key) = ready_key.take() {
+                    admit.submit_ready_batch(order_key, core::mem::take(&mut ready));
+                }
+                admit.submit(self.batch_key(index, 1), &conditions, job);
+            }
+        }
+        if let Some(order_key) = ready_key {
+            admit.submit_ready_batch(order_key, ready);
+        }
+        if starts_commit {
             let commit = Arc::clone(self);
             admit.submit(
-                self.batch_key(index, 2),
-                &[Condition::Completion(&self.prepared[index])],
-                Box::new(move |admit| commit.commit(index, admit)),
+                self.batch_key(0, 2),
+                &[Condition::Completion(&self.prepared[0])],
+                Box::new(move |admit| commit.commit(0, admit)),
             );
         }
     }
@@ -500,9 +517,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 return;
             }
         };
-        for batch in batches {
-            self.submit_batch(batch, admit);
-        }
+        self.submit_batches(batches, admit);
         let next = index.saturating_add(1);
         if next < self.walk.resolve_len() {
             self.submit_resolve(next, admit);
