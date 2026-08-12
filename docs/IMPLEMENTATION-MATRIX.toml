@@ -14884,10 +14884,10 @@ tests = [
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::rdir_neighbour_directional_d135_intra_frame_decodes_to_oracle",
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_tests::d157_neighbour_directional_idif_intra_frame_decodes_to_oracle",
     "crates/splot-decode/src/pipeline/general_intra.rs::tests::directional_edge_failure_is_typed_internal_state",
-    "crates/splot-decode/src/pipeline/reconstruct_tests.rs::one_sided_edge_state_failures_do_not_mutate_luma_plane",
-    "crates/splot-decode/src/pipeline/reconstruct_tests.rs::chroma_mrl_edge_state_failure_does_not_mutate_plane",
-    "crates/splot-decode/src/pipeline/reconstruct_tests.rs::middle_edge_state_failure_does_not_mutate_luma_plane",
-    "crates/splot-decode/src/pipeline/reconstruct_tests.rs::dip_edge_state_failure_does_not_mutate_luma_plane",
+    "crates/splot-decode/src/pipeline/reconstruct_tests/directional_edge.rs::one_sided_edge_state_failures_do_not_mutate_luma_plane",
+    "crates/splot-decode/src/pipeline/reconstruct_tests/directional_edge.rs::chroma_mrl_edge_state_failure_does_not_mutate_plane",
+    "crates/splot-decode/src/pipeline/reconstruct_tests/directional_edge.rs::middle_edge_state_failure_does_not_mutate_luma_plane",
+    "crates/splot-decode/src/pipeline/reconstruct_tests/directional_edge.rs::dip_edge_state_failure_does_not_mutate_luma_plane",
 ]
 commands = [
     "cargo test -p splot-decode general_intra --locked",
