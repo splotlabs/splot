@@ -27,7 +27,9 @@ use super::compound_path::{
 };
 use super::prediction::PlacedInterGeometry;
 use super::tile::ReconRowEntry;
-use super::warp::{apply_warp_delta, extend_warp_estimation, set_warp_translation};
+use super::warp::{
+    ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
+};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -420,6 +422,7 @@ fn resolve_pending_intrabc(
             mv: [mv, Mv::ZERO],
             cwp_weight: mc::CWP_EQUAL,
             stored_warp: None,
+            global_mv: [false, false],
             splat_warp: [None, None],
         },
     );
@@ -556,7 +559,7 @@ pub(super) struct WarpMotionSyntax {
     pub(super) ref_mv_idx: usize,
     pub(super) ref_warp_idx: usize,
     pub(super) mvd: Option<Mv>,
-    pub(super) extend_delta: Option<(i32, i32)>,
+    pub(super) extend_delta: (i32, i32),
     pub(super) derive_wrl: bool,
     pub(super) use_temporal_first: bool,
 }
@@ -675,7 +678,7 @@ impl InterBlockSyntax {
                     compound.y_mode.list1_is_newmv(),
                 ],
                 compound.skip_mode,
-                compound_motion_mode(compound.has_warp_model()),
+                compound_motion_mode(compound.local_warp),
             ),
         };
         NeighbourFlagSyntax {
@@ -696,10 +699,6 @@ impl InterBlockSyntax {
 }
 
 impl CompoundMotionSyntax {
-    const fn has_warp_model(&self) -> bool {
-        self.local_warp || self.global_warp[0].is_some() || self.global_warp[1].is_some()
-    }
-
     const fn is_global(&self) -> bool {
         matches!(self.y_mode, CompoundYMode::GlobalGlobal)
     }
@@ -717,6 +716,30 @@ pub(super) fn resolve_inter_block(
         InterMotionSyntax::Warp(warp) => resolve_warp(syntax, warp, state)?,
         InterMotionSyntax::Compound(compound) => resolve_compound(syntax, compound, state)?,
     };
+    let (stored_warp, global_mv) = match &syntax.motion {
+        InterMotionSyntax::Single(single) => (
+            None,
+            [
+                single.mode == SINGLE_MODE_GLOBALMV
+                    && is_global_mv_candidate(state.core, block.ref_frame0, block.bw4, block.bh4),
+                false,
+            ],
+        ),
+        InterMotionSyntax::Warp(_) => (resolved.warp_params[0], [false, false]),
+        InterMotionSyntax::Compound(compound) => {
+            let stored_warp = if compound.local_warp {
+                resolved.warp_params[0]
+            } else {
+                None
+            };
+            let global_mv = compound.is_global().then(|| {
+                [block.ref_frame0, compound.ref_frame1].map(|ref_frame| {
+                    is_global_mv_candidate(state.core, ref_frame, block.bw4, block.bh4)
+                })
+            });
+            (stored_warp, global_mv.unwrap_or([false; 2]))
+        }
+    };
     state.grid.record_motion(
         block.mi_row,
         block.mi_col,
@@ -725,7 +748,8 @@ pub(super) fn resolve_inter_block(
         NeighbourMotionValues {
             mv: resolved.mv,
             cwp_weight: resolved.blend.cwp_weight(),
-            stored_warp: resolved.warp_params[0],
+            stored_warp,
+            global_mv,
             splat_warp: match &syntax.motion {
                 InterMotionSyntax::Single(_) => [None, None],
                 InterMotionSyntax::Warp(_) | InterMotionSyntax::Compound(_) => resolved.warp_params,
@@ -932,7 +956,10 @@ fn warp_newmv_model(
         WarpModelSource::Extended => extend_warp_estimation(
             state.grid,
             block,
-            warp.extend_delta,
+            &ExtendWarpContext {
+                delta: warp.extend_delta,
+                global_warp_params: global_motion_model(state.core, block.ref_frame0).gm_params,
+            },
             stack,
             warp.ref_mv_idx,
             mv,

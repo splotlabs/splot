@@ -32,8 +32,7 @@ fn leaf_grid(motion_mode: MotionMode) -> NeighbourMvGrid {
 /// leaf keeps the model its neighbours read while every cell keeps the uniform
 /// block MV.
 #[test]
-fn a_globalmv_single_stores_its_model_without_splatting_sub_mvs() {
-    let model = [131_072, 65_536, 65_600, 256, -256, 65_600];
+fn a_globalmv_single_records_its_mode_without_splatting_sub_mvs() {
     let mv = Mv { row: -20, col: 36 };
     let mut grid = leaf_grid(MotionMode::Simple);
 
@@ -45,7 +44,8 @@ fn a_globalmv_single_stores_its_model_without_splatting_sub_mvs() {
         NeighbourMotionValues {
             mv: [mv, Mv::ZERO],
             cwp_weight: CWP_EQUAL,
-            stored_warp: Some(model),
+            stored_warp: None,
+            global_mv: [true, false],
             splat_warp: [None, None],
         },
     );
@@ -53,10 +53,11 @@ fn a_globalmv_single_stores_its_model_without_splatting_sub_mvs() {
     for (r, c) in [(0, 0), (0, 3), (3, 0), (3, 3)] {
         let cell = grid.get(r, c).unwrap();
         assert_eq!(
-            cell.motion.warp_params,
-            Some(model),
-            "the global model stays readable at ({r}, {c})"
+            cell.motion.warp_params(),
+            None,
+            "GLOBALMV does not duplicate frame state at ({r}, {c})"
         );
+        assert!(cell.motion.is_global_mv(0));
         assert_eq!(
             cell.motion.sub_mv, mv,
             "no per-cell sub-MV is derived for global warp at ({r}, {c})"
@@ -83,6 +84,7 @@ fn a_warp_leaf_still_splats_per_cell_sub_mvs() {
             mv: [mv, Mv::ZERO],
             cwp_weight: CWP_EQUAL,
             stored_warp: Some(model),
+            global_mv: [false, false],
             splat_warp: [Some(model), None],
         },
     );

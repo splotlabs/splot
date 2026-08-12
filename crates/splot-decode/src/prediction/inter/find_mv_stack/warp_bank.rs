@@ -52,7 +52,7 @@ impl WarpParamBank {
         }
         seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
             if cell.flags.is_warp()
-                && let Some(params) = cell.motion.warp_params
+                && let Some(params) = cell.motion.warp_params()
             {
                 self.update(cell.flags.ref_frame0, params);
             }
@@ -121,7 +121,7 @@ impl WarpParamStack {
         if cell.flags.is_inter()
             && cell.flags.is_warp()
             && cell.flags.ref_frame0 == block.ref_frame0
-            && let Some(params) = cell.motion.warp_params
+            && let Some(params) = cell.motion.warp_params()
         {
             self.insert(params);
         }

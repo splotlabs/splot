@@ -1603,6 +1603,11 @@ description = "Minimal two-record prefix of a deterministic current-AVMenc 48x48
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-extendwarp-global-48x48-q185.ivf"
+description = "Deterministic pinned-AVM two-frame 48x48 8-bit 4:2:0 stream with exactly one WARP_NEWMV+EXTENDWARP block selecting an affine GLOBALMV neighbour. It exercises §5.20.7.13 current-block global-MV stack projection and §7.13.3.24 per-list frame global-model selection; fixed splot and pinned avmdec produce the same complete 6,912-byte raw I420 SHA-256 9c432a75b318d6f811c11399e16fdd4f28367753a597de8858cd4b8a13efed36; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-2frame-refscale-inter-64x64-51x51-q80.ivf"
 description = """
 Minimal deterministic current-AVMenc two-frame 8-bit 4:2:0 stream generated

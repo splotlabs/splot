@@ -300,7 +300,7 @@ pub(crate) struct ModeContext {
     pub(crate) warp_mv_count: usize,
     pub(crate) warp_sample_found: bool,
     pub(crate) warp_sample_found1: bool,
-    pub(crate) extend_delta: Option<(i32, i32)>,
+    pub(crate) extend_delta: (i32, i32),
 }
 
 pub(crate) fn find_mode_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> ModeContext {
@@ -331,14 +331,14 @@ pub(crate) fn find_mode_ctx_with_tip(
     }
     let mut warp_sample_found = false;
     let mut warp_sample_found1 = false;
-    let mut extend_delta = None;
+    let mut extend_delta = (0, 0);
     for probe in warp_context_spatial_probes(block).into_iter().flatten() {
         let Some(cell) = probe.warp_context_flags(grid, block) else {
             continue;
         };
         if matches_block_ref(cell, block) {
             if !warp_sample_found {
-                extend_delta = Some(probe.warp_context_delta(block));
+                extend_delta = probe.warp_context_delta(block);
             }
             warp_sample_found = true;
             if cell.is_warp() {
@@ -790,22 +790,29 @@ pub(crate) fn extend_warp_neighbour_params(
     block: &MvBlockContext,
     delta_row: i32,
     delta_col: i32,
+    global_warp_params: [i32; 6],
 ) -> Option<[i32; 6]> {
     let cell = grid.get(
         block.mi_row as i32 + delta_row,
         block.mi_col as i32 + delta_col,
     )?;
-    if cell.flags.is_warp()
-        && let Some(params) = cell.motion.warp_params
-    {
-        return Some(params);
-    }
-    let mv = if cell.flags.ref_frame0 == block.ref_frame0 {
-        cell.motion.mv
+    let list = if cell.flags.ref_frame0 == block.ref_frame0 {
+        0
     } else if cell.flags.ref_frame1 == Some(block.ref_frame0) {
-        cell.motion.mv1
+        1
     } else {
         return None;
+    };
+    if cell.flags.is_warp() {
+        return cell.motion.warp_params();
+    }
+    if cell.motion.is_global_mv(list) {
+        return Some(global_warp_params);
+    }
+    let mv = if list == 0 {
+        cell.motion.mv
+    } else {
+        cell.motion.mv1
     };
     let mut params = splot_recon::IDENTITY_WARP_PARAMS;
     let [Some(translation_x), Some(translation_y)] =
@@ -1361,7 +1368,7 @@ pub(crate) fn find_mv_stack_with_temporal(
     let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvStack);
     let mut entries = FixedStack::new();
     let mut prune_count = 0usize;
-    let mut derived = DerivedMvState::new(temporal, order_hints);
+    let mut derived = DerivedMvState::new(temporal, order_hints, global_mv);
     let mut warp = derive_wrl.then(WarpParamStack::new);
     if let Some(warp) = warp.as_mut() {
         generate_points_from_corners(grid, block, 0, warp);
@@ -1770,13 +1777,18 @@ fn scan_mv_stack_probe(
         }
     }
     let candidates = [
-        Some((cell.flags.ref_frame0, cell.motion.sub_mv)),
+        Some((cell.flags.ref_frame0, cell.motion.sub_mv, 0)),
         cell.flags
             .ref_frame1
-            .map(|ref_frame1| (ref_frame1, cell.motion.sub_mv1)),
+            .map(|ref_frame1| (ref_frame1, cell.motion.sub_mv1, 1)),
     ];
-    for (candidate_ref, candidate_mv) in candidates.into_iter().flatten() {
+    for (candidate_ref, candidate_mv, list) in candidates.into_iter().flatten() {
         if candidate_ref == block.ref_frame0 {
+            let candidate_mv = if cell.motion.is_global_mv(list) {
+                derived.global_mv()
+            } else {
+                candidate_mv
+            };
             insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
         } else if candidate_ref >= 0 && candidate_ref != TIP_REF_FRAME {
             derived.add_spatial(block, candidate_ref, candidate_mv, cell);
@@ -1988,7 +2000,7 @@ fn warp_corner(
             if ref_list > 0 {
                 return;
             }
-            let Some(params) = cell.motion.warp_params else {
+            let Some(params) = cell.motion.warp_params() else {
                 return;
             };
             warp_motion_vector_at(params, block, mv_row + 1, mv_col + 1)
@@ -2099,5 +2111,7 @@ fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
 
 #[cfg(test)]
 mod bank_tests;
+#[cfg(test)]
+mod global_motion_tests;
 #[cfg(test)]
 mod tests;

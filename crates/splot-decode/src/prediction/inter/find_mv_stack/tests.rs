@@ -2417,7 +2417,7 @@ fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
 
     let cell = grid.get(1, 1).unwrap();
     assert_eq!(cell.flags.motion_mode, MotionMode::LocalWarp);
-    assert_eq!(cell.motion.warp_params, Some(model0));
+    assert_eq!(cell.motion.warp_params(), Some(model0));
     assert_eq!(cell.motion.sub_mv, warp_sub_mv_at(model0, 0, 0, 1, 1));
     assert_eq!(cell.motion.sub_mv1, warp_sub_mv_at(model1, 0, 0, 1, 1));
 
@@ -2458,8 +2458,9 @@ fn extend_warp_uses_retained_compound_list1_mv() {
     let mut block = block_at(8, 8);
     block.ref_frame0 = 1;
 
-    let params = extend_warp_neighbour_params(&grid, &block, 0, -1)
-        .expect("compound list1 neighbour retains its MV");
+    let params =
+        extend_warp_neighbour_params(&grid, &block, 0, -1, splot_recon::IDENTITY_WARP_PARAMS)
+            .expect("compound list1 neighbour retains its MV");
     assert_eq!(params[0], mv1.col << (WARPEDMODEL_PREC_BITS - 3));
     assert_eq!(params[1], mv1.row << (WARPEDMODEL_PREC_BITS - 3));
     assert_eq!(params[2..], splot_recon::IDENTITY_WARP_PARAMS[2..]);

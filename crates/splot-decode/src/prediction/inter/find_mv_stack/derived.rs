@@ -166,18 +166,21 @@ pub(super) struct DerivedMvState<'a> {
     order_hints: Option<OrderHintMvContext<'a>>,
     entries: FixedStack<Mv, MAX_DR_STACK_SIZE>,
     prune_count: usize,
+    global_mv: Mv,
 }
 
 impl<'a> DerivedMvState<'a> {
     pub(super) fn new(
         temporal: Option<&'a TemporalMvContext>,
         order_hints: Option<OrderHintMvContext<'a>>,
+        global_mv: Mv,
     ) -> Self {
         Self {
             temporal,
             order_hints,
             entries: FixedStack::new(),
             prune_count: 0,
+            global_mv,
         }
     }
 
@@ -230,6 +233,10 @@ impl<'a> DerivedMvState<'a> {
         self.temporal
     }
 
+    pub(super) const fn global_mv(&self) -> Mv {
+        self.global_mv
+    }
+
     fn push(&mut self, candidate: Mv) {
         push_bounded_unique(&mut self.entries, &mut self.prune_count, candidate);
     }
@@ -275,7 +282,7 @@ mod tests {
     fn fill_preserves_order_and_honors_the_drl_limit() {
         let first = Mv { row: 10, col: 365 };
         let second = Mv { row: -6, col: 233 };
-        let mut derived = DerivedMvState::new(None, None);
+        let mut derived = DerivedMvState::new(None, None, Mv::ZERO);
         derived.push(first);
         derived.push(second);
         let mut entries = FixedStack::from_entries([
@@ -307,7 +314,7 @@ mod tests {
     #[test]
     fn collection_prunes_an_early_duplicate() {
         let candidate = Mv { row: 10, col: 365 };
-        let mut derived = DerivedMvState::new(None, None);
+        let mut derived = DerivedMvState::new(None, None, Mv::ZERO);
 
         derived.push(candidate);
         derived.push(candidate);
@@ -317,7 +324,7 @@ mod tests {
 
     #[test]
     fn derived_mv_storage_keeps_the_first_four_candidates() {
-        let mut derived = DerivedMvState::new(None, None);
+        let mut derived = DerivedMvState::new(None, None, Mv::ZERO);
 
         for col in 0..5 {
             derived.push(Mv { row: 0, col });

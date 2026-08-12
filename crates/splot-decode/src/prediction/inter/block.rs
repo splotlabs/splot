@@ -104,16 +104,24 @@ fn global_motion_mv(
     )
 }
 
-fn global_motion_warp(
+pub(super) fn is_global_mv_candidate(
+    core: &FrameHeaderCore,
+    logical_ref: i8,
+    n4w: usize,
+    n4h: usize,
+) -> bool {
+    n4w >= 2 && n4h >= 2 && global_motion_model(core, logical_ref).gm_type != GmType::Identity
+}
+
+pub(super) fn global_motion_warp(
     core: &FrameHeaderCore,
     logical_ref: i8,
     force_integer_mv: bool,
     n4w: usize,
     n4h: usize,
 ) -> Option<[i32; 6]> {
-    let model = global_motion_model(core, logical_ref);
-    (!force_integer_mv && n4w >= 2 && n4h >= 2 && model.gm_type != GmType::Identity)
-        .then_some(model.gm_params)
+    (!force_integer_mv && is_global_mv_candidate(core, logical_ref, n4w, n4h))
+        .then(|| global_motion_model(core, logical_ref).gm_params)
 }
 pub(crate) const WARP_PARAM_REDUCE_BITS: u32 = 6;
 const WARP_TRANS_INTEGER_BITS: u32 = 12;
