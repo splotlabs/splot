@@ -1668,6 +1668,13 @@ ivf_sha256 = "64d2471fb3cc14203df8c4df65a5850ff61d74691441ff84170f4f96210473ac"
 avm_raw_sha256 = "d1c84d805c7e01737a88779051a6e9363fac552c5c543d21b8bb99fd3388a787"
 
 [[fixture]]
+id = "syn-2frame-extendwarp-global-48x48-q185"
+status = "must_pass"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.warp", "inter.warp.extend_global", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "48b7d643f7351344cb8cad1e3d3092bf29a9eea1075ffa71656111c7bffbce5c"
+avm_raw_sha256 = "9c432a75b318d6f811c11399e16fdd4f28367753a597de8858cd4b8a13efed36"
+
+[[fixture]]
 id = "syn-2frame-refscale-inter-64x64-51x51-q80"
 status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.reference_scaling", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]

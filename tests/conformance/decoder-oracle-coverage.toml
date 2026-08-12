@@ -603,6 +603,14 @@ fixtureable = true
 spec_sections = ["7.13.3.24"]
 
 [[capability]]
+id = "inter.warp.extend_global"
+name = "Extend-warp neighbour using a GLOBALMV affine model"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.7.13", "7.12.2.2", "7.13.3.24"]
+notes = "The isolated fixture selects exactly one single-reference GLOBALMV neighbour and proves both current-block global-MV stack projection and affine-model selection."
+
+[[capability]]
 id = "inter.warp.sample_list1"
 name = "Local-warp sample using a compound block's list-1 MV"
 category = "inter"

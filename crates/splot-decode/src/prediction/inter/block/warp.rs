@@ -190,43 +190,44 @@ pub(super) fn local_warp_estimation(
     Ok(params)
 }
 
+pub(super) struct ExtendWarpContext {
+    pub(super) delta: (i32, i32),
+    pub(super) global_warp_params: [i32; 6],
+}
+
 pub(super) fn extend_warp_estimation(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
-    extend_delta: Option<(i32, i32)>,
+    context: &ExtendWarpContext,
     stack: &super::super::find_mv_stack::MvStack,
     ref_mv_idx: usize,
     mv: Mv,
     tile_offset: ByteOffset,
 ) -> Result<[i32; 6]> {
+    let ExtendWarpContext {
+        delta,
+        global_warp_params,
+    } = *context;
     let (mi_row, mi_col, n4w, n4h) = (
         block_ctx.mi_row,
         block_ctx.mi_col,
         block_ctx.bw4,
         block_ctx.bh4,
     );
-    let Some((delta_row, delta_col)) = extend_warp_base_position(
+    let (delta_row, delta_col) = extend_warp_base_position(
         mv_grid,
         block_ctx,
         stack.candidate_offsets(ref_mv_idx),
-        extend_delta,
-    ) else {
-        return Err(inter_cap!(
-            "inter_warp_extend_base_missing",
-            tile_offset,
-            "inter.warp_extend.base_position",
-            "7.13.3.24"
-        ));
-    };
+        delta,
+    );
     let Some(params) = super::super::find_mv_stack::extend_warp_neighbour_params(
-        mv_grid, block_ctx, delta_row, delta_col,
+        mv_grid,
+        block_ctx,
+        delta_row,
+        delta_col,
+        global_warp_params,
     ) else {
-        return Err(inter_cap!(
-            "inter_warp_extend_neighbour_missing",
-            tile_offset,
-            "inter.warp_extend.base_position",
-            "7.13.3.24"
-        ));
+        return Err(crate::DecodeHeaderStateError::InvalidExtendWarpNeighbourState.into());
     };
     let geometry_error = || warp_model_error(tile_offset);
     let mid_y = i32::try_from(
@@ -295,13 +296,13 @@ pub(super) fn extend_warp_base_position(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     candidate: (i32, i32),
-    fallback: Option<(i32, i32)>,
-) -> Option<(i32, i32)> {
+    fallback: (i32, i32),
+) -> (i32, i32) {
     let (row, col) = candidate;
     if (row == -1 || col == -1)
         && grid.is_non_tip_at(block.mi_row as i32 + row, block.mi_col as i32 + col)
     {
-        return Some(candidate);
+        return candidate;
     }
     fallback
 }

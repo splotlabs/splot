@@ -102,7 +102,7 @@ pub(super) struct NeighbourMotion {
     pub(super) mv1: Mv,
     pub(super) sub_mv: Mv,
     pub(super) sub_mv1: Mv,
-    pub(super) warp_params: Option<[i32; 6]>,
+    model: NeighbourMotionModel,
     pub(super) cwp_weight: i16,
     pub(super) base_r: u32,
     pub(super) base_c: u32,
@@ -110,12 +110,32 @@ pub(super) struct NeighbourMotion {
     pub(super) bh4: u8,
 }
 
+impl NeighbourMotion {
+    pub(super) const fn warp_params(self) -> Option<[i32; 6]> {
+        match self.model {
+            NeighbourMotionModel::Warp(params) => Some(params),
+            NeighbourMotionModel::None | NeighbourMotionModel::Global(_) => None,
+        }
+    }
+
+    pub(super) const fn is_global_mv(self, list: usize) -> bool {
+        matches!(self.model, NeighbourMotionModel::Global(lists) if list < 2 && lists & (1 << list) != 0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NeighbourMotionModel {
+    None,
+    Warp([i32; 6]),
+    Global(u8),
+}
+
 /// The motion a leaf publishes into every cell it covers alike.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct LeafMotion {
     mv: Mv,
     mv1: Mv,
-    warp_params: Option<[i32; 6]>,
+    model: NeighbourMotionModel,
     cwp_weight: i16,
     base_r: u32,
     base_c: u32,
@@ -206,10 +226,9 @@ pub(crate) struct NeighbourFlagSyntax {
     pub(crate) precision: BlockPrecisionRecord,
 }
 
-/// AV2 § 5.20.7.14 compound motion mode implied by the presence of a per-list
-/// warp model.
-pub(crate) const fn compound_motion_mode(has_warp_model: bool) -> MotionMode {
-    if has_warp_model {
+/// AV2 § 5.20.7.14 compound motion mode implied by the local-warp syntax.
+pub(crate) const fn compound_motion_mode(local_warp: bool) -> MotionMode {
+    if local_warp {
         MotionMode::LocalWarp
     } else {
         MotionMode::Simple
@@ -244,6 +263,8 @@ pub(crate) struct NeighbourMotionValues {
     pub(crate) cwp_weight: i16,
     /// Model the neighbour-facing derivations read (AVM `wm_params[0]`).
     pub(crate) stored_warp: Option<[i32; 6]>,
+    /// Per-list GLOBALMV facts; the model is frame state, not leaf state.
+    pub(crate) global_mv: [bool; 2],
     /// Per-list models driving the § 7.12.2.2 sub-MV splat.
     pub(crate) splat_warp: [Option<[i32; 6]>; 2],
 }
@@ -254,6 +275,7 @@ pub(crate) const ZERO_NEIGHBOUR_MOTION_VALUES: NeighbourMotionValues = Neighbour
     mv: [Mv::ZERO; 2],
     cwp_weight: CWP_EQUAL,
     stored_warp: None,
+    global_mv: [false, false],
     splat_warp: [None, None],
 };
 
@@ -397,10 +419,21 @@ impl NeighbourMvGrid {
         if leaf == UNPUBLISHED_LEAF {
             return;
         }
+        let global_mv_lists = u8::from(values.global_mv[0]) | (u8::from(values.global_mv[1]) << 1);
+        let model = values.stored_warp.map_or_else(
+            || {
+                if global_mv_lists == 0 {
+                    NeighbourMotionModel::None
+                } else {
+                    NeighbourMotionModel::Global(global_mv_lists)
+                }
+            },
+            NeighbourMotionModel::Warp,
+        );
         self.planes.leaves.push(LeafMotion {
             mv: values.mv[0],
             mv1: values.mv[1],
-            warp_params: values.stored_warp,
+            model,
             cwp_weight: values.cwp_weight,
             base_r: r as u32,
             base_c: c as u32,
@@ -542,7 +575,8 @@ impl NeighbourMvGrid {
             NeighbourMotionValues {
                 mv: [mv, Mv::ZERO],
                 cwp_weight: CWP_EQUAL,
-                stored_warp: warp_params,
+                stored_warp: warp_params.filter(|_| motion_mode.is_warp()),
+                global_mv: [warp_params.is_some() && !motion_mode.is_warp(), false],
                 splat_warp: [warp_params.filter(|_| motion_mode.is_warp()), None],
             },
         );
@@ -638,8 +672,9 @@ impl NeighbourMvGrid {
             NeighbourMotionValues {
                 mv: [mv0, mv1],
                 cwp_weight,
-                // Neighbour-facing derivations read only the first model (AVM `wm_params[0]`).
+                // Neighbour-facing warp derivations read only the first model (AVM `wm_params[0]`).
                 stored_warp: warp_params[0],
+                global_mv: [false, false],
                 splat_warp: warp_params,
             },
         );
@@ -769,7 +804,7 @@ impl NeighbourMvGrid {
                 mv1: leaf.mv1,
                 sub_mv: cell.sub_mv,
                 sub_mv1: cell.sub_mv1,
-                warp_params: leaf.warp_params,
+                model: leaf.model,
                 cwp_weight: leaf.cwp_weight,
                 base_r: leaf.base_r,
                 base_c: leaf.base_c,

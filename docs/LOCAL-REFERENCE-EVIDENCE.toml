@@ -11467,3 +11467,70 @@ output_scope = "Complete 256-byte native monochrome raw output at both thread co
 kind = "digest-equality"
 left = "avm-multi-brt-native-raw-sha256"
 right = "splot-multi-brt-native-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-2frame-extendwarp-global-48x48-q185"
+feature_id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
+decoder_support_rows = ["first-inter-frame-frontier"]
+kind = "reference-output-agreement"
+summary = "A deterministic two-frame AVM stream isolates one WARP_NEWMV+EXTENDWARP block selecting an affine GLOBALMV neighbour. Splot at base 7a8109904e2784101dbe29756bc9199f5332fb31 silently produced identical but wrong one- and eight-thread output (SHA-256 da4f590f3fcb282459ce37028ac7373401f4523e0164eef0b85939b10624aa54; first divergence at zero-based raw byte 5008); the fixed decoder matches AVM byte-for-byte at both thread counts."
+recorded_at = "2026-08-12"
+command = '''ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'testsrc2=size=48x48:rate=1:duration=1' -filter_complex '[0:v]split=2[f0][rotate_input];[rotate_input]rotate=angle=0.06:fillcolor=gray:bilinear=1,split=2[bg][pin];[pin]crop=w=12:h=12:x=27:y=18[patch];[bg][patch]overlay=x=24:y=18[f1];[f0][f1]concat=n=2:v=1:a=0,format=yuv420p[v]' -map '[v]' -r 1 -pix_fmt yuv420p source.y4m; SPLOT_DISABLE_SAME_REF_COMPOUND=1 SPLOT_DISABLE_WARP_DELTA_TRIAL=1 SPLOT_DISABLE_WARPMV_MODE=1 SPLOT_DISABLE_NEARMV_MODE=1 avmenc --codec=av2 --ivf -D --cpu-used=2 --end-usage=q --qp=185 --kf-min-dist=16 --kf-max-dist=16 -t 1 --i420 --limit=2 --passes=1 --lag-in-frames=0 --enable-global-motion=1 --enable-warped-motion=1 --enable-warp-causal=0 --enable-warp-delta=1 --enable-six-param-warp-delta=0 --enable-warp-extend=1 --enable-tip=0 --enable-skip-mode=0 --enable-gdf=0 --enable-restoration=0 --enable-cdef=0 --enable-deblocking=0 --enable-ccso=0 --enable-bawp=0 --enable-interintra-comp=0 --enable-ref-frame-mvs=0 --enable-refmvbank=0 --enable-tcq=0 -y -o output.ivf source.y4m; repeat once and compare; avmdec --codec=av2 --rawvideo --i420 -o avm.raw output.ivf; splot decode --output-format raw --threads 1/8 -o splot.raw output.ivf'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-extendwarp-global-48x48-q185.ivf"
+sha256 = "48b7d643f7351344cb8cad1e3d3092bf29a9eea1075ffa71656111c7bffbce5c"
+size_bytes = 616
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "FFmpeg 8.1.2 generated a 6,979-byte project-owned synthetic Y4M source (SHA-256 3481905383458adb2131b710e9c6e5d5f78f4a76d525a495085d411bf6be4a29). Pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774 plus opt-in encoder trial-isolation instrumentation (patch SHA-256 45b59603751de012c9b5a29073fdd60da86bbd72906ba9ae55c56c3783c8811f) produced byte-identical IVF and raw OBU files across two complete encodes; raw OBU SHA-256 f4c510e520fa22c2a851dbc27198985c7c04970d0cc0a17dbe6f73663c387372. AVM's validated syntax writer produced the stream; bytes were not hand-edited. Trace proof records exactly one EXTENDWARP block, at mi=(8,4), selecting the 16x32 GLOBALMV neighbour at mi=(6,0). AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned AVM decoder; encoder-only opt-in instrumentation isolated the syntax while decoder trace hooks did not alter raw output."
+command_summary = "Two pinned avmdec --codec=av2 --rawvideo --i420 decodes of {fixture:input}."
+output_digest_id = "avm-extendwarp-global-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "9c432a75b318d6f811c11399e16fdd4f28367753a597de8858cd4b8a13efed36"
+output_scope = "6,912-byte raw I420 output for two 48x48 frames"
+
+[[evidence.reference_run]]
+id = "splot-before"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "7a8109904e2784101dbe29756bc9199f5332fb31"
+version_summary = "Clean phase-4 base before GLOBALMV-neighbour selection support."
+command_summary = "Splot raw-output decode of {fixture:input} at one and eight threads produced identical but wrong outputs."
+output_digest_id = "splot-before-extendwarp-global-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "da4f590f3fcb282459ce37028ac7373401f4523e0164eef0b85939b10624aa54"
+output_scope = "6,912-byte raw I420 output for two 48x48 frames; 580 bytes differed from AVM"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree implementing current-block GLOBALMV stack projection and per-list neighbour model selection."
+command_summary = "Splot decoded {fixture:input} with --output-format raw at one and eight threads."
+output_digest_id = "splot-extendwarp-global-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "9c432a75b318d6f811c11399e16fdd4f28367753a597de8858cd4b8a13efed36"
+output_scope = "6,912-byte raw I420 output for two 48x48 frames, identical at one and eight threads"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-extendwarp-global-raw-sha256"
+right = "splot-extendwarp-global-raw-sha256"

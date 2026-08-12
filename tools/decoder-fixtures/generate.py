@@ -43,12 +43,12 @@ def sha(path):
     return h.hexdigest()
 
 
-def run(cmd):
-    return subprocess.run(cmd, capture_output=True, timeout=180)
+def run(cmd, env=None):
+    return subprocess.run(cmd, capture_output=True, timeout=180, env=env)
 
 
-def run_checked(cmd):
-    r = run(cmd)
+def run_checked(cmd, env=None):
+    r = run(cmd, env=env)
     if r.returncode != 0:
         raise SystemExit(f"error: {cmd[0]} failed ({r.returncode}): "
                          f"{r.stderr.decode(errors='replace')[:200]}")
@@ -132,6 +132,26 @@ COVERAGE = [
       "--enable-ccso=0", "--enable-pc-wiener=0", "--enable-wiener-nonsep=0",
       "--enable-keyframe-filtering=0", "--enable-intrabc=0", "--enable-parity-hiding=0",
       "--enable-tcq=0"], "2", "196"),
+    ("syn-2frame-extendwarp-global-48x48-q185", "", "yuv420p", "--i420",
+     ["--limit=2", "--passes=1", "--lag-in-frames=0",
+      "--kf-min-dist=16", "--kf-max-dist=16", "--enable-global-motion=1",
+      "--enable-warped-motion=1", "--enable-warp-causal=0", "--enable-warp-delta=1",
+      "--enable-six-param-warp-delta=0", "--enable-warp-extend=1", "--enable-tip=0",
+      "--enable-skip-mode=0", "--enable-gdf=0", "--enable-restoration=0",
+      "--enable-cdef=0", "--enable-deblocking=0", "--enable-ccso=0",
+      "--enable-bawp=0", "--enable-interintra-comp=0", "--enable-ref-frame-mvs=0",
+      "--enable-refmvbank=0", "--enable-tcq=0", "-y"], "2", "185",
+     {"format": "y4m", "encode_env": {
+         "SPLOT_DISABLE_SAME_REF_COMPOUND": "1",
+         "SPLOT_DISABLE_WARP_DELTA_TRIAL": "1",
+         "SPLOT_DISABLE_WARPMV_MODE": "1",
+         "SPLOT_DISABLE_NEARMV_MODE": "1",
+     }, "ffmpeg_args": [
+         "-f", "lavfi", "-i", "testsrc2=size=48x48:rate=1:duration=1",
+         "-filter_complex",
+         "[0:v]split=2[f0][rotate_input];[rotate_input]rotate=angle=0.06:fillcolor=gray:bilinear=1,split=2[bg][pin];[pin]crop=w=12:h=12:x=27:y=18[patch];[bg][patch]overlay=x=24:y=18[f1];[f0][f1]concat=n=2:v=1:a=0,format=yuv420p[v]",
+         "-map", "[v]", "-r", "1", "-pix_fmt", "yuv420p",
+     ]}),
 ]
 
 PINNED_RECIPE_HASHES = {
@@ -183,6 +203,16 @@ PINNED_RECIPE_HASHES = {
         "avm_native_raw_sha256": "418ecf79e4b2564419678cb25c28cbbf0259bf4602dd54f3e2868529d4df261d",
         "avmenc_sha256": "952af54f32109602ee9315dd36cc5ec3d01adcaae42f2a7d1cfdd11e92815b2e",
         "avmdec_sha256": "70342f860be8ccb277c6d719c631f3c054f0ec52b1bcf40c5db00941b8a56ab2",
+        "reproducibility_runs": 2,
+    },
+    "syn-2frame-extendwarp-global-48x48-q185": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "ffmpeg_version": "8.1.2",
+        "source_sha256": "3481905383458adb2131b710e9c6e5d5f78f4a76d525a495085d411bf6be4a29",
+        "ivf_sha256": "48b7d643f7351344cb8cad1e3d3092bf29a9eea1075ffa71656111c7bffbce5c",
+        "obu_sha256": "f4c510e520fa22c2a851dbc27198985c7c04970d0cc0a17dbe6f73663c387372",
+        "avm_i420_raw_sha256": "9c432a75b318d6f811c11399e16fdd4f28367753a597de8858cd4b8a13efed36",
+        "instrumentation_sha256": "45b59603751de012c9b5a29073fdd60da86bbd72906ba9ae55c56c3783c8811f",
         "reproducibility_runs": 2,
     },
 }
@@ -259,15 +289,21 @@ def cmd_coverage_fixtures(args):
         suffix = ".yuv" if source["format"] == "rawvideo" else ".y4m"
         y4m = os.path.join(stage, fid + suffix)
         source_args = ["-frames:v", "1", "-f", "rawvideo"] if source["format"] == "rawvideo" else []
-        run_checked(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src,
-                     "-pix_fmt", pix, *source_args, y4m])
+        if "ffmpeg_args" in source:
+            run_checked(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                         *source["ffmpeg_args"], y4m])
+        else:
+            run_checked(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src,
+                         "-pix_fmt", pix, *source_args, y4m])
         ivf = os.path.join(stage, fid + ".ivf")
         size_args = (["-w", str(source["width"]), "-h", str(source["height"])]
                      if source["format"] == "rawvideo" else [])
         encode = [avmenc, "--codec=av2", "--ivf", "-D", "--cpu-used=" + cpu,
                   "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
                   inflag, *size_args, *flags]
-        run_checked([*encode, "-o", ivf, y4m])
+        encode_env = os.environ.copy()
+        encode_env.update(source.get("encode_env", {}))
+        run_checked([*encode, "-o", ivf, y4m], env=encode_env)
         if expected:
             actual_source = sha(y4m)
             actual_ivf = sha(ivf)
@@ -276,7 +312,7 @@ def cmd_coverage_fixtures(args):
                          f"source={actual_source}, ivf={actual_ivf}")
             if expected.get("reproducibility_runs") == 2:
                 repeated_ivf = os.path.join(stage, fid + ".repeat.ivf")
-                run_checked([*encode, "-o", repeated_ivf, y4m])
+                run_checked([*encode, "-o", repeated_ivf, y4m], env=encode_env)
                 if sha(repeated_ivf) != actual_ivf:
                     sys.exit(f"error: {fid} is not deterministic across two encodes")
                 os.remove(repeated_ivf)
@@ -285,7 +321,7 @@ def cmd_coverage_fixtures(args):
                 obu_encode = [avmenc, "--codec=av2", "--obu", "-D", "--cpu-used=" + cpu,
                               "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
                               inflag, *size_args, *flags]
-                run_checked([*obu_encode, "-o", obu, y4m])
+                run_checked([*obu_encode, "-o", obu, y4m], env=encode_env)
                 if sha(obu) != expected["obu_sha256"]:
                     sys.exit(f"error: {fid} differs from its pinned raw OBU")
             if "avm_i420_raw_sha256" in expected:

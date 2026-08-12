@@ -424,6 +424,7 @@ fn intrabc_spatial_probe_waits_for_ordered_motion_publication() -> TestResult {
             mv: [bv, Mv::ZERO],
             cwp_weight: 0,
             stored_warp: None,
+            global_mv: [false, false],
             splat_warp: [None, None],
         },
     );
@@ -560,8 +561,8 @@ fn extend_warp_base_rejects_tip_candidate_and_uses_matching_fallback() -> TestRe
     };
 
     assert_eq!(
-        extend_warp_base_position(&grid, &block, (0, -1), Some((-1, 0))),
-        Some((-1, 0))
+        extend_warp_base_position(&grid, &block, (0, -1), (-1, 0)),
+        (-1, 0)
     );
     grid.record_block(
         8,
@@ -579,8 +580,8 @@ fn extend_warp_base_rejects_tip_candidate_and_uses_matching_fallback() -> TestRe
         BlockPrecisionRecord::default(),
     );
     assert_eq!(
-        extend_warp_base_position(&grid, &block, (0, -1), Some((-1, 0))),
-        Some((0, -1))
+        extend_warp_base_position(&grid, &block, (0, -1), (-1, 0)),
+        (0, -1)
     );
     Ok(())
 }

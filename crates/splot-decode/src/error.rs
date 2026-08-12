@@ -195,6 +195,9 @@ pub enum DecodeHeaderStateError {
     /// A decoded palette index escaped its CDF-derived palette-size domain.
     #[error("general-intra palette color-index state is inconsistent")]
     InvalidGeneralIntraPaletteColorState,
+    /// An admitted EXTENDWARP neighbour was absent from resolved motion state.
+    #[error("EXTENDWARP neighbour motion state is inconsistent")]
+    InvalidExtendWarpNeighbourState,
     /// Derived GDF filter state was internally inconsistent.
     #[error("GDF filter derivation state is inconsistent")]
     InvalidGdfFilterState,

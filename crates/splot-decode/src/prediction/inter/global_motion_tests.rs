@@ -112,3 +112,15 @@ fn global_motion_fixtures_match_reference_hashes() {
         );
     }
 }
+
+#[test]
+fn global_candidate_fact_survives_force_integer_reconstruction_gating() {
+    let (_, core, _) = decode_context()
+        .pool()
+        .install(|| parse_inter_core_for_validation(GLOBAL_AFFINE_FIXTURE))
+        .expect("global-affine fixture inter header parses");
+
+    assert!(super::block::is_global_mv_candidate(&core, 0, 2, 2));
+    assert_eq!(super::block::global_motion_warp(&core, 0, true, 2, 2), None);
+    assert!(!super::block::is_global_mv_candidate(&core, 0, 1, 2));
+}
