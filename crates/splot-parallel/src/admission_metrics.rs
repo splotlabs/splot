@@ -65,6 +65,10 @@ impl AdmissionDiagnosticCounters {
         self.values[8].fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn note_batch(&self) {
+        self.values[9].fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn snapshot(&self) -> AdmissionMetrics {
         let [
             total_jobs,

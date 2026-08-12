@@ -192,6 +192,13 @@ pub trait Admit<'job>: Sync {
     /// so reserve it for work whose start order is a matter of indifference.
     fn spawn_ready(&self, job: Job<'job>);
 
+    /// Submits independent proven-ready jobs as one ordered scheduler entry.
+    ///
+    /// The batch competes under `order_key`, then spawns its members directly
+    /// in their vector order. A singleton uses ordinary submission so the
+    /// wrapper never costs more work than it removes.
+    fn submit_ready_batch(&self, order_key: u64, jobs: Vec<Job<'job>>);
+
     /// Runs one proven-ready serial successor on this worker after the current
     /// job returns and the scheduler has exposed any other ready work.
     ///
@@ -854,6 +861,31 @@ impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
         self.scope.spawn(move |scope| {
             scheduler.run_job(scope, job);
         });
+    }
+
+    fn submit_ready_batch(&self, order_key: u64, mut jobs: Vec<Job<'job>>) {
+        if jobs.len() == 1 {
+            if let Some(job) = jobs.pop() {
+                self.scheduler.submit(self.scope, order_key, &[], job);
+            }
+            return;
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        if let Some(diagnostics) = &self.scheduler.ready.diagnostics {
+            diagnostics.note_batch();
+        }
+        self.scheduler.submit(
+            self.scope,
+            order_key,
+            &[],
+            Box::new(move |admit| {
+                for job in jobs {
+                    admit.spawn_ready(job);
+                }
+            }),
+        );
     }
 
     fn continue_ready(&self, order_key: u64, job: Job<'job>) {
@@ -2037,6 +2069,62 @@ mod tests {
                 parallel_batches: 0,
             }
         );
+    }
+
+    #[test]
+    fn a_ready_batch_uses_one_ordered_slot_and_settles_its_successor() {
+        const JOBS: usize = 8;
+        let completed: Vec<CompletionCell<()>> = (0..JOBS).map(|_| CompletionCell::new()).collect();
+        let ran = AtomicUsize::new(0);
+        let successor = AtomicUsize::new(0);
+        let scheduler = AdmissionScheduler::with_metrics();
+        let pool = pool(4);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(|admit| {
+                        let jobs = completed
+                            .iter()
+                            .map(|done| {
+                                Box::new(|_: &dyn Admit<'_>| {
+                                    ran.fetch_add(1, Ordering::AcqRel);
+                                    assert!(done.set(()).is_ok());
+                                }) as Job<'_>
+                            })
+                            .collect();
+                        admit.submit_ready_batch(1, jobs);
+                        let conditions = completed
+                            .iter()
+                            .map(|done| Condition::Completion(done))
+                            .collect::<Vec<_>>();
+                        admit.submit(
+                            2,
+                            &conditions,
+                            Box::new(|_| {
+                                successor.fetch_add(1, Ordering::AcqRel);
+                            }),
+                        );
+                    }),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+
+        assert_eq!(ran.load(Ordering::Acquire), JOBS);
+        assert_eq!(successor.load(Ordering::Acquire), 1);
+        let metrics = scheduler.metrics();
+        assert_eq!(metrics.total_jobs, 3);
+        assert_eq!(metrics.conditions_registered, JOBS);
+        assert_eq!(metrics.conditionless_jobs, 2);
+        assert_eq!(metrics.scheduler_slots, 3);
+        assert_eq!(metrics.ready_heap_pushes, 3);
+        assert_eq!(metrics.ready_heap_pops, 3);
+        assert_eq!(metrics.direct_jobs, JOBS);
+        assert_eq!(metrics.parallel_batches, 1);
     }
 
     #[test]
