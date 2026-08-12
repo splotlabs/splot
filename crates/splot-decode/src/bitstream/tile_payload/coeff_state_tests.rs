@@ -364,6 +364,46 @@ fn update_after_coeffs_rejects_bad_facts_without_mutation() {
         }
     ));
     assert_eq!(state, before);
+
+    assert!(matches!(
+        state
+            .update_after_coeffs(update(0, 0, 0, 0, 1))
+            .unwrap_err(),
+        TileCoeffStateError::EmptyContextRange { axis: "columns" }
+    ));
+    assert_eq!(state, before);
+
+    assert!(matches!(
+        state
+            .update_after_coeffs(update(0, 0, 0, 1, 0))
+            .unwrap_err(),
+        TileCoeffStateError::EmptyContextRange { axis: "rows" }
+    ));
+    assert_eq!(state, before);
+
+    assert!(matches!(
+        state
+            .update_after_coeffs(update(0, 1, 0, usize::MAX, 1))
+            .unwrap_err(),
+        TileCoeffStateError::CoordinateOverflow {
+            coordinate: "above",
+            base: 1,
+            offset: usize::MAX,
+        }
+    ));
+    assert_eq!(state, before);
+
+    assert!(matches!(
+        state
+            .update_after_coeffs(update(0, 0, 1, 1, usize::MAX))
+            .unwrap_err(),
+        TileCoeffStateError::CoordinateOverflow {
+            coordinate: "left",
+            base: 1,
+            offset: usize::MAX,
+        }
+    ));
+    assert_eq!(state, before);
 }
 
 #[test]
