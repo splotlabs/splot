@@ -13810,9 +13810,13 @@ id = "DECODE-GENERAL-INTRA-LUMA-COEFFS"
 name = "General intra luma coefficient decode"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.27", "8.3.2"]
+spec_sections = ["5.20.7.27", "5.20.7.28", "6.19.7.23", "6.19.7.24", "8.2.4", "8.3.2"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-23",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-24",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-4",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
 ]
 crate = "splot-decode"
@@ -13821,29 +13825,29 @@ change_id = "decode-general-intra-luma-coeffs"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Current runtime plane coefficient decode handles the direct all-zero path and routes nonzero blocks through staged ordinary or FSC decoding; oracle tests protect reconstructed output."
+notes = "Completes the former general_intra_luma_coeff_parse marker with shared recursive taxonomy used by both general-intra and inter. Reserved Pt512 and strict post-parity/post-TCQ Quant magnitude escapes are malformed §6.19.7.23; an overlong Golomb prefix is malformed §6.19.7.24; allocation is a typed reconstruction resource failure; invalid CDF/arithmetic state and geometry/table/scan/context escapes are narrow typed header-state invariants without global reason ids. Direct SymbolDecoder reads zero-pad, so direct UnexpectedEof is a defensive syntax-specific mapping; live truncation remains terminal exit_symbol §8.2.4. Two redundant ordinary-branch error variants were deleted. The pinned AVM 457cd586 68-byte monochrome lossless fixture reaches one extended-Golomb tail (m=1, cMax=5, q=5, prefix 1), is deterministic and strict-clean, and splot at one and eight threads matches its 256-byte raw SHA-256 673f62a095962fe0413e3fa044af24b3f8ec6919a0b61132187e7257ad38afb1. The feature remains partial only because general_intra_luma_coeff_state is independently tracked."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
-validate = "not-applicable"
+parse = "done"
+validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "partial"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/pipeline/general_intra_tests.rs::luma_skip_fixture_decodes_skip_branch_through_general_path", "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_nonzero_intra_frame_decodes_to_oracle", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest"]
-commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::golomb_prefix_boundary_is_writer_backed", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::strict_quant_magnitude_bounds_include_both_signs", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::strict_quant_bound_is_checked_after_hidden_parity_and_tcq", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::coefficient_parse_failures_have_typed_recursive_taxonomy", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::coefficient_entropy_and_geometry_failures_are_typed_header_state", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::coefficient_defensive_eof_keeps_each_syntax_owner", "crates/splot-decode/src/output/raw_tests.rs::truncated_palette_tile_terminal_fails_closed_before_raw_output", "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_nonzero_intra_frame_decodes_to_oracle", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest"]
+commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask decoder-fixtures verify", "cargo test -p splot-cli --test decoder_oracle --locked", "cargo xtask check-feature-status"]
 fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
-    "crates/splot-decode/src/pipeline/mod.rs",
-    "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf",
+    "tests/conformance/vectors/valid/syn-golomb-lossless-mono-16x16.ivf",
+    "tests/conformance/decoder-oracle.toml",
+    "tools/decoder-fixtures/generate.py",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = ["decode/malformed-source", "decode/unsupported-feature"]
 
 [[feature]]
 id = "DECODE-GENERAL-INTRA-FRAME-RECON"
@@ -17174,11 +17178,12 @@ id = "DECODE-COEFF-PARITY-TCQ-HANDOFF"
 name = "Coefficient parity-hiding and TCQ handoff"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["3", "5.18.2", "5.20.7.27", "8.3.2"]
+spec_sections = ["3", "5.18.2", "5.20.7.27", "6.19.7.23", "8.3.2"]
 sources = [
     "docs/spec/av2/1.0.0/03-symbols.md",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-23",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
 ]
 crate = "splot-decode"
@@ -17187,7 +17192,7 @@ change_id = "coeff-parity-tcq-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Current live parity-hiding and TCQ derivation occurs in staged_transform_tool_lossless_base_config, followed by ordinary quant-state application; FSC disables TCQ."
+notes = "Current live parity-hiding and TCQ derivation occurs in staged_transform_tool_lossless_base_config, followed by ordinary quant-state application; FSC disables TCQ. The strict Quant magnitude check runs after either adjustment. Pinned AVM instrumentation proves syn-parity-intra-128x128 reaches the hidden-parity DC path and syn-cos-intra-64x64-q180 reaches one luma TCQ block; CPU-used 0 also yields byte-distinct TCQ-on/off streams, correcting the former non-fixtureable assumption without claiming every TCQ state transition."
 
 [feature.status]
 mapped = "done"
@@ -17198,17 +17203,19 @@ write = "not-applicable"
 encode = "not-applicable"
 decode_check = "partial"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::luma_txtype_residual_staged_base_config_derives_coeff_tool_flags", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::fsc_idtx_block_reconstructs_without_tcq_dequant_shift"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::luma_txtype_residual_staged_base_config_derives_coeff_tool_flags", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::strict_quant_bound_is_checked_after_hidden_parity_and_tcq", "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::fsc_idtx_block_reconstructs_without_tcq_dequant_shift", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload.rs",
     "crates/splot-decode/src/bitstream/tile_payload/input.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/derived_tests.rs",
+    "tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf",
+    "tests/conformance/vectors/valid/syn-parity-intra-128x128.ivf",
 ]
 diagnostics = ["decode/unsupported-feature"]
 
@@ -17466,9 +17473,10 @@ id = "DECODE-COEFF-READ-QUANT-SYNTAX"
 name = "Coefficient read_quant syntax"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.28", "8.2.5"]
+spec_sections = ["5.20.7.28", "6.19.7.24", "8.2.5"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-24",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
 ]
 crate = "splot-decode"
@@ -17477,40 +17485,42 @@ change_id = "coeff-read-quant-syntax"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Current live stateful read_quant path has focused no-bit, finite, Golomb, HR-average carry, invalid maxLevel, and overflow proof."
+notes = "The live stateful read_quant path has no-bit, finite, extended-Golomb, HR-average carry, and invalid maxLevel proof. Writer-backed boundaries accept a 20-bit Golomb prefix and reject 21 bits as malformed §6.19.7.24. The pinned AVM fixture enters the extended branch once with m=1, cMax=5, q=5, and prefix 1, and matches splot byte-for-byte at one and eight threads."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
-validate = "not-applicable"
+parse = "done"
+validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "partial"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::below_threshold_consumes_no_bits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::finite_and_golomb_extensions_decode_expected_quant", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::state_carries_hr_average_between_entries", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::invalid_max_level_and_oversized_golomb_width_are_rejected"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::below_threshold_consumes_no_bits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::finite_and_golomb_extensions_decode_expected_quant", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::state_carries_hr_average_between_entries", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::invalid_max_level_is_rejected", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant_tests.rs::golomb_prefix_boundary_is_writer_backed"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/scan_walk.rs",
     "crates/splot-core/src/symbol.rs",
+    "tests/conformance/vectors/valid/syn-golomb-lossless-mono-16x16.ivf",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = ["decode/malformed-source"]
 
 [[feature]]
 id = "DECODE-COEFF-QUANT-STATE-WRITE"
 name = "Coefficient quantized state write"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.27", "5.20.7.28"]
+spec_sections = ["5.20.7.27", "5.20.7.28", "6.19.7.23"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-28",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-23",
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state.rs"
@@ -17518,13 +17528,13 @@ change_id = "coeff-quant-state-write"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Current live quant-state accumulator has focused signed-write, context-summary, hidden-parity, TCQ, and overflow proof."
+notes = "The live quant-state accumulator applies hidden parity or TCQ in normative order, then enforces the strict §6.19.7.23 Quant range before sign/write. Focused tests cover both legal signed endpoints, both illegal endpoints, and values that cross the limit only after hidden-parity or TCQ adjustment."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "not-applicable"
-validate = "not-applicable"
+validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
 decode_check = "partial"
@@ -17533,7 +17543,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::accumulator_applies_sign_and_updates_context_summary", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::hidden_parity_and_tcq_adjust_quant", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::hidden_parity_overflow_is_reported"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::accumulator_applies_sign_and_updates_context_summary", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::hidden_parity_and_tcq_adjust_quant", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::hidden_parity_overflow_is_reported", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::strict_quant_magnitude_bounds_include_both_signs", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state_tests.rs::strict_quant_bound_is_checked_after_hidden_parity_and_tcq"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17542,7 +17552,7 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/scan_walk.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = ["decode/malformed-source"]
 
 [[feature]]
 id = "DECODE-COEFF-QUANT-PASS-COMPOSE"

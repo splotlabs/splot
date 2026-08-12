@@ -705,9 +705,9 @@ spec_sections = ["5.20.7.27", "5.20.7.28"]
 id = "coeff.tcq"
 name = "Trellis-coded quantization (TCQ) coefficient decode"
 category = "coeff"
-fixtureable = false
+fixtureable = true
 spec_sections = ["5.20.7.27", "5.20.7.28"]
-notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+notes = "Pinned AVM instrumentation confirms syn-cos-intra-64x64-q180 enters one luma TCQ block. AVMenc preserves TCQ at cpu-used=0; cpu-used>=2 disables it through speed features."
 
 [[capability]]
 id = "quant.base_q"

@@ -13,6 +13,7 @@ use super::sign_symbol::CoeffSignRead;
 
 const TCQ_STATES: usize = 8;
 const TCQ_PARITIES: usize = 2;
+const MAX_CONFORMING_QUANT_MAGNITUDE: u32 = 1 << 20;
 const TCQ_NEXT_STATE: [[usize; TCQ_PARITIES]; TCQ_STATES] = [
     [0, 4],
     [4, 0],
@@ -97,6 +98,10 @@ pub(crate) enum CoeffQuantStateWriteError {
     State(#[from] TileCoeffStateError),
     #[error("coefficient quant input {index} used invalid tcqState {tcq_state}")]
     InvalidTcqState { index: usize, tcq_state: usize },
+    #[error(
+        "coefficient quant input {index} has nonconforming magnitude {magnitude}; expected less than 1 << 20"
+    )]
+    QuantMagnitudeOutOfRange { index: usize, magnitude: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,6 +156,13 @@ impl CoeffQuantStateAccumulator {
             if quant > 0 {
                 quant = checked_mul_sub(index, quant, 2, q0, "quant * 2 - q0")?;
             }
+        }
+
+        if quant >= MAX_CONFORMING_QUANT_MAGNITUDE {
+            return Err(CoeffQuantStateWriteError::QuantMagnitudeOutOfRange {
+                index,
+                magnitude: quant,
+            });
         }
 
         let signed_quant = signed_quant(index, quant, sign)?;

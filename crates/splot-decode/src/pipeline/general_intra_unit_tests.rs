@@ -5,7 +5,9 @@
 
 use super::*;
 use crate::bitstream::tile_payload::{
-    CflMultiDirection, CflParams, FrameCdfSubset, GeneralIntraChromaBlockMode, TileCdfSelector,
+    CflMultiDirection, CflParams, CoeffOrdinaryBranchError, CoeffOrdinaryPassError,
+    CoeffQuantPassError, CoeffQuantStateWriteError, FrameCdfSubset, GeneralIntraChromaBlockMode,
+    TileCdfSelector,
 };
 use crate::{DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeSourceIssueKind};
 use splot_core::symbol::SymbolDecoder;
@@ -371,6 +373,158 @@ fn residual_plan_failures_keep_internal_and_resource_taxonomy() {
         }
     ));
     assert!(DecodeDiagnosticReport::from_decode_error(&allocation).is_none());
+}
+
+#[test]
+fn coefficient_parse_failures_have_typed_recursive_taxonomy() {
+    let offset = ByteOffset::new(42);
+    let pt512 = general_intra_residual_error(
+        GeneralIntraResidualError::NonZeroStart {
+            source: crate::bitstream::tile_payload::CoeffLoopContextError::InvalidPt512EobExtra {
+                eob_pt_extra: 3,
+            },
+        },
+        offset,
+    );
+    assert!(matches!(
+        pt512,
+        DecodeError::MalformedSource { issue }
+            if issue.spec_section() == Some("6.19.7.23") && issue.offset() == Some(offset)
+    ));
+
+    let overlong = general_intra_residual_error(
+        GeneralIntraResidualError::StagedNonZeroPass {
+            source: CoeffOrdinaryBranchError::Ordinary(CoeffOrdinaryPassError::Quant(
+                CoeffQuantPassError::ReadQuant(
+                    crate::bitstream::tile_payload::CoeffReadQuantError::OverlongGolombPrefix {
+                        index: 0,
+                    },
+                ),
+            )),
+        },
+        offset,
+    );
+    assert!(matches!(
+        overlong,
+        DecodeError::MalformedSource { issue }
+            if issue.spec_section() == Some("6.19.7.24") && issue.offset() == Some(offset)
+    ));
+
+    let magnitude = general_intra_residual_error(
+        GeneralIntraResidualError::StagedNonZeroPass {
+            source: CoeffOrdinaryBranchError::Ordinary(CoeffOrdinaryPassError::Quant(
+                CoeffQuantPassError::QuantState(
+                    CoeffQuantStateWriteError::QuantMagnitudeOutOfRange {
+                        index: 0,
+                        magnitude: 1 << 20,
+                    },
+                ),
+            )),
+        },
+        offset,
+    );
+    assert!(matches!(
+        magnitude,
+        DecodeError::MalformedSource { issue }
+            if issue.spec_section() == Some("6.19.7.23") && issue.offset() == Some(offset)
+    ));
+
+    let mut allocation = Vec::<u8>::new();
+    let allocation = general_intra_residual_error(
+        GeneralIntraResidualError::NonZeroStart {
+            source: crate::bitstream::tile_payload::CoeffLoopContextError::State(
+                crate::bitstream::tile_payload::TileCoeffStateError::Allocation(
+                    allocation
+                        .try_reserve(usize::MAX)
+                        .expect_err("oversized allocation must fail"),
+                ),
+            ),
+        },
+        offset,
+    );
+    assert!(matches!(
+        allocation,
+        DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "general-intra coefficient parse state",
+            }
+        }
+    ));
+}
+
+#[test]
+fn coefficient_entropy_and_geometry_failures_are_typed_header_state() {
+    let offset = ByteOffset::new(42);
+    let selector = TileCdfSelector::IdentityRowY { ctx: usize::MAX };
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = SymbolDecoder::new(&[0x80]).expect("symbol decoder");
+    let source = tile
+        .read_block_symbol_trace(selector, &mut symbols)
+        .expect_err("out-of-range selector");
+    let entropy =
+        general_intra_residual_error(GeneralIntraResidualError::AllZeroRead { source }, offset);
+    assert!(matches!(
+        entropy,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraCoefficientEntropyState,
+        }
+    ));
+
+    let geometry = general_intra_residual_error(
+        GeneralIntraResidualError::TransformPartitionGeometry {
+            table: "test",
+            index: usize::MAX,
+        },
+        offset,
+    );
+    assert!(matches!(
+        geometry,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraCoefficientState,
+        }
+    ));
+}
+
+#[test]
+fn coefficient_defensive_eof_keeps_each_syntax_owner() {
+    let offset = ByteOffset::new(42);
+    for (failure, expected_section) in [
+        (
+            GeneralIntraResidualError::AllZeroRead {
+                source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                    offset,
+                    needed: 1,
+                }),
+            },
+            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+        ),
+        (
+            GeneralIntraResidualError::TransformPartitionRead {
+                source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                    offset,
+                    needed: 1,
+                }),
+            },
+            "5.20.6.3",
+        ),
+        (
+            GeneralIntraResidualError::TransformTypeRead {
+                source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                    offset,
+                    needed: 1,
+                }),
+            },
+            "5.20.8.2",
+        ),
+    ] {
+        let error = general_intra_residual_error(failure, offset);
+        assert!(matches!(
+            error,
+            DecodeError::MalformedSource { issue }
+                if issue.spec_section() == Some(expected_section) && issue.offset() == Some(offset)
+        ));
+    }
 }
 
 #[test]

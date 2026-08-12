@@ -36,6 +36,74 @@ mod scan_walk;
 pub(crate) mod sign_symbol;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoeffParseErrorClass {
+    Allocation,
+    Malformed { spec_section: &'static str },
+    EntropyState,
+    CoefficientState,
+}
+
+pub(crate) fn classify_coeff_parse_error(
+    error: &(dyn std::error::Error + 'static),
+    syntax_spec_section: &'static str,
+) -> CoeffParseErrorClass {
+    let mut source = Some(error);
+    let mut source_spec_section = syntax_spec_section;
+    while let Some(current) = source {
+        if current
+            .downcast_ref::<std::collections::TryReserveError>()
+            .is_some()
+        {
+            return CoeffParseErrorClass::Allocation;
+        }
+        if matches!(
+            current.downcast_ref::<CoeffLoopContextError>(),
+            Some(CoeffLoopContextError::InvalidPt512EobExtra { .. })
+        ) {
+            return CoeffParseErrorClass::Malformed {
+                spec_section: "6.19.7.23",
+            };
+        }
+        if matches!(
+            current.downcast_ref::<quant_state::CoeffQuantStateWriteError>(),
+            Some(quant_state::CoeffQuantStateWriteError::QuantMagnitudeOutOfRange { .. })
+        ) {
+            return CoeffParseErrorClass::Malformed {
+                spec_section: "6.19.7.23",
+            };
+        }
+        if let Some(read_quant_error) = current.downcast_ref::<read_quant::CoeffReadQuantError>() {
+            source_spec_section = "5.20.7.28";
+            if matches!(
+                read_quant_error,
+                read_quant::CoeffReadQuantError::OverlongGolombPrefix { .. }
+            ) {
+                return CoeffParseErrorClass::Malformed {
+                    spec_section: "6.19.7.24",
+                };
+            }
+        }
+        if matches!(
+            current.downcast_ref::<BlockSymbolTraceReadError>(),
+            Some(BlockSymbolTraceReadError::Cdf(_))
+        ) {
+            return CoeffParseErrorClass::EntropyState;
+        }
+        if let Some(core_error) = current.downcast_ref::<CoreError>() {
+            return if matches!(core_error, CoreError::UnexpectedEof { .. }) {
+                CoeffParseErrorClass::Malformed {
+                    spec_section: source_spec_section,
+                }
+            } else {
+                CoeffParseErrorClass::EntropyState
+            };
+        }
+        source = current.source();
+    }
+    CoeffParseErrorClass::CoefficientState
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AllZeroCoeffBlockInput {
     pub(crate) plane: usize,
     pub(crate) x4: usize,

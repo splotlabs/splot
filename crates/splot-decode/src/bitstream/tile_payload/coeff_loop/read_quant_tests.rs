@@ -108,7 +108,7 @@ fn state_carries_hr_average_between_entries() {
 }
 
 #[test]
-fn invalid_max_level_and_oversized_golomb_width_are_rejected() {
+fn invalid_max_level_is_rejected() {
     let mut symbols = symbol_decoder(&[0xff, 0x80]);
     let mut state = CoeffReadQuantState::new(CoeffReadQuantConfig {
         is_hidden: false,
@@ -123,8 +123,17 @@ fn invalid_max_level_and_oversized_golomb_width_are_rejected() {
             ..
         })
     ));
+}
 
-    let mut symbols = symbol_decoder(&[0x00, 0x00, 0x00, 0x00, 0x08, 0x80]);
+#[test]
+fn golomb_prefix_boundary_is_writer_backed() {
+    let maximum = encode_extended(5, 5, 20, 22, 0);
+    let mut symbols = symbol_decoder(&maximum);
+    let mut state = CoeffReadQuantState::new(config(1));
+    assert!(state.read_one(&mut symbols, 0, input(2, 2)).is_ok());
+
+    let overlong = encode_extended(5, 5, 21, 0, 0);
+    let mut symbols = symbol_decoder(&overlong);
     let mut state = CoeffReadQuantState::new(config(1));
     assert!(matches!(
         state.read_one(&mut symbols, 0, input(2, 2)),

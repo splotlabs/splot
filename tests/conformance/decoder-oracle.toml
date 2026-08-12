@@ -298,7 +298,7 @@ avm_raw_sha256 = "bfec72ffcddf982499eebfa21bdfb400fc66aa96b40281298387420ef21246
 [[fixture]]
 id = "syn-cos-intra-64x64-q180"
 status = "must_pass"
-features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+features = ["coeff.nonzero_ordinary", "coeff.tcq", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "1235ed7c3ce9afa5b5cac873459de631176a2b1fef0ea381cad23d4670cbcd59"
 avm_raw_sha256 = "8a6751d4517073bad0bbe71f4b5537df8e8b0bfee85fcd6af1ac2d5878dd59e8"
 
@@ -1008,6 +1008,13 @@ status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "c704b3f75b90c0c02d89a4d91d4d2f773247f8ee5ccfb463e4f396c5897e72d2"
 avm_raw_sha256 = "1af4a4343927b77994b57ce50d3e0b09d57dc698e2ec122d8abcdc1667d70782"
+
+[[fixture]]
+id = "syn-golomb-lossless-mono-16x16"
+status = "must_pass"
+features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
+ivf_sha256 = "2e49ce31dc92b05747ff10ebed9b256f450cbac8ff69001f31a19c452de7716b"
+avm_raw_sha256 = "673f62a095962fe0413e3fa044af24b3f8ec6919a0b61132187e7257ad38afb1"
 
 [[fixture]]
 id = "syn-lossless-cardinal-y-v-intra-64x64"

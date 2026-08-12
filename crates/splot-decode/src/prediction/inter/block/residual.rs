@@ -13,7 +13,6 @@ const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
 const TX_4X4: usize = 0;
 const SPEC_RESIDUAL: &str = "5.20.7.23";
-const SPEC_READ_QUANT: &str = "5.20.7.28";
 const SPEC_TX_SIZE: &str = "5.20.6.1";
 const SPEC_TRANSFORM_TYPE: &str = "5.20.8.2";
 #[cfg(test)]
@@ -856,61 +855,35 @@ fn residual_read_error(
     spec_section: &'static str,
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
-    let mut source = Some(error);
-    let mut source_spec_section = spec_section;
-    while let Some(current) = source {
-        if current
-            .downcast_ref::<std::collections::TryReserveError>()
-            .is_some()
-        {
-            return inter_allocation!("inter residual coefficient parse state");
+    match crate::bitstream::tile_payload::classify_coeff_parse_error(error, spec_section) {
+        crate::bitstream::tile_payload::CoeffParseErrorClass::Allocation => {
+            inter_allocation!("inter residual coefficient parse state")
         }
-        if matches!(
-            current.downcast_ref::<crate::bitstream::tile_payload::CoeffLoopContextError>(),
-            Some(
-                crate::bitstream::tile_payload::CoeffLoopContextError::InvalidPt512EobExtra { .. }
-            )
-        ) {
-            return crate::pipeline::malformed_tile_payload(tile_offset, spec_section, error);
+        crate::bitstream::tile_payload::CoeffParseErrorClass::Malformed { spec_section } => {
+            crate::pipeline::malformed_tile_payload(tile_offset, spec_section, error)
         }
-        if let Some(read_quant_error) =
-            current.downcast_ref::<crate::bitstream::tile_payload::CoeffReadQuantError>()
-        {
-            source_spec_section = SPEC_READ_QUANT;
-            if matches!(
-                read_quant_error,
-                crate::bitstream::tile_payload::CoeffReadQuantError::OverlongGolombPrefix { .. }
-            ) {
-                return crate::pipeline::malformed_tile_payload(
-                    tile_offset,
-                    source_spec_section,
-                    error,
-                );
-            }
+        crate::bitstream::tile_payload::CoeffParseErrorClass::EntropyState
+        | crate::bitstream::tile_payload::CoeffParseErrorClass::CoefficientState => {
+            residual_read_internal_error(tile_offset)
         }
-        if let Some(core_error) = current.downcast_ref::<splot_core::Error>() {
-            return if matches!(core_error, splot_core::Error::UnexpectedEof { .. }) {
-                crate::pipeline::malformed_tile_payload(tile_offset, source_spec_section, error)
-            } else {
-                residual_read_internal_error(tile_offset)
-            };
-        }
-        source = current.source();
     }
-    residual_read_internal_error(tile_offset)
 }
 
 fn residual_plane_read_error(
     error: &crate::bitstream::tile_payload::GeneralIntraResidualError,
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
-    let spec_section = if matches!(
-        error,
-        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformTypeRead { .. }
-    ) {
-        SPEC_TRANSFORM_TYPE
-    } else {
-        SPEC_RESIDUAL
+    let spec_section = match error {
+        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformPartitionRead {
+            ..
+        }
+        | crate::bitstream::tile_payload::GeneralIntraResidualError::TransformPartitionGeometry {
+            ..
+        } => "5.20.6.3",
+        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformTypeRead { .. } => {
+            SPEC_TRANSFORM_TYPE
+        }
+        _ => SPEC_RESIDUAL,
     };
     residual_read_error(error, spec_section, tile_offset)
 }

@@ -1225,7 +1225,7 @@ fn staged_transform_tool_plane_tx_type(
         parity_hiding: base_config.parity_hiding,
         use_tcq: base_config.use_tcq,
     };
-    resolve_mode_to_txfm_plane_tx_type(geometry, is_inter, lossless, mode_to_txfm)
+    resolve_mode_to_txfm_plane_tx_type(geometry, is_inter, mode_to_txfm)
         .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })
 }
 

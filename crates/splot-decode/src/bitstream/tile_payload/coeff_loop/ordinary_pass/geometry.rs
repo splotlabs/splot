@@ -123,10 +123,9 @@ impl CoeffOrdinaryBranchModeToTxfmBaseConfig {
         self,
         geometry: CoeffOrdinaryTxSizeGeometryConfig,
         is_inter: bool,
-        lossless: bool,
     ) -> Result<CoeffOrdinaryBranchTxSizeDimensionsBaseConfig, CoeffOrdinaryBranchError> {
         Ok(CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-            plane_tx_type: mode_to_txfm_plane_tx_type(geometry, is_inter, lossless, self)?,
+            plane_tx_type: mode_to_txfm_plane_tx_type(geometry, is_inter, self)?,
             parity_hiding: self.parity_hiding,
             use_tcq: self.use_tcq,
         })
@@ -262,7 +261,7 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         staged_lossless_tx_size_base_config(geometry, is_inter, base_config)
     } else {
         let mode_to_txfm_base_config = base_config.mode_to_txfm_base_config(geometry, is_inter)?;
-        mode_to_txfm_base_config.tx_size_base_config(geometry, is_inter, lossless)?
+        mode_to_txfm_base_config.tx_size_base_config(geometry, is_inter)?
     };
     let input = CoeffOrdinaryStagedTxSizeDimensionsInput {
         geometry,
@@ -393,21 +392,16 @@ fn tx_set(
 pub(crate) fn resolve_mode_to_txfm_plane_tx_type(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     is_inter: bool,
-    lossless: bool,
     config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
 ) -> Result<usize, CoeffOrdinaryBranchError> {
-    mode_to_txfm_plane_tx_type(geometry, is_inter, lossless, config)
+    mode_to_txfm_plane_tx_type(geometry, is_inter, config)
 }
 
 fn mode_to_txfm_plane_tx_type(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     is_inter: bool,
-    lossless: bool,
     config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
 ) -> Result<usize, CoeffOrdinaryBranchError> {
-    if lossless {
-        return Err(CoeffOrdinaryBranchError::UnsupportedModeToTxfmSubset { reason: "lossless" });
-    }
     if geometry.plane == 0 {
         return luma_tx_type(config.luma_tx_type);
     }

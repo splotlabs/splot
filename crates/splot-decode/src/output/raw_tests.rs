@@ -28,6 +28,9 @@ const MONO_FIXTURE: &[u8] =
 const PALETTE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-luma-palette2-row-mono-16x16-q0.ivf"
 );
+const GOLOMB_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-golomb-lossless-mono-16x16.ivf"
+);
 const INTRA_ONLY_TILE_GROUP_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-2frame-intra-only-mono-16x16-q255.ivf"
 );
@@ -231,34 +234,36 @@ fn truncated_ivf_payload_fails_before_raw_output() {
 
 #[test]
 fn truncated_palette_tile_terminal_fails_closed_before_raw_output() {
-    let parsed = splot_core::annexb::parse_annex_b_obus(&PALETTE_FIXTURE[44..]).unwrap();
-    assert_eq!(parsed.len(), 3);
-    let mut annex_b = BitWriter::new();
-    for obu in &parsed[..2] {
-        write_annexb_obu(&mut annex_b, &obu.header, obu.payload).unwrap();
-    }
-    let palette_obu = parsed.last().unwrap();
-    let truncated_payload = &palette_obu.payload[..palette_obu.payload.len() - 1];
-    write_annexb_obu(&mut annex_b, &palette_obu.header, truncated_payload).unwrap();
+    for fixture in [PALETTE_FIXTURE, GOLOMB_FIXTURE] {
+        let parsed = splot_core::annexb::parse_annex_b_obus(&fixture[44..]).unwrap();
+        assert_eq!(parsed.len(), 3);
+        let mut annex_b = BitWriter::new();
+        for obu in &parsed[..2] {
+            write_annexb_obu(&mut annex_b, &obu.header, obu.payload).unwrap();
+        }
+        let tile_obu = parsed.last().unwrap();
+        let truncated_payload = &tile_obu.payload[..tile_obu.payload.len() - 1];
+        write_annexb_obu(&mut annex_b, &tile_obu.header, truncated_payload).unwrap();
 
-    let mut input = Vec::new();
-    write_ivf_header(&mut input, &IvfHeader::new(*b"AV02", 16, 16, 30, 1, 1)).unwrap();
-    write_ivf_frame(&mut input, 0, &annex_b.into_bytes()).unwrap();
+        let mut input = Vec::new();
+        write_ivf_header(&mut input, &IvfHeader::new(*b"AV02", 16, 16, 30, 1, 1)).unwrap();
+        write_ivf_frame(&mut input, 0, &annex_b.into_bytes()).unwrap();
 
-    for threads in [1usize, 8] {
-        let mut raw = Vec::new();
-        let error = context(ThreadCount::from(threads))
-            .decode_raw_bytes(&input, DecodeOptions::default(), &mut raw)
-            .unwrap_err();
+        for threads in [1usize, 8] {
+            let mut raw = Vec::new();
+            let error = context(ThreadCount::from(threads))
+                .decode_raw_bytes(&input, DecodeOptions::default(), &mut raw)
+                .unwrap_err();
 
-        assert!(raw.is_empty());
-        assert!(matches!(
-            error,
-            DecodeError::MalformedSource { issue }
-                if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
-                    && issue.spec_section() == Some("8.2.4")
-                    && issue.message().contains("exit_symbol()")
-        ));
+            assert!(raw.is_empty());
+            assert!(matches!(
+                error,
+                DecodeError::MalformedSource { issue }
+                    if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
+                        && issue.spec_section() == Some("8.2.4")
+                        && issue.message().contains("exit_symbol()")
+            ));
+        }
     }
 }
 
