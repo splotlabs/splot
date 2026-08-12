@@ -96,7 +96,9 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
         bit_depth,
     )?;
     if u_setup.adjusted != v_setup.adjusted || u_setup.samples != v_setup.samples {
-        return Err(GeneralIntraResidualError::UnexpectedBranch);
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CCTX paired transform geometry",
+        });
     }
 
     u_out.resize(u_setup.samples, T::default());
@@ -125,15 +127,19 @@ pub(super) fn apply_cross_chroma_transform(
     v_dequant: &mut [i32],
 ) -> Result<(), GeneralIntraResidualError> {
     if u_dequant.len() != v_dequant.len() {
-        return Err(GeneralIntraResidualError::UnexpectedBranch);
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CCTX coefficient lengths",
+        });
     }
     let [cos, sin] = *CCTX_MTX
-        .get(
-            cctx_type
-                .checked_sub(1)
-                .ok_or(GeneralIntraResidualError::UnexpectedBranch)?,
-        )
-        .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+        .get(cctx_type.checked_sub(1).ok_or(
+            GeneralIntraResidualError::InvalidReconstructionState {
+                context: "CCTX type",
+            },
+        )?)
+        .ok_or(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CCTX type",
+        })?;
     let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
     for (u, v) in u_dequant.iter_mut().zip(v_dequant.iter_mut()) {
         let saved_u = (*u).clamp(-bound, bound - 1);

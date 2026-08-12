@@ -56,7 +56,9 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     let cctx_type = u_coeffs.cctx_type.unwrap_or(0);
     let Some((v_plane, v_coeffs)) = v else {
         if cctx_type != 0 {
-            return Err(GeneralIntraResidualError::UnexpectedBranch);
+            return Err(GeneralIntraResidualError::InvalidReconstructionState {
+                context: "CCTX paired V plane",
+            });
         }
         return u_plane.reconstruct(
             scratch,
@@ -193,7 +195,9 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         || u_plane.y != v_plane.y
         || u_plane.tx != v_plane.tx
     {
-        return Err(GeneralIntraResidualError::UnexpectedBranch);
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CCTX paired plane geometry",
+        });
     }
     let u_prediction_block = prediction_only_coeff_block(&u_coeffs);
     u_plane.reconstruct(
@@ -264,9 +268,11 @@ fn read_plane_prediction<T: ReconSample>(
     out: &mut Vec<T>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let (rect, width) = plane_rect(plane)?;
-    let expected = width
-        .checked_mul(rect.height())
-        .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+    let expected = width.checked_mul(rect.height()).ok_or(
+        GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CCTX prediction sample count",
+        },
+    )?;
     out.clear();
     out.reserve(expected);
     for row in workspace.rect_rows(plane.plane_id, rect)? {

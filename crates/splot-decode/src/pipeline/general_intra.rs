@@ -180,15 +180,6 @@ impl GeneralIntraReconCommand {
     }
 }
 
-macro_rules! general_intra_internal {
-    ($reason:literal, $offset:expr $(,)?) => {
-        DecodeError::InternalState {
-            reason: $reason,
-            byte_offset: $offset,
-        }
-    };
-}
-
 fn general_intra_chroma_tools(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1055,9 +1046,6 @@ fn general_intra_residual_error(
         }
         GeneralIntraResidualError::PaletteColorIndex { .. } => {
             crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteColorState.into()
-        }
-        GeneralIntraResidualError::UnexpectedBranch => {
-            general_intra_internal!("general_intra_luma_coeff_unexpected_branch", offset,)
         }
         GeneralIntraResidualError::InvalidReconstructionState { .. }
         | GeneralIntraResidualError::QuantLength { .. }

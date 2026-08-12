@@ -238,7 +238,9 @@ fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
             false,
             BitDepth::Ten,
         ),
-        Err(GeneralIntraResidualError::UnexpectedBranch)
+        Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "inter residual bit depth"
+        })
     ));
     assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before);
 

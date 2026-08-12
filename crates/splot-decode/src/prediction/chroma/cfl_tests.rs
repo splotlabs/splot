@@ -73,6 +73,37 @@ fn derived_alpha() -> CflParams {
 }
 
 #[test]
+fn missing_cfl_luma_ac_preserves_prediction() {
+    let frame = workspace(PixelFormat::Yuv420);
+    let mut prediction = vec![21, 22];
+    let before = prediction.clone();
+
+    let result = cfl_prediction_into(
+        &frame,
+        PlaneId::U,
+        0,
+        0,
+        2,
+        2,
+        derived_alpha(),
+        0,
+        4,
+        NeighbourAvailability::new(false, false, 0, 0),
+        BitDepth::Eight,
+        None,
+        &mut prediction,
+    );
+
+    assert!(matches!(
+        result,
+        Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CfL luma AC"
+        })
+    ));
+    assert_eq!(prediction, before);
+}
+
+#[test]
 fn invalid_cfl_filter_preserves_prediction_scratch() {
     let mut frame = workspace(PixelFormat::Yuv420);
     let mut scratch = seeded_cfl_scratch();
