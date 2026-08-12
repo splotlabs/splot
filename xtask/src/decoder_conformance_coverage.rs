@@ -235,6 +235,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "tile-payload-decode-fuzz",
             "general-intra-frame-frontier",
             "general-intra-block-modes",
+            "general-intra-luma-palette",
             "general-intra-luma-coeffs",
             "general-intra-frame-recon",
             "general-intra-multiblock",
@@ -309,6 +310,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "CONF-TILE-PAYLOAD-DECODE-FUZZ",
             "DECODE-GENERAL-INTRA-FRAME-FRONTIER",
             "DECODE-GENERAL-INTRA-BLOCK-MODES",
+            "DECODE-GENERAL-INTRA-LUMA-PALETTE",
             "DECODE-GENERAL-INTRA-LUMA-COEFFS",
             "DECODE-GENERAL-INTRA-FRAME-RECON",
             "DECODE-GENERAL-INTRA-MULTIBLOCK",
@@ -389,7 +391,11 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "tile_payload_decode_bytes",
         ],
         local_reference_evidence: &[],
-        diagnostics: &["decode/unsupported-feature", "decode/resource-limit"],
+        diagnostics: &[
+            "decode/unsupported-feature",
+            "decode/resource-limit",
+            "decode/malformed-source",
+        ],
         notes: "Tile payload, partition CDF boundary subsets, and targeted minimal tile-payload frontier fuzz evidence exist. Full tile group traversal, decode_tile, partition/block syntax, residual syntax, and multi-tile handling remain unsupported.",
     },
     CoverageRow {

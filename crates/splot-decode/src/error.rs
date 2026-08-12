@@ -189,6 +189,12 @@ pub enum DecodeHeaderStateError {
     /// Derived selectable transform-record state was internally inconsistent.
     #[error("selectable transform-record derivation state is inconsistent")]
     InvalidSelectableTransformRecords,
+    /// A palette symbol read encountered invalid CDF or arithmetic-decoder state.
+    #[error("general-intra palette entropy state is inconsistent")]
+    InvalidGeneralIntraPaletteEntropyState,
+    /// A decoded palette index escaped its CDF-derived palette-size domain.
+    #[error("general-intra palette color-index state is inconsistent")]
+    InvalidGeneralIntraPaletteColorState,
     /// Derived GDF filter state was internally inconsistent.
     #[error("GDF filter derivation state is inconsistent")]
     InvalidGdfFilterState,

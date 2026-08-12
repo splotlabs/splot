@@ -7,9 +7,12 @@ use std::io;
 
 use splot_core::bitio::BitReader;
 use splot_core::headers::sequence::parse_sequence_header;
-use splot_core::ivf::{IVF_FRAME_HEADER_SIZE, IVF_HEADER_SIZE};
+use splot_core::ivf::{
+    IVF_FRAME_HEADER_SIZE, IVF_HEADER_SIZE, IvfHeader, write_ivf_frame, write_ivf_header,
+};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
+use splot_core::write::{BitWriter, write_annexb_obu};
 use splot_parallel::ThreadCount;
 
 use crate::test_support::{MINIMAL_FIXTURE, empty_avmenc_ivf, minimal_fixture_with_timebase};
@@ -22,6 +25,9 @@ use crate::{
 
 const MONO_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-mono-intra-64x64.ivf");
+const PALETTE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-luma-palette2-row-mono-16x16-q0.ivf"
+);
 const INTRA_ONLY_TILE_GROUP_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-2frame-intra-only-mono-16x16-q255.ivf"
 );
@@ -221,6 +227,39 @@ fn truncated_ivf_payload_fails_before_raw_output() {
             if issue.kind() == DecodeSourceIssueKind::IvfContainerError
                 && issue.rule_id().is_some()
     ));
+}
+
+#[test]
+fn truncated_palette_tile_terminal_fails_closed_before_raw_output() {
+    let parsed = splot_core::annexb::parse_annex_b_obus(&PALETTE_FIXTURE[44..]).unwrap();
+    assert_eq!(parsed.len(), 3);
+    let mut annex_b = BitWriter::new();
+    for obu in &parsed[..2] {
+        write_annexb_obu(&mut annex_b, &obu.header, obu.payload).unwrap();
+    }
+    let palette_obu = parsed.last().unwrap();
+    let truncated_payload = &palette_obu.payload[..palette_obu.payload.len() - 1];
+    write_annexb_obu(&mut annex_b, &palette_obu.header, truncated_payload).unwrap();
+
+    let mut input = Vec::new();
+    write_ivf_header(&mut input, &IvfHeader::new(*b"AV02", 16, 16, 30, 1, 1)).unwrap();
+    write_ivf_frame(&mut input, 0, &annex_b.into_bytes()).unwrap();
+
+    for threads in [1usize, 8] {
+        let mut raw = Vec::new();
+        let error = context(ThreadCount::from(threads))
+            .decode_raw_bytes(&input, DecodeOptions::default(), &mut raw)
+            .unwrap_err();
+
+        assert!(raw.is_empty());
+        assert!(matches!(
+            error,
+            DecodeError::MalformedSource { issue }
+                if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
+                    && issue.spec_section() == Some("8.2.4")
+                    && issue.message().contains("exit_symbol()")
+        ));
+    }
 }
 
 #[test]

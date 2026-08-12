@@ -45,6 +45,11 @@ description = "Deterministic AVM revision 457cd58681a747465661baccb1f32095bc5b77
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-luma-palette2-row-mono-16x16-q0.ivf"
+description = "Deterministic AVM revision 457cd58681a747465661baccb1f32095bc5b7774 8-bit monochrome 16x16 key frame whose project-owned two-tone row source selects a two-entry luma palette. The source recipe and encoder options are pinned in tools/decoder-fixtures/generate.py (source SHA-256 d004e017048deb20e7e68c13d75959fc007c0edd87b66336d59f51b441fd800d, 68-byte IVF SHA-256 15f7683df284453f314f169182e185590a892ca6e612cfdeb9a1b86949e0cc53, OBU SHA-256 f5cf30af52391c027f3b060ee9071ffbda4cb1f9454a6b1e55fd57200e1f3e06); validates clean and decodes byte-exact to the pinned AVM native monochrome raw SHA-256 418ecf79e4b2564419678cb25c28cbbf0259bf4602dd54f3e2868529d4df261d."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-2frame-intra-only-mono-16x16-q255.ivf"
 description = "Pinned instrumented AVM revision 457cd58681a747465661baccb1f32095bc5b7774 two-frame 8-bit monochrome 16x16 stream: a closed-loop key followed by an INTRA_ONLY frame in OBU_REGULAR_TILE_GROUP, both base_q_idx 255. The project-owned source recipe has SHA-256 2e8c4d3b8780635c7b7eb83887a21ca35e280d4ac900c62f158201dac89c7186; the isolated encoder instrumentation is SHA-256 b99a7a36c7b143d3af07cc0418a590f461344698dc1d181352bfc17dbab00dcc; the 97-byte IVF is SHA-256 74acd49de73519e0d80a4508e5dcaf7548f22669e0aafe2fa62c9f9610289776 and decodes to 512-byte raw SHA-256 0dc50ed6e41c0a4d3eaa8c5a1e850607fd4bf2042596439f6112369e90f58364. The generator requires the recorded instrumented producer and proves two-run determinism; validates clean."
 expect = "clean"

@@ -842,6 +842,13 @@ ivf_sha256 = "8310661d3b68ee9560be0c61f5bae65fe10f3667b8b65e18a4ad5db1fbc4127d"
 avm_raw_sha256 = "052e33144ff95552a005db19589110651a814470540b0b708e30f7de4c99f496"
 
 [[fixture]]
+id = "syn-luma-palette2-row-mono-16x16-q0"
+status = "must_pass"
+features = ["container.ivf", "frame.key_closed_loop", "intra.palette", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single"]
+ivf_sha256 = "15f7683df284453f314f169182e185590a892ca6e612cfdeb9a1b86949e0cc53"
+avm_raw_sha256 = "418ecf79e4b2564419678cb25c28cbbf0259bf4602dd54f3e2868529d4df261d"
+
+[[fixture]]
 id = "syn-mhccp-intra-128x128"
 status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.mhccp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]

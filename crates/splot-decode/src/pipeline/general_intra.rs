@@ -1034,15 +1034,34 @@ fn general_intra_residual_error(
             "general intra luma coefficient context state could not be derived from the tile work unit",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
-        GeneralIntraResidualError::PaletteSymbolRead { .. }
-        | GeneralIntraResidualError::PaletteLiteral { .. }
-        | GeneralIntraResidualError::PaletteInvalidIdentityRow
-        | GeneralIntraResidualError::PaletteColorIndex { .. } => general_intra_at!(
-            "general_intra_luma_palette_parse",
-            offset,
-            "general intra luma palette color-map syntax could not be parsed from the tile payload",
-            "5.20.8.1",
-        ),
+        GeneralIntraResidualError::PaletteSymbolRead {
+            source:
+                BlockSymbolTraceReadError::Cdf(_)
+                | BlockSymbolTraceReadError::Symbol(
+                    splot_core::Error::InvalidSymbolCdf { .. }
+                    | splot_core::Error::InvalidSymbolDecoderState { .. },
+                ),
+        }
+        | GeneralIntraResidualError::PaletteLiteral {
+            source: splot_core::Error::InvalidSymbolDecoderState { .. },
+            ..
+        } => crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteEntropyState.into(),
+        GeneralIntraResidualError::PaletteSymbolRead {
+            source: BlockSymbolTraceReadError::Symbol(_),
+        }
+        | GeneralIntraResidualError::PaletteLiteral {
+            source: splot_core::Error::UnexpectedEof { .. },
+            ..
+        } => malformed_tile_payload(offset, "5.20.8.4", error),
+        GeneralIntraResidualError::PaletteLiteral { .. } => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteEntropyState.into()
+        }
+        GeneralIntraResidualError::PaletteInvalidIdentityRow => {
+            malformed_tile_payload(offset, "6.19.8.3", error)
+        }
+        GeneralIntraResidualError::PaletteColorIndex { .. } => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteColorState.into()
+        }
         GeneralIntraResidualError::UnsupportedTransformToolResidual { .. } => {
             general_intra_at!(
                 "general_intra_transform_tool_residual",

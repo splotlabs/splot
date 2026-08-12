@@ -342,3 +342,71 @@ fn swap_color_order(
         *color_count += 1;
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::bitstream::tile_payload::FrameCdfSubset;
+
+    #[test]
+    fn palette_cdf_alphabets_and_color_order_stay_inside_palette_size() {
+        let tile = FrameCdfSubset::from_defaults().tile_copy();
+        let palette_size_row = tile
+            .row(TileCdfSelector::PaletteYSize)
+            .expect("palette-size selector");
+        assert_eq!(palette_size_row.len() - 1, PALETTE_MAX_SIZE - 1);
+
+        for palette_size in 2..=PALETTE_MAX_SIZE {
+            for ctx in 0..PALETTE_COLOR_CONTEXTS {
+                let row = tile
+                    .row(TileCdfSelector::PaletteYColorIndex { palette_size, ctx })
+                    .expect("palette color-index selector");
+                assert_eq!(row.len() - 1, palette_size);
+            }
+
+            let (_, origin_order) = palette_color_index_context(&[0], 1, 0, 0);
+            assert!(
+                origin_order[..palette_size]
+                    .iter()
+                    .all(|&index| usize::from(index) < palette_size)
+            );
+
+            for neighbour in 0..palette_size {
+                let (_, top_order) = palette_color_index_context(&[neighbour as u8, 0], 1, 1, 0);
+                let (_, left_order) = palette_color_index_context(&[neighbour as u8, 0], 2, 0, 1);
+                for order in [top_order, left_order] {
+                    assert!(
+                        order[..palette_size]
+                            .iter()
+                            .all(|&index| usize::from(index) < palette_size)
+                    );
+                }
+            }
+
+            for top_left in 0..palette_size {
+                for top in 0..palette_size {
+                    for left in 0..palette_size {
+                        let map = [top_left as u8, top as u8, left as u8, 0];
+                        let (_, order) = palette_color_index_context(&map, 2, 1, 1);
+                        let prefix = &order[..palette_size];
+                        assert!(
+                            prefix
+                                .iter()
+                                .all(|&index| usize::from(index) < palette_size)
+                        );
+                        for index in 0..palette_size {
+                            assert_eq!(
+                                prefix
+                                    .iter()
+                                    .filter(|&&value| usize::from(value) == index)
+                                    .count(),
+                                1
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
