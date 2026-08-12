@@ -343,10 +343,7 @@ pub(crate) enum WarpInterIntraSyntax {
     },
 }
 
-pub(crate) fn inter_mv_read_config(
-    core: &FrameHeaderCore,
-    _tile_offset: ByteOffset,
-) -> Result<MvReadConfig> {
+pub(crate) fn inter_mv_read_config(core: &FrameHeaderCore) -> Result<MvReadConfig> {
     let precision = core
         .inter
         .as_ref()

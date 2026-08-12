@@ -204,7 +204,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             )?;
         }
     }
-    let frame_mv_config = inter_mv_read_config(core, tile_offset)?;
+    let frame_mv_config = inter_mv_read_config(core)?;
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
@@ -1011,7 +1011,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         max_drl_bits_minus_1,
         tile_offset,
     )?;
-    let precision = frame_mv_precision(core, tile_offset)?;
+    let precision = frame_mv_precision(core)?;
     finish_compound_inter_block(
         work_unit,
         symbols,
