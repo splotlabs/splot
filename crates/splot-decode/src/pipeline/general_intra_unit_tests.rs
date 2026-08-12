@@ -592,6 +592,22 @@ fn general_intra_reconstruction_failures_have_typed_taxonomy() {
 }
 
 #[test]
+fn directional_edge_failure_is_typed_internal_state() {
+    let error = general_intra_residual_error(
+        GeneralIntraResidualError::InvalidDirectionalEdgeState,
+        ByteOffset::new(42),
+    );
+
+    assert!(matches!(
+        &error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraDirectionalEdgeState,
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
+}
+
+#[test]
 fn coefficient_entropy_and_geometry_failures_are_typed_header_state() {
     let offset = ByteOffset::new(42);
     let selector = TileCdfSelector::IdentityRowY { ctx: usize::MAX };

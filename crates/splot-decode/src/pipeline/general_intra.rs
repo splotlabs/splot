@@ -18,7 +18,6 @@ use crate::residual::pipeline::{
     GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
     ResidualPlanError,
 };
-use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 
 const MI_SIZE: usize = 4;
@@ -179,12 +178,6 @@ impl GeneralIntraReconCommand {
             )
             .map_err(|error| general_intra_residual_error(error, self.tile_offset))
     }
-}
-
-macro_rules! general_intra_at {
-    ($reason:literal, $offset:expr, $message:expr, $spec_section:expr $(,)?) => {
-        general_intra_unsupported($reason, Some($offset), $message, $spec_section)
-    };
 }
 
 macro_rules! general_intra_internal {
@@ -1074,12 +1067,9 @@ fn general_intra_residual_error(
         GeneralIntraResidualError::Reconstruct { source } => {
             general_intra_reconstruction_error(source)
         }
-        GeneralIntraResidualError::UnsupportedDirectionalAboveEdge => general_intra_at!(
-            "general_intra_directional_above_edge",
-            offset,
-            missing_capability_message!("intra.luma.directional.above_edge", neighbour = "corner",),
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
+        GeneralIntraResidualError::InvalidDirectionalEdgeState => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraDirectionalEdgeState.into()
+        }
     }
 }
 
@@ -1175,15 +1165,6 @@ fn general_intra_block_mode_error(
             crate::DecodeHeaderStateError::InvalidGeneralIntraMhccpDirection.into()
         }
     }
-}
-
-pub(crate) fn general_intra_unsupported(
-    reason: &'static str,
-    byte_offset: Option<ByteOffset>,
-    message: &'static str,
-    spec_section: &'static str,
-) -> DecodeError {
-    crate::pipeline::unsupported_with_spec(reason, byte_offset, message, spec_section)
 }
 
 #[cfg(test)]

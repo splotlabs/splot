@@ -247,7 +247,7 @@ pub(super) fn average_luma_prediction_with<T: ReconSample>(
     for (primary, secondary) in prediction.iter_mut().zip(secondary) {
         let average = (u32::from(primary.to_u16()) + u32::from(secondary.to_u16()) + 1) >> 1;
         let average = u16::try_from(average)
-            .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            .map_err(|_| GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
         *primary = T::try_from_u16(average)?;
     }
     Ok(())

@@ -31,7 +31,7 @@ pub(crate) struct OneSidedIdifEdge<T: ReconSample> {
 impl<T: ReconSample> OneSidedIdifEdge<T> {
     fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
         if len > ONE_SIDED_IDIF_EDGE_CAPACITY {
-            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
         }
         Ok(Self {
             samples: [T::default(); ONE_SIDED_IDIF_EDGE_CAPACITY],
@@ -108,7 +108,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         )?;
     } else {
         if mrl.mrl_index != 0 {
-            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
         }
         let above_idif = build_one_sided_above_idif_edge(
             workspace,
@@ -374,13 +374,13 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
             let above_row = y
                 .checked_sub(1)
                 .and_then(|row| row.checked_sub(above_mrl_index))
-                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
             let max_x = workspace
                 .plane(PlaneId::Y)?
                 .storage_size()
                 .width()
                 .checked_sub(1)
-                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
             for column in 0..width {
                 let sample_x = x.saturating_add(column).min(max_x);
                 let sample = workspace.reconstructed_sample(PlaneId::Y, sample_x, above_row)?;
@@ -394,7 +394,7 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
                 let left_col = x
                     .checked_sub(1)
                     .and_then(|col| col.checked_sub(mrl_index))
-                    .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                    .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
                 workspace.reconstructed_sample(PlaneId::Y, left_col, y)?
             } else {
                 noneighbour_above::<T>(bit_depth)
@@ -405,13 +405,13 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
             let left_col = x
                 .checked_sub(1)
                 .and_then(|col| col.checked_sub(mrl_index))
-                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
             let max_y = workspace
                 .plane(PlaneId::Y)?
                 .storage_size()
                 .height()
                 .checked_sub(1)
-                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
             for row in 0..height {
                 let sample_y = y.saturating_add(row).min(max_y);
                 let sample = workspace.reconstructed_sample(PlaneId::Y, left_col, sample_y)?;
@@ -425,7 +425,7 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
                 let above_row = y
                     .checked_sub(1)
                     .and_then(|row| row.checked_sub(above_mrl_index))
-                    .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                    .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
                 workspace.reconstructed_sample(PlaneId::Y, x, above_row)?
             } else {
                 noneighbour_left::<T>(bit_depth)
@@ -464,7 +464,7 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
         }
         let fallback_col = x
             .checked_sub(mrl_index + 1)
-            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
         let fallback = workspace.reconstructed_sample(plane_id, fallback_col, y)?;
         return build_one_sided_idif_edge(
             width,
@@ -478,13 +478,13 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
     let above_row = y
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
     let max_x = workspace
         .plane(plane_id)?
         .storage_size()
         .width()
         .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
     let above_limit = width
         .checked_add(num4_above_right.saturating_mul(4))
         .and_then(|v| v.checked_sub(1))
@@ -522,7 +522,7 @@ fn build_one_sided_idif_edge<T: ReconSample>(
         .and_then(|v| v.checked_sub(1))
         .and_then(|v| v.checked_add(mrl_index.checked_mul(2)?))
         .and_then(|max_base| Some((max_base, max_base.checked_add(5)?)))
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
     let mut edge = OneSidedIdifEdge::new(edge_len)?;
     edge.samples[1] = corner()?;
     for i in 0..=max_base {
@@ -540,11 +540,11 @@ pub(super) fn finalize_one_sided_idif_edge<T: ReconSample>(
     if let Some(opposite) = filter.corner_opposite {
         let corner = edge
             .get(1)
-            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?
             .to_u16();
         let own0 = edge
             .get(2)
-            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?
             .to_u16();
         let filtered = filter_intra_edge_corner(opposite, corner, own0);
         edge[1] = T::try_from_u16(filtered)?;
@@ -616,7 +616,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         )?;
     } else {
         if mrl_index != 0 {
-            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
         }
         let left_idif = build_one_sided_left_idif_edge(
             workspace,
@@ -818,7 +818,7 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
         let fallback_row = y
             .checked_sub(1)
             .and_then(|row| row.checked_sub(above_mrl_index))
-            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
         let fallback = workspace.reconstructed_sample(plane_id, x, fallback_row)?;
         return build_one_sided_idif_edge(
             width,
@@ -832,13 +832,13 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
     let left_col = x
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
     let max_y = workspace
         .plane(plane_id)?
         .storage_size()
         .height()
         .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
     let left_limit = height
         .checked_add(num4_below_left.saturating_mul(4))
         .and_then(|v| v.checked_sub(1))
@@ -846,7 +846,7 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
         .map_or(max_y, |limit| limit.min(max_y));
     let corner_row = if have_above {
         y.checked_sub(1)
-            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?
     } else {
         y
     };

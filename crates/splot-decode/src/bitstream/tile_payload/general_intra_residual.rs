@@ -512,10 +512,8 @@ pub(crate) enum GeneralIntraResidualError {
         #[from]
         source: ReconError,
     },
-    #[error(
-        "general intra directional prediction over a real above-neighbour edge is missing its §7.13.2.1 corner sample"
-    )]
-    UnsupportedDirectionalAboveEdge,
+    #[error("general intra directional edge state is invalid")]
+    InvalidDirectionalEdgeState,
 }
 
 fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
