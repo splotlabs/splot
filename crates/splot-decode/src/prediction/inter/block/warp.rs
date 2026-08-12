@@ -364,23 +364,17 @@ fn read_warp_newmv_tail(
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct WarpInterIntraSyntax {
-    pub(crate) enabled: bool,
-    pub(crate) mode: InterIntraMode,
-    pub(crate) use_wedge: bool,
-    pub(crate) wedge_index: Option<u8>,
-}
-
-impl Default for WarpInterIntraSyntax {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            mode: InterIntraMode::Dc,
-            use_wedge: false,
-            wedge_index: None,
-        }
-    }
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum WarpInterIntraSyntax {
+    #[default]
+    Disabled,
+    Smooth {
+        mode: InterIntraMode,
+    },
+    Wedge {
+        mode: InterIntraMode,
+        wedge_index: u8,
+    },
 }
 
 pub(crate) fn inter_mv_read_config(
@@ -600,27 +594,14 @@ const WEDGE_ANGLE_DIST_TO_INDEX: [[i8; 4]; 20] = [
 
 pub(crate) fn interintra_prediction_mode(
     syntax: WarpInterIntraSyntax,
-    tile_offset: ByteOffset,
-) -> Result<Option<InterIntraPrediction>> {
-    if !syntax.enabled {
-        return Ok(None);
-    }
-    let mode = syntax.mode;
-    Ok(Some(if syntax.use_wedge {
-        InterIntraPrediction::WedgeMask {
-            mode,
-            wedge_index: syntax.wedge_index.ok_or_else(|| {
-                inter_cap!(
-                    "inter_wedge_interintra_index_missing",
-                    tile_offset,
-                    "inter.interintra.wedge_index",
-                    "5.20.7.15"
-                )
-            })?,
+) -> Option<InterIntraPrediction> {
+    match syntax {
+        WarpInterIntraSyntax::Disabled => None,
+        WarpInterIntraSyntax::Smooth { mode } => Some(InterIntraPrediction::SmoothMask { mode }),
+        WarpInterIntraSyntax::Wedge { mode, wedge_index } => {
+            Some(InterIntraPrediction::WedgeMask { mode, wedge_index })
         }
-    } else {
-        InterIntraPrediction::SmoothMask { mode }
-    }))
+    }
 }
 
 /// Reads the AV2 section 5.20.7.15 inter-intra tail shared by the plain and warp
@@ -654,18 +635,14 @@ pub(super) fn read_active_inter_intra_tail(
     } else {
         false
     };
-    let wedge_index = if use_wedge {
-        Some(read_wedge_mode_syntax(cdfs, symbols, tile_offset)?)
+    if use_wedge {
+        Ok(WarpInterIntraSyntax::Wedge {
+            mode,
+            wedge_index: read_wedge_mode_syntax(cdfs, symbols, tile_offset)?,
+        })
     } else {
-        None
-    };
-
-    Ok(WarpInterIntraSyntax {
-        enabled: true,
-        mode,
-        use_wedge,
-        wedge_index,
-    })
+        Ok(WarpInterIntraSyntax::Smooth { mode })
+    }
 }
 
 pub(crate) fn read_warp_inter_intra_syntax(

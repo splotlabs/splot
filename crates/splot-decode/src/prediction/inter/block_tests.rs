@@ -681,16 +681,11 @@ fn tile_grid_ranges_are_arithmetic_safe_at_maximum_frame_size() {
 }
 
 #[test]
-fn warp_interintra_smooth_mode_builds_smooth_mask() -> TestResult {
-    let prediction = super::warp::interintra_prediction_mode(
-        super::warp::WarpInterIntraSyntax {
-            enabled: true,
+fn warp_interintra_smooth_mode_builds_smooth_mask() {
+    let prediction =
+        super::warp::interintra_prediction_mode(super::warp::WarpInterIntraSyntax::Smooth {
             mode: InterIntraMode::Smooth,
-            use_wedge: false,
-            wedge_index: None,
-        },
-        ByteOffset::new(19),
-    )?;
+        });
 
     assert_eq!(
         prediction,
@@ -698,7 +693,20 @@ fn warp_interintra_smooth_mode_builds_smooth_mask() -> TestResult {
             mode: InterIntraMode::Smooth
         })
     );
-    Ok(())
+}
+
+#[test]
+fn warp_interintra_wedge_mode_keeps_its_index() {
+    assert_eq!(
+        super::warp::interintra_prediction_mode(super::warp::WarpInterIntraSyntax::Wedge {
+            mode: InterIntraMode::Horizontal,
+            wedge_index: 17,
+        }),
+        Some(InterIntraPrediction::WedgeMask {
+            mode: InterIntraMode::Horizontal,
+            wedge_index: 17,
+        })
+    );
 }
 
 #[test]
@@ -746,9 +754,76 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
     )?;
     let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3, ByteOffset::new(0))?;
 
-    assert!(interintra.enabled);
-    assert_eq!(interintra.mode, InterIntraMode::Smooth);
-    assert!(!interintra.use_wedge);
+    assert_eq!(
+        interintra,
+        super::warp::WarpInterIntraSyntax::Smooth {
+            mode: InterIntraMode::Smooth,
+        }
+    );
+    assert_eq!(drl, 0);
+    Ok(())
+}
+
+#[test]
+fn regular_interintra_wedge_syntax_couples_index_to_wedge() -> TestResult {
+    let bsize_group = super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8];
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::with_config(
+        SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+    );
+    write_symbol(
+        &mut tile,
+        &mut encoder,
+        TileCdfSelector::InterIntra { bsize_group },
+        1,
+    )?;
+    write_symbol(
+        &mut tile,
+        &mut encoder,
+        TileCdfSelector::InterIntraMode { bsize_group },
+        2,
+    )?;
+    write_symbol(&mut tile, &mut encoder, TileCdfSelector::WedgeInterIntra, 1)?;
+    write_symbol(&mut tile, &mut encoder, TileCdfSelector::WedgeQuad, 0)?;
+    write_symbol(
+        &mut tile,
+        &mut encoder,
+        TileCdfSelector::WedgeAngle { quad: 0 },
+        0,
+    )?;
+    write_symbol(&mut tile, &mut encoder, TileCdfSelector::WedgeDist2, 0)?;
+    write_symbol(
+        &mut tile,
+        &mut encoder,
+        TileCdfSelector::DrlMode { idx: 0, ctx: 1 },
+        0,
+    )?;
+    let payload = encoder.finish()?.into_bytes();
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+    )?;
+
+    let interintra = read_inter_intra_syntax_enabled(
+        &mut tile,
+        &mut symbols,
+        true,
+        BlockSize::new(super::BLOCK_8X8)?,
+        2,
+        2,
+        ByteOffset::new(0),
+    )?;
+    let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3, ByteOffset::new(0))?;
+
+    assert_eq!(
+        interintra,
+        super::warp::WarpInterIntraSyntax::Wedge {
+            mode: InterIntraMode::Horizontal,
+            wedge_index: 0,
+        }
+    );
     assert_eq!(drl, 0);
     Ok(())
 }
