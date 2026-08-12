@@ -431,6 +431,14 @@ fixtureable = true
 spec_sections = ["5.20.5.5", "7.13.2.1"]
 
 [[capability]]
+id = "intra.palette"
+name = "Luma palette token decode and prediction"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.5.3", "5.20.8.1", "5.20.8.4", "6.19.8.1", "6.19.8.3", "7.13.4", "8.3.2"]
+notes = "The isolated AVM fixture covers a 2-color, row-major, 16x16 monochrome luma palette; it does not claim all palette sizes, directions, identity-row modes, chroma formats, or partition shapes."
+
+[[capability]]
 id = "intra.paeth"
 name = "PAETH intra prediction"
 category = "intra"

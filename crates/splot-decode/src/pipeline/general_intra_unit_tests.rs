@@ -175,6 +175,151 @@ fn general_intra_cdf_failures_are_typed_internal_and_do_not_mutate_rows() {
 }
 
 #[test]
+fn palette_source_failures_are_malformed_at_the_palette_token_boundary() {
+    let offset = ByteOffset::new(42);
+    let source_offset = ByteOffset::new(47);
+    let failures = [
+        GeneralIntraResidualError::PaletteSymbolRead {
+            source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                offset: source_offset,
+                needed: 1,
+            }),
+        },
+        GeneralIntraResidualError::PaletteLiteral {
+            reason: "palette_direction",
+            source: splot_core::Error::UnexpectedEof {
+                offset: source_offset,
+                needed: 1,
+            },
+        },
+    ];
+
+    for failure in failures {
+        let error = general_intra_residual_error(failure, offset);
+        assert!(matches!(
+            &error,
+            DecodeError::MalformedSource { issue }
+                if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
+                    && issue.rule_id().is_none()
+                    && issue.spec_section() == Some("5.20.8.4")
+                    && issue.offset() == Some(offset)
+                    && issue.message().contains("unexpected end of input at byte 47")
+        ));
+        assert!(matches!(
+            DecodeDiagnosticReport::from_decode_error(&error).map(|report| report.details),
+            Some(DecodeDiagnosticDetails::MalformedSource(_))
+        ));
+    }
+}
+
+#[test]
+fn palette_first_line_copy_is_a_typed_conformance_error() {
+    let offset = ByteOffset::new(42);
+    let error =
+        general_intra_residual_error(GeneralIntraResidualError::PaletteInvalidIdentityRow, offset);
+
+    assert!(matches!(
+        &error,
+        DecodeError::MalformedSource { issue }
+            if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
+                && issue.rule_id().is_none()
+                && issue.spec_section() == Some("6.19.8.3")
+                && issue.offset() == Some(offset)
+                && issue.message().contains("invalid on the first row")
+    ));
+    assert!(matches!(
+        DecodeDiagnosticReport::from_decode_error(&error).map(|report| report.details),
+        Some(DecodeDiagnosticDetails::MalformedSource(_))
+    ));
+}
+
+#[test]
+fn palette_entropy_failures_are_typed_internal_and_fail_atomic() {
+    let offset = ByteOffset::new(42);
+    let selector = TileCdfSelector::IdentityRowY { ctx: usize::MAX };
+    let mut selector_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let selector_before = selector_tile.clone();
+    let mut selector_symbols = SymbolDecoder::new(&[0x80]).expect("symbol decoder");
+    let selector_source = selector_tile
+        .read_block_symbol_trace(selector, &mut selector_symbols)
+        .expect_err("out-of-range selector");
+    assert_eq!(selector_tile, selector_before);
+    let selector_error = general_intra_residual_error(
+        GeneralIntraResidualError::PaletteSymbolRead {
+            source: selector_source,
+        },
+        offset,
+    );
+    assert!(matches!(
+        selector_error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteEntropyState,
+        }
+    ));
+
+    let selector = TileCdfSelector::IdentityRowY { ctx: 0 };
+    let mut invalid_tile = FrameCdfSubset::from_defaults().tile_copy();
+    invalid_tile
+        .with_row_mut(selector, |row| row[0] = 0)
+        .expect("identity-row selector");
+    let invalid_before = invalid_tile.clone();
+    let mut invalid_symbols = SymbolDecoder::new(&[0x80]).expect("symbol decoder");
+    let invalid_source = invalid_tile
+        .read_block_symbol_trace(selector, &mut invalid_symbols)
+        .expect_err("invalid CDF row");
+    assert_eq!(invalid_tile, invalid_before);
+    let invalid_error = general_intra_residual_error(
+        GeneralIntraResidualError::PaletteSymbolRead {
+            source: invalid_source,
+        },
+        offset,
+    );
+    assert!(matches!(
+        invalid_error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteEntropyState,
+        }
+    ));
+
+    let state_error = general_intra_residual_error(
+        GeneralIntraResidualError::PaletteLiteral {
+            reason: "palette_direction",
+            source: splot_core::Error::InvalidSymbolDecoderState {
+                offset: ByteOffset::new(48),
+                bit_offset: splot_core::span::BitOffset::from_bits(3),
+                kind: splot_core::error::SymbolDecoderErrorKind::InvalidArithmeticRange,
+            },
+        },
+        offset,
+    );
+    assert!(matches!(
+        state_error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteEntropyState,
+        }
+    ));
+}
+
+#[test]
+fn palette_color_index_escape_is_typed_internal_state() {
+    let error = general_intra_residual_error(
+        GeneralIntraResidualError::PaletteColorIndex {
+            color_index: 3,
+            palette_size: 2,
+        },
+        ByteOffset::new(42),
+    );
+
+    assert!(matches!(
+        &error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteColorState,
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
+}
+
+#[test]
 fn residual_plan_failures_keep_internal_and_resource_taxonomy() {
     let geometry =
         general_intra_residual_plan_error(ResidualPlanError::InvalidGeometry, ByteOffset::new(42));

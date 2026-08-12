@@ -1010,6 +1010,20 @@ local_reference_evidence = []
 notes = "Second brick of the AVM-oracle general intra decode path. `decode_general_intra_block_modes` decodes the AV2 §5.20.5.3 `intra_frame_mode_info` mode symbols in spec order without the frozen trace's value assertions: `read_intra_y_mode` (`y_mode_set` then `y_mode_index` with the §8.3.2 tile-origin context, reconstructing the typed non-directional luma `YMode`) and `read_intra_uv_mode` (`uv_mode` with the §8.3.2 is_directional_mode context plus the `uv_mode == CHROMA_MODE_COUNT - 1` `uv_mode_idx` escape). It is wired after the §5.20.3.1 partition frontier, moving the general intra rejection from the partition frontier to the residual step. For the minimal-tool subset those other mode_info tool branches read no symbols. This row stays partial: typed `UVMode` reconstruction, the directional or escape or second-mode `YMode` reconstruction paths, and AVM or dav2d invocation remain unimplemented."
 
 [[row]]
+id = "general-intra-luma-palette"
+name = "General intra luma palette token decode and prediction"
+feature_id = "DECODE-GENERAL-INTRA-LUMA-PALETTE"
+spec_sections = ["5.20.5.3", "5.20.8.1", "5.20.8.4", "6.19.8.1", "6.19.8.3", "7.13.4", "8.3.2"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/06-syntax-structures-semantics.md; docs/spec/av2/1.0.0/07-decoding-process.md; docs/spec/av2/1.0.0/08-parsing-process.md"
+decode_module = "crates/splot-decode/src/residual/pipeline/palette.rs; crates/splot-decode/src/pipeline/reconstruct/sink.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::palette_source_failures_are_malformed_at_the_palette_token_boundary", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::palette_first_line_copy_is_a_typed_conformance_error", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::palette_entropy_failures_are_typed_internal_and_fail_atomic", "crates/splot-decode/src/residual/pipeline/palette.rs::tests::palette_cdf_alphabets_and_color_order_stay_inside_palette_size", "crates/splot-decode/src/output/raw_tests.rs::truncated_palette_tile_terminal_fails_closed_before_raw_output", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest", "cargo test -p splot-decode palette --locked", "cargo xtask decoder-fixtures verify", "cargo test -p splot-cli --test decoder_oracle --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+diagnostics = ["decode/malformed-source"]
+local_reference_evidence = []
+notes = "Supports the luma palette token parser, ColorOrder derivation, edge padding, and palette reconstruction on the general-intra path. The 68-byte pinned AVM fixture proves a strict-clean 16x16 monochrome, 2-color, row-major palette stream byte-for-byte at one and eight threads. Unit tests prove the 2..8 selector alphabet, neighbor-derived color-order bounds, malformed source taxonomy, the §6.19.8.3 first-line copy constraint, and fail-atomic CDF errors. SymbolDecoder zero-padding means a live palette literal does not directly emit UnexpectedEof; synthetic source-error mapping preserves the boundary contract, while terminal truncation is covered at the decoded tile exit and output remains unpublished. This row deliberately does not claim exhaustive coverage of all palette sizes, directions, identity-row modes, chroma formats, or partition shapes."
+
+[[row]]
 id = "general-intra-luma-coeffs"
 name = "General intra luma coefficient decode"
 feature_id = "DECODE-GENERAL-INTRA-LUMA-COEFFS"

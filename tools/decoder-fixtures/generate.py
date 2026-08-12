@@ -65,7 +65,9 @@ BASE = ["--enable-cfl-intra=0", "--enable-intra-dip=0", "--enable-ibp=0", "--ena
         "--enable-wiener-nonsep=0", "--enable-pc-wiener=0", "--enable-gdf=0"]
 
 # The COMPLETE recipe for every committed coverage fixture, deterministic via `-D`.
-# Each row: (id, lavfi_src, pix_fmt, input_flag, avmenc_flags, cpu, qp). Only tool
+# Each row: (id, lavfi_src, pix_fmt, input_flag, avmenc_flags, cpu, qp[, source]).
+# `source` defaults to Y4M; the optional mapping selects deterministic raw input.
+# Only tool
 # fixtures byte-distinct from a same-content baseline are committed (see the
 # byte-distinctness guard in `cargo xtask decoder-fixtures verify`).
 COVERAGE = [
@@ -100,6 +102,20 @@ COVERAGE = [
     ("syn-pcwiener-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-restoration=1", "--enable-pc-wiener=1"], "2", "90"),
     ("syn-gdf-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-gdf=1"], "2", "90"),
     ("syn-warp-inter-128x128", "testsrc2=size=128x128:rate=1:duration=4", "yuv420p", "--i420", BASE + ["--enable-warped-motion=1", "--enable-global-motion=1"], "2", "90"),
+    ("syn-luma-palette2-row-mono-16x16-q0",
+     "nullsrc=s=16x16:d=1,geq=lum='if(eq(Y,0),32,224)':cb=128:cr=128",
+     "yuv420p", "--i420",
+     ["--monochrome", "--tune-content=screen", "--limit=1", "--usage=0",
+      "--enable-intrabc=0", "--enable-sdp=0", "--enable-extended-sdp=0",
+      "--enable-intra-dip=0", "--enable-ibp=0", "--enable-mrls=0",
+      "--enable-angle-delta=0", "--enable-fsc=0", "--enable-ist=0",
+      "--enable-idtx-intra=0", "--enable-smooth-intra=0", "--enable-paeth-intra=0",
+      "--enable-intra-edge-filter=0", "--enable-cfl-intra=0", "--enable-mhccp=0",
+      "--enable-cctx=0", "--enable-tcq=0", "--enable-parity-hiding=0",
+      "--enable-qm=0", "--enable-chroma-deltaq=0", "--enable-deblocking=0",
+      "--enable-cdef=0", "--enable-restoration=0", "--enable-gdf=0",
+      "--enable-ccso=0", "--enable-pc-wiener=0", "--enable-palette=1"],
+     "8", "0", {"format": "rawvideo", "width": 16, "height": 16}),
     ("syn-dirneigh-reorder-128x64-q196",
      "nullsrc=size=128x64:rate=1:duration=1,format=yuv420p,geq=lum='if(lt(X,64),if(lt(X+Y,64),40,210),30+180*Y/(64-1))':cb=120:cr=130",
      "yuv420p", "--i420",
@@ -158,6 +174,17 @@ PINNED_RECIPE_HASHES = {
         "avmdec_sha256": "70342f860be8ccb277c6d719c631f3c054f0ec52b1bcf40c5db00941b8a56ab2",
         "reproducibility_runs": 2,
     },
+    "syn-luma-palette2-row-mono-16x16-q0": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "ffmpeg_version": "8.1.2",
+        "source_sha256": "d004e017048deb20e7e68c13d75959fc007c0edd87b66336d59f51b441fd800d",
+        "ivf_sha256": "15f7683df284453f314f169182e185590a892ca6e612cfdeb9a1b86949e0cc53",
+        "obu_sha256": "f5cf30af52391c027f3b060ee9071ffbda4cb1f9454a6b1e55fd57200e1f3e06",
+        "avm_native_raw_sha256": "418ecf79e4b2564419678cb25c28cbbf0259bf4602dd54f3e2868529d4df261d",
+        "avmenc_sha256": "952af54f32109602ee9315dd36cc5ec3d01adcaae42f2a7d1cfdd11e92815b2e",
+        "avmdec_sha256": "70342f860be8ccb277c6d719c631f3c054f0ec52b1bcf40c5db00941b8a56ab2",
+        "reproducibility_runs": 2,
+    },
 }
 
 
@@ -191,7 +218,9 @@ def cmd_coverage_fixtures(args):
     selected = [row for row in COVERAGE if args.only is None or row[0] == args.only]
     if not selected:
         sys.exit(f"error: unknown coverage fixture id: {args.only}")
-    for fid, src, pix, inflag, flags, cpu, qp in selected:
+    for row in selected:
+        fid, src, pix, inflag, flags, cpu, qp = row[:7]
+        source = row[7] if len(row) == 8 else {"format": "y4m"}
         expected = PINNED_RECIPE_HASHES.get(fid)
         avmdec = None
         if expected and "avm_revision" in expected:
@@ -227,13 +256,17 @@ def cmd_coverage_fixtures(args):
             version = run_checked(["ffmpeg", "-version"]).stdout.decode().splitlines()[0]
             if not version.startswith("ffmpeg version " + expected["ffmpeg_version"]):
                 sys.exit(f"error: {fid} requires ffmpeg {expected['ffmpeg_version']}: {version}")
-        y4m = os.path.join(stage, fid + ".y4m")
+        suffix = ".yuv" if source["format"] == "rawvideo" else ".y4m"
+        y4m = os.path.join(stage, fid + suffix)
+        source_args = ["-frames:v", "1", "-f", "rawvideo"] if source["format"] == "rawvideo" else []
         run_checked(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src,
-                     "-pix_fmt", pix, y4m])
+                     "-pix_fmt", pix, *source_args, y4m])
         ivf = os.path.join(stage, fid + ".ivf")
+        size_args = (["-w", str(source["width"]), "-h", str(source["height"])]
+                     if source["format"] == "rawvideo" else [])
         encode = [avmenc, "--codec=av2", "--ivf", "-D", "--cpu-used=" + cpu,
                   "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
-                  inflag, *flags]
+                  inflag, *size_args, *flags]
         run_checked([*encode, "-o", ivf, y4m])
         if expected:
             actual_source = sha(y4m)
@@ -251,7 +284,7 @@ def cmd_coverage_fixtures(args):
                 obu = os.path.join(stage, fid + ".obu")
                 obu_encode = [avmenc, "--codec=av2", "--obu", "-D", "--cpu-used=" + cpu,
                               "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
-                              inflag, *flags]
+                              inflag, *size_args, *flags]
                 run_checked([*obu_encode, "-o", obu, y4m])
                 if sha(obu) != expected["obu_sha256"]:
                     sys.exit(f"error: {fid} differs from its pinned raw OBU")
@@ -260,6 +293,11 @@ def cmd_coverage_fixtures(args):
                 run_checked([avmdec, "--i420", "--rawvideo", "-o", raw, ivf])
                 if sha(raw) != expected["avm_i420_raw_sha256"]:
                     sys.exit(f"error: {fid} differs from its pinned AVM raw output")
+            if "avm_native_raw_sha256" in expected:
+                raw = os.path.join(stage, fid + ".avm-native.raw")
+                run_checked([avmdec, "--rawvideo", "-o", raw, ivf])
+                if sha(raw) != expected["avm_native_raw_sha256"]:
+                    sys.exit(f"error: {fid} differs from its pinned AVM native raw output")
             if "instrumentation_sha256" in expected:
                 print(f"  {fid}: isolated AVM instrumentation "
                       f"{expected['instrumentation_sha256']}")

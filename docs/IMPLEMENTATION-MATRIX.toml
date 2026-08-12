@@ -13714,6 +13714,64 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature", "decode/malformed-source"]
 
 [[feature]]
+id = "DECODE-GENERAL-INTRA-LUMA-PALETTE"
+name = "General intra luma palette token decode and prediction"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.20.5.3", "5.20.8.1", "5.20.8.4", "6.19.8.1", "6.19.8.3", "7.13.4", "8.3.2"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-4",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-8-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-4",
+    "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/residual/pipeline/palette.rs"
+change_id = "decode-general-intra-luma-palette"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "The existing general-intra path decodes §5.20.8.4 luma palette direction, identity-row, first-sample nonsymmetric literal, context-selected color-index symbols, edge padding, and §7.13.4 palette prediction. This change removes the former mixed palette unsupported marker: input-origin palette token failures are typed malformed source under §5.20.8.4; the forbidden first-line identity_row_y == 2 value is a typed §6.19.8.3 conformance error; CDF/arithmetic-state failures and color-index escapes are typed header-state invariants without global reason ids. The selector proof exhaustively checks the 2..8 palette-size alphabet and every neighbor-derived ColorOrder prefix. The pinned 68-byte AVMenc fixture is a strict-clean 16x16 monochrome, 2-color, row-major palette stream; it is byte-distinct from the palette-disabled encode and splot matches pinned AVM at one and eight threads over the complete 256-byte native monochrome output SHA-256 418ecf79e4b2564419678cb25c28cbbf0259bf4602dd54f3e2868529d4df261d. This proof does not claim every palette size, palette direction, identity-row mode, chroma format, or partition shape."
+replaces = []
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "done"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::palette_source_failures_are_malformed_at_the_palette_token_boundary",
+    "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::palette_first_line_copy_is_a_typed_conformance_error",
+    "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::palette_entropy_failures_are_typed_internal_and_fail_atomic",
+    "crates/splot-decode/src/residual/pipeline/palette.rs::tests::palette_cdf_alphabets_and_color_order_stay_inside_palette_size",
+    "crates/splot-decode/src/output/raw_tests.rs::truncated_palette_tile_terminal_fails_closed_before_raw_output",
+    "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
+]
+commands = [
+    "cargo test -p splot-decode palette --locked",
+    "cargo xtask decoder-fixtures verify",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-luma-palette2-row-mono-16x16-q0.ivf",
+    "tests/conformance/decoder-oracle.toml",
+    "tools/decoder-fixtures/generate.py",
+]
+diagnostics = ["decode/malformed-source"]
+
+[[feature]]
 id = "DECODE-GENERAL-INTRA-LUMA-COEFFS"
 name = "General intra luma coefficient decode"
 category = "infrastructure"
