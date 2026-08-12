@@ -10,6 +10,8 @@ use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext, SupportedChromaMode,
 };
 
+#[path = "reconstruct_tests/directional_edge.rs"]
+mod directional_edge;
 #[path = "reconstruct/edge_tests.rs"]
 mod edge_tests;
 
@@ -684,7 +686,7 @@ fn one_sided_edge_rejects_oversize_geometry_without_panicking() {
             BitDepth::Eight,
             OneSidedEdgeFilter::default(),
         ),
-        Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)
+        Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
     ));
 }
 
