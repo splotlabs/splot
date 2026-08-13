@@ -319,7 +319,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         key_envelope.offset,
         key_envelope.header.embedded_layer_id,
     )?;
-    reference.update(0, &update);
+    reference.update(0, &update, crate::pipeline::is_key_or_switch(&key_core));
     let frames = vec![Some(key_frame)];
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
@@ -402,7 +402,7 @@ pub(super) fn parse_inter_core_for_validation(
         key_envelope.offset,
         key_envelope.header.embedded_layer_id,
     )?;
-    reference.update(0, &update);
+    reference.update(0, &update, crate::pipeline::is_key_or_switch(&key_core));
     let frames = vec![Some(key_frame)];
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");

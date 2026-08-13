@@ -20,7 +20,6 @@ fn key_update() -> FrameRefUpdate {
         base_q_idx: 70,
         delta_q_u_ac: -2,
         delta_q_v_ac: 3,
-        is_key_or_switch: true,
         is_inter: false,
         num_total_refs: 0,
         saved_order_hints: [0; 7],
@@ -44,7 +43,6 @@ fn inter_update() -> FrameRefUpdate {
         base_q_idx: 109,
         delta_q_u_ac: 4,
         delta_q_v_ac: -1,
-        is_key_or_switch: false,
         is_inter: true,
         num_total_refs: 1,
         saved_order_hints: [0; 7],
@@ -61,13 +59,12 @@ fn valid_count(buf: &RuntimeReferenceBuffer) -> usize {
 }
 
 #[test]
-fn bridge_overwrite_marks_every_refreshed_slot_valid() {
+fn non_key_refresh_marks_every_refreshed_slot_valid() {
     let mut update = key_update();
     update.refresh_frame_flags = (1 << 2) | (1 << 5);
-    update.is_key_or_switch = false;
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
 
-    buf.update(0, &update);
+    buf.update(0, &update, false);
 
     assert!(buf.slots[2].valid);
     assert!(buf.slots[5].valid);
@@ -105,7 +102,7 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
 #[test]
 fn key_refresh_marks_only_first_slot_valid() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
+    buf.update(0, &key_update(), true);
     assert_eq!(valid_count(&buf), 1);
     assert!(buf.slots[0].valid);
     assert!(!buf.slots[1].valid);
@@ -120,8 +117,8 @@ fn key_refresh_marks_only_first_slot_valid() {
 #[test]
 fn inter_refresh_adds_a_second_valid_slot() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
-    buf.update(1, &inter_update());
+    buf.update(0, &key_update(), true);
+    buf.update(1, &inter_update(), false);
     assert_eq!(valid_count(&buf), 2);
     assert!(buf.slots[0].valid);
     assert!(buf.slots[1].valid);
@@ -142,21 +139,21 @@ fn first_regular_frame_after_olk_keeps_only_olk_and_listed_long_term_slots() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     let mut old = key_update();
     old.refresh_frame_flags = 1;
-    buf.update(0, &old);
+    buf.update(0, &old, true);
 
     let mut long_term = key_update();
     long_term.refresh_frame_flags = 1 << 3;
     long_term.long_term_id = Some(7);
-    buf.update(1, &long_term);
+    buf.update(1, &long_term, true);
 
     let mut olk = key_update();
     olk.refresh_frame_flags = 1 << 1;
-    buf.update(2, &olk);
+    buf.update(2, &olk, true);
     buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[7]);
 
     let mut leading = inter_update();
     leading.refresh_frame_flags = 1 << 2;
-    buf.update(3, &leading);
+    buf.update(3, &leading, false);
     buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
 
     buf.prepare_for_frame(ObuType::RegularTileGroup, true);
@@ -172,17 +169,17 @@ fn olk_co_vcl_refresh_in_same_tu_survives_first_regular_tu() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     let mut olk = key_update();
     olk.refresh_frame_flags = 1 << 1;
-    buf.update(0, &olk);
+    buf.update(0, &olk, true);
     buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[]);
 
     let mut co_vcl = inter_update();
     co_vcl.refresh_frame_flags = 1 << 4;
-    buf.update(1, &co_vcl);
+    buf.update(1, &co_vcl, false);
     buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl, &[]);
 
     let mut leading = inter_update();
     leading.refresh_frame_flags = 1 << 2;
-    buf.update(2, &leading);
+    buf.update(2, &leading, false);
     buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
 
     buf.prepare_for_frame(ObuType::RegularTileGroup, true);
@@ -198,8 +195,8 @@ fn reference_refresh_preserves_full_and_lsb_order_hints() {
     update.order_hint = 136;
     update.order_hint_lsb = 8;
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
-    buf.update(1, &update);
+    buf.update(0, &key_update(), true);
+    buf.update(1, &update, false);
 
     assert_eq!(buf.slots[1].order_hint, 136);
     assert_eq!(buf.slots[1].order_hint_lsb, 8);
@@ -217,8 +214,8 @@ fn reference_refresh_preserves_global_motion_predictor_state() {
     update.saved_order_hints[..2].copy_from_slice(&[7, 11]);
     update.saved_gm_params[0] = [131_072, 65_536, 65_600, 256, -128, 65_728];
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
-    buf.update(1, &update);
+    buf.update(0, &key_update(), true);
+    buf.update(1, &update, false);
 
     let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
     let metadata = buf.build_store_eight(&frames).unwrap().1;
@@ -235,7 +232,7 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
     let mut update = inter_update();
     update.refresh_frame_flags = 1 << 2;
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &update);
+    buf.update(0, &update, false);
 
     let mut frame = pipeline_frame(64, 64);
     let frame_cdfs = Arc::new(crate::bitstream::tile_payload::FrameCdfSubset::from_defaults());
@@ -319,20 +316,20 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
 #[test]
 fn frame_index_is_retained_until_last_slot_is_overwritten() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
+    buf.update(0, &key_update(), true);
     let mut update = inter_update();
     update.refresh_frame_flags = (1 << 1) | (1 << 2);
-    buf.update(1, &update);
+    buf.update(1, &update, false);
 
     assert!(buf.retains(0));
     assert!(buf.retains(1));
 
     update.refresh_frame_flags = 1 << 1;
-    buf.update(2, &update);
+    buf.update(2, &update, false);
     assert!(buf.retains(1));
 
     update.refresh_frame_flags = 1 << 2;
-    buf.update(3, &update);
+    buf.update(3, &update, false);
     assert!(!buf.retains(1));
 }
 
@@ -416,7 +413,7 @@ fn valid_slot_with_out_of_range_frame_index_is_reference_state_error() {
 #[test]
 fn valid_slot_with_missing_retained_frame_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
+    buf.update(0, &key_update(), true);
 
     let Err(error) = buf.build_store_eight(&[None]) else {
         panic!("missing retained frame must be rejected");
@@ -433,7 +430,7 @@ fn valid_slot_with_missing_retained_frame_is_reference_state_error() {
 #[test]
 fn valid_slot_with_mismatched_storage_depth_keeps_its_diagnostic() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
+    buf.update(0, &key_update(), true);
     let frames = vec![Some(pipeline_frame(64, 64))];
 
     let Err(error) = buf.build_store_ten(&frames) else {
@@ -450,7 +447,7 @@ fn valid_slot_with_mismatched_storage_depth_keeps_its_diagnostic() {
 #[test]
 fn valid_slot_with_mismatched_frame_size_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
+    buf.update(0, &key_update(), true);
     let frames = vec![Some(pipeline_frame(32, 64))];
 
     let Err(error) = buf.build_store_eight(&frames) else {
@@ -475,7 +472,7 @@ fn valid_slot_with_mismatched_frame_size_is_reference_state_error() {
 #[test]
 fn sef_derive_requires_a_hidden_not_previously_shown_reference() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
+    buf.update(0, &key_update(), true);
     assert!(matches!(
         buf.mark_sef_derive_output(0, false),
         Err(crate::DecodeError::ReferenceState {
@@ -487,7 +484,7 @@ fn sef_derive_requires_a_hidden_not_previously_shown_reference() {
     hidden.refresh_frame_flags = 1 << 1;
     hidden.implicit_output_frame = false;
     hidden.immediate_output_frame = false;
-    buf.update(1, &hidden);
+    buf.update(1, &hidden, false);
     buf.mark_sef_derive_output(1, false).unwrap();
     assert!(matches!(
         buf.mark_sef_derive_output(1, false),
@@ -500,17 +497,17 @@ fn sef_derive_requires_a_hidden_not_previously_shown_reference() {
 #[test]
 fn show_existing_advances_the_reference_frame_counter() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
+    buf.update(0, &key_update(), true);
     buf.note_show_existing();
     let update = inter_update();
-    buf.update(1, &update);
+    buf.update(1, &update, false);
     assert_eq!(buf.slots[1].counter, 2);
 }
 
 #[test]
 fn restricted_switch_marks_dependency_layer_order_hints() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
+    buf.update(0, &key_update(), true);
     let current = splot_core::types::EmbeddedLayerId::from_bits(0);
     let presence =
         splot_core::headers::sequence::MLayerDependencyMap::default_for(current).presence_map();

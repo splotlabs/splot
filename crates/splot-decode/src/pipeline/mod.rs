@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
-use splot_core::headers::frame::{FrameHeaderCore, FrameType, TxMode};
+use splot_core::headers::frame::{FrameHeaderCore, TxMode};
 use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::headers::tile_group::{
     FrameHeaderCopyOutcome, RecordedFrameHeaderBits, parse_frame_header_copy,
@@ -56,7 +56,7 @@ use frame_lifecycle::*;
 pub(crate) use frame_lifecycle::{
     ActiveFilmGrain, PipelineDecodedFrame, PipelineFrame, PipelineFrameRate, deblock_quant_deltas,
     derive_visible_luma_rect, effective_allow_screen_content_tools, frame_ref_update_from_core,
-    parse_frame_core, parse_frame_core_with_reference, parse_sequence,
+    is_key_or_switch, parse_frame_core, parse_frame_core_with_reference, parse_sequence,
 };
 use output_effects::{FrameOutputEffects, OutputEffectState};
 use output_schedule::*;
@@ -969,7 +969,7 @@ where
         &evicted,
         &mut emit,
     )?;
-    reference.update(0, &key_update);
+    reference.update(0, &key_update, is_key_or_switch(&key_core));
     reference.note_frame(
         key_envelope.header.obu_type,
         true,
@@ -1802,8 +1802,7 @@ where
                 let inter_hint = inter_update.order_hint;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
-                let inter_key_or_switch =
-                    inter_core.is_key_frame || inter_core.frame_type == Some(FrameType::Switch);
+                let inter_key_or_switch = is_key_or_switch(&inter_core);
                 let evicted = scheduler.refresh(
                     inter_update.refresh_frame_flags,
                     frame_index,
@@ -1819,7 +1818,7 @@ where
                     &evicted,
                     &mut emit,
                 )?;
-                reference.update(frame_index, &inter_update);
+                reference.update(frame_index, &inter_update, inter_key_or_switch);
                 reference.note_frame(
                     next_candidate.obu_type(),
                     first_picture_in_tu,
@@ -2091,7 +2090,7 @@ where
                     &evicted,
                     &mut emit,
                 )?;
-                reference.update(frame_index, &key_update);
+                reference.update(frame_index, &key_update, is_key_or_switch(&key_core));
                 reference.note_frame(
                     next_candidate.obu_type(),
                     first_picture_in_tu,

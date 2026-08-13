@@ -39,8 +39,13 @@ fn frontier_geometry(mi_row: usize, mi_col: usize) -> IntrabcStackGeometry {
         sb_samples: 128,
         frame_w: 1920,
         frame_h: 1080,
-        max_bvp_drl_bits_minus_1: 2,
     }
+}
+
+/// The DRL selection every frontier case decodes: `max_bvp_drl_bits_minus_1 = 2`
+/// (four stack entries) at the given `ref_bv_idx`.
+fn drl(index: usize) -> IntrabcRefSelection {
+    IntrabcRefSelection::new(2, index).expect("frontier ref_bv_idx is within the DRL bound")
 }
 
 #[test]
@@ -150,7 +155,7 @@ fn check_rmb_cand_bounds_rejection_still_spends_the_budget() {
 /// No spatial candidate.
 fn no_spatial() -> SpatialIntrabcScan {
     SpatialIntrabcScan {
-        candidates: Vec::new(),
+        candidates: FixedStack::new(),
         nearest_len: 0,
         comparisons: 0,
     }
@@ -159,13 +164,13 @@ fn no_spatial() -> SpatialIntrabcScan {
 #[test]
 fn admission_admits_frontier_mi_0_112_default_only() {
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[Mv { row: -512, col: 0 }],
             frontier_geometry(0, 112),
             &no_spatial(),
             true,
             DrlReorderMode::Always,
-            3,
+            drl(3),
         ),
         Mv { row: 0, col: -256 }
     );
@@ -174,13 +179,13 @@ fn admission_admits_frontier_mi_0_112_default_only() {
 #[test]
 fn admission_selects_frontier_mi_0_232_bank_reordered_bv() {
     let decide = |enable_refmvbank| {
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[Mv { row: 0, col: -256 }, Mv { row: -512, col: 0 }],
             frontier_geometry(0, 232),
             &no_spatial(),
             enable_refmvbank,
             DrlReorderMode::Always,
-            2,
+            drl(2),
         )
     };
     assert_eq!(decide(true), Mv { row: 0, col: -3072 });
@@ -195,7 +200,7 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
         Mv { row: -512, col: 0 },
     ];
     let spatial = SpatialIntrabcScan {
-        candidates: vec![adj(Mv { row: 0, col: -3072 })],
+        candidates: FixedStack::from_entries([adj(Mv { row: 0, col: -3072 })]),
         nearest_len: 1,
         comparisons: 0,
     };
@@ -216,13 +221,13 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
         ]
     );
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &bank_candidates,
             frontier_geometry(0, 240),
             &spatial,
             true,
             DrlReorderMode::Always,
-            0,
+            drl(0),
         ),
         Mv { row: 0, col: -3072 }
     );
@@ -231,33 +236,33 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
 #[test]
 fn admission_forced_swap_places_max_weight_at_slot0() {
     let unsorted = SpatialIntrabcScan {
-        candidates: vec![
+        candidates: FixedStack::from_entries([
             wbv(Mv { row: 0, col: -64 }, 0),
             wbv(Mv { row: -512, col: 0 }, 1),
-        ],
+        ]),
         nearest_len: 2,
         comparisons: 0,
     };
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &unsorted,
             false, // bank fill OFF: the stack is spatial-prefix + defaults only.
             DrlReorderMode::Always,
-            0,
+            drl(0),
         ),
         Mv { row: -512, col: 0 },
         "the §7.12.2.19 sort must move the weight-1 candidate to slot 0 (not a passthrough)"
     );
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &unsorted,
             false,
             DrlReorderMode::Always,
-            1,
+            drl(1),
         ),
         Mv { row: 0, col: -64 }
     );
@@ -266,41 +271,41 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
 #[test]
 fn admission_no_op_swap_when_slot0_already_max() {
     let tie = SpatialIntrabcScan {
-        candidates: vec![
+        candidates: FixedStack::from_entries([
             wbv(Mv { row: -1024, col: 0 }, 1),
             wbv(Mv { row: -512, col: 0 }, 1),
-        ],
+        ]),
         nearest_len: 2,
         comparisons: 0,
     };
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &tie,
             false,
             DrlReorderMode::Always,
-            0,
+            drl(0),
         ),
         Mv { row: -1024, col: 0 },
         "equal weights must keep the lowest index in slot 0 (strict `>` tie-break)"
     );
     let frontier = SpatialIntrabcScan {
-        candidates: vec![
+        candidates: FixedStack::from_entries([
             wbv(Mv { row: -1024, col: 0 }, 3),
             wbv(Mv { row: -512, col: 0 }, 1),
-        ],
+        ]),
         nearest_len: 2,
         comparisons: 0,
     };
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &frontier,
             false,
             DrlReorderMode::Always,
-            0,
+            drl(0),
         ),
         Mv { row: -1024, col: 0 },
         "the max-weight slot-0 entry stays put (no swap)"
@@ -309,47 +314,47 @@ fn admission_no_op_swap_when_slot0_already_max() {
 
 #[test]
 fn admission_sort_respects_drl_reorder_mode() {
-    let candidates = vec![
+    let candidates = FixedStack::from_entries([
         wbv(Mv { row: 0, col: -64 }, 0),
         wbv(Mv { row: -512, col: 0 }, 1),
-    ];
+    ]);
     let scan = SpatialIntrabcScan {
-        candidates: candidates.clone(),
+        candidates,
         nearest_len: 2,
         comparisons: 0,
     };
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &scan,
             false,
             DrlReorderMode::Disabled,
-            0,
+            drl(0),
         ),
         Mv { row: 0, col: -64 },
         "DRL_REORDER_DISABLED must NOT sort (slot 0 stays scan-order-first)"
     );
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &scan,
             false,
             DrlReorderMode::Constraint,
-            0,
+            drl(0),
         ),
         Mv { row: 0, col: -64 },
         "DRL_REORDER_CONSTRAINT with nearest < 4 must NOT sort"
     );
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &scan,
             false,
             DrlReorderMode::Always,
-            0,
+            drl(0),
         ),
         Mv { row: -512, col: 0 },
         "DRL_REORDER_ALWAYS must sort the weight-1 candidate into slot 0"
@@ -359,21 +364,21 @@ fn admission_sort_respects_drl_reorder_mode() {
 #[test]
 fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
     let scan = SpatialIntrabcScan {
-        candidates: vec![
+        candidates: FixedStack::from_entries([
             wbv(Mv { row: 0, col: -64 }, 0),
             wbv(Mv { row: -512, col: 0 }, 1),
-        ],
+        ]),
         nearest_len: 1,
         comparisons: 0,
     };
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &scan,
             false,
             DrlReorderMode::Always,
-            0,
+            drl(0),
         ),
         Mv { row: 0, col: -64 },
         "§7.12.2.19 sorts only the step-15 nearest prefix, not scan-col tail entries"
@@ -383,18 +388,18 @@ fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
 #[test]
 fn admission_admits_single_spatial_candidate() {
     let one = SpatialIntrabcScan {
-        candidates: vec![adj(Mv { row: 0, col: -64 })],
+        candidates: FixedStack::from_entries([adj(Mv { row: 0, col: -64 })]),
         nearest_len: 1,
         comparisons: 0,
     };
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             frontier_geometry(0, 240),
             &one,
             true,
             DrlReorderMode::Always,
-            0,
+            drl(0),
         ),
         Mv { row: 0, col: -64 }
     );
@@ -418,6 +423,31 @@ fn sort_nearest_moves_max_weight_to_slot0_strict() {
 }
 
 #[test]
+fn spatial_stack_rejects_push_past_capacity() {
+    let mut stack = SpatialBvStack::new();
+    for index in 0..MAX_SPATIAL_INTRABC_CANDIDATES {
+        assert!(
+            stack.try_push(wbv(
+                Mv {
+                    row: -8 * (index as i32 + 1),
+                    col: 0
+                },
+                1
+            )),
+            "slot {index} is within capacity and must be accepted"
+        );
+    }
+    assert_eq!(stack.len(), MAX_SPATIAL_INTRABC_CANDIDATES);
+    let full = stack;
+    assert!(
+        !stack.try_push(wbv(Mv { row: 1, col: 1 }, 7)),
+        "a push past MAX_SPATIAL_INTRABC_CANDIDATES must be rejected, not silently dropped"
+    );
+    assert_eq!(stack.len(), MAX_SPATIAL_INTRABC_CANDIDATES);
+    assert_eq!(stack[..], full[..], "the rejected push must not clobber");
+}
+
+#[test]
 fn spatial_scan_adds_left_neighbour_and_admits_modelled_above_neighbour() {
     let geom = SpatialScanGeometry {
         mi_row: 4,
@@ -433,13 +463,13 @@ fn spatial_scan_adds_left_neighbour_and_admits_modelled_above_neighbour() {
         |row, col| (row == 7 && col == 7).then_some(Mv { row: 0, col: -64 }),
         |_, _| false,
     );
-    assert_eq!(left_only.candidates, vec![adj(Mv { row: 0, col: -64 })]);
+    assert_eq!(left_only.candidates[..], [adj(Mv { row: 0, col: -64 })]);
     let above = spatial_intrabc_scan(
         geom,
         |row, col| (row == 3 && col == 8).then_some(Mv { row: -8, col: 0 }),
         |_, _| false,
     );
-    assert_eq!(above.candidates, vec![adj(Mv { row: -8, col: 0 })]);
+    assert_eq!(above.candidates[..], [adj(Mv { row: -8, col: 0 })]);
     let deep_left = spatial_intrabc_scan(
         geom,
         |row, col| (row == 4 && col == 5).then_some(Mv { row: 0, col: -512 }),
@@ -460,7 +490,7 @@ fn spatial_scan_adds_left_neighbour_and_admits_modelled_above_neighbour() {
             }
         },
     );
-    assert_eq!(scan_col.candidates, vec![wbv(Mv { row: 0, col: -512 }, 0)]);
+    assert_eq!(scan_col.candidates[..], [wbv(Mv { row: 0, col: -512 }, 0)]);
     assert_eq!(scan_col.nearest_len, 0);
 }
 
@@ -485,7 +515,7 @@ fn spatial_scan_admits_frontier_mi_32_56_step8_above_neighbour() {
         |row, col| (row == 31 && col == 62).then_some(Mv { row: -512, col: 0 }),
         |_, _| false,
     );
-    assert_eq!(scan.candidates, vec![adj(Mv { row: -512, col: 0 })]);
+    assert_eq!(scan.candidates[..], [adj(Mv { row: -512, col: 0 })]);
 }
 
 #[test]
@@ -503,7 +533,6 @@ fn admission_selects_frontier_mi_32_56_step8_bv() {
         sb_samples: 128,
         frame_w: 1920,
         frame_h: 1080,
-        max_bvp_drl_bits_minus_1: 2,
     };
     let stack = build_intrabc_ref_mv_stack_from_candidates(
         &[],
@@ -522,7 +551,14 @@ fn admission_selects_frontier_mi_32_56_step8_bv() {
         ]
     );
     assert_eq!(
-        select_intrabc_ref_mv_for_test(&[], geometry, &spatial, true, DrlReorderMode::Always, 0,),
+        select_intrabc_ref_mv_from_candidates(
+            &[],
+            geometry,
+            &spatial,
+            true,
+            DrlReorderMode::Always,
+            drl(0),
+        ),
         Mv { row: -512, col: 0 }
     );
 }
@@ -548,7 +584,7 @@ fn spatial_scan_ignores_non_table_above_row_column() {
         },
         |_, _| false,
     );
-    assert_eq!(scan.candidates, vec![adj(Mv { row: -512, col: 0 })]);
+    assert_eq!(scan.candidates[..], [adj(Mv { row: -512, col: 0 })]);
 }
 
 fn assert_sb_border_step8_aligns_odd_mi_col(
@@ -572,7 +608,7 @@ fn assert_sb_border_step8_aligns_odd_mi_col(
         |row, col| (row == above && col == above_neighbour_col).then_some(Mv { row: -512, col: 0 }),
         |_, _| false,
     );
-    assert_eq!(scan.candidates, vec![adj(Mv { row: -512, col: 0 })]);
+    assert_eq!(scan.candidates[..], [adj(Mv { row: -512, col: 0 })]);
 }
 
 #[test]
@@ -602,7 +638,7 @@ fn spatial_scan_admits_frontier_mi_48_56_within_sb_step8() {
         |row, col| (row == 47 && (56..=63).contains(&col)).then_some(Mv { row: -512, col: 0 }),
         |_, _| true,
     );
-    assert_eq!(scan.candidates, vec![wbv(Mv { row: -512, col: 0 }, 2)]);
+    assert_eq!(scan.candidates[..], [wbv(Mv { row: -512, col: 0 }, 2)]);
 }
 
 #[test]
@@ -624,7 +660,7 @@ fn spatial_scan_step12_top_right_respects_has_top_right() {
         |row, col| (row == 19 && col == 12).then_some(bv),
         |row, col| row == 19 && col == 12,
     );
-    assert_eq!(coded.candidates, vec![adj(bv)]);
+    assert_eq!(coded.candidates[..], [adj(bv)]);
 }
 
 #[test]
@@ -645,8 +681,8 @@ fn spatial_scan_disables_step10_for_block_width_4_within_sb() {
         |_, _| false,
     );
     assert_eq!(
-        scan.candidates,
-        vec![wbv(bv, 1)],
+        scan.candidates[..],
+        [wbv(bv, 1)],
         "step 10 disabled for bw4 == 1: the above candidate keeps step-8 weight 1"
     );
     let wide = SpatialScanGeometry { n4w: 2, ..narrow };
@@ -656,8 +692,8 @@ fn spatial_scan_disables_step10_for_block_width_4_within_sb() {
         |_, _| false,
     );
     assert_eq!(
-        wide_scan.candidates,
-        vec![wbv(bv, 2)],
+        wide_scan.candidates[..],
+        [wbv(bv, 2)],
         "bw4 >= 2 enables step 10: step 8 + step 10 accumulate weight 2"
     );
 }
@@ -680,8 +716,8 @@ fn spatial_scan_disables_step10_for_block_width_4_sb_border() {
         |_, _| false,
     );
     assert_eq!(
-        scan.candidates,
-        vec![wbv(bv, 1)],
+        scan.candidates[..],
+        [wbv(bv, 1)],
         "step 10 disabled for bw4 == 1 on the SB border: the above candidate keeps step-8 weight 1"
     );
     let wide = SpatialScanGeometry { n4w: 8, ..narrow };
@@ -691,8 +727,8 @@ fn spatial_scan_disables_step10_for_block_width_4_sb_border() {
         |_, _| false,
     );
     assert_eq!(
-        wide_scan.candidates,
-        vec![wbv(bv, 2)],
+        wide_scan.candidates[..],
+        [wbv(bv, 2)],
         "bw4 >= 4 enables step 10 on the SB border: step 8 + step 10 accumulate weight 2"
     );
 }
@@ -713,7 +749,7 @@ fn spatial_scan_dedups_same_left_neighbour() {
         |row, col| (col == 7 && row < 16).then_some(Mv { row: 0, col: -3072 }),
         |_, _| false,
     );
-    assert_eq!(scan.candidates, vec![wbv(Mv { row: 0, col: -3072 }, 2)]);
+    assert_eq!(scan.candidates[..], [wbv(Mv { row: 0, col: -3072 }, 2)]);
 }
 
 /// Mission-stream frame-0 MI(192,112) geometry: MiRow 192, `192 % 32 == 0` -> SB border;
@@ -747,8 +783,8 @@ fn admission_admits_frontier_mi_192_112_no_op_weight_sort() {
         |_, _| false,
     );
     assert_eq!(
-        scan.candidates,
-        vec![
+        scan.candidates[..],
+        [
             wbv(Mv { row: -1024, col: 0 }, 2),
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
@@ -762,14 +798,27 @@ fn admission_admits_frontier_mi_192_112_no_op_weight_sort() {
         sb_samples: 128,
         frame_w: 1920,
         frame_h: 1080,
-        max_bvp_drl_bits_minus_1: 2,
     };
     assert_eq!(
-        select_intrabc_ref_mv_for_test(&[], geometry, &scan, true, DrlReorderMode::Always, 1,),
+        select_intrabc_ref_mv_from_candidates(
+            &[],
+            geometry,
+            &scan,
+            true,
+            DrlReorderMode::Always,
+            drl(1),
+        ),
         Mv { row: -512, col: 0 },
     );
     assert_eq!(
-        select_intrabc_ref_mv_for_test(&[], geometry, &scan, true, DrlReorderMode::Always, 0,),
+        select_intrabc_ref_mv_from_candidates(
+            &[],
+            geometry,
+            &scan,
+            true,
+            DrlReorderMode::Always,
+            drl(0),
+        ),
         Mv { row: -1024, col: 0 },
     );
 }
@@ -790,7 +839,7 @@ fn spatial_scan_admits_sb_border_even_mi_col_step14() {
         |row, col| (row == 31 && col == 318).then_some(Mv { row: 0, col: -256 }),
         |_, _| false,
     );
-    assert_eq!(scan.candidates, vec![wbv(Mv { row: 0, col: -256 }, 0)]);
+    assert_eq!(scan.candidates[..], [wbv(Mv { row: 0, col: -256 }, 0)]);
 }
 
 #[test]
@@ -811,8 +860,8 @@ fn spatial_scan_uses_aligned_sb_border_offset_for_weight() {
         |row, col| row == 15 && col == 10,
     );
     assert_eq!(
-        scan.candidates,
-        vec![wbv(bv, 1)],
+        scan.candidates[..],
+        [wbv(bv, 1)],
         "the aligned step-8 (-1,-1) probe has weight 0; top-right contributes weight 1"
     );
 }
@@ -955,7 +1004,7 @@ fn sb_border_above_row_columns_align_odd_mi_col() {
 fn sb_border_block_width_4_step12_reads_max2_column() {
     let geom = generic_scan_geom(32, 8, 1);
     let at_10 = scan_single_intrabc_probe(geom, 31, 10, Mv { row: -8, col: -8 });
-    assert_eq!(at_10.candidates, vec![adj(Mv { row: -8, col: -8 })]);
+    assert_eq!(at_10.candidates[..], [adj(Mv { row: -8, col: -8 })]);
     let at_9 = scan_single_intrabc_probe(geom, 31, 9, Mv { row: -8, col: -8 });
     assert!(
         at_9.candidates.is_empty(),

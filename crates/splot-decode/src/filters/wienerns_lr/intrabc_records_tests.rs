@@ -17,7 +17,7 @@ use crate::bitstream::tile_payload::{FrameCdfSubset, MvCdfSelector};
 use crate::error::DecodeError;
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
     DrlReorderMode, IntrabcStackGeometry, build_intrabc_ref_mv_stack_from_candidates,
-    select_intrabc_ref_mv_for_test,
+    select_intrabc_ref_mv_from_candidates,
 };
 
 const BLOCK_16X16: usize = 6;
@@ -75,7 +75,6 @@ fn read_intrabc_info_record(
         sb_samples: i32::try_from(state.sb_size4.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
         frame_w: i32::try_from(state.mi_cols.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
         frame_h: i32::try_from(state.mi_rows.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
-        max_bvp_drl_bits_minus_1: pending.max_bvp_drl_bits_minus_1(),
     };
     let spatial = state
         .capture_spatial_intrabc_probes(geometry)
@@ -89,13 +88,13 @@ fn read_intrabc_info_record(
         .inter
         .as_ref()
         .is_some_and(|inter| inter.enable_refmvbank);
-    let pred_mv = select_intrabc_ref_mv_for_test(
+    let pred_mv = select_intrabc_ref_mv_from_candidates(
         &[],
         stack_geometry,
         &spatial,
         enable_refmvbank,
         drl_reorder,
-        pending.ref_selection().index(),
+        pending.ref_selection(),
     );
     Ok(resolve_pending_intrabc_info(pending, pred_mv))
 }
@@ -509,7 +508,7 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
             (19, 8) => Some(Mv { row: 0, col: -3072 }),
             _ => None,
         });
-    let selected = select_intrabc_ref_mv_for_test(
+    let selected = select_intrabc_ref_mv_from_candidates(
         &[],
         IntrabcStackGeometry {
             mi_row: geometry.block.row,
@@ -519,12 +518,11 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
             sb_samples: i32::try_from(state.sb_size4 * MI_SIZE).unwrap(),
             frame_w: i32::try_from(state.mi_cols * MI_SIZE).unwrap(),
             frame_h: i32::try_from(state.mi_rows * MI_SIZE).unwrap(),
-            max_bvp_drl_bits_minus_1: pending.max_bvp_drl_bits_minus_1(),
         },
         &spatial,
         true,
         DrlReorderMode::Always,
-        pending.ref_selection().index(),
+        pending.ref_selection(),
     );
     let info = resolve_pending_intrabc_info(pending, selected);
 
@@ -550,8 +548,8 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         .capture_spatial_intrabc_probes(at_border)
         .resolve(|row, col| (row == 15 && col == 54).then_some(Mv { row: -512, col: 0 }));
     assert_eq!(
-        scan.candidates,
-        vec![super::super::intrabc_ref_mv_stack::WeightedBv {
+        scan.candidates[..],
+        [super::super::intrabc_ref_mv_stack::WeightedBv {
             mv: Mv { row: -512, col: 0 },
             weight: 0,
         }]
@@ -610,8 +608,8 @@ fn sequence_256_intrabc_spatial_probe_uses_the_frame_superblock_size() {
 
     assert!(intra_scan.candidates.is_empty());
     assert_eq!(
-        inter_scan.candidates,
-        vec![super::super::intrabc_ref_mv_stack::WeightedBv {
+        inter_scan.candidates[..],
+        [super::super::intrabc_ref_mv_stack::WeightedBv {
             mv: Mv { row: -512, col: 0 },
             weight: 1,
         }]
@@ -1039,7 +1037,7 @@ fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
     let spatial = state
         .capture_spatial_intrabc_probes(geometry)
         .resolve(|_, _| None);
-    let selected = select_intrabc_ref_mv_for_test(
+    let selected = select_intrabc_ref_mv_from_candidates(
         &[Mv { row: 4, col: -316 }],
         IntrabcStackGeometry {
             mi_row: geometry.block.row,
@@ -1049,12 +1047,11 @@ fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
             sb_samples: i32::try_from(state.sb_size4 * MI_SIZE).unwrap(),
             frame_w: i32::try_from(state.mi_cols * MI_SIZE).unwrap(),
             frame_h: i32::try_from(state.mi_rows * MI_SIZE).unwrap(),
-            max_bvp_drl_bits_minus_1: pending.max_bvp_drl_bits_minus_1(),
         },
         &spatial,
         true,
         DrlReorderMode::Disabled,
-        pending.ref_selection().index(),
+        pending.ref_selection(),
     );
     let info = resolve_pending_intrabc_info(pending, selected);
 
@@ -1157,7 +1154,6 @@ fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
         sb_samples: 128,
         frame_w: i32::MAX,
         frame_h: i32::MAX,
-        max_bvp_drl_bits_minus_1: 2,
     };
     let candidates = build_intrabc_ref_mv_stack_from_candidates(&[], stack_geometry, false, &[], 0);
 

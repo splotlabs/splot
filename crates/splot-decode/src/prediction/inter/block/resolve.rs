@@ -287,10 +287,10 @@ fn resolve_pending_intrabc(
         mi_rows,
         mi_cols,
     };
-    let bank_candidates = state.ref_mv_bank.as_ref().map_or_else(
-        Vec::new,
-        super::super::find_mv_stack::RefMvBank::intrabc_candidates,
-    );
+    let bank_candidates = state
+        .ref_mv_bank
+        .as_ref()
+        .map(super::super::find_mv_stack::RefMvBank::intrabc_candidates);
     let drl_reorder = match state.drl_reorder {
         DrlReorder::Always => DrlReorderMode::Always,
         DrlReorder::Constraint => DrlReorderMode::Constraint,
@@ -304,10 +304,9 @@ fn resolve_pending_intrabc(
         sb_samples: i32::try_from(sb_h4.saturating_mul(4)).unwrap_or(i32::MAX),
         frame_w: i32::try_from(block.mi_cols.saturating_mul(4)).unwrap_or(i32::MAX),
         frame_h: i32::try_from(block.mi_rows.saturating_mul(4)).unwrap_or(i32::MAX),
-        max_bvp_drl_bits_minus_1: info.max_bvp_drl_bits_minus_1(),
     };
     let pred_mv = select_intrabc_ref_mv_from_candidates(
-        &bank_candidates,
+        bank_candidates.as_deref().unwrap_or(&[]),
         stack_geometry,
         &spatial,
         state.ref_mv_bank.is_some(),

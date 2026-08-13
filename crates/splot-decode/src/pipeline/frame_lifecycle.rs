@@ -464,6 +464,13 @@ pub(crate) fn parse_frame_core_with_reference(
         )
     })
 }
+
+/// AV2 § 5.18.2 `keyFrame` (from the OBU type, not `FrameType`) or `FrameType == SWITCH_FRAME`;
+/// consumed by the § 7.23 `RefValid` update (mirror `07-decoding-process.md` line 14100).
+pub(crate) fn is_key_or_switch(core: &FrameHeaderCore) -> bool {
+    core.is_key_frame || core.frame_type == Some(FrameType::Switch)
+}
+
 pub(crate) fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
@@ -536,8 +543,6 @@ pub(crate) fn frame_ref_update_from_core(
         base_q_idx: quantization.base_q_idx,
         delta_q_u_ac: quantization.delta_q_u_ac,
         delta_q_v_ac: quantization.delta_q_v_ac,
-        is_key_or_switch: (core.is_key_frame && !core.is_bridge)
-            || core.frame_type == Some(FrameType::Switch),
         is_inter,
         num_total_refs,
         saved_order_hints,

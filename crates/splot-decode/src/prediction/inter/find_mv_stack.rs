@@ -19,14 +19,14 @@ pub(crate) struct FixedStack<T, const N: usize> {
 }
 
 impl<T: Default, const N: usize> FixedStack<T, N> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: core::array::from_fn(|_| T::default()),
             len: 0,
         }
     }
 
-    fn from_entries(entries: impl IntoIterator<Item = T>) -> Self {
+    pub(crate) fn from_entries(entries: impl IntoIterator<Item = T>) -> Self {
         let mut stack = Self::new();
         for entry in entries {
             if !stack.try_push(entry) {
@@ -38,7 +38,7 @@ impl<T: Default, const N: usize> FixedStack<T, N> {
 }
 
 impl<T, const N: usize> FixedStack<T, N> {
-    fn try_push(&mut self, entry: T) -> bool {
+    pub(crate) fn try_push(&mut self, entry: T) -> bool {
         let Some(slot) = self.entries.get_mut(self.len) else {
             return false;
         };
@@ -1184,18 +1184,20 @@ impl RefMvBank {
         }
     }
 
-    pub(crate) fn intrabc_candidates(&self) -> Vec<Mv> {
+    pub(crate) fn intrabc_candidates(&self) -> FixedStack<Mv, REF_MV_BANK_SIZE> {
         let list = Self::list_index(INTRABC_REF_FRAME, None);
         let key = Self::bank_key(INTRABC_REF_FRAME, None);
         let count = self.sizes[list];
         let start = self.starts[list];
-        let mut candidates = Vec::with_capacity(count);
+        let mut candidates = FixedStack::new();
         for i in (0..count).rev() {
             let candidate = self.entries[list][(start + i) % REF_MV_BANK_SIZE];
             if candidate.key != key {
                 continue;
             }
-            candidates.push(candidate.mv0);
+            if !candidates.try_push(candidate.mv0) {
+                break;
+            }
         }
         candidates
     }

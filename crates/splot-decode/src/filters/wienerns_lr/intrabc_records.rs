@@ -189,10 +189,6 @@ impl IntrabcRefSelection {
     pub(crate) const fn max_count(self) -> usize {
         self.max_bvp_drl_bits_minus_1 as usize + 2
     }
-
-    const fn max_bvp_drl_bits_minus_1(self) -> u32 {
-        self.max_bvp_drl_bits_minus_1 as u32
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -740,10 +736,6 @@ pub(crate) fn resolve_pending_intrabc_info(
 impl PendingIntrabcInfo {
     pub(crate) const fn ref_selection(self) -> IntrabcRefSelection {
         self.syntax.ref_selection
-    }
-
-    pub(crate) const fn max_bvp_drl_bits_minus_1(self) -> u32 {
-        self.syntax.ref_selection.max_bvp_drl_bits_minus_1()
     }
 
     pub(crate) const fn morph_pred(self) -> bool {
