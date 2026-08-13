@@ -61,6 +61,30 @@ struct ScheduledResolve {
     state: TileResolveState,
 }
 
+fn take_active_commit<S>(holder: &Mutex<Option<S>>) -> Result<S> {
+    holder
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .ok_or_else(invalid_inter_tile_scheduling_state)
+}
+
+fn restore_active_commit<S>(holder: &Mutex<Option<S>>, state: S) -> Result<()> {
+    let mut holder = holder.lock().unwrap_or_else(PoisonError::into_inner);
+    if holder.is_some() {
+        return Err(invalid_inter_tile_scheduling_state());
+    }
+    *holder = Some(state);
+    Ok(())
+}
+
+fn validate_commit_ordinal(ordinal: usize, next: usize) -> Result<()> {
+    if ordinal != next {
+        return Err(invalid_inter_tile_scheduling_state());
+    }
+    Ok(())
+}
+
 fn project_temporal_band(
     plan: &TemporalBandPlan,
     temporal: &TemporalMvContext,
@@ -632,10 +656,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
-            .ok_or(inter_internal!(
-                "inter_admission_recon_scratch_owner",
-                self.tile_offset
-            ))
+            .ok_or_else(invalid_inter_tile_scheduling_state)
     }
 
     /// Commits one precomputed unit after its predecessor has completed.
@@ -645,24 +666,22 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         &self,
         index: usize,
     ) -> Result<ScheduledCommitProgress> {
-        if self.finished.load(Ordering::Acquire) {
-            return Ok(ScheduledCommitProgress {
-                frontier_rows: 0..0,
-                recon_complete: false,
-            });
+        let result = self.commit_active(index);
+        if result.is_err() {
+            self.finished.store(true, Ordering::Release);
         }
+        result
+    }
+
+    fn commit_active(&self, index: usize) -> Result<ScheduledCommitProgress> {
+        let mut commit = take_active_commit(&self.commit)?;
         let batch = {
             let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(prepared) = prepared.get_mut(index) else {
-                return Err(inter_internal!(
-                    "inter_admission_prepared_range_missing",
-                    self.tile_offset
-                ));
-            };
-            prepared.take().ok_or(inter_internal!(
-                "inter_admission_prepared_rows_missing",
-                self.tile_offset
-            ))?
+            prepared
+                .get_mut(index)
+                .ok_or_else(invalid_inter_tile_scheduling_state)?
+                .take()
+                .ok_or_else(invalid_inter_tile_scheduling_state)?
         };
         let (ready, completed_band) = match batch {
             PreparedBatch::Legacy(ready) => (ready, None),
@@ -677,21 +696,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 Some(band),
             ),
         };
-        let mut holder = self.commit.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(commit) = holder.as_mut() else {
-            return Ok(ScheduledCommitProgress {
-                frontier_rows: 0..0,
-                recon_complete: false,
-            });
-        };
         for mut ready in ready {
-            if commit.next != ready.row.ordinal {
-                self.finished.store(true, Ordering::Release);
-                return Err(inter_internal!(
-                    "inter_admission_commit_order",
-                    self.tile_offset
-                ));
-            }
+            validate_commit_ordinal(ready.row.ordinal, commit.next)?;
             if let Some(surface) = ready.surface.take() {
                 surface.publish_into(&mut commit.workspace)?;
                 if let ReadyReconSurface::Owned(surface) = surface {
@@ -730,10 +736,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             frontier
                 .bands
                 .as_mut()
-                .ok_or(inter_internal!(
-                    "inter_admission_band_owner",
-                    self.tile_offset
-                ))?
+                .ok_or_else(invalid_inter_tile_scheduling_state)?
                 .push(band)?;
         }
         let terminal = commit.next == self.unit_count;
@@ -744,11 +747,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             self.frontier_rows,
         );
         if closed_rows > commit.handed_rows {
-            self.seal_committed_rows(commit, closed_rows)?;
+            self.seal_committed_rows(&commit, closed_rows)?;
         }
         let frontier_rows = commit.handed_rows..closed_rows;
         commit.handed_rows = closed_rows;
         if !terminal {
+            restore_active_commit(&self.commit, commit)?;
             return Ok(ScheduledCommitProgress {
                 frontier_rows,
                 recon_complete: false,
@@ -759,10 +763,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             return Err(no_decoded_block_error());
         }
         self.finished.store(true, Ordering::Release);
-        let mut commit = holder.take().ok_or(inter_internal!(
-            "inter_admission_commit_state",
-            self.tile_offset
-        ))?;
         commit.surfaces.reverse();
         let scratch =
             TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, commit.surfaces);
@@ -1111,10 +1111,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         })
         .collect::<Vec<_>>();
     if rows.is_empty() {
-        return Err(inter_internal!(
-            "inter_admission_no_resolved_rows",
-            tile_offset
-        ));
+        return Err(invalid_inter_tile_scheduling_state());
     }
     let prepass_block_decoded = parsed.block_decoded.clone();
     let block_decoded = parsed.block_decoded.clone();
@@ -1215,8 +1212,12 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
 
 #[cfg(test)]
 mod tests {
-    use super::{project_temporal_band, record_banded_command_error, safe_deblock_mi_end};
+    use super::{
+        project_temporal_band, record_banded_command_error, restore_active_commit,
+        safe_deblock_mi_end, take_active_commit, validate_commit_ordinal,
+    };
     use crate::prediction::inter::MotionFieldLayout;
+    use std::sync::Mutex;
 
     struct TemporalProjectionCase {
         plan: super::TemporalBandPlan,
@@ -1396,6 +1397,81 @@ mod tests {
         assert!(matches!(handle.band_publication(0), Some(Some(_))));
         project_temporal_band(&plan, &temporal, &fields, 0)
             .map_err(|_| "published band must project")?;
+        Ok(())
+    }
+
+    #[test]
+    fn missing_active_commit_is_a_typed_scheduling_invariant() -> Result<(), &'static str> {
+        let holder = Mutex::new(None::<usize>);
+
+        let error = take_active_commit(&holder)
+            .err()
+            .ok_or("missing commit state must fail")?;
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
+            }
+        ));
+        assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn nonterminal_commit_state_is_restored_exactly_once() -> Result<(), &'static str> {
+        let holder = Mutex::new(Some(7usize));
+        let state = take_active_commit(&holder).map_err(|_| "initial commit state")?;
+
+        restore_active_commit(&holder, state).map_err(|_| "valid commit restore")?;
+        let error = restore_active_commit(&holder, 8)
+            .err()
+            .ok_or("duplicate commit restore must fail")?;
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
+            }
+        ));
+        let state = take_active_commit(&holder).map_err(|_| "restored commit state")?;
+        assert_eq!(state, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_commit_state_is_consumed_once() -> Result<(), &'static str> {
+        let holder = Mutex::new(Some(7usize));
+        let state = take_active_commit(&holder).map_err(|_| "initial commit state")?;
+        assert_eq!(state, 7);
+
+        let error = take_active_commit(&holder)
+            .err()
+            .ok_or("consumed terminal commit must not be reusable")?;
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn commit_order_is_validated_before_surface_publication() -> Result<(), &'static str> {
+        validate_commit_ordinal(4, 4).map_err(|_| "matching ordinal")?;
+
+        let error = validate_commit_ordinal(6, 5)
+            .err()
+            .ok_or("out-of-order row must fail before publication")?;
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
+            }
+        ));
         Ok(())
     }
 
