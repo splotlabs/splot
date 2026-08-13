@@ -6,6 +6,9 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::bitstream::tile_payload::{
+    LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
+};
 
 fn assert_invalid_tile_state(error: &crate::DecodeError) {
     assert!(matches!(
@@ -30,6 +33,39 @@ fn assert_workspace_allocation(error: &crate::DecodeError, expected_context: &'s
             },
         } if *context == expected_context
     ));
+}
+
+fn lr_source_block(unit_filter_index: Option<usize>, x: usize) -> WienerNsLrSourceBlock {
+    WienerNsLrSourceBlock {
+        restoration_type: LrUnitRestorationType::WienerNonsep,
+        plane: 0,
+        unit_row: 0,
+        unit_col: x,
+        unit_filter_index,
+        tile_mi_row_start: 0,
+        tile_mi_row_end: 1,
+        tile_mi_col_end: 4,
+        x,
+        y: 0,
+        width: 1,
+        height: 1,
+        luma_start_x: x,
+        luma_end_x: x,
+        luma_start_y: 0,
+        luma_end_y: 0,
+        luma_stripe_start_y: 0,
+        luma_stripe_end_y: 0,
+    }
+}
+
+fn lr_unit_filter(unit_col: usize) -> WienerNsLrUnitFilter {
+    WienerNsLrUnitFilter {
+        plane: 0,
+        unit_row: 0,
+        unit_col,
+        coeff_count: 18,
+        coeffs: [0; 18],
+    }
 }
 
 #[test]
@@ -114,6 +150,72 @@ fn inter_tile_constructor_allocation_errors_stay_reconstruction_failures() {
         }),
         "inter block decoded state",
     );
+}
+
+#[test]
+fn loop_restoration_records_rebase_each_tile_once_in_append_order() {
+    let mut blocks = vec![lr_source_block(Some(0), 0)];
+    let mut filters = vec![lr_unit_filter(0)];
+
+    append_lr_records(
+        &mut blocks,
+        &mut filters,
+        vec![
+            lr_source_block(None, 1),
+            lr_source_block(Some(0), 2),
+            lr_source_block(Some(1), 3),
+        ],
+        vec![lr_unit_filter(1), lr_unit_filter(2)],
+    )
+    .unwrap();
+    append_lr_records(
+        &mut blocks,
+        &mut filters,
+        vec![lr_source_block(Some(0), 4)],
+        vec![lr_unit_filter(3)],
+    )
+    .unwrap();
+
+    assert_eq!(
+        blocks
+            .iter()
+            .map(|block| block.unit_filter_index)
+            .collect::<Vec<_>>(),
+        [Some(0), None, Some(1), Some(2), Some(3)]
+    );
+    assert_eq!(
+        filters
+            .iter()
+            .map(|filter| filter.unit_col)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+}
+
+#[test]
+fn invalid_loop_restoration_index_is_typed_and_fail_atomic() {
+    let mut blocks = vec![lr_source_block(Some(0), 0)];
+    let mut filters = vec![lr_unit_filter(0)];
+    let expected_blocks = blocks.clone();
+    let expected_filters = filters.clone();
+
+    let error = append_lr_records(
+        &mut blocks,
+        &mut filters,
+        vec![lr_source_block(Some(1), 1)],
+        vec![lr_unit_filter(1)],
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState
+        }
+    ));
+    assert_eq!(blocks, expected_blocks);
+    assert_eq!(filters, expected_filters);
+    assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
 }
 
 #[test]

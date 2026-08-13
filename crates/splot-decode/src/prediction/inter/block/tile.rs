@@ -59,19 +59,35 @@ fn append_lr_records(
     filters: &mut Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     mut tile_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     tile_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
-) -> Option<()> {
+) -> Result<()> {
     let filter_base = filters.len();
+    for block in &tile_blocks {
+        if let Some(index) = block.unit_filter_index
+            && index >= tile_filters.len()
+        {
+            return Err(crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState.into());
+        }
+    }
+
+    blocks
+        .try_reserve(tile_blocks.len())
+        .map_err(|_| inter_allocation!("inter LR source-block records"))?;
+    filters
+        .try_reserve(tile_filters.len())
+        .map_err(|_| inter_allocation!("inter LR unit-filter records"))?;
+
     for block in &mut tile_blocks {
         if let Some(index) = block.unit_filter_index {
-            if index >= tile_filters.len() {
-                return None;
-            }
-            block.unit_filter_index = Some(filter_base.checked_add(index)?);
+            block.unit_filter_index = Some(
+                filter_base
+                    .checked_add(index)
+                    .ok_or(crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState)?,
+            );
         }
     }
     blocks.extend(tile_blocks);
     filters.extend(tile_filters);
-    Some(())
+    Ok(())
 }
 
 #[derive(Default)]
@@ -1515,7 +1531,6 @@ impl ParsedTile {
         ccso_state: &mut CcsoState,
         segment_ids: &mut FrameSegmentIdMap,
     ) -> Result<()> {
-        let tile_offset = self.tile_offset;
         let output = &mut self.output;
         merge_tile_filter_state(
             cdef_state,
@@ -1531,8 +1546,8 @@ impl ParsedTile {
             &mut frame_filter_records.lr_unit_filters,
             core::mem::take(&mut output.active_source_blocks),
             core::mem::take(&mut output.unit_filters),
-        )
-        .ok_or(inter_internal!("inter_lr_filter_index_split", tile_offset))
+        )?;
+        Ok(())
     }
 }
 
@@ -2005,11 +2020,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 &mut frame_filter_records.lr_unit_filters,
                 output.active_source_blocks,
                 output.unit_filters,
-            )
-            .ok_or(inter_internal!(
-                "inter_lr_filter_index_parallel",
-                tile.tile_offset
-            ))?;
+            )?;
 
             let mut recon_ordinal = 0usize;
             let mut current_block_decoded_superblock = None;
@@ -2195,8 +2206,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &mut frame_filter_records.lr_unit_filters,
             output.active_source_blocks,
             output.unit_filters,
-        )
-        .ok_or(inter_internal!("inter_lr_filter_index_serial", tile_offset))?;
+        )?;
     }
     if !decoded_any {
         return Err(no_decoded_block_error());
