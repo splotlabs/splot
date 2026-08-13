@@ -300,12 +300,9 @@ fn derive_inter_block_setup<T: ReconSample>(
     } = facts;
     let offset = frame_envelope.offset;
     let frame_is_intra = core.frame_is_intra == Some(true);
-    let Some(first_tile) = work_units.first() else {
-        return Err(inter_internal!(
-            "inter_walk_unexpected_tile_work_units",
-            offset
-        ));
-    };
+    let first_tile = work_units
+        .first()
+        .ok_or(DecodeHeaderStateError::InvalidInterTileConstructionState)?;
     let first_tile_offset = first_tile.tile_byte_span().start;
     let initial_frame_cdfs = first_tile.frame_cdfs();
 
