@@ -22,8 +22,9 @@ pub(in crate::prediction::inter::block) enum ParserStep<Row> {
 #[derive(Debug)]
 pub(super) enum ReadyRowPipelineError<E> {
     Codec(E),
+    Allocation,
     Capacity,
-    Parallel,
+    Parallel(splot_parallel::ParallelError),
 }
 
 pub(super) trait OrderedDone {
@@ -359,7 +360,7 @@ where
         .max(1);
     let mut done = Vec::new();
     done.try_reserve_exact(done_limit)
-        .map_err(|_| ReadyRowPipelineError::Capacity)?;
+        .map_err(|_| ReadyRowPipelineError::Allocation)?;
     done.resize_with(done_limit, || None);
     let coordinator = Mutex::new(ReadyRowCoordinator {
         parser: Some(parser),
@@ -390,7 +391,7 @@ where
         splot_parallel::ready_task_scope(|scope| {
             schedule_ready_rows(scope, &coordinator, &work, &gate);
         })
-        .map_err(|_| ReadyRowPipelineError::Parallel)
+        .map_err(ReadyRowPipelineError::Parallel)
     };
     run_scope()?;
     let drain_timer = crate::timing::start();

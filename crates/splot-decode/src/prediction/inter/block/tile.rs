@@ -1438,13 +1438,7 @@ where
         || row_gate.is_ready(),
         || row_gate.wait("arm=rows"),
     )
-    .map_err(|error| match error {
-        ReadyRowPipelineError::Parallel => inter_internal!("inter_row_prepass_scope", tile_offset),
-        ReadyRowPipelineError::Capacity => {
-            inter_internal!("inter_row_prepass_capacity", tile_offset)
-        }
-        ReadyRowPipelineError::Codec(error) => error,
-    })?;
+    .map_err(inter_ready_row_pipeline_error)?;
     if timer.is_some() {
         crate::timing::report_detail(
             "inter_row_prepass",
@@ -1855,6 +1849,23 @@ fn no_decoded_block_error() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into()
 }
 
+fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
+    crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into()
+}
+
+fn inter_ready_row_pipeline_error(
+    error: ReadyRowPipelineError<crate::DecodeError>,
+) -> crate::DecodeError {
+    match error {
+        ReadyRowPipelineError::Codec(error) => error,
+        ReadyRowPipelineError::Allocation => {
+            inter_allocation!("inter ready-row completion slots")
+        }
+        ReadyRowPipelineError::Capacity => invalid_inter_tile_scheduling_state(),
+        ReadyRowPipelineError::Parallel(source) => source.into(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_tiles<T: ReconSample>(
     scratch: &mut TileDecodeScratch<T>,
@@ -1894,9 +1905,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
     frame_filter_records.clear();
     let motion = MotionFieldUnits::new(motion_field);
     let mut decoded_any = false;
-    let chunk_offset = work_units
-        .first()
-        .map_or(ByteOffset::new(0), |tile| tile.tile_byte_span().start);
     let mut segment_ids = frame_segment_id_map(mi_rows, mi_cols)?;
     let row_gate = row_gate::RowReferenceGate::new(
         reference,
@@ -1959,8 +1967,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     ));
                 });
             }
-        })
-        .map_err(|_| inter_internal!("inter_tile_prepare_scope", chunk_offset))?;
+        })?;
         if timer.is_some() {
             crate::timing::report_detail(
                 "inter_tile_prepare",
@@ -1978,8 +1985,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .try_reserve_exact(prepared_results.len())
             .map_err(|_| inter_allocation!("inter tile result collection"))?;
         for result in prepared_results {
-            let result =
-                result.ok_or(inter_internal!("inter_tile_result_missing", chunk_offset))?;
+            let result = result.ok_or_else(invalid_inter_tile_scheduling_state)?;
             prepared.push(result?);
         }
         prepared.sort_by_key(|tile| tile.tile_num);
