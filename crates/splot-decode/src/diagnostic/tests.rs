@@ -10,22 +10,6 @@ use crate::{
     DecodeSeverity, DecodeSourceIssueKind, DecodeUnsupportedReason, MALFORMED_SOURCE_RULE_ID,
     OUTPUT_ERROR_RULE_ID, RESOURCE_LIMIT_RULE_ID, UNSUPPORTED_FEATURE_RULE_ID,
 };
-use splot_core::span::ByteOffset;
-
-#[test]
-fn internal_state_error_stays_operational() {
-    let error = DecodeError::InternalState {
-        reason: "inter_test_invariant",
-        byte_offset: ByteOffset::new(7),
-    };
-
-    assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
-    assert_eq!(
-        error.to_string(),
-        "internal decode state `inter_test_invariant` failed at byte 7"
-    );
-}
-
 #[test]
 fn malformed_source_report_has_stable_fields() {
     let error = plan_byte_stream(&[0x05, 0x10], &DecodeOptions::default()).unwrap_err();
