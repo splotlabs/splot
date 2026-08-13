@@ -113,7 +113,6 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) base_q_idx: u32,
     pub(crate) delta_q_u_ac: i32,
     pub(crate) delta_q_v_ac: i32,
-    pub(crate) is_key_or_switch: bool,
     pub(crate) is_inter: bool,
     pub(crate) num_total_refs: u32,
     pub(crate) saved_order_hints: SavedGlobalMotionOrderHints,
@@ -197,14 +196,19 @@ impl RuntimeReferenceBuffer {
         }
     }
 
-    pub(crate) fn update(&mut self, frame_index: usize, update: &FrameRefUpdate) {
+    pub(crate) fn update(
+        &mut self,
+        frame_index: usize,
+        update: &FrameRefUpdate,
+        is_key_or_switch: bool,
+    ) {
         self.advance_frame_counter();
         let mut first = true;
         for (i, slot) in self.slots.iter_mut().enumerate() {
             if (update.refresh_frame_flags >> i) & 1 == 0 {
                 continue;
             }
-            let valid = !update.is_key_or_switch || first;
+            let valid = !is_key_or_switch || first;
             first = false;
             slot.refresh(frame_index, update, valid, self.frame_counter);
         }

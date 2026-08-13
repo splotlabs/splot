@@ -2133,7 +2133,9 @@ pub(crate) use block::{
     ScheduledFrameProgress, decode_inter_blocks, parse_inter_frame_blocks,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
-pub(crate) use find_mv_stack::{MotionFieldLayout, TemporalMotionField, TemporalMvScratch};
+pub(crate) use find_mv_stack::{
+    FixedStack, MotionFieldLayout, TemporalMotionField, TemporalMvScratch,
+};
 pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
 pub(crate) use frame_walk::{
     DeferredInterWalk, ScheduledInterWalk, inter_frame_info, motion_field_layout,

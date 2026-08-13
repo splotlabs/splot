@@ -99,9 +99,10 @@ use crate::bitstream::tile_payload::{
     TilePartitionTraversalError, TilePartitionTraversalUnsupported,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError};
+use crate::filters::wienerns_lr::intrabc_records::IntrabcRefSelection;
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
     DrlReorderMode, IntrabcStackGeometry, SpatialScanGeometry, capture_spatial_intrabc_probes,
-    select_intrabc_ref_mv_for_test,
+    select_intrabc_ref_mv_from_candidates,
 };
 use crate::prediction::inter::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, Mv, PlacedInterBlock,
@@ -483,7 +484,7 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
     )
     .resolve(|_, _| None);
     assert_eq!(
-        select_intrabc_ref_mv_for_test(
+        select_intrabc_ref_mv_from_candidates(
             &[],
             IntrabcStackGeometry {
                 mi_row: 0,
@@ -493,12 +494,11 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
                 sb_samples: i32::try_from(sb_h4 * 4)?,
                 frame_w: 256,
                 frame_h: 256,
-                max_bvp_drl_bits_minus_1: 2,
             },
             &spatial,
             true,
             DrlReorderMode::Disabled,
-            0,
+            IntrabcRefSelection::new(2, 0).ok_or("valid intrabc DRL selection")?,
         ),
         Mv { row: -1024, col: 0 }
     );
@@ -519,7 +519,7 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
         4,
         sb_h4,
     );
-    assert_eq!(bank.intrabc_candidates(), vec![Mv { row: 0, col: -128 }]);
+    assert_eq!(bank.intrabc_candidates()[..], [Mv { row: 0, col: -128 }]);
     bank.reset_for_leaf(&grid, 32, 0, sb_h4, false);
     assert!(
         bank.intrabc_candidates().is_empty(),

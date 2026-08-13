@@ -95,10 +95,10 @@ fn shared_ref_mv_bank_intrabc_candidates_are_newest_first() {
     let newer = Mv { row: 0, col: -512 };
     bank.update(INTRABC_REF_FRAME, None, older, None, CWP_EQUAL, false);
     bank.update(INTRABC_REF_FRAME, None, newer, None, CWP_EQUAL, false);
-    assert_eq!(bank.intrabc_candidates(), vec![newer, older]);
+    assert_eq!(bank.intrabc_candidates()[..], [newer, older]);
 
     bank.update(INTRABC_REF_FRAME, None, older, None, CWP_EQUAL, false);
-    assert_eq!(bank.intrabc_candidates(), vec![older, newer]);
+    assert_eq!(bank.intrabc_candidates()[..], [older, newer]);
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn shared_ref_mv_bank_seeds_intrabc_from_previous_superblock_row() {
     );
     let mut inter_bank = RefMvBank::new();
     inter_bank.reset_for_leaf(&grid, 256, 128, 32, true);
-    assert_eq!(inter_bank.intrabc_candidates(), vec![mv]);
+    assert_eq!(inter_bank.intrabc_candidates()[..], [mv]);
 
     let mut intra_bank = RefMvBank::new();
     intra_bank.reset_for_leaf(&grid, 256, 128, 32, false);
@@ -150,7 +150,7 @@ fn shared_ref_mv_bank_late_leaf_uses_only_existing_unit_budget() {
         32,
     );
     ordered.reset_for_leaf(&grid, 28, 320, 32, true);
-    assert_eq!(ordered.intrabc_candidates(), vec![mv]);
+    assert_eq!(ordered.intrabc_candidates()[..], [mv]);
 
     let mut late = RefMvBank::new();
     late.reset_for_leaf(&grid, 22, 288, 32, true);
