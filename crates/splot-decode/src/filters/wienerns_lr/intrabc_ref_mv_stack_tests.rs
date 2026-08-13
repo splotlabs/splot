@@ -423,6 +423,31 @@ fn sort_nearest_moves_max_weight_to_slot0_strict() {
 }
 
 #[test]
+fn spatial_stack_rejects_push_past_capacity() {
+    let mut stack = SpatialBvStack::new();
+    for index in 0..MAX_SPATIAL_INTRABC_CANDIDATES {
+        assert!(
+            stack.try_push(wbv(
+                Mv {
+                    row: -8 * (index as i32 + 1),
+                    col: 0
+                },
+                1
+            )),
+            "slot {index} is within capacity and must be accepted"
+        );
+    }
+    assert_eq!(stack.len(), MAX_SPATIAL_INTRABC_CANDIDATES);
+    let full = stack;
+    assert!(
+        !stack.try_push(wbv(Mv { row: 1, col: 1 }, 7)),
+        "a push past MAX_SPATIAL_INTRABC_CANDIDATES must be rejected, not silently dropped"
+    );
+    assert_eq!(stack.len(), MAX_SPATIAL_INTRABC_CANDIDATES);
+    assert_eq!(stack[..], full[..], "the rejected push must not clobber");
+}
+
+#[test]
 fn spatial_scan_adds_left_neighbour_and_admits_modelled_above_neighbour() {
     let geom = SpatialScanGeometry {
         mi_row: 4,
