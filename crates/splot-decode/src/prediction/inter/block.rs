@@ -2387,6 +2387,9 @@ fn map_inter_partition_traversal_error(
             .into()
         }
         TilePartitionTraversalError::Symbol(splot_core::Error::InvalidSymbolCdf { .. })
+        | TilePartitionTraversalError::LoopRestorationSymbol(
+            splot_core::Error::InvalidSymbolCdf { .. },
+        )
         | TilePartitionTraversalError::BlockDecoded(_)
         | TilePartitionTraversalError::IntraYModeState(_)
         | TilePartitionTraversalError::UsesMrlsState(_)
@@ -2412,6 +2415,9 @@ fn map_inter_partition_traversal_error(
         }
         TilePartitionTraversalError::Symbol(error) => {
             crate::pipeline::malformed_tile_payload(tile_offset, "5.20.3.1", error)
+        }
+        TilePartitionTraversalError::LoopRestorationSymbol(error) => {
+            crate::pipeline::malformed_tile_payload(tile_offset, "5.20.10.5", error)
         }
     }
 }

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::error::SymbolCdfErrorKind;
 use splot_core::headers::sequence::{ChromaFormatIdc, SuperblockSize};
-use splot_core::span::ByteOffset;
+use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_recon::{
@@ -419,6 +420,11 @@ fn partition_walk_failures_keep_typed_boundaries() {
             offset: 1,
         },
         TilePartitionTraversalError::Decision(PartitionDecisionError::EmptyAllowedSet),
+        TilePartitionTraversalError::LoopRestorationSymbol(splot_core::Error::InvalidSymbolCdf {
+            offset: ByteOffset::new(0),
+            bit_offset: BitOffset::from_bits(0),
+            kind: SymbolCdfErrorKind::UnsupportedLength { len: 0 },
+        }),
     ] {
         assert!(matches!(
             map_inter_multiblock_error(
@@ -453,6 +459,17 @@ fn partition_walk_failures_keep_typed_boundaries() {
                 }),
             )),
             "5.20.3.1",
+        ),
+        (
+            GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
+                TilePartitionTraversalError::LoopRestorationSymbol(
+                    splot_core::Error::UnexpectedEof {
+                        offset: ByteOffset::new(0),
+                        needed: 1,
+                    },
+                ),
+            )),
+            "5.20.10.5",
         ),
     ] {
         assert!(matches!(

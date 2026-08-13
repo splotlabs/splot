@@ -132,7 +132,13 @@ pub(super) fn read_loop_restoration_for_call(
             symbols,
             lr_activity,
             limits,
-        )?;
+        )
+        .map_err(|error| match error {
+            TilePartitionTraversalError::Symbol(source) => {
+                TilePartitionTraversalError::LoopRestorationSymbol(source)
+            }
+            error => error,
+        })?;
     }
     Ok(())
 }

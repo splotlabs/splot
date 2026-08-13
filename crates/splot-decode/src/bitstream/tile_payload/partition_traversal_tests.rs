@@ -838,6 +838,30 @@ fn frame_level_lr_symbol_precedes_partition_read() {
 }
 
 #[test]
+fn frame_level_lr_invalid_cdf_preserves_syntax_origin() {
+    let mut work_unit = make_work_unit(&[0x00, 0x00, 0x80], CdfUpdateMode::Enabled);
+    work_unit
+        .cdf_mut()
+        .tile_cdfs_mut()
+        .with_row_mut(TileCdfSelector::UseWienerNs, |row| row[1] = u16::MAX)
+        .unwrap();
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = frame_level_wiener_ns(256);
+
+    let error = expect_tree_error(run_first_superblock(
+        &mut work_unit,
+        facts,
+        DecodeLimits::DEFAULT,
+    ));
+    assert!(matches!(
+        error,
+        GeneralIntraTreeWalkError::Traversal(TilePartitionTraversalError::LoopRestorationSymbol(
+            splot_core::Error::InvalidSymbolCdf { .. }
+        ))
+    ));
+}
+
+#[test]
 fn switchable_luma_selection_controls_current_source_output() {
     let selector = |tool| TileCdfSelector::FlexRestorationType { tool, plane: 0 };
     let cases = [

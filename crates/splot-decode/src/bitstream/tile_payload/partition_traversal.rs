@@ -545,6 +545,8 @@ pub(crate) enum TilePartitionTraversalError {
     Decision(#[from] PartitionDecisionError),
     #[error("partition traversal symbol initialization failed: {0}")]
     Symbol(#[from] splot_core::Error),
+    #[error("loop-restoration syntax symbol read failed: {0}")]
+    LoopRestorationSymbol(#[source] splot_core::Error),
     #[error("partition traversal CDF context failed: {0}")]
     Cdf(#[from] TileCdfError),
     #[error("partition traversal unsupported path: {0:?}")]
