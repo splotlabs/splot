@@ -33,6 +33,24 @@ fn new_rejects_invalid_geometry() {
         TileBlockDecodedState::new(3, 1, 1, 0, 16, 16),
         Err(TileBlockDecodedStateError::EmptySuperblock)
     ));
+    assert!(matches!(
+        TileBlockDecodedState::new(3, 1, 1, usize::MAX, 16, 16),
+        Err(TileBlockDecodedStateError::Overflow)
+    ));
+    assert!(matches!(
+        TileBlockDecodedState::new(3, usize::BITS as usize, 1, SB_SIZE4, 16, 16),
+        Err(TileBlockDecodedStateError::InvalidSubsampling {
+            axis: "horizontal",
+            value,
+        }) if value == usize::BITS as usize
+    ));
+    assert!(matches!(
+        TileBlockDecodedState::new(3, 1, usize::BITS as usize, SB_SIZE4, 16, 16),
+        Err(TileBlockDecodedStateError::InvalidSubsampling {
+            axis: "vertical",
+            value,
+        }) if value == usize::BITS as usize
+    ));
 }
 
 #[test]

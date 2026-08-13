@@ -58,10 +58,25 @@ impl TileBlockDecodedState {
         if sb_size4 == 0 {
             return Err(TileBlockDecodedStateError::EmptySuperblock);
         }
+        if subsampling_x > 1 {
+            return Err(TileBlockDecodedStateError::InvalidSubsampling {
+                axis: "horizontal",
+                value: subsampling_x,
+            });
+        }
+        if subsampling_y > 1 {
+            return Err(TileBlockDecodedStateError::InvalidSubsampling {
+                axis: "vertical",
+                value: subsampling_y,
+            });
+        }
         let mut planes: [PlaneGrid; MAX_PLANES] = Default::default();
         for (plane, grid) in planes.iter_mut().enumerate().take(num_planes) {
             let (sub_x, sub_y) = plane_subsampling(plane, subsampling_x, subsampling_y);
-            let width = ((2 * sb_size4) >> sub_x)
+            let width = (sb_size4
+                .checked_mul(2)
+                .ok_or(TileBlockDecodedStateError::Overflow)?
+                >> sub_x)
                 .checked_add(2)
                 .ok_or(TileBlockDecodedStateError::Overflow)?;
             let height = (sb_size4 >> sub_y)
@@ -240,6 +255,8 @@ pub(crate) enum TileBlockDecodedStateError {
     InvalidPlanes { num_planes: usize },
     #[error("BlockDecoded state requires a non-empty superblock")]
     EmptySuperblock,
+    #[error("BlockDecoded state has invalid {axis} subsampling shift {value}")]
+    InvalidSubsampling { axis: &'static str, value: usize },
     #[error("BlockDecoded state dimension overflow")]
     Overflow,
     #[error("BlockDecoded state allocation failed: {source}")]

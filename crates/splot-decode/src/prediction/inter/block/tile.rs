@@ -218,6 +218,53 @@ struct TileParserOutput {
     unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
 }
 
+fn inter_tile_coeff_context_error(error: &TileCoeffStateError) -> crate::DecodeError {
+    match error {
+        TileCoeffStateError::Allocation(_) => {
+            inter_allocation!("inter coefficient context state")
+        }
+        TileCoeffStateError::EmptyTileDimensions { .. }
+        | TileCoeffStateError::InvalidAdjustedTransformExtent { .. }
+        | TileCoeffStateError::ArithmeticOverflow { .. }
+        | TileCoeffStateError::InvalidPlane { .. }
+        | TileCoeffStateError::InvalidDcCategory { .. }
+        | TileCoeffStateError::EmptyContextRange { .. }
+        | TileCoeffStateError::CoordinateOverflow { .. }
+        | TileCoeffStateError::ContextRangeOutOfBounds { .. }
+        | TileCoeffStateError::TransformCoordinateOutOfBounds { .. }
+        | TileCoeffStateError::QuantPositionOutOfBounds { .. }
+        | TileCoeffStateError::InvalidSubsampling { .. } => {
+            crate::DecodeHeaderStateError::InvalidInterTileConstructionState.into()
+        }
+    }
+}
+
+fn inter_tile_segment_id_error(error: &TileSegmentIdStateError) -> crate::DecodeError {
+    match error {
+        TileSegmentIdStateError::Allocation { .. } => {
+            inter_allocation!("inter segment id state")
+        }
+        TileSegmentIdStateError::EmptyDimensions { .. }
+        | TileSegmentIdStateError::ArithmeticOverflow { .. } => {
+            crate::DecodeHeaderStateError::InvalidInterTileConstructionState.into()
+        }
+    }
+}
+
+fn inter_tile_block_decoded_error(error: &TileBlockDecodedStateError) -> crate::DecodeError {
+    match error {
+        TileBlockDecodedStateError::Allocation { .. } => {
+            inter_allocation!("inter block decoded state")
+        }
+        TileBlockDecodedStateError::InvalidPlanes { .. }
+        | TileBlockDecodedStateError::EmptySuperblock
+        | TileBlockDecodedStateError::InvalidSubsampling { .. }
+        | TileBlockDecodedStateError::Overflow => {
+            crate::DecodeHeaderStateError::InvalidInterTileConstructionState.into()
+        }
+    }
+}
+
 impl<'tile, 'payload> TileParser<'tile, 'payload> {
     fn new<T: ReconSample>(
         tile: &'tile mut DecodeTileWorkUnit<'payload>,
@@ -237,12 +284,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             tile_cols.clone(),
             chroma,
         )
-        .map_err(|error| match error {
-            TileCoeffStateError::Allocation(_) => {
-                inter_allocation!("inter coefficient context state")
-            }
-            _ => inter_internal!("inter_coeff_context_state", tile_offset),
-        })?;
+        .map_err(|error| inter_tile_coeff_context_error(&error))?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core)?;
         let intrabc_state = TileIntrabcPreludeState::new_for_tile(
             (context.mi_rows, context.mi_cols),
@@ -253,14 +295,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(context.core),
         )?;
         let segment_id_state =
-            TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone()).map_err(
-                |error| match error {
-                    TileSegmentIdStateError::Allocation { .. } => {
-                        inter_allocation!("inter segment id state")
-                    }
-                    _ => inter_internal!("inter_segment_id_grid", tile_offset),
-                },
-            )?;
+            TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone())
+                .map_err(|error| inter_tile_segment_id_error(&error))?;
         let mv_grid = NeighbourMvGrid::new_for_tile(tile_rows.clone(), tile_cols.clone())
             .ok_or(inter_internal!("inter_mv_grid", tile_offset))?;
         let y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new_for_tile(
@@ -1609,7 +1645,7 @@ fn tile_block_decoded<T: ReconSample>(
         (tile.mi_col_range().end as usize).min(context.mi_cols),
         (tile.mi_row_range().end as usize).min(context.mi_rows),
     )
-    .map_err(|_| inter_internal!("inter_tile_block_decoded_init", tile.tile_byte_span().start))
+    .map_err(|error| inter_tile_block_decoded_error(&error))
 }
 
 fn tile_luma_rect<T: ReconSample>(
@@ -2176,3 +2212,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
 #[cfg(test)]
 #[path = "tile_ready_row_tests.rs"]
 mod ready_row_tests;
+
+#[cfg(test)]
+#[path = "tile_state_tests.rs"]
+mod state_tests;

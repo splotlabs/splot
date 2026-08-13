@@ -105,6 +105,9 @@ pub enum DecodeHeaderStateError {
     /// An inter tile's parser was reused after its traversal had finished.
     #[error("inter-tile traversal state is inconsistent")]
     InvalidInterTileTraversalState,
+    /// Validated tile geometry could not construct required inter decode state.
+    #[error("inter-tile construction state is inconsistent")]
+    InvalidInterTileConstructionState,
     /// A complete inter header was missing mandatory frame-tool state.
     #[error("inter-frame tool state is incomplete")]
     IncompleteInterFrameTools,
