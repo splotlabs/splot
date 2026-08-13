@@ -114,6 +114,9 @@ pub enum DecodeHeaderStateError {
     /// Derived inter temporal-motion state was internally inconsistent.
     #[error("inter temporal-motion state is inconsistent")]
     InvalidInterTemporalMotionState,
+    /// Derived TIP prediction controls, references, or motion grid were inconsistent.
+    #[error("inter TIP prediction state is inconsistent")]
+    InvalidInterTipPredictionState,
     /// An inter block's decoded mode or entropy state was internally inconsistent.
     #[error("inter-block mode state is inconsistent")]
     InvalidInterBlockModeState,
