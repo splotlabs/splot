@@ -723,9 +723,7 @@ impl TrajectoryBand<'_> {
         } else {
             source_to_current
         };
-        let Some(projected) = project_mv(mv, numerator, reference_offset) else {
-            return;
-        };
+        let projected = project_mv(mv, numerator, reference_offset);
         let Some(position) = self.sampled_position(y8, x8, projected) else {
             return;
         };
@@ -802,9 +800,7 @@ impl TrajectoryBand<'_> {
         } else {
             source_to_current
         };
-        let Some(end_mv) = project_mv(mv, reference_offset - numerator, reference_offset) else {
-            return;
-        };
+        let end_mv = project_mv(mv, reference_offset - numerator, reference_offset);
         self.set_field_at(end, index, end_mv);
         let bounds = self.position_bounds(position);
         if let Some(target_position) = target_position

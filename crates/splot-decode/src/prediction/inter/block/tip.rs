@@ -16,6 +16,35 @@ use super::super::find_mv_stack::TemporalMotionBlock;
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
 const TIP_SINGLE_WEIGHT: i16 = 16;
 
+fn tip_prediction_controls(
+    inter: Option<&splot_core::headers::frame::InterControl>,
+) -> Result<(
+    &splot_core::headers::frame::InterControl,
+    TipFrameMode,
+    i16,
+    u32,
+)> {
+    let inter = inter.ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
+    let mode = inter
+        .tip_frame_mode
+        .filter(|mode| matches!(mode, TipFrameMode::AsRef | TipFrameMode::AsOutput))
+        .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+    let weight_index = usize::from(
+        inter
+            .tip_global_wtd_index
+            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?,
+    );
+    let weight = TIP_WEIGHTING_FACTORS
+        .get(weight_index)
+        .copied()
+        .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+    let opfl_refine_type = inter
+        .opfl_refine_type
+        .filter(|&value| value <= 2)
+        .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+    Ok((inter, mode, weight, opfl_refine_type))
+}
+
 #[derive(Debug)]
 struct TipUnit {
     rect: mc::McBlockRect,
@@ -83,7 +112,6 @@ struct TipHeldReferences<'a, T: ReconSample> {
     past: HeldFrameSamples<'a, T>,
     /// The future reference's borrow, absent when it names the past slot.
     future: Option<HeldFrameSamples<'a, T>>,
-    compound: bool,
 }
 
 impl TipReferencePlan {
@@ -99,11 +127,7 @@ impl TipReferencePlan {
         reference: &'a InterReferenceState<T>,
     ) -> Result<TipHeldReferences<'a, T>> {
         let (past, future) = super::super::hold_reference_pair(reference, self.past, self.future)?;
-        Ok(TipHeldReferences {
-            past,
-            future,
-            compound: self.future.is_some(),
-        })
+        Ok(TipHeldReferences { past, future })
     }
 }
 
@@ -117,11 +141,16 @@ impl<T: ReconSample> TipHeldReferences<'_, T> {
 
     /// Resolves the borrow into the samples one batch's units read.
     fn prediction(&self, plan: &TipReferencePlan) -> Result<TipPrediction<'_, T>> {
+        let compound_reference = match self.future.as_ref() {
+            Some(future) => future,
+            None => &self.past,
+        };
         Ok(TipPrediction {
             reference0: self.past.samples()?,
-            reference1: self
-                .compound
-                .then(|| self.future.as_ref().unwrap_or(&self.past).samples())
+            reference1: plan
+                .future
+                .is_some()
+                .then(|| compound_reference.samples())
                 .transpose()?,
             interpolation_filter: plan.interpolation_filter,
             blend: plan.blend,
@@ -156,10 +185,6 @@ const fn tip_temporal_mvs(
     } else {
         candidate
     }
-}
-
-fn tip_reference_pair_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    inter_internal!("inter_tip_reference_pair", tile_offset)
 }
 
 const fn tip_uses_refinemv(
@@ -308,7 +333,7 @@ fn compute_parallel_outputs<T: ReconSample>(
             let compound = prediction
                 .block_params(unit)
                 .into_compound()
-                .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
             let motion = mc::compound_block_motion_grid(
                 sink,
                 compound,
@@ -340,7 +365,7 @@ fn compute_batched_output<T: ReconSample>(
     let compound = prediction
         .block_params(first)
         .into_compound()
-        .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+        .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
     mc::predict_tip_batch_from_grid(
         sink,
         compound,
@@ -502,7 +527,7 @@ pub(crate) fn tip_allowed_for_block_indices(
 /// half derives its own copy rather than carrying one across the seam.
 struct TipBlockPlan {
     references: TipReferencePair,
-    plan: Option<TipReferencePlan>,
+    plan: TipReferencePlan,
     two_references: bool,
     output: bool,
     use_optflow: bool,
@@ -517,16 +542,12 @@ struct TipBlockPlan {
 }
 
 impl TipBlockPlan {
-    /// Borrows the block's reference pair, absent when it predicts no sample.
+    /// Borrows the block's reference pair.
     fn hold<'a, T: ReconSample>(
         &self,
         reference: &'a InterReferenceState<T>,
-        tile_offset: ByteOffset,
     ) -> Result<TipHeldReferences<'a, T>> {
-        self.plan
-            .as_ref()
-            .ok_or_else(|| tip_reference_pair_error(tile_offset))?
-            .hold(reference)
+        self.plan.hold(reference)
     }
 
     /// One unit's § 7.22 temporal motion record.
@@ -566,20 +587,11 @@ fn tip_block_plan<T: ReconSample>(
     core: &FrameHeaderCore,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
-    tile_offset: ByteOffset,
 ) -> Result<TipBlockPlan> {
     let references = temporal
         .tip_references()
-        .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
-    let inter = core
-        .inter
-        .as_ref()
-        .ok_or(inter_internal!("inter_tip_control", tile_offset))?;
-    let weight_index = usize::from(inter.tip_global_wtd_index.unwrap_or(0));
-    let weight = TIP_WEIGHTING_FACTORS
-        .get(weight_index)
-        .copied()
-        .ok_or(inter_internal!("inter_tip_weight_index", tile_offset))?;
+        .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+    let (inter, mode, weight, opfl_refine_type) = tip_prediction_controls(core.inter.as_ref())?;
     let implicit_mask = sequence
         .inter
         .as_ref()
@@ -591,7 +603,7 @@ fn tip_block_plan<T: ReconSample>(
         .inter
         .as_ref()
         .is_some_and(|tools| tools.enable_tip_refinemv);
-    let output = inter.tip_frame_mode == Some(TipFrameMode::AsOutput);
+    let output = mode == TipFrameMode::AsOutput;
     let offsets = [
         (references.past_ref, references.past_offset),
         (references.future_ref, references.future_offset),
@@ -625,7 +637,7 @@ fn tip_block_plan<T: ReconSample>(
         prediction_unit_size(placed.luma_w, placed.luma_h, enable_tip_refinemv)
     };
     let use_optflow = unit_size == 8
-        && inter.opfl_refine_type.unwrap_or(0) != 0
+        && opfl_refine_type != 0
         && enable_tip_refinemv
         && interpolation_filter == ReconInterpolationFilter::EightTapSharp
         && two_references
@@ -647,31 +659,30 @@ fn tip_block_plan<T: ReconSample>(
     let block_h = placed
         .luma_h
         .min(frame_size.height().saturating_sub(placed.luma_y));
+    if block_w == 0 || block_h == 0 {
+        return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
+    }
     let unit_count = block_w
         .div_ceil(unit_size)
         .checked_mul(block_h.div_ceil(unit_size))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "TIP prediction unit count",
         })?;
-    let plan = (block_w > 0 && block_h > 0)
-        .then(|| {
-            let past = super::super::block_reference_slot(ref_frame_idx, references.past_ref)?;
-            let future = two_references
-                .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
-                .transpose()?;
-            Ok::<_, crate::error::DecodeError>(TipReferencePlan {
-                past,
-                future,
-                interpolation_filter,
-                blend,
-                optflow_distances: use_optflow
-                    .then_some([references.past_offset, references.future_offset]),
-                use_refinemv,
-                search_refinemv,
-                optflow_sad_threshold: use_optflow.then_some(if output { 15 } else { 6 }),
-            })
-        })
+    let past = super::super::block_reference_slot(ref_frame_idx, references.past_ref)?;
+    let future = two_references
+        .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
         .transpose()?;
+    let plan = TipReferencePlan {
+        past,
+        future,
+        interpolation_filter,
+        blend,
+        optflow_distances: use_optflow
+            .then_some([references.past_offset, references.future_offset]),
+        use_refinemv,
+        search_refinemv,
+        optflow_sad_threshold: use_optflow.then_some(if output { 15 } else { 6 }),
+    };
     let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
     let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
     let batch_chroma_end_x = placed
@@ -722,7 +733,6 @@ fn build_units<T: ReconSample>(
     placed: &PlacedInterBlock,
     temporal: &TemporalMvContext,
     first_only: bool,
-    tile_offset: ByteOffset,
 ) -> Result<()> {
     scratch.units.clear();
     scratch.output_samples.clear();
@@ -758,7 +768,7 @@ fn build_units<T: ReconSample>(
                 placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
             let mvs = temporal
                 .tip_candidate(luma_y / 8, luma_x / 8, placed.block.mv)
-                .ok_or(inter_internal!("inter_tip_motion_field", tile_offset))?;
+                .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
             scratch.units.push(TipUnit {
                 rect: mc::McBlockRect {
                     luma_x,
@@ -808,9 +818,8 @@ pub(super) fn motion<T: ReconSample>(
         core,
         ref_frame_idx,
         reference,
-        tile_offset,
     )?;
-    build_units(scratch, &plan, placed, temporal, false, tile_offset)?;
+    build_units(scratch, &plan, placed, temporal, false)?;
     let grid = plan
         .use_optflow
         .then(|| tip_motion_grid(scratch, &plan, sink, reference, tile_offset))
@@ -818,7 +827,9 @@ pub(super) fn motion<T: ReconSample>(
     temporal_records
         .try_reserve(plan.unit_count)
         .map_err(|_| inter_allocation!("TIP temporal records"))?;
-    let current_order_hint = core.display_order_hint().unwrap_or(0);
+    let current_order_hint = core
+        .display_order_hint()
+        .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
     for (index, unit) in scratch.units.iter().enumerate() {
         let stored_mvs = match grid.as_ref() {
             Some(grid) => grid.stored_mvs_at_index(index)?,
@@ -844,22 +855,18 @@ fn tip_motion_grid<T: ReconSample>(
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<mc::CompoundMotionGrid> {
-    let held = plan.hold(reference, tile_offset)?;
-    let reference_plan = plan
-        .plan
-        .as_ref()
-        .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
-    let prediction = held.prediction(reference_plan)?;
+    let held = plan.hold(reference)?;
+    let prediction = held.prediction(&plan.plan)?;
     let first = scratch.units.first().ok_or(ReconError::ZeroDimension {
         field: "TIP compound batch",
     })?;
     let compound = prediction
         .block_params(first)
         .into_compound()
-        .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+        .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
     if scratch.units.len() == 1 {
         return mc::compound_block_motion_grid(sink, compound, Some(8), tile_offset)?
-            .ok_or_else(|| tip_reference_pair_error(tile_offset));
+            .ok_or_else(|| DecodeHeaderStateError::InvalidInterTipPredictionState.into());
     }
     mc::tip_batch_motion_grid(
         sink,
@@ -888,9 +895,7 @@ fn publish_unit_outputs<T: ReconSample>(
 ) -> Result<()> {
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     let mut units_per_hold = scratch.units.len().max(1);
-    if scratch.units.iter().any(|unit| unit.metadata.is_none())
-        && plan.plan.is_some()
-        && !plan.hold(reference, tile_offset)?.settled()
+    if scratch.units.iter().any(|unit| unit.metadata.is_none()) && !plan.hold(reference)?.settled()
     {
         units_per_hold = plan.block_w.div_ceil(plan.unit_size).max(1);
     }
@@ -898,12 +903,11 @@ fn publish_unit_outputs<T: ReconSample>(
         let held = batch
             .iter()
             .any(|unit| unit.metadata.is_none())
-            .then(|| plan.hold(reference, tile_offset))
+            .then(|| plan.hold(reference))
             .transpose()?;
         let prediction = held
             .as_ref()
-            .zip(plan.plan.as_ref())
-            .map(|(held, reference_plan)| held.prediction(reference_plan))
+            .map(|held| held.prediction(&plan.plan))
             .transpose()?;
         for unit in batch {
             if let Some(metadata) = unit.metadata.take() {
@@ -918,12 +922,12 @@ fn publish_unit_outputs<T: ReconSample>(
             }
             let params = prediction
                 .as_ref()
-                .ok_or_else(|| tip_reference_pair_error(tile_offset))?
+                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?
                 .block_params(unit);
             if plan.use_optflow {
                 let compound = params
                     .into_compound()
-                    .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+                    .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
                 mc::predict_compound_average_block(sink, compound, grid.take(), tile_offset)?
                     .publish(sink)?;
             } else {
@@ -931,6 +935,14 @@ fn publish_unit_outputs<T: ReconSample>(
             }
         }
     }
+    Ok(())
+}
+
+fn resize_output_samples<T: ReconSample>(samples: &mut Vec<T>, len: usize) -> Result<()> {
+    samples
+        .try_reserve(len.saturating_sub(samples.len()))
+        .map_err(|_| inter_allocation!("TIP compound output samples"))?;
+    samples.resize(len, T::default());
     Ok(())
 }
 
@@ -970,17 +982,9 @@ pub(super) fn predict<T: ReconSample>(
         core,
         ref_frame_idx,
         reference,
-        tile_offset,
     )?;
     let batched_output = plan.use_optflow && plan.unit_count > 1;
-    build_units(
-        scratch,
-        &plan,
-        placed,
-        temporal,
-        batched_output,
-        tile_offset,
-    )?;
+    build_units(scratch, &plan, placed, temporal, batched_output)?;
     let parallel_output = !plan.use_optflow
         && allow_unit_parallelism
         && plan.two_references
@@ -996,37 +1000,33 @@ pub(super) fn predict<T: ReconSample>(
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "TIP compound output arena length",
                 })?;
-        scratch.output_samples.resize(arena_len, T::default());
+        resize_output_samples(&mut scratch.output_samples, arena_len)?;
     }
     let prediction_timer = crate::timing::start();
     let mut grid = grid;
     let batch_metadata = if batched_output {
-        let held = plan.hold(reference, tile_offset)?;
-        let reference_plan = plan
-            .plan
-            .as_ref()
-            .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+        let held = plan.hold(reference)?;
         Some(compute_batched_output(
             sink,
             &scratch.units,
             &mut scratch.output_samples,
-            &held.prediction(reference_plan)?,
+            &held.prediction(&plan.plan)?,
             &plan,
             grid.take()
-                .ok_or_else(|| tip_reference_pair_error(tile_offset))?,
+                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?,
             tile_offset,
         )?)
     } else {
         None
     };
-    if parallel_output && let Some(reference_plan) = plan.plan.as_ref() {
-        let held = reference_plan.hold(reference)?;
+    if parallel_output {
+        let held = plan.plan.hold(reference)?;
         compute_parallel_outputs(
             sink,
             &mut scratch.units,
             &mut scratch.output_samples,
             output_stride,
-            &held.prediction(reference_plan)?,
+            &held.prediction(&plan.plan)?,
             tile_offset,
         )?;
     }
@@ -1275,16 +1275,17 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 #[cfg(test)]
 mod tests {
     use super::{
-        TipPrediction, TipUnit, compute_parallel_outputs, output_interpolation_filter,
-        output_prediction_unit_size, prediction_unit_extent, prediction_unit_size,
-        tip_optflow_references_allowed, tip_refinemv_offsets_allowed,
-        tip_refinemv_references_allowed, tip_temporal_mvs, tip_uses_refinemv,
-        tip_uses_two_references, tmvp_unit_size8,
+        TipHeldReferences, TipPrediction, TipReferencePlan, TipUnit, compute_parallel_outputs,
+        output_interpolation_filter, output_prediction_unit_size, prediction_unit_extent,
+        prediction_unit_size, resize_output_samples, tip_optflow_references_allowed,
+        tip_prediction_controls, tip_refinemv_offsets_allowed, tip_refinemv_references_allowed,
+        tip_temporal_mvs, tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
     };
-    use crate::prediction::inter::reference::ReferenceSamples;
+    use crate::prediction::inter::reference::{HeldFrameSamples, ReferenceSamples};
     use crate::prediction::inter::{Mv, mc};
     use splot_core::headers::frame::{
         FrameSize, FrameType, InterControl, InterpolationFilter as FrameInterpolationFilter,
+        TipFrameMode,
     };
     use splot_core::span::ByteOffset;
     use splot_parallel::{ThreadCount, WorkerPool};
@@ -1317,6 +1318,84 @@ mod tests {
                 })
             ));
         }
+    }
+
+    #[test]
+    fn tip_prediction_controls_require_complete_bounded_tip_state() {
+        let invalid = |inter: InterControl| {
+            assert!(matches!(
+                tip_prediction_controls(Some(&inter)),
+                Err(crate::DecodeError::HeaderState {
+                    source: crate::DecodeHeaderStateError::InvalidInterTipPredictionState
+                })
+            ));
+        };
+        assert!(matches!(
+            tip_prediction_controls(None),
+            Err(crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::MissingInterControlRegion
+            })
+        ));
+        let mut inter = InterControl::default();
+        invalid(inter.clone());
+        inter.tip_frame_mode = Some(TipFrameMode::AsRef);
+        invalid(inter.clone());
+        inter.tip_global_wtd_index = Some(0);
+        invalid(inter.clone());
+        inter.opfl_refine_type = Some(0);
+        assert!(tip_prediction_controls(Some(&inter)).is_ok());
+        inter.tip_global_wtd_index = Some(7);
+        inter.opfl_refine_type = Some(2);
+        inter.tip_frame_mode = Some(TipFrameMode::AsOutput);
+        assert!(tip_prediction_controls(Some(&inter)).is_ok());
+        inter.tip_frame_mode = Some(TipFrameMode::Disabled);
+        invalid(inter.clone());
+        inter.tip_frame_mode = Some(TipFrameMode::Other(3));
+        invalid(inter.clone());
+        inter.tip_frame_mode = Some(TipFrameMode::AsRef);
+        inter.tip_global_wtd_index = Some(8);
+        invalid(inter.clone());
+        inter.tip_global_wtd_index = Some(0);
+        inter.opfl_refine_type = Some(3);
+        invalid(inter);
+    }
+
+    #[test]
+    fn tip_output_sample_allocation_failure_is_typed() {
+        let mut samples = Vec::<u8>::new();
+        assert!(matches!(
+            resize_output_samples(&mut samples, usize::MAX),
+            Err(crate::DecodeError::Reconstruction {
+                source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                    plane: PlaneId::Y,
+                    context: "TIP compound output samples"
+                }
+            })
+        ));
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn logical_compound_pair_survives_a_deduplicated_reference_borrow()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reference = tip_workspace()?.freeze()?;
+        let held = TipHeldReferences {
+            past: HeldFrameSamples::Settled(&reference),
+            future: None,
+        };
+        let plan = TipReferencePlan {
+            past: 0,
+            future: Some(0),
+            interpolation_filter: InterpolationFilter::EightTapSharp,
+            blend: mc::CompoundBlend::default(),
+            optflow_distances: None,
+            use_refinemv: false,
+            search_refinemv: false,
+            optflow_sad_threshold: None,
+        };
+
+        assert!(held.prediction(&plan)?.reference1.is_some());
+        Ok(())
     }
 
     #[test]

@@ -898,9 +898,7 @@ impl OrderHintMvContext<'_> {
         let candidate_distance = distance(candidate)?;
         let same_side = (dst_distance > 0 && candidate_distance > 0)
             || (dst_distance < 0 && candidate_distance < 0);
-        same_side
-            .then(|| project_mv(candidate_mv, dst_distance.abs(), candidate_distance.abs()))
-            .flatten()
+        same_side.then(|| project_mv(candidate_mv, dst_distance.abs(), candidate_distance.abs()))
     }
 }
 
@@ -1325,13 +1323,11 @@ impl TemporalMvContext {
         let references = self.tip?;
         let y8 = y8.min(self.field.height8.saturating_sub(1));
         let x8 = x8.min(self.field.width8.saturating_sub(1));
-        let cell = self.projected_cell(y8, x8).unwrap_or_default();
+        let cell = self.projected_cell(y8, x8)?;
         let projected = if cell.valid {
             [
-                project_mv(cell.mv, references.past_offset, references.ref_offset)
-                    .unwrap_or(Mv::ZERO),
-                project_mv(cell.mv, references.future_offset, references.ref_offset)
-                    .unwrap_or(Mv::ZERO),
+                project_mv(cell.mv, references.past_offset, references.ref_offset),
+                project_mv(cell.mv, references.future_offset, references.ref_offset),
             ]
         } else {
             [Mv::ZERO; 2]
@@ -1384,7 +1380,7 @@ impl TemporalMvContext {
             row: mvs[0].row.saturating_sub(mvs[1].row),
             col: mvs[0].col.saturating_sub(mvs[1].col),
         };
-        let projected = project_mv(linear, tip.past_offset, tip.ref_offset)?;
+        let projected = project_mv(linear, tip.past_offset, tip.ref_offset);
         Some(Mv {
             row: mvs[0]
                 .row
@@ -1415,7 +1411,7 @@ impl TemporalMvContext {
             self.current_order_hint as i32,
             i32::try_from(dst_hint).ok()?,
         );
-        project_mv(cell.mv, ref_to_dst, cell.ref_offset)
+        Some(project_mv(cell.mv, ref_to_dst, cell.ref_offset))
     }
 
     pub(super) fn derive_spatial_mv(
@@ -1574,14 +1570,13 @@ fn prepare_tip_field(
         for x8 in (0..projection.width8).step_by(projection_step) {
             let index = row_start + x8;
             let source = source.cells[index];
-            let projected = if source.valid {
-                project_mv(source.mv, references.ref_offset, source.ref_offset).map(|mv| Mv {
+            let projected = source.valid.then(|| {
+                let mv = project_mv(source.mv, references.ref_offset, source.ref_offset);
+                Mv {
                     row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                     col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                })
-            } else {
-                None
-            };
+                }
+            });
             projection.cells[index] = ProjectedTemporalMotionCell {
                 valid: projected.is_some(),
                 mv: projected.unwrap_or(Mv::ZERO),
@@ -1763,12 +1758,11 @@ fn fill_temporal_sampling_gap(
             let mv = if candidate_y == 0 && candidate_x == 0 {
                 source.mv
             } else {
-                project_mv(source.mv, anchor.ref_offset, source.ref_offset).map_or(Mv::ZERO, |mv| {
-                    Mv {
-                        row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                        col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                    }
-                })
+                let mv = project_mv(source.mv, anchor.ref_offset, source.ref_offset);
+                Mv {
+                    row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                    col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                }
             };
             sum.row += mv.row;
             sum.col += mv.col;
@@ -2086,11 +2080,8 @@ fn project_temporal_motion_field(
                     col: -mv.col,
                 };
             }
-            let Some(projected_to_current) =
-                project_tmvp_mv_with_factor(mv, source_to_current, ref_offset, projection_factor)
-            else {
-                continue;
-            };
+            let projected_to_current =
+                project_tmvp_mv_with_factor(mv, source_to_current, ref_offset, projection_factor);
             let Some((pos_y8, pos_x8)) = sampled_temporal_position(
                 y8,
                 x8,
@@ -2248,10 +2239,10 @@ fn project_no_constraint(v8: usize, delta: i32, max8: usize) -> Option<usize> {
         .filter(|&projected| projected < max8)
 }
 
-fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Option<Mv> {
+fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
     let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE) as usize;
     let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
-    let scale = DIV_MULT.get(denominator).copied()?;
+    let scale = DIV_MULT[denominator];
     let bound = (1 << 16) - 1;
     let row = round2_signed(
         i64::from(mv.row) * i64::from(numerator) * i64::from(scale),
@@ -2263,7 +2254,7 @@ fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Option<Mv> {
         14,
     )
     .clamp(-bound, bound) as i32;
-    Some(Mv { row, col })
+    Mv { row, col }
 }
 
 fn tmvp_projection_factor(numerator: i32, ref_offset: i32, side: usize) -> Option<i32> {
@@ -2282,12 +2273,7 @@ fn tmvp_projection_factor(numerator: i32, ref_offset: i32, side: usize) -> Optio
         .map(|scale| numerator * scale)
 }
 
-fn project_tmvp_mv_with_factor(
-    mv: Mv,
-    numerator: i32,
-    denominator: i32,
-    factor: i32,
-) -> Option<Mv> {
+fn project_tmvp_mv_with_factor(mv: Mv, numerator: i32, denominator: i32, factor: i32) -> Mv {
     if mv.row.unsigned_abs() > REFMVS_LIMIT as u32 || mv.col.unsigned_abs() > REFMVS_LIMIT as u32 {
         return project_mv(mv, numerator, denominator);
     }
@@ -2297,17 +2283,17 @@ fn project_tmvp_mv_with_factor(
         let rounded = (magnitude + (1 << 13)) >> 14;
         if scaled < 0 { -rounded } else { rounded }.clamp(-MV_LIMIT, MV_LIMIT)
     };
-    Some(Mv {
+    Mv {
         row: project(mv.row),
         col: project(mv.col),
-    })
+    }
 }
 
 #[cfg(test)]
-fn project_tmvp_mv(mv: Mv, numerator: i32, denominator: i32) -> Option<Mv> {
+fn project_tmvp_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
     let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE);
     let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
-    let factor = numerator * DIV_MULT.get(denominator as usize).copied()?;
+    let factor = numerator * DIV_MULT[denominator as usize];
     project_tmvp_mv_with_factor(mv, numerator, denominator, factor)
 }
 

@@ -34,15 +34,6 @@ use crate::{
     Result,
 };
 
-macro_rules! inter_internal {
-    ($reason:literal, $offset:expr $(,)?) => {
-        crate::error::DecodeError::InternalState {
-            reason: $reason,
-            byte_offset: $offset,
-        }
-    };
-}
-
 macro_rules! inter_allocation {
     ($context:literal $(,)?) => {
         crate::error::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {

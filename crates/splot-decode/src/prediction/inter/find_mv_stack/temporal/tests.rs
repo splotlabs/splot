@@ -464,7 +464,47 @@ fn projection_records_zero_offset_reference() {
 
 #[test]
 fn zero_offset_projection_uses_the_zero_divisor_multiplier() {
-    assert_eq!(project_mv(Mv { row: 24, col: -40 }, 3, 0), Some(Mv::ZERO));
+    assert_eq!(project_mv(Mv { row: 24, col: -40 }, 3, 0), Mv::ZERO);
+}
+
+#[test]
+fn projection_is_total_over_untrusted_integer_inputs() {
+    for numerator in [
+        i32::MIN,
+        -MAX_FRAME_DISTANCE,
+        0,
+        MAX_FRAME_DISTANCE,
+        i32::MAX,
+    ] {
+        for denominator in [i32::MIN, -1, 0, MAX_FRAME_DISTANCE, i32::MAX] {
+            let projected = project_mv(
+                Mv {
+                    row: i32::MIN,
+                    col: i32::MAX,
+                },
+                numerator,
+                denominator,
+            );
+            assert!(projected.row.abs() <= MV_LIMIT && projected.col.abs() <= MV_LIMIT);
+        }
+    }
+}
+
+#[test]
+fn tip_candidate_distinguishes_absent_from_present_invalid_cells() {
+    let mut context = tip_context(4, vec![Some(2), Some(6)], 2, 2);
+    context.tip = Some(TipReferencePair {
+        past_ref: 0,
+        future_ref: 1,
+        past_offset: 2,
+        future_offset: -2,
+        ref_offset: 4,
+    });
+    let base = Mv { row: 3, col: -5 };
+    assert_eq!(context.tip_candidate(0, 0, base), Some([base; 2]));
+
+    context.field = ProjectedTemporalMotionField::default();
+    assert_eq!(context.tip_candidate(0, 0, base), None);
 }
 
 #[test]
