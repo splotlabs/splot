@@ -10,6 +10,45 @@ const BRIDGE_CELU_FIXTURE: &[u8] =
     include_bytes!("../../../../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
 
 #[test]
+fn inter_frame_validation_requires_compound_tool_facts() {
+    let context = decode_context();
+    context
+        .pool()
+        .install(|| -> Result<()> {
+            let (mut sequence, mut core, offset) =
+                parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
+            core.inter
+                .as_mut()
+                .expect("fixture inter core has control region")
+                .opfl_refine_type = None;
+            let error = super::super::validate_inter_frame_core(&core, &sequence, offset)
+                .expect_err("missing optical-flow refinement type must stay fail-closed");
+            assert!(matches!(
+                error,
+                DecodeError::HeaderState {
+                    source: DecodeHeaderStateError::IncompleteInterFrameTools
+                }
+            ));
+
+            core.inter
+                .as_mut()
+                .expect("fixture inter core has control region")
+                .opfl_refine_type = Some(0);
+            sequence.inter = None;
+            let error = super::super::validate_inter_frame_core(&core, &sequence, offset)
+                .expect_err("missing sequence inter tools must stay fail-closed");
+            assert!(matches!(
+                error,
+                DecodeError::HeaderState {
+                    source: DecodeHeaderStateError::IncompleteInterFrameTools
+                }
+            ));
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn avm_inter_fixtures_parse_quarter_and_eighth_pel_precision() {
     use splot_core::headers::frame::MvPrecision;
 

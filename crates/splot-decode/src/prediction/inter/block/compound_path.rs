@@ -82,6 +82,16 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     frame_interpolation_filter: FrameInterpolationFilter,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
+    let opfl_refine_type = core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.opfl_refine_type)
+        .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
+    let enable_refinemv = sequence
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?
+        .enable_refinemv;
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs)?;
     let ref_distance_nonnegative = compound_ref_distance_signs(
@@ -119,13 +129,13 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         tile_offset,
     )?;
     if compound_switchable_opfl_reachable(
+        opfl_refine_type,
         core,
         reference,
         ref_frame_idx,
         compound,
         n4w,
         n4h,
-        tile_offset,
     )? {
         compound.use_optflow =
             read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode, tile_offset)?;
@@ -149,7 +159,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         n4w,
         n4h,
         effective_force_integer_mv(core),
-        compound_opfl_refine_type(core, tile_offset)?,
+        opfl_refine_type,
         [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
         frame_modes[splot_core::headers::frame::LOCALWARP],
     );
@@ -246,18 +256,17 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         },
         tile_offset,
     )?;
-    let refinemv_switchable =
-        compound_refinemv_is_switchable(compound, compound_opfl_refine_type(core, tile_offset)?);
+    let refinemv_switchable = compound_refinemv_is_switchable(compound, opfl_refine_type);
     let refinemv_signalled = if !local_warp
         && compound_refinemv_reachable(
-            sequence,
+            enable_refinemv,
+            opfl_refine_type,
             core,
             reference,
             ref_frame_idx,
             compound,
             n4w,
             n4h,
-            tile_offset,
         )? {
         if refinemv_switchable {
             read_compound_use_refinemv_syntax(
@@ -329,6 +338,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     )?;
     let compound_blend = compound_warp_blend(compound_blend, local_warp);
     if compound_all_opfl_reachable(
+        opfl_refine_type,
         core,
         reference,
         ref_frame_idx,
@@ -336,7 +346,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         n4w,
         n4h,
         compound_blend,
-        tile_offset,
     )? {
         compound.use_optflow = true;
     }
@@ -681,15 +690,15 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         mv1: Mv::ZERO,
     };
     let optflow_distances = if motion.use_optflow {
-        compound_sized_reference_distances(
-            core,
-            reference,
-            ref_frame_idx,
-            reference_pair,
-            CompoundReferencePath::Opfl,
-            tile_offset,
-        )?
-        .map(|(dist0, dist1)| [dist0, dist1])
+        compound_sized_reference_facts(core, reference, ref_frame_idx, reference_pair)?.map(
+            |(ref0, ref1)| {
+                let current = compound_current_order_hint(core);
+                [
+                    current.relative_dist(ref0.order_hint),
+                    current.relative_dist(ref1.order_hint),
+                ]
+            },
+        )
     } else {
         None
     };
@@ -1095,23 +1104,21 @@ fn checked_skip_mode_reference_pair(
 }
 
 fn compound_switchable_opfl_reachable<T: ReconSample>(
+    opfl_refine_type: u32,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
     n4h: usize,
-    tile_offset: ByteOffset,
 ) -> Result<bool> {
     if compound.y_mode == CompoundYMode::GlobalGlobal {
         return Ok(false);
     }
-    if compound_opfl_refine_type(core, tile_offset)? != REFINE_SWITCHABLE
-        || !compound_opfl_block_size_allowed(n4w, n4h)
-    {
+    if opfl_refine_type != REFINE_SWITCHABLE || !compound_opfl_block_size_allowed(n4w, n4h) {
         return Ok(false);
     }
-    compound_opfl_reference_allowed(core, reference, ref_frame_idx, compound, tile_offset)
+    compound_opfl_reference_allowed(core, reference, ref_frame_idx, compound)
 }
 
 fn read_compound_use_optflow_syntax(
@@ -1178,6 +1185,7 @@ pub(super) fn select_near_near_candidates(
 
 #[allow(clippy::too_many_arguments)]
 fn compound_all_opfl_reachable<T: ReconSample>(
+    opfl_refine_type: u32,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
@@ -1185,14 +1193,12 @@ fn compound_all_opfl_reachable<T: ReconSample>(
     n4w: usize,
     n4h: usize,
     blend: mc::CompoundBlend,
-    tile_offset: ByteOffset,
 ) -> Result<bool> {
-    if compound_opfl_refine_type(core, tile_offset)? != REFINE_ALL
-        || !compound_all_opfl_block_allowed(compound, n4w, n4h, blend)
+    if opfl_refine_type != REFINE_ALL || !compound_all_opfl_block_allowed(compound, n4w, n4h, blend)
     {
         return Ok(false);
     }
-    compound_opfl_reference_allowed(core, reference, ref_frame_idx, compound, tile_offset)
+    compound_opfl_reference_allowed(core, reference, ref_frame_idx, compound)
 }
 
 fn compound_all_opfl_block_allowed(
@@ -1207,16 +1213,6 @@ fn compound_all_opfl_block_allowed(
         && blend.cwp_weight() == mc::CWP_EQUAL
 }
 
-fn compound_opfl_refine_type(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<u32> {
-    core.inter
-        .as_ref()
-        .and_then(|inter| inter.opfl_refine_type)
-        .ok_or(inter_internal!(
-            "compound_missing_opfl_refine_type",
-            tile_offset
-        ))
-}
-
 const fn compound_opfl_block_size_allowed(n4w: usize, n4h: usize) -> bool {
     n4w >= 2 && n4h >= 2
 }
@@ -1226,75 +1222,43 @@ fn compound_opfl_reference_allowed<T: ReconSample>(
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
-    tile_offset: ByteOffset,
 ) -> Result<bool> {
-    let Some((d0, d1)) = compound_sized_reference_distances(
-        core,
-        reference,
-        ref_frame_idx,
-        compound,
-        CompoundReferencePath::Opfl,
-        tile_offset,
-    )?
+    let Some((ref0, ref1)) =
+        compound_sized_reference_facts(core, reference, ref_frame_idx, compound)?
     else {
         return Ok(false);
     };
+    let current = compound_current_order_hint(core);
+    let d0 = current.relative_dist(ref0.order_hint);
+    let d1 = current.relative_dist(ref1.order_hint);
     Ok((d0 <= 0) ^ (d1 <= 0))
 }
 
 #[allow(clippy::too_many_arguments)]
 fn compound_refinemv_reachable<T: ReconSample>(
-    sequence: &SequenceHeader,
+    enable_refinemv: bool,
+    opfl_refine_type: u32,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
     n4h: usize,
-    tile_offset: ByteOffset,
 ) -> Result<bool> {
-    let Some(seq_inter) = sequence.inter.as_ref() else {
-        return Err(inter_internal!(
-            "compound_refinemv_missing_sequence_inter",
-            tile_offset
-        ));
-    };
-    if !seq_inter.enable_refinemv || !compound_refinemv_size_allowed(n4w, n4h) {
+    if !enable_refinemv || !compound_refinemv_size_allowed(n4w, n4h) {
         return Ok(false);
     }
-    if !compound_refinemv_mode_allowed(core, compound, tile_offset)? {
+    if !compound_refinemv_mode_allowed(compound, opfl_refine_type) {
         return Ok(false);
     }
-    compound_refinemv_reference_allowed(core, reference, ref_frame_idx, compound, tile_offset)
+    compound_refinemv_reference_allowed(core, reference, ref_frame_idx, compound)
 }
 
 const fn compound_refinemv_size_allowed(n4w: usize, n4h: usize) -> bool {
     n4w >= 2 && n4h >= 2 && (n4w >= 4 || n4h >= 4)
 }
 
-fn compound_refinemv_mode_allowed(
-    core: &FrameHeaderCore,
-    compound: super::super::compound::CompoundBlockSyntax,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
-    if compound.y_mode == CompoundYMode::GlobalGlobal {
-        return Ok(false);
-    }
-    let opfl_refine_type = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.opfl_refine_type)
-        .ok_or(inter_internal!(
-            "compound_refinemv_missing_opfl_refine_type",
-            tile_offset
-        ))?;
-    Ok(compound_refinemv_mode_allowed_for_type(
-        compound,
-        opfl_refine_type,
-    ))
-}
-
-const fn compound_refinemv_mode_allowed_for_type(
+const fn compound_refinemv_mode_allowed(
     compound: super::super::compound::CompoundBlockSyntax,
     opfl_refine_type: u32,
 ) -> bool {
@@ -1326,49 +1290,30 @@ fn compound_refinemv_reference_allowed<T: ReconSample>(
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
-    tile_offset: ByteOffset,
 ) -> Result<bool> {
-    let Some((d0, d1)) = compound_sized_reference_distances(
-        core,
-        reference,
-        ref_frame_idx,
-        compound,
-        CompoundReferencePath::RefineMv,
-        tile_offset,
-    )?
+    let Some((ref0, ref1)) =
+        compound_sized_reference_facts(core, reference, ref_frame_idx, compound)?
     else {
         return Ok(false);
     };
+    let current = compound_current_order_hint(core);
+    let d0 = current.relative_dist(ref0.order_hint);
+    let d1 = current.relative_dist(ref1.order_hint);
     Ok(d0 != 0 && d0 == -d1)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CompoundReferencePath {
-    Opfl,
-    RefineMv,
-}
-
-fn compound_sized_reference_distances<T: ReconSample>(
+fn compound_sized_reference_facts<T: ReconSample>(
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
-    path: CompoundReferencePath,
-    tile_offset: ByteOffset,
-) -> Result<Option<(i32, i32)>> {
+) -> Result<Option<(CompoundReferenceFacts, CompoundReferenceFacts)>> {
     if core.frame_type == Some(FrameType::Switch) {
         return Ok(None);
     }
-    let Some(frame_size) = core.frame_size else {
-        return Err(match path {
-            CompoundReferencePath::Opfl => {
-                inter_internal!("compound_opfl_missing_frame_size", tile_offset)
-            }
-            CompoundReferencePath::RefineMv => {
-                inter_internal!("compound_refinemv_missing_frame_size", tile_offset)
-            }
-        });
-    };
+    let frame_size = core
+        .frame_size
+        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
     let ref0 = compound_reference_facts(reference, ref_frame_idx, compound.ref_frame0)?;
     let ref1 = compound_reference_facts(reference, ref_frame_idx, compound.ref_frame1)?;
     if ref0.order_hint.is_restricted()
@@ -1380,10 +1325,7 @@ fn compound_sized_reference_distances<T: ReconSample>(
     {
         return Ok(None);
     }
-    let current = compound_current_order_hint(core);
-    let d0 = current.relative_dist(ref0.order_hint);
-    let d1 = current.relative_dist(ref1.order_hint);
-    Ok(Some((d0, d1)))
+    Ok(Some((ref0, ref1)))
 }
 
 fn compound_current_order_hint(core: &FrameHeaderCore) -> CompoundOrderHint {

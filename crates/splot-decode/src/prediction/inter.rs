@@ -1977,6 +1977,7 @@ fn validate_inter_frame_core(
         || core.setup_qm_params.is_none()
         || core.delta_q_params.is_none()
         || core.lossless_info.is_none()
+        || inter.opfl_refine_type.is_none()
         || sequence.inter.is_none()
         || core.deblocking_filter_params.is_none()
         || core.gdf_params.is_none()
