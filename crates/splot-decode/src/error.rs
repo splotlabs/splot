@@ -111,6 +111,12 @@ pub enum DecodeHeaderStateError {
     /// An inter tile's scheduled work set or ordered commit was inconsistent.
     #[error("inter-tile scheduling state is inconsistent")]
     InvalidInterTileSchedulingState,
+    /// An inter block's decoded mode or entropy state was internally inconsistent.
+    #[error("inter-block mode state is inconsistent")]
+    InvalidInterBlockModeState,
+    /// An inter tile's partition syntax or traversal state was internally inconsistent.
+    #[error("inter partition state is inconsistent")]
+    InvalidInterPartitionState,
     /// A complete inter header was missing mandatory frame-tool state.
     #[error("inter-frame tool state is incomplete")]
     IncompleteInterFrameTools,

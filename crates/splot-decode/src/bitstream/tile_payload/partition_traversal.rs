@@ -521,6 +521,8 @@ impl GeneralIntraLeafMode {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TilePartitionTraversalError {
+    #[error("partition traversal allocation failed: {0}")]
+    Allocation(#[from] std::collections::TryReserveError),
     #[error("partition traversal rejected by resource limit: {0}")]
     Limit(#[from] DecodeLimitError),
     #[error("partition traversal block-decoded state failed: {0}")]
@@ -543,6 +545,8 @@ pub(crate) enum TilePartitionTraversalError {
     Decision(#[from] PartitionDecisionError),
     #[error("partition traversal symbol initialization failed: {0}")]
     Symbol(#[from] splot_core::Error),
+    #[error("loop-restoration syntax symbol read failed: {0}")]
+    LoopRestorationSymbol(#[source] splot_core::Error),
     #[error("partition traversal CDF context failed: {0}")]
     Cdf(#[from] TileCdfError),
     #[error("partition traversal unsupported path: {0:?}")]

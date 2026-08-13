@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::error::SymbolCdfErrorKind;
 use splot_core::headers::sequence::{ChromaFormatIdc, SuperblockSize};
-use splot_core::span::ByteOffset;
+use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_recon::{
@@ -221,10 +222,9 @@ fn block_mode_failures_keep_typed_boundary() -> TestResult {
     let error = symbol_read_error(source, ByteOffset::new(42));
     assert!(matches!(
         error,
-        DecodeError::InternalState {
-            reason: "inter_block_mode_parse",
-            byte_offset,
-        } if byte_offset == ByteOffset::new(42)
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::InvalidInterBlockModeState,
+        }
     ));
 
     let selector = TileCdfSelector::SingleMode { ctx: 0 };
@@ -234,13 +234,16 @@ fn block_mode_failures_keep_typed_boundary() -> TestResult {
     let Err(source) = tile.read_block_symbol_trace(selector, &mut symbols) else {
         return Err("invalid inter CDF row must fail".into());
     };
+    assert!(matches!(
+        &source,
+        BlockSymbolTraceReadError::Symbol(splot_core::Error::InvalidSymbolCdf { .. })
+    ));
     let error = symbol_read_error(source, ByteOffset::new(43));
     assert!(matches!(
         error,
-        DecodeError::InternalState {
-            reason: "inter_block_mode_parse",
-            byte_offset,
-        } if byte_offset == ByteOffset::new(43)
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::InvalidInterBlockModeState,
+        }
     ));
     Ok(())
 }
@@ -343,18 +346,18 @@ fn single_ref_read_failures_keep_typed_boundary() -> TestResult {
 #[test]
 fn partition_walk_failures_keep_typed_boundaries() {
     let offset = ByteOffset::new(45);
-    let error = GeneralIntraMultiblockError::<DecodeError>::Walk(
+    let unsupported = GeneralIntraMultiblockError::<DecodeError>::Walk(
         GeneralIntraTreeWalkError::Traversal(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::ReadLoopRestoration,
         )),
     );
 
     assert!(matches!(
-        map_inter_multiblock_error(error, offset),
-        DecodeError::InternalState {
-            reason: "inter_partition_walk",
-            byte_offset,
-        } if byte_offset == offset
+        map_inter_multiblock_error(unsupported, offset),
+        DecodeError::UnsupportedFeature { unsupported }
+            if unsupported.reason() == "inter_partition_loop_restoration"
+                && unsupported.byte_offset() == Some(offset)
+                && unsupported.spec_section() == "5.20.10.4"
     ));
 
     let missing_sdp_luma =
@@ -376,27 +379,104 @@ fn partition_walk_failures_keep_typed_boundaries() {
         "internal SDP ordering failure must not become an unsupported or source diagnostic"
     );
 
+    let allocation = Vec::<u8>::new().try_reserve(usize::MAX);
+    assert!(allocation.is_err(), "impossible reservation must fail");
+    let Err(allocation) = allocation else {
+        return;
+    };
+    assert!(matches!(
+        map_inter_multiblock_error(
+            GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
+                TilePartitionTraversalError::Allocation(allocation,)
+            ),),
+            offset,
+        ),
+        DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                context: "inter partition traversal state",
+                ..
+            },
+        }
+    ));
+
+    let limit = crate::DecodeLimitError::HostAllocationTooLarge {
+        name: crate::DecodeLimitName::MaxTilePartitionSteps,
+        actual: u64::MAX,
+    };
+    assert!(matches!(
+        map_inter_multiblock_error(
+            GeneralIntraMultiblockError::<DecodeError>::Walk(
+                GeneralIntraTreeWalkError::Traversal(TilePartitionTraversalError::Limit(limit)),
+            ),
+            offset,
+        ),
+        DecodeError::Limit { source } if source == limit
+    ));
+
     for error in [
-        GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
-            TilePartitionTraversalError::Decision(PartitionDecisionError::Literal(
-                splot_core::Error::UnexpectedEof {
+        TilePartitionTraversalError::CoordinateOverflow {
+            coordinate: "partition-test",
+            base: usize::MAX,
+            offset: 1,
+        },
+        TilePartitionTraversalError::Decision(PartitionDecisionError::EmptyAllowedSet),
+        TilePartitionTraversalError::LoopRestorationSymbol(splot_core::Error::InvalidSymbolCdf {
+            offset: ByteOffset::new(0),
+            bit_offset: BitOffset::from_bits(0),
+            kind: SymbolCdfErrorKind::UnsupportedLength { len: 0 },
+        }),
+    ] {
+        assert!(matches!(
+            map_inter_multiblock_error(
+                GeneralIntraMultiblockError::<DecodeError>::Walk(
+                    GeneralIntraTreeWalkError::Traversal(error),
+                ),
+                offset,
+            ),
+            DecodeError::HeaderState {
+                source: DecodeHeaderStateError::InvalidInterPartitionState,
+            }
+        ));
+    }
+
+    for (error, spec_section) in [
+        (
+            GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
+                TilePartitionTraversalError::Decision(PartitionDecisionError::Literal(
+                    splot_core::Error::UnexpectedEof {
+                        offset: ByteOffset::new(0),
+                        needed: 1,
+                    },
+                )),
+            )),
+            "5.20.3.2",
+        ),
+        (
+            GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
+                TilePartitionTraversalError::Symbol(splot_core::Error::UnexpectedEof {
                     offset: ByteOffset::new(0),
                     needed: 1,
-                },
+                }),
             )),
-        )),
-        GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
-            TilePartitionTraversalError::Symbol(splot_core::Error::UnexpectedEof {
-                offset: ByteOffset::new(0),
-                needed: 1,
-            }),
-        )),
+            "5.20.3.1",
+        ),
+        (
+            GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
+                TilePartitionTraversalError::LoopRestorationSymbol(
+                    splot_core::Error::UnexpectedEof {
+                        offset: ByteOffset::new(0),
+                        needed: 1,
+                    },
+                ),
+            )),
+            "5.20.10.5",
+        ),
     ] {
         assert!(matches!(
             map_inter_multiblock_error(error, offset),
             DecodeError::MalformedSource { issue }
                 if issue.offset() == Some(offset)
-                    && issue.spec_section() == Some(super::super::SPEC_MODE_INFO)
+                    && issue.spec_section() == Some(spec_section)
         ));
     }
 }
