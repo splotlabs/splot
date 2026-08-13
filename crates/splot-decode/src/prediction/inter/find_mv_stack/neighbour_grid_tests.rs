@@ -7,6 +7,31 @@
 
 use super::{CWP_EQUAL, MotionMode, Mv, warp_sub_mv_at};
 use super::{NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid};
+use crate::prediction::TileGridConstructionError;
+
+#[test]
+fn mv_grid_constructor_classifies_geometry_and_allocation() {
+    let reversed = std::ops::Range { start: 5, end: 4 };
+    let grid = NeighbourMvGrid::new_for_tile(4..8, 8..12).unwrap();
+    assert_eq!((grid.origin_row, grid.origin_col), (4, 8));
+    assert_eq!((grid.mi_rows, grid.mi_cols), (4, 4));
+    assert!(matches!(
+        NeighbourMvGrid::new_for_tile(4..4, 8..12),
+        Err(TileGridConstructionError::EmptyDimensions)
+    ));
+    assert!(matches!(
+        NeighbourMvGrid::new_for_tile(reversed, 8..12),
+        Err(TileGridConstructionError::ReversedDimensions)
+    ));
+    assert!(matches!(
+        NeighbourMvGrid::new_for_tile(0..usize::MAX, 0..2),
+        Err(TileGridConstructionError::AreaOverflow)
+    ));
+    assert!(matches!(
+        NeighbourMvGrid::new_for_tile(0..usize::MAX, 0..1),
+        Err(TileGridConstructionError::Allocation)
+    ));
+}
 
 /// A 4x4 leaf at the grid origin whose flag half is already published, since
 /// the motion plane is only visible through a cell that carries both halves.

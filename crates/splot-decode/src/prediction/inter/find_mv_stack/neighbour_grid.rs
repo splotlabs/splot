@@ -17,6 +17,7 @@ use super::mv_grid_pool::take_neighbour_mv_planes;
 use super::{
     CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at,
 };
+use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
 
 /// Syntax facts read by neighbour context derivation during symbol decode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -319,16 +320,15 @@ impl NeighbourMvGrid {
     pub(crate) fn new_for_tile(
         mi_rows: core::ops::Range<usize>,
         mi_cols: core::ops::Range<usize>,
-    ) -> Option<Self> {
-        let rows = mi_rows.end.checked_sub(mi_rows.start)?;
-        let cols = mi_cols.end.checked_sub(mi_cols.start)?;
-        let cells = rows.checked_mul(cols)?;
-        Some(Self {
+    ) -> Result<Self, TileGridConstructionError> {
+        let (rows, cols, cells) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
+        Ok(Self {
             origin_row: mi_rows.start,
             origin_col: mi_cols.start,
             mi_rows: rows,
             mi_cols: cols,
-            planes: take_neighbour_mv_planes(cells),
+            planes: take_neighbour_mv_planes(cells)
+                .map_err(|_| TileGridConstructionError::Allocation)?,
             flag_log: Vec::new(),
             logging: false,
         })

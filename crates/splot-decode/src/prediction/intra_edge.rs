@@ -14,6 +14,7 @@ use std::ops::Range;
 
 use crate::bitstream::tile_payload::GeneralIntraResidualError;
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
+use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
 
 pub(crate) struct TileSmoothGrid {
     origin_row: usize,
@@ -28,16 +29,22 @@ pub(crate) type TileYSmoothGrid = TileSmoothGrid;
 pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
 
 impl TileSmoothGrid {
-    pub(crate) fn new_for_tile(mi_rows: Range<usize>, mi_cols: Range<usize>) -> Option<Self> {
-        let rows = mi_rows.end.checked_sub(mi_rows.start)?;
-        let cols = mi_cols.end.checked_sub(mi_cols.start)?;
-        let cells = rows.checked_mul(cols)?;
-        Some(Self {
+    pub(crate) fn new_for_tile(
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+    ) -> Result<Self, TileGridConstructionError> {
+        let (rows, cols, cell_count) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(cell_count)
+            .map_err(|_| TileGridConstructionError::Allocation)?;
+        cells.resize(cell_count, false);
+        Ok(Self {
             origin_row: mi_rows.start,
             origin_col: mi_cols.start,
             mi_rows: rows,
             mi_cols: cols,
-            cells: vec![false; cells],
+            cells,
         })
     }
 
