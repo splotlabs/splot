@@ -26,6 +26,7 @@ use ready_rows::{
 
 use super::super::MotionFieldHandle;
 use super::temporal::MotionFieldUnits;
+use crate::prediction::TileGridConstructionError;
 
 pub(super) struct TileDecodeOutput {
     pub(super) cdef_state: CdefState,
@@ -265,6 +266,26 @@ fn inter_tile_block_decoded_error(error: &TileBlockDecodedStateError) -> crate::
     }
 }
 
+fn inter_tile_grid_error(
+    error: &TileGridConstructionError,
+    allocation_context: &'static str,
+) -> crate::DecodeError {
+    match error {
+        TileGridConstructionError::Allocation => {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: allocation_context,
+            }
+            .into()
+        }
+        TileGridConstructionError::EmptyDimensions
+        | TileGridConstructionError::ReversedDimensions
+        | TileGridConstructionError::AreaOverflow => {
+            crate::DecodeHeaderStateError::InvalidInterTileConstructionState.into()
+        }
+    }
+}
+
 impl<'tile, 'payload> TileParser<'tile, 'payload> {
     fn new<T: ReconSample>(
         tile: &'tile mut DecodeTileWorkUnit<'payload>,
@@ -298,19 +319,19 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone())
                 .map_err(|error| inter_tile_segment_id_error(&error))?;
         let mv_grid = NeighbourMvGrid::new_for_tile(tile_rows.clone(), tile_cols.clone())
-            .ok_or(inter_internal!("inter_mv_grid", tile_offset))?;
+            .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
         let y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new_for_tile(
             tile_rows.clone(),
             tile_cols.clone(),
         )
-        .ok_or(inter_internal!("inter_y_smooth_grid", tile_offset))?;
+        .map_err(|error| inter_tile_grid_error(&error, "inter luma smooth grid"))?;
         let (chroma_rows, chroma_cols) =
             super::chroma_smooth_tile_ranges(tile_rows, tile_cols, chroma);
         let chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new_for_tile(
             chroma_rows,
             chroma_cols,
         )
-        .ok_or(inter_internal!("inter_chroma_smooth_grid", tile_offset))?;
+        .map_err(|error| inter_tile_grid_error(&error, "inter chroma smooth grid"))?;
         let walk =
             GeneralIntraMultiblockCursor::new(tile, context.sequence, context.core, context.limits)
                 .map_err(|error| {

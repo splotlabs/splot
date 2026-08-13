@@ -4,6 +4,28 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::prediction::TileGridConstructionError;
+
+#[test]
+fn smooth_grid_constructor_classifies_invalid_geometry_and_allocation() {
+    let reversed = std::ops::Range { start: 5, end: 4 };
+    assert!(matches!(
+        TileYSmoothGrid::new_for_tile(4..4, 8..12),
+        Err(TileGridConstructionError::EmptyDimensions)
+    ));
+    assert!(matches!(
+        TileYSmoothGrid::new_for_tile(reversed, 8..12),
+        Err(TileGridConstructionError::ReversedDimensions)
+    ));
+    assert!(matches!(
+        TileYSmoothGrid::new_for_tile(0..usize::MAX, 0..2),
+        Err(TileGridConstructionError::AreaOverflow)
+    ));
+    assert!(matches!(
+        TileYSmoothGrid::new_for_tile(0..usize::MAX, 0..1),
+        Err(TileGridConstructionError::Allocation)
+    ));
+}
 
 #[test]
 fn grid_records_and_reads_cells() {

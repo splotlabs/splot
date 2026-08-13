@@ -16,7 +16,7 @@ const MI_DIM: usize = 16;
 
 impl NeighbourMvGrid {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols)
+        Self::new_for_tile(0..mi_rows, 0..mi_cols).ok()
     }
 
     #[allow(clippy::too_many_arguments)]

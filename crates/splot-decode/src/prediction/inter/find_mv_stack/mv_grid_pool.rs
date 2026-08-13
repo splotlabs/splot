@@ -26,17 +26,20 @@ static RETAINED_NEIGHBOUR_MV_GRIDS: Mutex<Vec<GridPlanes>> = Mutex::new(Vec::new
 /// motion plane left empty on its retained allocation: a grid that only ever
 /// publishes flags — the split path's parse pass — never pays the motion fill,
 /// and the first `record_motion` sizes it. See `NeighbourMvGrid::motion_plane`.
-pub(super) fn take_neighbour_mv_planes(cells: usize) -> GridPlanes {
+pub(super) fn take_neighbour_mv_planes(
+    cells: usize,
+) -> Result<GridPlanes, std::collections::TryReserveError> {
     let mut planes = RETAINED_NEIGHBOUR_MV_GRIDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .pop()
         .unwrap_or_default();
     planes.flags.clear();
+    planes.flags.try_reserve_exact(cells)?;
     planes.flags.resize(cells, None);
     planes.motion.clear();
     planes.leaves.clear();
-    planes
+    Ok(planes)
 }
 
 fn recycle_neighbour_mv_planes(planes: GridPlanes) {

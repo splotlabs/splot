@@ -982,6 +982,22 @@ fn band_batches(
         .collect()
 }
 
+fn prepare_scheduled_motion(
+    mi_rows: core::ops::Range<usize>,
+    mi_cols: core::ops::Range<usize>,
+    motion_field: TemporalMotionField,
+    units: usize,
+    units_per_row: usize,
+    motion_handle: MotionFieldHandle,
+    started: Option<std::time::Instant>,
+) -> Result<(NeighbourMvGrid, MotionFieldUnits)> {
+    let grid = NeighbourMvGrid::new_for_tile(mi_rows, mi_cols)
+        .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
+    let motion =
+        MotionFieldUnits::publishing(motion_field, units, units_per_row, motion_handle, started);
+    Ok((grid, motion))
+}
+
 /// Resolves a parsed tile and turns each unit into owned admission state.
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
@@ -1042,7 +1058,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             },
         );
     }
-    let motion = MotionFieldUnits::publishing(
+    let (resolve_grid, motion) = prepare_scheduled_motion(
+        parsed.mi_rows.clone(),
+        parsed.mi_cols.clone(),
         motion_field,
         parsed
             .rows
@@ -1052,7 +1070,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         units_per_row,
         motion_handle,
         crate::timing::start(),
-    );
+    )?;
     let surfaces = if owned_bands {
         Vec::new()
     } else {
@@ -1170,8 +1188,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         resolve: Mutex::new(ScheduledResolve {
             next: 0,
             submitted_batches: 0,
-            grid: NeighbourMvGrid::new_for_tile(parsed.mi_rows.clone(), parsed.mi_cols.clone())
-                .ok_or(inter_internal!("inter_admission_mv_grid", tile_offset))?,
+            grid: resolve_grid,
             state: TileResolveState::new(&sequence),
         }),
         workers,
@@ -1194,6 +1211,42 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
 #[cfg(test)]
 mod tests {
     use super::safe_deblock_mi_end;
+
+    #[test]
+    fn admission_grid_failure_precedes_empty_motion_band_publication() -> Result<(), &'static str> {
+        let field = super::TemporalMotionField::new(8, 8).ok_or("valid motion field")?;
+        let handle = super::MotionFieldHandle::pending_with_layout(field.layout());
+        handle.publish_metadata(field.metadata());
+        let observer = handle.clone();
+
+        let result = super::prepare_scheduled_motion(1..1, 0..1, field, 0, 1, handle, None);
+
+        assert!(matches!(
+            result,
+            Err(crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidInterTileConstructionState
+            })
+        ));
+        assert!(observer.band(0).is_none());
+        assert!(observer.field().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn successful_admission_grid_construction_allows_empty_band_publication()
+    -> Result<(), &'static str> {
+        let field = super::TemporalMotionField::new(8, 8).ok_or("valid motion field")?;
+        let handle = super::MotionFieldHandle::pending_with_layout(field.layout());
+        handle.publish_metadata(field.metadata());
+        let observer = handle.clone();
+
+        let _state = super::prepare_scheduled_motion(0..8, 0..8, field, 0, 1, handle, None)
+            .map_err(|_| "valid scheduled motion")?;
+
+        assert!(observer.band(0).is_some());
+        assert!(observer.field().is_some());
+        Ok(())
+    }
 
     fn frontier(
         completed_units: usize,

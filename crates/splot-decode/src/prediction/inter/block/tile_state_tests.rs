@@ -69,6 +69,31 @@ fn inter_tile_constructors_accept_nonempty_boundary_geometry() {
     assert!(TileSegmentIdState::new_for_tile(7..8, 9..10).is_ok());
     assert!(TileBlockDecodedState::new(1, 1, 1, 1, 1, 1).is_ok());
     assert!(TileBlockDecodedState::new(3, 1, 1, 32, 32, 32).is_ok());
+    assert!(NeighbourMvGrid::new_for_tile(7..8, 9..10).is_ok());
+    assert!(crate::prediction::intra_edge::TileYSmoothGrid::new_for_tile(7..8, 9..10).is_ok());
+}
+
+#[test]
+fn inter_tile_grid_mapper_exhaustively_separates_state_from_allocation() {
+    for error in [
+        TileGridConstructionError::EmptyDimensions,
+        TileGridConstructionError::ReversedDimensions,
+        TileGridConstructionError::AreaOverflow,
+    ] {
+        assert_invalid_tile_state(&inter_tile_grid_error(&error, "unused"));
+    }
+
+    for context in [
+        "inter parser MV grid",
+        "inter luma smooth grid",
+        "inter chroma smooth grid",
+        "inter admission MV grid",
+    ] {
+        assert_workspace_allocation(
+            &inter_tile_grid_error(&TileGridConstructionError::Allocation, context),
+            context,
+        );
+    }
 }
 
 #[test]
