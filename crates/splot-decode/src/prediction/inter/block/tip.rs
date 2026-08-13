@@ -406,21 +406,27 @@ pub(super) fn prepare_motion_field(
     temporal: &mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,
-) {
-    let Some(inter) = core.inter.as_ref() else {
-        return;
-    };
+    references: Option<super::TipReferencePair>,
+) -> Result<()> {
     let projection_step = tmvp_projection_step(core);
     let tmvp_unit_size8 = tmvp_unit_size8(projection_step, sb_h4);
-    if inter.tip_frame_mode == Some(TipFrameMode::Disabled) {
+    let Some(inter) = core.inter.as_ref() else {
         temporal.fill_sampling_gaps(projection_step, tmvp_unit_size8);
-        return;
+        return Ok(());
+    };
+    let tip_mode = inter
+        .tip_frame_mode
+        .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
+    if tip_mode == TipFrameMode::Disabled {
+        temporal.fill_sampling_gaps(projection_step, tmvp_unit_size8);
+        return Ok(());
     }
-    _ = temporal.prepare_tip(
-        projection_step,
-        tmvp_unit_size8,
-        inter.allow_tip_hole_fill.unwrap_or(false),
-    );
+    let references = references.ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+    let fill_holes = inter
+        .allow_tip_hole_fill
+        .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
+    temporal.prepare_tip(references, projection_step, tmvp_unit_size8, fill_holes)?;
+    Ok(())
 }
 
 pub(super) fn tmvp_projection_step(core: &FrameHeaderCore) -> usize {
@@ -1132,43 +1138,46 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let (mi_rows, mi_cols) = geometry.mi_dimensions();
     let sb_h4 = geometry.sb_h4();
     let projection_step = tmvp_projection_step(core);
-    let ref_motion_fields = reference
-        .resolve_motion_fields(ref_frame_idx)
-        .ok_or(DecodeReferenceStateError::MissingMotionFieldPublication)?;
     let current_order_hint = core
         .display_order_hint()
         .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
+    if sequence.partition.is_none() {
+        return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
+    }
+    let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
     let temporal = decode_scratch
         .temporal_context
         .get_or_insert_with(TemporalMvContext::empty);
-    temporal
-        .refresh_from_references(
-            (mi_rows, mi_cols),
-            current_order_hint,
-            TemporalProjectionConfig {
-                frame_size: (width, height),
-                step: projection_step,
-                unit_size8: tmvp_unit_size8(projection_step, sb_h4),
-                enable_tip: sequence
-                    .inter
-                    .as_ref()
-                    .is_some_and(|tools| tools.enable_tip),
-                enable_trajectory: sequence
-                    .inter
-                    .as_ref()
-                    .is_some_and(|tools| tools.enable_mv_traj),
-                reduced: sequence
-                    .inter
-                    .as_ref()
-                    .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
-            },
-            ref_frame_idx,
-            &reference.ref_valid,
-            &reference.ref_order_hint,
-            &ref_motion_fields,
-        )
-        .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-    prepare_motion_field(temporal, core, sb_h4);
+    temporal.refresh_from_references(
+        (mi_rows, mi_cols),
+        current_order_hint,
+        TemporalProjectionConfig {
+            frame_size: (width, height),
+            step: projection_step,
+            unit_size8: tmvp_unit_size8(projection_step, sb_h4),
+            enable_tip: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.enable_tip),
+            enable_trajectory: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.enable_mv_traj),
+            reduced: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
+        },
+        ref_frame_idx,
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+        &ref_motion_fields,
+    )?;
+    let tip_pair = super::super::find_mv_stack::tip_reference_pair_from_hints(
+        current_order_hint,
+        temporal.reference_order_hints(),
+    );
+    prepare_motion_field(temporal, core, sb_h4, tip_pair)?;
     let global_mv = inter
         .tip_global_mv
         .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;

@@ -26,6 +26,21 @@ fn temporal_grid_rejects_impossible_capacity() {
 }
 
 #[test]
+fn projected_temporal_reset_reports_allocation_failure() {
+    let mut field = ProjectedTemporalMotionField::default();
+    let result = field.reset(2, usize::MAX);
+    assert!(matches!(
+        &result,
+        Err(crate::DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: splot_recon::PlaneId::Y,
+                context: "inter projected temporal motion field"
+            }
+        })
+    ));
+}
+
+#[test]
 fn compact_temporal_motion_preserves_every_warp_shape() {
     let mvs = [Mv { row: 9, col: -7 }, Mv { row: -5, col: 3 }];
     let first = [1 << 16, 0, 2 << 16, 0, 1 << 16, -(1 << 16)];
@@ -558,7 +573,8 @@ fn tip_projection_fills_unsampled_units_and_adds_the_block_mv() {
     let mut context = tip_context(10, vec![Some(8), Some(12)], 4, 4);
     context.field.set(0, 0, Mv { row: 8, col: -16 }, 4, true);
 
-    assert!(context.prepare_tip(2, 2, false));
+    let references = context.tip_reference_pair().unwrap();
+    assert!(context.prepare_tip(references, 2, 2, false).is_ok());
     assert_eq!(context.tip_references(), context.tip_reference_pair());
     let expected = [Mv { row: 5, col: -6 }, Mv { row: -3, col: 10 }];
     for y8 in 0..2 {
@@ -585,7 +601,8 @@ fn tip_temporal_scaling_clamps_to_the_reference_mv_domain() {
         true,
     );
 
-    assert!(context.prepare_tip(1, 8, false));
+    let references = context.tip_reference_pair().unwrap();
+    assert!(context.prepare_tip(references, 1, 8, false).is_ok());
     assert_eq!(
         context.field.cell(0, 0),
         Some(ProjectedTemporalMotionCell {
@@ -604,7 +621,8 @@ fn tip_step_one_hole_fill_stays_within_64_pixel_tmvp_units() {
     let mut context = tip_context(10, vec![Some(8), Some(12)], 2, 32);
     context.field.set(0, 7, Mv { row: 8, col: -16 }, 4, true);
 
-    assert!(context.prepare_tip(1, 16, true));
+    let references = context.tip_reference_pair().unwrap();
+    assert!(context.prepare_tip(references, 1, 16, true).is_ok());
     assert_eq!(context.tip_candidate(0, 8, Mv::ZERO), Some([Mv::ZERO; 2]));
 }
 
@@ -632,7 +650,8 @@ fn tip_newly_averaged_sample_keeps_the_scaled_reference_offset() {
     let mut context = tip_context(10, vec![Some(6), Some(15)], 2, 32);
     context.field.set(0, 14, Mv { row: 18, col: -36 }, 9, true);
 
-    assert!(context.prepare_tip(2, 16, true));
+    let references = context.tip_reference_pair().unwrap();
+    assert!(context.prepare_tip(references, 2, 16, true).is_ok());
     let cell = context.field.cell(0, 11).unwrap();
     assert_eq!(
         cell,
@@ -652,10 +671,11 @@ fn tip_averaging_never_inherits_the_previous_frame_between_sampled_cells() {
             context.field.set(y8, x8, Mv { row: 18, col: -36 }, 9, true);
         }
     }
-    assert!(context.prepare_tip(1, 8, true));
+    let references = context.tip_reference_pair().unwrap();
+    assert!(context.prepare_tip(references, 1, 8, true).is_ok());
 
     context.field.reset(4, 8).unwrap();
-    assert!(context.prepare_tip(2, 16, true));
+    assert!(context.prepare_tip(references, 2, 16, true).is_ok());
 
     for y8 in 0..2 {
         for x8 in 0..4 {
@@ -715,4 +735,39 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     assert_eq!(trajectories.fields[0].cells.as_ptr(), trajectory_ptr);
     assert_eq!(trajectories.positions[0].as_ptr(), positions_ptr);
     assert_eq!(trajectories.projection_offsets.as_ptr(), offsets_ptr);
+}
+
+#[test]
+fn refresh_rejects_a_malformed_selected_projection_source() {
+    let mut past = TemporalMotionField::empty();
+    past.set_reference_metadata(true, (0, 0), &[Some(12)]);
+    let mut future = TemporalMotionField::empty();
+    future.set_reference_metadata(true, (0, 0), &[Some(8)]);
+    let mut context = TemporalMvContext::empty();
+
+    let result = context.refresh_from_references(
+        (0, 0),
+        10,
+        TemporalProjectionConfig {
+            frame_size: (0, 0),
+            step: 1,
+            unit_size8: 8,
+            enable_tip: false,
+            enable_trajectory: false,
+            reduced: false,
+        },
+        &[0, 1],
+        &[true, true],
+        &[8, 12],
+        &[Some(Arc::new(past)), Some(Arc::new(future))],
+    );
+    assert!(matches!(
+        result,
+        Err(crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterTemporalMotionState
+        })
+    ));
+    if let Err(error) = result {
+        assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
 }

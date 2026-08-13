@@ -108,7 +108,6 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
     let (frame_cdfs, filter_inputs, segment_ids) = decode_inter_blocks::<T>(
         scratch,
         tile_plan,
-        frame_envelope,
         sequence,
         &core,
         options,

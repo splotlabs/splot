@@ -129,7 +129,6 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
 pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
     tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     mut records: crate::filters::wienerns_lr::FrameFilterRecords,
-    frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
@@ -139,7 +138,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
 ) -> Result<InterFrameParse> {
     let setup = derive_inter_block_setup(
         std::slice::from_mut(tile),
-        frame_envelope,
         sequence,
         core,
         options,

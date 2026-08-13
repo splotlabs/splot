@@ -106,7 +106,6 @@ fn project_temporal_band(
     plan.project(temporal, index, |slot, band| {
         reference_fields.get(slot)?.as_ref()?.band(band).cloned()
     })
-    .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
 }
 
 #[allow(clippy::large_enum_variant)]

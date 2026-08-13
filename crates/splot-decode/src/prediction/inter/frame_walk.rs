@@ -436,7 +436,6 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     let parse = parse_inter_frame_blocks(
         tile,
         records,
-        frame_envelope,
         &sequence,
         &core,
         options,

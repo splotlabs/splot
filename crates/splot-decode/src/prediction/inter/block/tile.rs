@@ -1291,7 +1291,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         .entries
         .iter()
         .all(|entry| !matches!(entry.command(), Some(ReconCommand::Inter(_))));
-    if row.motion_folded {
+    if row.motion_folded && !row.superblocks.is_empty() {
         for entry in &mut row.entries {
             if let Some(clear) = entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint) {
                 let start = row.temporal.len();

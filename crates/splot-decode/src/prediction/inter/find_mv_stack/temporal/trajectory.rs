@@ -419,16 +419,41 @@ impl OwnedTrajectoryBand {
         reference_count: usize,
         step: usize,
         unit_size8: usize,
-    ) -> Option<Self> {
+    ) -> crate::Result<Self> {
         if reference_count > MAX_TRAJECTORY_REFERENCES {
-            return None;
+            return Err(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
         }
-        let cell_count = width8.checked_mul(row_count)?;
-        let total_cells = cell_count.checked_mul(reference_count)?;
-        Some(Self {
-            fields: vec![PackedTrajectoryMv::INVALID; total_cells],
-            positions: vec![TrajectoryPositions::EMPTY; total_cells],
-            projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
+        let cell_count = width8
+            .checked_mul(row_count)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        let total_cells = cell_count
+            .checked_mul(reference_count)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        let allocation = || {
+            crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: splot_recon::PlaneId::Y,
+                context: "inter temporal trajectory band",
+            })
+        };
+        let mut fields = Vec::new();
+        fields
+            .try_reserve_exact(total_cells)
+            .map_err(|_| allocation())?;
+        fields.resize(total_cells, PackedTrajectoryMv::INVALID);
+        let mut positions = Vec::new();
+        positions
+            .try_reserve_exact(total_cells)
+            .map_err(|_| allocation())?;
+        positions.resize(total_cells, TrajectoryPositions::EMPTY);
+        let mut projection_offsets = Vec::new();
+        projection_offsets
+            .try_reserve_exact(cell_count)
+            .map_err(|_| allocation())?;
+        projection_offsets.resize(cell_count, INVALID_PROJECTION_OFFSET);
+        Ok(Self {
+            fields,
+            positions,
+            projection_offsets,
             cells_per_reference: cell_count,
             row_base,
             step: step.clamp(1, 2),
@@ -946,7 +971,7 @@ mod tests {
 
     #[test]
     fn owned_band_rejects_more_than_seven_references() {
-        assert!(OwnedTrajectoryBand::new(1, 1, 0, 1, 8, 1, 8).is_none());
+        assert!(OwnedTrajectoryBand::new(1, 1, 0, 1, 8, 1, 8).is_err());
     }
 
     #[test]

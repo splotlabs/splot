@@ -36,7 +36,7 @@ use super::read_mv::{
 use super::single_ref::SingleRefReadError;
 use super::{
     BawpSyntax, CcsoGridHandle, InterBlock, InterIntraPrediction, InterReferenceState,
-    InterResidual, InterResidualBlock, MotionFieldHandle, Mv, PlacedInterBlock,
+    InterResidual, InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
     SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc,
 };
 use crate::bitstream::tile_payload::{
@@ -279,7 +279,6 @@ pub(crate) struct InterBlockFacts {
 #[allow(clippy::too_many_arguments)]
 fn derive_inter_block_setup<T: ReconSample>(
     work_units: &[DecodeTileWorkUnit<'_>],
-    frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
@@ -297,7 +296,6 @@ fn derive_inter_block_setup<T: ReconSample>(
         luma_use_tcq,
         residual_use_ddt,
     } = facts;
-    let offset = frame_envelope.offset;
     let frame_is_intra = geometry.frame_is_intra();
     let bit_depth = geometry.info().bit_depth();
     let first_tile = work_units
@@ -348,6 +346,7 @@ fn derive_inter_block_setup<T: ReconSample>(
     let motion_field = geometry
         .new_motion_field(&derived_order_hints)
         .ok_or(inter_allocation!("inter temporal motion field"))?;
+    let motion_layout = motion_field.layout();
     let cdef_state = CdefState::new(mi_rows, mi_cols, sequence)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
     let ref_ccso_unit_grids = reference
@@ -407,10 +406,10 @@ fn derive_inter_block_setup<T: ReconSample>(
         params,
         prelude: TemporalPrelude {
             geometry,
+            motion_layout,
             current_order_hint,
             config: temporal_config,
             expected_tip_pair,
-            offset,
         },
         cdef_state,
         gdf_state,
@@ -447,7 +446,6 @@ fn finish_frame_cdfs(
 pub(crate) fn decode_inter_blocks<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
-    frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
@@ -463,7 +461,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let work_units = tile_plan.work_units_mut();
     let setup = derive_inter_block_setup(
         work_units,
-        frame_envelope,
         sequence,
         core,
         options,
@@ -572,10 +569,10 @@ fn frame_segment_id_map(mi_rows: usize, mi_cols: usize) -> Result<FrameSegmentId
 #[derive(Clone, Copy)]
 pub(crate) struct TemporalPrelude {
     geometry: super::FrameDecodeGeometry,
+    motion_layout: MotionFieldLayout,
     current_order_hint: u32,
     config: TemporalProjectionConfig,
     expected_tip_pair: Option<TipReferencePair>,
-    offset: ByteOffset,
 }
 
 impl TemporalPrelude {
@@ -596,7 +593,6 @@ impl TemporalPrelude {
             ref_frame_idx,
             reference,
             self.expected_tip_pair,
-            self.offset,
         )
     }
 
@@ -607,40 +603,27 @@ impl TemporalPrelude {
         ref_frame_idx: &[u32],
         reference: &InterReferenceState<T>,
     ) -> Result<super::find_mv_stack::TemporalBandPlan> {
-        let metadata = reference
-            .ref_motion_fields
-            .iter()
-            .map(|field| {
-                field
-                    .as_ref()
-                    .and_then(|field| field.metadata().map(|metadata| metadata.as_ref().clone()))
-            })
-            .collect::<Vec<_>>();
-        let layouts = reference
-            .ref_motion_fields
-            .iter()
-            .map(|field| field.as_ref().map(MotionFieldHandle::layout))
-            .collect::<Vec<_>>();
-        let target_layout = self.geometry.motion_layout();
-        let (mi_rows, mi_cols) = self.geometry.mi_dimensions();
-        if target_layout.height8() != mi_rows.div_ceil(2)
-            || target_layout.width8() != mi_cols.div_ceil(2)
-            || target_layout.band_rows8() != self.geometry.sb_h4() / 2
-        {
-            return Err(inter_internal!(
-                "inter_scheduled_temporal_motion_layout",
-                self.offset
-            ));
+        let (metadata, layouts) =
+            scheduled_motion_field_inputs(&reference.ref_motion_fields, ref_frame_idx)?;
+        let inter = core
+            .inter
+            .as_ref()
+            .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
+        let tip_mode = inter
+            .tip_frame_mode
+            .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
+        let tip_active = tip_mode != TipFrameMode::Disabled;
+        let fill_tip_holes = if tip_active {
+            inter
+                .allow_tip_hole_fill
+                .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?
+        } else {
+            false
+        };
+        if tip_active && self.expected_tip_pair.is_none() {
+            return Err(DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
         }
-        let tip_mode = core
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.tip_frame_mode != Some(TipFrameMode::Disabled));
-        let fill_tip_holes = core
-            .inter
-            .as_ref()
-            .and_then(|inter| inter.allow_tip_hole_fill)
-            .unwrap_or(false);
+        let target_layout = self.motion_layout;
         temporal_context
             .begin_banded_refresh(
                 target_layout,
@@ -652,23 +635,54 @@ impl TemporalPrelude {
                 &metadata,
                 &layouts,
                 self.expected_tip_pair,
-                tip_mode,
+                tip_active,
                 fill_tip_holes,
             )
-            .ok_or(inter_internal!(
-                "inter_scheduled_temporal_motion_context",
-                self.offset
-            ))
+            .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
     }
+}
+
+type ScheduledMotionFieldInputs = (
+    Vec<Option<super::find_mv_stack::TemporalMotionFieldMetadata>>,
+    Vec<Option<MotionFieldLayout>>,
+);
+
+fn scheduled_motion_field_inputs(
+    fields: &[Option<MotionFieldHandle>],
+    selected: &[u32],
+) -> Result<ScheduledMotionFieldInputs> {
+    for &slot in selected {
+        if fields
+            .get(slot as usize)
+            .and_then(Option::as_ref)
+            .and_then(MotionFieldHandle::metadata)
+            .is_none()
+        {
+            return Err(DecodeReferenceStateError::MissingMotionFieldPublication.into());
+        }
+    }
+    Ok((
+        fields
+            .iter()
+            .map(|field| {
+                field
+                    .as_ref()
+                    .and_then(MotionFieldHandle::metadata)
+                    .map(|metadata| metadata.as_ref().clone())
+            })
+            .collect(),
+        fields
+            .iter()
+            .map(|field| field.as_ref().map(MotionFieldHandle::layout))
+            .collect(),
+    ))
 }
 
 /// Runs the AV2 § 7.9 temporal prelude: reference motion-field projection and
 /// the § 7.11.3 TIP motion field.
 ///
-/// The entropy pass reads the resulting TIP reference pair, and the driver
-/// derived that pair from the reference order hints alone before the prelude
-/// ran, so a disagreement means the prelude could not build the field the parse
-/// pass assumed and the frame fails closed.
+/// The driver derives the TIP reference pair once and passes that exact pair to
+/// both the entropy pass and this prelude.
 #[allow(clippy::too_many_arguments)]
 fn frame_temporal_context<'a, T: ReconSample>(
     temporal_context: &'a mut TemporalMvContext,
@@ -680,37 +694,22 @@ fn frame_temporal_context<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     expected_tip_pair: Option<TipReferencePair>,
-    offset: ByteOffset,
 ) -> Result<&'a mut TemporalMvContext> {
     let temporal_timer = crate::timing::start();
-    let ref_motion_fields =
-        reference
-            .resolve_motion_fields(ref_frame_idx)
-            .ok_or(inter_internal!(
-                "inter_reference_motion_field_unpublished",
-                offset
-            ))?;
-    temporal_context
-        .refresh_from_references(
-            dimensions,
-            current_order_hint,
-            temporal_config,
-            ref_frame_idx,
-            &reference.ref_valid,
-            &reference.ref_order_hint,
-            &ref_motion_fields,
-        )
-        .ok_or(inter_internal!(
-            "inter_fused_temporal_motion_context",
-            offset
-        ))?;
+    let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
+    temporal_context.refresh_from_references(
+        dimensions,
+        current_order_hint,
+        temporal_config,
+        ref_frame_idx,
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+        &ref_motion_fields,
+    )?;
     crate::timing::report("inter_temporal_refresh", temporal_timer);
     let tip_prepare_timer = crate::timing::start();
-    tip::prepare_motion_field(temporal_context, core, sb_h4);
+    tip::prepare_motion_field(temporal_context, core, sb_h4, expected_tip_pair)?;
     crate::timing::report("inter_tip_prepare", tip_prepare_timer);
-    if temporal_context.tip_references() != expected_tip_pair {
-        return Err(inter_internal!("inter_tip_reference_pair_mismatch", offset));
-    }
     Ok(temporal_context)
 }
 /// AV2 § 7.12.2 TIP reference pair as the entropy pass sees it.
@@ -718,8 +717,7 @@ fn frame_temporal_context<'a, T: ReconSample>(
 /// [`tip::prepare_motion_field`] leaves the projected field's pair set exactly
 /// when the frame enables TIP and the reference order hints admit a pair, and
 /// that derivation reads no motion field, so the driver can settle it before
-/// the temporal prelude runs. `decode_inter_blocks` fails closed if the two
-/// ever disagree.
+/// the temporal prelude runs.
 fn derived_tip_reference_pair(
     core: &FrameHeaderCore,
     ref_order_hints: &[Option<u32>],
