@@ -522,10 +522,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 terminal,
             )
         {
-            let filter = filter.as_ref().ok_or(inter_internal!(
-                "inter_admission_frontier_filter_owner",
-                self.tile_offset
-            ))?;
+            let filter = filter
+                .as_ref()
+                .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
             debug_assert!(
                 sealed_rows.is_none_or(|rows| {
                     deblock
@@ -560,6 +559,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 let Some(window) = window else {
                     break;
                 };
+                filters
+                    .try_reserve(1)
+                    .map_err(|_| inter_allocation!("inter admission filter jobs"))?;
                 filters.push(filter.owned_job(stripe, window));
                 *next_filter_stripe += 1;
             }
@@ -570,32 +572,24 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 output: None,
             });
         }
-        self.finish_frontier(&mut frontier, filters)
+        Self::finish_frontier(&mut frontier, filters)
     }
 
     /// Completes the frame's filter stripes after the final frontier link.
     fn finish_frontier(
-        &self,
         frontier: &mut ScheduledFrontier<T>,
         mut filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
     ) -> Result<ScheduledTileProgress<T>> {
+        let filter = frontier
+            .filter
+            .take()
+            .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
         if let Some(deblock) = frontier.deblock.take() {
             let records = deblock
                 .finish()
                 .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
-            frontier
-                .filter
-                .as_ref()
-                .ok_or(inter_internal!(
-                    "inter_admission_deblock_filter_owner",
-                    self.tile_offset
-                ))?
-                .restore_deblock_records(records)?;
+            filter.restore_deblock_records(records)?;
         }
-        let filter = frontier.filter.as_ref().ok_or(inter_internal!(
-            "inter_admission_terminal_filter_owner",
-            self.tile_offset
-        ))?;
         while frontier.next_filter_stripe < filter.stripe_ranges().len() {
             let stripe = frontier.next_filter_stripe;
             let window = match (
@@ -608,12 +602,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 (Some(bands), _) => filter.extract_terminal_band_window(stripe, bands)?,
                 (None, Some(filtered)) => filter.extract_terminal_window(stripe, filtered)?,
                 (None, None) => {
-                    return Err(inter_internal!(
-                        "inter_admission_terminal_filter_source",
-                        self.tile_offset
-                    ));
+                    return Err(crate::filters::wienerns_lr::recon::lr_pipeline_state_error());
                 }
             };
+            filters
+                .try_reserve(1)
+                .map_err(|_| inter_allocation!("inter admission filter jobs"))?;
             filters.push(filter.owned_job(stripe, window));
             frontier.next_filter_stripe += 1;
         }
@@ -623,10 +617,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         {
             workspace.recycle_planes();
         }
-        let filter = frontier.filter.take().ok_or(inter_internal!(
-            "inter_admission_finish_filter_owner",
-            self.tile_offset
-        ))?;
         Ok(ScheduledTileProgress {
             filters,
             output: Some(ScheduledTileOutput {
