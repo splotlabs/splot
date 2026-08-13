@@ -35,7 +35,7 @@ use splot_core::types::ObuType;
 
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
-pub(crate) use block_decoded_state::TileBlockDecodedState;
+pub(crate) use block_decoded_state::{TileBlockDecodedState, TileBlockDecodedStateError};
 #[cfg(test)]
 pub(crate) use cdf::block_context::IntraJointMode;
 pub(crate) use cdf::block_context::{
