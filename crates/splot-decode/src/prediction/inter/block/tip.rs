@@ -1187,12 +1187,17 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
             visible_luma_rect,
         )?;
-    let mut motion_field =
-        TemporalMotionField::new(mi_rows, mi_cols).ok_or(ReconError::ArithmeticOverflow {
-            context: "TIP-output motion field",
-        })?;
+    let mut motion_field = TemporalMotionField::new_with_metadata(
+        mi_rows,
+        mi_cols,
+        true,
+        (width, height),
+        temporal.reference_order_hints(),
+    )
+    .ok_or(ReconError::ArithmeticOverflow {
+        context: "TIP-output motion field",
+    })?;
     motion_field.set_band_rows8(sb_h4 / 2);
-    motion_field.set_reference_metadata(true, (width, height), temporal.reference_order_hints());
     let placed = PlacedInterBlock {
         luma_x: 0,
         luma_y: 0,

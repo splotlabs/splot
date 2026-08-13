@@ -236,6 +236,32 @@ fn reference_order_hints_exclude_invalid_slots() {
 }
 
 #[test]
+fn metadata_constructor_matches_delayed_reference_resolution() {
+    let ref_order_hints = [Some(1), None, Some(3)];
+    let block = TemporalMotionBlock::new(
+        0,
+        0,
+        2,
+        2,
+        2,
+        2,
+        4,
+        [Some(3), Some(1)],
+        [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
+        [None; 2],
+    );
+    let mut delayed = TemporalMotionField::new(2, 2).unwrap();
+    delayed.record_block(block);
+    delayed.set_reference_metadata(true, (8, 8), &ref_order_hints);
+
+    let mut immediate =
+        TemporalMotionField::new_with_metadata(2, 2, true, (8, 8), &ref_order_hints).unwrap();
+    immediate.record_block(block);
+
+    assert_eq!(immediate, delayed);
+}
+
+#[test]
 fn single_reference_motion_is_stored_in_both_slots() {
     for source_list in 0..2 {
         let mut field = TemporalMotionField::new(2, 2).unwrap();
