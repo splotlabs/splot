@@ -193,13 +193,14 @@ impl TemporalMotionField {
             height8: 0,
             band_rows8: 8,
             storage: TemporalMotionStorage::Contiguous(Vec::new()),
-            pending_ref_hints: Some(Vec::new()),
+            pending_ref_hints: None,
             is_inter: false,
             frame_size: None,
             ref_order_hints: Vec::new(),
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
         let pending_ref_hints = vec![[u32::MAX; 2]; cells.len()];
@@ -215,6 +216,27 @@ impl TemporalMotionField {
         })
     }
 
+    pub(crate) fn new_with_metadata(
+        mi_rows: usize,
+        mi_cols: usize,
+        is_inter: bool,
+        frame_size: (usize, usize),
+        ref_order_hints: &[Option<u32>],
+    ) -> Option<Self> {
+        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        Some(Self {
+            width8,
+            height8,
+            band_rows8: 8,
+            storage: TemporalMotionStorage::Contiguous(cells),
+            pending_ref_hints: None,
+            is_inter,
+            frame_size: Some(frame_size),
+            ref_order_hints: ref_order_hints.to_vec(),
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_reference_metadata(
         &mut self,
         is_inter: bool,

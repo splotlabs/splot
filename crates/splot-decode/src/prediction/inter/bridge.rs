@@ -76,8 +76,13 @@ pub(crate) fn motion_field(
     let height = usize::try_from(frame_size.height).ok()?;
     let mi_cols = 2usize.checked_mul(width.checked_add(7)? >> 3)?;
     let mi_rows = 2usize.checked_mul(height.checked_add(7)? >> 3)?;
-    let mut field = TemporalMotionField::new(mi_rows, mi_cols)?;
-    field.set_reference_metadata(true, (width, height), &[Some(reference_order_hint)]);
+    let mut field = TemporalMotionField::new_with_metadata(
+        mi_rows,
+        mi_cols,
+        true,
+        (width, height),
+        &[Some(reference_order_hint)],
+    )?;
     field.record_block(TemporalMotionBlock::new(
         0,
         0,

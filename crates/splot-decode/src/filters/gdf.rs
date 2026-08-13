@@ -907,12 +907,17 @@ fn source_bounds(
     })
 }
 
-fn resize_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
-    buffer.clear();
-    buffer
-        .try_reserve_exact(len)
-        .map_err(|_| gdf_allocation_error())?;
-    buffer.resize(len, T::default());
+fn resize_overwrite_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
+    if len > buffer.len() {
+        let additional = len - buffer.len();
+        if buffer.try_reserve_exact(additional).is_err() {
+            buffer.clear();
+            return Err(gdf_allocation_error());
+        }
+        buffer.resize(len, T::default());
+    } else {
+        buffer.truncate(len);
+    }
     Ok(())
 }
 
@@ -1016,7 +1021,7 @@ impl<'a> GdfSource<'a> {
             .checked_add(GDF_READ_RADIUS * 2)
             .ok_or_else(gdf_state_error)?;
         let sample_count = width.checked_mul(height).ok_or_else(gdf_state_error)?;
-        resize_scratch(samples, sample_count)?;
+        resize_overwrite_scratch(samples, sample_count)?;
         let radius = isize::try_from(GDF_READ_RADIUS).map_err(|_| gdf_state_error())?;
         let origin_x = isize::try_from(block.x).map_err(|_| gdf_state_error())? - radius;
         let origin_y = isize::try_from(block.y).map_err(|_| gdf_state_error())? - radius;
@@ -1127,7 +1132,7 @@ fn band_gradients(
     let len = GDF_DIRECTIONS
         .checked_mul(plane)
         .ok_or_else(gdf_state_error)?;
-    resize_scratch(grad, len)?;
+    resize_overwrite_scratch(grad, len)?;
     for i in 0..rows {
         for j in 0..cols {
             let sample_col = source_origin.0 - 1 + j;
@@ -1204,7 +1209,7 @@ fn band_classes(
     let len = class_rows
         .checked_mul(class_cols)
         .ok_or_else(gdf_state_error)?;
-    resize_scratch(classes, len)?;
+    resize_overwrite_scratch(classes, len)?;
     for i in 0..class_rows {
         for j in 0..class_cols {
             let mut strengths = [0_u32; GDF_DIRECTIONS];
@@ -1236,8 +1241,8 @@ fn gradient_pair_row(
     output: &mut Vec<[u16; GDF_DIRECTIONS]>,
     tmp: &mut Vec<[u16; GDF_DIRECTIONS]>,
 ) -> Result<()> {
-    resize_scratch(tmp, class_cols + 1)?;
-    resize_scratch(output, class_cols)?;
+    resize_overwrite_scratch(tmp, class_cols + 1)?;
+    resize_overwrite_scratch(output, class_cols)?;
     let base_row = source_origin.1 - 1 + row_pair * 2;
     let base_col = source_origin.0 - 1;
     let source_error = gdf_state_error;
@@ -1339,7 +1344,7 @@ fn band_classes_from_source(
     let len = class_rows
         .checked_mul(class_cols)
         .ok_or_else(gdf_state_error)?;
-    resize_scratch(classes, len)?;
+    resize_overwrite_scratch(classes, len)?;
     let [previous, current] = gradient_pairs;
     gradient_pair_row(source, source_origin, 0, class_cols, previous, gradient_tmp)?;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
@@ -1651,11 +1656,12 @@ mod wide_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfReferenceContext,
-        GdfSource, RESTRICTED_ORDER_HINT, band_classes, band_classes_from_source, band_gradients,
-        compute_block, copy_base_block, gdf_band_segment, gdf_band_segments, gdf_inter_ref_dst_idx,
-        gdf_inter_ref_dst_idx_from_max_dist, gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end,
-        grad_sum, preserve_lossless_luma_samples, resize_scratch, tile_axis_bounds,
+        GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
+        GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes,
+        band_classes_from_source, band_gradients, compute_block, copy_base_block, gdf_band_segment,
+        gdf_band_segments, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist,
+        gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end, grad_sum,
+        preserve_lossless_luma_samples, resize_overwrite_scratch, tile_axis_bounds,
     };
     use crate::error::{DecodeError, DecodeHeaderStateError};
     use crate::filters::deblock::DeblockBlock;
@@ -2078,25 +2084,74 @@ mod tests {
         assert_eq!(fused_classes, classes);
         let filtered = compute_block::<u16>(&source, &curr, &classes, block.width >> 1, block);
         assert!(filtered.is_ok());
-        assert!(filtered.is_ok_and(|samples| samples.into_iter().all(|sample| sample <= 1023)));
+        let Ok(filtered) = filtered else {
+            return;
+        };
+        assert!(filtered.iter().all(|&sample| sample <= 1023));
+
+        let mut reused_source_samples = vec![u16::MAX; source.samples.len() + 8];
+        let reused_source = GdfSource::materialize::<u16>(
+            &mut reused_source_samples,
+            &curr,
+            &curr,
+            &bounds,
+            &block,
+        );
+        assert!(reused_source.is_ok());
+        let Ok(reused_source) = reused_source else {
+            return;
+        };
+        assert_eq!(reused_source.samples, source.samples);
+
+        let mut reused_classes = vec![GdfClass(i32::MAX); classes.len() + 4];
+        let mut reused_gradient_pairs = [
+            vec![[u16::MAX; 4]; gradient_pairs[0].len() + 3],
+            vec![[u16::MAX; 4]; gradient_pairs[1].len() + 3],
+        ];
+        let mut reused_gradient_tmp = vec![[u16::MAX; 4]; gradient_tmp.len() + 3];
+        let reused_result = band_classes_from_source(
+            &reused_source,
+            origin,
+            &block,
+            &mut reused_classes,
+            &mut reused_gradient_pairs,
+            &mut reused_gradient_tmp,
+        );
+        assert!(reused_result.is_ok());
+        assert_eq!(reused_classes, classes);
+        let reused_filtered = compute_block::<u16>(
+            &reused_source,
+            &curr,
+            &reused_classes,
+            block.width >> 1,
+            block,
+        );
+        assert!(reused_filtered.is_ok());
+        let Ok(reused_filtered) = reused_filtered else {
+            return;
+        };
+        assert_eq!(reused_filtered, filtered);
     }
 
     #[test]
-    fn scratch_resize_reuses_storage_and_clears_old_values() {
+    fn overwrite_scratch_resize_reuses_initialized_storage() {
         let mut scratch = Vec::new();
-        assert!(resize_scratch(&mut scratch, 8).is_ok());
+        assert!(resize_overwrite_scratch(&mut scratch, 8).is_ok());
         scratch.fill(9_u16);
         let capacity = scratch.capacity();
 
-        assert!(resize_scratch(&mut scratch, 4).is_ok());
-        assert_eq!(scratch, vec![0; 4]);
+        assert!(resize_overwrite_scratch(&mut scratch, 4).is_ok());
+        assert_eq!(scratch, vec![9; 4]);
         assert_eq!(scratch.capacity(), capacity);
+
+        assert!(resize_overwrite_scratch(&mut scratch, 6).is_ok());
+        assert_eq!(scratch, [9, 9, 9, 9, 0, 0]);
     }
 
     #[test]
     fn scratch_capacity_overflow_is_typed() {
         let mut scratch = vec![1_u8];
-        let result = resize_scratch(&mut scratch, usize::MAX);
+        let result = resize_overwrite_scratch(&mut scratch, usize::MAX);
 
         assert!(matches!(
             result,

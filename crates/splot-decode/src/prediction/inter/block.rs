@@ -347,14 +347,15 @@ fn derive_inter_block_setup<T: ReconSample>(
         &reference.ref_order_hint,
     );
     let expected_tip_pair = derived_tip_reference_pair(core, &derived_order_hints);
-    let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols)
-        .ok_or(inter_internal!("inter_temporal_motion_field", offset))?;
-    motion_field.set_band_rows8(sb_h4 / 2);
-    motion_field.set_reference_metadata(
+    let mut motion_field = TemporalMotionField::new_with_metadata(
+        mi_rows,
+        mi_cols,
         !frame_is_intra,
         temporal_config.frame_size,
         &derived_order_hints,
-    );
+    )
+    .ok_or(inter_internal!("inter_temporal_motion_field", offset))?;
+    motion_field.set_band_rows8(sb_h4 / 2);
     let cdef_state = CdefState::new(mi_rows, mi_cols, sequence)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
     let ref_ccso_unit_grids = reference

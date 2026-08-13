@@ -660,6 +660,9 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     let mut pc_block = block(0, 0, 0);
     pc_block.restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
     let wiener_ns_block = block(0, 8, 0);
+    with_lr_source_scratch::<u8, _>(|scratch| {
+        scratch.cell_subclasses.resize(32, usize::MAX);
+    });
     let mut mixed = lr_sink(&snapshot);
     apply_luma_lr(&mut mixed, &mixed_core, &[pc_block, wiener_ns_block]);
     let mut pc_only = lr_sink(&snapshot);
