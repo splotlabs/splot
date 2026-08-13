@@ -8,7 +8,7 @@ use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, TipFrameMode, TxMode,
     get_qindex,
 };
-use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
+use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
@@ -744,11 +744,15 @@ fn derived_tip_reference_pair(
 
 pub(super) fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<usize> {
     let partition = sequence.partition?;
-    core.frame_is_intra?;
-    match partition.seq_sb_size() {
-        splot_core::headers::sequence::SuperblockSize::Block64x64 => Some(16),
-        splot_core::headers::sequence::SuperblockSize::Block128x128 => Some(32),
-        splot_core::headers::sequence::SuperblockSize::Block256x256 => Some(64),
+    let frame_is_intra = core.frame_is_intra?;
+    Some(frame_superblock_h4(partition.seq_sb_size(), frame_is_intra))
+}
+
+fn frame_superblock_h4(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usize {
+    match (seq_sb_size, frame_is_intra) {
+        (SuperblockSize::Block64x64, _) => 16,
+        (SuperblockSize::Block128x128, _) | (SuperblockSize::Block256x256, true) => 32,
+        (SuperblockSize::Block256x256, false) => 64,
     }
 }
 

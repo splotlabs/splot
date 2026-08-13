@@ -114,6 +114,28 @@ TX_PARTITION_INTER = [
     "--monotonic-output-order=1", "--test-decode=fatal", "--quiet", "--disable-warning-prompt",
 ]
 
+SB256_INTRA = [
+    "--limit=1", "--passes=1", "--threads=1", "--lag-in-frames=0",
+    "--min-partition-size=16", "--max-partition-size=128", "--sb-size=256",
+    "--enable-sdp=0", "--enable-extended-sdp=0", "--enable-cfl-intra=0",
+    "--enable-mhccp=0", "--enable-cctx=0", "--enable-chroma-dctonly=0",
+    "--enable-cdef=0", "--enable-deblocking=0", "--enable-restoration=0",
+    "--enable-ccso=0", "--enable-gdf=0", "--enable-pc-wiener=0",
+    "--enable-wiener-nonsep=0", "--enable-qm=0", "--enable-tcq=0",
+    "--enable-parity-hiding=0", "--enable-trellis-quant=0", "--enable-fsc=0",
+    "--enable-flip-idtx=0", "--enable-idtx-intra=0", "--enable-ist=0",
+    "--enable-inter-ist=0", "--enable-intra-dip=0", "--enable-ibp=0",
+    "--enable-mrls=0", "--enable-intra-edge-filter=0", "--enable-angle-delta=0",
+    "--enable-palette=0", "--enable-intrabc=0", "--enable-intrabc-ext=0",
+    "--enable-paeth-intra=0", "--enable-smooth-intra=0",
+    "--enable-rect-partitions=0", "--enable-ext-partitions=0",
+    "--enable-uneven-4way-partitions=0", "--enable-tx-partition=0",
+    "--reduced-tx-part-set=1", "--deltaq-mode=0", "--aq-mode=0",
+    "--enable-chroma-deltaq=0", "--enable-keyframe-filtering=0",
+    "--force-video-mode=0", "--test-decode=fatal", "--quiet",
+    "--disable-warning-prompt",
+]
+
 # The COMPLETE recipe for every committed coverage fixture, deterministic via `-D`.
 # Each row: (id, lavfi_src, pix_fmt, input_flag, avmenc_flags, cpu, qp[, source]).
 # `source` defaults to Y4M; the optional mapping selects deterministic raw input.
@@ -236,6 +258,11 @@ COVERAGE = [
              "-map", "[out]", "-frames:v", "2", "-f", "rawvideo",
          ],
      }),
+    ("syn-sb256-intra-129x16-q180", "color=c=gray:size=129x16:rate=1:duration=1",
+     "yuv420p", "--i420", SB256_INTRA, "0", "180", {
+         "format": "y4m",
+         "control_replace": {"--sb-size=256": "--sb-size=128"},
+     }),
 ]
 
 PINNED_RECIPE_HASHES = {
@@ -329,6 +356,24 @@ PINNED_RECIPE_HASHES = {
         "avm_i420_raw_sha256": "9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3",
         "trace_sha256": "32453fd5d10f17eec9f69551cb3408d2794e91bfb658965ac64761bb538ab2a3",
         "full_set_control_ivf_sha256": "176aa168708fd3afbe5b842ef364bafa19d1e07c4b58ddcdad6793cdec020ec6",
+        "reproducibility_runs": 2,
+    },
+    "syn-sb256-intra-129x16-q180": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "ffmpeg_version": "9.0.1",
+        "source_sha256": "097e4a3a4394bbae09c548d6b1a44b2ea8a3ebe03cabafcb2ce59ff220698898",
+        "ivf_sha256": "bfdf8c13d29f022dfbc1abd03f69efd51d6361bb51ae600af7812a2df11fedaf",
+        "obu_sha256": "dca7cac0bd6e17a66e54986d8e80dc89331abeb12e07f0590c1635eb6f917db6",
+        "avm_i420_raw_sha256": "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6",
+        "avm_trace_sha256": "c7a1948c4b0574e20bcf8ed854dafc27ca541a09ab65aa0c766ad8fe3d3b39f5",
+        "control_ivf_sha256": "64b3c75cb0cab6cd00db8461f70ece148949321436cce81ee69198887f321bcc",
+        "control_obu_sha256": "34577a0424f7da6e6185bee73a5ec9d1b8b6482bf9663604f975589b21fe07c3",
+        "control_avm_i420_raw_sha256": "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6",
+        "control_avm_trace_sha256": "b97139cfb010355e097fa739755ee84aa5b92e98f42cac5c875b839c1141ac56",
+        "instrumentation_sha256": "6edc38965cea57d33cd72b483d28c76672a4cf761d84798a49af13fdf820f3c1",
+        "recipe_sha256": "4d46233bfbc84b44618f65abad233bdf3ee8733e4fd87c63987640b0015cf72d",
+        "avmenc_sha256": "a152b44a783f37479500cbf468ed5fdc8209f8da700bbe8ce290315941f36a63",
+        "avmdec_sha256": "e867227ee71a133aa0410f9075e604ae6aaef01c0e50f2dc74aa9b61a54547f5",
         "reproducibility_runs": 2,
     },
 }
@@ -449,9 +494,16 @@ def cmd_coverage_fixtures(args):
                     sys.exit(f"error: {fid} differs from its pinned raw OBU")
             if "avm_i420_raw_sha256" in expected:
                 raw = os.path.join(stage, fid + ".avm.raw")
-                run_checked([avmdec, "--i420", "--rawvideo", "-o", raw, ivf])
+                decode_flags = (["--codec=av2", "--threads=1"]
+                                if "avm_trace_sha256" in expected else [])
+                decoded = run_checked([avmdec, *decode_flags, "--i420", "--rawvideo",
+                                       "-o", raw, ivf])
                 if sha(raw) != expected["avm_i420_raw_sha256"]:
                     sys.exit(f"error: {fid} differs from its pinned AVM raw output")
+                if "avm_trace_sha256" in expected:
+                    actual_trace = hashlib.sha256(decoded.stderr).hexdigest()
+                    if actual_trace != expected["avm_trace_sha256"]:
+                        sys.exit(f"error: {fid} differs from its pinned AVM trace")
             if "avm_native_raw_sha256" in expected:
                 raw = os.path.join(stage, fid + ".avm-native.raw")
                 run_checked([avmdec, "--rawvideo", "-o", raw, ivf])
@@ -472,6 +524,40 @@ def cmd_coverage_fixtures(args):
             if "full_set_control_ivf_sha256" in expected:
                 print(f"  {fid}: full-set control IVF "
                       f"{expected['full_set_control_ivf_sha256']}")
+            if "control_replace" in source:
+                replacements = source["control_replace"]
+                if not all(old in encode for old in replacements):
+                    sys.exit(f"error: {fid} control replacement source is absent")
+                control_encode = [replacements.get(arg, arg) for arg in encode]
+                control_ivf = os.path.join(stage, fid + ".control.ivf")
+                run_checked([*control_encode, "-o", control_ivf, y4m], env=encode_env)
+                if sha(control_ivf) != expected["control_ivf_sha256"]:
+                    sys.exit(f"error: {fid} differs from its pinned control IVF")
+                if expected.get("reproducibility_runs") == 2:
+                    repeated_control = os.path.join(stage, fid + ".control.repeat.ivf")
+                    run_checked([*control_encode, "-o", repeated_control, y4m], env=encode_env)
+                    if sha(repeated_control) != expected["control_ivf_sha256"]:
+                        sys.exit(f"error: {fid} control is not deterministic")
+                    os.remove(repeated_control)
+                if "control_obu_sha256" in expected:
+                    control_obu_encode = [replacements.get(arg, arg) for arg in obu_encode]
+                    control_obu = os.path.join(stage, fid + ".control.obu")
+                    run_checked([*control_obu_encode, "-o", control_obu, y4m], env=encode_env)
+                    if sha(control_obu) != expected["control_obu_sha256"]:
+                        sys.exit(f"error: {fid} differs from its pinned control OBU")
+                if "control_avm_i420_raw_sha256" in expected:
+                    control_raw = os.path.join(stage, fid + ".control.avm.raw")
+                    control_decoded = run_checked([
+                        avmdec, "--codec=av2", "--threads=1", "--i420", "--rawvideo",
+                        "-o", control_raw, control_ivf,
+                    ])
+                    if sha(control_raw) != expected["control_avm_i420_raw_sha256"]:
+                        sys.exit(f"error: {fid} differs from its pinned control AVM output")
+                    if "control_avm_trace_sha256" in expected:
+                        actual_trace = hashlib.sha256(control_decoded.stderr).hexdigest()
+                        if actual_trace != expected["control_avm_trace_sha256"]:
+                            sys.exit(f"error: {fid} differs from its pinned control AVM trace")
+                print(f"  {fid}: sequence-SB control IVF {expected['control_ivf_sha256']}")
     print(f"staged {len(selected)} coverage fixtures in {stage} "
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 

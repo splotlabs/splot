@@ -11640,3 +11640,56 @@ output_scope = "Complete 12,288-byte raw I420 output at both thread counts"
 kind = "digest-equality"
 left = "avm-reduced-txpart-inter-raw-sha256"
 right = "splot-reduced-txpart-inter-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-sb256-intra-129x16-q180"
+feature_id = "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
+decoder_support_rows = ["tile-partition-traversal-boundary"]
+kind = "reference-output-agreement"
+summary = "A pinned-AVM sequence-SB256 intra stream crosses the 128-pixel effective-superblock edge. Exact base is byte-exact at one thread but fails scheduler prepass capacity at every tested parallel width; fixed splot matches AVM byte-for-byte at one and eight threads."
+recorded_at = "2026-08-13"
+command = '''AVM_BUILD=<instrumented pinned AVM build> AVM_ROOT=<pinned AVM checkout at 457cd58681a747465661baccb1f32095bc5b7774> python3 tools/decoder-fixtures/generate.py coverage-fixtures --only syn-sb256-intra-129x16-q180 --stage <stage>; run twice in separate stage directories and compare every generated artifact. Validate with splot validate --strict --json. Decode candidate and its SB128 control with pinned avmdec and splot decode --threads 1/8 --output-format raw, then compare byte-for-byte. On exact base 3699dd83ed8eeee8bd7c8fe950c0fd9a11f87123, additionally decode the candidate at each integer thread width from 2 through 12 and record the deterministic inter_row_prepass_capacity failure.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-sb256-intra-129x16-q180.ivf"
+sha256 = "bfdf8c13d29f022dfbc1abd03f69efd51d6361bb51ae600af7812a2df11fedaf"
+size_bytes = 68
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "FFmpeg 9.0.1 generated a deterministic 129x16 gray Y4M source SHA-256 097e4a3a4394bbae09c548d6b1a44b2ea8a3ebe03cabafcb2ce59ff220698898. Pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774, avmenc SHA-256 a152b44a783f37479500cbf468ed5fdc8209f8da700bbe8ce290315941f36a63, and instrumented avmdec SHA-256 e867227ee71a133aa0410f9075e604ae6aaef01c0e50f2dc74aa9b61a54547f5 produced identical artifacts in two independent generator runs. The raw OBU SHA-256 is dca7cac0bd6e17a66e54986d8e80dc89331abeb12e07f0590c1635eb6f917db6. Isolated trace SHA-256 c7a1948c4b0574e20bcf8ed854dafc27ca541a09ab65aa0c766ad8fe3d3b39f5 records sequence SB256 but effective intra SB128 roots at MI (0,0) and (0,32). Changing only --sb-size=256 to --sb-size=128 produces control IVF SHA-256 64b3c75cb0cab6cd00db8461f70ece148949321436cce81ee69198887f321bcc, raw OBU SHA-256 34577a0424f7da6e6185bee73a5ec9d1b8b6482bf9663604f975589b21fe07c3, trace SHA-256 b97139cfb010355e097fa739755ee84aa5b92e98f42cac5c875b839c1141ac56, and the same decoded raw hash. Instrumentation patch SHA-256 is 6edc38965cea57d33cd72b483d28c76672a4cf761d84798a49af13fdf820f3c1; exact recipe SHA-256 is 4d46233bfbc84b44618f65abad233bdf3ee8733e4fd87c63987640b0015cf72d. Exact base 3699dd83ed8eeee8bd7c8fe950c0fd9a11f87123 matches AVM at one thread, while each integer thread width from 2 through 12 fails closed at byte 64 with internal decode state inter_row_prepass_capacity; the SB128 control matches AVM at one and eight threads."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned AVM decoder with isolated trace-only instrumentation; the instrumentation does not change decoded pixels."
+command_summary = "avmdec --codec=av2 --threads=1 --i420 --rawvideo decoded {fixture:input}."
+output_digest_id = "avm-sb256-intra-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6"
+output_scope = "Complete 3,104-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree derives scheduler surfaces from the effective frame superblock geometry used by the partition cursor."
+command_summary = "Splot raw-output decodes of {fixture:input} at one and eight threads."
+output_digest_id = "splot-sb256-intra-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6"
+output_scope = "Complete 3,104-byte raw I420 output at both thread counts"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-sb256-intra-raw-sha256"
+right = "splot-sb256-intra-raw-sha256"

@@ -1828,3 +1828,8 @@ expect = "clean"
 path = "vectors/valid/syn-3frame-intrabc-bv-10bit-256x128-q120.ivf"
 description = "Minimal three-frame 10-bit 4:2:0 AVMenc stream (IVF, 256x128, 8,605 bytes) that reaches both halves of the IntraBC block-vector gap. At MI (16,9), AV2 § 7.12.2.6 (`docs/spec/av2/1.0.0/07-decoding-process.md`) aligns scan step 8 from nominal deltaCol 0 to actual deltaCol -1 before assigning weight 0; the former weight-1 candidate selected an out-of-bounds block vector and failed closed at byte 6829. After that path opens, an INTERINTRA block exercises AV2 § 5.20.7.13 (`docs/spec/av2/1.0.0/05-syntax-structures.md`), where derived MVD signs are forbidden unless motion_mode is SIMPLE, skip_mode is 0, and a compound block uses RefMvIdx 0. Fixed splot and current avmdec emit the same complete 294,912-byte raw I420 SHA-256 76196877855754843f9d45abb7d9ae33764ca65c6bd88fcc4e868d462d952ee7; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-sb256-intra-129x16-q180.ivf"
+description = "Deterministic 68-byte single-key-frame 129x16 AVM stream with sequence SB256 enabled. AV2 § 5.18.2 makes the effective intra-frame superblock size SB128, so the frame has two horizontal partition roots even though an inter frame in the same sequence would use SB256. Exact base 3699dd83ed8eeee8bd7c8fe950c0fd9a11f87123 decoded byte-exact at one thread, but each integer thread width from 2 through 12 failed closed with inter_row_prepass_capacity because the scheduler allocated one SB256 surface while the partition cursor emitted two SB128 roots. Fixed splot decodes byte-exact at one and eight threads to the same 3,104-byte AVM raw SHA-256 6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6; validates clean."
+expect = "clean"
