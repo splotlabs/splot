@@ -59,7 +59,10 @@ where
     let width8 = mi_cols.div_ceil(2);
     let height8 = mi_rows.div_ceil(2);
     let cells = width8.checked_mul(height8)?;
-    Some((width8, height8, vec![T::default(); cells]))
+    let mut grid = Vec::new();
+    grid.try_reserve_exact(cells).ok()?;
+    grid.resize(cells, T::default());
+    Some((width8, height8, grid))
 }
 
 fn temporal_grid_index(width8: usize, height8: usize, y8: usize, x8: usize) -> Option<usize> {
@@ -224,6 +227,11 @@ impl TemporalMotionField {
         ref_order_hints: &[Option<u32>],
     ) -> Option<Self> {
         let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        let mut owned_ref_order_hints = Vec::new();
+        owned_ref_order_hints
+            .try_reserve_exact(ref_order_hints.len())
+            .ok()?;
+        owned_ref_order_hints.extend_from_slice(ref_order_hints);
         Some(Self {
             width8,
             height8,
@@ -232,7 +240,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter,
             frame_size: Some(frame_size),
-            ref_order_hints: ref_order_hints.to_vec(),
+            ref_order_hints: owned_ref_order_hints,
         })
     }
 

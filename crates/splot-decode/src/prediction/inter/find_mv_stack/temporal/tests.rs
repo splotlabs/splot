@@ -21,6 +21,11 @@ fn temporal_grid_cell_count_fits_at_maximum_frame_size() {
 }
 
 #[test]
+fn temporal_grid_rejects_impossible_capacity() {
+    assert!(allocate_temporal_grid::<u8>(1, usize::MAX).is_none());
+}
+
+#[test]
 fn compact_temporal_motion_preserves_every_warp_shape() {
     let mvs = [Mv { row: 9, col: -7 }, Mv { row: -5, col: 3 }];
     let first = [1 << 16, 0, 2 << 16, 0, 1 << 16, -(1 << 16)];
