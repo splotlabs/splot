@@ -14,7 +14,6 @@
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
-use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
@@ -78,10 +77,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-    tile_offset: ByteOffset,
 ) -> Result<ReconRowBuffers> {
     if row.ordinal != *expected_ordinal {
-        return Err(inter_internal!("inter_row_recon_order", tile_offset));
+        return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
     }
     row.return_terminal_error()?;
     let ordinal = row.ordinal;
@@ -105,7 +103,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     for superblock in &superblocks {
         let superblock_entries = entries
             .get_mut(superblock.entries.clone())
-            .ok_or(inter_internal!("inter_row_replay_entry_range", tile_offset))?;
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
         debug_assert!(
             superblock_entries
                 .iter()
@@ -195,10 +193,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                 }
             } else {
                 let _scope = crate::timing::PhaseScope::new(crate::timing::Phase::CommitReplay);
-                let records = temporal.get(entry.temporal.clone()).ok_or(inter_internal!(
-                    "inter_row_replay_temporal_range",
-                    tile_offset
-                ))?;
+                let records = temporal
+                    .get(entry.temporal.clone())
+                    .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
                 if motion_owed {
                     motion.fold_unit(ordinal, records);
                 }
@@ -206,7 +203,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             entry
                 .publication
                 .publish_block_decoded(block_decoded)
-                .map_err(|_| inter_internal!("inter_row_block_decoded_publish", tile_offset))?;
+                .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
         }
     }
     if motion_owed {

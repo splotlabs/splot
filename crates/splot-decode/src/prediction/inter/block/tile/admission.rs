@@ -719,7 +719,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     self.params.luma_use_tcq,
                     self.params.residual_use_ddt,
                     self.params.bit_depth,
-                    self.tile_offset,
                 )
             })?;
             recycle_retained_recon_row_buffers(buffers);

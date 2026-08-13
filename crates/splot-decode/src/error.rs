@@ -108,7 +108,7 @@ pub enum DecodeHeaderStateError {
     /// Validated tile geometry could not construct required inter decode state.
     #[error("inter-tile construction state is inconsistent")]
     InvalidInterTileConstructionState,
-    /// Parallel inter-tile scheduling did not complete its validated work set.
+    /// An inter tile's scheduled work set or ordered commit was inconsistent.
     #[error("inter-tile scheduling state is inconsistent")]
     InvalidInterTileSchedulingState,
     /// A complete inter header was missing mandatory frame-tool state.
