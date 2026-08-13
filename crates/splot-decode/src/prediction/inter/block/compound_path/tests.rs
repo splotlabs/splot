@@ -211,23 +211,12 @@ fn compound_ref_distance_signs_keep_missing_order_hint_fail_closed() {
 }
 
 #[test]
-fn compound_consumers_keep_missing_header_state_fail_closed() {
+fn compound_reference_tools_keep_missing_frame_size_typed() {
     let fixture = include_bytes!(
         "../../../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
     );
-    let (mut sequence, mut core, _) =
+    let (_, mut core, _) =
         crate::prediction::inter::tests::parse_inter_core_for_validation(fixture).unwrap();
-    core.inter.as_mut().unwrap().opfl_refine_type = None;
-
-    let error = compound_opfl_refine_type(&core, TILE_OFFSET).unwrap_err();
-    assert!(matches!(
-        error,
-        crate::error::DecodeError::InternalState {
-            reason: "compound_missing_opfl_refine_type",
-            byte_offset: TILE_OFFSET,
-        }
-    ));
-
     let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
         y_mode: CompoundYMode::NearNear,
         use_optflow: false,
@@ -236,70 +225,21 @@ fn compound_consumers_keep_missing_header_state_fail_closed() {
         mv0: Mv::ZERO,
         mv1: Mv::ZERO,
     };
-    sequence.inter = None;
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_refinemv_reachable(
-        &sequence,
-        &core,
-        &reference,
-        &[],
-        compound,
-        2,
-        4,
-        TILE_OFFSET,
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        crate::error::DecodeError::InternalState {
-            reason: "compound_refinemv_missing_sequence_inter",
-            byte_offset: TILE_OFFSET,
-        }
-    ));
-
-    let error = compound_refinemv_mode_allowed(&core, compound, TILE_OFFSET).unwrap_err();
-    assert!(matches!(
-        error,
-        crate::error::DecodeError::InternalState {
-            reason: "compound_refinemv_missing_opfl_refine_type",
-            byte_offset: TILE_OFFSET,
-        }
-    ));
-
     core.frame_size = None;
-    let error = compound_sized_reference_distances(
-        &core,
-        &reference,
-        &[],
-        compound,
-        CompoundReferencePath::Opfl,
-        TILE_OFFSET,
-    )
-    .unwrap_err();
+    let error = compound_sized_reference_facts(&core, &reference, &[], compound).unwrap_err();
     assert!(matches!(
         error,
-        crate::error::DecodeError::InternalState {
-            reason: "compound_opfl_missing_frame_size",
-            byte_offset: TILE_OFFSET,
+        crate::error::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::MissingFrameSize,
         }
     ));
 
-    let error = compound_sized_reference_distances(
-        &core,
-        &reference,
-        &[],
-        compound,
-        CompoundReferencePath::RefineMv,
-        TILE_OFFSET,
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        crate::error::DecodeError::InternalState {
-            reason: "compound_refinemv_missing_frame_size",
-            byte_offset: TILE_OFFSET,
-        }
-    ));
+    core.frame_type = Some(FrameType::Switch);
+    assert_eq!(
+        compound_sized_reference_facts(&core, &reference, &[], compound).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -520,7 +460,7 @@ fn compound_reference_facts_map_the_full_order_hint_domain() {
 }
 
 #[test]
-fn compound_sized_reference_distances_reject_restricted_references() {
+fn compound_sized_reference_facts_reject_restricted_references() {
     let fixture = include_bytes!(
         "../../../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
     );
@@ -540,34 +480,16 @@ fn compound_sized_reference_distances_reject_restricted_references() {
         mv1: Mv::ZERO,
     };
 
-    for path in [CompoundReferencePath::Opfl, CompoundReferencePath::RefineMv] {
-        assert!(
-            compound_sized_reference_distances(
-                &core,
-                &reference,
-                &[0, 1],
-                compound,
-                path,
-                TILE_OFFSET,
-            )
+    assert!(
+        compound_sized_reference_facts(&core, &reference, &[0, 1], compound)
             .unwrap()
             .is_some()
-        );
-        reference.ref_order_hint[0] = u32::MAX;
-        assert_eq!(
-            compound_sized_reference_distances(
-                &core,
-                &reference,
-                &[0, 1],
-                compound,
-                path,
-                TILE_OFFSET,
-            )
-            .unwrap(),
-            None
-        );
-        reference.ref_order_hint[0] = 0;
-    }
+    );
+    reference.ref_order_hint[0] = u32::MAX;
+    assert_eq!(
+        compound_sized_reference_facts(&core, &reference, &[0, 1], compound).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -1084,15 +1006,9 @@ fn compound_refinemv_switchability_matches_mode_and_optflow() {
     ));
     compound.y_mode = CompoundYMode::NearNew;
     assert!(compound_refinemv_is_switchable(compound, REFINE_SWITCHABLE));
-    assert!(!compound_refinemv_mode_allowed_for_type(
-        compound,
-        REFINE_SWITCHABLE
-    ));
+    assert!(!compound_refinemv_mode_allowed(compound, REFINE_SWITCHABLE));
     compound.use_optflow = true;
-    assert!(compound_refinemv_mode_allowed_for_type(
-        compound,
-        REFINE_SWITCHABLE
-    ));
+    assert!(compound_refinemv_mode_allowed(compound, REFINE_SWITCHABLE));
     compound.y_mode = CompoundYMode::JointNew;
     assert!(!compound_refinemv_is_switchable(
         compound,
@@ -1101,9 +1017,7 @@ fn compound_refinemv_switchability_matches_mode_and_optflow() {
     assert!(compound_refinemv_is_switchable(compound, REFINE_ALL));
     compound.y_mode = CompoundYMode::GlobalGlobal;
     compound.use_optflow = false;
-    assert!(!compound_refinemv_mode_allowed_for_type(
-        compound, REFINE_ALL
-    ));
+    assert!(!compound_refinemv_mode_allowed(compound, REFINE_ALL));
 }
 
 #[test]
