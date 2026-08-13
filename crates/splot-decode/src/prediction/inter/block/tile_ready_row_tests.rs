@@ -401,7 +401,7 @@ fn completed_row_overflow_fails_closed() {
         run_ready_row_prepass_with_commit(
             parser,
             |row| row,
-            |_| Ok::<_, ()>(()),
+            |_| Ok::<_, crate::DecodeError>(()),
             1,
             |_: &usize| true,
             || true,
@@ -409,7 +409,73 @@ fn completed_row_overflow_fails_closed() {
         )
     });
 
-    assert!(matches!(result, Err(ReadyRowPipelineError::Capacity)));
+    let error = result
+        .err()
+        .expect("completion-slot overflow must fail closed");
+    let error = inter_ready_row_pipeline_error(error);
+    assert!(matches!(
+        &error,
+        crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
+        }
+    ));
+    assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+}
+
+#[test]
+fn ready_row_reservation_failure_stays_an_allocation_error() {
+    let result = run_ready_row_prepass_with_commit(
+        || ParserStep::Last(0usize),
+        |row| row,
+        |_| Ok::<_, crate::DecodeError>(()),
+        usize::MAX,
+        |_: &usize| true,
+        || true,
+        || Ok(()),
+    );
+    let error = result
+        .err()
+        .expect("an impossible completion-slot reservation must fail");
+    assert!(matches!(&error, ReadyRowPipelineError::Allocation));
+
+    let error = inter_ready_row_pipeline_error(error);
+    assert!(matches!(
+        &error,
+        crate::DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "inter ready-row completion slots",
+            },
+        }
+    ));
+    assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+}
+
+#[test]
+fn ready_row_scope_preserves_off_pool_error() {
+    let result = run_ready_row_prepass_with_commit(
+        || ParserStep::Last(0usize),
+        |row| row,
+        |_| Ok::<_, crate::DecodeError>(()),
+        1,
+        |_: &usize| true,
+        || true,
+        || Ok(()),
+    );
+    let error = result.err().expect("an off-pool ready scope must fail");
+    assert!(matches!(
+        &error,
+        ReadyRowPipelineError::Parallel(splot_parallel::ParallelError::NotOnWorkerPool)
+    ));
+
+    let error = inter_ready_row_pipeline_error(error);
+    assert!(matches!(
+        &error,
+        crate::DecodeError::Pool {
+            source: splot_parallel::ParallelError::NotOnWorkerPool,
+        }
+    ));
+    assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
 }
 
 #[test]
