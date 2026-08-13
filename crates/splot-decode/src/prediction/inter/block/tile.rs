@@ -1546,27 +1546,26 @@ impl ParsedTile {
 fn tile_unit_capacity(
     mi_rows: &Range<usize>,
     mi_cols: &Range<usize>,
-    params: &TileWalkParams,
+    frame_mi_rows: usize,
+    frame_mi_cols: usize,
+    sb_h4: usize,
     granularity: ParserGranularity,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
+) -> usize {
     let sb_rows = mi_rows
         .end
-        .min(params.mi_rows)
+        .min(frame_mi_rows)
         .saturating_sub(mi_rows.start)
-        .div_ceil(params.sb_h4);
+        .div_ceil(sb_h4);
     let sb_cols = mi_cols
         .end
-        .min(params.mi_cols)
+        .min(frame_mi_cols)
         .saturating_sub(mi_cols.start)
-        .div_ceil(params.sb_h4);
+        .div_ceil(sb_h4);
     let units = match granularity {
         ParserGranularity::Row => sb_rows,
-        ParserGranularity::Superblock => sb_rows.saturating_mul(sb_cols),
+        ParserGranularity::Superblock => sb_rows * sb_cols,
     };
-    units
-        .checked_add(1)
-        .ok_or(inter_internal!("inter_parsed_row_capacity", tile_offset))
+    units + 1
 }
 
 /// Runs one tile's entropy pass to the end, keeping every unit.
@@ -1597,7 +1596,14 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
     let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
     let block_decoded = tile_block_decoded(tile, context)?;
-    let capacity = tile_unit_capacity(&mi_rows, &mi_cols, params, granularity, tile_offset)?;
+    let capacity = tile_unit_capacity(
+        &mi_rows,
+        &mi_cols,
+        params.mi_rows,
+        params.mi_cols,
+        params.sb_h4,
+        granularity,
+    );
     let mut rows = Vec::new();
     rows.try_reserve_exact(capacity)
         .map_err(|_| inter_allocation!("inter parsed rows"))?;
@@ -1714,40 +1720,17 @@ fn luma_rect<T: ReconSample>(
     )?)
 }
 
-fn tile_superblock_luma_rects<T: ReconSample>(
-    tile: &DecodeTileWorkUnit<'_>,
-    workspace: &CurrentFrameWorkspace<T>,
-    sb_h4: usize,
-) -> Result<Vec<splot_recon::PlaneRect>> {
-    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
-    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-    superblock_luma_rects(
-        &mi_rows,
-        &mi_cols,
-        workspace,
-        sb_h4,
-        tile.tile_byte_span().start,
-    )
-}
-
 fn superblock_luma_rects<T: ReconSample>(
     mi_rows: &Range<usize>,
     mi_cols: &Range<usize>,
     workspace: &CurrentFrameWorkspace<T>,
     sb_h4: usize,
-    tile_offset: ByteOffset,
 ) -> Result<Vec<splot_recon::PlaneRect>> {
     let bounds = luma_rect(mi_rows, mi_cols, workspace)?;
-    let side = sb_h4.checked_mul(4).ok_or(inter_internal!(
-        "inter_superblock_surface_size",
-        tile_offset
-    ))?;
+    let side = sb_h4 * 4;
     let rows = bounds.height().div_ceil(side);
     let cols = bounds.width().div_ceil(side);
-    let count = rows.checked_mul(cols).ok_or(inter_internal!(
-        "inter_superblock_surface_count",
-        tile_offset
-    ))?;
+    let count = rows * cols;
     let mut rects = Vec::new();
     rects
         .try_reserve_exact(count)
@@ -1790,8 +1773,7 @@ fn prepare_tile<T: ReconSample>(
         .min(context.mi_rows)
         .saturating_sub(mi_rows.start)
         .div_ceil(context.sb_h4)
-        .checked_add(1)
-        .ok_or(inter_internal!("inter_tile_row_capacity", tile_offset))?;
+        + 1;
     let mut rows = Vec::new();
     rows.try_reserve_exact(row_count)
         .map_err(|_| inter_allocation!("inter tile rows"))?;
@@ -2072,11 +2054,13 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut current_block_decoded_superblock = None;
         let quantizer = FrameQuantizerSnapshot::capture();
         let mut recon_ordinal = 0usize;
-        let superblock_rects = if parse_ahead {
-            Some(tile_superblock_luma_rects(tile, workspace, sb_h4)?)
-        } else {
-            None
-        };
+        let superblock_rects = parse_ahead
+            .then(|| {
+                let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+                let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+                superblock_luma_rects(&rows, &cols, workspace, sb_h4)
+            })
+            .transpose()?;
         let tile_mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
         let tile_mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
         let mut parser = TileParser::new(
@@ -2087,13 +2071,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
-        if parse_ahead {
-            let Some(rects) = superblock_rects else {
-                return Err(inter_internal!(
-                    "inter_superblock_surface_state",
-                    tile_offset
-                ));
-            };
+        if let Some(rects) = superblock_rects {
             let row_buffers = ReconRowBufferPool::new(
                 splot_parallel::current_pool_width()
                     .saturating_mul(3)
@@ -2120,10 +2098,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             let mut shadow = parallel_prepass
                 .then(|| CurrentFrameWorkspace::new(workspace.info(), T::default()))
                 .transpose()?;
-            let done_limit = rects.len().checked_add(1).ok_or(inter_internal!(
-                "inter_superblock_done_limit_overflow",
-                tile_offset
-            ))?;
+            let done_limit = rects.len() + 1;
             let surfaces = match shadow.as_mut() {
                 Some(shadow) => shadow
                     .rect_surfaces(&rects)?

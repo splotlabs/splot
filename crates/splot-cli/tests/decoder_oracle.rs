@@ -30,6 +30,13 @@ const UNSUPPORTED_RULE: &str = "decode/unsupported-feature";
 /// (the widest gate today is `current_pool_width() >= 4`).
 const THREAD_LEGS: [usize; 2] = [1, 8];
 
+const SB256_INTRA_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-sb256-intra-129x16-q180.ivf");
+const SB256_INTRA_IVF_SHA256: &str =
+    "bfdf8c13d29f022dfbc1abd03f69efd51d6361bb51ae600af7812a2df11fedaf";
+const SB256_INTRA_RAW_SHA256: &str =
+    "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6";
+
 #[derive(Deserialize)]
 struct Manifest {
     vectors_dir: String,
@@ -164,4 +171,20 @@ fn decoder_oracle_corpus_matches_manifest() {
         );
         eprintln!("{msg}");
     }
+}
+
+#[test]
+fn sequence_sb256_intra_uses_effective_sb128_at_serial_and_parallel_widths() {
+    assert_eq!(sha256_hex(SB256_INTRA_FIXTURE), SB256_INTRA_IVF_SHA256);
+    for threads in THREAD_LEGS {
+        let raw = decode_raw(SB256_INTRA_FIXTURE, threads)
+            .unwrap_or_else(|error| panic!("SB256 intra failed at {threads} threads: {error}"));
+        assert_eq!(sha256_hex(&raw), SB256_INTRA_RAW_SHA256);
+    }
+
+    let truncated = &SB256_INTRA_FIXTURE[..SB256_INTRA_FIXTURE.len() - 1];
+    assert!(matches!(
+        decode_raw(truncated, 8),
+        Err(splot_decode::DecodeError::MalformedSource { .. })
+    ));
 }

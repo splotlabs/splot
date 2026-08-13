@@ -1074,13 +1074,8 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let surfaces = if owned_bands {
         Vec::new()
     } else {
-        let rects = superblock_luma_rects(
-            &parsed.mi_rows,
-            &parsed.mi_cols,
-            &workspace,
-            params.sb_h4,
-            tile_offset,
-        )?;
+        let rects =
+            superblock_luma_rects(&parsed.mi_rows, &parsed.mi_cols, &workspace, params.sb_h4)?;
         scratch
             .surfaces
             .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));

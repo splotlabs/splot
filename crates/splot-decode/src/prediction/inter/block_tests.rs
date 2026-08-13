@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::headers::sequence::ChromaFormatIdc;
+use splot_core::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
@@ -17,10 +17,29 @@ use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
-    chroma_smooth_tile_ranges, frame_segment_id_map, inter_skip_txfm_ctx, leaf_uses_general_intra,
-    map_inter_multiblock_error, predict_interintra_planes, read_inter_intra_syntax_enabled,
-    single_ref_read_error, skip_segment_reference, symbol_read_error, validate_segment_id,
+    chroma_smooth_tile_ranges, frame_segment_id_map, frame_superblock_h4, inter_skip_txfm_ctx,
+    leaf_uses_general_intra, map_inter_multiblock_error, predict_interintra_planes,
+    read_inter_intra_syntax_enabled, single_ref_read_error, skip_segment_reference,
+    symbol_read_error, validate_segment_id,
 };
+
+#[test]
+fn frame_superblock_height_follows_sequence_size_and_intra_cap() {
+    for (seq_size, frame_is_intra, expected) in [
+        (SuperblockSize::Block64x64, true, 16),
+        (SuperblockSize::Block64x64, false, 16),
+        (SuperblockSize::Block128x128, true, 32),
+        (SuperblockSize::Block128x128, false, 32),
+        (SuperblockSize::Block256x256, true, 32),
+        (SuperblockSize::Block256x256, false, 64),
+    ] {
+        assert_eq!(
+            frame_superblock_h4(seq_size, frame_is_intra),
+            expected,
+            "sequence {seq_size:?}, frame_is_intra={frame_is_intra}"
+        );
+    }
+}
 
 #[test]
 fn frame_segment_id_map_maps_construction_failures_by_kind()

@@ -190,6 +190,14 @@ fixtureable = true
 spec_sections = ["6.2.2", "7.3.8.6"]
 
 [[capability]]
+id = "seq.superblock.256_intra_128"
+name = "Sequence SB256 with effective intra-frame SB128"
+category = "sequence"
+fixtureable = true
+spec_sections = ["5.4.3", "5.18.2", "5.20.2.1"]
+notes = "The sequence enables 256x256 superblocks, while the intra frame uses the AV2 effective 128x128 superblock geometry across a 129-pixel width."
+
+[[capability]]
 id = "frame.bridge"
 name = "Bridge frame"
 category = "frame"

@@ -115,3 +115,64 @@ fn inter_tile_constructor_allocation_errors_stay_reconstruction_failures() {
         "inter block decoded state",
     );
 }
+
+#[test]
+fn tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
+    const MAX_MI_DIMENSION: usize = (1 << 16) / 4;
+
+    assert_eq!(
+        tile_unit_capacity(
+            &(0..MAX_MI_DIMENSION),
+            &(0..MAX_MI_DIMENSION),
+            MAX_MI_DIMENSION,
+            MAX_MI_DIMENSION,
+            16,
+            ParserGranularity::Row,
+        ),
+        1_025
+    );
+    assert_eq!(
+        tile_unit_capacity(
+            &(0..MAX_MI_DIMENSION),
+            &(0..MAX_MI_DIMENSION),
+            MAX_MI_DIMENSION,
+            MAX_MI_DIMENSION,
+            16,
+            ParserGranularity::Superblock,
+        ),
+        1_048_577
+    );
+    assert_eq!(
+        tile_unit_capacity(&(0..4), &(0..34), 4, 34, 32, ParserGranularity::Superblock,),
+        3,
+        "two effective 128x128 roots plus the terminal unit"
+    );
+    assert_eq!(
+        tile_unit_capacity(
+            &(MAX_MI_DIMENSION - 1..MAX_MI_DIMENSION + 32),
+            &(MAX_MI_DIMENSION - 1..MAX_MI_DIMENSION + 32),
+            MAX_MI_DIMENSION,
+            MAX_MI_DIMENSION,
+            64,
+            ParserGranularity::Superblock,
+        ),
+        2,
+        "a clipped bottom-right edge still contributes one root and one terminal"
+    );
+}
+
+#[test]
+fn superblock_surfaces_follow_raster_order_and_clip_the_frame_edge()
+-> core::result::Result<(), Box<dyn std::error::Error>> {
+    let workspace = crate::test_support::yuv420_workspace(129, 16, 0);
+    let rects = superblock_luma_rects(&(0..4), &(0..34), &workspace, 32)?;
+
+    assert_eq!(
+        rects,
+        [
+            splot_recon::PlaneRect::new(0, 0, 128, 16)?,
+            splot_recon::PlaneRect::new(128, 0, 1, 16)?,
+        ]
+    );
+    Ok(())
+}
