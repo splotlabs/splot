@@ -865,12 +865,12 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     enable_inter_ddt: bool,
     use_intrabc: bool,
     bit_depth: BitDepth,
-    offset: ByteOffset,
+    _offset: ByteOffset,
 ) -> Result<()> {
     let use_ddt = enable_inter_ddt && !use_intrabc;
     let blocks = residual
         .blocks(residual_blocks)
-        .ok_or(inter_internal!("inter_residual_block_range", offset))?;
+        .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
     for (index, block) in blocks.iter().enumerate() {
         if block.cctx_pair_delta < 0 {
             continue;

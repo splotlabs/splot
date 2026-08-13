@@ -198,6 +198,12 @@ pub enum DecodeHeaderStateError {
     /// Decoded inter residual records were inconsistent at reconstruction time.
     #[error("inter residual reconstruction state is inconsistent")]
     InvalidInterResidualReconstruction,
+    /// An inter coefficient read encountered invalid CDF or arithmetic-decoder state.
+    #[error("inter coefficient entropy state is inconsistent")]
+    InvalidInterResidualCoefficientEntropyState,
+    /// Derived inter coefficient geometry, table, scan, or context state was inconsistent.
+    #[error("inter coefficient state is inconsistent")]
+    InvalidInterResidualCoefficientState,
     /// A decoded inter CCTX record did not have its paired chroma block.
     #[error("inter residual CCTX pair state is inconsistent")]
     MissingInterResidualCctxPair,
