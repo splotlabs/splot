@@ -125,6 +125,7 @@ impl WienerNsLrUnitActivity {
             1,
         )?;
         limits.ensure_allocation_len(DecodeLimitName::MaxLumaSamplesPerFrame, next_len as u64)?;
+        self.active_source_blocks.try_reserve(1)?;
         self.active_source_blocks.push(block);
         Ok(())
     }
@@ -136,6 +137,7 @@ impl WienerNsLrUnitActivity {
     ) -> Result<(), TilePartitionTraversalError> {
         let next_len = checked_add("lr_unit_filters", self.unit_filters.len(), 1)?;
         limits.ensure_allocation_len(DecodeLimitName::MaxLumaSamplesPerFrame, next_len as u64)?;
+        self.unit_filters.try_reserve(1)?;
         self.unit_filters.push(filter);
         Ok(())
     }

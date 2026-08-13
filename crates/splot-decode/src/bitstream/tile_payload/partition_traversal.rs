@@ -521,6 +521,8 @@ impl GeneralIntraLeafMode {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TilePartitionTraversalError {
+    #[error("partition traversal allocation failed: {0}")]
+    Allocation(#[from] std::collections::TryReserveError),
     #[error("partition traversal rejected by resource limit: {0}")]
     Limit(#[from] DecodeLimitError),
     #[error("partition traversal block-decoded state failed: {0}")]

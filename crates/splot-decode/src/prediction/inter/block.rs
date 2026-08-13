@@ -47,9 +47,10 @@ use crate::bitstream::tile_payload::{
     SavedCdfSubset, TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector,
     TileCdfSubset, TileCoeffContextState, TileCoeffStateError, TileFscModeState,
     TileIntraJointModeState, TilePartitionFrontierError, TilePartitionTraversalError,
-    TileSegmentIdState, TileSegmentIdStateError, TileUsesMrlsState, TransformToolResidualPolicy,
-    chroma_subsampling, current_frame_qm_segment_id, decode_general_intra_plane_coeffs,
-    get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
+    TilePartitionTraversalUnsupported, TileSegmentIdState, TileSegmentIdStateError,
+    TileUsesMrlsState, TransformToolResidualPolicy, chroma_subsampling,
+    current_frame_qm_segment_id, decode_general_intra_plane_coeffs, get_plane_residual_size,
+    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -2327,8 +2328,8 @@ fn single_ref_read_error(
     }
 }
 
-fn symbol_read_internal_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    inter_internal!("inter_block_mode_parse", tile_offset)
+fn symbol_read_internal_error(_tile_offset: ByteOffset) -> crate::error::DecodeError {
+    crate::DecodeHeaderStateError::InvalidInterBlockModeState.into()
 }
 
 fn map_inter_multiblock_error(
@@ -2337,28 +2338,81 @@ fn map_inter_multiblock_error(
 ) -> crate::error::DecodeError {
     match error {
         GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Leaf(error)) => error,
-        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
-            TilePartitionTraversalError::Limit(source),
-        )) => crate::error::DecodeError::Limit { source },
-        GeneralIntraMultiblockError::Setup(TilePartitionFrontierError::Traversal(
-            TilePartitionTraversalError::Symbol(error),
-        ))
-        | GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
-            TilePartitionTraversalError::Symbol(error),
-        )) => symbol_read_error(BlockSymbolTraceReadError::Symbol(error), tile_offset),
-        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
-            TilePartitionTraversalError::Decision(error),
-        )) if error.is_source_read_failure() => {
-            crate::pipeline::malformed_tile_payload(tile_offset, SPEC_MODE_INFO, error)
+        GeneralIntraMultiblockError::Setup(TilePartitionFrontierError::Traversal(error))
+        | GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(error)) => {
+            map_inter_partition_traversal_error(error, tile_offset)
         }
-        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
-            TilePartitionTraversalError::MissingSdpLumaModeState { r, c },
-        )) => crate::DecodeHeaderStateError::MissingSdpLumaModeState {
-            mi_row: r,
-            mi_col: c,
+        GeneralIntraMultiblockError::Setup(
+            TilePartitionFrontierError::MissingFact { .. }
+            | TilePartitionFrontierError::MiSizeState(_)
+            | TilePartitionFrontierError::IntraJointModeState(_)
+            | TilePartitionFrontierError::UsesMrlsState(_)
+            | TilePartitionFrontierError::UseDipState(_)
+            | TilePartitionFrontierError::FscModeState(_)
+            | TilePartitionFrontierError::LumaPaletteState(_)
+            | TilePartitionFrontierError::UvCflState(_)
+            | TilePartitionFrontierError::UnexpectedFrontier { .. },
+        )
+        | GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::MiSize(_)) => {
+            crate::DecodeHeaderStateError::InvalidInterPartitionState.into()
         }
-        .into(),
-        _ => inter_internal!("inter_partition_walk", tile_offset),
+    }
+}
+
+fn map_inter_partition_traversal_error(
+    error: TilePartitionTraversalError,
+    tile_offset: ByteOffset,
+) -> crate::error::DecodeError {
+    match error {
+        TilePartitionTraversalError::Allocation(_) => {
+            inter_allocation!("inter partition traversal state")
+        }
+        TilePartitionTraversalError::Limit(source) => crate::error::DecodeError::Limit { source },
+        TilePartitionTraversalError::Decision(error) if error.is_source_read_failure() => {
+            crate::pipeline::malformed_tile_payload(tile_offset, "5.20.3.2", error)
+        }
+        TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ReadLoopRestoration,
+        ) => crate::pipeline::unsupported_feature_at(
+            "inter_partition_loop_restoration",
+            tile_offset,
+            "inter partition traversal does not support this loop-restoration syntax",
+            "5.20.10.4",
+        ),
+        TilePartitionTraversalError::MissingSdpLumaModeState { r, c } => {
+            crate::DecodeHeaderStateError::MissingSdpLumaModeState {
+                mi_row: r,
+                mi_col: c,
+            }
+            .into()
+        }
+        TilePartitionTraversalError::Symbol(splot_core::Error::InvalidSymbolCdf { .. })
+        | TilePartitionTraversalError::BlockDecoded(_)
+        | TilePartitionTraversalError::IntraYModeState(_)
+        | TilePartitionTraversalError::UsesMrlsState(_)
+        | TilePartitionTraversalError::UseDipState(_)
+        | TilePartitionTraversalError::FscModeState(_)
+        | TilePartitionTraversalError::LumaPaletteState(_)
+        | TilePartitionTraversalError::Size(_)
+        | TilePartitionTraversalError::Allowed(_)
+        | TilePartitionTraversalError::Decision(_)
+        | TilePartitionTraversalError::Cdf(_)
+        | TilePartitionTraversalError::CoordinateUnderflow { .. }
+        | TilePartitionTraversalError::CoordinateOverflow { .. }
+        | TilePartitionTraversalError::CoordinateOffsetOverflow { .. }
+        | TilePartitionTraversalError::InvalidLoopRestorationUnitSize { .. }
+        | TilePartitionTraversalError::InvalidPartitionSubsize { .. }
+        | TilePartitionTraversalError::InvalidRegionType { .. }
+        | TilePartitionTraversalError::TooManyChildCalls
+        | TilePartitionTraversalError::MissingIntraLumaModeState { .. }
+        | TilePartitionTraversalError::MissingIntraUsesMrlsState { .. }
+        | TilePartitionTraversalError::MissingIntraFscModeState { .. }
+        | TilePartitionTraversalError::MissingIntraUseDipState { .. } => {
+            crate::DecodeHeaderStateError::InvalidInterPartitionState.into()
+        }
+        TilePartitionTraversalError::Symbol(error) => {
+            crate::pipeline::malformed_tile_payload(tile_offset, "5.20.3.1", error)
+        }
     }
 }
 

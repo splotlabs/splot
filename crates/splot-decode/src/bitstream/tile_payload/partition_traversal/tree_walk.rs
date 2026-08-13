@@ -184,6 +184,9 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         }
         let root = TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, ROOT_HAS_CHROMA);
         self.stack.clear();
+        self.stack
+            .try_reserve(1)
+            .map_err(TilePartitionTraversalError::from)?;
         self.stack.push(TilePartitionStackEntry::Partition(root));
         while let Some(entry) = self.stack.pop() {
             let (call, forced_extended_sdp_chroma_block) = match entry {
@@ -198,6 +201,9 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 continue;
             }
             if !forced_extended_sdp_chroma_block && is_intra_sdp_shared_root(self.frame, call) {
+                self.stack
+                    .try_reserve(2)
+                    .map_err(TilePartitionTraversalError::from)?;
                 self.stack.push(TilePartitionStackEntry::Partition(
                     call.with_tree_type(PartitionTreeType::ChromaPart),
                 ));
@@ -240,7 +246,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                             &mut self.stack,
                             children.as_slice(),
                             using_extended_sdp.then(|| extended_sdp_chroma_call(call)),
-                        );
+                        )?;
                     }
                     (
                         call,
@@ -317,7 +323,8 @@ fn schedule_partition_children(
     stack: &mut Vec<TilePartitionStackEntry>,
     children: &[TilePartitionCall],
     extended_sdp_chroma: Option<TilePartitionCall>,
-) {
+) -> Result<(), TilePartitionTraversalError> {
+    stack.try_reserve(children.len() + usize::from(extended_sdp_chroma.is_some()))?;
     if let Some(call) = extended_sdp_chroma {
         stack.push(TilePartitionStackEntry::ExtendedSdpChromaBlock(call));
     }
@@ -328,6 +335,7 @@ fn schedule_partition_children(
             .copied()
             .map(TilePartitionStackEntry::Partition),
     );
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -769,7 +777,7 @@ mod row_cursor_tests {
         let chroma_call = extended_sdp_chroma_call(luma_call);
         let mut stack = Vec::new();
 
-        schedule_partition_children(&mut stack, children.as_slice(), Some(chroma_call));
+        schedule_partition_children(&mut stack, children.as_slice(), Some(chroma_call)).unwrap();
 
         let first = stack.pop().unwrap();
         let second = stack.pop().unwrap();
