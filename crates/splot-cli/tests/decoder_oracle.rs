@@ -4,12 +4,9 @@
 //! Committed decoder-output oracle runner (CONF-AVM-DECODE-ORACLE).
 //!
 //! Decodes each committed fixture in-process through `splot_decode` and asserts
-//! `tests/conformance/decoder-oracle.toml`: `must_pass` output SHA-256 equals the
-//! recorded AVM oracle hash at every pool width in [`THREAD_LEGS`], so serial and
-//! parallel decode arms are both differentially gated; `xfail_splot` fails closed
-//! with the recorded `decode/unsupported-feature` reason/matrix row. CI gate, no
-//! AVM, no network.
-//! Set `SPLOT_DECODER_ORACLE_STRICT_XPASS=1` to fail on an unexpected pass.
+//! `tests/conformance/decoder-oracle.toml`: output SHA-256 equals the recorded
+//! AVM oracle hash at every pool width in [`THREAD_LEGS`], so serial and parallel
+//! decode arms are both differentially gated. CI gate, no AVM, no network.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -18,13 +15,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use splot_decode::{
-    DecodeContext, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeOptions,
-    DecodeRuntimeConfig,
-};
+use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 use splot_parallel::ThreadCount;
-
-const UNSUPPORTED_RULE: &str = "decode/unsupported-feature";
 
 /// Serial arm plus a pool wide enough to select every parallel decode arm
 /// (the widest gate today is `current_pool_width() >= 4`).
@@ -39,6 +31,7 @@ const SB256_INTRA_RAW_SHA256: &str =
 
 #[derive(Deserialize)]
 struct Manifest {
+    schema_version: u32,
     vectors_dir: String,
     #[serde(default)]
     fixture: Vec<Fixture>,
@@ -47,11 +40,8 @@ struct Manifest {
 #[derive(Deserialize)]
 struct Fixture {
     id: String,
-    status: String,
     ivf_sha256: String,
     avm_raw_sha256: String,
-    #[serde(default)]
-    unsupported_reason: Option<String>,
 }
 
 fn repo_root() -> PathBuf {
@@ -84,11 +74,10 @@ fn decoder_oracle_corpus_matches_manifest() {
     let manifest_text = std::fs::read_to_string(root.join("tests/conformance/decoder-oracle.toml"))
         .expect("read decoder-oracle.toml");
     let manifest: Manifest = toml::from_str(&manifest_text).expect("parse decoder-oracle.toml");
+    assert_eq!(manifest.schema_version, 2, "decoder oracle schema");
     let vectors = root.join(&manifest.vectors_dir);
     assert!(!manifest.fixture.is_empty(), "manifest has no fixtures");
 
-    let mut saw_pass = false;
-    let mut xpasses: Vec<String> = Vec::new();
     let mut ids: BTreeSet<&str> = BTreeSet::new();
 
     for fx in &manifest.fixture {
@@ -97,57 +86,17 @@ fn decoder_oracle_corpus_matches_manifest() {
             .unwrap_or_else(|e| panic!("read {}.ivf: {e}", fx.id));
         assert_eq!(sha256_hex(&bytes), fx.ivf_sha256, "{} ivf hash", fx.id);
 
-        match fx.status.as_str() {
-            "must_pass" => {
-                saw_pass = true;
-                for threads in THREAD_LEGS {
-                    let raw = decode_raw(&bytes, threads).unwrap_or_else(|e| {
-                        panic!(
-                            "must_pass {} failed to decode at {threads} threads: {e}",
-                            fx.id
-                        )
-                    });
-                    assert_eq!(
-                        sha256_hex(&raw),
-                        fx.avm_raw_sha256,
-                        "{} != AVM oracle at {threads} threads",
-                        fx.id
-                    );
-                }
-            }
-            "xfail_splot" => match decode_raw(&bytes, 1) {
-                Ok(raw) => {
-                    assert_eq!(
-                        sha256_hex(&raw),
-                        fx.avm_raw_sha256,
-                        "xfail {} decoded to output that DIFFERS from the AVM oracle: the \
-                             decoder neither failed closed nor matched AVM (non-conforming output)",
-                        fx.id
-                    );
-                    xpasses.push(fx.id.clone());
-                }
-                Err(error) => {
-                    let report = DecodeDiagnosticReport::from_decode_error(&error)
-                        .unwrap_or_else(|| panic!("xfail {} non-reportable: {error}", fx.id));
-                    assert_eq!(
-                        report.diagnostic.rule_id, UNSUPPORTED_RULE,
-                        "{} rule",
-                        fx.id
-                    );
-                    let reason = match &report.details {
-                        DecodeDiagnosticDetails::UnsupportedFeature(d) => d.unsupported_reason,
-                        DecodeDiagnosticDetails::UnsupportedStructure(d) => d.unsupported_reason,
-                        other => panic!("xfail {} unexpected details: {other:?}", fx.id),
-                    };
-                    if let Some(want) = fx.unsupported_reason.as_deref() {
-                        assert_eq!(reason, want, "{} reason", fx.id);
-                    }
-                }
-            },
-            other => panic!("{} unknown status {other:?}", fx.id),
+        for threads in THREAD_LEGS {
+            let raw = decode_raw(&bytes, threads)
+                .unwrap_or_else(|e| panic!("{} failed to decode at {threads} threads: {e}", fx.id));
+            assert_eq!(
+                sha256_hex(&raw),
+                fx.avm_raw_sha256,
+                "{} != AVM oracle at {threads} threads",
+                fx.id
+            );
         }
     }
-    assert!(saw_pass, "corpus must exercise the must_pass arm");
 
     let orphans: Vec<String> = std::fs::read_dir(&vectors)
         .into_iter()
@@ -162,15 +111,6 @@ fn decoder_oracle_corpus_matches_manifest() {
         orphans.is_empty(),
         "valid .ivf missing from manifest: {orphans:?}"
     );
-
-    if !xpasses.is_empty() {
-        let msg = format!("XPASS (upgrade to must_pass): {xpasses:?}");
-        assert!(
-            std::env::var_os("SPLOT_DECODER_ORACLE_STRICT_XPASS").is_none(),
-            "{msg}"
-        );
-        eprintln!("{msg}");
-    }
 }
 
 #[test]
