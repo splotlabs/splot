@@ -136,7 +136,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
     facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
-    workspace: &CurrentFrameWorkspace<T>,
 ) -> Result<InterFrameParse> {
     let setup = derive_inter_block_setup(
         std::slice::from_mut(tile),
@@ -147,7 +146,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         facts,
         ref_frame_idx,
         reference,
-        workspace,
     )?;
     let InterBlockSetup {
         params,

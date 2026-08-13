@@ -49,8 +49,7 @@ use crate::bitstream::tile_payload::{
     TileIntraJointModeState, TilePartitionFrontierError, TilePartitionTraversalError,
     TileSegmentIdState, TileSegmentIdStateError, TileUsesMrlsState, TransformToolResidualPolicy,
     chroma_subsampling, current_frame_qm_segment_id, decode_general_intra_plane_coeffs,
-    frame_mi_dimensions, get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave,
-    read_lossless_tx_size,
+    get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -266,6 +265,7 @@ pub(crate) struct InterBlockSetup {
 /// sequence carries directly.
 #[derive(Clone, Copy)]
 pub(crate) struct InterBlockFacts {
+    pub(crate) geometry: super::FrameDecodeGeometry,
     pub(crate) frame_interpolation_filter: FrameInterpolationFilter,
     pub(crate) num_total_refs: usize,
     pub(crate) reference_select: bool,
@@ -273,7 +273,6 @@ pub(crate) struct InterBlockFacts {
     pub(crate) qindex: u32,
     pub(crate) luma_use_tcq: bool,
     pub(crate) residual_use_ddt: bool,
-    pub(crate) bit_depth: BitDepth,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -286,9 +285,9 @@ fn derive_inter_block_setup<T: ReconSample>(
     facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
-    workspace: &CurrentFrameWorkspace<T>,
 ) -> Result<InterBlockSetup> {
     let InterBlockFacts {
+        geometry,
         frame_interpolation_filter,
         num_total_refs,
         reference_select,
@@ -296,10 +295,10 @@ fn derive_inter_block_setup<T: ReconSample>(
         qindex,
         luma_use_tcq,
         residual_use_ddt,
-        bit_depth,
     } = facts;
     let offset = frame_envelope.offset;
-    let frame_is_intra = core.frame_is_intra == Some(true);
+    let frame_is_intra = geometry.frame_is_intra();
+    let bit_depth = geometry.info().bit_depth();
     let first_tile = work_units
         .first()
         .ok_or(DecodeHeaderStateError::InvalidInterTileConstructionState)?;
@@ -315,14 +314,15 @@ fn derive_inter_block_setup<T: ReconSample>(
             .ok_or(crate::DecodeHeaderStateError::IncompleteInterFrameTools)?
     };
 
-    let (mi_rows, mi_cols) =
-        frame_mi_dimensions(core).map_err(|_| inter_internal!("inter_mi_dimensions", offset))?;
-    let coded_size = workspace.info().coded_luma_size();
+    let (mi_rows, mi_cols) = geometry.mi_dimensions();
     let current_order_hint = core.display_order_hint().unwrap_or(0);
-    let sb_h4 = superblock_h4(sequence, core).ok_or(inter_internal!("inter_sb_size", offset))?;
+    let sb_h4 = geometry.sb_h4();
     let projection_step = tip::tmvp_projection_step(core);
     let temporal_config = TemporalProjectionConfig {
-        frame_size: (coded_size.width(), coded_size.height()),
+        frame_size: (
+            geometry.info().coded_luma_size().width(),
+            geometry.info().coded_luma_size().height(),
+        ),
         step: projection_step,
         unit_size8: tip::tmvp_unit_size8(projection_step, sb_h4),
         enable_tip: sequence
@@ -344,15 +344,9 @@ fn derive_inter_block_setup<T: ReconSample>(
         &reference.ref_order_hint,
     );
     let expected_tip_pair = derived_tip_reference_pair(core, &derived_order_hints);
-    let mut motion_field = TemporalMotionField::new_with_metadata(
-        mi_rows,
-        mi_cols,
-        !frame_is_intra,
-        temporal_config.frame_size,
-        &derived_order_hints,
-    )
-    .ok_or(inter_internal!("inter_temporal_motion_field", offset))?;
-    motion_field.set_band_rows8(sb_h4 / 2);
+    let motion_field = geometry
+        .new_motion_field(&derived_order_hints)
+        .ok_or(inter_internal!("inter_temporal_motion_field", offset))?;
     let cdef_state = CdefState::new(mi_rows, mi_cols, sequence)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
     let ref_ccso_unit_grids = reference
@@ -411,8 +405,7 @@ fn derive_inter_block_setup<T: ReconSample>(
     Ok(InterBlockSetup {
         params,
         prelude: TemporalPrelude {
-            sb_h4,
-            dimensions: (mi_rows, mi_cols),
+            geometry,
             current_order_hint,
             config: temporal_config,
             expected_tip_pair,
@@ -476,7 +469,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         facts,
         ref_frame_idx,
         reference,
-        workspace,
     )?;
     let InterBlockSetup {
         params,
@@ -578,8 +570,7 @@ fn frame_segment_id_map(mi_rows: usize, mi_cols: usize) -> Result<FrameSegmentId
 /// prelude can run after the entropy pass instead of before it.
 #[derive(Clone, Copy)]
 pub(crate) struct TemporalPrelude {
-    sb_h4: usize,
-    dimensions: (usize, usize),
+    geometry: super::FrameDecodeGeometry,
     current_order_hint: u32,
     config: TemporalProjectionConfig,
     expected_tip_pair: Option<TipReferencePair>,
@@ -597,8 +588,8 @@ impl TemporalPrelude {
         frame_temporal_context(
             temporal_context,
             core,
-            self.sb_h4,
-            self.dimensions,
+            self.geometry.sb_h4(),
+            self.geometry.mi_dimensions(),
             self.current_order_hint,
             self.config,
             ref_frame_idx,
@@ -629,15 +620,17 @@ impl TemporalPrelude {
             .iter()
             .map(|field| field.as_ref().map(MotionFieldHandle::layout))
             .collect::<Vec<_>>();
-        let target_layout = super::find_mv_stack::MotionFieldLayout::new(
-            self.dimensions.0,
-            self.dimensions.1,
-            self.sb_h4,
-        )
-        .ok_or(inter_internal!(
-            "inter_scheduled_temporal_motion_layout",
-            self.offset
-        ))?;
+        let target_layout = self.geometry.motion_layout();
+        let (mi_rows, mi_cols) = self.geometry.mi_dimensions();
+        if target_layout.height8() != mi_rows.div_ceil(2)
+            || target_layout.width8() != mi_cols.div_ceil(2)
+            || target_layout.band_rows8() != self.geometry.sb_h4() / 2
+        {
+            return Err(inter_internal!(
+                "inter_scheduled_temporal_motion_layout",
+                self.offset
+            ));
+        }
         let tip_mode = core
             .inter
             .as_ref()
@@ -740,13 +733,7 @@ fn derived_tip_reference_pair(
     )
 }
 
-pub(super) fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<usize> {
-    let partition = sequence.partition?;
-    let frame_is_intra = core.frame_is_intra?;
-    Some(frame_superblock_h4(partition.seq_sb_size(), frame_is_intra))
-}
-
-fn frame_superblock_h4(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usize {
+pub(super) fn frame_superblock_h4(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usize {
     match (seq_sb_size, frame_is_intra) {
         (SuperblockSize::Block64x64, _) => 16,
         (SuperblockSize::Block128x128, _) | (SuperblockSize::Block256x256, true) => 32,

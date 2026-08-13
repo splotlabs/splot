@@ -1350,14 +1350,14 @@ where
                                 crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            let info = inter::inter_frame_info(
+                            let geometry = inter::FrameDecodeGeometry::new(
                                 &inter_core,
                                 &sequence,
                                 BitDepth::Eight,
-                                inter_envelope.offset,
+                                false,
                             )?;
                             let (slot, finish) = inflight::reserve_pending_slot(
-                                info,
+                                geometry.info(),
                                 inflight::PipelineFrameSlot::Eight,
                                 ring,
                                 frame_index,
@@ -1368,12 +1368,7 @@ where
                             let ccso_grid = inter::CcsoGridHandle::pending();
                             let segment_ids = inter::SegmentIdMapHandle::pending();
                             let motion = inter::MotionFieldHandle::pending_with_layout(
-                                inter::motion_field_layout(
-                                    &inter_core,
-                                    &sequence,
-                                    info,
-                                    inter_envelope.offset,
-                                )?,
+                                geometry.motion_layout(),
                             );
                             let products = (
                                 slot,
@@ -1397,6 +1392,7 @@ where
                                         options,
                                         inter_state,
                                         BitDepth::Eight,
+                                        geometry,
                                         motion,
                                     )
                                 },
@@ -1432,16 +1428,22 @@ where
                                 )
                             })?;
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
-                            let (slot, finish, frame_cdfs, ccso_grid, segment_ids, motion) =
-                                frame_pipeline::reserve_tip_output(
-                                    &inter_core,
-                                    &sequence,
-                                    BitDepth::Eight,
-                                    inter_envelope.offset,
-                                    inflight::PipelineFrameSlot::Eight,
-                                    ring,
-                                    frame_index,
-                                )?;
+                            let (
+                                slot,
+                                finish,
+                                geometry,
+                                frame_cdfs,
+                                ccso_grid,
+                                segment_ids,
+                                motion,
+                            ) = frame_pipeline::reserve_tip_output(
+                                &inter_core,
+                                &sequence,
+                                BitDepth::Eight,
+                                inflight::PipelineFrameSlot::Eight,
+                                ring,
+                                frame_index,
+                            )?;
                             let dependencies = inter::tip_output_dependencies(
                                 &inter_core,
                                 &sequence,
@@ -1463,6 +1465,7 @@ where
                                         options,
                                         &inter_state,
                                         BitDepth::Eight,
+                                        geometry,
                                     )
                                 },
                                 frame_index,
@@ -1586,14 +1589,14 @@ where
                                 crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            let info = inter::inter_frame_info(
+                            let geometry = inter::FrameDecodeGeometry::new(
                                 &inter_core,
                                 &sequence,
                                 BitDepth::Ten,
-                                inter_envelope.offset,
+                                false,
                             )?;
                             let (slot, finish) = inflight::reserve_pending_slot(
-                                info,
+                                geometry.info(),
                                 inflight::PipelineFrameSlot::Ten,
                                 ring,
                                 frame_index,
@@ -1604,12 +1607,7 @@ where
                             let ccso_grid = inter::CcsoGridHandle::pending();
                             let segment_ids = inter::SegmentIdMapHandle::pending();
                             let motion = inter::MotionFieldHandle::pending_with_layout(
-                                inter::motion_field_layout(
-                                    &inter_core,
-                                    &sequence,
-                                    info,
-                                    inter_envelope.offset,
-                                )?,
+                                geometry.motion_layout(),
                             );
                             let products = (
                                 slot,
@@ -1633,6 +1631,7 @@ where
                                         options,
                                         inter_state,
                                         BitDepth::Ten,
+                                        geometry,
                                         motion,
                                     )
                                 },
@@ -1668,16 +1667,22 @@ where
                                 )
                             })?;
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
-                            let (slot, finish, frame_cdfs, ccso_grid, segment_ids, motion) =
-                                frame_pipeline::reserve_tip_output(
-                                    &inter_core,
-                                    &sequence,
-                                    BitDepth::Ten,
-                                    inter_envelope.offset,
-                                    inflight::PipelineFrameSlot::Ten,
-                                    ring,
-                                    frame_index,
-                                )?;
+                            let (
+                                slot,
+                                finish,
+                                geometry,
+                                frame_cdfs,
+                                ccso_grid,
+                                segment_ids,
+                                motion,
+                            ) = frame_pipeline::reserve_tip_output(
+                                &inter_core,
+                                &sequence,
+                                BitDepth::Ten,
+                                inflight::PipelineFrameSlot::Ten,
+                                ring,
+                                frame_index,
+                            )?;
                             let dependencies = inter::tip_output_dependencies(
                                 &inter_core,
                                 &sequence,
@@ -1699,6 +1704,7 @@ where
                                         options,
                                         &inter_state,
                                         BitDepth::Ten,
+                                        geometry,
                                     )
                                 },
                                 frame_index,

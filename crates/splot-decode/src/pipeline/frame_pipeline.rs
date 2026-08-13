@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
-use splot_core::span::ByteOffset;
 use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
 use splot_recon::{BitDepth, ReconSample};
 
@@ -241,6 +240,7 @@ impl_scheduled_scratch_sample!(u16, Ten);
 type PendingTipProducts<T> = (
     PipelineFrameSlot,
     PendingFinish<T>,
+    inter::FrameDecodeGeometry,
     inter::FrameCdfHandle,
     inter::CcsoGridHandle,
     inter::SegmentIdMapHandle,
@@ -252,20 +252,26 @@ pub(super) fn reserve_tip_output<T: ReconSample>(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     bit_depth: BitDepth,
-    offset: ByteOffset,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
     ring: &mut InflightRing,
     frame_index: usize,
 ) -> Result<PendingTipProducts<T>> {
-    let info = inter::inter_frame_info(core, sequence, bit_depth, offset)?;
-    let (slot, finish) = super::inflight::reserve_pending_slot(info, erase, ring, frame_index)?;
+    let geometry = inter::FrameDecodeGeometry::new(core, sequence, bit_depth, false)?;
+    let (slot, finish) =
+        super::inflight::reserve_pending_slot(geometry.info(), erase, ring, frame_index)?;
     let frame_cdfs = inter::FrameCdfHandle::pending();
     let ccso_grid = inter::CcsoGridHandle::pending();
     let segment_ids = inter::SegmentIdMapHandle::pending();
-    let motion = inter::MotionFieldHandle::pending_with_layout(inter::motion_field_layout(
-        core, sequence, info, offset,
-    )?);
-    Ok((slot, finish, frame_cdfs, ccso_grid, segment_ids, motion))
+    let motion = inter::MotionFieldHandle::pending_with_layout(geometry.motion_layout());
+    Ok((
+        slot,
+        finish,
+        geometry,
+        frame_cdfs,
+        ccso_grid,
+        segment_ids,
+        motion,
+    ))
 }
 
 /// Admits one reference-gated TIP output reconstruction without stopping the

@@ -14,14 +14,12 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{BitDepth, PixelFormat, QmFrameLevels, ReconSample};
+use splot_recon::{BitDepth, CurrentFrameWorkspace, QmFrameLevels, ReconSample};
 
 use crate::bitstream::tile_payload::{FrameQmScope, FrameQuantizerDeltasScope};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk};
-use crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect;
 use crate::pipeline::{
-    deblock_quant_deltas, derive_tile_plan, derive_visible_luma_rect, ensure_runtime_limits,
-    unsupported_at,
+    deblock_quant_deltas, derive_tile_plan, ensure_runtime_limits, unsupported_at,
 };
 use crate::prediction::inter::{
     InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
@@ -50,6 +48,8 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
     })?;
     let frame_width = frame_size.width as usize;
     let frame_height = frame_size.height as usize;
+    let geometry =
+        crate::prediction::inter::FrameDecodeGeometry::new(&core, sequence, bit_depth, true)?;
     let quantization = core.quantization_params.ok_or_else(|| {
         unsupported_at(
             "frame_engine_intra_missing_base_q",
@@ -92,17 +92,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let pixel_format =
-        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?;
-    let visible_luma_rect =
-        derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
-    let mut workspace = new_general_intra_workspace_with_visible_rect::<T>(
-        frame_width,
-        frame_height,
-        bit_depth,
-        pixel_format,
-        visible_luma_rect,
-    )?;
+    let mut workspace = CurrentFrameWorkspace::<T>::new(geometry.info(), T::default())?;
 
     let reference = InterReferenceState::<T>::empty().map_err(|_| {
         unsupported_at(
@@ -123,6 +113,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         &core,
         options,
         crate::prediction::inter::InterBlockFacts {
+            geometry,
             frame_interpolation_filter: InterpolationFilter::Eighttap,
             num_total_refs: 0,
             reference_select: false,
@@ -130,7 +121,6 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
             qindex,
             luma_use_tcq,
             residual_use_ddt: false,
-            bit_depth,
         },
         &[],
         &reference,

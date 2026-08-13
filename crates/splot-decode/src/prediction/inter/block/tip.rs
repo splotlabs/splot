@@ -6,7 +6,7 @@ use crate::DecodeHeaderStateError;
 use crate::prediction::inter::InterResidualReconScratch;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_parallel::prelude::*;
-use splot_recon::{DecodedFrame, PixelFormat, ReconError};
+use splot_recon::{CurrentFrameWorkspace, DecodedFrame, ReconError};
 
 use super::super::reference::{HeldFrameSamples, ReferenceSamples};
 
@@ -1117,25 +1117,20 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
-    bit_depth: BitDepth,
+    geometry: super::super::FrameDecodeGeometry,
     offset: ByteOffset,
 ) -> Result<(DecodedFrame<T>, TemporalMotionField)> {
-    let frame_size = core
-        .frame_size
-        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
+    let info = geometry.info();
+    let bit_depth = info.bit_depth();
     let inter = core
         .inter
         .as_ref()
         .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let ref_frame_idx = &inter.ref_frame_idx;
-    let dimension_overflow = || ReconError::ArithmeticOverflow {
-        context: "TIP-output frame dimensions",
-    };
-    let width = usize::try_from(frame_size.width).map_err(|_| dimension_overflow())?;
-    let height = usize::try_from(frame_size.height).map_err(|_| dimension_overflow())?;
-    let (mi_rows, mi_cols) = (height.div_ceil(4), width.div_ceil(4));
-    let sb_h4 =
-        super::superblock_h4(sequence, core).ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
+    let width = info.coded_luma_size().width();
+    let height = info.coded_luma_size().height();
+    let (mi_rows, mi_cols) = geometry.mi_dimensions();
+    let sb_h4 = geometry.sb_h4();
     let projection_step = tmvp_projection_step(core);
     let ref_motion_fields = reference
         .resolve_motion_fields(ref_frame_idx)
@@ -1177,27 +1172,12 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let global_mv = inter
         .tip_global_mv
         .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-    let visible_luma_rect =
-        crate::pipeline::derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
-    let mut workspace =
-        crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect::<T>(
-            width,
-            height,
-            bit_depth,
-            PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
-            visible_luma_rect,
-        )?;
-    let mut motion_field = TemporalMotionField::new_with_metadata(
-        mi_rows,
-        mi_cols,
-        true,
-        (width, height),
-        temporal.reference_order_hints(),
-    )
-    .ok_or(ReconError::ArithmeticOverflow {
-        context: "TIP-output motion field",
-    })?;
-    motion_field.set_band_rows8(sb_h4 / 2);
+    let mut workspace = CurrentFrameWorkspace::<T>::new(info, T::default())?;
+    let mut motion_field = geometry
+        .new_motion_field(temporal.reference_order_hints())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "TIP-output motion field",
+        })?;
     let placed = PlacedInterBlock {
         luma_x: 0,
         luma_y: 0,
