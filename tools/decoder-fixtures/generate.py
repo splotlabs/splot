@@ -11,10 +11,11 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py coverage-fixtures --stage <dir>
 
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
-.ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo) and classifies
-splot decode (must_pass / xfail_splot). `coverage-fixtures` re-encodes the small
-capability-coverage fixtures (profiles, chroma formats, and one isolated intra tool
-each) so the corpus is reproducible; move vetted `.ivf` into vectors/valid/ by hand.
+.ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo). AVM decoder
+failures are recorded as null hashes for local inventory; the committed manifest
+remains strict. `coverage-fixtures` re-encodes the small capability-coverage
+fixtures (profiles, chroma formats, and one isolated intra tool each) so the corpus
+is reproducible; move vetted `.ivf` into vectors/valid/ by hand.
 """
 import argparse, hashlib, json, os, shutil, subprocess, sys
 
@@ -385,18 +386,18 @@ def cmd_find(_):
 
 
 def cmd_hashes(args):
-    avmdec, splot = find("avmdec"), os.path.join(REPO, "target/release/splot")
+    avmdec = find("avmdec")
     rows = []
     for name in sorted(f for f in os.listdir(VALID) if f.endswith(".ivf")):
         ivf = os.path.join(VALID, name)
         raw = "/tmp/_o.raw"
-        avm_ok = run([avmdec, "--i420", "--rawvideo", "-o", raw, ivf]).returncode == 0
-        avm = sha(raw) if avm_ok and os.path.exists(raw) else None
-        sp = run([splot, "decode", "--output-format", "raw", "-o", "/tmp/_s.raw", ivf])
-        cls = ("must_pass" if sp.returncode == 0 and sha("/tmp/_s.raw") == avm
-               else "xfail_splot" if sp.returncode != 0 else "MISMATCH")
-        rows.append({"id": name[:-4], "ivf_sha256": sha(ivf), "avm_raw_sha256": avm, "status": cls})
-        print(f"  {cls:12s} {name}")
+        if os.path.exists(raw):
+            os.remove(raw)
+        avm_ok = (run([avmdec, "--i420", "--rawvideo", "-o", raw, ivf]).returncode == 0
+                  and os.path.exists(raw))
+        avm = sha(raw) if avm_ok else None
+        rows.append({"id": name[:-4], "ivf_sha256": sha(ivf), "avm_raw_sha256": avm})
+        print(f"  {'AVM_OK' if avm_ok else 'AVM_ERROR':9s} {name}")
     out = args.out or "/tmp/oracle.json"
     json.dump(rows, open(out, "w"), indent=2)
     print(f"wrote {out} ({len(rows)} fixtures)")

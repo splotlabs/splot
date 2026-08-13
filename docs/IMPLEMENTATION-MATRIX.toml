@@ -5801,7 +5801,7 @@ change_id = "decoder-avm-oracle-corpus"
 tracking_issue = ""
 owner = "conformance"
 risk = "high"
-notes = "Committed decode-output differential over the reused CONF-AVM-VALID-STREAMS corpus (tests/conformance/vectors/): tests/conformance/decoder-oracle.toml records, per stream, the AVM decoder raw-output oracle sha256 (avmdec --i420 --rawvideo, visible I420 samples, §6.18) and an expected splot outcome. The committed CI runner (crates/splot-cli/tests/decoder_oracle.rs) decodes each fixture in-process through splot_decode and asserts must_pass (splot decode --output-format raw sha256 equals the recorded oracle) or xfail_splot (fails closed with a recorded decode/unsupported-feature rule id + unsupported reason). AVM is the LOCAL oracle-hash generator only and is never invoked/vendored by the runner, build, or CI; the oracle hashes are committed offline. As of the initial corpus: 47 must_pass, 21 xfail_splot, 0 mismatches (splot matches AVM byte-for-byte or fails closed). tests/conformance/decoder-oracle-coverage.toml is the capability taxonomy; `cargo xtask decoder-fixtures coverage` renders the optional generated coverage report on demand, and `cargo xtask decoder-fixtures verify` plus the optional coverage drift check run in `cargo xtask ci`. xfail_splot fixtures never block CI; an unexpected pass (XPASS) is reported and fails only in strict local mode (SPLOT_DECODER_ORACLE_STRICT_XPASS). Local regeneration tooling lives under tools/decoder-fixtures/. The live avm encode -> splot validate harness stays separate (avm-differential-harness)."
+notes = "Committed pass-only decode-output differential over the reused CONF-AVM-VALID-STREAMS corpus (tests/conformance/vectors/): tests/conformance/decoder-oracle.toml schema 2 records, per stream, the AVM decoder raw-output oracle sha256 (avmdec --i420 --rawvideo, visible I420 samples, §6.18). The committed CI runner (crates/splot-cli/tests/decoder_oracle.rs) decodes all 278 fixtures in-process through splot_decode at serial and parallel widths 1 and 8 and requires every raw-output sha256 to equal the recorded oracle. AVM is the LOCAL oracle-hash generator only and is never invoked or vendored by the runner, build, or CI; the oracle hashes are committed offline. tests/conformance/decoder-oracle-coverage.toml is the 124-capability taxonomy; `cargo xtask decoder-fixtures coverage` renders the optional generated coverage report on demand, and `cargo xtask decoder-fixtures verify` plus the optional coverage drift check run in `cargo xtask ci`. Local regeneration tooling inventories IVF and AVM hashes under tools/decoder-fixtures/ without reclassifying splot output. The live avm encode -> splot validate harness stays separate (avm-differential-harness)."
 
 [feature.status]
 mapped = "done"
@@ -5831,7 +5831,7 @@ fixtures = [
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf",
     "tests/conformance/vectors/valid/syn-key-intra-64x64.ivf",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = []
 
 [[feature]]
 id = "CONF-PUBLIC-VECTORS"

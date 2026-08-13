@@ -5,1958 +5,1679 @@
 # decode-output differential over the reused CONF-AVM-VALID-STREAMS corpus; the
 # runner never invokes AVM. See docs/CONFORMANCE.md.
 #
-# Per fixture: id (basename under vectors_dir), status, features (ids in
-# decoder-oracle-coverage.toml), ivf_sha256, avm_raw_sha256 (sha256 of
-# avmdec --i420 --rawvideo, the oracle). must_pass => splot decode --output-format
-# raw sha256 == avm_raw_sha256; xfail_splot => splot fails closed with
-# decode/unsupported-feature + the recorded unsupported_reason / matrix_row.
+# Per fixture: id (basename under vectors_dir), features (ids in
+# decoder-oracle-coverage.toml), ivf_sha256, and avm_raw_sha256 (sha256 of
+# avmdec --i420 --rawvideo, the oracle). Every fixture must decode at the serial
+# and parallel CI widths with raw output equal to avm_raw_sha256.
 
-schema_version = 1
+schema_version = 2
 avm_revision = "457cd58681a747465661baccb1f32095bc5b7774"
 vectors_dir = "tests/conformance/vectors/valid"
 
 [[fixture]]
 id = "syn-2frame-inter-444-64x64-q128"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.non420_chroma", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single"]
 ivf_sha256 = "e658f1dfa59c2f7f35ae4ca43f6fac06e9c5394c976b16d00986616bd29f7544"
 avm_raw_sha256 = "92cb67a5828266a983aca929f2c97b1e86ea5047ea9bca6ded0e467c3cb781e2"
 
 [[fixture]]
 id = "syn-2frame-intra-only-mono-16x16-q255"
-status = "must_pass"
 features = ["container.ivf", "frame.intra_only", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single"]
 ivf_sha256 = "74acd49de73519e0d80a4508e5dcaf7548f22669e0aafe2fa62c9f9610289776"
 avm_raw_sha256 = "0dc50ed6e41c0a4d3eaa8c5a1e850607fd4bf2042596439f6112369e90f58364"
 
 [[fixture]]
 id = "syn-cfl-444-tilerows-intra-256x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.cfl", "intra.cfl.non420", "intra.cfl.tile_boundary", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i444", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "39ba40e189ec236d2e92c7e2914427ebae6e4a9d44cc932a65dc07282c494b7c"
 avm_raw_sha256 = "90c639011a24ed70a56048c888ce06cfc3b8121518a9b08f31fde897e4000f2a"
 
 [[fixture]]
 id = "syn-cfl-444-intra-64x64-q255"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.cfl", "intra.cfl.non420", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "efc64896161a3b9e8d1acb43e0de7f567b973ad57893829306ab0535e97c11fb"
 avm_raw_sha256 = "075641becbde523eb5b6dbd542ae0df161b24f5a36710fc4cb6497dad85455bb"
 
 [[fixture]]
 id = "syn-cfl-422-intra-64x64-q128"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.cfl", "intra.cfl.non420", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.422", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "902dfd5a8f50edfefbeb8a27dddf5d4dba48814f8b52db94ddccd3a1dee700cc"
 avm_raw_sha256 = "8f9809413ac43dd23e7045d9c95ef27ec392beb38b5582edd71c61bea7e298f1"
 
 [[fixture]]
 id = "syn-2frame-ccso-inter-32x32-10bit-q100"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "loop.ccso", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "a7c7919d74b1ff819731b12571b2312875c19fc4956de365fddd9757fde45ad9"
 avm_raw_sha256 = "c5440ace80b7f66fe73b02827aa9c9715e6100bb86089c55da95ad6df54f17e6"
 
 [[fixture]]
 id = "syn-2frame-cdef-inter-64x32-10bit-q120"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "loop.cdef", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "f6462ea929e225b03d707b21f2af44c2aaeaf3932f61248e484e0f727c01153a"
 avm_raw_sha256 = "a608f95ef98a7e5fcc7fae7343104c09dd8fe2a2cb857f70f767c9311e29848f"
 
 [[fixture]]
 id = "syn-2frame-deblock-inter-32x32-10bit-q100"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "76ebb9ccd75ca79e28e8d451d4d09ec140d9ee23523c6f10a111ab6e216bd10e"
 avm_raw_sha256 = "e4cbe2ec37dc6bc093d1b019482cbc749ce7d95cde222dd151856e1b0df922c5"
 
 [[fixture]]
 id = "syn-2frame-inter-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "74c46c6c9fe368ddd211e696c5cb59ba2d9e8ccd8961355fd112a8f10963ed69"
 avm_raw_sha256 = "d98e1697e2f29c229620758433b43ed11ad65f888a6a82d952801573b87d2602"
 
 [[fixture]]
 id = "syn-2frame-reserved-obu-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.single_ref", "obu.frame_header", "obu.reserved", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "9ee872c4a6b351d22a1fb201ec77845489897ceaafce7f065fcda9a99e87ae27"
 avm_raw_sha256 = "d98e1697e2f29c229620758433b43ed11ad65f888a6a82d952801573b87d2602"
 
 [[fixture]]
 id = "syn-2frame-inter-64x64-10bit"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "83cf0271a1e4d998b7eb04ba372110e0fa3d8ac2d85c6bfa043d2b3b031603f8"
 avm_raw_sha256 = "c80d5288adb1fc0ad1a27e49ff6df25431c5e3dbe3fc5dfd3edb416c3c233960"
 
 [[fixture]]
 id = "syn-2frame-multirow-inter-64x256-10bit-q100"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "328c4496b76d2ee860c89431a5b0497b593ca51775281b818694962e6ee80aba"
 avm_raw_sha256 = "548bad8e5f7f2f42c28fc20377b43f81a04bf93e08acdeead26d725d60562c9d"
 
 [[fixture]]
 id = "syn-2frame-multirow-deblock-inter-64x256-10bit-q158"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "7d4cafed4ec120174def2cf972438b95a25cb06af831b2244ae0478756f57914"
 avm_raw_sha256 = "13707270f1982ae8e089f67fca40fcafe4b8e37985da6ac78c5853962ad9ac4f"
 
 [[fixture]]
 id = "syn-2frame-inter-mvorder-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.mv_prediction_spatial", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "236955d7e1a2c5c121db28458af03e3861f4c8ad9045e70c4d6c4289093e5b96"
 avm_raw_sha256 = "d0f2955ba511f017ce8c5673fc0fd968f7e5d9e6a8ee6e1886606afc29180b73"
 
 [[fixture]]
 id = "syn-2frame-inter-mvstack-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.mv_prediction_spatial", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "da285a3f2466ea1f8a163682e41d61ffe53ab95e33414210afe1bfbb6821ea59"
 avm_raw_sha256 = "5fd48d3a1e67c2abd7bbe23ad2419256de57915f66c9fe96874687a55e8c34ec"
 
 [[fixture]]
 id = "syn-2frame-lr-switchable-768x256-8bit"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "loop.lr_switchable", "loop.pc_wiener", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "437ab87f9a1e35d5a855cf6ecbc622b27551e5d765ab3e2d0f8697bc2c78f841"
 avm_raw_sha256 = "21fa88e1e7aa47c2dacff85a6586266dfd1898a492917916a9261f4fcb743566"
 
 [[fixture]]
 id = "syn-2frame-lr-switchable-unit-wienerns-128x64-q100"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "loop.lr_switchable", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "b63c74a9258784ab66288b1b677e26e5891540c95cb9d680f9b61d18f170bf1f"
 avm_raw_sha256 = "956a9b73f17edbcdb396706662153bd38a16b606f17453a86be065069b842bf0"
 
 [[fixture]]
 id = "syn-2frame-inter-residual-64x64"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.residual_dct", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "f540bef2f8e5ab510e7ac3c061379fe6fdefb3b0ca68334ac9dcf3b038e3d6a5"
 avm_raw_sha256 = "35a66d66965f71602e0b0661a5b3c7bff8a1a691c98a69a9f8c7453f642a1441"
 
 [[fixture]]
 id = "syn-2frame-flatstep-inter-y-dc-delta1-64x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.residual_dct", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.frame_delta_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "26a518e7814ccc313e5cf6760f392dc06002f8cb40f106594626b1638b6347ba"
 avm_raw_sha256 = "a3109f9f21810ac7dc529212e5978fd9a038aedf4f1c9e680fb1990581c91f6d"
 
 [[fixture]]
 id = "syn-2frame-subpel-inter-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "4bb2504e5c47e3431cdb705e588dbd6325af1f95a9cb2021e5a5343031091d40"
 avm_raw_sha256 = "ccab74f625ac644739e9ba9e075811f8c120a5644e6700faa9c4bd070bd6919d"
 
 [[fixture]]
 id = "syn-2frame-txsplit-intra-inter-64x64-10bit-q100"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "intra.dc", "intra.per_unit_prediction", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.tx_split"]
 ivf_sha256 = "c3a6bb3b8749d3920edc7fbf7c37229c3f7833111e362acb352fc398a789f0ec"
 avm_raw_sha256 = "2396c5dd796134b3fdcc4e333ce3bbf1b7812f1ce83ad4ad9e5b699524db9ca8"
 
 [[fixture]]
 id = "syn-2sb-cdef-intra-128x64-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "loop.cdef", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "34bf1b57fcbffc3de9c1ae47262ff996759a91533ac5d863bdf2bb081b3412b1"
 avm_raw_sha256 = "5e8576f139db38fa6cf8c9d5015bf1a7b667a9255e84d1593222848728f02362"
 
 [[fixture]]
 id = "syn-2sb-cdef-intra-128x64-q130"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "loop.cdef", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "64e752a20e0acd03fbc4e3f038aa75259147820a2ff058f8b13e8b7d12524b11"
 avm_raw_sha256 = "5746153715e5537ae86879a9330048331e3bdf62246fb3fdd55a372cb8299cc9"
 
 [[fixture]]
 id = "syn-2sb-cdefdeblock-intra-128x64-q100"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.cdef", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "942bb0b85f8247a2d834c87b45f73d9a8f56de605b90d84f96149353263753be"
 avm_raw_sha256 = "2915c2a65660fa1ff35c965f16e1c59d629ffc279539bfe9f502f7a03de2d23d"
 
 [[fixture]]
 id = "syn-2sb-cdefuv-intra-128x64-q170"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "loop.cdef", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "ead7a1c4225f56caafbfe9d533cdaa8938602e776e707f8dcbea88e704e7841d"
 avm_raw_sha256 = "9b11d0effa3b93e84c63306e9ac865921e33f6e098cc35fbc472cbd6096ee3e6"
 
 [[fixture]]
 id = "syn-2sb-deblock-intra-128x64-q100"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "94dd761675007dae3649f58c2d5af8a36bfbe0d5789333c80e3304920b1c16d1"
 avm_raw_sha256 = "a83cf84a6eab00d8c1e6aaf64e7aeba2049e7d1721a90147067ecc627f0aea0b"
 
 [[fixture]]
 id = "syn-2sb-deblock-intra-128x64-q98"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "f3c60ca581a63b15d419563b07fed18467bfd5c7a5bd55711f0fc3feab9ec7cf"
 avm_raw_sha256 = "3306f7ab5f192cc4f30f6c564e9b52a9d868de77ffd9fb913651cb58a8d8a3f1"
 
 [[fixture]]
 id = "syn-2sb-deblockwide-intra-128x64-q100"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "8e981e105715ae6d420fd217667480026053748e6d7a7b1ac9943cd12217c10c"
 avm_raw_sha256 = "199c62093efa3b644fb4d519ae082516d9a4f9a77b13f116ddc62c49fa8648d7"
 
 [[fixture]]
 id = "syn-2sb-inter-128x64-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.mv_prediction_spatial", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "199d8b5d3989d61843c3edadcd9fca21dc0c66f055afb03b9e17b26860ecba64"
 avm_raw_sha256 = "acf7dcf80a387ad21064ad9d18016265c301059fa68ed684a9a90fba937aa143"
 
 [[fixture]]
 id = "syn-2tile-inter-128x64-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "022395f33395cb469c871127526b45ecec9b78522fedeec6e49dff3099bab1b0"
 avm_raw_sha256 = "acf7dcf80a387ad21064ad9d18016265c301059fa68ed684a9a90fba937aa143"
 
 [[fixture]]
 id = "syn-2tile-zone1-edge-128x64-q192"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.ibp", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple", "transform.dct_adst"]
 ivf_sha256 = "c9fd016f591250511b12d9a28ce2608b28be98035794042b4f04468ab3507475"
 avm_raw_sha256 = "92e2f47d153066e5efa4188d0b9dcd926c583f686a82f0fef9c706a43d0c29e3"
 
 [[fixture]]
 id = "syn-2sb-intra-128x64-10bit-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.dc_subset", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "d8e097994c2706fc943627aa988da02d41073614dc1c14017a805fc4a7fff5aa"
 avm_raw_sha256 = "ceff974fde25c8d05c9010d2a7f414845dc3a626ab3c45a9dabb08634c29dd66"
 
 [[fixture]]
 id = "syn-2sb-intra-128x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "867b2640febf24415f587cf0536199ddf572465bdda4a3b564eb100b2033c4c9"
 avm_raw_sha256 = "18ba32ffb8d818689cbded3dbd5c44602bb091c1f9750c1bb062e6f80498540f"
 
 [[fixture]]
 id = "syn-2sbcol-intra-64x128-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "763dd3a52884b80d39d3c6cdfe06504aecd32c4e59ca1302ce7f269e7081927f"
 avm_raw_sha256 = "3ee739a805e13597ff7d75659dd1e0150113bf4782c4d69e1d27ae942d6c10a0"
 
 [[fixture]]
 id = "syn-3frame-deblock-subpu-chroma-64x32-10bit-q90"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "b0771269cc17c810990a8fbce30175ee4977e4fd42a7500739aba5cb07670c47"
 avm_raw_sha256 = "7b63416de76f67af781247f878bebc9ad42bc5eabb043eda15a0fdde7eca5a9f"
 
 [[fixture]]
 id = "syn-3frame-derived-smvp-96x64-q100"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.mv_prediction_spatial", "inter.single_ref", "inter.warp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "cbc0b6287c6dc1f5f764cc36a81cf450b40438a074384e8d238c8323d8deff3d"
 avm_raw_sha256 = "c57ff3fd3224b6a3003f0bf164363efb15213adfa49f4f861d06e9a04f7ae14f"
 
 [[fixture]]
 id = "syn-3frame-compound-average-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "bee855a9500da46c2ab20e4af63f180784b9d3ed12764cc65ac3a9444b7e2f2a"
 avm_raw_sha256 = "2b4f716243d9f5c30a244ecc6f7fdcb5bef804d2ba353a21d670d686cfe63ff4"
 
 [[fixture]]
 id = "syn-8frame-opfl-refine-all-64x64-q120"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "591f8bb4ea05309581527491d73026805d4fba24d8d3dd7fa547d02c41a12bb9"
 avm_raw_sha256 = "2617506663727b6b1f5d8e80eafb31c893700ee5d0bdb2ce5db243d841b35548"
 
 [[fixture]]
 id = "syn-3frame-multiref-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.mv_prediction_spatial", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "7f2d6a2f0cf2c4248a12e598d74efdf7e63e012902c6bf2de29b455c07a57e0d"
 avm_raw_sha256 = "de7484cdf8627ca732f8c79866355950118c092034d32708192cef4a6319df19"
 
 [[fixture]]
 id = "syn-cos-intra-64x64-10bit-q180"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.dc_subset", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "474444753b600823b45eddbb55fe0b764da56c8fc0ba7c848cba56194add508e"
 avm_raw_sha256 = "bfec72ffcddf982499eebfa21bdfb400fc66aa96b40281298387420ef2124649"
 
 [[fixture]]
 id = "syn-cos-intra-64x64-q180"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "coeff.tcq", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "1235ed7c3ce9afa5b5cac873459de631176a2b1fef0ea381cad23d4670cbcd59"
 avm_raw_sha256 = "8a6751d4517073bad0bbe71f4b5537df8e8b0bfee85fcd6af1ac2d5878dd59e8"
 
 [[fixture]]
 id = "syn-chroma-corner-cap-256x256-q140"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "1e15beb4acca2a166c3476c38eff1c635090da0a407ea850c4ba9bfc70a7e5c1"
 avm_raw_sha256 = "9d1331b7f113bcd0de59adfd04681009dd8a8c03b18d7ddbd651058fb406435c"
 
 [[fixture]]
 id = "syn-d113-intra-128x128-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "f80ece1da803a496a48c92a56c39aa92fde41cfc7cc217f9b875e60a0f131126"
 avm_raw_sha256 = "d32bc2b11585e7ea55f0d2401f18402c55e781c0a861bb613b55f5dc26a2a395"
 
 [[fixture]]
 id = "syn-d113-chroma-top-left-64x64-q192"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "f462042850c087904c8f2e23a8ecff5875c2d1c266d53ca4a69a1b37bbe76534"
 avm_raw_sha256 = "991b1a40edefbde26e76a81a37e2221048880636238eb93f44574d801e86ca35"
 
 [[fixture]]
 id = "syn-d135-chroma-nonfull-32x32-q7"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "0470878bc9cbc4930cfc5a6935a3a29ec0078a7194dd72e70c06887a23905649"
 avm_raw_sha256 = "9a1caf04eeed5402053edc129525d145477fcac645984e84ea2ec735ca4d47fa"
 
 [[fixture]]
 id = "syn-d157-chroma-nonfull-32x32-q1"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "af23aa05be23538624c50928cf9e6dea972aa6bd49ec88a9a5f37f878d1ae15b"
 avm_raw_sha256 = "9084f7311718d3558b0e9b5ed09315a989f39b55b585d3e387fe878c436d40e7"
 
 [[fixture]]
 id = "syn-rect-noedge-d113follow-chroma-64x64-q7"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "8f6c402a4e590e5aa725f6ac2158e14222a179bd8a6dc249c142eff5ff9496d1"
 avm_raw_sha256 = "f831430d302267653add61fbc5054c1f3ab193a10ab7529fbcda74be6cdff70e"
 
 [[fixture]]
 id = "syn-d135row-intra-128x128-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "bea01a0fbefa560e40681294c284d60adb4b848fcb4493511fe6f8c141edb36e"
 avm_raw_sha256 = "85583e5a46ac6a2db97854b86f643735c1b9710bee2c2d2bc65d1aa5a16fe3a1"
 
 [[fixture]]
 id = "syn-d157-intra-128x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "07b44aa966c0ae08adae16915684bb40301e5e08743779828f0ae0c00259a20e"
 avm_raw_sha256 = "bf93ca6b8f55e1fb7db2584f3e3821ad67f21018b774c6e326634362ee5ef046"
 
 [[fixture]]
 id = "syn-d203-intra-128x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "a0a430c366116e4826c35dc2393da677078168436183fcf4c06c71fe2d681553"
 avm_raw_sha256 = "3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f"
 
 [[fixture]]
 id = "syn-noedge-zone3-p186-intra-128x64-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.ibp", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple", "transform.dct_adst"]
 ivf_sha256 = "a5c47b1003617ff821497a8a3061f9c720a002212ac1768bda052e6a98733b4d"
 avm_raw_sha256 = "8cac414672397d2ab67b143f3003c567c9a4efceceaf4222ec8cd4680bb0c5ee"
 
 [[fixture]]
 id = "syn-d45-intra-192x128-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "cf887e04ba417fa74a5d97fde25ce92c915fc66f55bf4d9fe4cedb15002eaebe"
 avm_raw_sha256 = "d08056c0d1ed3f379e3072c7f1ebced04da0f6df994efd0b5f8d39b76c0b683f"
 
 [[fixture]]
 id = "syn-d45-follow-chroma-top-left-64x64-q182"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "ace2c76f449c0c0df80e3cc5c58cc0a62cb58e081d184d63fb06f627b5ce4a33"
 avm_raw_sha256 = "5f048c577d2fd6a392302aad8be4dbdb070d5dd33ccaecfe4cbadb5374aec0c3"
 
 [[fixture]]
 id = "syn-d45-follow-intra-64x64-10bit-q128"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "7deccb879ed21da987a85d81316c67110d931bb8096929d3f7c136c44ac0c72e"
 avm_raw_sha256 = "176168529b5970cafe650525f68cdd34df4a9bd9cca1e784005248ec71aa7ed7"
 
 [[fixture]]
 id = "syn-d45-mono-intra-64x64-10bit-q128"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.monochrome", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "23e7f12ca671b3d7e491e67ab6e4bcb73622c54656619b45382c81edbaaaea17"
 avm_raw_sha256 = "2efc7a2cdb39694755fb06ff31e70bc06b5711e26196d5a756daad43e546d6cc"
 
 [[fixture]]
 id = "syn-d45-top-left-intra-64x64-q96"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "d647ff6d80ba301d77540ab937a9dfcf75bc7e4d705263ff1d8cf41ba6179622"
 avm_raw_sha256 = "6a8317f2ca517cb85a9157c9e8e86ffe7b4ad9580374cbfee7394e974a5cf06b"
 
 [[fixture]]
 id = "syn-d45-right-edge-intra-128x128-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "d5b1f5f4cc02d4cf23face5657cf5871f7ee0e44ed74d51599e7c81c192b93c7"
 avm_raw_sha256 = "fd131679dbf64ae6ad63cf2b51894995c86bda529ff5299545225b00d478ba76"
 
 [[fixture]]
 id = "syn-deep-intra-64x64-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "a098548db459b488eed1baeb61f998fabe7eca042b1bbcf2c538fb85da6fd33d"
 avm_raw_sha256 = "73123e51c66787b59fb6b93a6221e9d78a550c6e0d1c4e0c1adfd21a41ed39ab"
 
 [[fixture]]
 id = "syn-dfchroma-intra-64x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "8903ee176510027c35105f28e832ff9fe6c06ca72a7bda3010b2ea543bf07974"
 avm_raw_sha256 = "628b759dcb63356ad3174063652c54d7ebf6f54d1566ab9f1b64b3a74542154f"
 
 [[fixture]]
 id = "syn-dirneigh-intra-128x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "13c34ba0c880c90510f8ff5ff5ff97daac704933e6e003d04a20cea825583b78"
 avm_raw_sha256 = "ad1515885df5620a31c37f855934ae2432167edbf1b1b62081552b9df3957426"
 
 [[fixture]]
 id = "syn-dirneigh-reorder-128x64-q196"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "c87506fdee597539962c49ad5ced2dfb1b36d7d50919158d73f368b4c6790b25"
 avm_raw_sha256 = "a1500046842354466967cd766ae569ed61927ffcf4617cbc471a3c7644d18edd"
 
 [[fixture]]
 id = "syn-flat-intra-64x64-10bit-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.dc_subset", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "617e6067262e5e475ed97c4991a553f82dae647e60b5d9008c4c5385d1a82fe2"
 avm_raw_sha256 = "973eb3fc4b112c865f939dc1339824ca0b2a1522ca2b5ec70311afb459436e2d"
 
 [[fixture]]
 id = "syn-crop-intra-64x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.crop_window", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "497a5664c78d915a865f5997e8a4e808c549cd7b9e263dea0693e00146e39fe3"
 avm_raw_sha256 = "db63b846c386f8b66acb6f4750abd436a4c2e5b9cbe63166d1c93f1fcc4e20b9"
 
 [[fixture]]
 id = "syn-flat-intra-64x64-minimal"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "161c475afdf5b4067ab93bdc9699187ef023b1a7e1fb619fec114a961781298e"
 avm_raw_sha256 = "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af"
 
 [[fixture]]
 id = "syn-flat-intra-64x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "19f422ac63056ae799157daf1954715c33028002baafb399731c9e768204c7ef"
 avm_raw_sha256 = "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979"
 
 [[fixture]]
 id = "syn-grid-deblock-intra-128x128-q100"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "d988a5939c491608a8c44b2ac686ce2ae402683420ce3ce20cae930529cfa121"
 avm_raw_sha256 = "242cb4df75288e96ab231c41f3bcb956aa0159d35a304e82c89e04814bd77ef0"
 
 [[fixture]]
 id = "syn-grid-inter-128x128-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.mv_prediction_spatial", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "2a3932e6a533de228073209baba77c2de70655fa538d11d35fc3844a7b079f0d"
 avm_raw_sha256 = "4988ec8126de360b2d3bc27a97a923cda2f5572b5d045c5517f5644e5992290b"
 
 [[fixture]]
 id = "syn-grid-intra-128x128-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "6a24b14cbbd7563bfd99ef25216c77309cc2c7c8755b13bb11db7a3aac1b193e"
 avm_raw_sha256 = "42bd99faae1ac0acb15c3e24fbededd8fc670612d08987bebb8942de5f4f4874"
 
 [[fixture]]
 id = "syn-hedge-intra-64x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "9bc90cb41d63f9b8b093549743a7eead75d5d5e56d3060d34ebbc0ec14d79c94"
 avm_raw_sha256 = "b15f267ec6e99ca4d96a70f38bffe5f798ee4c33ad3aaec23761a1ea74b0be33"
 
 [[fixture]]
 id = "syn-hpred-intra-128x64-q180"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "889d9a329b7b36a5da9907083c27acdb2c96f41c465a2c753a086d441d60b85a"
 avm_raw_sha256 = "826cea4e59f8280b538c3efc26e7be72cd1912aa19f235ebf3f862fc8832a885"
 
 [[fixture]]
 id = "syn-hrect-intra-64x64-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "0f85478c9dd5ad50bf4b5523be73b3213c8fd10e0d5b5f1c11997a46e9d21257"
 avm_raw_sha256 = "6d2e94d795d46cae62d1e2cf06cf4fe5b727b0917742745af998b002a7686142"
 
 [[fixture]]
 id = "syn-rect-noedge-d157-intra-128x64-q116"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple", "transform.dct_adst"]
 ivf_sha256 = "3bfa304df78149f444e9d6bb41c597da129e5ccb88e012e9fe00efcd5f6778fe"
 avm_raw_sha256 = "915607cac9c150f457122c9738e1a4f90bf846dabb8049ca89d8737351f6978d"
 
 [[fixture]]
 id = "syn-hsmooth-intra-64x64-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "17997ec86b177e4033e6cc518b2fed6d2ccde6fd5a53496c1a555dcc0a39df68"
 avm_raw_sha256 = "cfc6debd26760cdebf1d1a4497792461f0f68bc7e7773741ddf2cbc34561e702"
 
 [[fixture]]
 id = "syn-mbvg-intra-128x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "3ddf52a253e3406a7ebe20df45cb6b39e6a5f177fe5a8a2d1672f8a47102a564"
 avm_raw_sha256 = "269b4969800751c63f7f0605f1f7b8f178f7bf85590ec62fe64313ff394d6dfd"
 
 [[fixture]]
 id = "syn-quad-intra-64x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "b18c0c01f873000bb10deaad07af9e99870691dc9880f456da061cc0435df2e6"
 avm_raw_sha256 = "c54ed4e996841e2178e74033d765dda1e1127d5d89c3012be3266c3e24a7fd28"
 
 [[fixture]]
 id = "syn-rdir-intra-128x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "36f0ed8d6040fdd41d1019a28dabaa33ca6a7d685b894b00a80451e925e27b57"
 avm_raw_sha256 = "9ea9254abc7d7507558099d5ae3e78eaf5d88625e1cc8184038321650b2b54a4"
 
 [[fixture]]
 id = "syn-shgrid-intra-128x128-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "5cbdf29bbb94adb156abe4c4263620fabf988798fc5006d50abf3525a48964be"
 avm_raw_sha256 = "d1ce39cc3d79f5c46fdea67ad57ec4edd5dfed088ee39fd7029fda1bbb11e0e8"
 
 [[fixture]]
 id = "syn-shsplit-intra-64x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "0e4487b499ed356684963686b8fea994d33c59f4019f4759d15d3b68075a2803"
 avm_raw_sha256 = "296f15949d88b26b5797bffdb15c6c36dc46bf6976bad59f7995e2443e1b418a"
 
 [[fixture]]
 id = "syn-smchroma-intra-64x64-10bit-q160"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.dc_subset", "intra.dc", "intra.residual.dc_only", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "9c4a51a470e9fff3275140c943fb6fb341bc2f51e445207863913ab068784ed1"
 avm_raw_sha256 = "4fe932e5e5dea4a1830eae4853b198c738e8d1919049736d2f4a234c491d5397"
 
 [[fixture]]
 id = "syn-smooth-intra-64x64-q124"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "508f4fb479e3f8238c928b097bb14cca334a03314ab46f68294b795b6f995a21"
 avm_raw_sha256 = "9b054c6fff47397fbe88a9eb45a34fac018efc7748fc697edebddd3f14bd88d3"
 
 [[fixture]]
 id = "syn-smoothnondc-intra-64x64-q132"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "5b1c76e8424aa02c402e501809c9f2410aafac029143fd4581bedb2eb624fb29"
 avm_raw_sha256 = "f1621607dfcd2737e8a4c308fc26cd1596cb001444437f0440e34883a59b519b"
 
 [[fixture]]
 id = "syn-split-intra-64x64-10bit-q110"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "025e03b1351bf2a4aa50bf3ec26f821bc9840139d8f67c20da58ad53ec2f6e58"
 avm_raw_sha256 = "527cf3cdc7bca2ccfca21573f175c0ffcde73189f1f94fd02a65e09cc9dfdcbf"
 
 [[fixture]]
 id = "syn-svsplit-intra-64x64-q140"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "853d7fbf7537953d4d5b17a2ffcf86cd956385dcfdf3003cff6cbee8819fcab1"
 avm_raw_sha256 = "c2b46d534744db9fc146b460f438a6ae450c711e43e537f80a13886297ddbaa5"
 
 [[fixture]]
 id = "syn-vgrid-intra-192x128-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "b2bc34d7a9dec2bf8a46770f1ebb374448bfe93bf32dc39608f3b42cbdfd897b"
 avm_raw_sha256 = "c62dd0eb74ab1129e9cd4d6a326cfef9026f62ab4144a378b38cb325b45462d2"
 
 [[fixture]]
 id = "syn-vpred-intra-64x128-q160"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "633cff9c1764da40024e67d857854f46085d1d025a31a6e1c48352c58b871ba6"
 avm_raw_sha256 = "5b2761c0d2eb2502af5cbe544b2cadbb676a4b84b60953d86a3e42d7df910e39"
 
 [[fixture]]
 id = "syn-vpred-top-left-intra-64x64-q96"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "7a2f08846da0fcf12ee6112fd350a46390ba20197786ad3ee5f254bd6bf48f5c"
 avm_raw_sha256 = "3b0a07a4c0686c9d3d4c7715691159468e545bd70989707c25dbeee330e33ae5"
 
 [[fixture]]
 id = "syn-cardinal-v-chroma-top-left-64x64-q64"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.cardinal_vertical_chroma", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "da99b90e6b9085dd68bb1805a522689dad5efcdc82258d2c1e99afd108916960"
 avm_raw_sha256 = "d615e4d9cb9f6463d6765cb8b523d96eeaa0ab9fc7e3b802d20f9d567eaaa267"
 
 [[fixture]]
 id = "syn-cardinal-h-chroma-top-left-64x64-q192"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.cardinal_horizontal_chroma", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "58b42e17e9891de831c3f4e734bfee4a3533246da39e437792325b0a99d878b2"
 avm_raw_sha256 = "9406aad1ff978564b0d9f0879e0ce1dcb414b74f6d3e250703eb7873937fa0d0"
 
 [[fixture]]
 id = "syn-cardinal-h-chroma-tile-origin-128x64-q1"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.cardinal_horizontal_chroma", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple", "transform.dct_adst"]
 ivf_sha256 = "bfc9dc564b7c9e92503a32fb096b9f23ef8cf9d704776ce797bd494d53592112"
 avm_raw_sha256 = "8efb0e30f50271df41154e6227cbd0ad6df2dc6405c7c29b5615f7ba188ebf6d"
 
 [[fixture]]
 id = "syn-hpred-top-left-intra-64x64-q96"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "b95f2820aca297084804c43a5206c571efbb7920e902ecb121ff797abd1f4b77"
 avm_raw_sha256 = "f06ae152103a1abcb6d853faf078d35c770734acd99827c625763bd8b73a2854"
 
 [[fixture]]
 id = "syn-vsmooth-intra-64x64-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.dc_only", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "ba11f9b284081e29b9c05afef6dfffdf4d6a50765dfc642fb1face0d181afab2"
 avm_raw_sha256 = "3aebe2eb215d4878bbc40aa2f97e2178b6140ef51c03afaaae478e69dbbf6bcd"
 
 [[fixture]]
 id = "syn-2frame-ccso-reuse-inter-64x64-10bit"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "loop.ccso", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "c1383a1265d815f7ecbdbb16a3a13ae1c42b6f31afb9a95b29590b186a50e6b6"
 avm_raw_sha256 = "ca0bc39fad7b151c55766630c7dc05caea154838220916819cd46be7b33cced6"
 
 [[fixture]]
 id = "syn-2frame-sameref-compound-64x32-10bit-q150"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.compound", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "d0a83ae53e5ef9ff9009a1c1c1679eca71935234601d1ec7752061957b3381d4"
 avm_raw_sha256 = "ece65945b06fb0260f668c9bce198a3b4c62f594ae112e242f6eb99ed207947c"
 
 [[fixture]]
 id = "syn-2frame-same-ref-global-global-64x64-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.compound", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "30e2073e20001f9a0f117af33d57bca23311fb9d62780d31543cc81644b558ce"
 avm_raw_sha256 = "21e1e10d0b1bf3932eac3842e87af17450ad2deb0b765e8179177a2a08881231"
 
 [[fixture]]
 id = "syn-2frame-global-translation-64x64-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "inter.warp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "aa18fdcb39d3974c072c0ca8e8213f2189ed8f0285d01896cde8d17d35ae23fe"
 avm_raw_sha256 = "db9ca8e6c0880c60fc319943f8522081dcd7d2826a17f0ce133d933e17c5c7e3"
 
 [[fixture]]
 id = "syn-2frame-global-rotzoom-64x64-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "inter.warp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "aa045747e39764ff7f1859824dd7f4f0e17db016df297d2e526600c31d8c7286"
 avm_raw_sha256 = "db9ca8e6c0880c60fc319943f8522081dcd7d2826a17f0ce133d933e17c5c7e3"
 
 [[fixture]]
 id = "syn-2frame-global-affine-64x64-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "inter.warp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "d2d96ef121e9650773f9c04d0d92861a2eb55fc52766597c3d7af9b4dcc7018e"
 avm_raw_sha256 = "db9ca8e6c0880c60fc319943f8522081dcd7d2826a17f0ce133d933e17c5c7e3"
 
 [[fixture]]
 id = "syn-2sb-smchroma-intra-128x64-10bit-q160"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.dc", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "15b1a73772e7bd554406004b11a0419a73fdaf8d66a17028b3c0ce360eb1ea70"
 avm_raw_sha256 = "dd96ae02ba422d0da6c38f9f748ee06c74d89a5d70170db29550c6916cb5fbaa"
 
 [[fixture]]
 id = "syn-2tile-intra-128x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.cfl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "2334f5365bc33eb5e35222592474fcce018325817a62c2bc2a4ab217514a6089"
 avm_raw_sha256 = "2bb897ebe222b9da5420bb5edc071d65b71188a7fa19d0b4c6b0c9d188ae2163"
 
 [[fixture]]
 id = "syn-3frame-simple-interintra-64x32-10bit"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.inter_intra", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "298c4e654d708e57daaad29878d22d75a44777e65b3bdd79839260fc154ff149"
 avm_raw_sha256 = "0aa084e156a9d1dad81c4380b03e671ad5f816d8b47181e47623e0b1ec8644b1"
 
 [[fixture]]
 id = "syn-422-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.422", "seq.layers.single", "tile.single"]
 ivf_sha256 = "5728ade59d5fcf013de801e8166b0b9055e720b49a739512fe9145c89289ed5f"
 avm_raw_sha256 = "6024ad9897407b803bcda24e481171815f54dd5c8906f53506e7d2fe092ba49d"
 
 [[fixture]]
 id = "syn-444-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single"]
 ivf_sha256 = "18c8f0f5e80e0e9c3b25ce3f61296201015d8a14e6a3f897d2202d9344f7db95"
 avm_raw_sha256 = "a24bd8a8cb3c9b293d3bc0209c2b0f6357fec74727a4958baf341791ee1a1bae"
 
 [[fixture]]
 id = "syn-cctx-444-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single", "transform.cctx"]
 ivf_sha256 = "4e44edfb887e1d8d6467fd8a9d3dc43ee4c7cda2ffc4f0cac2a7263e4c62518b"
 avm_raw_sha256 = "61854be209ee4caceec47baf4bd5d2b796e296d5451f89973f0e2e519a524a05"
 
 [[fixture]]
 id = "syn-filmgrain-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "film_grain.present", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "0d85dee8dee88df267310b4213af5f2f5993b3242349d323452220341e4fb552"
 avm_raw_sha256 = "d67b6682c3ae18e7ad78ddfc07311fbb605920bf1bb599495ffa7dc7225b2db2"
 
 [[fixture]]
 id = "syn-flat-intra-64x64-10bit-q255"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.delta_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "7d32341f461d621eb1b765a59fe53e3acc42ee8d8b835745a8a648559052d860"
 avm_raw_sha256 = "500f4756f2d3bfceefa01dec6d4074d9adb4e48d83adaaf1faf71c7dbb158222"
 
 [[fixture]]
 id = "syn-fsc-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.idtx_fsc"]
 ivf_sha256 = "c3241f1442af3a8cd0459fd67c774f87f4d2c1fb82764a7c231ddb98193085c2"
 avm_raw_sha256 = "b69e1dde7dde07fefd2b0548529ea2d60886ab07cd1dd4597d3e2234d379888d"
 
 [[fixture]]
 id = "syn-lossless-fsc-d135-intra-32x32-10bit"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.idtx_fsc"]
 ivf_sha256 = "d4eb85c3200604cd2aca8b851d9f797563c7def103ebb369db88f9e822d2dba0"
 avm_raw_sha256 = "7c5ddec5653a8baddfbfa039dd8048666a3526e1a7a62a4f77d0a4e58bc82ac8"
 
 [[fixture]]
 id = "syn-gdf-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.gdf", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "1b2f03204b5ab1a58a087026d3b12c4f27b2851e7214dd2fcc1bed1dc2728053"
 avm_raw_sha256 = "21da5a7f33dfe7fa3b2768e7e14be462df43846ce427ace2dfd1089f411a9800"
 
 [[fixture]]
 id = "syn-gdf-per-block-intra-128x128-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "loop.gdf", "loop.gdf_per_block", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "65215cdf1501ce0b05b0cc1793b2b2033c49ebec4810016b08eb700ccec3ffd0"
 avm_raw_sha256 = "13af253aff07dbbdcd9cd9e904597376e5cdca89e4be02d6900419ad9dbaf599"
 
 [[fixture]]
 id = "syn-4tile-gdf-intra-128x128-q120"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "loop.gdf", "loop.gdf_multitile", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple", "transform.dct_adst"]
 ivf_sha256 = "e90d88909527228327eb1d1a2ac86fc38c73ce027fec84c0d2fc315168231101"
 avm_raw_sha256 = "3d74979b2e766b285c535c6ff68078b8175f8b835d6f8a4380f215cc19874107"
 
 [[fixture]]
 id = "syn-txpart-d135-intra-64x64-q100"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.per_unit_prediction", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.tx_split"]
 ivf_sha256 = "1b003c34024583e8736e48fb47e285dac0568b1bd06e08a75a9f5035f964ed6a"
 avm_raw_sha256 = "5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1"
 
 [[fixture]]
 id = "syn-reduced-txpart-d135-intra-64x64-q160"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "intra.per_unit_prediction", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.tx_partition_reduced", "transform.tx_split"]
 ivf_sha256 = "fb5d3cd1abeb033e8de489f9daa90dbfbbc5c624ab92fb927c860d860420dfa7"
 avm_raw_sha256 = "608619fe3b10c3464841b2269baa417c29d48d7e4793ca38913a68c107caa0a9"
 
 [[fixture]]
 id = "syn-2frame-reduced-txpart-inter-64x64-q160"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.tx_partition_reduced", "transform.tx_split"]
 ivf_sha256 = "06fbf0a02c027d3336e9c90e1b8f35c0ed21c367196129266b14504a34a0fe96"
 avm_raw_sha256 = "9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3"
 
 [[fixture]]
 id = "syn-inter-96x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.show_existing", "inter.single_ref", "intra.cfl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "dba7ad79bc1524b9e94fbc82f5b2b5021ca6b4157571f1cfc13beea2765e9dec"
 avm_raw_sha256 = "fb1f53557525e6e4cd36d721901b868e2a57004281a46dd8a14558c536106d1f"
 
 [[fixture]]
 id = "syn-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.cfl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "62e2b1b10282b9c090e82801ace0c13bb9cb099bebfebba66e508014988ef56e"
 avm_raw_sha256 = "294d914f3d6c61339876b7d91c97a1762011b3afae36850b91f89a04e850c6ce"
 
 [[fixture]]
 id = "syn-intra-64x64-10bit"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.cfl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "83f36347e4fab4d083acb6ba227d3e8296115fd0efe89fa3f8ff1db4b76208e2"
 avm_raw_sha256 = "6acbc1e8acef72183829023e9bb214650082c8b9c0598df9594e0bd50c6b0c66"
 
 [[fixture]]
 id = "syn-ist-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.secondary_ist"]
 ivf_sha256 = "13a461906b1b0074503daac6b64171faa4b806662ce038c13c6bffa6b39b1468"
 avm_raw_sha256 = "e5b64143d281e5c3e78c3029670c43d32cd073f75339b866829d74ca0d2306e6"
 
 [[fixture]]
 id = "syn-key-inter-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "intra.cfl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "ae09182ed9d0c1fde1533a0215abfcfcdd69b21676cf72dde903c9c34d07420c"
 avm_raw_sha256 = "3929c9c9bb73231072060dcc93e0e30970ebfffe0d7be7c0f3eb2c511aa1d404"
 
 [[fixture]]
 id = "syn-2tile-2group-intra-128x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.nonzero_multiblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple", "tile.multiple_groups", "transform.dct_adst"]
 ivf_sha256 = "3d356dc32d4f4e73d9f3aa5bd98ff79081f90aa327ac523ea6db8fde96eb4153"
 avm_raw_sha256 = "2b0affadf536e7decb3e6899e173ffb289127c131a1f676cebcf79169f714fe2"
 
 [[fixture]]
 id = "syn-key-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.cfl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "8310661d3b68ee9560be0c61f5bae65fe10f3667b8b65e18a4ad5db1fbc4127d"
 avm_raw_sha256 = "052e33144ff95552a005db19589110651a814470540b0b708e30f7de4c99f496"
 
 [[fixture]]
 id = "syn-luma-palette2-row-mono-16x16-q0"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.palette", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single"]
 ivf_sha256 = "15f7683df284453f314f169182e185590a892ca6e612cfdeb9a1b86949e0cc53"
 avm_raw_sha256 = "418ecf79e4b2564419678cb25c28cbbf0259bf4602dd54f3e2868529d4df261d"
 
 [[fixture]]
 id = "syn-mhccp-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.mhccp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "fae30cb237865e94b22b7dc2e6d208efcd04cb03a280fedd01eee879b41d33d1"
 avm_raw_sha256 = "4d95ed1b9a1ae7188b06a3b991355e1822ca456dcb9e58aafebb6dfc05a7258a"
 
 [[fixture]]
 id = "syn-mono-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single"]
 ivf_sha256 = "eb72350653f0cf72691bfc80bbc9ea47149ca112e47381412cf3581b7b41316e"
 avm_raw_sha256 = "2caad75a3f9a729187deee66d839eacf3a4705e62221cbdd6ece96c022334b6b"
 
 [[fixture]]
 id = "syn-profile31-mono-intra-16x16"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "seq.profile.configurable", "tile.single"]
 ivf_sha256 = "5cda9a0c51c31721036a23c2601b88770989e9e872c66d32fc5d0a1875b53501"
 avm_raw_sha256 = "5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b"
 
 [[fixture]]
 id = "syn-mono-intrabc-morph-128x128-q100"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "inter.intrabc", "inter.intrabc.morph_pred", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single"]
 ivf_sha256 = "08bb6fbeead1205d5c682c500acf6dcbb14b26fdcce95ca6f907fc3f1c799b80"
 avm_raw_sha256 = "5e6a9eac61011e29f965e53a7fb8f2e8278bae53c1370772ea96344cf8e56dea"
 
 [[fixture]]
 id = "syn-mrl-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.mrl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "95cf5133afbc75d72fb0147499199a38b57259c574122ae42e3ebbf494824000"
 avm_raw_sha256 = "ff66557f26d838051d533347ec98ea54d0090d0baf9f1ff83b6a9c72278542ae"
 
 [[fixture]]
 id = "syn-ops-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.show_existing", "inter.single_ref", "obu.frame_header", "obu.operating_point_set", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.multi_or_operating_point", "seq.layers.single", "tile.single"]
 ivf_sha256 = "fca2a05ac5b2e63b1cf2a2fa8e6f6cd5da51c06852fe6816022626db50b2a3af"
 avm_raw_sha256 = "1f2c07be41c62e4cb218b4261c7fdb59348750fb6427d29520eeddd244c2d3cc"
 
 [[fixture]]
 id = "syn-parity-intra-128x128"
-status = "must_pass"
 features = ["coeff.parity_hiding", "container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "b68a1dc0a8047a693688cc45f2c2e3bb81f91d75bafa801f999c7287ffb262df"
 avm_raw_sha256 = "c427cea1d9c9ca8efece0415d1b1228ab03475b3ef0da7f06e4cdf741a39ec14"
 
 [[fixture]]
 id = "syn-pcwiener-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.pc_wiener", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "bbc01708a3409e4bd5bb4d1d3ea57d2ec5afdccecea54a80482fd228548943c0"
 avm_raw_sha256 = "21da5a7f33dfe7fa3b2768e7e14be462df43846ce427ace2dfd1089f411a9800"
 
 [[fixture]]
 id = "syn-smooth-intra-64x64-10bit-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.residual.nonzero_multiblock", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "45a655c29105edfeace52cc25f3cc078dbb1bb8a3db41716e8ae49703f42e20d"
 avm_raw_sha256 = "7412ac765a66580283a9b67120bb0124df4ac03687c9e449f3dbd1f60921ba4f"
 
 [[fixture]]
 id = "syn-warp-inter-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "inter.single_ref", "inter.warp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single"]
 ivf_sha256 = "8d49b2525746fd87ee0605d123703a8b04db57f2dce613297c471b00b496e066"
 avm_raw_sha256 = "b58b514b2942429b3e5580a986d6e75ad7bc4a3fc47b9b9d13a194fe0454bd16"
 
 [[fixture]]
 id = "syn-wienerns-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "c7e75665e526693a1050be367741abd1eec0d15f08107417b29072de6ec03c92"
 avm_raw_sha256 = "21da5a7f33dfe7fa3b2768e7e14be462df43846ce427ace2dfd1089f411a9800"
 
 [[fixture]]
 id = "syn-wienerns-422-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i422", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.422", "seq.layers.single", "tile.single"]
 ivf_sha256 = "67b29dad3e1b3ce6834043b331f4452f582c07d69ff14e619d5deea775817c02"
 avm_raw_sha256 = "325e16e95b9960150dfbb053ea5de6ba0d6cf4b663e355e97bb8641109c0b8ac"
 
 [[fixture]]
 id = "syn-wienerns-444-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i444", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single"]
 ivf_sha256 = "285cebb178b7743c6a3f2fdb0636305a0b8c4857ac879e56f267b43998edbc0c"
 avm_raw_sha256 = "bbc00abaf1a3e8bd805efc0b26653f408a6de43d4f02f7cea1f01e1baf6d57d1"
 
 [[fixture]]
 id = "syn-wienerns-tilerows-intra-256x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.lr_multitile", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "6174adacb834efa3d20d1206af6a4844c6d514104c7f48955e2eebc2a6295bce"
 avm_raw_sha256 = "72822371ae1560a7dd7a27012533ea1e3f6cee0c9cdd45d6c3ae8ac0e5c211b1"
 
 [[fixture]]
 id = "syn-qm-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.qm", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "658a44330701f11e5516f85afbcc370dcf0fc0e390073f98712b4ca81a6d3324"
 avm_raw_sha256 = "a3a64b8df33017ea9c6c54b94bc54f6694e7ccb5e00edade7d00208de09a14b4"
 
 [[fixture]]
 id = "syn-seg-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "frame.segmentation", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "6ff272bf9538efc8abb68085817e8735a9ae9a277ad2457192cbc669fb7c76ce"
 avm_raw_sha256 = "8af98b3535505196ef731f21b965ac16905b04d04e0a6eb6f475f3274fc148d0"
 
 [[fixture]]
 id = "syn-qmseg-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "frame.segmentation", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.qm", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "d20c2b1ee84509ffdf865211d4a06b13a6cba27ebabb6291abff95db4b1c2fb7"
 avm_raw_sha256 = "e6d6dc0726e808ddbc5f4410a3d0d0cc351b17803edd76f012157d912e47396e"
 
 [[fixture]]
 id = "syn-deltaq-intra-128x64"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.delta_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "442391abcf415ece5ba85351f55b6786d3aa0e12ae3822745a10a09393aecb63"
 avm_raw_sha256 = "18ba32ffb8d818689cbded3dbd5c44602bb091c1f9750c1bb062e6f80498540f"
 
 [[fixture]]
 id = "syn-seqdeltaq-intra-128x64"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.delta_q", "quant.sequence_base_delta_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "dfcdbef2fc7ec912d2e5dac0acb5ddcd0475771d3601ab3889c14ed28e0bc74a"
 avm_raw_sha256 = "3febac78b0b0e4c27e1a080073d7f4ecf51b5a6d689f495169354834d4659c11"
 
 [[fixture]]
 id = "syn-lossless-intra-64x64"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "0e820f52188da91da829b2fdb15170a5058bc3faaedb15975b46bc561b6ffda6"
 avm_raw_sha256 = "cb11e05cb5da949c0e0f5b5a7cb310df35a96a22c45d1ada70d950859fe697d1"
 
 [[fixture]]
 id = "syn-lossless-nonzero-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "c704b3f75b90c0c02d89a4d91d4d2f773247f8ee5ccfb463e4f396c5897e72d2"
 avm_raw_sha256 = "1af4a4343927b77994b57ce50d3e0b09d57dc698e2ec122d8abcdc1667d70782"
 
 [[fixture]]
 id = "syn-golomb-lossless-mono-16x16"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "2e49ce31dc92b05747ff10ebed9b256f450cbac8ff69001f31a19c452de7716b"
 avm_raw_sha256 = "673f62a095962fe0413e3fa044af24b3f8ec6919a0b61132187e7257ad38afb1"
 
 [[fixture]]
 id = "syn-lossless-cardinal-y-v-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "9dd34ef93d09517c7052261099867bfcdf0c5ce42e4d18c3af6825375aac6007"
 avm_raw_sha256 = "1ed57e96fd8e3107284d54007af41a0974ea5f75b2adb16de2d3c9943dc5a7fc"
 
 [[fixture]]
 id = "syn-lossless-cardinal-y-h-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "bd6504eb89de2ce465b73082970fc3b40eabca5d837ab67a90fa05b15d5afa1c"
 avm_raw_sha256 = "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-paeth-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "3d27e4b653231826c84cc7a072267149fdc3292e8b9d3813f17563d9c51c817e"
 avm_raw_sha256 = "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d135-intra-64x64"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "25ce2224ffc024420faf6b81f973a980c3a202836080c53766440c73d2900f4e"
 avm_raw_sha256 = "71248f8ced1be4c7b0ac9a1c5b4d4eda9b616249b91b0c1464029f06e86cb942"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d45-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "c62f1fade0f80ebb6f074c94f3844e6a9a0a6790ea046994eb9b7a85b4fe3f72"
 avm_raw_sha256 = "f545bb90a2b6ae346fef77c06b92f5e632df636bc364d860158ff0d1cf782dd3"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d67-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "cc456af20967ffaf7250eb736c4c372dde4b4b6334093f492bbbea2b715127ff"
 avm_raw_sha256 = "06f8dbad33bd1c4e903d36cc3f042fceb1c2c4094f9ff50c08b4c1f08ba81595"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d67-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "860a82d6f86aaba49dc906a09c6b36eb6f5512ab8d6755080fa8b5a1dc72bfcd"
 avm_raw_sha256 = "1e06306e7d131ffc620e1969987c4f4b7dbae673c68e56e8a462a65c338c4576"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d45-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "7d86a8afca5002e1a8e80e2b8b1aee848a1e32f22d9bd40c1ecae40d50f4c25f"
 avm_raw_sha256 = "52c9fe30861467fdb7a1897bd266e21e8edd4c6ddb04ef534442849125c5d925"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-luma-d67-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "2c07cdf207e1d269d8ff9afd2fea63336121873eae8ffcf274ac23b89e811712"
 avm_raw_sha256 = "1e06306e7d131ffc620e1969987c4f4b7dbae673c68e56e8a462a65c338c4576"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d113-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "b2c9a18bbe958c12addf7cd4845616ead4cc61c41034fbedc3f1c0b8a664c292"
 avm_raw_sha256 = "8f2f920f4daf0e1c057d0ae7d51ba56508b6a5f552dd3459bba97677ba7aafd8"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-luma-d113-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "3338ef32386b0b65a11d692b42f3550a062b4038639070000ad8ad88104cee92"
 avm_raw_sha256 = "8f2f920f4daf0e1c057d0ae7d51ba56508b6a5f552dd3459bba97677ba7aafd8"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d135-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "2a63d996496f52ead5aca0799e6215d9ac5cfefcdb6c69b4d7f507243ad0e6f4"
 avm_raw_sha256 = "5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d157-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "496379c43bebc272c18515273ab42d2d703116fdb911c2dad0865ba8a00fbc94"
 avm_raw_sha256 = "3b73634d41e76e87cfdd22fc75b11a2e9f187b96434f80915f18054aac8a7c9c"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-luma-d135-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "a9a70a35314d0f2cbe0ca0890012ca03b3dbaab964b098b9a4b02257277ea5b0"
 avm_raw_sha256 = "5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-luma-d157-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "9ffe71dbd59db889497a82221c9e76ddfbffc83d7b76e0724b22ca25bcabebd3"
 avm_raw_sha256 = "3b73634d41e76e87cfdd22fc75b11a2e9f187b96434f80915f18054aac8a7c9c"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d203-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "94ec23b796f031eac546742cbbcec60c7c8a095f11d4a11cc1af26b3f5231bdf"
 avm_raw_sha256 = "547050c8d8b70f5eac7a44475fba961363945f35c490fe1554e129f6cd349662"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d203-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "5a6b0c737542601eb249d27d722e416c93d64c39c3fc48301701adf56a6de8de"
 avm_raw_sha256 = "1aa978acb73d6bc314b779a49f4aaecafba12978ecf290673fa3ed30c54e735a"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-luma-d203-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "8be976c6062e77be606ccc42f59ce1c99c7bf2c81a3aa548963df0f6049d5bd6"
 avm_raw_sha256 = "1aa978acb73d6bc314b779a49f4aaecafba12978ecf290673fa3ed30c54e735a"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-luma-d45-chroma-follow-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "5e981d55f3512112656b700051a672b35d9032ecbbf05e0ffca3cb4c11bcabe7"
 avm_raw_sha256 = "52c9fe30861467fdb7a1897bd266e21e8edd4c6ddb04ef534442849125c5d925"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d45-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "59e0df1344f75f72449dc9c9a98af78b15dd27a3ca5fa3bf272841fd441b023e"
 avm_raw_sha256 = "386bf9550c5623bc5eb0fba92f0985b2bd0f9d06c5fa991d32407f3b17f99c6f"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-h-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "fcce34f572ef21f39e7cacdd7bf0282aae794427f0f85462fd41cc98100a58d0"
 avm_raw_sha256 = "d72b424056b3f818fea000d6847c90733ac85e36a87396c4d8731f0d16e0820f"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-v-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "3677500dbb76c84643d25aa583fd93a3003e0eda2199358fe0b74b0a2353861c"
 avm_raw_sha256 = "f9e6cee7db3659e1c280789df8307ff8168a8b4ff043b64d489fa50816ebdba4"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d67-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "bf31dcea2712aa7bc9898f22762c579acc5adb510b0622652cae7467898a98c6"
 avm_raw_sha256 = "bd031b83ebb53396538bcfdebe5c2fe5a186e8d75a5842fabdcad123039f7b3b"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-smooth-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "0b39ad067ad287968d2c5b71a26b222ad6e2252b985297819adc278d61ac428e"
 avm_raw_sha256 = "3abbca14c97210383c916c30aee1bfd8a9d0ee4062ad60b8b2d0941ff71dd7d1"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-smooth-v-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "8f8c23ac5801424c43411e933ed9d1418bd734abf1e3fe172fc83d3123ae06a9"
 avm_raw_sha256 = "891f663879fa406d7488f76e97931a981086ae3d7c9a38bad4272af313856f54"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-smooth-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.smooth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "fc2f72917276dc9e410e8d5ca5b6fba1bc282921a906d8b3d29e8a5cedeb48d7"
 avm_raw_sha256 = "3abbca14c97210383c916c30aee1bfd8a9d0ee4062ad60b8b2d0941ff71dd7d1"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-h-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "8e7fb85a0f77e77aea451c01ae3b66fa2003f9645e553983ac5ff0b740c9996c"
 avm_raw_sha256 = "d72b424056b3f818fea000d6847c90733ac85e36a87396c4d8731f0d16e0820f"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-v-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "8284e26a460d5dabc898fa6f4d183f8ca890273366df3f8aca34920364edff5e"
 avm_raw_sha256 = "f9e6cee7db3659e1c280789df8307ff8168a8b4ff043b64d489fa50816ebdba4"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d45-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "3b53993808eff8cd412a0ce8b3a5b5c1210da308afe00fd1f22d27846f352f11"
 avm_raw_sha256 = "fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d67-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "48ed15122ae458ce4d70009fa662268dfcd94897d8f5ed5d82c59947fffe2f47"
 avm_raw_sha256 = "bd031b83ebb53396538bcfdebe5c2fe5a186e8d75a5842fabdcad123039f7b3b"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d135-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "9593daacf0457f59b3ebe62ea00e4f3290514056e92d6da45102607c5156d97f"
 avm_raw_sha256 = "73ffedb0ffe07b92f4f48c4da43f2572687397ad3e136e4553629de993096f5d"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d157-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "acfbd7be050b3197e4e616cfc656cf91b6ed8d7897858cbe2fb84040682ce286"
 avm_raw_sha256 = "00e00b20f057056ee63684a752d60e4a158da1e466720069d81639e88887030d"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d113-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "16a05fd666fab1685f2a6949f0d2e4b856666c217d8bf5a3586b9d920fcd8a05"
 avm_raw_sha256 = "840bcce567e791d1b1b97b650c2f5e3b03da1660c0ba9a2415bb1abf334222dc"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d45-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "7d88dee119622187f707d17e79d8d4b89333271a723fb67e1cdc5827fc01b09e"
 avm_raw_sha256 = "56a0c73c398f6adb27194cb8d3908cea02791d63e79658c7552cc15a0752fc01"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d45follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "df939e1dc18cdc8d925d8a8df222610e14f1427577d1faf9861f3c95f672097a"
 avm_raw_sha256 = "386bf9550c5623bc5eb0fba92f0985b2bd0f9d06c5fa991d32407f3b17f99c6f"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d67-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "fdd65e80d852a43ceb72c4865253832318178a7205dd2cf75f654f01617fc056"
 avm_raw_sha256 = "c8ea02e937ad6ca39ab558192a831e71832fbda95ec2f249f5c138ece880a591"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d67follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "4e260bdc3a427bdd0ceaeade8978dd43be234d2d389bc8f4463b09375e051812"
 avm_raw_sha256 = "318dce0d8ed8771aa79709051ee18e72cdb7b999c05f27095fe1a6cc611ba6ee"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-h-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "28052257ecd19dc105a2ed6e43e1e69c6df65974ab63ce02919e196e3a76ba93"
 avm_raw_sha256 = "a5e8e56e191e9558ed8591013fa884fb573c320adea6aa6db475680a69167740"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-v-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "02332295abf09bfcd112771cef50124cfbe2103b8b3b76c0f8b5c60a357fcde0"
 avm_raw_sha256 = "026ab3ce735e8d3c0a4b413ac6ab4c970631908887c1e7b7395cdf4464d72ea5"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-vfollow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "4e43f3edb9bcb2728355de850368c2094eaecee49a3f422fc5185ed46be8885c"
 avm_raw_sha256 = "84b2a3c6212d5694b8914ca017b6dc7f6d6ae4876fc22582f2b924a5629e5304"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-hfollow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "5b10d2ed1602b613f608364f669ff309568d58868680e9d31c1c629b1b2f83c6"
 avm_raw_sha256 = "879dfd582fb00d3f068b5ac2f3eaf3a4c28449c8c763c18aa8645a5fde20448b"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d135-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "57f034eb437af371f6e7216db57eba19245149d6b1934a44035cb48c77cb68c2"
 avm_raw_sha256 = "2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d135follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "a31ff9eb88fa8bd32b4beada6e8197ff886e8a0cfec12ae0bde2c0cb49dc50f0"
 avm_raw_sha256 = "a79860d10164c5b4f17a10491a17280856a424b47846e90989af62d8f609bfa1"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d113-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "a9479353a94ab276d7aed13591a2e340810a2623179f78612d196784b5e5f4db"
 avm_raw_sha256 = "31e9ff391a6e9eb3872aa4aef9fadced89d0fe5da1f5bfeaf8a143e8208ad9bd"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d113follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "3d8f1603c6b31024925e067e717b295a37f105bc6cfe2817217ee7f27c7b78dc"
 avm_raw_sha256 = "9bee7cd3840dd6ea99742cbbef41dc6f55643352bcff0452144208f7b1531284"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d157-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "582051419cf4e5c2f52b5a657186a97889bea41783324235743336104b7b3ca8"
 avm_raw_sha256 = "88077765e8df42e0b3a6d00e8f84c705caf83080cc0fb1c0b79f04e855f015bc"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d157follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "2c06f6042be785890bf1532ff59cbd9f0c3c03705fe9a7b18231f11363400ea9"
 avm_raw_sha256 = "01e55c1f2112e99af5bdae258410262ca5e0641e74b73bfec366c7df222d00b4"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d203follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "a7accfd148c2c7dd60abaea65cd42a76e37152fe1f7cbc5856228dc2b120ac2e"
 avm_raw_sha256 = "3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d203-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "cb3370e10d3cae3edd8146d345a54e6617d527fae3b988747877effbb9334fa5"
 avm_raw_sha256 = "41b6d153f6804d2c6b898c9e1458a171f3bfb4ef4c7941c43d18131d115b5576"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-d203-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "a3f6106256183189a70fee768209306cd951ae24e818f4a3d55799bcfdfc8645"
 avm_raw_sha256 = "904929c7d5b575bec168d7f46ae69f77f503ed30af05ca6966c18e0b42914b40"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-paeth-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "d868fb43848e915bdc290a5f7adf78b85f86cac847a7ea506561b9a96dac0c25"
 avm_raw_sha256 = "b064c9c6fbeaac7b04e7c5cc4430f1af7a968488b9f2508127e82024f973fb96"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-paeth-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "8fe865d0866e672aedd1293e638cb109230b065a088fbb0cb959b32793f90dfa"
 avm_raw_sha256 = "82bece3a5ee82789940b30339ec764d664f12c8fdd0f6201a7a25cbc74dcda53"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d135-intra-64x64"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "f03aa2f6d957f801af7b73a68e13d61fae2a991212165a15ce7fd97d1b8de5bf"
 avm_raw_sha256 = "b0ca9c37b56e8144a85510c024dbf468738cbda9bb77218bcffbc68d4b634725"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d45-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "c8e2fcb6f41d5e031dacdc5e7c3f8144d4fad814ddbf713749fa31032684795d"
 avm_raw_sha256 = "fda4ade10312b47ac3e2d8803a2aaaccb6f24a2b04ca6a5acb420c8770521ff4"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d113-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "b6a3bcd9e114bddf04ec317161c8305c74bf04bdef11dfc3e551a7b9c1eca742"
 avm_raw_sha256 = "840bcce567e791d1b1b97b650c2f5e3b03da1660c0ba9a2415bb1abf334222dc"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d203-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "5341383ef854a986e167f4cea493e590489eccd9a0b0084360ad5502adbf777a"
 avm_raw_sha256 = "41b6d153f6804d2c6b898c9e1458a171f3bfb4ef4c7941c43d18131d115b5576"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d157-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "d2fd55ccd8dbaa30f1e3bf95efe869bcfcfd99732e54d638ce1f240c91f96841"
 avm_raw_sha256 = "00e00b20f057056ee63684a752d60e4a158da1e466720069d81639e88887030d"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-paeth-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "fdbfb9bf202d14b670ffb3078d00f6ed98759e8fe6f57ccf95441bdd4510aa62"
 avm_raw_sha256 = "82bece3a5ee82789940b30339ec764d664f12c8fdd0f6201a7a25cbc74dcda53"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d45-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "fdeaa7d6b14e1619a8e067dd008c6536024104659c4a0a9ea7befaf95eb9452f"
 avm_raw_sha256 = "56a0c73c398f6adb27194cb8d3908cea02791d63e79658c7552cc15a0752fc01"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d67-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "f9efa3ce25aeb9d283bb98fd64fb00a7310e47457a000ff12a187e35db23a394"
 avm_raw_sha256 = "c8ea02e937ad6ca39ab558192a831e71832fbda95ec2f249f5c138ece880a591"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d67follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "86299c1bfea3148ec8c650f8bf2821244ebd67942f3e2832dedec00e1d864bb3"
 avm_raw_sha256 = "318dce0d8ed8771aa79709051ee18e72cdb7b999c05f27095fe1a6cc611ba6ee"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-v-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "b9290c1dcdf5e4443bed09cfd43278cd50e94ce3c8da5bcaee2c254c2959c471"
 avm_raw_sha256 = "026ab3ce735e8d3c0a4b413ac6ab4c970631908887c1e7b7395cdf4464d72ea5"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-vfollow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "86041f7dabc529f96680676ddc0d5b91315cc41aad33786365ec61f368f79512"
 avm_raw_sha256 = "84b2a3c6212d5694b8914ca017b6dc7f6d6ae4876fc22582f2b924a5629e5304"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-h-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "731489a1852ea5c9e55935bfaa037140253a55700bc6b95537afa398bf71b414"
 avm_raw_sha256 = "a5e8e56e191e9558ed8591013fa884fb573c320adea6aa6db475680a69167740"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-paeth-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "2f3e19c9be63a237d53d336339ed7d718620b099dd9b5c1acf761cf02c4aed05"
 avm_raw_sha256 = "b064c9c6fbeaac7b04e7c5cc4430f1af7a968488b9f2508127e82024f973fb96"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-hfollow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "09014caa270379d91039de4b133f59aea471e468c984a0e30112c5ad45cf8165"
 avm_raw_sha256 = "879dfd582fb00d3f068b5ac2f3eaf3a4c28449c8c763c18aa8645a5fde20448b"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d135-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "5a8be333a7886189ec05c00e93fed03203cb1f4c3513281120a65aa795d7d883"
 avm_raw_sha256 = "2f7c27a87a7af7eaa9cc4d44b137a777bf323a7098d8ae33152e30a4060f4576"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d113-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "e84a01f9b5896230c059d65dd82101b432f11f1dcb8325bd5ac1debdcaaec80a"
 avm_raw_sha256 = "31e9ff391a6e9eb3872aa4aef9fadced89d0fe5da1f5bfeaf8a143e8208ad9bd"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d113-chroma-follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dpcm_uv", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "25c7ae7c80a6cdd3c6bf56c16e9cacbbb5463a2e2db73efae43e909318aa8ed3"
 avm_raw_sha256 = "9bee7cd3840dd6ea99742cbbef41dc6f55643352bcff0452144208f7b1531284"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d135-chroma-follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "abbdaf05125c806dfc2224e2c3c916b7ec598df0c0bec052b2fdcdec63410bb7"
 avm_raw_sha256 = "a79860d10164c5b4f17a10491a17280856a424b47846e90989af62d8f609bfa1"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d157-chroma-follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "8932880dc81c7ec171a8579cf1aaa0dcce2401ac47a2a9340f32c5a9b82601f1"
 avm_raw_sha256 = "01e55c1f2112e99af5bdae258410262ca5e0641e74b73bfec366c7df222d00b4"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-d203-chroma-follow-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "5a3ef1c24c065ad59f59944a9cd05e506c28fa233b4167f5b057e411e65ebf1a"
 avm_raw_sha256 = "3b95907f8808cc9d0bdd2eb376c8726019f7a4490cf8ecfcccab883fb11f8a3f"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d203-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "2cc2ca69351eeb4c7326be383f428506cb82b8a0c1049560664212d20e90a881"
 avm_raw_sha256 = "78d0d448f8c327f44ccb2598e68ad9560923aff0f8c0c98eb3febb1b7cb36d38"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-d157-leftedge-128x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "49c087433271f1f7ea6f2d96682a01fb84c7d8fbf1d58be778cb9f5215db5fb7"
 avm_raw_sha256 = "88077765e8df42e0b3a6d00e8f84c705caf83080cc0fb1c0b79f04e855f015bc"
 
 [[fixture]]
 id = "syn-lossless-dpcm-y-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dpcm_y", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "26b6678280dd55e3eb00f335d5d31625ae65ee58c76c6864aa18b448751c4f11"
 avm_raw_sha256 = "f294ce1a7dbe1d19840f716fc284a0e9c144548fb0699fef2b44e7c0c1f91d90"
 
 [[fixture]]
 id = "syn-lossless-dpcm-uv-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dpcm_uv", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "ea0e7988b86e1ae26e02993179813a1b8b17873c74631d3534c42e2bf25f545a"
 avm_raw_sha256 = "2df572366da9b9c816f21f2c605552a5d6925d0e155eb197f16d9d3fc65aff3c"
 
 [[fixture]]
 id = "syn-lossless-sdp-dpcm-uv-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dpcm_uv", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "615ea93c64292c3f7c9475c56b0d58ff18af223818e28536588da2227b795907"
 avm_raw_sha256 = "2df572366da9b9c816f21f2c605552a5d6925d0e155eb197f16d9d3fc65aff3c"
 
 [[fixture]]
 id = "syn-lossless-sdp-dpcm-uv-h-intra-64x64"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dpcm_uv", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "b19c8baebcf2bd5eaa0d2f7525a89d400e97358501f640e2ed261401b39e22e8"
 avm_raw_sha256 = "d679eb28950917cd3a2ae230e1a3e1e7aa3cfd720ecbf8656ed8deb1e6d28878"
 
 [[fixture]]
 id = "syn-xtile-noloopfilter-intra-256x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.ccso", "loop.cdef", "loop.deblock", "loop.gdf", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "7f6ff0115bae82363fa96b1eba86dc29496c0e0d2a8958a56bb1c27cfbb80f38"
 avm_raw_sha256 = "c767e34921b964b395558a319588a5b40ba7e34bdd4e9a0dd77e3e18a14fd28b"
 
 [[fixture]]
 id = "syn-gdf-2x2-tiles-intra-256x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.gdf", "loop.gdf_multitile", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "cd9c8a54a6d85abfa5ff588c8b05b292762fa586d8c37e0e94bb3a0da9d1b69b"
 avm_raw_sha256 = "dcbc84cefddff276f73732bb0c9d96505c36da2725fb66b2de7b6cef1aa4162c"
 
 [[fixture]]
 id = "syn-gdf-tile-rows-intra-256x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.gdf", "loop.gdf_multitile", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "07f960059cb9448a7138a9bd7ef95d559f06b0fb2bd72eb8222e39eb4bc5e204"
 avm_raw_sha256 = "6dd039c65ea1b2408acaac1ef1dabe9b74d0dff6c6fec003ffa647c5b0b7fb85"
 
 [[fixture]]
 id = "syn-multi-tile-group-intra-256x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple", "tile.multiple_groups"]
 ivf_sha256 = "731c31624250833e19559430836815ee74fb4e607a69957a6853c208ca5e635b"
 avm_raw_sha256 = "23bdc0d131dcb2e1004723d8a29d560cc5ee21949288eb8a35df9a7e2794a8ff"
 
 [[fixture]]
 id = "syn-4frame-refmvbank-compound-256x128"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.mv_prediction_spatial", "inter.single_ref", "inter.subpel_mc", "inter.warp", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "d5227e273faba3512743b06f28641bf52ce8a245a4375c77558516db1de3ce92"
 avm_raw_sha256 = "7d15106138e6331b5ba5a6de5f84ce79fd2b372a895dedf0911d144f77d57b5d"
 
 [[fixture]]
 id = "syn-4frame-cdef-skip-txfm-256x128"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.single_ref", "inter.subpel_mc", "loop.cdef", "loop.cdef_on_skip_txfm", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "e0dfdf141bcbac0fe7774d771c171076ffb7682016486e3cadb5e2443b21fe91"
 avm_raw_sha256 = "1fdd8b8409534e27f1fe5b7954317dcb33e38ba1f2fca4729ec7c5eb51011191"
 
 [[fixture]]
 id = "syn-4frame-inter-skip-chroma-256x128"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.single_ref", "inter.subpel_mc", "inter.warp", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.cctx"]
 ivf_sha256 = "87133614a38c546652d3a80facaacfaf4fead0186ac89e81aedb92c9a1e753bd"
 avm_raw_sha256 = "2957f16f3023ba17a7a3ed29737b7ba09387c17986e2acc87bd0a8092068d8e5"
 
 [[fixture]]
 id = "syn-3frame-inter-nofilters-64x64"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.subpel_mc", "inter.warp", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "a2766644ae1ded0ef6b5f3f1eb28d78529c238c89251228f69c75ca0864cfd0a"
 avm_raw_sha256 = "9171ea36ca181876d8d16752abc6be0ac397ba8f7976e9fc8f17c34dd7e378f6"
 
 [[fixture]]
 id = "syn-3frame-inter-default-64x64"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.subpel_mc", "inter.warp", "intra.directional", "loop.cdef", "loop.ccso", "loop.deblock", "loop.gdf", "loop.loop_restoration", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "0102c30b096a2b34c5efaabcc43539613237185f1f3c1210517731f6c5b0c7e0"
 avm_raw_sha256 = "4347a1b8b11d1526d84538fe330b1cd04b4928a526d3f929ca0b91e1c681eff0"
 
 [[fixture]]
 id = "syn-3frame-seg-inherit-inter-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.segmentation", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "afe247ee781f3efd16d5b409618572b3c79503e1049ff819e723ce433225f872"
 avm_raw_sha256 = "2d3b7c51e36a5e4364a7a1f4214ce928660d966e98aea24baae44268ce67d6d8"
 
 [[fixture]]
 id = "syn-2frame-seg-skip-inter-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.segmentation", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "afa1f450e93e863755b7b22b34638481c05f91b300fdf05f2ff150e110ee76b8"
 avm_raw_sha256 = "9b7199ed54f928114a3a158cb86d4e6f11f37818061ebdc4f9703bb3a554eec8"
 
 [[fixture]]
 id = "syn-mrl-sec-4x4-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.mrl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "5fce5e5edc928933b8d4691e1892fa2195078a331eef5f6c6b8995978b211e46"
 avm_raw_sha256 = "e9a6ac7f8cabc11457c1be89250edeb9e142ed91a665943912fb875a76da8f69"
 
 [[fixture]]
 id = "syn-mrl-largest-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.mrl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "4c064cc8d27305d05ced0475c9bd7437257d030165d06c37e1529de6ab5fd90f"
 avm_raw_sha256 = "540a4b340038dbb60fde144372a891681ff330a103ccd60ea2d19a8e64cf69d9"
 
 [[fixture]]
 id = "syn-sdp-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "90bc96be8313f809cc3719ba153b9c4b36f3b6b16ee65b9108ac5ac2601cfae6"
 avm_raw_sha256 = "45959d0ce8b51f7a4d3693ac566a51b4dafb6dfa0a893e89edee3cbb3703a344"
 
 [[fixture]]
 id = "syn-idtx-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.idtx_intra"]
 ivf_sha256 = "0c9dd22ebb2be0241172d6c25cf77407079ebea091834d857c37c66a64d13a16"
 avm_raw_sha256 = "43ba2cd3f10f65ac584be3d19bc118ae6699b6572498f71b3a55a4d0eecba6fe"
 
 [[fixture]]
 id = "syn-ist-largest-intra-128x128"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.secondary_ist"]
 ivf_sha256 = "c5798ef9cc059e820d35595624b3b10e899eccd46f77e78be39df9a635d3a20f"
 avm_raw_sha256 = "ab4739ab410a85cae6ef4eb149fd1b715e93f62b56324930d3cc57ab74be54a3"
 
 [[fixture]]
 id = "syn-orderhint-wrap-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.warp", "inter.warp.extend_list1", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "fa5f53b161cd7fcc094807ea31429391179cbcfcfe87889ca05795cb7ecec096"
 avm_raw_sha256 = "0d032cacd2c307f0d2b2c32fb3281742edcb03781fb81c4d3ae476c09ce8648e"
 
 [[fixture]]
 id = "syn-2frame-warp-sample-list1-48x48-q90"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.mv_prediction_spatial", "inter.single_ref", "inter.warp", "inter.warp.sample_list1", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "64d2471fb3cc14203df8c4df65a5850ff61d74691441ff84170f4f96210473ac"
 avm_raw_sha256 = "d1c84d805c7e01737a88779051a6e9363fac552c5c543d21b8bb99fd3388a787"
 
 [[fixture]]
 id = "syn-2frame-extendwarp-global-48x48-q185"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.warp", "inter.warp.extend_global", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "48b7d643f7351344cb8cad1e3d3092bf29a9eea1075ffa71656111c7bffbce5c"
 avm_raw_sha256 = "9c432a75b318d6f811c11399e16fdd4f28367753a597de8858cd4b8a13efed36"
 
 [[fixture]]
 id = "syn-2frame-refscale-inter-64x64-51x51-q80"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.reference_scaling", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "021c056c022e154de7d13ad6f67c13edab9d13841ea3ab2d527235353b99a871"
 avm_raw_sha256 = "4ca2e77c74dc68920ce0ba333e5a984b65836ac6f07e5d2d89e1f715e93ea590"
 
 [[fixture]]
 id = "syn-rect-chroma-chunks-444-intra-128x64-q80"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.oversized_chroma_chunks", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "4837ec4fd8d0ea1172f3b48cfe4efeab88c9d1cf2413e09f4555ed9fa3ab701b"
 avm_raw_sha256 = "7cbec0da6486a3ef302af168bcd58cdf5658acef05ffbfb64dbb14b068e6e3a6"
 
 [[fixture]]
 id = "syn-tlayer2-base-only-intra-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.multi_or_operating_point", "tile.single"]
 ivf_sha256 = "a007bcfce4b4c307c995487b77627007c9f8973fae5e16ff494c1f9d15357944"
 avm_raw_sha256 = "ae245dff6e5b9272ba039d820c58fc77ed9d1184f031fa103b0ee101914eff32"
 
 [[fixture]]
 id = "syn-empty-avmenc-64x64"
-status = "must_pass"
 features = ["container.ivf", "output.raw_i420"]
 ivf_sha256 = "3f406087f7278cec58c9ae03bc24eb444198bd30f3a4d3c3ee703511c9ea8dd0"
 avm_raw_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 [[fixture]]
 id = "syn-ivf-advisory-empty-record-64x64"
-status = "must_pass"
 features = ["coeff.all_zero", "container.ivf", "frame.key_closed_loop", "intra.dc", "intra.residual.dc_only", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "31b4fa55187b9a4b2f29ee980113cd9e180b0f436e64240eb58714da0b5f52dc"
 avm_raw_sha256 = "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af"
 
 [[fixture]]
 id = "syn-output-mfh-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.multi_frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "b8d43b5fcb5d9e684a1f36df754b9405b89cb13e3da104db477ebb0a6e171f6e"
 avm_raw_sha256 = "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53"
 
 [[fixture]]
 id = "syn-output-brt-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.buffer_removal_timing", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "2aead0cfffb2cf85c17fee0b623e2ce191c7cdf64524f68c37a03b69fb186240"
 avm_raw_sha256 = "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53"
 
 [[fixture]]
 id = "syn-output-multi-brt-16x16"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "frame.output.multiple_brt", "obu.buffer_removal_timing", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single"]
 ivf_sha256 = "7dd5e609570d7d8be941e684f8e7bf7be669f6e9d39f7c03167b09e9fec4764c"
 avm_raw_sha256 = "5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b"
 
 [[fixture]]
 id = "syn-output-ci-2frame-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "obu.content_interpretation", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "77456c5add802db377847a55bef1955a1234df4f2324de4bd3dd109d2e0be4ff"
 avm_raw_sha256 = "c72cfeeb74d2ca0ba7b6bdee9737b006a034be48a4e633d1e6630668b2e7c364"
 
 [[fixture]]
 id = "syn-output-metadata-group-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.metadata_group", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "821ed5f351282258e93062f7ae4888a963542251eec4c1fd94d5b7a616ffcffe"
 avm_raw_sha256 = "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53"
 
 [[fixture]]
 id = "syn-output-metadata-short-prefix-suffix-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.metadata_short", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "4a6c78053accbd6edb59627dd644b88f9e8051ee92d5bf64f3a04dd72fceefff"
 avm_raw_sha256 = "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53"
 
 [[fixture]]
 id = "syn-output-user-qm-64x64"
-status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.dc", "obu.frame_header", "obu.quantizer_matrix", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.qm", "quant.qm_user", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "4a7b41cb295c1bd09c567a59b35a60f283bfc098fecf20ab949c3bdf26b3a8eb"
 avm_raw_sha256 = "0f43b4de99455e2cc4d1444290bdb07240f92f2a505211351ee0e3cb70826d86"
 
 [[fixture]]
 id = "syn-standalone-olk-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.key_open_loop", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "c0ac5e680f28ddc4b5056e4d637ebd142ec582a2bbd57cc98333ee6b21aa5e96"
 avm_raw_sha256 = "7ccdd8e95f70849d93650136562854419f79379ab897edca10fba785a61d46ab"
 
 [[fixture]]
 id = "syn-frame-olk-leading-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.key_open_loop", "frame.leading", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "5b6db3ab8760fc02d0b4dff75b2be066267e12b5b8d6ad67b2ea5dd2a05858a7"
 avm_raw_sha256 = "76d5068785638d85a8e796a6eb856437aaa335d3aaf9cc45d297566788f4725c"
 
 [[fixture]]
 id = "syn-frame-switch-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.switch", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "86075040a04253a8278ea1cb901515fa02c1dbd0c57ca43a3591825292ca28c6"
 avm_raw_sha256 = "606263b14593f7391fab93e5829360d9b962e10057b722f0b5d84bfb84648674"
 
 [[fixture]]
 id = "syn-frame-ras-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.random_access_switch", "frame.reference_refresh", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "052a11a97ceab8a0db092e50a3ba77e4c513fc48b02f23dfdcee47c8ae55fdfe"
 avm_raw_sha256 = "14a757c99a68ce5d91817392f143fa7ae4e1217b16cd349fc3c62ff5c5c2c76f"
 
 [[fixture]]
 id = "syn-hidden-clk-ras-initial-tu-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.long_term_reference", "frame.multi_frame", "frame.random_access_switch", "frame.reference_refresh", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "2d7442be6bc87428af1b1f50ee073b657ef5c0d49351a4992931b643d7c71ff9"
 avm_raw_sha256 = "8ae2742597d896935c7cad17ee3e6154aaf5fd45117e3df54b9e498a8ec441e6"
 
 [[fixture]]
 id = "syn-frame-sef-families-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.key_open_loop", "frame.leading", "frame.multi_frame", "frame.reference_refresh", "frame.show_existing", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "5dd105511461c6dc9fab962544196e07a0f0ed78623deb58fa121e8049f77d43"
 avm_raw_sha256 = "074c7ea9e44e30e5017ffcd197a7528acbdd8b45e79f66839bc28e504208aa5d"
 
 [[fixture]]
 id = "syn-frame-tip-families-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.key_open_loop", "frame.leading", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.tip", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "0d0f0b299c41cfe3ab8d3caa601ecb54ae025d3bfe677321a463e4e82afabea8"
 avm_raw_sha256 = "e5303b39328be05f633aff002349bb0705e3977245943f390157c82164a21e8c"
 
 [[fixture]]
 id = "syn-bridge-celu-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.bridge", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.crop_window", "seq.layers.single", "tile.single"]
 ivf_sha256 = "b25a12e88381d03addd8ff256f7fb65e796996f24615df9ebcf1ef3dd1cac8c8"
 avm_raw_sha256 = "135baa1c73745a9fdf6030b2a42dc0ad75b55774a4c4592a2564351ace0c8d13"
 
 [[fixture]]
 id = "syn-bridge-scaled-box-64x64"
-status = "must_pass"
 features = ["container.ivf", "frame.bridge", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "1a50511d72733ab1cb9a1c6a2a3fa5be89e1d9f1e8c295580398022bc0be9a21"
 avm_raw_sha256 = "254fc16ae3bdebb3e063342234a9c4d9d4c9f2f7d1767cdbc5ed23e6bf8f0be2"
 
 [[fixture]]
 id = "syn-bridge-single-picture-32x32"
-status = "must_pass"
 features = ["container.ivf", "frame.bridge", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "intra.dc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "cd10af48f6e21903fe9ee83f03863e417777f69c2e779f0cf0a3b722f88fa017"
 avm_raw_sha256 = "908a47be9c1e679265d4a8efbf66702f705b06d5111aca57f7e05dcba23fcc58"
 
 [[fixture]]
 id = "syn-tip-output-2tile-mono-128x64-q160"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.key_open_loop", "frame.leading", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.tip", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.multiple", "tile.multiple_groups"]
 ivf_sha256 = "e33ea0c4fb8b7323fa464e44f739fa49d8fc999804ff7d53614332ce47f78d74"
 avm_raw_sha256 = "297fb2b8eca1fa6810bb6571c140c6917fa48cc90a3412a2e32e573cb226265a"
 
 [[fixture]]
 id = "syn-tip-output-422-64x64-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.non420_chroma", "inter.single_ref", "inter.tip", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i422", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.422", "seq.layers.single", "tile.single"]
 ivf_sha256 = "9618cfff9b8587b553466d5b71182c59b3980279a07913d619c4405cf21d92f5"
 avm_raw_sha256 = "362da297d05f8b428820089d6a44ee271c8eb97725f5fe5c28836eefbb664b56"
 
 [[fixture]]
 id = "syn-tip-output-444-64x64-q80"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.non420_chroma", "inter.single_ref", "inter.tip", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i444", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single"]
 ivf_sha256 = "78ff3d25e2bbe181dbf288f2c9dd04724b04722b1459730c8f115d5b0497b8cd"
 avm_raw_sha256 = "de5b4b7082bca0eb0467a18806463fcc8e654faa0df8d8c085abfbc41ba62980"
 
 [[fixture]]
 id = "syn-tip-output-deblock-2tile-mono-128x64-q160"
-status = "must_pass"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.key_open_loop", "frame.leading", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.tip", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.multiple", "tile.multiple_groups"]
 ivf_sha256 = "8d8cbf73f8f1e331fd93749a2ef9035336ba356a087dff6fc28412ec3fcbc8e0"
 avm_raw_sha256 = "eacccbd6fa6d275ff0501d0ff7b7f4580a3a3986c8176668a10b67230fccdb22"
 
 [[fixture]]
 id = "syn-lossless-nondc-luma-paeth-intra-64x64-10bit"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.paeth", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "655eab374e0fc2a06f72fd1e24b749bf360c23c7119113ce21f3392198f213cb"
 avm_raw_sha256 = "c48f76e4dee5eee8980bd7da14bebe2eb1e24d566fc972d1fb10aaf87963940b"
 
 [[fixture]]
 id = "syn-lossless-cardinal-y-v-intra-64x64-10bit"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "0c25e6dd5497b7631f682592f21ae497dcba89b98204a85596dea774f722d038"
 avm_raw_sha256 = "840b2119b3f2459bab99bc2e5814c5e9a35a4969301030d2808ebd8a08da90c6"
 
 [[fixture]]
 id = "syn-lossless-nondc-chroma-v-intra-64x64-10bit"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "16a66bd680aff1565e614ee5972ef1c6b0232921663854dfb458085680893c13"
 avm_raw_sha256 = "7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f"
 
 [[fixture]]
 id = "syn-lossless-sdp-nondc-chroma-v-intra-64x64-10bit"
-status = "must_pass"
 features = ["coeff.lossless_nonzero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "intra.10bit.non_dc", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.sdp", "quant.base_q", "quant.lossless_segment", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.lossless_tx4x4"]
 ivf_sha256 = "3882ab66f3adc69279d8db24faa0511b850012858d1d6fa473cf6a76c80d190f"
 avm_raw_sha256 = "7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f"
 
 [[fixture]]
 id = "syn-4frame-bawp-tile-column-256x128"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.mv_prediction_spatial", "inter.single_ref", "inter.subpel_mc", "inter.warp", "loop.cdef", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "f3cc7916ad1f923ab80489f94cfde349d04952794ebef62141664470b5b2498e"
 avm_raw_sha256 = "d4edd1a3183f0bd083c7f8573861ffad8fc7942d1c4f560cc46c8028bbc66772"
 
 [[fixture]]
 id = "syn-4frame-dct-adst-tools-off-200x104"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "cd633dec894cf0c14ea2e32112208894b3b069dddb17f464cdd10166b74dda81"
 avm_raw_sha256 = "221059f99854e58c027ffd228f7e15d2af4ee969d660e58e51915392340b9b5d"
 
 [[fixture]]
 id = "syn-4frame-mono-inter-256x128"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.intrabc", "inter.mv_prediction_spatial", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "f13ad6ac89b27c3b0de426dcd03b0a766fd4c9feeb606e3eb2757e8e82ad24e5"
 avm_raw_sha256 = "b2471976fdcadc460888cb335184a605062a18c04ea461a9a6bdfd155392b9ae"
 
 [[fixture]]
 id = "syn-4frame-444-thin-block-compound-256x128"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.intrabc", "inter.mv_prediction_spatial", "inter.non420_chroma", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "511b8bcb74e08d909f2fb578bf8378ac32c59d532e46e20f5cd8bb71fd24b657"
 avm_raw_sha256 = "347079511192ea3b3a94c14a6cfd1b6ea81d58ee4aa0cab778f9cf1861b531a1"
 
 [[fixture]]
 id = "syn-4frame-444-intra-clears-tmvp-256x128"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.intrabc", "inter.mv_prediction_spatial", "inter.mv_prediction_temporal", "inter.non420_chroma", "inter.single_ref", "inter.subpel_mc", "loop.gdf", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "09406253a979317c1045731be1c4843cc2c52dc24ce9d8981aa5cb5be3977dac"
 avm_raw_sha256 = "1d2416b3bf98649c196dcd5d434fcf5f9f771b976b92043ed62081d89e40ed51"
 
 [[fixture]]
 id = "syn-3frame-intrabc-drl-budget-640x384-q120"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.intrabc", "inter.intrabc.ref_bv_budget", "inter.mv_prediction_spatial", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.rectangular", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "fa196247f21aeabf03858e69285b97f79ec1d1747abbe18cd58c5e3bfd30b77d"
 avm_raw_sha256 = "d6e56f280622aba5af7f7142abc5856245350e943185e705a9591583bd7ec74c"
 
 [[fixture]]
 id = "syn-3frame-intrabc-bv-10bit-256x128-q120"
-status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.inter_intra", "inter.intrabc", "inter.mv_prediction_spatial", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "bf90f09399e1b216bc8ef00db8bc33a4ed3a3e79486b0ae19ba1acde9bdffd55"
 avm_raw_sha256 = "76196877855754843f9d45abb7d9ae33764ca65c6bd88fcc4e868d462d952ee7"
 
 [[fixture]]
 id = "syn-sb256-intra-129x16-q180"
-status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "seq.superblock.256_intra_128", "tile.single"]
 ivf_sha256 = "bfdf8c13d29f022dfbc1abd03f69efd51d6361bb51ae600af7812a2df11fedaf"
 avm_raw_sha256 = "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6"

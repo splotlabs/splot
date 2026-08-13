@@ -38,9 +38,8 @@ that manifest and run the project validator only.
 
 The decoder-output oracle reuses committed vectors under
 `tests/conformance/vectors/valid/`. `tests/conformance/decoder-oracle.toml`
-records each fixture's AVM raw-output hash and expected `splot` outcome:
-`must_pass` fixtures must match the hash, while `xfail_splot` fixtures must fail
-closed with the recorded unsupported-feature reason.
+schema 2 records each fixture's AVM raw-output hash. Every listed fixture must
+decode byte-exactly to that hash at the serial and parallel CI widths.
 
 Validator manifest expectations are set equality over diagnostic `rule_id`s:
 
