@@ -113,7 +113,7 @@ pub(crate) use partition_traversal::{
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{
     GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, GeneralIntraMultiblockOutput,
-    TilePartitionFrontierError, chroma_subsampling, frame_mi_dimensions,
+    TilePartitionFrontierError, chroma_subsampling,
 };
 
 #[derive(Clone, Debug)]

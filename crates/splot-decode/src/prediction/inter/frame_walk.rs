@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use splot_core::annexb::ObuEnvelope;
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, FrameSize};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
@@ -36,43 +36,110 @@ pub(super) struct InterWalkPrologue<'payload, T: ReconSample> {
     pub(super) quantizer_deltas: splot_recon::QuantizerDeltas,
 }
 
-/// Derives the pending slot's header-known geometry without parsing tile syntax.
-pub(crate) fn inter_frame_info(
-    core: &FrameHeaderCore,
-    sequence: &SequenceHeader,
-    bit_depth: BitDepth,
-    offset: splot_core::span::ByteOffset,
-) -> Result<DecodedFrameInfo> {
-    let frame_size = core
-        .frame_size
-        .ok_or(inter_internal!("inter_pending_missing_frame_size", offset))?;
-    let pixel_format =
-        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?;
-    let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
-    Ok(DecodedFrameInfo::new(
-        OutputIndex::new(0),
-        bit_depth,
-        pixel_format,
-        PlaneSize::new(frame_size.width as usize, frame_size.height as usize)?,
-        visible,
-    )?)
+/// Validated geometry shared by every stage of one frame decode.
+#[derive(Clone, Copy)]
+pub(crate) struct FrameDecodeGeometry {
+    frame_size: FrameSize,
+    info: DecodedFrameInfo,
+    mi_rows: usize,
+    mi_cols: usize,
+    sb_h4: usize,
+    motion_layout: MotionFieldLayout,
+    frame_is_intra: bool,
 }
 
-/// Derives the fixed motion-band completion layout before entropy admission.
-pub(crate) fn motion_field_layout(
-    core: &FrameHeaderCore,
-    sequence: &SequenceHeader,
-    info: DecodedFrameInfo,
-    offset: splot_core::span::ByteOffset,
-) -> Result<MotionFieldLayout> {
-    let sb_h4 = block::superblock_h4(sequence, core).ok_or(inter_internal!(
-        "inter_temporal_motion_layout_superblock",
-        offset
-    ))?;
-    let luma = info.coded_luma_size();
-    MotionFieldLayout::new(luma.height().div_ceil(4), luma.width().div_ceil(4), sb_h4).ok_or(
-        inter_internal!("inter_frame_temporal_motion_layout", offset),
-    )
+impl FrameDecodeGeometry {
+    /// Derives all frame geometry before pending state or decode storage is created.
+    pub(crate) fn new(
+        core: &FrameHeaderCore,
+        sequence: &SequenceHeader,
+        bit_depth: BitDepth,
+        frame_is_intra: bool,
+    ) -> Result<Self> {
+        if core.frame_is_intra != Some(frame_is_intra) {
+            return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
+        }
+        let frame_size = core
+            .frame_size
+            .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
+        if frame_size.width == 0 || frame_size.height == 0 {
+            return Err(DecodeHeaderStateError::ZeroFrameSize.into());
+        }
+        let partition = sequence
+            .partition
+            .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
+        let mi_dimension = |samples: u32| {
+            usize::try_from(samples)
+                .ok()
+                .and_then(|samples| samples.checked_add(7))
+                .and_then(|samples| (samples >> 3).checked_mul(2))
+                .ok_or(DecodeHeaderStateError::InvalidInterTileConstructionState)
+        };
+        let mi_cols = mi_dimension(frame_size.width)?;
+        let mi_rows = mi_dimension(frame_size.height)?;
+        let pixel_format =
+            PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?;
+        let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            bit_depth,
+            pixel_format,
+            PlaneSize::new(frame_size.width as usize, frame_size.height as usize)?,
+            visible,
+        )?;
+        let sb_h4 = block::frame_superblock_h4(partition.seq_sb_size(), frame_is_intra);
+        let motion_layout = MotionFieldLayout::new(mi_rows, mi_cols, sb_h4)
+            .ok_or(DecodeHeaderStateError::InvalidInterTileConstructionState)?;
+        Ok(Self {
+            frame_size,
+            info,
+            mi_rows,
+            mi_cols,
+            sb_h4,
+            motion_layout,
+            frame_is_intra,
+        })
+    }
+
+    pub(crate) const fn frame_size(self) -> FrameSize {
+        self.frame_size
+    }
+
+    pub(crate) const fn info(self) -> DecodedFrameInfo {
+        self.info
+    }
+
+    pub(crate) const fn mi_dimensions(self) -> (usize, usize) {
+        (self.mi_rows, self.mi_cols)
+    }
+
+    pub(crate) const fn sb_h4(self) -> usize {
+        self.sb_h4
+    }
+
+    pub(crate) const fn motion_layout(self) -> MotionFieldLayout {
+        self.motion_layout
+    }
+
+    pub(crate) const fn frame_is_intra(self) -> bool {
+        self.frame_is_intra
+    }
+
+    pub(crate) fn new_motion_field(
+        self,
+        reference_order_hints: &[Option<u32>],
+    ) -> Option<TemporalMotionField> {
+        let coded_size = self.info.coded_luma_size();
+        let mut field = TemporalMotionField::new_with_metadata(
+            self.mi_rows,
+            self.mi_cols,
+            !self.frame_is_intra,
+            (coded_size.width(), coded_size.height()),
+            reference_order_hints,
+        )?;
+        field.set_band_rows8(self.motion_layout.band_rows8());
+        Some(field)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -86,12 +153,11 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
+    geometry: FrameDecodeGeometry,
 ) -> Result<InterWalkPrologue<'payload, T>> {
     let offset = frame_envelope.offset;
     let initial_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?;
-    let frame_size = core
-        .frame_size
-        .ok_or(inter_internal!("inter_walk_missing_frame_size", offset))?;
+    let frame_size = geometry.frame_size();
     let frame_width = frame_size.width;
     let frame_height = frame_size.height;
     let inter = core
@@ -136,14 +202,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let interpolation_filter = inter
         .interpolation_filter
         .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
-    let visible_luma_rect = derive_visible_luma_rect(sequence, frame_width, frame_height)?;
-    let workspace = crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect::<T>(
-        frame_width as usize,
-        frame_height as usize,
-        bit_depth,
-        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
-        visible_luma_rect,
-    )?;
+    let workspace = CurrentFrameWorkspace::<T>::new(geometry.info(), T::default())?;
     let quantization = core.quantization_params.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_base_q",
@@ -179,6 +238,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         workspace,
         setup,
         facts: InterBlockFacts {
+            geometry,
             frame_interpolation_filter: interpolation_filter,
             num_total_refs: num_total_refs as usize,
             reference_select: block_reference_select,
@@ -196,7 +256,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
                 .transform_quant_entropy
                 .as_ref()
                 .is_some_and(|tq| tq.enable_inter_ddt),
-            bit_depth,
         },
         ref_frame_idx: ref_frame_idx.clone(),
         quantizer_deltas,
@@ -345,6 +404,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     options: &DecodeOptions,
     reference: InterReferenceState<T>,
     bit_depth: BitDepth,
+    geometry: FrameDecodeGeometry,
     motion: MotionFieldHandle,
 ) -> Result<DeferredInterWalk<T>> {
     let InterWalkPrologue {
@@ -364,6 +424,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         options,
         &reference,
         bit_depth,
+        geometry,
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let quantizer = FrameQuantizerSnapshot::capture();
@@ -382,7 +443,6 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         facts,
         ref_frame_idx.as_slice(),
         &reference,
-        &workspace,
     )?;
     if started.is_some() {
         crate::timing::report_detail(

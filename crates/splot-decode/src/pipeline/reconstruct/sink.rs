@@ -4,11 +4,13 @@
 //! Block reconstruction sinks: DC, palette, and inter-residual entries plus the shared luma write tail.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, DpcmDirection, IntraDcEdges,
-    IntraPredictionScratchBuffer, IntraRectBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize, ReconSample, apply_intra_ibp_dc_rect, predict_intra_dc_rect_value,
+    BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraDcEdges, IntraPredictionScratchBuffer,
+    IntraRectBlockSize, PlaneId, ReconSample, apply_intra_ibp_dc_rect, predict_intra_dc_rect_value,
 };
+#[cfg(test)]
+use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
+#[cfg(test)]
 use crate::Result;
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
@@ -44,29 +46,13 @@ pub(crate) fn new_general_intra_workspace<T: ReconSample>(
     pixel_format: PixelFormat,
 ) -> Result<CurrentFrameWorkspace<T>> {
     let luma_rect = PlaneRect::new(0, 0, luma_width, luma_height)?;
-    new_general_intra_workspace_with_visible_rect(
-        luma_width,
-        luma_height,
-        bit_depth,
-        pixel_format,
-        luma_rect,
-    )
-}
-
-pub(crate) fn new_general_intra_workspace_with_visible_rect<T: ReconSample>(
-    luma_width: usize,
-    luma_height: usize,
-    bit_depth: BitDepth,
-    pixel_format: PixelFormat,
-    visible_luma_rect: PlaneRect,
-) -> Result<CurrentFrameWorkspace<T>> {
     let luma_size = PlaneSize::new(luma_width, luma_height)?;
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
         bit_depth,
         pixel_format,
         luma_size,
-        visible_luma_rect,
+        luma_rect,
     )?;
     Ok(CurrentFrameWorkspace::<T>::new(info, T::default())?)
 }

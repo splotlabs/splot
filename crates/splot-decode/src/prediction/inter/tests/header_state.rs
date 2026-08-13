@@ -10,6 +10,62 @@ const BRIDGE_CELU_FIXTURE: &[u8] =
     include_bytes!("../../../../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
 
 #[test]
+fn frame_decode_geometry_uses_av2_mi_rounding_and_motion_layout() {
+    let (sequence, mut core, _) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.frame_size = Some(splot_core::headers::frame::FrameSize::new(51, 51));
+    let geometry = super::super::FrameDecodeGeometry::new(
+        &core,
+        &sequence,
+        splot_recon::BitDepth::Eight,
+        false,
+    )
+    .expect("valid geometry");
+    assert_eq!(geometry.mi_dimensions(), (14, 14));
+    assert_eq!(geometry.motion_layout().width8(), 7);
+    assert_eq!(geometry.motion_layout().height8(), 7);
+}
+
+#[test]
+fn frame_decode_geometry_maps_impossible_inputs_to_typed_state_errors() {
+    type Mutation = fn(&mut SequenceHeader, &mut FrameHeaderCore);
+    let (sequence, core, _) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    let cases: [(Mutation, DecodeHeaderStateError); 3] = [
+        (
+            |_, core| core.frame_size = None,
+            DecodeHeaderStateError::MissingFrameSize,
+        ),
+        (
+            |_, core| {
+                core.frame_size = Some(splot_core::headers::frame::FrameSize::new(0, 51));
+            },
+            DecodeHeaderStateError::ZeroFrameSize,
+        ),
+        (
+            |sequence, _| sequence.partition = None,
+            DecodeHeaderStateError::IncompleteInterFrameTools,
+        ),
+    ];
+
+    for (mutate, expected) in cases {
+        let mut sequence = sequence.clone();
+        let mut core = core.clone();
+        mutate(&mut sequence, &mut core);
+        let Err(error) = super::super::FrameDecodeGeometry::new(
+            &core,
+            &sequence,
+            splot_recon::BitDepth::Eight,
+            false,
+        ) else {
+            panic!("invalid geometry was accepted");
+        };
+        assert!(matches!(error, DecodeError::HeaderState { ref source } if *source == expected));
+        assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
+}
+
+#[test]
 fn inter_frame_validation_requires_compound_tool_facts() {
     let context = decode_context();
     context
@@ -1178,7 +1234,7 @@ fn impossible_tip_output_runtime_inputs_are_typed_state_errors() {
         ),
         (
             |sequence, _| sequence.partition = None,
-            DecodeHeaderStateError::IncompleteTipOutput,
+            DecodeHeaderStateError::IncompleteInterFrameTools,
         ),
         (
             |_, core| core.order_hint = None,
@@ -1190,12 +1246,24 @@ fn impossible_tip_output_runtime_inputs_are_typed_state_errors() {
         let mut sequence = sequence.clone();
         let mut core = core.clone();
         mutate(&mut sequence, &mut core);
+        let geometry = match super::super::FrameDecodeGeometry::new(
+            &core,
+            &sequence,
+            splot_recon::BitDepth::Eight,
+            false,
+        ) {
+            Ok(geometry) => geometry,
+            Err(error) => {
+                assert!(matches!(error, DecodeError::HeaderState { source } if source == expected));
+                continue;
+            }
+        };
         let error = super::super::block::tip::reconstruct_output(
             &mut super::super::InterDecodeScratch::default(),
             &sequence,
             &core,
             &reference,
-            splot_recon::BitDepth::Eight,
+            geometry,
             offset,
         )
         .expect_err("TIP-output runtime state");
@@ -1212,13 +1280,20 @@ fn unpublished_tip_output_motion_field_is_a_typed_reference_state_error() {
     reference.ref_motion_fields = vec![Some(super::super::MotionFieldHandle::pending_with_layout(
         super::super::MotionFieldLayout::new(16, 16, 16).expect("valid motion-field layout"),
     ))];
+    let geometry = super::super::FrameDecodeGeometry::new(
+        &core,
+        &sequence,
+        splot_recon::BitDepth::Eight,
+        false,
+    )
+    .expect("valid frame geometry");
 
     let error = super::super::block::tip::reconstruct_output(
         &mut super::super::InterDecodeScratch::default(),
         &sequence,
         &core,
         &reference,
-        splot_recon::BitDepth::Eight,
+        geometry,
         offset,
     )
     .expect_err("unpublished TIP-output motion field");

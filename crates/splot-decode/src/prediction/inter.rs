@@ -114,6 +114,11 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         )
         .map(completed_walk);
     }
+    let frame_is_intra = core
+        .frame_is_intra
+        .ok_or(DecodeHeaderStateError::IncompleteInterFrame)?;
+    let geometry =
+        frame_walk::FrameDecodeGeometry::new(&core, sequence, bit_depth, frame_is_intra)?;
     if frame_envelope.header.obu_type.is_tip_frame() {
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
@@ -127,6 +132,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             options,
             reference,
             bit_depth,
+            geometry,
         )
         .map(completed_walk);
     }
@@ -152,6 +158,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         options,
         reference,
         bit_depth,
+        geometry,
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let (frame_cdfs, filter_inputs, segment_ids) = decode_inter_blocks(
@@ -187,11 +194,10 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
+    geometry: FrameDecodeGeometry,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
-    let frame_size = core
-        .frame_size
-        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
+    let frame_size = geometry.frame_size();
     ensure_runtime_limits(
         options.limits(),
         frame_size.width,
@@ -202,7 +208,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     )?;
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
     let (frame, motion_field) =
-        block::tip::reconstruct_output(scratch, sequence, &core, reference, bit_depth, offset)?;
+        block::tip::reconstruct_output(scratch, sequence, &core, reference, geometry, offset)?;
     let mut frame_cdfs = (*frame_cdfs).clone();
     frame_cdfs
         .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx));
@@ -2137,8 +2143,8 @@ use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{MotionFieldLayout, TemporalMotionField, TemporalMvScratch};
 pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
 pub(crate) use frame_walk::{
-    DeferredInterWalk, ScheduledInterWalk, inter_frame_info, motion_field_layout,
-    parse_inter_frame, splittable_inter_frame,
+    DeferredInterWalk, FrameDecodeGeometry, ScheduledInterWalk, parse_inter_frame,
+    splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;
 
