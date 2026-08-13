@@ -346,7 +346,7 @@ fn derive_inter_block_setup<T: ReconSample>(
     let expected_tip_pair = derived_tip_reference_pair(core, &derived_order_hints);
     let motion_field = geometry
         .new_motion_field(&derived_order_hints)
-        .ok_or(inter_internal!("inter_temporal_motion_field", offset))?;
+        .ok_or(inter_allocation!("inter temporal motion field"))?;
     let cdef_state = CdefState::new(mi_rows, mi_cols, sequence)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
     let ref_ccso_unit_grids = reference

@@ -1175,7 +1175,8 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let mut workspace = CurrentFrameWorkspace::<T>::new(info, T::default())?;
     let mut motion_field = geometry
         .new_motion_field(temporal.reference_order_hints())
-        .ok_or(ReconError::ArithmeticOverflow {
+        .ok_or(ReconError::WorkspaceAllocationFailed {
+            plane: splot_recon::PlaneId::Y,
             context: "TIP-output motion field",
         })?;
     let placed = PlacedInterBlock {
