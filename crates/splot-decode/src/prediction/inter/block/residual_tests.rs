@@ -30,16 +30,15 @@ fn residual_block_allocation_failure_is_operational() {
 }
 
 #[test]
-fn residual_table_bounds_failure_is_internal() {
+fn residual_table_bounds_failure_is_typed_coefficient_state() {
     let offset = ByteOffset::new(17);
     let error = tx_size_dimension(&[], 0, offset).unwrap_err();
 
     assert!(matches!(
         error,
-        crate::DecodeError::InternalState {
-            reason: "inter_block_residual_geometry",
-            byte_offset,
-        } if byte_offset == offset
+        crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterResidualCoefficientState,
+        }
     ));
 }
 
@@ -71,18 +70,26 @@ fn residual_parse_failures_keep_typed_boundary() {
             table: "test",
             index: usize::MAX,
         };
-    let internal_errors: [&(dyn std::error::Error + 'static); 3] =
-        [&cdf_error, &decoder_state, &fallback];
-    for internal_error in internal_errors {
-        let error = residual_read_error(internal_error, SPEC_RESIDUAL, offset);
+    for entropy_error in [
+        &cdf_error as &(dyn std::error::Error + 'static),
+        &decoder_state,
+    ] {
+        let error = residual_read_error(entropy_error, SPEC_RESIDUAL, offset);
         assert!(matches!(
             error,
-            crate::DecodeError::InternalState {
-                reason: "inter_block_residual_parse",
-                byte_offset,
-            } if byte_offset == offset
+            crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidInterResidualCoefficientEntropyState,
+            }
         ));
     }
+
+    let error = residual_read_error(&fallback, SPEC_RESIDUAL, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterResidualCoefficientState,
+        }
+    ));
 
     let mut allocation = Vec::<u8>::new();
     let allocation_error = allocation.try_reserve(usize::MAX).unwrap_err();

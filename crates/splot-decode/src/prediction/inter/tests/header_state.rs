@@ -176,6 +176,43 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
     ));
 }
 
+#[test]
+fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+        4,
+        4,
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+    )
+    .unwrap();
+    let mut scratch = super::super::InterResidualReconScratch::default();
+
+    for (start, end) in [(1, 2), (1, 0)] {
+        let error = super::super::add_inter_residual_to_workspace(
+            &mut scratch,
+            &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
+            &super::super::InterResidual {
+                block_range: start..end,
+            },
+            &[],
+            0,
+            false,
+            false,
+            false,
+            BitDepth::Eight,
+            ByteOffset::new(47),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecodeError::HeaderState {
+                source: DecodeHeaderStateError::InvalidInterResidualReconstruction,
+            }
+        ));
+    }
+}
+
 fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
     let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
     let mut header = parsed.header.expect("SEF fixture has an IVF header");

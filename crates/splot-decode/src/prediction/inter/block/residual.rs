@@ -799,8 +799,8 @@ fn table_value_usize(values: &[i32], index: usize, tile_offset: ByteOffset) -> R
     usize::try_from(value).map_err(|_| residual_geometry_error(tile_offset))
 }
 
-pub(super) fn residual_geometry_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    inter_internal!("inter_block_residual_geometry", tile_offset)
+pub(super) fn residual_geometry_error(_tile_offset: ByteOffset) -> crate::error::DecodeError {
+    DecodeHeaderStateError::InvalidInterResidualCoefficientState.into()
 }
 
 /// § 5.20.4 `reset_block_context`.
@@ -862,9 +862,11 @@ fn residual_read_error(
         crate::bitstream::tile_payload::CoeffParseErrorClass::Malformed { spec_section } => {
             crate::pipeline::malformed_tile_payload(tile_offset, spec_section, error)
         }
-        crate::bitstream::tile_payload::CoeffParseErrorClass::EntropyState
-        | crate::bitstream::tile_payload::CoeffParseErrorClass::CoefficientState => {
-            residual_read_internal_error(tile_offset)
+        crate::bitstream::tile_payload::CoeffParseErrorClass::EntropyState => {
+            DecodeHeaderStateError::InvalidInterResidualCoefficientEntropyState.into()
+        }
+        crate::bitstream::tile_payload::CoeffParseErrorClass::CoefficientState => {
+            DecodeHeaderStateError::InvalidInterResidualCoefficientState.into()
         }
     }
 }
@@ -886,10 +888,6 @@ fn residual_plane_read_error(
         _ => SPEC_RESIDUAL,
     };
     residual_read_error(error, spec_section, tile_offset)
-}
-
-fn residual_read_internal_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    inter_internal!("inter_block_residual_parse", tile_offset)
 }
 
 #[cfg(test)]

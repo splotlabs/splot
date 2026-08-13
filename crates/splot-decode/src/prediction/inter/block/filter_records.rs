@@ -131,7 +131,7 @@ pub(crate) fn record_inter_deblock_geometry(
     };
     let blocks = residual
         .blocks(residual_blocks)
-        .ok_or_else(|| super::residual::residual_geometry_error(tile_offset))?;
+        .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
     for block in blocks {
         match block.plane {
             ReconPlaneId::Y => {
