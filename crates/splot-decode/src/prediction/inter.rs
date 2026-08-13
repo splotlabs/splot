@@ -164,7 +164,6 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     let (frame_cdfs, filter_inputs, segment_ids) = decode_inter_blocks(
         scratch,
         tile_plan,
-        frame_envelope,
         sequence,
         &core,
         options,
@@ -1208,7 +1207,18 @@ impl<T: ReconSample> InterReferenceState<T> {
     pub(crate) fn resolve_motion_fields(
         &self,
         ref_frame_idx: &[u32],
-    ) -> Option<Vec<Option<Arc<TemporalMotionField>>>> {
+    ) -> Result<Vec<Option<Arc<TemporalMotionField>>>> {
+        for &selected in ref_frame_idx {
+            if self
+                .ref_motion_fields
+                .get(selected as usize)
+                .and_then(Option::as_ref)
+                .and_then(MotionFieldHandle::field)
+                .is_none()
+            {
+                return Err(DecodeReferenceStateError::MissingMotionFieldPublication.into());
+            }
+        }
         self.ref_motion_fields
             .iter()
             .enumerate()
@@ -1218,9 +1228,18 @@ impl<T: ReconSample> InterReferenceState<T> {
                         .iter()
                         .any(|&selected| selected as usize == index) =>
                 {
-                    handle.field().map(|field| Some(Arc::clone(field)))
+                    handle
+                        .field()
+                        .map(|field| Some(Arc::clone(field)))
+                        .ok_or(DecodeReferenceStateError::MissingMotionFieldPublication.into())
                 }
-                None | Some(_) => Some(None),
+                None if ref_frame_idx
+                    .iter()
+                    .any(|&selected| selected as usize == index) =>
+                {
+                    Err(DecodeReferenceStateError::MissingMotionFieldPublication.into())
+                }
+                None | Some(_) => Ok(None),
             })
             .collect()
     }

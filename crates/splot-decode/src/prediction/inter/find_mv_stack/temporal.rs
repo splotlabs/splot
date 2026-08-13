@@ -591,14 +591,25 @@ impl ProjectedTemporalMotionField {
         })
     }
 
-    fn reset(&mut self, mi_rows: usize, mi_cols: usize) -> Option<()> {
+    fn reset(&mut self, mi_rows: usize, mi_cols: usize) -> crate::Result<()> {
         self.width8 = mi_cols.div_ceil(2);
         self.height8 = mi_rows.div_ceil(2);
-        let cells = self.width8.checked_mul(self.height8)?;
+        let cells = self
+            .width8
+            .checked_mul(self.height8)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        self.cells
+            .try_reserve_exact(cells.saturating_sub(self.cells.len()))
+            .map_err(|_| {
+                crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
+                    plane: splot_recon::PlaneId::Y,
+                    context: "inter projected temporal motion field",
+                })
+            })?;
         self.cells
             .resize(cells, ProjectedTemporalMotionCell::default());
         self.cells.fill(ProjectedTemporalMotionCell::default());
-        Some(())
+        Ok(())
     }
 
     fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
@@ -741,15 +752,24 @@ impl TemporalBandPlan {
         context: &TemporalMvContext,
         index: usize,
         mut source_band: impl FnMut(usize, usize) -> Option<Arc<TemporalMotionBand>>,
-    ) -> Option<()> {
+    ) -> crate::Result<()> {
         let rows = self.rows8(index);
         if rows.is_empty() {
-            return None;
+            return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
         }
         let row_count = rows.len();
         let width8 = self.layout.width8();
-        let cells = width8.checked_mul(row_count)?;
-        let mut field_cells = vec![ProjectedTemporalMotionCell::default(); cells];
+        let cells = width8
+            .checked_mul(row_count)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        let mut field_cells = Vec::new();
+        field_cells.try_reserve_exact(cells).map_err(|_| {
+            crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: splot_recon::PlaneId::Y,
+                context: "inter temporal motion band",
+            })
+        })?;
+        field_cells.resize(cells, ProjectedTemporalMotionCell::default());
         let mut output = ProjectedFieldBand {
             cells: &mut field_cells,
             width8,
@@ -773,14 +793,19 @@ impl TemporalBandPlan {
             if index >= projection.source_layout.band_count() {
                 continue;
             }
-            let source = source_band(projection.slot, index)?;
+            let source = source_band(projection.slot, index)
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
             if source.layout != projection.source_layout
                 || source.row_base8 != projection.source_layout.rows8(index).start
             {
-                return None;
+                return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
             }
             let mut trajectory = match trajectories.as_mut() {
-                Some(trajectories) => Some(trajectories.as_band()?),
+                Some(trajectories) => Some(
+                    trajectories
+                        .as_band()
+                        .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?,
+                ),
                 None => None,
             };
             project_temporal_motion_field(
@@ -820,9 +845,16 @@ impl TemporalBandPlan {
             field: field.cells,
             trajectories: trajectories.map(OwnedTrajectoryBand::finish),
         };
-        let banded = context.banded.as_ref()?;
-        let _ = banded.bands.get(index)?.set(Some(Arc::new(result)));
-        Some(())
+        let banded = context
+            .banded
+            .as_ref()
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        let band = banded
+            .bands
+            .get(index)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        let _ = band.set(Some(Arc::new(result)));
+        Ok(())
     }
 
     pub(crate) fn fail(context: &TemporalMvContext) {
@@ -998,15 +1030,17 @@ impl TemporalMvContext {
         ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
     ) -> Option<Self> {
         let mut context = Self::empty();
-        context.refresh_from_references(
-            mi_dimensions,
-            current_order_hint,
-            config,
-            ref_frame_idx,
-            ref_valid,
-            ref_order_hint,
-            ref_motion_fields,
-        )?;
+        context
+            .refresh_from_references(
+                mi_dimensions,
+                current_order_hint,
+                config,
+                ref_frame_idx,
+                ref_valid,
+                ref_order_hint,
+                ref_motion_fields,
+            )
+            .ok()?;
         Some(context)
     }
 
@@ -1020,7 +1054,7 @@ impl TemporalMvContext {
         ref_valid: &[bool],
         ref_order_hint: &[u32],
         ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
-    ) -> Option<()> {
+    ) -> crate::Result<()> {
         let reset_started = crate::timing::start();
         let (mi_rows, mi_cols) = mi_dimensions;
         self.field.reset(mi_rows, mi_cols)?;
@@ -1067,14 +1101,17 @@ impl TemporalMvContext {
                     self.ref_order_hints.len(),
                     config.step,
                     config.unit_size8,
-                )?,
+                )
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?,
             };
-            trajectories.reset(
-                mi_dimensions,
-                self.ref_order_hints.len(),
-                config.step,
-                config.unit_size8,
-            )?;
+            trajectories
+                .reset(
+                    mi_dimensions,
+                    self.ref_order_hints.len(),
+                    config.step,
+                    config.unit_size8,
+                )
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
             Some(trajectories)
         } else {
             self.trajectory_scratch = self.trajectories.take();
@@ -1084,19 +1121,20 @@ impl TemporalMvContext {
         let projection_started = crate::timing::start();
         let mut prepared = Vec::with_capacity(projections.len());
         for projection in projections {
-            let slot = *ref_frame_idx.get(projection.ref_index)?;
+            let slot = *ref_frame_idx
+                .get(projection.ref_index)
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
             let source_order_hint = self
                 .ref_order_hints
                 .get(projection.ref_index)
                 .copied()
-                .flatten()?;
-            let Some(source_field) = ref_motion_fields
+                .flatten()
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+            let source_field = ref_motion_fields
                 .get(slot as usize)
                 .and_then(Option::as_deref)
-            else {
-                continue;
-            };
-            let Some(source) = TemporalProjectionSource::new(
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+            let source = TemporalProjectionSource::new(
                 &source_field.metadata(),
                 source_field.layout(),
                 source_order_hint,
@@ -1105,9 +1143,8 @@ impl TemporalMvContext {
                 projection.side,
                 projection.target_ref,
                 &self.ref_order_hints,
-            ) else {
-                continue;
-            };
+            )
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
             prepared.push(PreparedTemporalProjection {
                 source,
                 field: source_field,
@@ -1124,7 +1161,7 @@ impl TemporalMvContext {
         self.trajectories = trajectories;
         self.tip = None;
         self.banded = None;
-        Some(())
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1236,20 +1273,18 @@ impl TemporalMvContext {
 
     pub(crate) fn prepare_tip(
         &mut self,
+        references: TipReferencePair,
         projection_step: usize,
         superblock_size8: usize,
         fill_holes: bool,
-    ) -> bool {
-        let Some(references) = self.tip_reference_pair() else {
-            return false;
-        };
+    ) -> crate::Result<()> {
         let projection_step = projection_step.clamp(1, 2);
         let tmvp_unit_size8 = if projection_step == 1 {
             8
         } else {
             superblock_size8.max(1)
         };
-        if prepare_tip_field(
+        prepare_tip_field(
             &mut self.field,
             &mut self.projection_scratch,
             &mut self.average_scratch,
@@ -1257,19 +1292,16 @@ impl TemporalMvContext {
             projection_step,
             tmvp_unit_size8,
             fill_holes,
-        )
-        .is_none()
-        {
-            return false;
-        }
+        )?;
         self.tip = Some(references);
-        true
+        Ok(())
     }
 
     pub(crate) fn fill_sampling_gaps(&mut self, projection_step: usize, tmvp_unit_size8: usize) {
         fill_temporal_sampling_gaps(&mut self.field, projection_step, tmvp_unit_size8);
     }
 
+    #[cfg(test)]
     pub(crate) fn tip_reference_pair(&self) -> Option<TipReferencePair> {
         tip_reference_pair_from_hints(self.current_order_hint, &self.ref_order_hints)
     }
@@ -1525,8 +1557,16 @@ fn prepare_tip_field(
     projection_step: usize,
     tmvp_unit_size8: usize,
     fill_holes: bool,
-) -> Option<()> {
-    projection.reset(source.height8 * 2, source.width8 * 2)?;
+) -> crate::Result<()> {
+    let mi_rows = source
+        .height8
+        .checked_mul(2)
+        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+    let mi_cols = source
+        .width8
+        .checked_mul(2)
+        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+    projection.reset(mi_rows, mi_cols)?;
     debug_assert_eq!(projection.width8, source.width8);
     debug_assert_eq!(projection.height8, source.height8);
     for y8 in (0..projection.height8).step_by(projection_step) {
@@ -1556,7 +1596,7 @@ fn prepare_tip_field(
     }
     fill_temporal_sampling_gaps(projection, projection_step, tmvp_unit_size8);
     std::mem::swap(source, projection);
-    Some(())
+    Ok(())
 }
 
 fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superblock_size8: usize) {
@@ -1604,8 +1644,16 @@ fn average_tip_motion(
     averaged: &mut ProjectedTemporalMotionField,
     step: usize,
     superblock_size8: usize,
-) -> Option<()> {
-    averaged.reset(field.height8.checked_mul(2)?, field.width8.checked_mul(2)?)?;
+) -> crate::Result<()> {
+    let mi_rows = field
+        .height8
+        .checked_mul(2)
+        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+    let mi_cols = field
+        .width8
+        .checked_mul(2)
+        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+    averaged.reset(mi_rows, mi_cols)?;
     let width8 = field.width8;
     for block_y in (0..field.height8).step_by(superblock_size8) {
         for block_x in (0..field.width8).step_by(superblock_size8) {
@@ -1653,7 +1701,7 @@ fn average_tip_motion(
             }
         }
     }
-    Some(())
+    Ok(())
 }
 
 #[doc = "AV2 § 7.10.4 Weight_Div_Mult motion-vector average."]

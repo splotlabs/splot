@@ -31,6 +31,11 @@ pub(super) fn derive_unit_motion<T: ReconSample>(
     motion: &MotionFieldUnits,
     shared: &deferred_recon::ReconShared<'_, T>,
 ) {
+    if row.superblocks.is_empty() {
+        row.motion_derived = true;
+        row.motion_folded = true;
+        return;
+    }
     if let Some(surface) = surface {
         let sink = surface.sink();
         if !derive_row_motion(row, scratch, &sink, shared) {
@@ -50,6 +55,11 @@ pub(super) fn derive_unit_motion_on_surface<T: ReconSample>(
     motion: &MotionFieldUnits,
     shared: &deferred_recon::ReconShared<'_, T>,
 ) {
+    if row.superblocks.is_empty() {
+        row.motion_derived = true;
+        row.motion_folded = true;
+        return;
+    }
     if !derive_row_motion(row, scratch, surface, shared) {
         return;
     }

@@ -233,6 +233,9 @@ impl MotionFieldUnits {
             return;
         }
         if ordinal >= self.units {
+            if let Some(handle) = self.handle.as_ref() {
+                handle.fail();
+            }
             return;
         }
         let Some(handle) = self.handle.as_ref() else {
@@ -371,5 +374,18 @@ mod tests {
         let mut untouched = TemporalMotionField::new(2, 2).expect("untouched field");
         untouched.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
         assert_eq!(cleared, untouched);
+    }
+
+    #[test]
+    fn out_of_range_unit_settles_the_publication_as_failed() {
+        let mut field = TemporalMotionField::new(2, 2).expect("motion field");
+        field.set_reference_metadata(true, (8, 8), &[Some(1)]);
+        let handle = MotionFieldHandle::pending_with_layout(field.layout());
+        let units = MotionFieldUnits::publishing(field, 1, 1, handle.clone(), None);
+
+        units.unit_landed_for(1, false);
+
+        assert!(handle.field().is_none());
+        assert!(handle.band_publication(0).is_some_and(Option::is_none));
     }
 }

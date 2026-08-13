@@ -20,9 +20,52 @@ use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_all
 use super::{
     chroma_smooth_tile_ranges, frame_segment_id_map, frame_superblock_h4, inter_skip_txfm_ctx,
     leaf_uses_general_intra, map_inter_multiblock_error, predict_interintra_planes,
-    read_inter_intra_syntax_enabled, single_ref_read_error, skip_segment_reference,
-    symbol_read_error, validate_segment_id,
+    read_inter_intra_syntax_enabled, scheduled_motion_field_inputs, single_ref_read_error,
+    skip_segment_reference, symbol_read_error, validate_segment_id,
 };
+
+#[test]
+fn scheduled_motion_fields_require_selected_metadata_only() -> TestResult {
+    let Some(field) = crate::prediction::inter::TemporalMotionField::new(2, 2) else {
+        return Err("test motion field allocation failed".into());
+    };
+    let settled = crate::prediction::inter::MotionFieldHandle::settled(field);
+    let pending =
+        crate::prediction::inter::MotionFieldHandle::pending_with_layout(settled.layout());
+    let fields = [Some(settled.clone()), None, Some(pending)];
+
+    let mut reference = InterReferenceState::<u8>::empty()?;
+    reference.ref_motion_fields = vec![Some(settled), None];
+    assert!(matches!(
+        reference.resolve_motion_fields(&[1]),
+        Err(DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::MissingMotionFieldPublication
+        })
+    ));
+    let resolved = reference.resolve_motion_fields(&[0])?;
+    assert!(resolved[0].is_some());
+    assert!(resolved[1].is_none());
+
+    let (metadata, layouts) = scheduled_motion_field_inputs(&fields, &[0])?;
+    assert!(metadata[0].is_some());
+    assert!(layouts[0].is_some());
+    assert!(metadata[1].is_none());
+    assert!(layouts[1].is_none());
+
+    for selected in [1, 2, u32::MAX] {
+        let Err(error) = scheduled_motion_field_inputs(&fields, &[selected]) else {
+            return Err("selected motion metadata was accepted".into());
+        };
+        assert!(matches!(
+            error,
+            DecodeError::ReferenceState {
+                source: crate::DecodeReferenceStateError::MissingMotionFieldPublication
+            }
+        ));
+        assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
+    Ok(())
+}
 
 #[test]
 fn frame_superblock_height_follows_sequence_size_and_intra_cap() {
