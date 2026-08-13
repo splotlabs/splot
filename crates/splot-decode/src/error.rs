@@ -285,6 +285,14 @@ pub enum DecodeReferenceStateError {
     /// A selected reference had not published the motion field required by TIP output.
     #[error("a selected TIP-output reference has no published motion field")]
     MissingMotionFieldPublication,
+    /// A selected reference completed without publishing a required motion-field band.
+    #[error("reference slot {slot} has no published motion-field band {band}")]
+    MissingMotionFieldBandPublication {
+        /// Zero-based reference slot selected for temporal projection.
+        slot: usize,
+        /// Zero-based full-width motion-field band required by the projection.
+        band: usize,
+    },
     /// A selected or valid reference slot had no decoded frame attached.
     #[error("reference slot {slot} has no stored decoded frame")]
     MissingFrame {

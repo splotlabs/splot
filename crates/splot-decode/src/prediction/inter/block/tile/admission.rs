@@ -61,6 +61,30 @@ struct ScheduledResolve {
     state: TileResolveState,
 }
 
+fn project_temporal_band(
+    plan: &TemporalBandPlan,
+    temporal: &TemporalMvContext,
+    reference_fields: &[Option<MotionFieldHandle>],
+    index: usize,
+) -> Result<()> {
+    for (slot, band) in plan.requirements(index) {
+        let publication = reference_fields
+            .get(slot)
+            .and_then(Option::as_ref)
+            .and_then(|field| field.band_publication(band))
+            .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        if publication.is_none() {
+            return Err(
+                DecodeReferenceStateError::MissingMotionFieldBandPublication { slot, band }.into(),
+            );
+        }
+    }
+    plan.project(temporal, index, |slot, band| {
+        reference_fields.get(slot)?.as_ref()?.band(band).cloned()
+    })
+    .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
+}
+
 #[allow(clippy::large_enum_variant)]
 enum ScheduledRowState<T: ReconSample> {
     Unresolved {
@@ -158,19 +182,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         &self,
         index: usize,
     ) -> Result<core::ops::Range<usize>> {
-        self.temporal_plan
-            .project(&self.temporal, index, |slot, band| {
-                self.reference
-                    .ref_motion_fields
-                    .get(slot)?
-                    .as_ref()?
-                    .band(band)
-                    .cloned()
-            })
-            .ok_or(inter_internal!(
-                "inter_reference_motion_band_unpublished",
-                self.tile_offset
-            ))?;
+        project_temporal_band(
+            &self.temporal_plan,
+            &self.temporal,
+            &self.reference.ref_motion_fields,
+            index,
+        )?;
         let projected_rows = self.temporal_plan.rows8(index);
         let final_band = index.saturating_add(1) == self.temporal_plan.len();
         let context = self.params.context(
@@ -1208,7 +1225,61 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
 
 #[cfg(test)]
 mod tests {
-    use super::{record_banded_command_error, safe_deblock_mi_end};
+    use super::{project_temporal_band, record_banded_command_error, safe_deblock_mi_end};
+    use crate::prediction::inter::MotionFieldLayout;
+
+    struct TemporalProjectionCase {
+        plan: super::TemporalBandPlan,
+        temporal: super::TemporalMvContext,
+        fields: Vec<Option<super::MotionFieldHandle>>,
+        source: super::TemporalMotionField,
+    }
+
+    fn temporal_projection_case() -> Result<TemporalProjectionCase, &'static str> {
+        let target_layout = MotionFieldLayout::new(16, 16, 16).ok_or("valid layout")?;
+        let source =
+            super::TemporalMotionField::new_with_metadata(16, 16, true, (64, 64), &[Some(3)])
+                .ok_or("valid source field")?;
+        let other =
+            super::TemporalMotionField::new_with_metadata(16, 16, true, (64, 64), &[Some(1)])
+                .ok_or("valid other field")?;
+        let metadata = vec![Some(source.metadata()), Some(other.metadata())];
+        let layouts = vec![Some(source.layout()), Some(other.layout())];
+        let mut temporal = super::TemporalMvContext::empty();
+        let plan = temporal
+            .begin_banded_refresh(
+                target_layout,
+                2,
+                super::TemporalProjectionConfig {
+                    frame_size: (64, 64),
+                    step: 1,
+                    unit_size8: 8,
+                    enable_tip: true,
+                    enable_trajectory: false,
+                    reduced: true,
+                },
+                &[0, 1],
+                &[true, true],
+                &[1, 3],
+                &metadata,
+                &layouts,
+                None,
+                false,
+                false,
+            )
+            .ok_or("valid banded plan")?;
+        if plan.requirements(0) != [(0, 0)] {
+            return Err("expected one source-band requirement");
+        }
+        let handle = super::MotionFieldHandle::pending_with_layout(source.layout());
+        handle.publish_metadata(source.metadata());
+        Ok(TemporalProjectionCase {
+            plan,
+            temporal,
+            fields: vec![Some(handle)],
+            source,
+        })
+    }
 
     #[test]
     fn banded_command_error_preserves_the_first_precompute_failure() {
@@ -1267,6 +1338,75 @@ mod tests {
         record_banded_command_error(&mut error, None);
 
         assert!(error.is_none());
+    }
+
+    #[test]
+    fn pending_reference_motion_band_is_a_scheduling_invariant() -> Result<(), &'static str> {
+        let TemporalProjectionCase {
+            plan,
+            temporal,
+            fields,
+            ..
+        } = temporal_projection_case()?;
+
+        let Err(error) = project_temporal_band(&plan, &temporal, &fields, 0) else {
+            return Err("pending publication must fail");
+        };
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
+            }
+        ));
+        assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_reference_motion_band_is_a_typed_dependency_error() -> Result<(), &'static str> {
+        let TemporalProjectionCase {
+            plan,
+            temporal,
+            fields,
+            ..
+        } = temporal_projection_case()?;
+        let handle = fields[0].as_ref().ok_or("reference handle")?;
+        handle.fail();
+
+        let Err(error) = project_temporal_band(&plan, &temporal, &fields, 0) else {
+            return Err("failed publication must fail");
+        };
+
+        assert!(matches!(
+            error,
+            crate::DecodeError::ReferenceState {
+                source: crate::DecodeReferenceStateError::MissingMotionFieldBandPublication {
+                    slot: 0,
+                    band: 0
+                }
+            }
+        ));
+        assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn published_reference_motion_band_survives_failure_and_projects() -> Result<(), &'static str> {
+        let TemporalProjectionCase {
+            plan,
+            temporal,
+            fields,
+            source,
+        } = temporal_projection_case()?;
+        let handle = fields[0].as_ref().ok_or("reference handle")?;
+        handle.publish(source);
+        handle.fail();
+
+        assert!(matches!(handle.band_publication(0), Some(Some(_))));
+        project_temporal_band(&plan, &temporal, &fields, 0)
+            .map_err(|_| "published band must project")?;
+        Ok(())
     }
 
     #[test]

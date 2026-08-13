@@ -145,6 +145,13 @@ impl MotionFieldHandle {
         self.0.bands.get(index)?.get().and_then(Option::as_ref)
     }
 
+    pub(crate) fn band_publication(
+        &self,
+        index: usize,
+    ) -> Option<&Option<Arc<TemporalMotionBand>>> {
+        self.0.bands.get(index)?.get()
+    }
+
     pub(crate) fn metadata_condition(&self) -> Condition<'_> {
         Condition::Completion(&self.0.metadata)
     }
