@@ -244,8 +244,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         TemporalBandPlan::fail(&self.temporal);
     }
 
-    fn batch_range(&self, index: usize) -> core::ops::Range<usize> {
-        self.batches.get(index).cloned().unwrap_or(0..0)
+    fn batch_range(&self, index: usize) -> Option<core::ops::Range<usize>> {
+        self.batches.get(index).cloned()
     }
 
     /// Conditions that replace the parsed unit's former cross-frame wait.
@@ -255,8 +255,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     ) -> Vec<Condition<'_>> {
         let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
         let mut bounds = row_gate::RowReferenceBounds::default();
-        for ready in rows
-            .get(self.batch_range(index))
+        for ready in self
+            .batch_range(index)
+            .and_then(|range| rows.get(range))
             .into_iter()
             .flatten()
             .filter_map(|row| match row {
@@ -281,23 +282,30 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         if self.finished.load(Ordering::Acquire) {
             return Ok(());
         }
-        let range = self.batch_range(index);
+        let range = self
+            .batch_range(index)
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        {
+            let prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(slot) = prepared.get(index) else {
+                self.finished.store(true, Ordering::Release);
+                return Err(invalid_inter_tile_scheduling_state());
+            };
+            if slot.is_some() {
+                self.finished.store(true, Ordering::Release);
+                return Err(invalid_inter_tile_scheduling_state());
+            }
+        }
         let ready = {
             let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(rows) = rows.get_mut(range.clone()) else {
-                return Err(inter_internal!(
-                    "inter_admission_unit_range_missing",
-                    self.tile_offset
-                ));
+                return Err(invalid_inter_tile_scheduling_state());
             };
             if rows
                 .iter()
                 .any(|row| !matches!(row, ScheduledRowState::Ready(_)))
             {
-                return Err(inter_internal!(
-                    "inter_admission_unit_rows_missing",
-                    self.tile_offset
-                ));
+                return Err(invalid_inter_tile_scheduling_state());
             }
             let mut ready = Vec::with_capacity(rows.len());
             for row in rows {
@@ -328,22 +336,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     current_order_hint: self.params.current_order_hint,
                 };
                 if self.owned_bands {
-                    let start = index
-                        .checked_mul(self.params.sb_h4)
-                        .and_then(|rows4| rows4.checked_mul(4))
-                        .ok_or(inter_internal!(
-                            "inter_admission_band_start",
-                            self.tile_offset
-                        ))?;
-                    let end = start
-                        .saturating_add(self.params.sb_h4.saturating_mul(4))
-                        .min(self.info.coded_luma_size().height());
+                    let rows8 = self.temporal_plan.rows8(index);
+                    let coded_height = self.info.coded_luma_size().height();
+                    let start = rows8.start.saturating_mul(8).min(coded_height);
+                    let end = rows8.end.saturating_mul(8).min(coded_height);
                     let mut band =
                         splot_recon::OwnedFrameRowBand::new(self.info, start..end, T::default())?;
                     let mut surface = band.surface_mut();
                     let mut rows = Vec::with_capacity(ready.len());
                     for mut ready in ready {
-                        let row = scratch.with_installed(|scratch| {
+                        let mut row = scratch.with_installed(|scratch| {
                             if ready.row.terminal.is_none() && !ready.row.motion_derived {
                                 mvres::derive_unit_motion_on_surface(
                                     &mut ready.row,
@@ -374,12 +376,11 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                                 self.params.bit_depth,
                             )
                         });
-                        if row.entries.iter().any(|entry| entry.command().is_some()) {
-                            return Err(inter_internal!(
-                                "inter_admission_band_command_remaining",
-                                self.tile_offset
-                            ));
-                        }
+                        let first_remaining = row
+                            .entries
+                            .iter()
+                            .position(|entry| entry.command().is_some());
+                        record_banded_command_error(&mut row.precompute_error, first_remaining);
                         rows.push(row);
                     }
                     return Ok(PreparedBatch::Banded { rows, band });
@@ -425,17 +426,11 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(slot) = prepared.get_mut(index) else {
             self.finished.store(true, Ordering::Release);
-            return Err(inter_internal!(
-                "inter_admission_unit_ordinal",
-                self.tile_offset
-            ));
+            return Err(invalid_inter_tile_scheduling_state());
         };
         if slot.is_some() {
             self.finished.store(true, Ordering::Release);
-            return Err(inter_internal!(
-                "inter_admission_unit_duplicate",
-                self.tile_offset
-            ));
+            return Err(invalid_inter_tile_scheduling_state());
         }
         *slot = Some(batch);
         Ok(())
@@ -929,6 +924,15 @@ fn supports_owned_bands(
 /// Reconstruction units one legacy precompute batch prepares.
 const LEGACY_BATCH_UNITS: usize = 4;
 
+fn record_banded_command_error(
+    error: &mut Option<(usize, crate::DecodeError)>,
+    first_remaining: Option<usize>,
+) {
+    if let Some(index) = first_remaining {
+        let _ = error.get_or_insert_with(|| (index, invalid_inter_tile_scheduling_state()));
+    }
+}
+
 /// Splits the units into precompute batches that never cross a superblock row.
 ///
 /// A batch's admission waits for the furthest reference row any of its units
@@ -1204,7 +1208,66 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
 
 #[cfg(test)]
 mod tests {
-    use super::safe_deblock_mi_end;
+    use super::{record_banded_command_error, safe_deblock_mi_end};
+
+    #[test]
+    fn banded_command_error_preserves_the_first_precompute_failure() {
+        let mut error = Some((
+            3,
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: splot_recon::PlaneId::Y,
+                context: "original banded precompute",
+            }
+            .into(),
+        ));
+
+        record_banded_command_error(&mut error, Some(7));
+
+        assert!(matches!(
+            error,
+            Some((
+                3,
+                crate::DecodeError::Reconstruction {
+                    source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                        plane: splot_recon::PlaneId::Y,
+                        context: "original banded precompute"
+                    }
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn banded_command_error_records_the_first_remaining_command() {
+        let mut error = None;
+
+        record_banded_command_error(&mut error, Some(5));
+
+        assert!(matches!(
+            &error,
+            Some((
+                5,
+                crate::DecodeError::HeaderState {
+                    source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
+                }
+            ))
+        ));
+        assert!(
+            error
+                .as_ref()
+                .and_then(|(_, error)| crate::DecodeDiagnosticReport::from_decode_error(error))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn banded_command_error_leaves_complete_rows_clean() {
+        let mut error = None;
+
+        record_banded_command_error(&mut error, None);
+
+        assert!(error.is_none());
+    }
 
     #[test]
     fn admission_grid_failure_precedes_empty_motion_band_publication() -> Result<(), &'static str> {
@@ -1366,5 +1429,23 @@ mod tests {
     fn band_batches_keep_one_batch_per_superblock_row() {
         assert_eq!(super::band_batches(9, 3, 3), vec![0..3, 3..6, 6..9]);
         assert_eq!(super::band_batches(11, 3, 3), vec![0..3, 3..6, 6..11]);
+    }
+
+    #[test]
+    fn band_batches_partition_every_unit_once() {
+        for units_per_row in 1..8 {
+            for unit_count in 1..32usize {
+                let band_count = unit_count.div_ceil(units_per_row);
+                let batches = super::band_batches(unit_count, units_per_row, band_count);
+                let mut next = 0;
+                for batch in batches {
+                    assert_eq!(batch.start, next);
+                    assert!(batch.end > batch.start);
+                    assert!(batch.end <= unit_count);
+                    next = batch.end;
+                }
+                assert_eq!(next, unit_count);
+            }
+        }
     }
 }
