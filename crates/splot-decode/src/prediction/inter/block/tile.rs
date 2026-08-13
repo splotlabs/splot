@@ -1354,7 +1354,6 @@ fn run_superblock_prepass<T: ReconSample, P>(
     mut next_unit: P,
     shadow_surfaces: Vec<ReadyReconSurface<'_, T>>,
     done_limit: usize,
-    tile_offset: ByteOffset,
     context: &TileDecodeContext<'_, T>,
     temporal_context: &TemporalMvContext,
     quantizer: &FrameQuantizerSnapshot,
@@ -1444,7 +1443,6 @@ where
                 context.luma_use_tcq,
                 context.residual_use_ddt,
                 context.bit_depth,
-                tile_offset,
             )?;
             row_buffers.recycle(buffers);
             Ok(())
@@ -1654,7 +1652,6 @@ pub(super) fn parse_tile_units<T: ReconSample>(
 
 struct PreparedTile {
     tile_num: u32,
-    tile_offset: ByteOffset,
     mi_rows: Range<usize>,
     mi_cols: Range<usize>,
     rows: Vec<ReconRow>,
@@ -1840,7 +1837,6 @@ fn prepare_tile<T: ReconSample>(
     }
     Ok(PreparedTile {
         tile_num,
-        tile_offset,
         mi_rows,
         mi_cols,
         rows,
@@ -2047,7 +2043,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     luma_use_tcq,
                     residual_use_ddt,
                     bit_depth,
-                    tile.tile_offset,
                 )?);
             }
         }
@@ -2128,7 +2123,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 next_unit,
                 surfaces,
                 done_limit,
-                tile_offset,
                 &context,
                 temporal_context,
                 &quantizer,
@@ -2184,7 +2178,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     luma_use_tcq,
                     residual_use_ddt,
                     bit_depth,
-                    tile_offset,
                 )?;
                 row_buffers.recycle(buffers);
                 Ok(())
