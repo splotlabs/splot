@@ -9,12 +9,18 @@ use std::sync::Mutex;
 use super::NeighbourMvGrid;
 use super::neighbour_grid::GridPlanes;
 
-/// Bounds how many tile-sized neighbour grids are retained between tiles. The
-/// grid is the widest per-MI tile buffer (one flag slot plus one motion slot per
-/// MI cell), so its backing allocation is reused across tiles/frames rather than
-/// reallocated per tile. Kept small to cap retained memory for large frames while
-/// still covering concurrent tiles on the parallel path.
-const MAX_RETAINED_NEIGHBOUR_MV_GRIDS: usize = 8;
+/// Fewest tile-sized neighbour grids retained between tiles, and the floor the
+/// pool-width bound never drops below. The grid is the widest per-MI tile buffer
+/// (one flag slot plus one motion slot per MI cell), so its backing allocation is
+/// reused across tiles/frames rather than reallocated per tile.
+const MIN_RETAINED_NEIGHBOUR_MV_GRIDS: usize = 8;
+
+/// Retains one grid per worker so a pool wider than the floor still covers its
+/// concurrent tiles, bounded below by [`MIN_RETAINED_NEIGHBOUR_MV_GRIDS`] and
+/// per-entry by [`MAX_RETAINED_NEIGHBOUR_MV_CELLS`].
+fn max_retained_neighbour_mv_grids() -> usize {
+    splot_parallel::current_pool_width().max(MIN_RETAINED_NEIGHBOUR_MV_GRIDS)
+}
 /// Upper bound (in cells) on the capacity a grid may have and still be retained.
 /// Comfortably covers a full ~1080p single-tile frame while ensuring one
 /// oversized tile cannot pin its high-water allocation in the pool until process
@@ -50,7 +56,7 @@ fn recycle_neighbour_mv_planes(planes: GridPlanes) {
     let mut retained = RETAINED_NEIGHBOUR_MV_GRIDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.len() < MAX_RETAINED_NEIGHBOUR_MV_GRIDS {
+    if retained.len() < max_retained_neighbour_mv_grids() {
         retained.push(planes);
     }
 }

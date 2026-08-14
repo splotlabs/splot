@@ -104,7 +104,15 @@ impl MiGrid<'_> {
     }
 }
 
-const MAX_RETAINED_DEBLOCK_GRIDS: usize = 4;
+/// Fewest deblock grids retained between frames, and the floor the pool-width
+/// bound never drops below.
+const MIN_RETAINED_DEBLOCK_GRIDS: usize = 4;
+
+/// Retains one grid per worker so a wide pool does not reallocate the grids its
+/// extra workers need, with [`MIN_RETAINED_DEBLOCK_GRIDS`] as the floor.
+fn max_retained_deblock_grids() -> usize {
+    splot_parallel::current_pool_width().max(MIN_RETAINED_DEBLOCK_GRIDS)
+}
 const MAX_RETAINED_DEBLOCK_CELLS: usize = 1 << 22;
 static RETAINED_DEBLOCK_GRIDS: std::sync::Mutex<Vec<(Vec<MiCell>, Vec<u8>)>> =
     std::sync::Mutex::new(Vec::new());
@@ -124,7 +132,7 @@ pub(super) fn recycle_deblock_grid_scratch(mut cells: Vec<MiCell>, mut candidate
     let mut pool = RETAINED_DEBLOCK_GRIDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if pool.len() < MAX_RETAINED_DEBLOCK_GRIDS {
+    if pool.len() < max_retained_deblock_grids() {
         cells.clear();
         candidates.clear();
         pool.push((cells, candidates));
