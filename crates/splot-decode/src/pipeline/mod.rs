@@ -693,7 +693,7 @@ where
     let leading_prefix = leading_prefix_obus(leading_obus)?;
     film_grain_slots.update_from_obus(leading_prefix)?;
     let mut output_effect_state = OutputEffectState::new();
-    let mut recon_lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity().min(4));
+    let mut recon_lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity());
     output_effect_state.observe_prefix(leading_prefix, &sequence)?;
 
     let sequence_inter = sequence.inter.as_ref().ok_or_else(|| {
@@ -1339,7 +1339,7 @@ where
                             })?;
                             frame_pipeline::prepare_entropy_submission(
                                 &mut pending_entropy,
-                                ring.capacity().min(3),
+                                ring.capacity(),
                                 spawner,
                                 admission,
                                 &mut recon_lane,
@@ -1578,7 +1578,7 @@ where
                             })?;
                             frame_pipeline::prepare_entropy_submission(
                                 &mut pending_entropy,
-                                ring.capacity().min(3),
+                                ring.capacity(),
                                 spawner,
                                 admission,
                                 &mut recon_lane,
