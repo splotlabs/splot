@@ -949,6 +949,33 @@ fn prepare_scheduled_motion(
     Ok((grid, motion))
 }
 
+/// Takes one reconstruction surface per superblock row of the tile.
+///
+/// Everything this needs is tile geometry and the frame workspace, so it is
+/// independent of the parse and can run before it once the scheduling skeleton
+/// is hoisted (SCALE-091 steps 2-4).
+fn acquire_row_surfaces<T: ReconSample>(
+    mi_rows: &core::ops::Range<usize>,
+    mi_cols: &core::ops::Range<usize>,
+    workspace: &CurrentFrameWorkspace<T>,
+    scratch: &mut TileDecodeScratch<T>,
+    info: splot_recon::DecodedFrameInfo,
+    sb_h4: usize,
+) -> Result<Vec<ReadyReconSurface<'static, T>>> {
+    let rects = superblock_luma_rects(mi_rows, mi_cols, workspace, sb_h4)?;
+    scratch
+        .surfaces
+        .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
+    Ok(rects
+        .into_iter()
+        .map(|rect| {
+            scratch
+                .take_surface(info, rect)
+                .map(ReadyReconSurface::Owned)
+        })
+        .collect::<splot_recon::Result<Vec<_>>>()?)
+}
+
 /// Resolves a parsed tile and turns each unit into owned admission state.
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
@@ -1020,23 +1047,14 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         motion_handle,
         crate::timing::start(),
     )?;
-    let surfaces = if owned_bands {
-        Vec::new()
-    } else {
-        let rects =
-            superblock_luma_rects(&parsed.mi_rows, &parsed.mi_cols, &workspace, params.sb_h4)?;
-        scratch
-            .surfaces
-            .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
-        rects
-            .into_iter()
-            .map(|rect| {
-                scratch
-                    .take_surface(info, rect)
-                    .map(ReadyReconSurface::Owned)
-            })
-            .collect::<splot_recon::Result<Vec<_>>>()?
-    };
+    let surfaces = acquire_row_surfaces(
+        &parsed.mi_rows,
+        &parsed.mi_cols,
+        &workspace,
+        &mut scratch,
+        info,
+        params.sb_h4,
+    )?;
     let mut surfaces = surfaces.into_iter();
     let rows = core::mem::take(&mut parsed.rows)
         .into_iter()
