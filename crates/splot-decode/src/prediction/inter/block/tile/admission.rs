@@ -1112,7 +1112,8 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         workers,
         surfaces,
     } = scratch;
-    let filter_count = filter_setup.stripe_ranges().len();
+    let filter_count =
+        crate::filters::gdf::stripe_ranges(&core, info.coded_luma_size().height())?.len();
     Ok(ScheduledTileRecon {
         rows: Mutex::new(rows),
         prepared: Mutex::new(prepared),
