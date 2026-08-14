@@ -869,64 +869,6 @@ fn covers_whole_frame(parsed: &ParsedTile, params: &TileWalkParams) -> bool {
         && parsed.mi_cols.end.min(params.mi_cols) == params.mi_cols
 }
 
-fn supports_owned_bands(
-    parsed: &ParsedTile,
-    params: &TileWalkParams,
-    info: splot_recon::DecodedFrameInfo,
-) -> core::result::Result<(), &'static str> {
-    if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
-        return Err("filters_disabled");
-    }
-    if !covers_whole_frame(parsed, params) {
-        return Err("partial_tile");
-    }
-    for row in &parsed.rows {
-        if row.terminal.is_some() {
-            return Err("terminal");
-        }
-        for superblock in &row.superblocks {
-            if superblock.dependency == ReconDependency::GlobalIntrabcFence {
-                return Err("intrabc");
-            }
-            if superblock.dependency == ReconDependency::CurrentFrame {
-                return Err("current_frame");
-            }
-            let entries = row
-                .entries
-                .get(superblock.entries.clone())
-                .ok_or("entry_range")?;
-            for entry in entries {
-                match entry.command() {
-                    Some(ReconCommand::Inter(command))
-                        if !command.reads_current_frame()
-                            && command.prepass_write_is_contained(
-                                superblock.origin,
-                                params.sb_h4,
-                                info,
-                                &row.residual_blocks,
-                            ) => {}
-                    Some(ReconCommand::Inter(command)) if command.reads_current_frame() => {
-                        return Err("current_frame_inter");
-                    }
-                    Some(ReconCommand::Inter(_)) => return Err("unbounded_inter"),
-                    Some(ReconCommand::GeneralIntra(_)) => return Err("general_intra"),
-                    Some(ReconCommand::Intrabc(_)) => return Err("intrabc"),
-                    None if entry.resolve_record().is_some_and(|record| {
-                        record.prepass_write_is_contained(
-                            superblock.origin,
-                            params.sb_h4,
-                            info,
-                            &row.residual_blocks,
-                        )
-                    }) => {}
-                    None => return Err("unbounded_resolve_record"),
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Reconstruction units one legacy precompute batch prepares.
 const LEGACY_BATCH_UNITS: usize = 4;
 
@@ -1046,12 +988,10 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .filter(|row| !row.superblocks.is_empty())
         .count()
         .div_ceil(units_per_row.max(1));
-    let band_eligibility = if candidate_batch_count != temporal_plan.len() {
-        Err("band_count")
-    } else {
-        supports_owned_bands(&parsed, &params, info)
-    };
-    let owned_bands = band_eligibility.is_ok();
+    // Fixed rather than scanned: the mode was read from every parsed entry.
+    let band_eligibility: core::result::Result<(), &'static str> = Err("scale_091_fixed_mode");
+    let _ = candidate_batch_count;
+    let owned_bands = false;
     let storage_started = crate::timing::start();
     if storage_started.is_some() {
         crate::timing::report_detail(

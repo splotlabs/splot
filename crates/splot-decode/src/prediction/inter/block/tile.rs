@@ -703,13 +703,6 @@ impl ReconRowEntry {
         }
     }
 
-    pub(super) fn resolve_record(&self) -> Option<&LeafResolveRecord> {
-        match self.state.as_ref()? {
-            ReconEntryState::Resolve(Some(resolve)) => Some(resolve),
-            ReconEntryState::Resolve(None) | ReconEntryState::Command(_) => None,
-        }
-    }
-
     pub(super) fn take_resolve(&mut self) -> Option<LeafResolveRecord> {
         self.take_state(ReconEntryState::as_resolve)
     }
