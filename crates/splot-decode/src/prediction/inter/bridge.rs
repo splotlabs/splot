@@ -50,7 +50,7 @@ pub(crate) fn reconstruct<T: ReconSample>(
         luma_size,
         visible,
     )?;
-    let mut workspace = CurrentFrameWorkspace::new(info, T::default())?;
+    let mut workspace = CurrentFrameWorkspace::new_recycled(info)?; // the § 7.23 copy below covers the whole frame rect
     motion_compensate_inter_block_into(
         &mut WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single(

@@ -92,7 +92,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let mut workspace = CurrentFrameWorkspace::<T>::new(geometry.info(), T::default())?;
+    let mut workspace = CurrentFrameWorkspace::<T>::new_recycled(geometry.info())?; // § 7.11 writes every coded sample before any read
 
     let reference = InterReferenceState::<T>::empty().map_err(|_| {
         unsupported_at(
