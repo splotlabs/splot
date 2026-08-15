@@ -539,14 +539,42 @@ fn previous_segment_ids<'a>(
 }
 
 /// Resolves every sample, entropy, and motion product a TIP output may read.
+/// The reference slots a TIP output frame actually reads samples from.
+///
+/// § 7.10.6 interpolates between exactly the two frames
+/// [`find_mv_stack::tip_reference_pair_from_hints`] names, so gating admission
+/// on every named slot made the frame wait on up to five references it never
+/// reads. The pair derives from the same helper and the same inputs the
+/// reconstruction uses, so the two cannot disagree; an underived pair falls
+/// back to the full set, and the § 7.13.3.18 published-row check still fails
+/// closed either way.
+fn tip_pixel_reference_slots(
+    core: &FrameHeaderCore,
+    ref_order_hint: &[u32],
+    ref_valid: &[bool],
+) -> Option<[u32; 2]> {
+    let inter = core.inter.as_ref()?;
+    let hints =
+        find_mv_stack::reference_order_hints(&inter.ref_frame_idx, ref_valid, ref_order_hint);
+    let pair = find_mv_stack::tip_reference_pair_from_hints(core.display_order_hint()?, &hints)?;
+    Some([
+        block_reference_slot(&inter.ref_frame_idx, pair.past_ref).ok()?,
+        block_reference_slot(&inter.ref_frame_idx, pair.future_ref).ok()?,
+    ])
+}
+
 pub(crate) fn tip_output_dependencies<T: ReconSample>(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     reference: &InterReferenceState<T>,
 ) -> TipOutputDependencies<T> {
-    let samples = reference
-        .pixel_reference_gate(named_pixel_reference_slots(core))
-        .shared_slots();
+    let samples =
+        match tip_pixel_reference_slots(core, &reference.ref_order_hint, &reference.ref_valid) {
+            Some(pair) => reference.pixel_reference_gate(pair).shared_slots(),
+            None => reference
+                .pixel_reference_gate(named_pixel_reference_slots(core))
+                .shared_slots(),
+        };
     let entropy = entropy_dependencies(core, sequence, reference);
     let motion = core.inter.as_ref().map_or_else(Vec::new, |inter| {
         reference.motion_dependencies(&inter.ref_frame_idx)
