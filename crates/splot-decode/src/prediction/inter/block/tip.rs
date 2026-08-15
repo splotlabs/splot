@@ -1181,7 +1181,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let global_mv = inter
         .tip_global_mv
         .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-    let mut workspace = CurrentFrameWorkspace::<T>::new(info, T::default())?;
+    let mut workspace = CurrentFrameWorkspace::<T>::new_recycled(info)?; // § 7.10.6 predicts every coded sample of the frame below before `freeze`
     let mut motion_field = geometry
         .new_motion_field(temporal.reference_order_hints())
         .ok_or(ReconError::WorkspaceAllocationFailed {

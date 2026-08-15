@@ -84,7 +84,7 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
                 Ok(Self::Published { progress, admit })
             }
             None => Ok(Self::Local(Box::new(Mutex::new(
-                CurrentFrameWorkspace::new(info, T::default())?,
+                CurrentFrameWorkspace::new_recycled(info)?, // every stripe publishes its rows before any read
             )))),
         }
     }

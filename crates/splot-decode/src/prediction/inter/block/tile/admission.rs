@@ -869,11 +869,31 @@ fn covers_whole_frame(parsed: &ParsedTile, params: &TileWalkParams) -> bool {
         && parsed.mi_cols.end.min(params.mi_cols) == params.mi_cols
 }
 
+/// Whether canonical row bands may replace the copying storage path.
+///
+/// They may not, on measurement. Bands remove the per-superblock rect and the
+/// sealed filter copy, but `band_batches` issues one precompute batch per
+/// superblock row where `superblock_row_batches` issues four, and a band
+/// collection is not contiguous across band boundaries, so the § 7.17 frontier
+/// drops off `filter_contiguous_edge` onto the per-sample `apply_edge_samples`
+/// path. Both cost more than the copies save: admitting no frame to band
+/// storage measured **8T -0.75% wall over 11 of 11 rotated pairs**, byte-exact,
+/// with occupancy 6.940 to 7.015.
+///
+/// [`supports_owned_bands`] is kept as the exact statement of when a frame
+/// *could* be banded: it is the control for any future design that removes one
+/// of the two costs, and a stream whose band-eligible fraction is well above
+/// this one's 25% could flip the call.
+const BAND_STORAGE_ADMITTED: bool = false;
+
 fn supports_owned_bands(
     parsed: &ParsedTile,
     params: &TileWalkParams,
     info: splot_recon::DecodedFrameInfo,
 ) -> core::result::Result<(), &'static str> {
+    if !BAND_STORAGE_ADMITTED {
+        return Err("band_storage_not_admitted");
+    }
     if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
         return Err("filters_disabled");
     }

@@ -69,7 +69,7 @@ impl<T: ReconSample> FrameProgress<T> {
     ///
     /// Returns the workspace allocation's own diagnostic.
     pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
-        let workspace = CurrentFrameWorkspace::new(info, T::default())?;
+        let workspace = CurrentFrameWorkspace::new_recycled(info)?; // every row is published by a filter stripe before any consumer may read past the watermark
         Ok(Self {
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),

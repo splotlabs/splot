@@ -736,19 +736,29 @@ impl FrameSegmentIdMap {
     }
 
     pub(crate) fn merge_tile(&mut self, tile: &TileSegmentIdState) {
-        for row in tile.origin_row..tile.origin_row.saturating_add(tile.grid.rows) {
-            for col in tile.origin_col..tile.origin_col.saturating_add(tile.grid.cols) {
-                if row >= self.mi_rows || col >= self.mi_cols {
-                    continue;
-                }
-                if let (Some(value), Some(cell)) = (
-                    tile.cell(row, col),
-                    self.cells
-                        .get_mut(row.saturating_mul(self.mi_cols).saturating_add(col)),
-                ) {
-                    *cell = value;
-                }
-            }
+        let rows = tile
+            .grid
+            .rows
+            .min(self.mi_rows.saturating_sub(tile.origin_row));
+        let cols = tile
+            .grid
+            .cols
+            .min(self.mi_cols.saturating_sub(tile.origin_col));
+        for local_row in 0..rows {
+            let source = local_row.saturating_mul(tile.grid.cols);
+            let target = tile
+                .origin_row
+                .saturating_add(local_row)
+                .saturating_mul(self.mi_cols)
+                .saturating_add(tile.origin_col);
+            let (Some(source), Some(target)) = (
+                tile.grid.cells.get(source..source.saturating_add(cols)),
+                self.cells.get_mut(target..target.saturating_add(cols)),
+            ) else {
+                continue;
+            };
+            // splot-copy-ok: publish one tile's segment-id rows into the frame map
+            target.copy_from_slice(source);
         }
     }
 }
