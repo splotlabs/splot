@@ -202,7 +202,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let interpolation_filter = inter
         .interpolation_filter
         .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
-    let workspace = CurrentFrameWorkspace::<T>::new(geometry.info(), T::default())?;
+    let workspace = CurrentFrameWorkspace::<T>::new_recycled(geometry.info())?; // pooled buffer keeps the previous frame's samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let quantization = core.quantization_params.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_base_q",
