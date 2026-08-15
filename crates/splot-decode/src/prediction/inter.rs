@@ -538,7 +538,6 @@ fn previous_segment_ids<'a>(
         .filter(|map| map.dimensions() == (mi_rows, mi_cols))
 }
 
-/// Resolves every sample, entropy, and motion product a TIP output may read.
 /// The reference slots a TIP output frame actually reads samples from.
 ///
 /// § 7.10.6 interpolates between exactly the two frames
@@ -563,6 +562,7 @@ fn tip_pixel_reference_slots(
     ])
 }
 
+/// Resolves every sample, entropy, and motion product a TIP output may read.
 pub(crate) fn tip_output_dependencies<T: ReconSample>(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
