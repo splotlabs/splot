@@ -886,35 +886,117 @@ fn covers_whole_frame(parsed: &ParsedTile, params: &TileWalkParams) -> bool {
 /// this one's 25% could flip the call.
 const BAND_STORAGE_ADMITTED: bool = false;
 
+/// Why a frame reconstructs into copying storage instead of canonical bands.
+///
+/// Each variant is one proof that failed, so the set is the exact statement of
+/// what a future banded design would have to admit. SCALE-094's census counts
+/// them: on the mission stream `GeneralIntra` is 92.4% of blocking leaves and
+/// `UnboundedResolveRecord` the remaining 7.6%, while `Intrabc`,
+/// `CurrentFrameInter`, `UnboundedInter` and `PartialTile` never occur.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum LegacyReason {
+    /// Band storage is disabled outright; see [`BAND_STORAGE_ADMITTED`].
+    NotAdmitted,
+    /// `SPLOT_DECODE_SKIP_FILTERS` removed the frontier bands would feed.
+    FiltersDisabled,
+    /// The tile does not cover the frame, so its rows are not frame bands.
+    PartialTile,
+    /// The unit's precompute batch count does not match the temporal plan.
+    BandCount,
+    /// The row already failed, so its writes are not proved.
+    Terminal,
+    /// The superblock entry range is not addressable.
+    EntryRange,
+    /// A § 7.10.3 IntraBC block reads raw samples a band cannot bound.
+    Intrabc,
+    /// The superblock reads current-frame samples.
+    CurrentFrame,
+    /// An inter command reads current-frame samples after resolution.
+    CurrentFrameInter,
+    /// An inter command's write footprint is not proved contained.
+    UnboundedInter,
+    /// A § 7.11 general-intra block reads its own frame's neighbours.
+    GeneralIntra,
+    /// An unresolved leaf's write footprint is not proved contained.
+    UnboundedResolveRecord,
+}
+
+impl LegacyReason {
+    /// The stable token this reason reports in timing diagnostics.
+    const fn token(self) -> &'static str {
+        match self {
+            Self::NotAdmitted => "band_storage_not_admitted",
+            Self::FiltersDisabled => "filters_disabled",
+            Self::PartialTile => "partial_tile",
+            Self::BandCount => "band_count",
+            Self::Terminal => "terminal",
+            Self::EntryRange => "entry_range",
+            Self::Intrabc => "intrabc",
+            Self::CurrentFrame => "current_frame",
+            Self::CurrentFrameInter => "current_frame_inter",
+            Self::UnboundedInter => "unbounded_inter",
+            Self::GeneralIntra => "general_intra",
+            Self::UnboundedResolveRecord => "unbounded_resolve_record",
+        }
+    }
+}
+
+/// Which canonical storage one admitted frame reconstructs into.
+///
+/// This replaces a bare `owned_bands: bool` so the fallback carries its own
+/// proof obligation rather than becoming another boolean exception.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum CanonicalStoragePlan {
+    /// Direct full-width canonical row bands.
+    RowBands,
+    /// The copying path, retained for every case bands cannot prove.
+    Legacy(LegacyReason),
+}
+
+impl CanonicalStoragePlan {
+    /// Whether this plan reconstructs directly into canonical row bands.
+    const fn owned_bands(self) -> bool {
+        matches!(self, Self::RowBands)
+    }
+
+    /// The stable token this plan reports in timing diagnostics.
+    const fn token(self) -> &'static str {
+        match self {
+            Self::RowBands => "mode=owned_bands",
+            Self::Legacy(reason) => reason.token(),
+        }
+    }
+}
+
 fn supports_owned_bands(
     parsed: &ParsedTile,
     params: &TileWalkParams,
     info: splot_recon::DecodedFrameInfo,
-) -> core::result::Result<(), &'static str> {
+) -> core::result::Result<(), LegacyReason> {
     if !BAND_STORAGE_ADMITTED {
-        return Err("band_storage_not_admitted");
+        return Err(LegacyReason::NotAdmitted);
     }
     if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
-        return Err("filters_disabled");
+        return Err(LegacyReason::FiltersDisabled);
     }
     if !covers_whole_frame(parsed, params) {
-        return Err("partial_tile");
+        return Err(LegacyReason::PartialTile);
     }
     for row in &parsed.rows {
         if row.terminal.is_some() {
-            return Err("terminal");
+            return Err(LegacyReason::Terminal);
         }
         for superblock in &row.superblocks {
             if superblock.dependency == ReconDependency::GlobalIntrabcFence {
-                return Err("intrabc");
+                return Err(LegacyReason::Intrabc);
             }
             if superblock.dependency == ReconDependency::CurrentFrame {
-                return Err("current_frame");
+                return Err(LegacyReason::CurrentFrame);
             }
             let entries = row
                 .entries
                 .get(superblock.entries.clone())
-                .ok_or("entry_range")?;
+                .ok_or(LegacyReason::EntryRange)?;
             for entry in entries {
                 match entry.command() {
                     Some(ReconCommand::Inter(command))
@@ -926,11 +1008,11 @@ fn supports_owned_bands(
                                 &row.residual_blocks,
                             ) => {}
                     Some(ReconCommand::Inter(command)) if command.reads_current_frame() => {
-                        return Err("current_frame_inter");
+                        return Err(LegacyReason::CurrentFrameInter);
                     }
-                    Some(ReconCommand::Inter(_)) => return Err("unbounded_inter"),
-                    Some(ReconCommand::GeneralIntra(_)) => return Err("general_intra"),
-                    Some(ReconCommand::Intrabc(_)) => return Err("intrabc"),
+                    Some(ReconCommand::Inter(_)) => return Err(LegacyReason::UnboundedInter),
+                    Some(ReconCommand::GeneralIntra(_)) => return Err(LegacyReason::GeneralIntra),
+                    Some(ReconCommand::Intrabc(_)) => return Err(LegacyReason::Intrabc),
                     None if entry.resolve_record().is_some_and(|record| {
                         record.prepass_write_is_contained(
                             superblock.origin,
@@ -939,7 +1021,7 @@ fn supports_owned_bands(
                             &row.residual_blocks,
                         )
                     }) => {}
-                    None => return Err("unbounded_resolve_record"),
+                    None => return Err(LegacyReason::UnboundedResolveRecord),
                 }
             }
         }
@@ -1066,25 +1148,21 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .filter(|row| !row.superblocks.is_empty())
         .count()
         .div_ceil(units_per_row.max(1));
-    let band_eligibility = if candidate_batch_count != temporal_plan.len() {
-        Err("band_count")
+    let storage_plan = if candidate_batch_count != temporal_plan.len() {
+        CanonicalStoragePlan::Legacy(LegacyReason::BandCount)
     } else {
-        supports_owned_bands(&parsed, &params, info)
+        match supports_owned_bands(&parsed, &params, info) {
+            Ok(()) => CanonicalStoragePlan::RowBands,
+            Err(reason) => CanonicalStoragePlan::Legacy(reason),
+        }
     };
-    let owned_bands = band_eligibility.is_ok();
+    let owned_bands = storage_plan.owned_bands();
     let storage_started = crate::timing::start();
     if storage_started.is_some() {
         crate::timing::report_detail(
             "inter_admission_storage",
             storage_started,
-            if owned_bands {
-                "mode=owned_bands"
-            } else {
-                match band_eligibility {
-                    Ok(()) => "mode=legacy_rects reason=unknown",
-                    Err(reason) => reason,
-                }
-            },
+            storage_plan.token(),
         );
     }
     let (resolve_grid, motion) = prepare_scheduled_motion(
@@ -1671,6 +1749,39 @@ mod tests {
                 }
                 assert_eq!(next, unit_count);
             }
+        }
+    }
+
+    /// Every fallback reason reports a distinct token, and only `RowBands`
+    /// claims band storage. Diagnostics and the SCALE-094 census both key on
+    /// these tokens, so a collision would silently merge two proof failures.
+    #[test]
+    fn every_storage_plan_reports_a_distinct_token() {
+        use super::{CanonicalStoragePlan, LegacyReason};
+        let reasons = [
+            LegacyReason::NotAdmitted,
+            LegacyReason::FiltersDisabled,
+            LegacyReason::PartialTile,
+            LegacyReason::BandCount,
+            LegacyReason::Terminal,
+            LegacyReason::EntryRange,
+            LegacyReason::Intrabc,
+            LegacyReason::CurrentFrame,
+            LegacyReason::CurrentFrameInter,
+            LegacyReason::UnboundedInter,
+            LegacyReason::GeneralIntra,
+            LegacyReason::UnboundedResolveRecord,
+        ];
+        let mut tokens: Vec<&'static str> = reasons
+            .iter()
+            .map(|reason| CanonicalStoragePlan::Legacy(*reason).token())
+            .collect();
+        tokens.push(CanonicalStoragePlan::RowBands.token());
+        let unique: std::collections::BTreeSet<_> = tokens.iter().copied().collect();
+        assert_eq!(unique.len(), tokens.len());
+        assert!(CanonicalStoragePlan::RowBands.owned_bands());
+        for reason in reasons {
+            assert!(!CanonicalStoragePlan::Legacy(reason).owned_bands());
         }
     }
 }
