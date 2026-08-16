@@ -405,6 +405,16 @@ pub(super) struct CompoundBlockMetadata {
 }
 
 impl CompoundBlockMetadata {
+    /// The block's luma rectangle, which publication scatters into.
+    pub(super) const fn luma_rect(&self) -> (usize, usize, usize, usize) {
+        (
+            self.rect.luma_x,
+            self.rect.luma_y,
+            self.rect.luma_w,
+            self.rect.luma_h,
+        )
+    }
+
     pub(super) fn stored_mvs_at_origin(&self) -> splot_recon::Result<Option<[Mv; 2]>> {
         self.motion
             .as_ref()

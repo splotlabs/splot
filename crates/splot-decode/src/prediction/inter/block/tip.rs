@@ -884,6 +884,75 @@ fn tip_motion_grid<T: ReconSample>(
 /// Writes the units the batch kernel did not cover, one reference borrow per
 /// batch of units so a still-filtering reference is held for as little as the
 /// § 7.2 filter phase publishing its later stripes can wait out.
+/// Publishes finished unit samples into disjoint horizontal bands of the frame.
+///
+/// On the common path every unit already carries its own samples, so
+/// publication is a pure disjoint scatter: each unit writes its own rectangle
+/// and reads none. Units tile the frame, so grouping them by luma row yields
+/// full-width bands whose rectangles are disjoint, which `rect_surfaces` proves
+/// before handing out one exclusive surface each. Walking thousands of units on
+/// one worker instead leaves the pool draining behind a § 7.10.6 output frame.
+fn publish_units_by_band<T: ReconSample>(
+    scratch: &mut TipReconstructScratch<T>,
+    workspace: &mut splot_recon::CurrentFrameWorkspace<T>,
+    output_stride: usize,
+) -> Result<()> {
+    let height = workspace.info().coded_luma_size().height();
+    let width = workspace.info().coded_luma_size().width();
+    let mut bands: Vec<(usize, usize)> = Vec::new();
+    let mut members: Vec<Vec<usize>> = Vec::new();
+    for (index, unit) in scratch.units.iter().enumerate() {
+        let Some(metadata) = unit.metadata.as_ref() else {
+            return Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into());
+        };
+        let (_, y, _, h) = metadata.luma_rect();
+        let end = y.saturating_add(h).min(height);
+        if let Some(last) = bands.last_mut()
+            && last.0 == y
+        {
+            last.1 = last.1.max(end);
+            if let Some(group) = members.last_mut() {
+                group.push(index);
+            }
+            continue;
+        }
+        bands.push((y, end));
+        members.push(vec![index]);
+    }
+    if bands.is_empty() {
+        return Ok(());
+    }
+    let rects = bands
+        .iter()
+        .map(|(start, end)| splot_recon::PlaneRect::new(0, *start, width, end - start))
+        .collect::<splot_recon::Result<Vec<_>>>()?;
+    let surfaces = workspace.rect_surfaces(&rects)?;
+    let chunks: Vec<&[T]> = scratch.output_samples.chunks_exact(output_stride).collect();
+    let units = &scratch.units;
+    surfaces
+        .into_par_iter()
+        .zip(members.into_par_iter())
+        .try_for_each(|(mut surface, group)| -> Result<()> {
+            let mut sink = mc::WorkspaceSink::Rect(&mut surface);
+            for index in group {
+                let metadata = units[index]
+                    .metadata
+                    .as_ref()
+                    .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+                let samples = chunks.get(index).ok_or(ReconError::BufferLengthMismatch {
+                    expected: output_stride,
+                    actual: 0,
+                })?;
+                metadata.publish(samples, &mut sink)?;
+            }
+            Ok(())
+        })?;
+    for unit in &mut scratch.units {
+        unit.metadata = None;
+    }
+    Ok(())
+}
+
 fn publish_unit_outputs<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
@@ -893,6 +962,12 @@ fn publish_unit_outputs<T: ReconSample>(
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<()> {
+    if scratch.units.iter().all(|unit| unit.metadata.is_some())
+        && splot_parallel::on_multiworker_pool()
+        && let mc::WorkspaceSink::Frame(workspace) = sink
+    {
+        return publish_units_by_band(scratch, workspace, output_stride);
+    }
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     let mut units_per_hold = scratch.units.len().max(1);
     if scratch.units.iter().any(|unit| unit.metadata.is_none()) && !plan.hold(reference)?.settled()

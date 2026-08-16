@@ -6,10 +6,9 @@ This is the live checklist for the work described in [`DECODE-SCALING-MISSION.md
 
 When an investigation or implementation discovers another bottleneck, correctness requirement, or prerequisite:
 
-1. Add it here before continuing implementation. 2. Give it a stable ID, owner, status, dependencies, evidence, and next
-gate. 3. Keep only one implementation task active at a time. Read-only audits may run in parallel. 4. Do not delete
-rejected or completed work. Move its evidence to the mission ledger and update dependent tasks here. 5. A task is
-complete only when its stated correctness and measurement gates pass. Source code existing on a branch is not completion.
+1. Add it here before continuing implementation. 2. Give it a stable ID, owner, status, dependencies, evidence, and next gate. 3. Keep only one implementation
+task active at a time. Read-only audits may run in parallel. 4. Do not delete rejected or completed work. Move its evidence to the mission ledger and update
+dependent tasks here. 5. A task is complete only when its stated correctness and measurement gates pass. Source code existing on a branch is not completion.
 
 ## Current checklist
 
