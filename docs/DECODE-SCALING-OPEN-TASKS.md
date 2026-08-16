@@ -184,6 +184,5 @@ When an investigation or implementation discovers another bottleneck, correctnes
 
 ## Attachment reconciliation
 
-SCALE-003 and SCALE-004 rejected only standalone POCs — a whole-frame synchronous entropy admission and a bounded schedule
-around shadow surfaces — not the architectural tasks. Both were delivered as `SCALE-011-A` and `SCALE-011-B` through the
-cohesive SCALE-011-H row graph in `#1140`; their standalone variants remain evidence against queue-only or context-depth tuning.
+SCALE-003 and SCALE-004 rejected only standalone POCs — a whole-frame synchronous entropy admission and a bounded schedule around shadow surfaces — not the architectural tasks. Both were
+delivered as `SCALE-011-A` and `SCALE-011-B` through the cohesive SCALE-011-H row graph in `#1140`; their standalone variants remain evidence against queue-only or context-depth tuning.
