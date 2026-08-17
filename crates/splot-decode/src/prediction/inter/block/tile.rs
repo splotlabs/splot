@@ -1488,11 +1488,9 @@ where
 /// resolve pass (which needs the frame's temporal prelude) and reconstruction
 /// (which needs reference pixels).
 pub(super) struct ParsedTile {
-    tile_offset: ByteOffset,
     mi_rows: Range<usize>,
     mi_cols: Range<usize>,
     unit_count: usize,
-    block_decoded: TileBlockDecodedState,
     output: TileParserOutput,
 }
 
@@ -1579,10 +1577,21 @@ fn tile_unit_capacity(
 /// Units are emitted in order, so a consumer can gate on the prefix it needs
 /// instead of on the whole tile. The cell is the scheduler's own watermark, so
 /// a batch waits through `Condition::Watermark` rather than through a poll.
+/// The tile geometry the § 8.2 parser settles before it reads its first
+/// unit, which is everything the admission scheduler needs to lay out
+/// batches and surfaces.
+pub(crate) struct TileGeometry {
+    pub(super) tile_offset: ByteOffset,
+    pub(super) mi_rows: Range<usize>,
+    pub(super) mi_cols: Range<usize>,
+    pub(super) block_decoded: TileBlockDecodedState,
+}
+
 #[derive(Default)]
 pub(crate) struct ParseProgress {
     finished: splot_parallel::WatermarkCell,
     rows: Mutex<Vec<Option<ReconRow>>>,
+    geometry: Mutex<Option<Arc<TileGeometry>>>,
 }
 
 impl ParseProgress {
@@ -1613,6 +1622,20 @@ impl ParseProgress {
             .unwrap_or_else(PoisonError::into_inner)
             .try_reserve_exact(capacity)
             .map_err(|_| inter_allocation!("inter parsed rows"))
+    }
+
+    /// Publishes the tile geometry, which the parser settles before its
+    /// first unit.
+    pub(super) fn publish_geometry(&self, geometry: TileGeometry) {
+        *self.geometry.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(geometry));
+    }
+
+    /// The published tile geometry, if the parser has reached its first unit.
+    pub(super) fn geometry(&self) -> Option<Arc<TileGeometry>> {
+        self.geometry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Visits every unit the parser has published, in order.
@@ -1667,6 +1690,12 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         granularity,
     );
     parse_progress.reserve(capacity)?;
+    parse_progress.publish_geometry(TileGeometry {
+        tile_offset,
+        mi_rows: mi_rows.clone(),
+        mi_cols: mi_cols.clone(),
+        block_decoded: block_decoded.clone(),
+    });
     let mut unit_count = 0usize;
     let mut parser = TileParser::new(
         tile,
@@ -1696,11 +1725,9 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     }
     crate::timing::report("pass1_parse", started);
     Ok(ParsedTile {
-        tile_offset,
         mi_rows,
         mi_cols,
         unit_count,
-        block_decoded,
         output: parser.into_output(),
     })
 }

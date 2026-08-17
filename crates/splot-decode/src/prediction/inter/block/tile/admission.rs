@@ -871,11 +871,11 @@ const fn seals_filter_copy(owned_bands: bool, has_deblock: bool, whole_frame: bo
 
 /// Whether one parsed tile owns every mode-info position in the frame, which
 /// is what makes superblock row `r` the frame's own row band `r`.
-fn covers_whole_frame(parsed: &ParsedTile, params: &TileWalkParams) -> bool {
-    parsed.mi_rows.start == 0
-        && parsed.mi_rows.end.min(params.mi_rows) == params.mi_rows
-        && parsed.mi_cols.start == 0
-        && parsed.mi_cols.end.min(params.mi_cols) == params.mi_cols
+fn covers_whole_frame(geometry: &TileGeometry, params: &TileWalkParams) -> bool {
+    geometry.mi_rows.start == 0
+        && geometry.mi_rows.end.min(params.mi_rows) == params.mi_rows
+        && geometry.mi_cols.start == 0
+        && geometry.mi_cols.end.min(params.mi_cols) == params.mi_cols
 }
 
 /// Whether canonical row bands may replace the copying storage path.
@@ -978,7 +978,7 @@ impl CanonicalStoragePlan {
 }
 
 fn supports_owned_bands(
-    parsed: &ParsedTile,
+    geometry: &TileGeometry,
     rows: &[ReconRow],
     params: &TileWalkParams,
     info: splot_recon::DecodedFrameInfo,
@@ -989,7 +989,7 @@ fn supports_owned_bands(
     if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
         return Err(LegacyReason::FiltersDisabled);
     }
-    if !covers_whole_frame(parsed, params) {
+    if !covers_whole_frame(geometry, params) {
         return Err(LegacyReason::PartialTile);
     }
     for row in rows {
@@ -1123,7 +1123,7 @@ fn prepare_scheduled_motion(
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
-    parsed: &ParsedTile,
+    unit_count: usize,
     params: TileWalkParams,
     sequence: Arc<SequenceHeader>,
     core: Arc<FrameHeaderCore>,
@@ -1145,15 +1145,18 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             .max(1),
     );
     let info = workspace.info();
-    let tile_offset = parsed.tile_offset;
+    let geometry = parse_progress
+        .geometry()
+        .ok_or_else(invalid_inter_tile_scheduling_state)?;
+    let tile_offset = geometry.tile_offset;
     let quantizer = FrameQuantizerSnapshot::capture();
-    let units_per_row = parsed
+    let units_per_row = geometry
         .mi_cols
         .end
         .min(params.mi_cols)
-        .saturating_sub(parsed.mi_cols.start)
+        .saturating_sub(geometry.mi_cols.start)
         .div_ceil(params.sb_h4);
-    let raw_rows = (0..parsed.unit_count)
+    let raw_rows = (0..unit_count)
         .map(|index| {
             parse_progress
                 .take_row(index)
@@ -1168,7 +1171,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let storage_plan = if candidate_batch_count != temporal_plan.len() {
         CanonicalStoragePlan::Legacy(LegacyReason::BandCount)
     } else {
-        match supports_owned_bands(parsed, &raw_rows, &params, info) {
+        match supports_owned_bands(&geometry, &raw_rows, &params, info) {
             Ok(()) => CanonicalStoragePlan::RowBands,
             Err(reason) => CanonicalStoragePlan::Legacy(reason),
         }
@@ -1183,8 +1186,8 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         );
     }
     let (resolve_grid, motion) = prepare_scheduled_motion(
-        parsed.mi_rows.clone(),
-        parsed.mi_cols.clone(),
+        geometry.mi_rows.clone(),
+        geometry.mi_cols.clone(),
         motion_field,
         raw_rows
             .iter()
@@ -1197,8 +1200,12 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let surfaces = if owned_bands {
         Vec::new()
     } else {
-        let rects =
-            superblock_luma_rects(&parsed.mi_rows, &parsed.mi_cols, &workspace, params.sb_h4)?;
+        let rects = superblock_luma_rects(
+            &geometry.mi_rows,
+            &geometry.mi_cols,
+            &workspace,
+            params.sb_h4,
+        )?;
         scratch
             .surfaces
             .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
@@ -1226,9 +1233,8 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     if rows.is_empty() {
         return Err(invalid_inter_tile_scheduling_state());
     }
-    let prepass_block_decoded = parsed.block_decoded.clone();
-    let block_decoded = parsed.block_decoded.clone();
-    let unit_count = rows.len();
+    let prepass_block_decoded = geometry.block_decoded.clone();
+    let block_decoded = geometry.block_decoded.clone();
     let batches = if owned_bands {
         band_batches(unit_count, units_per_row.max(1), temporal_plan.len())
     } else {
@@ -1261,7 +1267,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let seals_filter_copy = seals_filter_copy(
         owned_bands,
         deblock.is_some(),
-        covers_whole_frame(parsed, &params),
+        covers_whole_frame(&geometry, &params),
     );
     let TileDecodeScratch {
         ordered,

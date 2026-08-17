@@ -273,7 +273,7 @@ impl InterFrameParse {
         let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
         let tile = tile::prepare_scheduled_tile(
             tile,
-            &parsed,
+            parsed.unit_count(),
             params,
             sequence,
             core,
