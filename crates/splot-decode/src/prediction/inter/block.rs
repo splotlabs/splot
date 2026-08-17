@@ -278,7 +278,7 @@ pub(crate) struct InterBlockFacts {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn derive_inter_block_setup<T: ReconSample>(
+pub(crate) fn derive_inter_block_setup<T: ReconSample>(
     work_units: &[DecodeTileWorkUnit<'_>],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,

@@ -131,21 +131,11 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
     mut records: crate::filters::wienerns_lr::FrameFilterRecords,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    options: &DecodeOptions,
-    facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     parse_progress: &Arc<tile::ParseProgress>,
+    setup: InterBlockSetup,
 ) -> Result<InterFrameParse> {
-    let setup = derive_inter_block_setup(
-        std::slice::from_mut(tile),
-        sequence,
-        core,
-        options,
-        facts,
-        ref_frame_idx,
-        reference,
-    )?;
     let InterBlockSetup {
         params,
         prelude,

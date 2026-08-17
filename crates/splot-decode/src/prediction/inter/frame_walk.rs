@@ -435,16 +435,24 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     let [tile] = tile_plan.work_units_mut() else {
         return Err(DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into());
     };
-    let parse = parse_inter_frame_blocks(
-        tile,
-        records,
+    let block_setup = super::block::derive_inter_block_setup(
+        std::slice::from_mut(tile),
         &sequence,
         &core,
         options,
         facts,
         ref_frame_idx.as_slice(),
         &reference,
+    )?;
+    let parse = parse_inter_frame_blocks(
+        tile,
+        records,
+        &sequence,
+        &core,
+        ref_frame_idx.as_slice(),
+        &reference,
         parse_progress,
+        block_setup,
     )?;
     if started.is_some() {
         crate::timing::report_detail(
