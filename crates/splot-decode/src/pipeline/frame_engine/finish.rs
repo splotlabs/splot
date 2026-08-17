@@ -143,6 +143,8 @@ impl FilterSinkSetup {
             disable_loopfilters_across_tiles,
             progress,
         )?;
+        let workspace =
+            workspace.ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
         Ok((setup, workspace, deblock_quant_deltas))
     }
 

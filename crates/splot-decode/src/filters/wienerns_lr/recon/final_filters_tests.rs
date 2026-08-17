@@ -230,6 +230,7 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
     let (setup, workspace) = final_filter_sink_10bit()
         .into_owned_filter_setup(Arc::clone(&core), false, Some(&progress), None)
         .unwrap();
+    let workspace = workspace.unwrap();
     let ranges = setup.stripe_ranges().to_vec();
     assert_eq!(ranges.len(), 3, "fixture must exercise multiple stripes");
 
@@ -277,6 +278,7 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
     let (setup, workspace) = sink
         .into_owned_filter_setup(Arc::clone(&core), false, Some(progress), None)
         .unwrap();
+    let workspace = workspace.unwrap();
     let ranges = setup.stripe_ranges().to_vec();
 
     let (start, end) = ranges[0];
@@ -349,6 +351,7 @@ fn arc_owned_filter_setup() -> (
     let (setup, workspace) = sink
         .into_owned_filter_setup_published(core, false, Arc::clone(&progress))
         .unwrap();
+    let workspace = workspace.unwrap();
     (Arc::new(setup), workspace, progress)
 }
 
@@ -371,6 +374,7 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
     let (mut setup, workspace) = sink
         .into_owned_filter_setup(Arc::new(core), false, Some(&progress), None)
         .unwrap();
+    let workspace = workspace.unwrap();
 
     assert!(
         setup
@@ -523,7 +527,7 @@ fn apply_luma_lr(
     blocks: &[WienerNsLrSourceBlock],
 ) {
     let cdef = crate::filters::cdef::cdef_stripe(
-        crate::filters::source::DeblockedPlanes::frame(&sink.workspace).unwrap(),
+        crate::filters::source::DeblockedPlanes::frame(sink.workspace.as_ref().unwrap()).unwrap(),
         None,
         None,
         None,
@@ -541,14 +545,19 @@ fn apply_luma_lr(
         .apply_lr_stripe(core, cdef, &CdefOverlap::default(), [blocks, &[], &[]], &[])
         .unwrap()
         .into_filtered();
-    super::super::publish_filter_stripe_to(&mut sink.workspace, PlaneId::Y, &filtered.y).unwrap();
+    super::super::publish_filter_stripe_to(
+        sink.workspace.as_mut().unwrap(),
+        PlaneId::Y,
+        &filtered.y,
+    )
+    .unwrap();
 }
 
 #[test]
 fn inactive_filter_planes_reuse_cdef_storage() {
     let sink = lr_sink(&[0; 16 * 16]);
     let cdef = crate::filters::cdef::cdef_stripe(
-        crate::filters::source::DeblockedPlanes::frame(&sink.workspace).unwrap(),
+        crate::filters::source::DeblockedPlanes::frame(sink.workspace.as_ref().unwrap()).unwrap(),
         None,
         None,
         None,
@@ -670,9 +679,24 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     let mut wiener_ns_only = lr_sink(&snapshot);
     apply_luma_lr(&mut wiener_ns_only, &wiener_ns_core, &[wiener_ns_block]);
 
-    let mixed_luma = mixed.workspace.samples(PlaneId::Y).unwrap();
-    let pc_luma = pc_only.workspace.samples(PlaneId::Y).unwrap();
-    let wiener_ns_luma = wiener_ns_only.workspace.samples(PlaneId::Y).unwrap();
+    let mixed_luma = mixed
+        .workspace
+        .as_ref()
+        .unwrap()
+        .samples(PlaneId::Y)
+        .unwrap();
+    let pc_luma = pc_only
+        .workspace
+        .as_ref()
+        .unwrap()
+        .samples(PlaneId::Y)
+        .unwrap();
+    let wiener_ns_luma = wiener_ns_only
+        .workspace
+        .as_ref()
+        .unwrap()
+        .samples(PlaneId::Y)
+        .unwrap();
     assert_eq!(luma_rect(mixed_luma, 0), luma_rect(pc_luma, 0));
     assert_eq!(luma_rect(mixed_luma, 8), luma_rect(wiener_ns_luma, 8));
     assert_eq!(luma_rect(mixed_luma, 4), luma_rect(&snapshot, 4));
