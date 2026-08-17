@@ -1123,7 +1123,6 @@ fn prepare_scheduled_motion(
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
-    unit_count: usize,
     params: TileWalkParams,
     sequence: Arc<SequenceHeader>,
     core: Arc<FrameHeaderCore>,
@@ -1149,6 +1148,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .geometry()
         .ok_or_else(invalid_inter_tile_scheduling_state)?;
     let tile_offset = geometry.tile_offset;
+    let unit_count = geometry.unit_count;
     let quantizer = FrameQuantizerSnapshot::capture();
     let units_per_row = geometry
         .mi_cols

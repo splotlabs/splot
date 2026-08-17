@@ -271,9 +271,14 @@ impl InterFrameParse {
                 progress,
             )?;
         let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
+        if parse_progress
+            .geometry()
+            .is_none_or(|geometry| geometry.unit_count != parsed.unit_count())
+        {
+            return Err(tile::invalid_inter_tile_scheduling_state());
+        }
         let tile = tile::prepare_scheduled_tile(
             tile,
-            parsed.unit_count(),
             params,
             sequence,
             core,

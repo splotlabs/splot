@@ -1585,6 +1585,7 @@ pub(crate) struct TileGeometry {
     pub(super) mi_rows: Range<usize>,
     pub(super) mi_cols: Range<usize>,
     pub(super) block_decoded: TileBlockDecodedState,
+    pub(super) unit_count: usize,
 }
 
 #[derive(Default)]
@@ -1695,6 +1696,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         mi_rows: mi_rows.clone(),
         mi_cols: mi_cols.clone(),
         block_decoded: block_decoded.clone(),
+        unit_count: capacity,
     });
     let mut unit_count = 0usize;
     let mut parser = TileParser::new(
@@ -1942,7 +1944,7 @@ fn no_decoded_block_error() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into()
 }
 
-fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
+pub(super) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into()
 }
 
