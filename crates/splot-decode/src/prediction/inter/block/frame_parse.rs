@@ -228,7 +228,7 @@ impl InterFrameParse {
         super::super::find_mv_stack::TemporalMvScratch,
     )> {
         let Self {
-            mut parsed,
+            parsed,
             mut records,
             params,
             prelude,
@@ -249,7 +249,7 @@ impl InterFrameParse {
             prelude.begin_scheduled(&mut temporal, &core, ref_frame_idx.as_slice(), &reference)?;
         let temporal_scratch = temporal.take_scratch();
         let temporal = Arc::new(temporal);
-        parsed.detach_filter_records(&mut records);
+        tile::ParsedTile::detach_filter_records(&mut records, &parse_progress);
         let has_active_deblock = core
             .deblocking_filter_params
             .as_ref()
@@ -273,7 +273,7 @@ impl InterFrameParse {
         let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
         let tile = tile::prepare_scheduled_tile(
             tile,
-            parsed,
+            &parsed,
             params,
             sequence,
             core,

@@ -7,7 +7,7 @@
 
 use std::num::NonZeroUsize;
 use std::ops::Range;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use splot_recon::{PlaneId, ReconError};
 
@@ -1491,7 +1491,7 @@ pub(super) struct ParsedTile {
     tile_offset: ByteOffset,
     mi_rows: Range<usize>,
     mi_cols: Range<usize>,
-    rows: Vec<ReconRow>,
+    unit_count: usize,
     block_decoded: TileBlockDecodedState,
     output: TileParserOutput,
 }
@@ -1499,19 +1499,17 @@ pub(super) struct ParsedTile {
 impl ParsedTile {
     /// How many unit buffers the tile is holding, which bounds the split
     /// path's per-frame memory.
-    pub(super) fn unit_count(&self) -> usize {
-        self.rows.len()
+    pub(super) const fn unit_count(&self) -> usize {
+        self.unit_count
     }
 
     /// Moves reconstruction-derived filter geometry into the frame owner
     /// before the scheduled filter setup is built.
     pub(super) fn detach_filter_records(
-        &mut self,
         records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+        parse_progress: &ParseProgress,
     ) {
-        for row in &mut self.rows {
-            pixel_commit::detach_row_filter_records(row, records);
-        }
+        parse_progress.for_each_row(|row| pixel_commit::detach_row_filter_records(row, records));
     }
 
     /// Folds the tile's walk-parsed filter grids and loop-restoration records
@@ -1581,15 +1579,48 @@ fn tile_unit_capacity(
 /// Units are emitted in order, so a consumer can gate on the prefix it needs
 /// instead of on the whole tile. The cell is the scheduler's own watermark, so
 /// a batch waits through `Condition::Watermark` rather than through a poll.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct ParseProgress {
     finished: splot_parallel::WatermarkCell,
+    rows: Mutex<Vec<Option<ReconRow>>>,
 }
 
 impl ParseProgress {
-    /// Publishes that `finished` units are complete.
-    pub(crate) fn publish(&self, finished: usize) {
+    /// Hands one finished unit to the scheduler and publishes the new count.
+    pub(super) fn publish_row(&self, row: ReconRow) {
+        let finished = {
+            let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            rows.push(Some(row));
+            rows.len()
+        };
         self.finished.publish(finished);
+    }
+
+    /// Takes the unit at `index`, which a caller may claim exactly once.
+    pub(super) fn take_row(&self, index: usize) -> Option<ReconRow> {
+        self.rows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(index)
+            .and_then(Option::take)
+    }
+
+    /// Reserves room for one tile's units up front, so the parser never
+    /// reallocates the shared buffer while a reader holds an index.
+    pub(super) fn reserve(&self, capacity: usize) -> Result<()> {
+        self.rows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_reserve_exact(capacity)
+            .map_err(|_| inter_allocation!("inter parsed rows"))
+    }
+
+    /// Visits every unit the parser has published, in order.
+    pub(super) fn for_each_row(&self, mut visit: impl FnMut(&mut ReconRow)) {
+        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        for row in rows.iter_mut().flatten() {
+            visit(row);
+        }
     }
 
     /// The cell a batch waits on for its own units.
@@ -1635,9 +1666,8 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         params.sb_h4,
         granularity,
     );
-    let mut rows = Vec::new();
-    rows.try_reserve_exact(capacity)
-        .map_err(|_| inter_allocation!("inter parsed rows"))?;
+    parse_progress.reserve(capacity)?;
+    let mut unit_count = 0usize;
     let mut parser = TileParser::new(
         tile,
         context,
@@ -1658,8 +1688,8 @@ pub(super) fn parse_tile_units<T: ReconSample>(
             ParserStep::Last(row) => (row, true),
         };
         row.return_terminal_error()?;
-        rows.push(row);
-        parse_progress.publish(rows.len());
+        unit_count += 1;
+        parse_progress.publish_row(row);
         if last {
             break;
         }
@@ -1669,7 +1699,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         tile_offset,
         mi_rows,
         mi_cols,
-        rows,
+        unit_count,
         block_decoded,
         output: parser.into_output(),
     })

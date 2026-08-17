@@ -979,6 +979,7 @@ impl CanonicalStoragePlan {
 
 fn supports_owned_bands(
     parsed: &ParsedTile,
+    rows: &[ReconRow],
     params: &TileWalkParams,
     info: splot_recon::DecodedFrameInfo,
 ) -> core::result::Result<(), LegacyReason> {
@@ -991,7 +992,7 @@ fn supports_owned_bands(
     if !covers_whole_frame(parsed, params) {
         return Err(LegacyReason::PartialTile);
     }
-    for row in &parsed.rows {
+    for row in rows {
         if row.terminal.is_some() {
             return Err(LegacyReason::Terminal);
         }
@@ -1122,7 +1123,7 @@ fn prepare_scheduled_motion(
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
-    mut parsed: ParsedTile,
+    parsed: &ParsedTile,
     params: TileWalkParams,
     sequence: Arc<SequenceHeader>,
     core: Arc<FrameHeaderCore>,
@@ -1152,8 +1153,14 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .min(params.mi_cols)
         .saturating_sub(parsed.mi_cols.start)
         .div_ceil(params.sb_h4);
-    let candidate_batch_count = parsed
-        .rows
+    let raw_rows = (0..parsed.unit_count)
+        .map(|index| {
+            parse_progress
+                .take_row(index)
+                .ok_or_else(invalid_inter_tile_scheduling_state)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let candidate_batch_count = raw_rows
         .iter()
         .filter(|row| !row.superblocks.is_empty())
         .count()
@@ -1161,7 +1168,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let storage_plan = if candidate_batch_count != temporal_plan.len() {
         CanonicalStoragePlan::Legacy(LegacyReason::BandCount)
     } else {
-        match supports_owned_bands(&parsed, &params, info) {
+        match supports_owned_bands(parsed, &raw_rows, &params, info) {
             Ok(()) => CanonicalStoragePlan::RowBands,
             Err(reason) => CanonicalStoragePlan::Legacy(reason),
         }
@@ -1179,8 +1186,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         parsed.mi_rows.clone(),
         parsed.mi_cols.clone(),
         motion_field,
-        parsed
-            .rows
+        raw_rows
             .iter()
             .filter(|row| !row.superblocks.is_empty())
             .count(),
@@ -1206,7 +1212,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             .collect::<splot_recon::Result<Vec<_>>>()?
     };
     let mut surfaces = surfaces.into_iter();
-    let rows = core::mem::take(&mut parsed.rows)
+    let rows = raw_rows
         .into_iter()
         .map(|row| {
             let surface = if owned_bands || row.superblocks.is_empty() {
@@ -1255,7 +1261,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let seals_filter_copy = seals_filter_copy(
         owned_bands,
         deblock.is_some(),
-        covers_whole_frame(&parsed, &params),
+        covers_whole_frame(parsed, &params),
     );
     let TileDecodeScratch {
         ordered,
