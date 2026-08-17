@@ -1212,6 +1212,15 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             storage_plan.token(),
         );
     }
+    let (resolve_grid, motion) = prepare_scheduled_motion(
+        geometry.mi_rows.clone(),
+        geometry.mi_cols.clone(),
+        motion_field,
+        unit_count.saturating_sub(1),
+        units_per_row,
+        motion_handle,
+        crate::timing::start(),
+    )?;
     let raw_rows = match banded_rows {
         Some(rows) => rows,
         None => (0..unit_count)
@@ -1222,18 +1231,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             })
             .collect::<Result<Vec<_>>>()?,
     };
-    let (resolve_grid, motion) = prepare_scheduled_motion(
-        geometry.mi_rows.clone(),
-        geometry.mi_cols.clone(),
-        motion_field,
-        raw_rows
-            .iter()
-            .filter(|row| !row.superblocks.is_empty())
-            .count(),
-        units_per_row,
-        motion_handle,
-        crate::timing::start(),
-    )?;
     let surfaces = if owned_bands {
         Vec::new()
     } else {
