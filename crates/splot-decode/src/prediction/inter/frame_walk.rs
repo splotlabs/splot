@@ -444,6 +444,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         ref_frame_idx.as_slice(),
         &reference,
     )?;
+    motion.publish_metadata(block_setup.motion_field_metadata());
     let parse = parse_inter_frame_blocks(
         tile,
         records,
@@ -461,7 +462,6 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
             &format!("units={}", parse.unit_count()),
         );
     }
-    motion.publish_metadata(parse.motion_field_metadata());
     Ok(DeferredInterWalk {
         core: Arc::new(core),
         motion,

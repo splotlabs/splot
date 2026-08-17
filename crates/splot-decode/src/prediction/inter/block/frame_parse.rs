@@ -13,7 +13,6 @@
 //! once the frame becomes admissible.
 
 use super::super::MotionFieldHandle;
-use super::super::find_mv_stack::TemporalMotionFieldMetadata;
 use super::*;
 use splot_core::headers::frame::RefIdxBuf;
 use std::sync::Arc;
@@ -191,11 +190,6 @@ impl InterFrameParse {
     /// split path's per-frame memory.
     pub(crate) fn unit_count(&self) -> usize {
         self.parsed.unit_count()
-    }
-
-    /// Returns the semantic motion metadata derived by this entropy pass.
-    pub(crate) fn motion_field_metadata(&self) -> TemporalMotionFieldMetadata {
-        self.motion_field.metadata()
     }
 
     /// Runs the temporal prelude and resolve/motion half-pass, then returns

@@ -252,6 +252,15 @@ impl ReconCommand {
 ///
 /// Both the fused walk and the split parse pass derive exactly this, so the two
 /// enter their tile phases from the same frame state.
+impl InterBlockSetup {
+    /// The § 7.9 motion metadata the pre-parse derivation already settles.
+    pub(crate) fn motion_field_metadata(
+        &self,
+    ) -> super::find_mv_stack::TemporalMotionFieldMetadata {
+        self.motion_field.metadata()
+    }
+}
+
 pub(crate) struct InterBlockSetup {
     params: tile::TileWalkParams,
     prelude: TemporalPrelude,
