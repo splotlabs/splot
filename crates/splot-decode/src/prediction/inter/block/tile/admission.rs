@@ -167,6 +167,7 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
     core: Arc<FrameHeaderCore>,
     tile_offset: ByteOffset,
     parse_progress: Arc<super::ParseProgress>,
+    pending_surfaces: Mutex<std::vec::IntoIter<ReadyReconSurface<'static, T>>>,
     finished: AtomicBool,
 }
 
@@ -227,6 +228,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             self.info,
             &self.temporal,
         );
+        self.materialize_rows(self.unit_count);
         let mut resolve = self.resolve.lock().unwrap_or_else(PoisonError::into_inner);
         let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
@@ -290,6 +292,33 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// Conditions that replace the parsed unit's former cross-frame wait.
+    /// Pulls published units into the scheduled row list, up to `units`.
+    ///
+    /// The § 8.2 pass emits units in order, so a caller that has waited on
+    /// the parse watermark for `units` finds exactly that prefix available.
+    fn materialize_rows(&self, units: usize) {
+        let units = units.min(self.unit_count);
+        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        if rows.len() >= units {
+            return;
+        }
+        let mut surfaces = self
+            .pending_surfaces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while rows.len() < units {
+            let Some(row) = self.parse_progress.take_row(rows.len()) else {
+                break;
+            };
+            let surface = if self.owned_bands || row.superblocks.is_empty() {
+                None
+            } else {
+                surfaces.next()
+            };
+            rows.push(ScheduledRowState::Unresolved { row, surface });
+        }
+    }
+
     pub(in crate::prediction::inter::block) fn conditions(
         &self,
         index: usize,
@@ -298,6 +327,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             Some(range) => vec![Condition::Watermark(self.parse_progress.cell(), range.end)],
             None => Vec::new(),
         };
+        if let Some(range) = self.batch_range(index) {
+            self.materialize_rows(range.end);
+        }
         let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
         let mut bounds = row_gate::RowReferenceBounds::default();
         for ready in self
@@ -345,6 +377,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 return Err(invalid_inter_tile_scheduling_state());
             }
         }
+        self.materialize_rows(range.end);
         let ready = {
             let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(rows) = rows.get_mut(range.clone()) else {
@@ -1221,16 +1254,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         motion_handle,
         crate::timing::start(),
     )?;
-    let raw_rows = match banded_rows {
-        Some(rows) => rows,
-        None => (0..unit_count)
-            .map(|index| {
-                parse_progress
-                    .take_row(index)
-                    .ok_or_else(invalid_inter_tile_scheduling_state)
-            })
-            .collect::<Result<Vec<_>>>()?,
-    };
     let surfaces = if owned_bands {
         Vec::new()
     } else {
@@ -1252,20 +1275,20 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             })
             .collect::<splot_recon::Result<Vec<_>>>()?
     };
-    let mut surfaces = surfaces.into_iter();
-    let rows = raw_rows
-        .into_iter()
-        .map(|row| {
-            let surface = if owned_bands || row.superblocks.is_empty() {
-                None
-            } else {
-                surfaces.next()
-            };
-            ScheduledRowState::Unresolved { row, surface }
-        })
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
+    let mut surface_cursor = surfaces.into_iter();
+    if unit_count == 0 {
         return Err(invalid_inter_tile_scheduling_state());
+    }
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(unit_count)
+        .map_err(|_| inter_allocation!("inter scheduled rows"))?;
+    for row in banded_rows.unwrap_or_default() {
+        let surface = if owned_bands || row.superblocks.is_empty() {
+            None
+        } else {
+            surface_cursor.next()
+        };
+        rows.push(ScheduledRowState::Unresolved { row, surface });
     }
     let prepass_block_decoded = geometry.block_decoded.clone();
     let block_decoded = geometry.block_decoded.clone();
@@ -1360,6 +1383,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         core,
         tile_offset,
         parse_progress,
+        pending_surfaces: Mutex::new(surface_cursor),
         finished: AtomicBool::new(false),
     })
 }
