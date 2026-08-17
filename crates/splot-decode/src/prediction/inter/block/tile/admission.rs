@@ -292,6 +292,27 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// Conditions that replace the parsed unit's former cross-frame wait.
+    /// Hands the frontier its § 7.17 deblock records and final-filter setup.
+    ///
+    /// Reconstruction never reads either, so they arrive once the § 8.2 pass
+    /// has settled the grids they are built from, after the scheduler is
+    /// already admitting precompute work.
+    fn attach_filters(
+        &self,
+        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
+        whole_frame: bool,
+        info: splot_recon::DecodedFrameInfo,
+    ) -> Result<()> {
+        let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+        frontier.sealed = seals_filter_copy(self.owned_bands, deblock.is_some(), whole_frame)
+            .then(|| CurrentFrameWorkspace::new_recycled(info))
+            .transpose()?;
+        frontier.deblock = deblock;
+        frontier.filter = Some(Arc::new(filter_setup));
+        Ok(())
+    }
+
     /// Pulls published units into the scheduled row list, up to `units`.
     ///
     /// The § 8.2 pass emits units in order, so a caller that has waited on
@@ -1303,7 +1324,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
     prepared.resize_with(batch_count, || None);
-    let deblock = deblock_records
+    let deblock_for_attach = deblock_records
         .zip(core.deblocking_filter_params)
         .map(|(deblock_records, filter)| {
             crate::filters::deblock::FrameDeblock::prepare_owned(
@@ -1321,18 +1342,14 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         })
         .transpose()?
         .flatten();
-    let seals_filter_copy = seals_filter_copy(
-        owned_bands,
-        deblock.is_some(),
-        covers_whole_frame(&geometry, &params),
-    );
+    let whole_frame = covers_whole_frame(&geometry, &params);
     let TileDecodeScratch {
         ordered,
         workers,
         surfaces,
     } = scratch;
     let filter_count = filter_setup.stripe_ranges().len();
-    Ok(ScheduledTileRecon {
+    let tile = ScheduledTileRecon {
         rows: Mutex::new(rows),
         prepared: Mutex::new(prepared),
         unit_count,
@@ -1353,14 +1370,12 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         })),
         scratch: Mutex::new(None),
         frontier: Mutex::new(ScheduledFrontier {
-            sealed: seals_filter_copy
-                .then(|| CurrentFrameWorkspace::new_recycled(info))
-                .transpose()?,
+            sealed: None,
             sealed_rows: 0,
             terminal_workspace: None,
             bands: owned_bands.then(|| splot_recon::OwnedFrameBands::new(info)),
-            deblock,
-            filter: Some(Arc::new(filter_setup)),
+            deblock: None,
+            filter: None,
             next_filter_stripe: 0,
         }),
         resolve: Mutex::new(ScheduledResolve {
@@ -1385,7 +1400,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         parse_progress,
         pending_surfaces: Mutex::new(surface_cursor),
         finished: AtomicBool::new(false),
-    })
+    };
+    tile.attach_filters(filter_setup, deblock_for_attach, whole_frame, info)?;
+    Ok(tile)
 }
 
 #[cfg(test)]
