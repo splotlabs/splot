@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+pub(crate) use block::ParseProgress;
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use std::sync::Arc;

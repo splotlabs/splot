@@ -315,6 +315,7 @@ pub(crate) struct DeferredInterWalk<T: ReconSample> {
     reference: InterReferenceState<T>,
     ref_frame_idx: RefIdxBuf,
     quantizer: FrameQuantizerSnapshot,
+    parse_progress: Arc<super::ParseProgress>,
 }
 
 /// One deferred frame whose reconstruction units are scheduler-owned.
@@ -406,6 +407,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
     motion: MotionFieldHandle,
+    parse_progress: &Arc<super::ParseProgress>,
 ) -> Result<DeferredInterWalk<T>> {
     let InterWalkPrologue {
         mut tile_plan,
@@ -442,6 +444,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         facts,
         ref_frame_idx.as_slice(),
         &reference,
+        parse_progress,
     )?;
     if started.is_some() {
         crate::timing::report_detail(
@@ -461,6 +464,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         reference,
         ref_frame_idx,
         quantizer,
+        parse_progress: Arc::clone(parse_progress),
     })
 }
 
@@ -510,6 +514,7 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             reference,
             ref_frame_idx,
             quantizer,
+            parse_progress,
         } = self;
         let _quantizer_scopes = quantizer.install_frame();
         let core_for_reconstruction = Arc::clone(&core);
@@ -524,6 +529,7 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             Arc::new(reference),
             workspace,
             motion,
+            parse_progress,
         )?;
         Ok((ScheduledInterWalk { reconstruction }, temporal_scratch))
     }

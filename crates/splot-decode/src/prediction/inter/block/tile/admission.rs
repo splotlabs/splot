@@ -166,6 +166,7 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
     sequence: Arc<SequenceHeader>,
     core: Arc<FrameHeaderCore>,
     tile_offset: ByteOffset,
+    parse_progress: Arc<super::ParseProgress>,
     finished: AtomicBool,
 }
 
@@ -293,6 +294,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         &self,
         index: usize,
     ) -> Vec<Condition<'_>> {
+        let mut conditions = match self.batch_range(index) {
+            Some(range) => vec![Condition::Watermark(self.parse_progress.cell(), range.end)],
+            None => Vec::new(),
+        };
         let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
         let mut bounds = row_gate::RowReferenceBounds::default();
         for ready in self
@@ -307,14 +312,18 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         {
             bounds.merge(ready.bounds);
         }
-        RowReferenceGate::new(
-            &self.reference,
-            &self.core,
-            self.ref_frame_idx.as_slice(),
-            self.info,
-            &self.temporal,
-        )
-        .conditions(&bounds)
+        drop(rows);
+        conditions.extend(
+            RowReferenceGate::new(
+                &self.reference,
+                &self.core,
+                self.ref_frame_idx.as_slice(),
+                self.info,
+                &self.temporal,
+            )
+            .conditions(&bounds),
+        );
+        conditions
     }
 
     /// Precomputes one admitted unit without entering the ordered commit spine.
@@ -1127,6 +1136,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     motion_field: TemporalMotionField,
     motion_handle: MotionFieldHandle,
     temporal_plan: TemporalBandPlan,
+    parse_progress: Arc<super::ParseProgress>,
 ) -> Result<ScheduledTileRecon<T>> {
     scratch.workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -1303,6 +1313,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         sequence,
         core,
         tile_offset,
+        parse_progress,
         finished: AtomicBool::new(false),
     })
 }

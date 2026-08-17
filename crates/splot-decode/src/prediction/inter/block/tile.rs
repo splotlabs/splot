@@ -1575,6 +1575,29 @@ fn tile_unit_capacity(
     units + 1
 }
 
+/// Monotone count of § 8.2 parse units a tile has finished, published as the
+/// parser produces them.
+///
+/// Units are emitted in order, so a consumer can gate on the prefix it needs
+/// instead of on the whole tile. The cell is the scheduler's own watermark, so
+/// a batch waits through `Condition::Watermark` rather than through a poll.
+#[derive(Debug, Default)]
+pub(crate) struct ParseProgress {
+    finished: splot_parallel::WatermarkCell,
+}
+
+impl ParseProgress {
+    /// Publishes that `finished` units are complete.
+    pub(crate) fn publish(&self, finished: usize) {
+        self.finished.publish(finished);
+    }
+
+    /// The cell a batch waits on for its own units.
+    pub(crate) fn cell(&self) -> &splot_parallel::WatermarkCell {
+        &self.finished
+    }
+}
+
 /// Runs one tile's entropy pass to the end, keeping every unit.
 ///
 /// Each unit carries the flag-plane publications it made, so a resolve pass on
@@ -1592,6 +1615,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     gdf_state: &GdfState,
     ccso_state: &CcsoState,
     superblock_units: bool,
+    parse_progress: &Arc<ParseProgress>,
 ) -> Result<ParsedTile> {
     let context = &params.context(sequence, core, reference, ref_frame_idx);
     let granularity = if superblock_units {
@@ -1635,6 +1659,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         };
         row.return_terminal_error()?;
         rows.push(row);
+        parse_progress.publish(rows.len());
         if last {
             break;
         }

@@ -135,6 +135,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
     facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
+    parse_progress: &Arc<tile::ParseProgress>,
 ) -> Result<InterFrameParse> {
     let setup = derive_inter_block_setup(
         std::slice::from_mut(tile),
@@ -166,6 +167,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &gdf_state,
         &ccso_state,
         true,
+        parse_progress,
     )?;
     let mut segment_ids = frame_segment_id_map(params.mi_rows, params.mi_cols)?;
     records.clear();
@@ -220,6 +222,7 @@ impl InterFrameParse {
         reference: Arc<InterReferenceState<T>>,
         workspace: CurrentFrameWorkspace<T>,
         motion_handle: MotionFieldHandle,
+        parse_progress: Arc<super::tile::ParseProgress>,
     ) -> Result<(
         ScheduledInterReconstruction<T>,
         super::super::find_mv_stack::TemporalMvScratch,
@@ -284,6 +287,7 @@ impl InterFrameParse {
             motion_field,
             motion_handle,
             temporal_plan,
+            parse_progress,
         )?;
         Ok((ScheduledInterReconstruction { tile }, temporal_scratch))
     }

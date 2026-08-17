@@ -1378,6 +1378,7 @@ where
                                 segment_ids.clone(),
                                 motion.clone(),
                             );
+                            let parse_progress = Arc::new(inter::ParseProgress::default());
                             let result = frame_pipeline::schedule_entropy(
                                 move || {
                                     let _scopes = quantizer.install_frame();
@@ -1394,6 +1395,7 @@ where
                                         BitDepth::Eight,
                                         geometry,
                                         motion,
+                                        &parse_progress,
                                     )
                                 },
                                 frame_index,
@@ -1617,6 +1619,7 @@ where
                                 segment_ids.clone(),
                                 motion.clone(),
                             );
+                            let parse_progress = Arc::new(inter::ParseProgress::default());
                             let result = frame_pipeline::schedule_entropy(
                                 move || {
                                     let _scopes = quantizer.install_frame();
@@ -1633,6 +1636,7 @@ where
                                         BitDepth::Ten,
                                         geometry,
                                         motion,
+                                        &parse_progress,
                                     )
                                 },
                                 frame_index,
