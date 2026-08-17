@@ -977,15 +977,45 @@ impl CanonicalStoragePlan {
     }
 }
 
+/// Decides the storage plan when band storage is admitted, which is the one
+/// case that has to read every parsed unit before the plan is known.
+fn band_storage_plan(
+    geometry: &TileGeometry,
+    parse_progress: &super::ParseProgress,
+    params: &TileWalkParams,
+    info: splot_recon::DecodedFrameInfo,
+    units_per_row: usize,
+    temporal_bands: usize,
+    unit_count: usize,
+) -> Result<(CanonicalStoragePlan, Vec<ReconRow>)> {
+    let rows = (0..unit_count)
+        .map(|index| {
+            parse_progress
+                .take_row(index)
+                .ok_or_else(invalid_inter_tile_scheduling_state)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let candidate_batch_count = rows
+        .iter()
+        .filter(|row| !row.superblocks.is_empty())
+        .count()
+        .div_ceil(units_per_row.max(1));
+    if candidate_batch_count != temporal_bands {
+        return Ok((CanonicalStoragePlan::Legacy(LegacyReason::BandCount), rows));
+    }
+    let plan = match supports_owned_bands(geometry, &rows, params, info) {
+        Ok(()) => CanonicalStoragePlan::RowBands,
+        Err(reason) => CanonicalStoragePlan::Legacy(reason),
+    };
+    Ok((plan, rows))
+}
+
 fn supports_owned_bands(
     geometry: &TileGeometry,
     rows: &[ReconRow],
     params: &TileWalkParams,
     info: splot_recon::DecodedFrameInfo,
 ) -> core::result::Result<(), LegacyReason> {
-    if !BAND_STORAGE_ADMITTED {
-        return Err(LegacyReason::NotAdmitted);
-    }
     if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
         return Err(LegacyReason::FiltersDisabled);
     }
@@ -1156,25 +1186,22 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .min(params.mi_cols)
         .saturating_sub(geometry.mi_cols.start)
         .div_ceil(params.sb_h4);
-    let raw_rows = (0..unit_count)
-        .map(|index| {
-            parse_progress
-                .take_row(index)
-                .ok_or_else(invalid_inter_tile_scheduling_state)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let candidate_batch_count = raw_rows
-        .iter()
-        .filter(|row| !row.superblocks.is_empty())
-        .count()
-        .div_ceil(units_per_row.max(1));
-    let storage_plan = if candidate_batch_count != temporal_plan.len() {
-        CanonicalStoragePlan::Legacy(LegacyReason::BandCount)
+    let (storage_plan, banded_rows) = if BAND_STORAGE_ADMITTED {
+        let (plan, rows) = band_storage_plan(
+            &geometry,
+            &parse_progress,
+            &params,
+            info,
+            units_per_row,
+            temporal_plan.len(),
+            unit_count,
+        )?;
+        (plan, Some(rows))
     } else {
-        match supports_owned_bands(&geometry, &raw_rows, &params, info) {
-            Ok(()) => CanonicalStoragePlan::RowBands,
-            Err(reason) => CanonicalStoragePlan::Legacy(reason),
-        }
+        (
+            CanonicalStoragePlan::Legacy(LegacyReason::NotAdmitted),
+            None,
+        )
     };
     let owned_bands = storage_plan.owned_bands();
     let storage_started = crate::timing::start();
@@ -1185,6 +1212,16 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             storage_plan.token(),
         );
     }
+    let raw_rows = match banded_rows {
+        Some(rows) => rows,
+        None => (0..unit_count)
+            .map(|index| {
+                parse_progress
+                    .take_row(index)
+                    .ok_or_else(invalid_inter_tile_scheduling_state)
+            })
+            .collect::<Result<Vec<_>>>()?,
+    };
     let (resolve_grid, motion) = prepare_scheduled_motion(
         geometry.mi_rows.clone(),
         geometry.mi_cols.clone(),
