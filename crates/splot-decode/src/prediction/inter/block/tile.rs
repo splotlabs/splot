@@ -1667,6 +1667,42 @@ impl ParseProgress {
     }
 }
 
+/// Settles the tile geometry and publishes it, before anything reads a unit.
+///
+/// The admission scheduler is built from this alone, and it is promoted while
+/// the § 8.2 pass still runs, so this must be called before the walk is
+/// promoted -- not as the pass's first act, which would race it.
+pub(crate) fn publish_tile_geometry<T: ReconSample>(
+    tile: &DecodeTileWorkUnit<'_>,
+    params: &TileWalkParams,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<T>,
+    ref_frame_idx: &[u32],
+    parse_progress: &ParseProgress,
+) -> Result<()> {
+    let context = &params.context(sequence, core, reference, ref_frame_idx);
+    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    let capacity = tile_unit_capacity(
+        &mi_rows,
+        &mi_cols,
+        params.mi_rows,
+        params.mi_cols,
+        params.sb_h4,
+        ParserGranularity::Superblock,
+    );
+    parse_progress.reserve(capacity)?;
+    parse_progress.publish_geometry(TileGeometry {
+        tile_offset: tile.tile_byte_span().start,
+        mi_rows,
+        mi_cols,
+        block_decoded: tile_block_decoded(tile, context)?,
+        unit_count: capacity,
+    });
+    Ok(())
+}
+
 /// Runs one tile's entropy pass to the end, keeping every unit.
 ///
 /// Each unit carries the flag-plane publications it made, so a resolve pass on
@@ -1692,26 +1728,11 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     } else {
         ParserGranularity::Row
     };
-    let tile_offset = tile.tile_byte_span().start;
-    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
-    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-    let block_decoded = tile_block_decoded(tile, context)?;
-    let capacity = tile_unit_capacity(
-        &mi_rows,
-        &mi_cols,
-        params.mi_rows,
-        params.mi_cols,
-        params.sb_h4,
-        granularity,
-    );
-    parse_progress.reserve(capacity)?;
-    parse_progress.publish_geometry(TileGeometry {
-        tile_offset,
-        mi_rows: mi_rows.clone(),
-        mi_cols: mi_cols.clone(),
-        block_decoded: block_decoded.clone(),
-        unit_count: capacity,
-    });
+    let geometry = parse_progress
+        .geometry()
+        .ok_or_else(invalid_inter_tile_scheduling_state)?;
+    let mi_rows = geometry.mi_rows.clone();
+    let mi_cols = geometry.mi_cols.clone();
     let mut unit_count = 0usize;
     let mut parser = TileParser::new(
         tile,

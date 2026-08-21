@@ -473,6 +473,15 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     )?;
     motion.publish_metadata(block_setup.motion_field_metadata());
     let (parse_setup, params, prelude, motion_field) = block_setup.split();
+    block::publish_tile_geometry(
+        tile,
+        &params,
+        sequence,
+        &core,
+        &reference,
+        ref_frame_idx.as_slice(),
+        parse_progress,
+    )?;
     let core = Arc::new(core);
     let reference = Arc::new(reference);
     publish_early(InterWalkEarly {
