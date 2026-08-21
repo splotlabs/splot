@@ -159,7 +159,9 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
 }
 
 pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
-    workspace: CurrentFrameWorkspace<T>,
+    workspace: Option<CurrentFrameWorkspace<T>>,
+    info: splot_recon::DecodedFrameInfo,
+    plane_sizes: [Option<splot_recon::PlaneSize>; 3],
     bit_depth: BitDepth,
     cfl_ds_filter_index: u8,
     luma_width: usize,
@@ -300,6 +302,18 @@ pub(crate) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta:
     strength
 }
 
+/// The three plane storage sizes a filter setup needs from a workspace.
+pub(crate) fn plane_storage_sizes<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+) -> [Option<splot_recon::PlaneSize>; 3] {
+    [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+        workspace
+            .plane(plane)
+            .ok()
+            .map(splot_recon::CurrentFramePlane::storage_size)
+    })
+}
+
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     pub(crate) fn for_final_filtering(
         workspace: CurrentFrameWorkspace<T>,
@@ -307,8 +321,28 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         luma_height: usize,
         bit_depth: BitDepth,
     ) -> Self {
+        let info = workspace.info();
+        let plane_sizes = plane_storage_sizes(&workspace);
         Self {
-            workspace,
+            workspace: Some(workspace),
+            ..Self::for_deferred_filtering(info, plane_sizes, luma_width, luma_height, bit_depth)
+        }
+    }
+
+    /// Builds the sink for a frame whose workspace the reconstruction already
+    /// owns, which is every scheduled walk: the setup only ever reads the two
+    /// snapshots taken here.
+    pub(crate) fn for_deferred_filtering(
+        info: splot_recon::DecodedFrameInfo,
+        plane_sizes: [Option<splot_recon::PlaneSize>; 3],
+        luma_width: usize,
+        luma_height: usize,
+        bit_depth: BitDepth,
+    ) -> Self {
+        Self {
+            workspace: None,
+            info,
+            plane_sizes,
             bit_depth,
             cfl_ds_filter_index: 0,
             luma_width,
@@ -330,8 +364,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// Returns the geometry the frozen frame will report: the filter chain
     /// publishes into a workspace built from this one's metadata, so the
     /// decoded-frame info is known before the samples are filtered.
-    pub(crate) fn frame_info(&self) -> splot_recon::DecodedFrameInfo {
-        self.workspace.info()
+    pub(crate) const fn frame_info(&self) -> splot_recon::DecodedFrameInfo {
+        self.info
     }
 
     pub(crate) fn set_cdef_grid(&mut self, grid: Option<crate::filters::cdef::CdefUnitGrid>) {
@@ -408,7 +442,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         admit: Option<&'progress dyn splot_parallel::Admit<'job>>,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
-        CurrentFrameWorkspace<T>,
+        Option<CurrentFrameWorkspace<T>>,
     )> {
         self.into_owned_filter_setup_inner(
             core,
@@ -426,7 +460,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
     ) -> Result<(
         OwnedFilterSetup<'static, 'static, T>,
-        CurrentFrameWorkspace<T>,
+        Option<CurrentFrameWorkspace<T>>,
     )> {
         self.into_owned_filter_setup_inner(
             core,
@@ -442,7 +476,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         sink_source: FilteredFrameSinkSource<'progress, 'job, T>,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
-        CurrentFrameWorkspace<T>,
+        Option<CurrentFrameWorkspace<T>>,
     )> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
@@ -482,7 +516,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let (lr_source_blocks, lr_plane_ends) =
             final_filters::coalesced_lr_source_rows_all(lr_source_blocks);
         let ranges = crate::filters::gdf::stripe_ranges(&core, self.luma_height)?;
-        let info = self.workspace.info();
+        let info = self.info;
         let pixel_format = info.pixel_format();
         let subsampling = (
             usize::from(pixel_format.subsampling_x()),
@@ -498,15 +532,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|error| ccso_filter_error(&error))?;
         let sink = sink_source.open(info, &ranges)?;
         let stripe_count = ranges.len();
-        let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
-            self.workspace
-                .plane(plane)
-                .ok()
-                .map(splot_recon::CurrentFramePlane::storage_size)
-        });
+        let plane_sizes = self.plane_sizes;
 
         let Self {
             workspace,
+            info: _,
+            plane_sizes: _,
             bit_depth,
             cfl_ds_filter_index,
             luma_width,
@@ -567,10 +598,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
         if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
-            return Ok((publish(self.workspace.freeze()?), self.filter_records));
+            let workspace = self.workspace.ok_or_else(lr_pipeline_state_error)?;
+            return Ok((publish(workspace.freeze()?), self.filter_records));
         }
-        let (setup, mut workspace) =
+        let (setup, workspace) =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress, admit)?;
+        let mut workspace = workspace.ok_or_else(lr_pipeline_state_error)?;
         let mi_rows = setup.mi_rows;
         let mi_cols = setup.mi_cols;
         let bit_depth = setup.bit_depth;
@@ -1293,19 +1326,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             cfl_ds_filter_index: self.cfl_ds_filter_index,
             luma_width: self.luma_width,
             luma_height: self.luma_height,
-            pixel_format: self.workspace.info().pixel_format(),
+            pixel_format: self.info.pixel_format(),
             cdef_grid: self.cdef_grid.as_ref(),
             ccso_grid: self.ccso_grid.as_ref(),
             gdf_grid: self.gdf_grid.as_ref(),
             tx_skip_grid: self.tx_skip_grid.as_ref(),
             gdf_reference: self.gdf_reference,
             lossless_grid: self.lossless_grid.as_ref(),
-            plane_sizes: [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
-                self.workspace
-                    .plane(plane)
-                    .ok()
-                    .map(splot_recon::CurrentFramePlane::storage_size)
-            }),
+            plane_sizes: self.plane_sizes,
             max_sample_fits: T::try_from_u16(self.bit_depth.max_sample()).is_ok(),
         }
     }

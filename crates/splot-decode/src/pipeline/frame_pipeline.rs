@@ -35,29 +35,39 @@ pub(super) enum PendingWalk {
     /// Eight-bit sample storage.
     Eight {
         frame_index: usize,
-        deferred: inter::DeferredInterWalk<u8>,
+        early: inter::InterWalkEarly<u8>,
+        tail: EntropyResult<u8>,
         finish: PendingFinish<u8>,
     },
     /// Ten-bit sample storage.
     Ten {
         frame_index: usize,
-        deferred: inter::DeferredInterWalk<u16>,
+        early: inter::InterWalkEarly<u16>,
+        tail: EntropyResult<u16>,
         finish: PendingFinish<u16>,
     },
 }
 
 type EntropyResult<T> = Arc<CompletionCell<Mutex<Option<Result<inter::DeferredInterWalk<T>>>>>>;
+type EntropyEarly<T> = Arc<CompletionCell<Mutex<Option<inter::InterWalkEarly<T>>>>>;
+
+/// The two halves one scheduled entropy pass publishes: the pre-parse half the
+/// admission scheduler is built from, and the pass's own products.
+pub(super) struct EntropyHandles<T: splot_recon::ReconSample> {
+    early: EntropyEarly<T>,
+    tail: EntropyResult<T>,
+}
 
 /// One scheduler-owned entropy pass whose reconstruction has not been promoted.
 pub(super) enum PendingEntropy {
     Eight {
         frame_index: usize,
-        result: EntropyResult<u8>,
+        result: EntropyHandles<u8>,
         finish: PendingFinish<u8>,
     },
     Ten {
         frame_index: usize,
-        result: EntropyResult<u16>,
+        result: EntropyHandles<u16>,
         finish: PendingFinish<u16>,
     },
 }
@@ -65,12 +75,12 @@ pub(super) enum PendingEntropy {
 impl PendingEntropy {
     fn is_settled(&self) -> bool {
         match self {
-            Self::Eight { result, .. } => result.get().is_some(),
-            Self::Ten { result, .. } => result.get().is_some(),
+            Self::Eight { result, .. } => result.early.get().is_some(),
+            Self::Ten { result, .. } => result.early.get().is_some(),
         }
     }
 
-    fn promote(self) -> Result<Option<PendingWalk>> {
+    fn promote(self) -> Option<PendingWalk> {
         match self {
             Self::Eight {
                 frame_index,
@@ -78,11 +88,12 @@ impl PendingEntropy {
                 finish,
             } => promote_typed(
                 frame_index,
-                &result,
+                result,
                 finish,
-                |frame_index, deferred, finish| PendingWalk::Eight {
+                |frame_index, early, tail, finish| PendingWalk::Eight {
                     frame_index,
-                    deferred,
+                    early,
+                    tail,
                     finish,
                 },
             ),
@@ -92,11 +103,12 @@ impl PendingEntropy {
                 finish,
             } => promote_typed(
                 frame_index,
-                &result,
+                result,
                 finish,
-                |frame_index, deferred, finish| PendingWalk::Ten {
+                |frame_index, early, tail, finish| PendingWalk::Ten {
                     frame_index,
-                    deferred,
+                    early,
+                    tail,
                     finish,
                 },
             ),
@@ -120,25 +132,42 @@ impl PendingEntropyQueue {
     }
 }
 
+/// Promotes one entropy pass to a scheduled walk as soon as it has published
+/// its pre-parse half, which is before the pass itself has finished.
+///
+/// A pass that failed before publishing that half settles the tail instead, so
+/// the error is read from there.
 fn promote_typed<T: splot_recon::ReconSample + Send + 'static>(
     frame_index: usize,
-    result: &EntropyResult<T>,
+    result: EntropyHandles<T>,
     finish: PendingFinish<T>,
-    wrap: impl FnOnce(usize, inter::DeferredInterWalk<T>, PendingFinish<T>) -> PendingWalk,
-) -> Result<Option<PendingWalk>> {
-    let settled = result.wait_with_pool_assist();
-    let parsed = settled
+    wrap: impl FnOnce(
+        usize,
+        inter::InterWalkEarly<T>,
+        EntropyResult<T>,
+        PendingFinish<T>,
+    ) -> PendingWalk,
+) -> Option<PendingWalk> {
+    let EntropyHandles { early, tail } = result;
+    let settled = early.wait_with_pool_assist();
+    let early = settled
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .take()
-        .ok_or_else(frame_task_scope)?;
-    match parsed {
-        Ok(deferred) => Ok(Some(wrap(frame_index, deferred, finish))),
-        Err(error) => {
-            finish.fail(error);
-            Ok(None)
-        }
+        .take();
+    if let Some(early) = early {
+        return Some(wrap(frame_index, early, tail, finish));
     }
+    let error = tail
+        .get()
+        .and_then(|slot| {
+            slot.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .and_then(Result::err)
+        })
+        .unwrap_or_else(frame_task_scope);
+    finish.fail(error);
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -152,10 +181,12 @@ pub(super) fn schedule_entropy<'scope, 'job, T, P>(
     dependencies: &inter::EntropyDependencies,
     scheduler: &'scope AdmissionScheduler<'job>,
     spawner: &FinishSpawner<'_, 'scope>,
-) -> Result<EntropyResult<T>>
+) -> Result<EntropyHandles<T>>
 where
     T: splot_recon::ReconSample + Send + 'static,
-    P: FnOnce() -> Result<inter::DeferredInterWalk<T>> + Send + 'job,
+    P: FnOnce(&dyn Fn(inter::InterWalkEarly<T>)) -> Result<inter::DeferredInterWalk<T>>
+        + Send
+        + 'job,
     'job: 'scope,
 {
     let FinishSpawner::Deferred(scope) = spawner else {
@@ -163,6 +194,8 @@ where
     };
     let result = Arc::new(CompletionCell::new());
     let result_for_job = Arc::clone(&result);
+    let early: EntropyEarly<T> = Arc::new(CompletionCell::new());
+    let early_for_job = Arc::clone(&early);
     let failed_cdfs = frame_cdfs.clone();
     let failed_ccso = ccso_grid.clone();
     let failed_segment_ids = segment_ids.clone();
@@ -176,7 +209,9 @@ where
         order_key,
         &conditions,
         Box::new(move |_| {
-            let parsed = parse();
+            let parsed = parse(&|early| {
+                let _ = early_for_job.set(Mutex::new(Some(early)));
+            });
             if let Ok(deferred) = &parsed {
                 frame_cdfs.publish(Arc::clone(deferred.frame_cdfs()));
                 ccso_grid.publish(deferred.ccso_grid().cloned().map(Arc::new));
@@ -188,9 +223,13 @@ where
                 failed_motion.fail();
             }
             let _ = result_for_job.set(Mutex::new(Some(parsed)));
+            let _ = early_for_job.set(Mutex::new(None));
         }),
     );
-    Ok(result)
+    Ok(EntropyHandles {
+        early,
+        tail: result,
+    })
 }
 
 const ORDER_KEY_FRAME_STRIDE: u64 = 1 << 32;
@@ -401,6 +440,7 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
     frontier_done: Vec<CompletionCell<()>>,
     filtered: Vec<CompletionCell<()>>,
     filter_error: Mutex<Option<DecodeError>>,
+    filters_ready: Arc<CompletionCell<()>>,
     failed: AtomicBool,
     order_base: u64,
 }
@@ -435,7 +475,10 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             let commit = Arc::clone(self);
             admit.submit(
                 self.batch_key(0, 2),
-                &[Condition::Completion(&self.prepared[0])],
+                &[
+                    Condition::Completion(&self.prepared[0]),
+                    Condition::Completion(self.filters_ready.as_ref()),
+                ],
                 Box::new(move |admit| commit.commit(0, admit)),
             );
         }
@@ -512,18 +555,30 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         );
     }
 
+    /// Resolves one § 7.12 band, or resumes on the § 8.2 watermark when the
+    /// pass has not yet published the units the band still owes.
     fn resolve(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
         if self.failed.load(Ordering::Acquire) {
             return;
         }
-        let batches = match self.walk.resolve(index) {
-            Ok(batches) => batches,
+        let (batches, awaiting) = match self.walk.resolve(index) {
+            Ok(resolved) => resolved,
             Err(error) => {
                 self.fail(error, admit);
                 return;
             }
         };
         self.submit_batches(batches, admit);
+        if let Some(units) = awaiting {
+            let resume = Arc::clone(self);
+            let index_key = u64::try_from(index).unwrap_or(u64::MAX / 2);
+            admit.submit(
+                self.order_base.saturating_add(index_key),
+                &[Condition::Watermark(self.walk.parse_watermark(), units)],
+                Box::new(move |admit| resume.resolve(index, admit)),
+            );
+            return;
+        }
         let next = index.saturating_add(1);
         if next < self.walk.resolve_len() {
             self.submit_resolve(next, admit);
@@ -681,7 +736,8 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
 }
 
 fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
-    deferred: inter::DeferredInterWalk<T>,
+    early: inter::InterWalkEarly<T>,
+    tail: EntropyResult<T>,
     finish: PendingFinish<T>,
     frame_index: usize,
     scheduler: &'scope AdmissionScheduler<'job>,
@@ -693,8 +749,8 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
     let order_base = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
         .saturating_mul(ORDER_KEY_FRAME_STRIDE);
-    let motion = deferred.motion.clone();
-    let dependencies = deferred.motion_dependencies();
+    let motion = early.motion.clone();
+    let dependencies = early.motion_dependencies();
     let (scratch_source, scratch_done) = lane.reserve_recon();
     let recon_done = Arc::new(CompletionCell::new());
     let (filter_gate, filter_done) = lane.reserve_filter();
@@ -756,12 +812,13 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 );
                 return;
             };
-            let scheduled =
-                match deferred.prepare_scheduled(decode_scratch, temporal_scratch, progress) {
-                    Ok((scheduled, temporal_scratch)) => {
+            let filters_ready = Arc::new(CompletionCell::new());
+            let (scheduled, pending_filters) =
+                match early.prepare_scheduled(decode_scratch, temporal_scratch, progress) {
+                    Ok((scheduled, temporal_scratch, pending)) => {
                         let _ = temporal_done.set(Mutex::new(Some(temporal_scratch)));
                         admit.admit_ready();
-                        scheduled
+                        (scheduled, pending)
                     }
                     Err(error) => {
                         settle_prepare_failure(finish, error);
@@ -779,6 +836,7 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                     .map(|_| CompletionCell::new())
                     .collect(),
                 filter_error: Mutex::new(None),
+                filters_ready: Arc::clone(&filters_ready),
                 walk: scheduled,
                 finish: Mutex::new(Some(finish)),
                 motion,
@@ -789,6 +847,36 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 failed: AtomicBool::new(false),
                 order_base,
             });
+            {
+                let attach_frame = Arc::clone(&frame);
+                let attach_tail = Arc::clone(&tail);
+                let attach_ready = Arc::clone(&filters_ready);
+                admit.submit(
+                    order_base.saturating_add(1 << 19),
+                    &[Condition::Completion(tail.as_ref())],
+                    Box::new(move |admit| {
+                        let parsed = attach_tail.get().and_then(|slot| {
+                            slot.lock().unwrap_or_else(PoisonError::into_inner).take()
+                        });
+                        let outcome = match parsed {
+                            Some(Ok(deferred)) => {
+                                attach_frame.walk.attach_filters(deferred, pending_filters)
+                            }
+                            Some(Err(error)) => Err(error),
+                            None => Err(frame_task_scope()),
+                        };
+                        match outcome {
+                            Ok(()) => {
+                                let _ = attach_ready.set(());
+                            }
+                            Err(error) => {
+                                attach_frame.fail(error, admit);
+                                let _ = attach_ready.set(());
+                            }
+                        }
+                    }),
+                );
+            }
             if frame.walk.resolve_len() == 0 {
                 frame.fail(
                     unsupported(
@@ -854,14 +942,16 @@ where
     match pending {
         PendingWalk::Eight {
             frame_index,
-            deferred,
+            early,
+            tail,
             finish,
-        } => schedule_typed(deferred, finish, frame_index, scheduler, scope, lane),
+        } => schedule_typed(early, tail, finish, frame_index, scheduler, scope, lane),
         PendingWalk::Ten {
             frame_index,
-            deferred,
+            early,
+            tail,
             finish,
-        } => schedule_typed(deferred, finish, frame_index, scheduler, scope, lane),
+        } => schedule_typed(early, tail, finish, frame_index, scheduler, scope, lane),
     }
     Ok(())
 }
@@ -878,7 +968,7 @@ where
     let Some(pending) = entropy.entries.pop_front() else {
         return Ok(());
     };
-    if let Some(walk) = pending.promote()? {
+    if let Some(walk) = pending.promote() {
         schedule_pending(walk, spawner, scheduler, lane)?;
     }
     Ok(())

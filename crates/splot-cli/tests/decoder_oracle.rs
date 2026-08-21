@@ -128,3 +128,29 @@ fn sequence_sb256_intra_uses_effective_sb128_at_serial_and_parallel_widths() {
         Err(splot_decode::DecodeError::MalformedSource { .. })
     ));
 }
+
+/// A pass that fails mid-tile must settle, not spin the § 7.12 resolve chain.
+///
+/// The failure drives the parse watermark past every threshold, so a resolve
+/// step stalled on a unit the pass will never publish has to recognise the
+/// failure instead of waiting on an already-satisfied condition.
+#[test]
+fn truncated_tile_payload_settles_at_every_width() {
+    let root = repo_root();
+    let bytes = std::fs::read(
+        root.join("tests/conformance/vectors/valid/syn-4frame-mono-inter-256x128.ivf"),
+    )
+    .expect("read fixture");
+    let full = decode_raw(&bytes, 1).expect("intact stream decodes");
+    assert!(!full.is_empty(), "fixture produced no samples");
+
+    for cut in [bytes.len() / 3, bytes.len() / 2, bytes.len() * 3 / 4] {
+        for threads in THREAD_LEGS {
+            let outcome = decode_raw(&bytes[..cut], threads);
+            assert!(
+                outcome.map_or(0, |raw| raw.len()) < full.len(),
+                "truncation at {cut} bytes decoded a whole stream at {threads} threads",
+            );
+        }
+    }
+}

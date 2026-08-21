@@ -166,6 +166,9 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
     sequence: Arc<SequenceHeader>,
     core: Arc<FrameHeaderCore>,
     tile_offset: ByteOffset,
+    whole_frame: bool,
+    parse_progress: Arc<super::ParseProgress>,
+    pending_surfaces: Mutex<std::vec::IntoIter<ReadyReconSurface<'static, T>>>,
     finished: AtomicBool,
 }
 
@@ -201,10 +204,25 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .collect()
     }
 
+    /// Whether the § 8.2 pass failed.
+    ///
+    /// A failed pass drives the watermark past every threshold, so a stalled
+    /// step that waited on it again would spin until the failure settles.
+    fn parse_failed(&self) -> bool {
+        self.parse_progress.cell().current() == splot_parallel::WatermarkCell::FAILED
+    }
+
+    /// The § 8.2 watermark a stalled resolve step waits on.
+    pub(in crate::prediction::inter::block) fn parse_watermark(
+        &self,
+    ) -> &splot_parallel::WatermarkCell {
+        self.parse_progress.cell()
+    }
+
     pub(in crate::prediction::inter::block) fn resolve(
         &self,
         index: usize,
-    ) -> Result<core::ops::Range<usize>> {
+    ) -> Result<(core::ops::Range<usize>, Option<usize>)> {
         project_temporal_band(
             &self.temporal_plan,
             &self.temporal,
@@ -226,11 +244,19 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             self.info,
             &self.temporal,
         );
+        self.materialize_rows(self.unit_count);
+        let mut awaiting = None;
         let mut resolve = self.resolve.lock().unwrap_or_else(PoisonError::into_inner);
         let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             let next = resolve.next;
-            let Some(ScheduledRowState::Unresolved { row, .. }) = rows.get(next) else {
+            let Some(state) = rows.get(next) else {
+                if next < self.unit_count && !self.parse_failed() {
+                    awaiting = Some(next.saturating_add(1));
+                }
+                break;
+            };
+            let ScheduledRowState::Unresolved { row, .. } = state else {
                 break;
             };
             let row_end8 = row
@@ -277,7 +303,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .partition_point(|batch| batch.end <= resolve.next);
         let ready = resolve.submitted_batches..ready_batches;
         resolve.submitted_batches = ready_batches;
-        Ok(ready)
+        Ok((ready, awaiting))
     }
 
     pub(in crate::prediction::inter::block) fn fail_temporal(&self) {
@@ -289,10 +315,83 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// Conditions that replace the parsed unit's former cross-frame wait.
+    /// Hands the frontier its § 7.17 deblock records and final-filter setup.
+    ///
+    /// Reconstruction never reads either, so they arrive once the § 8.2 pass
+    /// has settled the grids they are built from, after the scheduler is
+    /// already admitting precompute work.
+    pub(in crate::prediction::inter::block) fn attach_filters(
+        &self,
+        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,
+        deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+    ) -> Result<()> {
+        let deblock = deblock_records
+            .zip(self.core.deblocking_filter_params)
+            .map(|(deblock_records, filter)| {
+                crate::filters::deblock::FrameDeblock::prepare_owned(
+                    deblock_records,
+                    self.params.mi_rows,
+                    self.params.mi_cols,
+                    filter,
+                    Arc::clone(&self.core),
+                    self.sequence
+                        .filter
+                        .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+                    deblock_quant_deltas,
+                )
+                .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))
+            })
+            .transpose()?
+            .flatten();
+        let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+        frontier.sealed = seals_filter_copy(self.owned_bands, deblock.is_some(), self.whole_frame)
+            .then(|| CurrentFrameWorkspace::new_recycled(self.info))
+            .transpose()?;
+        frontier.deblock = deblock;
+        frontier.filter = Some(Arc::new(filter_setup));
+        Ok(())
+    }
+
+    /// Pulls published units into the scheduled row list, up to `units`.
+    ///
+    /// The § 8.2 pass emits units in order, so a caller that has waited on
+    /// the parse watermark for `units` finds exactly that prefix available,
+    /// and a unit the pass has not reached simply stops the pull.
+    fn materialize_rows(&self, units: usize) {
+        let units = units.min(self.unit_count);
+        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        if rows.len() >= units {
+            return;
+        }
+        let mut surfaces = self
+            .pending_surfaces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while rows.len() < units {
+            let Some(row) = self.parse_progress.take_row(rows.len()) else {
+                break;
+            };
+            let surface = if self.owned_bands || row.superblocks.is_empty() {
+                None
+            } else {
+                surfaces.next()
+            };
+            rows.push(ScheduledRowState::Unresolved { row, surface });
+        }
+    }
+
     pub(in crate::prediction::inter::block) fn conditions(
         &self,
         index: usize,
     ) -> Vec<Condition<'_>> {
+        let mut conditions = match self.batch_range(index) {
+            Some(range) => vec![Condition::Watermark(self.parse_progress.cell(), range.end)],
+            None => Vec::new(),
+        };
+        if let Some(range) = self.batch_range(index) {
+            self.materialize_rows(range.end);
+        }
         let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
         let mut bounds = row_gate::RowReferenceBounds::default();
         for ready in self
@@ -307,14 +406,18 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         {
             bounds.merge(ready.bounds);
         }
-        RowReferenceGate::new(
-            &self.reference,
-            &self.core,
-            self.ref_frame_idx.as_slice(),
-            self.info,
-            &self.temporal,
-        )
-        .conditions(&bounds)
+        drop(rows);
+        conditions.extend(
+            RowReferenceGate::new(
+                &self.reference,
+                &self.core,
+                self.ref_frame_idx.as_slice(),
+                self.info,
+                &self.temporal,
+            )
+            .conditions(&bounds),
+        );
+        conditions
     }
 
     /// Precomputes one admitted unit without entering the ordered commit spine.
@@ -336,6 +439,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 return Err(invalid_inter_tile_scheduling_state());
             }
         }
+        self.materialize_rows(range.end);
         let ready = {
             let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(rows) = rows.get_mut(range.clone()) else {
@@ -862,11 +966,11 @@ const fn seals_filter_copy(owned_bands: bool, has_deblock: bool, whole_frame: bo
 
 /// Whether one parsed tile owns every mode-info position in the frame, which
 /// is what makes superblock row `r` the frame's own row band `r`.
-fn covers_whole_frame(parsed: &ParsedTile, params: &TileWalkParams) -> bool {
-    parsed.mi_rows.start == 0
-        && parsed.mi_rows.end.min(params.mi_rows) == params.mi_rows
-        && parsed.mi_cols.start == 0
-        && parsed.mi_cols.end.min(params.mi_cols) == params.mi_cols
+fn covers_whole_frame(geometry: &TileGeometry, params: &TileWalkParams) -> bool {
+    geometry.mi_rows.start == 0
+        && geometry.mi_rows.end.min(params.mi_rows) == params.mi_rows
+        && geometry.mi_cols.start == 0
+        && geometry.mi_cols.end.min(params.mi_cols) == params.mi_cols
 }
 
 /// Whether canonical row bands may replace the copying storage path.
@@ -886,35 +990,135 @@ fn covers_whole_frame(parsed: &ParsedTile, params: &TileWalkParams) -> bool {
 /// this one's 25% could flip the call.
 const BAND_STORAGE_ADMITTED: bool = false;
 
-fn supports_owned_bands(
-    parsed: &ParsedTile,
+/// Why a frame reconstructs into copying storage instead of canonical bands.
+///
+/// Each constant is one proof that failed, so the set is the exact statement of
+/// what a future banded design would have to admit. SCALE-094's census counts
+/// them: on the mission stream `GeneralIntra` is 92.4% of blocking leaves and
+/// `UnboundedResolveRecord` the remaining 7.6%, while `Intrabc`,
+/// `CurrentFrameInter`, `UnboundedInter` and `PartialTile` never occur.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct LegacyReason(&'static str);
+
+impl LegacyReason {
+    /// Band storage is disabled outright; see [`BAND_STORAGE_ADMITTED`].
+    const NOT_ADMITTED: Self = Self("band_storage_not_admitted");
+    /// `SPLOT_DECODE_SKIP_FILTERS` removed the frontier bands would feed.
+    const FILTERS_DISABLED: Self = Self("filters_disabled");
+    /// The tile does not cover the frame, so its rows are not frame bands.
+    const PARTIAL_TILE: Self = Self("partial_tile");
+    /// The unit's precompute batch count does not match the temporal plan.
+    const BAND_COUNT: Self = Self("band_count");
+    /// The row already failed, so its writes are not proved.
+    const TERMINAL: Self = Self("terminal");
+    /// The superblock entry range is not addressable.
+    const ENTRY_RANGE: Self = Self("entry_range");
+    /// A § 7.10.3 IntraBC block reads raw samples a band cannot bound.
+    const INTRABC: Self = Self("intrabc");
+    /// The superblock reads current-frame samples.
+    const CURRENT_FRAME: Self = Self("current_frame");
+    /// An inter command reads current-frame samples after resolution.
+    const CURRENT_FRAME_INTER: Self = Self("current_frame_inter");
+    /// An inter command's write footprint is not proved contained.
+    const UNBOUNDED_INTER: Self = Self("unbounded_inter");
+    /// A § 7.11 general-intra block reads its own frame's neighbours.
+    const GENERAL_INTRA: Self = Self("general_intra");
+    /// An unresolved leaf's write footprint is not proved contained.
+    const UNBOUNDED_RESOLVE_RECORD: Self = Self("unbounded_resolve_record");
+
+    /// The stable token this reason reports in timing diagnostics.
+    const fn token(self) -> &'static str {
+        self.0
+    }
+}
+
+/// Which canonical storage one admitted frame reconstructs into.
+///
+/// This replaces a bare `owned_bands: bool` so the fallback carries its own
+/// proof obligation rather than becoming another boolean exception.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum CanonicalStoragePlan {
+    /// Direct full-width canonical row bands.
+    RowBands,
+    /// The copying path, retained for every case bands cannot prove.
+    Legacy(LegacyReason),
+}
+
+impl CanonicalStoragePlan {
+    /// Whether this plan reconstructs directly into canonical row bands.
+    const fn owned_bands(self) -> bool {
+        matches!(self, Self::RowBands)
+    }
+
+    /// The stable token this plan reports in timing diagnostics.
+    const fn token(self) -> &'static str {
+        match self {
+            Self::RowBands => "mode=owned_bands",
+            Self::Legacy(reason) => reason.token(),
+        }
+    }
+}
+
+/// Decides the storage plan when band storage is admitted, which is the one
+/// case that has to read every parsed unit before the plan is known.
+fn band_storage_plan(
+    geometry: &TileGeometry,
+    parse_progress: &super::ParseProgress,
     params: &TileWalkParams,
     info: splot_recon::DecodedFrameInfo,
-) -> core::result::Result<(), &'static str> {
-    if !BAND_STORAGE_ADMITTED {
-        return Err("band_storage_not_admitted");
+    units_per_row: usize,
+    temporal_bands: usize,
+    unit_count: usize,
+) -> Result<(CanonicalStoragePlan, Vec<ReconRow>)> {
+    let rows = (0..unit_count)
+        .map(|index| {
+            parse_progress
+                .take_row(index)
+                .ok_or_else(invalid_inter_tile_scheduling_state)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let candidate_batch_count = rows
+        .iter()
+        .filter(|row| !row.superblocks.is_empty())
+        .count()
+        .div_ceil(units_per_row.max(1));
+    if candidate_batch_count != temporal_bands {
+        return Ok((CanonicalStoragePlan::Legacy(LegacyReason::BAND_COUNT), rows));
     }
+    let plan = match supports_owned_bands(geometry, &rows, params, info) {
+        Ok(()) => CanonicalStoragePlan::RowBands,
+        Err(reason) => CanonicalStoragePlan::Legacy(reason),
+    };
+    Ok((plan, rows))
+}
+
+fn supports_owned_bands(
+    geometry: &TileGeometry,
+    rows: &[ReconRow],
+    params: &TileWalkParams,
+    info: splot_recon::DecodedFrameInfo,
+) -> core::result::Result<(), LegacyReason> {
     if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
-        return Err("filters_disabled");
+        return Err(LegacyReason::FILTERS_DISABLED);
     }
-    if !covers_whole_frame(parsed, params) {
-        return Err("partial_tile");
+    if !covers_whole_frame(geometry, params) {
+        return Err(LegacyReason::PARTIAL_TILE);
     }
-    for row in &parsed.rows {
+    for row in rows {
         if row.terminal.is_some() {
-            return Err("terminal");
+            return Err(LegacyReason::TERMINAL);
         }
         for superblock in &row.superblocks {
             if superblock.dependency == ReconDependency::GlobalIntrabcFence {
-                return Err("intrabc");
+                return Err(LegacyReason::INTRABC);
             }
             if superblock.dependency == ReconDependency::CurrentFrame {
-                return Err("current_frame");
+                return Err(LegacyReason::CURRENT_FRAME);
             }
             let entries = row
                 .entries
                 .get(superblock.entries.clone())
-                .ok_or("entry_range")?;
+                .ok_or(LegacyReason::ENTRY_RANGE)?;
             for entry in entries {
                 match entry.command() {
                     Some(ReconCommand::Inter(command))
@@ -926,11 +1130,11 @@ fn supports_owned_bands(
                                 &row.residual_blocks,
                             ) => {}
                     Some(ReconCommand::Inter(command)) if command.reads_current_frame() => {
-                        return Err("current_frame_inter");
+                        return Err(LegacyReason::CURRENT_FRAME_INTER);
                     }
-                    Some(ReconCommand::Inter(_)) => return Err("unbounded_inter"),
-                    Some(ReconCommand::GeneralIntra(_)) => return Err("general_intra"),
-                    Some(ReconCommand::Intrabc(_)) => return Err("intrabc"),
+                    Some(ReconCommand::Inter(_)) => return Err(LegacyReason::UNBOUNDED_INTER),
+                    Some(ReconCommand::GeneralIntra(_)) => return Err(LegacyReason::GENERAL_INTRA),
+                    Some(ReconCommand::Intrabc(_)) => return Err(LegacyReason::INTRABC),
                     None if entry.resolve_record().is_some_and(|record| {
                         record.prepass_write_is_contained(
                             superblock.origin,
@@ -939,7 +1143,7 @@ fn supports_owned_bands(
                             &row.residual_blocks,
                         )
                     }) => {}
-                    None => return Err("unbounded_resolve_record"),
+                    None => return Err(LegacyReason::UNBOUNDED_RESOLVE_RECORD),
                 }
             }
         }
@@ -1031,7 +1235,6 @@ fn prepare_scheduled_motion(
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
-    mut parsed: ParsedTile,
     params: TileWalkParams,
     sequence: Arc<SequenceHeader>,
     core: Arc<FrameHeaderCore>,
@@ -1039,12 +1242,11 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     reference: Arc<InterReferenceState<T>>,
     ref_frame_idx: RefIdxBuf,
     workspace: CurrentFrameWorkspace<T>,
-    filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
-    deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,
-    deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+    filter_count: usize,
     motion_field: TemporalMotionField,
     motion_handle: MotionFieldHandle,
     temporal_plan: TemporalBandPlan,
+    parse_progress: Arc<super::ParseProgress>,
 ) -> Result<ScheduledTileRecon<T>> {
     scratch.workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -1052,50 +1254,49 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             .max(1),
     );
     let info = workspace.info();
-    let tile_offset = parsed.tile_offset;
+    let geometry = parse_progress
+        .geometry()
+        .ok_or_else(invalid_inter_tile_scheduling_state)?;
+    let tile_offset = geometry.tile_offset;
+    let unit_count = geometry.unit_count;
     let quantizer = FrameQuantizerSnapshot::capture();
-    let units_per_row = parsed
+    let units_per_row = geometry
         .mi_cols
         .end
         .min(params.mi_cols)
-        .saturating_sub(parsed.mi_cols.start)
+        .saturating_sub(geometry.mi_cols.start)
         .div_ceil(params.sb_h4);
-    let candidate_batch_count = parsed
-        .rows
-        .iter()
-        .filter(|row| !row.superblocks.is_empty())
-        .count()
-        .div_ceil(units_per_row.max(1));
-    let band_eligibility = if candidate_batch_count != temporal_plan.len() {
-        Err("band_count")
+    let (storage_plan, banded_rows) = if BAND_STORAGE_ADMITTED {
+        let (plan, rows) = band_storage_plan(
+            &geometry,
+            &parse_progress,
+            &params,
+            info,
+            units_per_row,
+            temporal_plan.len(),
+            unit_count,
+        )?;
+        (plan, Some(rows))
     } else {
-        supports_owned_bands(&parsed, &params, info)
+        (
+            CanonicalStoragePlan::Legacy(LegacyReason::NOT_ADMITTED),
+            None,
+        )
     };
-    let owned_bands = band_eligibility.is_ok();
+    let owned_bands = storage_plan.owned_bands();
     let storage_started = crate::timing::start();
     if storage_started.is_some() {
         crate::timing::report_detail(
             "inter_admission_storage",
             storage_started,
-            if owned_bands {
-                "mode=owned_bands"
-            } else {
-                match band_eligibility {
-                    Ok(()) => "mode=legacy_rects reason=unknown",
-                    Err(reason) => reason,
-                }
-            },
+            storage_plan.token(),
         );
     }
     let (resolve_grid, motion) = prepare_scheduled_motion(
-        parsed.mi_rows.clone(),
-        parsed.mi_cols.clone(),
+        geometry.mi_rows.clone(),
+        geometry.mi_cols.clone(),
         motion_field,
-        parsed
-            .rows
-            .iter()
-            .filter(|row| !row.superblocks.is_empty())
-            .count(),
+        unit_count.saturating_sub(1),
         units_per_row,
         motion_handle,
         crate::timing::start(),
@@ -1103,8 +1304,12 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let surfaces = if owned_bands {
         Vec::new()
     } else {
-        let rects =
-            superblock_luma_rects(&parsed.mi_rows, &parsed.mi_cols, &workspace, params.sb_h4)?;
+        let rects = superblock_luma_rects(
+            &geometry.mi_rows,
+            &geometry.mi_cols,
+            &workspace,
+            params.sb_h4,
+        )?;
         scratch
             .surfaces
             .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
@@ -1117,24 +1322,23 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             })
             .collect::<splot_recon::Result<Vec<_>>>()?
     };
-    let mut surfaces = surfaces.into_iter();
-    let rows = core::mem::take(&mut parsed.rows)
-        .into_iter()
-        .map(|row| {
-            let surface = if owned_bands || row.superblocks.is_empty() {
-                None
-            } else {
-                surfaces.next()
-            };
-            ScheduledRowState::Unresolved { row, surface }
-        })
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
+    let mut surface_cursor = surfaces.into_iter();
+    if unit_count == 0 {
         return Err(invalid_inter_tile_scheduling_state());
     }
-    let prepass_block_decoded = parsed.block_decoded.clone();
-    let block_decoded = parsed.block_decoded.clone();
-    let unit_count = rows.len();
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(unit_count)
+        .map_err(|_| inter_allocation!("inter scheduled rows"))?;
+    for row in banded_rows.unwrap_or_default() {
+        let surface = if owned_bands || row.superblocks.is_empty() {
+            None
+        } else {
+            surface_cursor.next()
+        };
+        rows.push(ScheduledRowState::Unresolved { row, surface });
+    }
+    let prepass_block_decoded = geometry.block_decoded.clone();
+    let block_decoded = geometry.block_decoded.clone();
     let batches = if owned_bands {
         band_batches(unit_count, units_per_row.max(1), temporal_plan.len())
     } else {
@@ -1146,36 +1350,13 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
     prepared.resize_with(batch_count, || None);
-    let deblock = deblock_records
-        .zip(core.deblocking_filter_params)
-        .map(|(deblock_records, filter)| {
-            crate::filters::deblock::FrameDeblock::prepare_owned(
-                deblock_records,
-                params.mi_rows,
-                params.mi_cols,
-                filter,
-                Arc::clone(&core),
-                sequence
-                    .filter
-                    .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
-                deblock_quant_deltas,
-            )
-            .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))
-        })
-        .transpose()?
-        .flatten();
-    let seals_filter_copy = seals_filter_copy(
-        owned_bands,
-        deblock.is_some(),
-        covers_whole_frame(&parsed, &params),
-    );
+    let whole_frame = covers_whole_frame(&geometry, &params);
     let TileDecodeScratch {
         ordered,
         workers,
         surfaces,
     } = scratch;
-    let filter_count = filter_setup.stripe_ranges().len();
-    Ok(ScheduledTileRecon {
+    let tile = ScheduledTileRecon {
         rows: Mutex::new(rows),
         prepared: Mutex::new(prepared),
         unit_count,
@@ -1196,14 +1377,12 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         })),
         scratch: Mutex::new(None),
         frontier: Mutex::new(ScheduledFrontier {
-            sealed: seals_filter_copy
-                .then(|| CurrentFrameWorkspace::new_recycled(info))
-                .transpose()?,
+            sealed: None,
             sealed_rows: 0,
             terminal_workspace: None,
             bands: owned_bands.then(|| splot_recon::OwnedFrameBands::new(info)),
-            deblock,
-            filter: Some(Arc::new(filter_setup)),
+            deblock: None,
+            filter: None,
             next_filter_stripe: 0,
         }),
         resolve: Mutex::new(ScheduledResolve {
@@ -1225,8 +1404,12 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         sequence,
         core,
         tile_offset,
+        whole_frame,
+        parse_progress,
+        pending_surfaces: Mutex::new(surface_cursor),
         finished: AtomicBool::new(false),
-    })
+    };
+    Ok(tile)
 }
 
 #[cfg(test)]
@@ -1671,6 +1854,39 @@ mod tests {
                 }
                 assert_eq!(next, unit_count);
             }
+        }
+    }
+
+    /// Every fallback reason reports a distinct token, and only `RowBands`
+    /// claims band storage. Diagnostics and the SCALE-094 census both key on
+    /// these tokens, so a collision would silently merge two proof failures.
+    #[test]
+    fn every_storage_plan_reports_a_distinct_token() {
+        use super::{CanonicalStoragePlan, LegacyReason};
+        let reasons = [
+            LegacyReason::NOT_ADMITTED,
+            LegacyReason::FILTERS_DISABLED,
+            LegacyReason::PARTIAL_TILE,
+            LegacyReason::BAND_COUNT,
+            LegacyReason::TERMINAL,
+            LegacyReason::ENTRY_RANGE,
+            LegacyReason::INTRABC,
+            LegacyReason::CURRENT_FRAME,
+            LegacyReason::CURRENT_FRAME_INTER,
+            LegacyReason::UNBOUNDED_INTER,
+            LegacyReason::GENERAL_INTRA,
+            LegacyReason::UNBOUNDED_RESOLVE_RECORD,
+        ];
+        let mut tokens: Vec<&'static str> = reasons
+            .iter()
+            .map(|reason| CanonicalStoragePlan::Legacy(*reason).token())
+            .collect();
+        tokens.push(CanonicalStoragePlan::RowBands.token());
+        let unique: std::collections::BTreeSet<_> = tokens.iter().copied().collect();
+        assert_eq!(unique.len(), tokens.len());
+        assert!(CanonicalStoragePlan::RowBands.owned_bands());
+        for reason in reasons {
+            assert!(!CanonicalStoragePlan::Legacy(reason).owned_bands());
         }
     }
 }

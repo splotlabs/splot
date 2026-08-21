@@ -7,7 +7,7 @@
 
 use std::num::NonZeroUsize;
 use std::ops::Range;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use splot_recon::{PlaneId, ReconError};
 
@@ -100,7 +100,7 @@ pub(super) struct TileFilterRecords {
 /// The frame-level facts every tile phase reads, all owned so a resolve pass
 /// that runs after the driver moved on can rebuild its tile context.
 #[derive(Clone, Copy)]
-pub(super) struct TileWalkParams {
+pub(crate) struct TileWalkParams {
     pub(super) limits: crate::DecodeLimits,
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
@@ -1488,30 +1488,26 @@ where
 /// resolve pass (which needs the frame's temporal prelude) and reconstruction
 /// (which needs reference pixels).
 pub(super) struct ParsedTile {
-    tile_offset: ByteOffset,
     mi_rows: Range<usize>,
     mi_cols: Range<usize>,
-    rows: Vec<ReconRow>,
-    block_decoded: TileBlockDecodedState,
+    unit_count: usize,
     output: TileParserOutput,
 }
 
 impl ParsedTile {
     /// How many unit buffers the tile is holding, which bounds the split
     /// path's per-frame memory.
-    pub(super) fn unit_count(&self) -> usize {
-        self.rows.len()
+    pub(super) const fn unit_count(&self) -> usize {
+        self.unit_count
     }
 
     /// Moves reconstruction-derived filter geometry into the frame owner
     /// before the scheduled filter setup is built.
     pub(super) fn detach_filter_records(
-        &mut self,
         records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+        parse_progress: &ParseProgress,
     ) {
-        for row in &mut self.rows {
-            pixel_commit::detach_row_filter_records(row, records);
-        }
+        records.append(&mut parse_progress.take_records());
     }
 
     /// Folds the tile's walk-parsed filter grids and loop-restoration records
@@ -1575,6 +1571,138 @@ fn tile_unit_capacity(
     units + 1
 }
 
+/// Monotone count of § 8.2 parse units a tile has finished, published as the
+/// parser produces them.
+///
+/// Units are emitted in order, so a consumer can gate on the prefix it needs
+/// instead of on the whole tile. The cell is the scheduler's own watermark, so
+/// a batch waits through `Condition::Watermark` rather than through a poll.
+/// The tile geometry the § 8.2 parser settles before it reads its first
+/// unit, which is everything the admission scheduler needs to lay out
+/// batches and surfaces.
+pub(crate) struct TileGeometry {
+    pub(super) tile_offset: ByteOffset,
+    pub(super) mi_rows: Range<usize>,
+    pub(super) mi_cols: Range<usize>,
+    pub(super) block_decoded: TileBlockDecodedState,
+    pub(super) unit_count: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct ParseProgress {
+    finished: splot_parallel::WatermarkCell,
+    rows: Mutex<Vec<Option<ReconRow>>>,
+    geometry: Mutex<Option<Arc<TileGeometry>>>,
+    records: Mutex<crate::filters::wienerns_lr::FrameFilterRecords>,
+}
+
+impl ParseProgress {
+    /// Hands one finished unit to the scheduler and publishes the new count.
+    ///
+    /// The frame's § 7.17 and loop-restoration records leave the unit here, in
+    /// parse order, because the scheduler claims units on its own schedule and
+    /// the frame-level detach must not depend on when it does.
+    pub(super) fn publish_row(&self, mut row: ReconRow) {
+        pixel_commit::detach_row_filter_records(
+            &mut row,
+            &mut self.records.lock().unwrap_or_else(PoisonError::into_inner),
+        );
+        let finished = {
+            let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            rows.push(Some(row));
+            rows.len()
+        };
+        self.finished.publish(finished);
+    }
+
+    /// Takes the unit at `index`, which a caller may claim exactly once.
+    pub(super) fn take_row(&self, index: usize) -> Option<ReconRow> {
+        self.rows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(index)
+            .and_then(Option::take)
+    }
+
+    /// Takes the filter records detached from units already handed out.
+    pub(super) fn take_records(&self) -> crate::filters::wienerns_lr::FrameFilterRecords {
+        core::mem::take(&mut self.records.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Reserves room for one tile's units up front, so the parser never
+    /// reallocates the shared buffer while a reader holds an index.
+    pub(super) fn reserve(&self, capacity: usize) -> Result<()> {
+        self.rows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_reserve_exact(capacity)
+            .map_err(|_| inter_allocation!("inter parsed rows"))
+    }
+
+    /// Publishes the tile geometry, which the parser settles before its
+    /// first unit.
+    pub(super) fn publish_geometry(&self, geometry: TileGeometry) {
+        *self.geometry.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(geometry));
+    }
+
+    /// The published tile geometry, if the parser has reached its first unit.
+    pub(super) fn geometry(&self) -> Option<Arc<TileGeometry>> {
+        self.geometry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Releases every waiter after a failed pass.
+    ///
+    /// Batches and resolve steps wait on unit thresholds the pass will now
+    /// never reach, so the watermark is driven past all of them.
+    pub(crate) fn fail(&self) {
+        self.finished.publish(splot_parallel::WatermarkCell::FAILED);
+    }
+
+    /// The cell a batch waits on for its own units.
+    pub(crate) fn cell(&self) -> &splot_parallel::WatermarkCell {
+        &self.finished
+    }
+}
+
+/// Settles the tile geometry and publishes it, before anything reads a unit.
+///
+/// The admission scheduler is built from this alone, and it is promoted while
+/// the § 8.2 pass still runs, so this must be called before the walk is
+/// promoted -- not as the pass's first act, which would race it.
+pub(crate) fn publish_tile_geometry<T: ReconSample>(
+    tile: &DecodeTileWorkUnit<'_>,
+    params: &TileWalkParams,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<T>,
+    ref_frame_idx: &[u32],
+    parse_progress: &ParseProgress,
+) -> Result<()> {
+    let context = &params.context(sequence, core, reference, ref_frame_idx);
+    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    let capacity = tile_unit_capacity(
+        &mi_rows,
+        &mi_cols,
+        params.mi_rows,
+        params.mi_cols,
+        params.sb_h4,
+        ParserGranularity::Superblock,
+    );
+    parse_progress.reserve(capacity)?;
+    parse_progress.publish_geometry(TileGeometry {
+        tile_offset: tile.tile_byte_span().start,
+        mi_rows,
+        mi_cols,
+        block_decoded: tile_block_decoded(tile, context)?,
+        unit_count: capacity,
+    });
+    Ok(())
+}
+
 /// Runs one tile's entropy pass to the end, keeping every unit.
 ///
 /// Each unit carries the flag-plane publications it made, so a resolve pass on
@@ -1592,6 +1720,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     gdf_state: &GdfState,
     ccso_state: &CcsoState,
     superblock_units: bool,
+    parse_progress: &Arc<ParseProgress>,
 ) -> Result<ParsedTile> {
     let context = &params.context(sequence, core, reference, ref_frame_idx);
     let granularity = if superblock_units {
@@ -1599,21 +1728,12 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     } else {
         ParserGranularity::Row
     };
-    let tile_offset = tile.tile_byte_span().start;
-    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
-    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-    let block_decoded = tile_block_decoded(tile, context)?;
-    let capacity = tile_unit_capacity(
-        &mi_rows,
-        &mi_cols,
-        params.mi_rows,
-        params.mi_cols,
-        params.sb_h4,
-        granularity,
-    );
-    let mut rows = Vec::new();
-    rows.try_reserve_exact(capacity)
-        .map_err(|_| inter_allocation!("inter parsed rows"))?;
+    let geometry = parse_progress
+        .geometry()
+        .ok_or_else(invalid_inter_tile_scheduling_state)?;
+    let mi_rows = geometry.mi_rows.clone();
+    let mi_cols = geometry.mi_cols.clone();
+    let mut unit_count = 0usize;
     let mut parser = TileParser::new(
         tile,
         context,
@@ -1634,18 +1754,17 @@ pub(super) fn parse_tile_units<T: ReconSample>(
             ParserStep::Last(row) => (row, true),
         };
         row.return_terminal_error()?;
-        rows.push(row);
+        unit_count += 1;
+        parse_progress.publish_row(row);
         if last {
             break;
         }
     }
     crate::timing::report("pass1_parse", started);
     Ok(ParsedTile {
-        tile_offset,
         mi_rows,
         mi_cols,
-        rows,
-        block_decoded,
+        unit_count,
         output: parser.into_output(),
     })
 }
@@ -1860,7 +1979,7 @@ fn no_decoded_block_error() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into()
 }
 
-fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
+pub(super) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into()
 }
 

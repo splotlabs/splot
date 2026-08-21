@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+pub(crate) use block::ParseProgress;
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use std::sync::Arc;
@@ -2183,7 +2184,7 @@ pub(crate) use find_mv_stack::{
 };
 pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
 pub(crate) use frame_walk::{
-    DeferredInterWalk, FrameDecodeGeometry, ScheduledInterWalk, parse_inter_frame,
+    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, ScheduledInterWalk, parse_inter_frame,
     splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;

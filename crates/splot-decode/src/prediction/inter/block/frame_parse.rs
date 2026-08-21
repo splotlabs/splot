@@ -13,7 +13,6 @@
 //! once the frame becomes admissible.
 
 use super::super::MotionFieldHandle;
-use super::super::find_mv_stack::TemporalMotionFieldMetadata;
 use super::*;
 use splot_core::headers::frame::RefIdxBuf;
 use std::sync::Arc;
@@ -26,9 +25,6 @@ mod scheduled_frame;
 pub(crate) struct InterFrameParse {
     parsed: tile::ParsedTile,
     records: crate::filters::wienerns_lr::FrameFilterRecords,
-    params: tile::TileWalkParams,
-    prelude: TemporalPrelude,
-    motion_field: TemporalMotionField,
     /// The end-of-walk CDF subset published to the canonical `PipelineFrame`.
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     cdef_grid: crate::filters::cdef::CdefUnitGrid,
@@ -59,6 +55,17 @@ impl<T: ReconSample> From<tile::ScheduledTileProgress<T>> for ScheduledFrameProg
 }
 
 impl<T: ReconSample> ScheduledInterReconstruction<T> {
+    /// Hands the scheduled tile's frontier its filter state.
+    pub(crate) fn attach_filters(
+        &self,
+        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,
+        deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+    ) -> Result<()> {
+        self.tile
+            .attach_filters(filter_setup, deblock_records, deblock_quant_deltas)
+    }
+
     /// Number of independently admitted reconstruction units.
     pub(crate) const fn len(&self) -> usize {
         self.tile.len()
@@ -77,7 +84,11 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
         self.tile.resolve_conditions(index)
     }
 
-    pub(crate) fn resolve(&self, index: usize) -> Result<core::ops::Range<usize>> {
+    pub(crate) fn parse_watermark(&self) -> &splot_parallel::WatermarkCell {
+        self.tile.parse_watermark()
+    }
+
+    pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
         self.tile.resolve(index)
     }
 
@@ -131,27 +142,16 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
     mut records: crate::filters::wienerns_lr::FrameFilterRecords,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    options: &DecodeOptions,
-    facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
+    parse_progress: &Arc<tile::ParseProgress>,
+    setup: super::InterParseSetup,
 ) -> Result<InterFrameParse> {
-    let setup = derive_inter_block_setup(
-        std::slice::from_mut(tile),
-        sequence,
-        core,
-        options,
-        facts,
-        ref_frame_idx,
-        reference,
-    )?;
-    let InterBlockSetup {
+    let super::InterParseSetup {
         params,
-        prelude,
         mut cdef_state,
         mut gdf_state,
         mut ccso_state,
-        motion_field,
         initial_frame_cdfs,
         qindex,
     } = setup;
@@ -166,6 +166,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &gdf_state,
         &ccso_state,
         true,
+        parse_progress,
     )?;
     let mut segment_ids = frame_segment_id_map(params.mi_rows, params.mi_cols)?;
     records.clear();
@@ -183,9 +184,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
     Ok(InterFrameParse {
         parsed,
         records,
-        params,
-        prelude,
-        motion_field,
         frame_cdfs,
         cdef_grid: cdef_state.into_grid()?,
         ccso_grid,
@@ -201,52 +199,39 @@ impl InterFrameParse {
         self.parsed.unit_count()
     }
 
-    /// Returns the semantic motion metadata derived by this entropy pass.
-    pub(crate) fn motion_field_metadata(&self) -> TemporalMotionFieldMetadata {
-        self.motion_field.metadata()
-    }
-
-    /// Runs the temporal prelude and resolve/motion half-pass, then returns
-    /// owned reconstruction units for the admission scheduler.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_scheduled<T: ReconSample>(
+    /// Hands the frontier the filter state the § 8.2 pass settles last.
+    ///
+    /// Reconstruction is already admitted by the time this runs; only the
+    /// § 7.17 frontier chain waits on it.
+    pub(crate) fn attach_filters<T: ReconSample>(
         self,
-        scratch: InterDecodeScratch<T>,
-        filter_sink_setup: crate::pipeline::frame_engine::finish::FilterSinkSetup,
-        progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-        sequence: Arc<SequenceHeader>,
-        core: Arc<FrameHeaderCore>,
-        ref_frame_idx: RefIdxBuf,
-        reference: Arc<InterReferenceState<T>>,
-        workspace: CurrentFrameWorkspace<T>,
-        motion_handle: MotionFieldHandle,
-    ) -> Result<(
-        ScheduledInterReconstruction<T>,
-        super::super::find_mv_stack::TemporalMvScratch,
-    )> {
+        pending: PendingFilterAttach<T>,
+        tile: &ScheduledInterReconstruction<T>,
+        parse_progress: &Arc<super::tile::ParseProgress>,
+    ) -> Result<()> {
         let Self {
-            mut parsed,
+            parsed,
             mut records,
-            params,
-            prelude,
-            motion_field,
             frame_cdfs: _,
             cdef_grid,
             ccso_grid,
             segment_ids: _,
             gdf_grid,
         } = self;
-        let InterDecodeScratch {
-            tile,
-            temporal_context,
-            frame_filter_records: _,
-        } = scratch;
-        let mut temporal = temporal_context.unwrap_or_else(TemporalMvContext::empty);
-        let temporal_plan =
-            prelude.begin_scheduled(&mut temporal, &core, ref_frame_idx.as_slice(), &reference)?;
-        let temporal_scratch = temporal.take_scratch();
-        let temporal = Arc::new(temporal);
-        parsed.detach_filter_records(&mut records);
+        let PendingFilterAttach {
+            info,
+            plane_sizes,
+            filter_sink_setup,
+            core,
+            progress,
+        } = pending;
+        if parse_progress
+            .geometry()
+            .is_none_or(|geometry| geometry.unit_count != parsed.unit_count())
+        {
+            return Err(tile::invalid_inter_tile_scheduling_state());
+        }
+        tile::ParsedTile::detach_filter_records(&mut records, parse_progress);
         let has_active_deblock = core
             .deblocking_filter_params
             .as_ref()
@@ -254,37 +239,94 @@ impl InterFrameParse {
                 std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_none()
                     && filter.apply_deblocking_filter != [false; 4]
             });
-        let (mut filter_setup, workspace, deblock_quant_deltas) = filter_sink_setup
-            .owned_filter_setup(
-                workspace,
-                InterFilterInputs {
-                    records,
-                    cdef_grid,
-                    ccso_grid,
-                    gdf_grid,
-                    motion_field: TemporalMotionField::empty(),
-                },
-                Arc::clone(&core),
-                progress,
-            )?;
-        let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
-        let tile = tile::prepare_scheduled_tile(
-            tile,
-            parsed,
-            params,
-            sequence,
+        let (mut filter_setup, deblock_quant_deltas) = filter_sink_setup.deferred_filter_setup(
+            info,
+            plane_sizes,
+            InterFilterInputs {
+                records,
+                cdef_grid,
+                ccso_grid,
+                gdf_grid,
+                motion_field: TemporalMotionField::empty(),
+            },
             core,
-            Arc::clone(&temporal),
-            reference,
-            ref_frame_idx,
-            workspace,
-            filter_setup,
-            deblock_records,
-            deblock_quant_deltas,
-            motion_field,
-            motion_handle,
-            temporal_plan,
+            progress,
         )?;
-        Ok((ScheduledInterReconstruction { tile }, temporal_scratch))
+        let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
+        tile.attach_filters(filter_setup, deblock_records, deblock_quant_deltas)
     }
+}
+
+/// The frame-level filter inputs a scheduled walk keeps until its § 8.2 pass
+/// has settled the grids they are built from.
+pub(crate) struct PendingFilterAttach<T: ReconSample> {
+    info: splot_recon::DecodedFrameInfo,
+    plane_sizes: [Option<splot_recon::PlaneSize>; 3],
+    filter_sink_setup: crate::pipeline::frame_engine::finish::FilterSinkSetup,
+    core: Arc<FrameHeaderCore>,
+    progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
+}
+
+/// Runs the temporal prelude and builds the admission scheduler from the half
+/// of the walk that is settled before the entropy pass reads a unit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_scheduled_recon<T: ReconSample>(
+    scratch: InterDecodeScratch<T>,
+    filter_sink_setup: crate::pipeline::frame_engine::finish::FilterSinkSetup,
+    progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
+    sequence: Arc<SequenceHeader>,
+    core: Arc<FrameHeaderCore>,
+    ref_frame_idx: RefIdxBuf,
+    reference: Arc<InterReferenceState<T>>,
+    workspace: CurrentFrameWorkspace<T>,
+    motion_handle: MotionFieldHandle,
+    parse_progress: &Arc<super::tile::ParseProgress>,
+    params: &tile::TileWalkParams,
+    prelude: TemporalPrelude,
+    motion_field: TemporalMotionField,
+) -> Result<(
+    ScheduledInterReconstruction<T>,
+    super::super::find_mv_stack::TemporalMvScratch,
+    PendingFilterAttach<T>,
+)> {
+    let InterDecodeScratch {
+        tile,
+        temporal_context,
+        frame_filter_records: _,
+    } = scratch;
+    let mut temporal = temporal_context.unwrap_or_else(TemporalMvContext::empty);
+    let temporal_plan =
+        prelude.begin_scheduled(&mut temporal, &core, ref_frame_idx.as_slice(), &reference)?;
+    let temporal_scratch = temporal.take_scratch();
+    let temporal = Arc::new(temporal);
+    let info = workspace.info();
+    let plane_sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(&workspace);
+    let filter_count =
+        crate::filters::gdf::stripe_ranges(&core, filter_sink_setup.luma_height)?.len();
+    let tile = tile::prepare_scheduled_tile(
+        tile,
+        *params,
+        sequence,
+        Arc::clone(&core),
+        Arc::clone(&temporal),
+        reference,
+        ref_frame_idx,
+        workspace,
+        filter_count,
+        motion_field,
+        motion_handle,
+        temporal_plan,
+        Arc::clone(parse_progress),
+    )?;
+    Ok((
+        ScheduledInterReconstruction { tile },
+        temporal_scratch,
+        PendingFilterAttach {
+            info,
+            plane_sizes,
+            filter_sink_setup,
+            core,
+            progress,
+        },
+    ))
 }

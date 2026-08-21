@@ -2,6 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use std::sync::Arc;
+pub(crate) use tile::ParseProgress;
+pub(crate) use tile::TileWalkParams;
+pub(crate) use tile::publish_tile_geometry;
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
@@ -251,6 +254,60 @@ impl ReconCommand {
 ///
 /// Both the fused walk and the split parse pass derive exactly this, so the two
 /// enter their tile phases from the same frame state.
+impl InterBlockSetup {
+    /// The § 7.9 motion metadata the pre-parse derivation already settles.
+    pub(crate) fn motion_field_metadata(
+        &self,
+    ) -> super::find_mv_stack::TemporalMotionFieldMetadata {
+        self.motion_field.metadata()
+    }
+
+    /// Splits the derivation into the half the entropy pass consumes and the
+    /// half the admission scheduler needs, which it can use straight away.
+    pub(crate) fn split(
+        self,
+    ) -> (
+        InterParseSetup,
+        TileWalkParams,
+        TemporalPrelude,
+        TemporalMotionField,
+    ) {
+        let Self {
+            params,
+            prelude,
+            cdef_state,
+            gdf_state,
+            ccso_state,
+            motion_field,
+            initial_frame_cdfs,
+            qindex,
+        } = self;
+        (
+            InterParseSetup {
+                params,
+                cdef_state,
+                gdf_state,
+                ccso_state,
+                initial_frame_cdfs,
+                qindex,
+            },
+            params,
+            prelude,
+            motion_field,
+        )
+    }
+}
+
+/// The half of the pre-parse derivation the § 8.2 pass consumes.
+pub(crate) struct InterParseSetup {
+    pub(crate) params: TileWalkParams,
+    pub(crate) cdef_state: CdefState,
+    pub(crate) gdf_state: GdfState,
+    pub(crate) ccso_state: CcsoState,
+    pub(crate) initial_frame_cdfs: Arc<FrameCdfSubset>,
+    pub(crate) qindex: u32,
+}
+
 pub(crate) struct InterBlockSetup {
     params: tile::TileWalkParams,
     prelude: TemporalPrelude,
@@ -277,7 +334,7 @@ pub(crate) struct InterBlockFacts {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn derive_inter_block_setup<T: ReconSample>(
+pub(crate) fn derive_inter_block_setup<T: ReconSample>(
     work_units: &[DecodeTileWorkUnit<'_>],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -2077,7 +2134,8 @@ mod deferred_recon;
 mod filter_records;
 mod frame_parse;
 pub(crate) use frame_parse::{
-    InterFrameParse, ScheduledFrameProgress, ScheduledInterReconstruction, parse_inter_frame_blocks,
+    InterFrameParse, PendingFilterAttach, ScheduledFrameProgress, ScheduledInterReconstruction,
+    parse_inter_frame_blocks, prepare_scheduled_recon,
 };
 pub(crate) use tile::ScheduledCommitProgress;
 mod interintra;
