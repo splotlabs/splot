@@ -4,7 +4,7 @@
 //! Pool-scoped event state for pipeline-driver waits.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, PoisonError, Weak};
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Instant;
 
 /// Instrumentation for assisted pipeline-driver waits in one worker pool.
@@ -181,22 +181,15 @@ impl PoolProgressEvent {
 
 #[derive(Debug)]
 pub(crate) struct PoolProgressBindings {
-    state: Mutex<BindingState>,
-}
-
-#[derive(Debug)]
-struct BindingState {
-    primary: Weak<PoolProgressEvent>,
-    additional: Vec<Weak<PoolProgressEvent>>,
+    primary: OnceLock<Weak<PoolProgressEvent>>,
+    additional: OnceLock<Mutex<Vec<Weak<PoolProgressEvent>>>>,
 }
 
 impl PoolProgressBindings {
     pub(crate) const fn new() -> Self {
         Self {
-            state: Mutex::new(BindingState {
-                primary: Weak::new(),
-                additional: Vec::new(),
-            }),
+            primary: OnceLock::new(),
+            additional: OnceLock::new(),
         }
     }
 
@@ -204,34 +197,47 @@ impl PoolProgressBindings {
         if binding.strong_count() == 0 {
             return;
         }
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.primary.strong_count() == 0 {
-            state.primary = Weak::clone(binding);
+
+        if self.primary.set(Weak::clone(binding)).is_ok() {
             return;
         }
-        if state.primary.ptr_eq(binding) {
+        if self
+            .primary
+            .get()
+            .is_some_and(|primary| primary.ptr_eq(binding))
+        {
             return;
         }
-        state.additional.retain(|bound| bound.strong_count() != 0);
-        if !state.additional.iter().any(|bound| bound.ptr_eq(binding)) {
-            state.additional.push(Weak::clone(binding));
+
+        let mut additional = self
+            .additional
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        additional.retain(|bound| bound.strong_count() != 0);
+        if !additional.iter().any(|bound| bound.ptr_eq(binding)) {
+            additional.push(Weak::clone(binding));
         }
     }
 
     pub(crate) fn notify(&self) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(progress) = state.primary.upgrade() {
+        if let Some(progress) = self.primary.get().and_then(Weak::upgrade) {
             progress.notify();
-        } else {
-            state.primary = Weak::new();
         }
-        state.additional.retain(|bound| {
-            let Some(progress) = bound.upgrade() else {
-                return false;
-            };
-            progress.notify();
-            true
-        });
+
+        let Some(additional) = self.additional.get() else {
+            return;
+        };
+        additional
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|bound| {
+                let Some(progress) = bound.upgrade() else {
+                    return false;
+                };
+                progress.notify();
+                true
+            });
     }
 }
 
@@ -396,10 +402,12 @@ mod tests {
         let bindings = PoolProgressBindings::new();
         let first = Arc::new(PoolProgressEvent::new());
         bindings.bind(&Arc::downgrade(&first));
+        assert!(bindings.additional.get().is_none());
         drop(first);
 
         let second = Arc::new(PoolProgressEvent::new());
         bindings.bind(&Arc::downgrade(&second));
+        assert!(bindings.additional.get().is_some());
         bindings.notify();
         assert_eq!(second.metrics().notifications, 1);
     }
@@ -410,7 +418,9 @@ mod tests {
         let first = Arc::new(PoolProgressEvent::new());
         let second = Arc::new(PoolProgressEvent::new());
         bindings.bind(&Arc::downgrade(&first));
+        assert!(bindings.additional.get().is_none());
         bindings.bind(&Arc::downgrade(&second));
+        assert!(bindings.additional.get().is_some());
         bindings.notify();
         assert_eq!(first.metrics().notifications, 1);
         assert_eq!(second.metrics().notifications, 1);
