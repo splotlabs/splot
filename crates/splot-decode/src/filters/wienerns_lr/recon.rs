@@ -302,6 +302,18 @@ pub(crate) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta:
     strength
 }
 
+/// The three plane storage sizes a filter setup needs from a workspace.
+pub(crate) fn plane_storage_sizes<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+) -> [Option<splot_recon::PlaneSize>; 3] {
+    [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+        workspace
+            .plane(plane)
+            .ok()
+            .map(splot_recon::CurrentFramePlane::storage_size)
+    })
+}
+
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     pub(crate) fn for_final_filtering(
         workspace: CurrentFrameWorkspace<T>,
@@ -310,14 +322,25 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         bit_depth: BitDepth,
     ) -> Self {
         let info = workspace.info();
-        let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
-            workspace
-                .plane(plane)
-                .ok()
-                .map(splot_recon::CurrentFramePlane::storage_size)
-        });
+        let plane_sizes = plane_storage_sizes(&workspace);
         Self {
             workspace: Some(workspace),
+            ..Self::for_deferred_filtering(info, plane_sizes, luma_width, luma_height, bit_depth)
+        }
+    }
+
+    /// Builds the sink for a frame whose workspace the reconstruction already
+    /// owns, which is every scheduled walk: the setup only ever reads the two
+    /// snapshots taken here.
+    pub(crate) fn for_deferred_filtering(
+        info: splot_recon::DecodedFrameInfo,
+        plane_sizes: [Option<splot_recon::PlaneSize>; 3],
+        luma_width: usize,
+        luma_height: usize,
+        bit_depth: BitDepth,
+    ) -> Self {
+        Self {
+            workspace: None,
             info,
             plane_sizes,
             bit_depth,

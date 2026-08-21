@@ -82,17 +82,41 @@ pub(crate) struct FilterSinkSetup {
 }
 
 impl FilterSinkSetup {
-    fn into_sink<T: ReconSample>(
+    /// Builds the owned filter setup for a frame whose workspace the
+    /// reconstruction already owns.
+    pub(crate) fn deferred_filter_setup<T: ReconSample>(
         self,
-        workspace: splot_recon::CurrentFrameWorkspace<T>,
+        info: splot_recon::DecodedFrameInfo,
+        plane_sizes: [Option<splot_recon::PlaneSize>; 3],
         filter_inputs: InterFilterInputs,
-    ) -> (WienerNsLrReconSink<T>, bool, DeblockQuantDeltas) {
-        let mut sink = crate::filters::wienerns_lr::recon_final_filter_sink(
-            workspace,
+        core: Arc<FrameHeaderCore>,
+        progress: Arc<FrameProgress<T>>,
+    ) -> Result<(
+        crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        DeblockQuantDeltas,
+    )> {
+        let sink = WienerNsLrReconSink::for_deferred_filtering(
+            info,
+            plane_sizes,
             self.luma_width,
             self.luma_height,
             self.bit_depth,
         );
+        let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas) =
+            self.fill_sink(sink, filter_inputs);
+        let (setup, _) = sink.into_owned_filter_setup_published(
+            core,
+            disable_loopfilters_across_tiles,
+            progress,
+        )?;
+        Ok((setup, deblock_quant_deltas))
+    }
+
+    fn fill_sink<T: ReconSample>(
+        self,
+        mut sink: WienerNsLrReconSink<T>,
+        filter_inputs: InterFilterInputs,
+    ) -> (WienerNsLrReconSink<T>, bool, DeblockQuantDeltas) {
         sink.set_gdf_reference_context(self.gdf_reference);
         sink.set_filter_records(filter_inputs.records);
         sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
@@ -104,6 +128,20 @@ impl FilterSinkSetup {
             self.disable_loopfilters_across_tiles,
             self.deblock_quant_deltas,
         )
+    }
+
+    fn into_sink<T: ReconSample>(
+        self,
+        workspace: splot_recon::CurrentFrameWorkspace<T>,
+        filter_inputs: InterFilterInputs,
+    ) -> (WienerNsLrReconSink<T>, bool, DeblockQuantDeltas) {
+        let sink = crate::filters::wienerns_lr::recon_final_filter_sink(
+            workspace,
+            self.luma_width,
+            self.luma_height,
+            self.bit_depth,
+        );
+        self.fill_sink(sink, filter_inputs)
     }
 
     /// Wraps one reconstructed frame and its filter inputs into the walked
@@ -122,30 +160,6 @@ impl FilterSinkSetup {
             disable_loopfilters_across_tiles,
             deblock_quant_deltas,
         )
-    }
-
-    /// Builds the progressive filter owner before scheduled reconstruction.
-    pub(crate) fn owned_filter_setup<T: ReconSample>(
-        self,
-        workspace: splot_recon::CurrentFrameWorkspace<T>,
-        filter_inputs: InterFilterInputs,
-        core: Arc<FrameHeaderCore>,
-        progress: Arc<FrameProgress<T>>,
-    ) -> Result<(
-        crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
-        splot_recon::CurrentFrameWorkspace<T>,
-        DeblockQuantDeltas,
-    )> {
-        let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas) =
-            self.into_sink(workspace, filter_inputs);
-        let (setup, workspace) = sink.into_owned_filter_setup_published(
-            core,
-            disable_loopfilters_across_tiles,
-            progress,
-        )?;
-        let workspace =
-            workspace.ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
-        Ok((setup, workspace, deblock_quant_deltas))
     }
 
     /// Turns one frame's walk output into the driver's [`FrameWalk`].

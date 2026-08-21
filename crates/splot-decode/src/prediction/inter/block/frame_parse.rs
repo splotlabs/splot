@@ -206,7 +206,7 @@ impl InterFrameParse {
         reference: Arc<InterReferenceState<T>>,
         workspace: CurrentFrameWorkspace<T>,
         motion_handle: MotionFieldHandle,
-        parse_progress: Arc<super::tile::ParseProgress>,
+        parse_progress: &Arc<super::tile::ParseProgress>,
     ) -> Result<(
         ScheduledInterReconstruction<T>,
         super::super::find_mv_stack::TemporalMvScratch,
@@ -233,7 +233,32 @@ impl InterFrameParse {
             prelude.begin_scheduled(&mut temporal, &core, ref_frame_idx.as_slice(), &reference)?;
         let temporal_scratch = temporal.take_scratch();
         let temporal = Arc::new(temporal);
-        tile::ParsedTile::detach_filter_records(&mut records, &parse_progress);
+        if parse_progress
+            .geometry()
+            .is_none_or(|geometry| geometry.unit_count != parsed.unit_count())
+        {
+            return Err(tile::invalid_inter_tile_scheduling_state());
+        }
+        let info = workspace.info();
+        let plane_sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(&workspace);
+        let filter_count =
+            crate::filters::gdf::stripe_ranges(&core, filter_sink_setup.luma_height)?.len();
+        let tile = tile::prepare_scheduled_tile(
+            tile,
+            params,
+            sequence,
+            Arc::clone(&core),
+            Arc::clone(&temporal),
+            reference,
+            ref_frame_idx,
+            workspace,
+            filter_count,
+            motion_field,
+            motion_handle,
+            temporal_plan,
+            Arc::clone(parse_progress),
+        )?;
+        tile::ParsedTile::detach_filter_records(&mut records, parse_progress);
         let has_active_deblock = core
             .deblocking_filter_params
             .as_ref()
@@ -241,43 +266,21 @@ impl InterFrameParse {
                 std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_none()
                     && filter.apply_deblocking_filter != [false; 4]
             });
-        let (mut filter_setup, workspace, deblock_quant_deltas) = filter_sink_setup
-            .owned_filter_setup(
-                workspace,
-                InterFilterInputs {
-                    records,
-                    cdef_grid,
-                    ccso_grid,
-                    gdf_grid,
-                    motion_field: TemporalMotionField::empty(),
-                },
-                Arc::clone(&core),
-                progress,
-            )?;
-        let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
-        if parse_progress
-            .geometry()
-            .is_none_or(|geometry| geometry.unit_count != parsed.unit_count())
-        {
-            return Err(tile::invalid_inter_tile_scheduling_state());
-        }
-        let tile = tile::prepare_scheduled_tile(
-            tile,
-            params,
-            sequence,
+        let (mut filter_setup, deblock_quant_deltas) = filter_sink_setup.deferred_filter_setup(
+            info,
+            plane_sizes,
+            InterFilterInputs {
+                records,
+                cdef_grid,
+                ccso_grid,
+                gdf_grid,
+                motion_field: TemporalMotionField::empty(),
+            },
             core,
-            Arc::clone(&temporal),
-            reference,
-            ref_frame_idx,
-            workspace,
-            filter_setup,
-            deblock_records,
-            deblock_quant_deltas,
-            motion_field,
-            motion_handle,
-            temporal_plan,
-            parse_progress,
+            progress,
         )?;
+        let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
+        tile.attach_filters(filter_setup, deblock_records, deblock_quant_deltas)?;
         Ok((ScheduledInterReconstruction { tile }, temporal_scratch))
     }
 }

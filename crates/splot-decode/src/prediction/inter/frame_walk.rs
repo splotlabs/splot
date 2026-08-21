@@ -537,7 +537,7 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             Arc::new(reference),
             workspace,
             motion,
-            parse_progress,
+            &parse_progress,
         )?;
         Ok((ScheduledInterWalk { reconstruction }, temporal_scratch))
     }
