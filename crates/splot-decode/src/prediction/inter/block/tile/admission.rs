@@ -204,6 +204,14 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .collect()
     }
 
+    /// Whether the § 8.2 pass failed.
+    ///
+    /// A failed pass drives the watermark past every threshold, so a stalled
+    /// step that waited on it again would spin until the failure settles.
+    fn parse_failed(&self) -> bool {
+        self.parse_progress.cell().current() == splot_parallel::WatermarkCell::FAILED
+    }
+
     /// The § 8.2 watermark a stalled resolve step waits on.
     pub(in crate::prediction::inter::block) fn parse_watermark(
         &self,
@@ -243,7 +251,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         loop {
             let next = resolve.next;
             let Some(state) = rows.get(next) else {
-                if next < self.unit_count {
+                if next < self.unit_count && !self.parse_failed() {
                     awaiting = Some(next.saturating_add(1));
                 }
                 break;
