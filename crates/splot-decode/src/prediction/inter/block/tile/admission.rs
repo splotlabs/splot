@@ -984,56 +984,43 @@ const BAND_STORAGE_ADMITTED: bool = false;
 
 /// Why a frame reconstructs into copying storage instead of canonical bands.
 ///
-/// Each variant is one proof that failed, so the set is the exact statement of
+/// Each constant is one proof that failed, so the set is the exact statement of
 /// what a future banded design would have to admit. SCALE-094's census counts
 /// them: on the mission stream `GeneralIntra` is 92.4% of blocking leaves and
 /// `UnboundedResolveRecord` the remaining 7.6%, while `Intrabc`,
 /// `CurrentFrameInter`, `UnboundedInter` and `PartialTile` never occur.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum LegacyReason {
-    /// Band storage is disabled outright; see [`BAND_STORAGE_ADMITTED`].
-    NotAdmitted,
-    /// `SPLOT_DECODE_SKIP_FILTERS` removed the frontier bands would feed.
-    FiltersDisabled,
-    /// The tile does not cover the frame, so its rows are not frame bands.
-    PartialTile,
-    /// The unit's precompute batch count does not match the temporal plan.
-    BandCount,
-    /// The row already failed, so its writes are not proved.
-    Terminal,
-    /// The superblock entry range is not addressable.
-    EntryRange,
-    /// A § 7.10.3 IntraBC block reads raw samples a band cannot bound.
-    Intrabc,
-    /// The superblock reads current-frame samples.
-    CurrentFrame,
-    /// An inter command reads current-frame samples after resolution.
-    CurrentFrameInter,
-    /// An inter command's write footprint is not proved contained.
-    UnboundedInter,
-    /// A § 7.11 general-intra block reads its own frame's neighbours.
-    GeneralIntra,
-    /// An unresolved leaf's write footprint is not proved contained.
-    UnboundedResolveRecord,
-}
+struct LegacyReason(&'static str);
 
 impl LegacyReason {
+    /// Band storage is disabled outright; see [`BAND_STORAGE_ADMITTED`].
+    const NOT_ADMITTED: Self = Self("band_storage_not_admitted");
+    /// `SPLOT_DECODE_SKIP_FILTERS` removed the frontier bands would feed.
+    const FILTERS_DISABLED: Self = Self("filters_disabled");
+    /// The tile does not cover the frame, so its rows are not frame bands.
+    const PARTIAL_TILE: Self = Self("partial_tile");
+    /// The unit's precompute batch count does not match the temporal plan.
+    const BAND_COUNT: Self = Self("band_count");
+    /// The row already failed, so its writes are not proved.
+    const TERMINAL: Self = Self("terminal");
+    /// The superblock entry range is not addressable.
+    const ENTRY_RANGE: Self = Self("entry_range");
+    /// A § 7.10.3 IntraBC block reads raw samples a band cannot bound.
+    const INTRABC: Self = Self("intrabc");
+    /// The superblock reads current-frame samples.
+    const CURRENT_FRAME: Self = Self("current_frame");
+    /// An inter command reads current-frame samples after resolution.
+    const CURRENT_FRAME_INTER: Self = Self("current_frame_inter");
+    /// An inter command's write footprint is not proved contained.
+    const UNBOUNDED_INTER: Self = Self("unbounded_inter");
+    /// A § 7.11 general-intra block reads its own frame's neighbours.
+    const GENERAL_INTRA: Self = Self("general_intra");
+    /// An unresolved leaf's write footprint is not proved contained.
+    const UNBOUNDED_RESOLVE_RECORD: Self = Self("unbounded_resolve_record");
+
     /// The stable token this reason reports in timing diagnostics.
     const fn token(self) -> &'static str {
-        match self {
-            Self::NotAdmitted => "band_storage_not_admitted",
-            Self::FiltersDisabled => "filters_disabled",
-            Self::PartialTile => "partial_tile",
-            Self::BandCount => "band_count",
-            Self::Terminal => "terminal",
-            Self::EntryRange => "entry_range",
-            Self::Intrabc => "intrabc",
-            Self::CurrentFrame => "current_frame",
-            Self::CurrentFrameInter => "current_frame_inter",
-            Self::UnboundedInter => "unbounded_inter",
-            Self::GeneralIntra => "general_intra",
-            Self::UnboundedResolveRecord => "unbounded_resolve_record",
-        }
+        self.0
     }
 }
 
@@ -1088,7 +1075,7 @@ fn band_storage_plan(
         .count()
         .div_ceil(units_per_row.max(1));
     if candidate_batch_count != temporal_bands {
-        return Ok((CanonicalStoragePlan::Legacy(LegacyReason::BandCount), rows));
+        return Ok((CanonicalStoragePlan::Legacy(LegacyReason::BAND_COUNT), rows));
     }
     let plan = match supports_owned_bands(geometry, &rows, params, info) {
         Ok(()) => CanonicalStoragePlan::RowBands,
@@ -1104,26 +1091,26 @@ fn supports_owned_bands(
     info: splot_recon::DecodedFrameInfo,
 ) -> core::result::Result<(), LegacyReason> {
     if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
-        return Err(LegacyReason::FiltersDisabled);
+        return Err(LegacyReason::FILTERS_DISABLED);
     }
     if !covers_whole_frame(geometry, params) {
-        return Err(LegacyReason::PartialTile);
+        return Err(LegacyReason::PARTIAL_TILE);
     }
     for row in rows {
         if row.terminal.is_some() {
-            return Err(LegacyReason::Terminal);
+            return Err(LegacyReason::TERMINAL);
         }
         for superblock in &row.superblocks {
             if superblock.dependency == ReconDependency::GlobalIntrabcFence {
-                return Err(LegacyReason::Intrabc);
+                return Err(LegacyReason::INTRABC);
             }
             if superblock.dependency == ReconDependency::CurrentFrame {
-                return Err(LegacyReason::CurrentFrame);
+                return Err(LegacyReason::CURRENT_FRAME);
             }
             let entries = row
                 .entries
                 .get(superblock.entries.clone())
-                .ok_or(LegacyReason::EntryRange)?;
+                .ok_or(LegacyReason::ENTRY_RANGE)?;
             for entry in entries {
                 match entry.command() {
                     Some(ReconCommand::Inter(command))
@@ -1135,11 +1122,11 @@ fn supports_owned_bands(
                                 &row.residual_blocks,
                             ) => {}
                     Some(ReconCommand::Inter(command)) if command.reads_current_frame() => {
-                        return Err(LegacyReason::CurrentFrameInter);
+                        return Err(LegacyReason::CURRENT_FRAME_INTER);
                     }
-                    Some(ReconCommand::Inter(_)) => return Err(LegacyReason::UnboundedInter),
-                    Some(ReconCommand::GeneralIntra(_)) => return Err(LegacyReason::GeneralIntra),
-                    Some(ReconCommand::Intrabc(_)) => return Err(LegacyReason::Intrabc),
+                    Some(ReconCommand::Inter(_)) => return Err(LegacyReason::UNBOUNDED_INTER),
+                    Some(ReconCommand::GeneralIntra(_)) => return Err(LegacyReason::GENERAL_INTRA),
+                    Some(ReconCommand::Intrabc(_)) => return Err(LegacyReason::INTRABC),
                     None if entry.resolve_record().is_some_and(|record| {
                         record.prepass_write_is_contained(
                             superblock.origin,
@@ -1148,7 +1135,7 @@ fn supports_owned_bands(
                             &row.residual_blocks,
                         )
                     }) => {}
-                    None => return Err(LegacyReason::UnboundedResolveRecord),
+                    None => return Err(LegacyReason::UNBOUNDED_RESOLVE_RECORD),
                 }
             }
         }
@@ -1284,7 +1271,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         (plan, Some(rows))
     } else {
         (
-            CanonicalStoragePlan::Legacy(LegacyReason::NotAdmitted),
+            CanonicalStoragePlan::Legacy(LegacyReason::NOT_ADMITTED),
             None,
         )
     };
@@ -1869,18 +1856,18 @@ mod tests {
     fn every_storage_plan_reports_a_distinct_token() {
         use super::{CanonicalStoragePlan, LegacyReason};
         let reasons = [
-            LegacyReason::NotAdmitted,
-            LegacyReason::FiltersDisabled,
-            LegacyReason::PartialTile,
-            LegacyReason::BandCount,
-            LegacyReason::Terminal,
-            LegacyReason::EntryRange,
-            LegacyReason::Intrabc,
-            LegacyReason::CurrentFrame,
-            LegacyReason::CurrentFrameInter,
-            LegacyReason::UnboundedInter,
-            LegacyReason::GeneralIntra,
-            LegacyReason::UnboundedResolveRecord,
+            LegacyReason::NOT_ADMITTED,
+            LegacyReason::FILTERS_DISABLED,
+            LegacyReason::PARTIAL_TILE,
+            LegacyReason::BAND_COUNT,
+            LegacyReason::TERMINAL,
+            LegacyReason::ENTRY_RANGE,
+            LegacyReason::INTRABC,
+            LegacyReason::CURRENT_FRAME,
+            LegacyReason::CURRENT_FRAME_INTER,
+            LegacyReason::UNBOUNDED_INTER,
+            LegacyReason::GENERAL_INTRA,
+            LegacyReason::UNBOUNDED_RESOLVE_RECORD,
         ];
         let mut tokens: Vec<&'static str> = reasons
             .iter()
