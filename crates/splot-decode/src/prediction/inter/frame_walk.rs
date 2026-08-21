@@ -304,18 +304,26 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
 /// the canonical `PipelineFrame`, while the reference update records header
 /// metadata before reconstruction runs after the next frame's entropy pass.
 pub(crate) struct DeferredInterWalk<T: ReconSample> {
-    /// The frame header the walk consumed, shared with the filter phase.
-    pub(crate) core: Arc<FrameHeaderCore>,
-    /// The § 7.9 motion field the reconstruction publishes.
-    pub(crate) motion: MotionFieldHandle,
     parse: InterFrameParse,
-    workspace: CurrentFrameWorkspace<T>,
-    setup: FilterSinkSetup,
-    sequence: Arc<SequenceHeader>,
-    reference: InterReferenceState<T>,
-    ref_frame_idx: RefIdxBuf,
-    quantizer: FrameQuantizerSnapshot,
     parse_progress: Arc<super::ParseProgress>,
+    marker: core::marker::PhantomData<T>,
+}
+
+/// The half of an inter walk that is settled before the § 8.2 pass reads its
+/// first unit, so the admission scheduler can be built while the pass runs.
+pub(crate) struct InterWalkEarly<T: ReconSample> {
+    pub(crate) core: Arc<FrameHeaderCore>,
+    pub(crate) motion: MotionFieldHandle,
+    pub(crate) workspace: CurrentFrameWorkspace<T>,
+    pub(crate) setup: FilterSinkSetup,
+    pub(crate) sequence: Arc<SequenceHeader>,
+    pub(crate) reference: Arc<InterReferenceState<T>>,
+    pub(crate) ref_frame_idx: RefIdxBuf,
+    pub(crate) quantizer: FrameQuantizerSnapshot,
+    pub(crate) parse_progress: Arc<super::ParseProgress>,
+    pub(crate) params: block::TileWalkParams,
+    pub(crate) prelude: block::TemporalPrelude,
+    pub(crate) motion_field: super::find_mv_stack::TemporalMotionField,
 }
 
 /// One deferred frame whose reconstruction units are scheduler-owned.
@@ -324,6 +332,20 @@ pub(crate) struct ScheduledInterWalk<T: ReconSample> {
 }
 
 impl<T: ReconSample> ScheduledInterWalk<T> {
+    /// Hands the scheduled frontier the filter state the pass settles last.
+    pub(crate) fn attach_filters(
+        &self,
+        parse: DeferredInterWalk<T>,
+        pending: block::PendingFilterAttach<T>,
+    ) -> Result<()> {
+        let DeferredInterWalk {
+            parse,
+            parse_progress,
+            ..
+        } = parse;
+        parse.attach_filters(pending, &self.reconstruction, &parse_progress)
+    }
+
     /// Number of independently admitted reconstruction units.
     pub(crate) const fn len(&self) -> usize {
         self.reconstruction.len()
@@ -342,7 +364,11 @@ impl<T: ReconSample> ScheduledInterWalk<T> {
         self.reconstruction.resolve_conditions(index)
     }
 
-    pub(crate) fn resolve(&self, index: usize) -> Result<core::ops::Range<usize>> {
+    pub(crate) fn parse_watermark(&self) -> &splot_parallel::WatermarkCell {
+        self.reconstruction.parse_watermark()
+    }
+
+    pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
         self.reconstruction.resolve(index)
     }
 
@@ -401,13 +427,14 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     bytes: &[u8],
     frame_envelope: ObuEnvelope<'_>,
     core: FrameHeaderCore,
-    sequence: Arc<SequenceHeader>,
+    sequence: &Arc<SequenceHeader>,
     options: &DecodeOptions,
     reference: InterReferenceState<T>,
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
-    motion: MotionFieldHandle,
+    motion: &MotionFieldHandle,
     parse_progress: &Arc<super::ParseProgress>,
+    publish_early: impl FnOnce(InterWalkEarly<T>),
 ) -> Result<DeferredInterWalk<T>> {
     let InterWalkPrologue {
         mut tile_plan,
@@ -422,7 +449,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         bytes,
         frame_envelope,
         &core,
-        &sequence,
+        sequence,
         options,
         &reference,
         bit_depth,
@@ -437,7 +464,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     };
     let block_setup = super::block::derive_inter_block_setup(
         std::slice::from_mut(tile),
-        &sequence,
+        sequence,
         &core,
         options,
         facts,
@@ -445,16 +472,39 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         &reference,
     )?;
     motion.publish_metadata(block_setup.motion_field_metadata());
-    let parse = parse_inter_frame_blocks(
+    let (parse_setup, params, prelude, motion_field) = block_setup.split();
+    let core = Arc::new(core);
+    let reference = Arc::new(reference);
+    publish_early(InterWalkEarly {
+        core: Arc::clone(&core),
+        motion: motion.clone(),
+        workspace,
+        setup,
+        sequence: Arc::clone(sequence),
+        reference: Arc::clone(&reference),
+        ref_frame_idx: ref_frame_idx.clone(),
+        quantizer,
+        parse_progress: Arc::clone(parse_progress),
+        params,
+        prelude,
+        motion_field,
+    });
+    let parse = match parse_inter_frame_blocks(
         tile,
         records,
-        &sequence,
+        sequence,
         &core,
         ref_frame_idx.as_slice(),
         &reference,
         parse_progress,
-        block_setup,
-    )?;
+        parse_setup,
+    ) {
+        Ok(parse) => parse,
+        Err(error) => {
+            parse_progress.fail();
+            return Err(error);
+        }
+    };
     if started.is_some() {
         crate::timing::report_detail(
             "pass1_parse",
@@ -463,16 +513,9 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         );
     }
     Ok(DeferredInterWalk {
-        core: Arc::new(core),
-        motion,
         parse,
-        workspace,
-        setup,
-        sequence,
-        reference,
-        ref_frame_idx,
-        quantizer,
         parse_progress: Arc::clone(parse_progress),
+        marker: core::marker::PhantomData,
     })
 }
 
@@ -493,7 +536,9 @@ impl<T: ReconSample> DeferredInterWalk<T> {
     ) -> &Arc<crate::bitstream::tile_payload::FrameSegmentIdMap> {
         &self.parse.segment_ids
     }
+}
 
+impl<T: ReconSample> InterWalkEarly<T> {
     /// Shares the reference motion handles that gate this frame's temporal
     /// prelude.
     pub(crate) fn motion_dependencies(&self) -> Vec<MotionFieldHandle> {
@@ -501,8 +546,8 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             .motion_dependencies(self.ref_frame_idx.as_slice())
     }
 
-    /// Runs the temporal prelude and resolve/motion half-pass, returning the
-    /// per-unit reconstruction state consumed by the admission scheduler.
+    /// Runs the temporal prelude and builds the admission scheduler, which is
+    /// everything the § 8.2 pass does not have to have finished for.
     pub(crate) fn prepare_scheduled(
         self,
         mut decode_scratch: InterDecodeScratch<T>,
@@ -511,11 +556,11 @@ impl<T: ReconSample> DeferredInterWalk<T> {
     ) -> Result<(
         ScheduledInterWalk<T>,
         super::find_mv_stack::TemporalMvScratch,
+        block::PendingFilterAttach<T>,
     )> {
         let Self {
             core,
             motion,
-            parse,
             workspace,
             setup,
             sequence,
@@ -523,22 +568,31 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             ref_frame_idx,
             quantizer,
             parse_progress,
+            params,
+            prelude,
+            motion_field,
         } = self;
         let _quantizer_scopes = quantizer.install_frame();
-        let core_for_reconstruction = Arc::clone(&core);
         decode_scratch.install_temporal_scratch(temporal_scratch);
-        let (reconstruction, temporal_scratch) = parse.prepare_scheduled(
+        let (reconstruction, temporal_scratch, pending) = block::prepare_scheduled_recon(
             decode_scratch,
             setup,
             progress,
             sequence,
-            core_for_reconstruction,
+            core,
             ref_frame_idx,
-            Arc::new(reference),
+            reference,
             workspace,
             motion,
             &parse_progress,
+            &params,
+            prelude,
+            motion_field,
         )?;
-        Ok((ScheduledInterWalk { reconstruction }, temporal_scratch))
+        Ok((
+            ScheduledInterWalk { reconstruction },
+            temporal_scratch,
+            pending,
+        ))
     }
 }

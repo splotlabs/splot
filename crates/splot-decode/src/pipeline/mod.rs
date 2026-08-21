@@ -1380,7 +1380,7 @@ where
                             );
                             let parse_progress = Arc::new(inter::ParseProgress::default());
                             let result = frame_pipeline::schedule_entropy(
-                                move || {
+                                move |publish_early| {
                                     let _scopes = quantizer.install_frame();
                                     inter::parse_inter_frame(
                                         records,
@@ -1389,13 +1389,14 @@ where
                                         bytes,
                                         inter_envelope,
                                         inter_core,
-                                        shared,
+                                        &shared,
                                         options,
                                         inter_state,
                                         BitDepth::Eight,
                                         geometry,
-                                        motion,
+                                        &motion,
                                         &parse_progress,
+                                        publish_early,
                                     )
                                 },
                                 frame_index,
@@ -1621,7 +1622,7 @@ where
                             );
                             let parse_progress = Arc::new(inter::ParseProgress::default());
                             let result = frame_pipeline::schedule_entropy(
-                                move || {
+                                move |publish_early| {
                                     let _scopes = quantizer.install_frame();
                                     inter::parse_inter_frame(
                                         records,
@@ -1630,13 +1631,14 @@ where
                                         bytes,
                                         inter_envelope,
                                         inter_core,
-                                        shared,
+                                        &shared,
                                         options,
                                         inter_state,
                                         BitDepth::Ten,
                                         geometry,
-                                        motion,
+                                        &motion,
                                         &parse_progress,
+                                        publish_early,
                                     )
                                 },
                                 frame_index,

@@ -100,7 +100,7 @@ pub(super) struct TileFilterRecords {
 /// The frame-level facts every tile phase reads, all owned so a resolve pass
 /// that runs after the driver moved on can rebuild its tile context.
 #[derive(Clone, Copy)]
-pub(super) struct TileWalkParams {
+pub(crate) struct TileWalkParams {
     pub(super) limits: crate::DecodeLimits,
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
@@ -1507,7 +1507,7 @@ impl ParsedTile {
         records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
         parse_progress: &ParseProgress,
     ) {
-        parse_progress.for_each_row(|row| pixel_commit::detach_row_filter_records(row, records));
+        records.append(&mut parse_progress.take_records());
     }
 
     /// Folds the tile's walk-parsed filter grids and loop-restoration records
@@ -1593,11 +1593,20 @@ pub(crate) struct ParseProgress {
     finished: splot_parallel::WatermarkCell,
     rows: Mutex<Vec<Option<ReconRow>>>,
     geometry: Mutex<Option<Arc<TileGeometry>>>,
+    records: Mutex<crate::filters::wienerns_lr::FrameFilterRecords>,
 }
 
 impl ParseProgress {
     /// Hands one finished unit to the scheduler and publishes the new count.
-    pub(super) fn publish_row(&self, row: ReconRow) {
+    ///
+    /// The frame's § 7.17 and loop-restoration records leave the unit here, in
+    /// parse order, because the scheduler claims units on its own schedule and
+    /// the frame-level detach must not depend on when it does.
+    pub(super) fn publish_row(&self, mut row: ReconRow) {
+        pixel_commit::detach_row_filter_records(
+            &mut row,
+            &mut self.records.lock().unwrap_or_else(PoisonError::into_inner),
+        );
         let finished = {
             let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
             rows.push(Some(row));
@@ -1613,6 +1622,11 @@ impl ParseProgress {
             .unwrap_or_else(PoisonError::into_inner)
             .get_mut(index)
             .and_then(Option::take)
+    }
+
+    /// Takes the filter records detached from units already handed out.
+    pub(super) fn take_records(&self) -> crate::filters::wienerns_lr::FrameFilterRecords {
+        core::mem::take(&mut self.records.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Reserves room for one tile's units up front, so the parser never
@@ -1639,12 +1653,12 @@ impl ParseProgress {
             .clone()
     }
 
-    /// Visits every unit the parser has published, in order.
-    pub(super) fn for_each_row(&self, mut visit: impl FnMut(&mut ReconRow)) {
-        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
-        for row in rows.iter_mut().flatten() {
-            visit(row);
-        }
+    /// Releases every waiter after a failed pass.
+    ///
+    /// Batches and resolve steps wait on unit thresholds the pass will now
+    /// never reach, so the watermark is driven past all of them.
+    pub(crate) fn fail(&self) {
+        self.finished.publish(splot_parallel::WatermarkCell::FAILED);
     }
 
     /// The cell a batch waits on for its own units.

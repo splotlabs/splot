@@ -204,10 +204,17 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .collect()
     }
 
+    /// The § 8.2 watermark a stalled resolve step waits on.
+    pub(in crate::prediction::inter::block) fn parse_watermark(
+        &self,
+    ) -> &splot_parallel::WatermarkCell {
+        self.parse_progress.cell()
+    }
+
     pub(in crate::prediction::inter::block) fn resolve(
         &self,
         index: usize,
-    ) -> Result<core::ops::Range<usize>> {
+    ) -> Result<(core::ops::Range<usize>, Option<usize>)> {
         project_temporal_band(
             &self.temporal_plan,
             &self.temporal,
@@ -230,11 +237,18 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             &self.temporal,
         );
         self.materialize_rows(self.unit_count);
+        let mut awaiting = None;
         let mut resolve = self.resolve.lock().unwrap_or_else(PoisonError::into_inner);
         let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             let next = resolve.next;
-            let Some(ScheduledRowState::Unresolved { row, .. }) = rows.get(next) else {
+            let Some(state) = rows.get(next) else {
+                if next < self.unit_count {
+                    awaiting = Some(next.saturating_add(1));
+                }
+                break;
+            };
+            let ScheduledRowState::Unresolved { row, .. } = state else {
                 break;
             };
             let row_end8 = row
@@ -281,7 +295,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .partition_point(|batch| batch.end <= resolve.next);
         let ready = resolve.submitted_batches..ready_batches;
         resolve.submitted_batches = ready_batches;
-        Ok(ready)
+        Ok((ready, awaiting))
     }
 
     pub(in crate::prediction::inter::block) fn fail_temporal(&self) {
@@ -334,7 +348,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Pulls published units into the scheduled row list, up to `units`.
     ///
     /// The § 8.2 pass emits units in order, so a caller that has waited on
-    /// the parse watermark for `units` finds exactly that prefix available.
+    /// the parse watermark for `units` finds exactly that prefix available,
+    /// and a unit the pass has not reached simply stops the pull.
     fn materialize_rows(&self, units: usize) {
         let units = units.min(self.unit_count);
         let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);

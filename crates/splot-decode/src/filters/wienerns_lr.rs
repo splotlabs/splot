@@ -40,6 +40,16 @@ pub(crate) struct FrameFilterRecords {
 }
 
 impl FrameFilterRecords {
+    /// Moves every record out of `other` and onto the end of these lists.
+    pub(crate) fn append(&mut self, other: &mut Self) {
+        self.deblock_blocks.append(&mut other.deblock_blocks);
+        self.chroma_deblock_blocks
+            .append(&mut other.chroma_deblock_blocks);
+        self.tx_skip_records.append(&mut other.tx_skip_records);
+        self.lr_source_blocks.append(&mut other.lr_source_blocks);
+        self.lr_unit_filters.append(&mut other.lr_unit_filters);
+    }
+
     pub(crate) fn clear(&mut self) {
         self.deblock_blocks.clear();
         self.chroma_deblock_blocks.clear();

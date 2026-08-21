@@ -2184,7 +2184,7 @@ pub(crate) use find_mv_stack::{
 };
 pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
 pub(crate) use frame_walk::{
-    DeferredInterWalk, FrameDecodeGeometry, ScheduledInterWalk, parse_inter_frame,
+    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, ScheduledInterWalk, parse_inter_frame,
     splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;
