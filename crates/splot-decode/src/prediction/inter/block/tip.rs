@@ -892,6 +892,27 @@ fn tip_motion_grid<T: ReconSample>(
 /// full-width bands whose rectangles are disjoint, which `rect_surfaces` proves
 /// before handing out one exclusive surface each. Walking thousands of units on
 /// one worker instead leaves the pool draining behind a § 7.10.6 output frame.
+/// How many disjoint luma bands the finished units cover, or zero when any
+/// unit still owes its prediction.
+///
+/// One band is the whole frame's worth of work in a single job, so the band
+/// path would pay for its rect partition and pool entry and win nothing.
+fn published_band_count<T: ReconSample>(scratch: &TipReconstructScratch<T>) -> usize {
+    let mut bands = 0;
+    let mut last = None;
+    for unit in &scratch.units {
+        let Some(metadata) = unit.metadata.as_ref() else {
+            return 0;
+        };
+        let (_, y, _, _) = metadata.luma_rect();
+        if last != Some(y) {
+            bands += 1;
+            last = Some(y);
+        }
+    }
+    bands
+}
+
 fn publish_units_by_band<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
     workspace: &mut splot_recon::CurrentFrameWorkspace<T>,
@@ -962,7 +983,7 @@ fn publish_unit_outputs<T: ReconSample>(
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    if scratch.units.iter().all(|unit| unit.metadata.is_some())
+    if published_band_count(scratch) > 1
         && splot_parallel::on_multiworker_pool()
         && let mc::WorkspaceSink::Frame(workspace) = sink
     {
