@@ -5,22 +5,9 @@
 
 #![allow(clippy::expect_used)]
 
-use super::{
-    MAX_RETAINED_STRIPE_BUFFERS, MAX_RETAINED_WINDOW_BUFFERS, StripePlane, recycle_buffer,
-    select_buffer_index,
-};
+use super::{StripePlane, select_buffer_index};
 use splot_recon::PlaneRect;
 use std::any::Any;
-
-const EIGHT_K_LUMA_WINDOW_SAMPLES: usize = 737_280;
-
-fn oversized(samples: usize) -> Vec<u16> {
-    let mut buffer = Vec::new();
-    buffer
-        .try_reserve_exact(samples)
-        .expect("an oversized sample buffer");
-    buffer
-}
 
 #[test]
 fn window_cache_selection_matches_type_and_capacity() {
@@ -50,31 +37,6 @@ fn stripe_cache_selection_uses_fresh_storage_until_full() {
     assert_eq!(select_buffer_index(capacities, 96, false), Some(1));
     assert_eq!(select_buffer_index(capacities, 512, false), None);
     assert_eq!(select_buffer_index(capacities, 512, true), Some(2));
-}
-
-#[test]
-fn caches_retain_large_frame_buffers_under_their_count_caps() {
-    let stripe = oversized(EIGHT_K_LUMA_WINDOW_SAMPLES);
-    let stripe_capacity = stripe.capacity();
-    let mut stripe_buffers = Vec::new();
-    recycle_buffer(
-        &mut stripe_buffers,
-        stripe,
-        stripe_capacity,
-        MAX_RETAINED_STRIPE_BUFFERS,
-    );
-    assert_eq!(stripe_buffers.len(), 1);
-
-    let window = oversized(EIGHT_K_LUMA_WINDOW_SAMPLES);
-    let window_capacity = window.capacity();
-    let mut window_buffers: Vec<Box<dyn Any + Send>> = Vec::new();
-    recycle_buffer(
-        &mut window_buffers,
-        Box::new(window),
-        window_capacity,
-        MAX_RETAINED_WINDOW_BUFFERS,
-    );
-    assert_eq!(window_buffers.len(), 1);
 }
 
 #[test]

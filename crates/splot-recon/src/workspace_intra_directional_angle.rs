@@ -71,6 +71,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             angle.p_angle(),
             directional_edge_context(edge_kind),
         )?;
+        let stride_samples = self.stride_samples();
         if self.plane == PlaneId::Y {
             let corner = self.one_sided_directional_corner(rect, edge_kind)?;
             let idif_edge = extend_one_sided_idif_edge(corner, &edge)?;
@@ -86,7 +87,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 angle,
                 edges,
                 &mut self.samples[output_start..],
-                self.stride_samples,
+                stride_samples,
             )
         } else {
             let edges = super::workspace_edges::directional_angle_edges(edge_kind, &edge);
@@ -96,7 +97,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 angle,
                 edges,
                 &mut self.samples[output_start..],
-                self.stride_samples,
+                stride_samples,
             )
         }
     }
@@ -136,6 +137,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         )?;
 
         let output_start = self.sample_index(rect.x(), rect.y())?;
+        let stride_samples = self.stride_samples();
         if matches!(plane, PlaneId::Y) {
             let (left_idif, above_idif) = extend_middle_idif_edges(&left, &above)?;
             predict_intra_middle_directional_angle_rect_idif_into(
@@ -144,7 +146,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 angle,
                 IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
                 &mut self.samples[output_start..],
-                self.stride_samples,
+                stride_samples,
             )
         } else {
             predict_intra_middle_directional_angle_rect_into(
@@ -153,7 +155,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 angle,
                 IntraMiddleDirectionalAngleEdges::both(&left, &above),
                 &mut self.samples[output_start..],
-                self.stride_samples,
+                stride_samples,
             )
         }
     }

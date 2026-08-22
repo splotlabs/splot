@@ -107,10 +107,25 @@ pub(crate) struct GeneralIntraReconScratch<T: ReconSample> {
     pub(crate) cfl_prediction: Vec<T>,
     pub(crate) mhccp_refs: [Vec<u16>; 2],
     pub(crate) paeth_edges: [Vec<T>; 2],
-    pub(crate) cctx_u_prediction: Vec<T>,
-    pub(crate) cctx_v_prediction: Vec<T>,
-    pub(crate) cctx_u_output: Vec<T>,
-    pub(crate) cctx_v_output: Vec<T>,
+    cctx: Option<Box<CctxReconScratch<T>>>,
+}
+
+pub(crate) struct CctxReconScratch<T: ReconSample> {
+    pub(crate) u_prediction: Vec<T>,
+    pub(crate) v_prediction: Vec<T>,
+    pub(crate) u_output: Vec<T>,
+    pub(crate) v_output: Vec<T>,
+}
+
+impl<T: ReconSample> Default for CctxReconScratch<T> {
+    fn default() -> Self {
+        Self {
+            u_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            v_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            u_output: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            v_output: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+        }
+    }
 }
 
 impl<T: ReconSample> Default for GeneralIntraReconScratch<T> {
@@ -122,11 +137,75 @@ impl<T: ReconSample> Default for GeneralIntraReconScratch<T> {
             cfl_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
             mhccp_refs: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
             paeth_edges: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
-            cctx_u_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
-            cctx_v_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
-            cctx_u_output: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
-            cctx_v_output: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            cctx: None,
         }
+    }
+}
+
+impl<T: ReconSample> GeneralIntraReconScratch<T> {
+    pub(crate) fn cctx_mut(&mut self) -> &mut CctxReconScratch<T> {
+        self.cctx
+            .get_or_insert_with(|| Box::new(CctxReconScratch::default()))
+    }
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::{GeneralIntraReconScratch, MAX_INTRA_BLOCK_SAMPLES};
+    use splot_recon::ReconSample;
+
+    fn assert_cctx_is_lazy_and_reused<T: ReconSample>() {
+        let mut scratch = GeneralIntraReconScratch::<T>::default();
+        assert!(scratch.cctx.is_none());
+
+        let first = scratch.cctx_mut();
+        let capacities = [
+            first.u_prediction.capacity(),
+            first.v_prediction.capacity(),
+            first.u_output.capacity(),
+            first.v_output.capacity(),
+        ];
+        assert!(
+            capacities
+                .iter()
+                .all(|&capacity| capacity >= MAX_INTRA_BLOCK_SAMPLES)
+        );
+        first.u_prediction.resize(16, T::default());
+        first.v_prediction.resize(16, T::default());
+        first.u_output.resize(16, T::default());
+        first.v_output.resize(16, T::default());
+        let pointers = [
+            first.u_prediction.as_ptr(),
+            first.v_prediction.as_ptr(),
+            first.u_output.as_ptr(),
+            first.v_output.as_ptr(),
+        ];
+
+        let reused = scratch.cctx_mut();
+        assert_eq!(
+            [
+                reused.u_prediction.capacity(),
+                reused.v_prediction.capacity(),
+                reused.u_output.capacity(),
+                reused.v_output.capacity(),
+            ],
+            capacities
+        );
+        assert_eq!(
+            [
+                reused.u_prediction.as_ptr(),
+                reused.v_prediction.as_ptr(),
+                reused.u_output.as_ptr(),
+                reused.v_output.as_ptr(),
+            ],
+            pointers
+        );
+    }
+
+    #[test]
+    fn cctx_scratch_is_lazy_and_reused_for_each_sample_type() {
+        assert_cctx_is_lazy_and_reused::<u8>();
+        assert_cctx_is_lazy_and_reused::<u16>();
     }
 }
 

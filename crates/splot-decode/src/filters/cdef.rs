@@ -60,7 +60,7 @@ pub(crate) fn cdef_frame_strengths(core: &FrameHeaderCore) -> Option<Vec<CdefFra
     }
     let damping = i32::from(cdef.cdef_damping?);
     let mut strengths = Vec::with_capacity(cdef.strengths.len());
-    for set in &cdef.strengths {
+    for set in cdef.strengths.as_slice() {
         strengths.push(CdefFrameParams {
             y_pri: i32::from(set.y_pri_strength),
             y_sec: i32::from(set.y_sec_strength),

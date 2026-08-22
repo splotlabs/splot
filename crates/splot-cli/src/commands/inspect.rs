@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 use clap::Args;
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeSeq as _};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::buffer_removal_timing::{
@@ -35,13 +35,13 @@ use splot_core::headers::content_interpretation::{
 };
 use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
-    CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
-    FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, FrameType,
-    GdfParams, InterControl, InterStop, InterpolationFilter, LosslessInfo, LrParams, LrPlaneParams,
-    MvPrecision, QuantizationParams, SefTrailingBits, SegmentationParams, SetupQmParams, TileInfo,
-    TipFrameMode, WienerNsFrameFilterBank, WienerNsFrameFilterClass, parse_frame_header_core,
-    parse_frame_header_prefix,
+    CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, CdefStrengthSets,
+    DeblockingFilterParams, DeltaQParams, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
+    FrameHeaderParseMode, FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail,
+    FrameReferenceStateView, FrameType, GdfParams, InterControl, InterStop, InterpolationFilter,
+    LosslessInfo, LrParams, LrPlaneParams, MvPrecision, QuantizationParams, SefTrailingBits,
+    SegmentationParams, SetupQmParams, TileInfo, TipFrameMode, WienerNsFrameFilterBank,
+    WienerNsFrameFilterClass, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -1340,8 +1340,8 @@ struct CdefParamsView {
     cdef_strengths: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cdef_on_skip_txfm_frame_enable: Option<bool>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    strengths: Vec<CdefStrengthSetView>,
+    #[serde(skip_serializing_if = "CdefStrengthSetsView::is_empty")]
+    strengths: CdefStrengthSetsView,
 }
 
 impl CdefParamsView {
@@ -1351,13 +1351,29 @@ impl CdefParamsView {
             cdef_damping: params.cdef_damping,
             cdef_strengths: params.cdef_strengths,
             cdef_on_skip_txfm_frame_enable: params.cdef_on_skip_txfm_frame_enable,
-            strengths: params
-                .strengths
-                .iter()
-                .copied()
-                .map(CdefStrengthSetView::new)
-                .collect(),
+            strengths: CdefStrengthSetsView(params.strengths),
         }
+    }
+}
+
+struct CdefStrengthSetsView(CdefStrengthSets);
+
+impl CdefStrengthSetsView {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Serialize for CdefStrengthSetsView {
+    fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for &set in &self.0 {
+            sequence.serialize_element(&CdefStrengthSetView::new(set))?;
+        }
+        sequence.end()
     }
 }
 

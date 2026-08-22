@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
-use splot_core::headers::buffer_removal_timing::{
-    BufferRemovalTiming, parse_buffer_removal_timing,
-};
+use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
@@ -42,7 +40,6 @@ const LAYER_VALUES: u8 = 3;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FrameOutputEffects {
     pub(crate) content_interpretation: Option<ContentInterpretation>,
-    pub(crate) buffer_removal_timings: Vec<BufferRemovalTiming>,
     pub(crate) metadata: Vec<MetadataUnit>,
 }
 
@@ -51,7 +48,6 @@ impl FrameOutputEffects {
     pub(crate) const fn empty() -> Self {
         Self {
             content_interpretation: None,
-            buffer_removal_timings: Vec::new(),
             metadata: Vec::new(),
         }
     }
@@ -161,6 +157,13 @@ struct QmSlot {
     user: Option<FrameUserQmLevel>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrtCount {
+    None,
+    One,
+    Multiple,
+}
+
 pub(crate) struct OutputEffectState {
     mfh: [Option<MultiFrameHeaderRecord>; MAX_MFH_NUM as usize],
     qm: [Option<QmSlot>; NUM_CUSTOM_QMS],
@@ -169,7 +172,7 @@ pub(crate) struct OutputEffectState {
     qm_obu_seen_since_frame: bool,
     content_interpretation: Option<ContentInterpretation>,
     ci_in_current_tu: Option<ContentInterpretation>,
-    brts: Vec<BufferRemovalTiming>,
+    brt_count: BrtCount,
     second_brt_offset: Option<ByteOffset>,
     ops_counts: BTreeMap<(ExtendedLayerId, u8), u8>,
     metadata: Vec<ActiveMetadata>,
@@ -186,7 +189,7 @@ impl OutputEffectState {
             qm_obu_seen_since_frame: false,
             content_interpretation: None,
             ci_in_current_tu: None,
-            brts: Vec::new(),
+            brt_count: BrtCount::None,
             second_brt_offset: None,
             ops_counts: BTreeMap::new(),
             metadata: Vec::new(),
@@ -304,7 +307,7 @@ impl OutputEffectState {
         else {
             return Err(DecodeHeaderStateError::MissingFrameOutputClassification.into());
         };
-        if !immediate_output && !implicit_output && self.brts.len() > 1 {
+        if !immediate_output && !implicit_output && self.brt_count == BrtCount::Multiple {
             let offset = self
                 .second_brt_offset
                 .ok_or(DecodeHeaderStateError::MissingBufferRemovalTimingOffset)?;
@@ -358,7 +361,6 @@ impl OutputEffectState {
     pub(crate) fn finish_frame(&mut self) -> FrameOutputEffects {
         let effects = FrameOutputEffects {
             content_interpretation: self.content_interpretation,
-            buffer_removal_timings: std::mem::take(&mut self.brts),
             metadata: self
                 .metadata
                 .iter()
@@ -368,6 +370,7 @@ impl OutputEffectState {
         };
         self.metadata
             .retain(|unit| unit.persistence != MetadataPersistence::No);
+        self.brt_count = BrtCount::None;
         self.second_brt_offset = None;
         effects
     }
@@ -564,16 +567,14 @@ impl OutputEffectState {
                 ));
             }
         }
-        self.brts.try_reserve(1).map_err(|_| {
-            DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: splot_recon::PlaneId::Y,
-                context: "buffer-removal-timing output-effect state",
-            })
-        })?;
-        if self.brts.len() == 1 {
-            self.second_brt_offset = Some(envelope.offset);
+        match self.brt_count {
+            BrtCount::None => self.brt_count = BrtCount::One,
+            BrtCount::One => {
+                self.brt_count = BrtCount::Multiple;
+                self.second_brt_offset = Some(envelope.offset);
+            }
+            BrtCount::Multiple => {}
         }
-        self.brts.push(brt);
         Ok(())
     }
 
@@ -877,6 +878,7 @@ fn effect_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use splot_core::headers::buffer_removal_timing::BufferRemovalTiming;
     use splot_core::headers::metadata::{MetadataHdrCll, MetadataPayload};
     use splot_core::obu::ObuHeader;
     use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
@@ -976,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_brts_follow_output_classification_and_drain_in_source_order() {
+    fn multiple_brts_follow_output_classification_and_reset_after_frame() {
         let Some((frame_envelope, sequence, base_core)) = olk_frame() else {
             return;
         };
@@ -995,16 +997,10 @@ mod tests {
                 .prepare_frame(frame_envelope, &immediate_core, &sequence, false, Some(4),)
                 .is_ok()
         );
-        let effects = immediate.finish_frame();
-        assert_eq!(
-            effects
-                .buffer_removal_timings
-                .iter()
-                .filter_map(BufferRemovalTiming::extended_layer_time)
-                .collect::<Vec<_>>(),
-            vec![0, 1]
-        );
-        assert!(immediate.finish_frame().buffer_removal_timings.is_empty());
+        assert_eq!(immediate.brt_count, BrtCount::Multiple);
+        let _ = immediate.finish_frame();
+        assert_eq!(immediate.brt_count, BrtCount::None);
+        assert_eq!(immediate.second_brt_offset, None);
 
         let mut implicit = OutputEffectState::new();
         assert!(observe_brt_time(&mut implicit, &first, 10).is_ok());
@@ -1017,7 +1013,9 @@ mod tests {
                 .prepare_frame(frame_envelope, &implicit_core, &sequence, false, Some(5),)
                 .is_ok()
         );
-        assert_eq!(implicit.finish_frame().buffer_removal_timings.len(), 2);
+        assert_eq!(implicit.brt_count, BrtCount::Multiple);
+        let _ = implicit.finish_frame();
+        assert_eq!(implicit.brt_count, BrtCount::None);
 
         let mut non_output = OutputEffectState::new();
         assert!(observe_brt_time(&mut non_output, &first, 10).is_ok());
@@ -1029,7 +1027,9 @@ mod tests {
                 .prepare_frame(frame_envelope, &non_output_core, &sequence, false, Some(6),)
                 .is_ok()
         );
-        assert_eq!(non_output.finish_frame().buffer_removal_timings.len(), 1);
+        assert_eq!(non_output.brt_count, BrtCount::One);
+        let _ = non_output.finish_frame();
+        assert_eq!(non_output.brt_count, BrtCount::None);
     }
 
     #[test]
@@ -1066,7 +1066,8 @@ mod tests {
             Some(crate::DecodeDiagnosticDetails::MalformedSource(_))
         ));
         assert_eq!(state.metadata.len(), 1);
-        assert_eq!(state.brts.len(), 2);
+        assert_eq!(state.brt_count, BrtCount::Multiple);
+        assert_eq!(state.second_brt_offset, Some(ByteOffset::new(20)));
     }
 
     #[test]
@@ -1104,7 +1105,7 @@ mod tests {
                     && issue.spec_section() == Some("5.12")
                     && issue.offset() == Some(ByteOffset::new(30))
         ));
-        assert!(eof_state.brts.is_empty());
+        assert_eq!(eof_state.brt_count, BrtCount::None);
 
         let mut invalid_tail = valid;
         invalid_tail.push(0x80);
@@ -1117,7 +1118,7 @@ mod tests {
                     && issue.spec_section() == Some("5.12")
                     && issue.offset() == Some(ByteOffset::new(40))
         ));
-        assert!(tail_state.brts.is_empty());
+        assert_eq!(tail_state.brt_count, BrtCount::None);
     }
 
     #[test]

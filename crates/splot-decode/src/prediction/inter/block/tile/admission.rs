@@ -278,16 +278,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 break;
             };
             resolve.grid.replay_flag_log(&row.flag_log);
-            if let Some(error) = row.terminal.take() {
-                return Err(error);
-            }
+            row.return_terminal_error()?;
             {
                 let ScheduledResolve { grid, state, .. } = &mut *resolve;
                 state.resolve_unit(grid, &context, &self.temporal, &mut row, self.tile_offset)
             }?;
-            if let Some(error) = row.terminal.take() {
-                return Err(error);
-            }
+            row.return_terminal_error()?;
             let bounds = row_gate.bounds_for_row(&row);
             if let Some(slot) = rows.get_mut(next) {
                 *slot = ScheduledRowState::Ready(ReadyReconRow {
@@ -490,7 +486,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     let mut rows = Vec::with_capacity(ready.len());
                     for mut ready in ready {
                         let mut row = scratch.with_installed(|scratch| {
-                            if ready.row.terminal.is_none() && !ready.row.motion_derived {
+                            if !ready.row.has_terminal_error() && !ready.row.motion_derived {
                                 mvres::derive_unit_motion_on_surface(
                                     &mut ready.row,
                                     &surface,
@@ -524,7 +520,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                             .entries
                             .iter()
                             .position(|entry| entry.command().is_some());
-                        record_banded_command_error(&mut row.precompute_error, first_remaining);
+                        record_banded_command_error(&mut row.failure, first_remaining);
                         rows.push(row);
                     }
                     return Ok(PreparedBatch::Banded { rows, band });
@@ -534,7 +530,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                         .into_iter()
                         .map(|mut ready| {
                             scratch.with_installed(|scratch| {
-                                if ready.row.terminal.is_none() && !ready.row.motion_derived {
+                                if !ready.row.has_terminal_error() && !ready.row.motion_derived {
                                     mvres::derive_unit_motion(
                                         &mut ready.row,
                                         ready.surface.as_mut(),
@@ -1105,7 +1101,7 @@ fn supports_owned_bands(
         return Err(LegacyReason::PARTIAL_TILE);
     }
     for row in rows {
-        if row.terminal.is_some() {
+        if row.has_terminal_error() {
             return Err(LegacyReason::TERMINAL);
         }
         for superblock in &row.superblocks {
@@ -1154,12 +1150,9 @@ fn supports_owned_bands(
 /// Reconstruction units one legacy precompute batch prepares.
 const LEGACY_BATCH_UNITS: usize = 4;
 
-fn record_banded_command_error(
-    error: &mut Option<(usize, crate::DecodeError)>,
-    first_remaining: Option<usize>,
-) {
+fn record_banded_command_error(failure: &mut ReconRowFailure, first_remaining: Option<usize>) {
     if let Some(index) = first_remaining {
-        let _ = error.get_or_insert_with(|| (index, invalid_inter_tile_scheduling_state()));
+        failure.record_precompute(index, invalid_inter_tile_scheduling_state());
     }
 }
 
@@ -1414,6 +1407,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
 
 #[cfg(test)]
 mod tests {
+    use super::super::ReconRowFailure;
     use super::{
         project_temporal_band, record_banded_command_error, restore_active_commit,
         safe_deblock_mi_end, take_active_commit, validate_commit_ordinal,
@@ -1476,61 +1470,64 @@ mod tests {
 
     #[test]
     fn banded_command_error_preserves_the_first_precompute_failure() {
-        let mut error = Some((
-            3,
-            splot_recon::ReconError::WorkspaceAllocationFailed {
+        let mut failure = ReconRowFailure::Precompute {
+            index: 3,
+            error: splot_recon::ReconError::WorkspaceAllocationFailed {
                 plane: splot_recon::PlaneId::Y,
                 context: "original banded precompute",
             }
             .into(),
-        ));
+        };
 
-        record_banded_command_error(&mut error, Some(7));
+        record_banded_command_error(&mut failure, Some(7));
 
         assert!(matches!(
-            error,
-            Some((
-                3,
-                crate::DecodeError::Reconstruction {
+            failure,
+            ReconRowFailure::Precompute {
+                index: 3,
+                error: crate::DecodeError::Reconstruction {
                     source: splot_recon::ReconError::WorkspaceAllocationFailed {
                         plane: splot_recon::PlaneId::Y,
                         context: "original banded precompute"
                     }
                 }
-            ))
+            }
         ));
     }
 
     #[test]
     fn banded_command_error_records_the_first_remaining_command() {
-        let mut error = None;
+        let mut failure = ReconRowFailure::None;
 
-        record_banded_command_error(&mut error, Some(5));
+        record_banded_command_error(&mut failure, Some(5));
 
         assert!(matches!(
-            &error,
-            Some((
-                5,
-                crate::DecodeError::HeaderState {
+            &failure,
+            ReconRowFailure::Precompute {
+                index: 5,
+                error: crate::DecodeError::HeaderState {
                     source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
                 }
-            ))
+            }
         ));
         assert!(
-            error
-                .as_ref()
-                .and_then(|(_, error)| crate::DecodeDiagnosticReport::from_decode_error(error))
-                .is_none()
+            match &failure {
+                ReconRowFailure::Precompute { error, .. } => {
+                    crate::DecodeDiagnosticReport::from_decode_error(error)
+                }
+                ReconRowFailure::None | ReconRowFailure::Terminal(_) => None,
+            }
+            .is_none()
         );
     }
 
     #[test]
     fn banded_command_error_leaves_complete_rows_clean() {
-        let mut error = None;
+        let mut failure = ReconRowFailure::None;
 
-        record_banded_command_error(&mut error, None);
+        record_banded_command_error(&mut failure, None);
 
-        assert!(error.is_none());
+        assert!(matches!(failure, ReconRowFailure::None));
     }
 
     #[test]

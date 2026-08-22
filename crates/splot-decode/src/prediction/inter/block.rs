@@ -14,9 +14,7 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{
-    MAX_TX_SIZE_RECT, TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2,
-};
+use splot_core::tables::conversion::{MAX_TX_SIZE_RECT, TX_HEIGHT, TX_WIDTH};
 use splot_recon::PlaneId as ReconPlaneId;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IDENTITY_WARP_PARAMS, InterIntraMode,

@@ -102,7 +102,7 @@ impl<T: ReconSample> OwnedFramePlaneRect<T> {
         let stride = self.rect.width();
         for row in 0..self.rect.height() {
             let source = row * stride;
-            let target_start = (self.rect.y() + row) * target.stride_samples + self.rect.x();
+            let target_start = (self.rect.y() + row) * target.stride_samples() + self.rect.x();
             // splot-copy-ok: commit an exclusive scheduler-owned row into the frame surface
             target.samples[target_start..target_start + stride]
                 .copy_from_slice(&self.samples[source..source + stride]);

@@ -36,7 +36,7 @@
 
 use crate::headers::frame::{
     CdefParams, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
-    MfhDeblockingView, gdf_per_block_is_coded,
+    MAX_CDEF_STRENGTH_SETS, MfhDeblockingView, gdf_per_block_is_coded,
 };
 use crate::headers::sequence::CdefOnSkipTxfm;
 use crate::write::bit_writer::BitWriter;
@@ -51,8 +51,6 @@ const CDEF_DAMPING_MAX: u8 = 6;
 /// `CdefStrengths` lower bound (AV2 v1.0.0 § 5.18.7.10): `cdef_strengths_minus_1` is `f(3)`,
 /// so `CdefStrengths = cdef_strengths_minus_1 + 1` is `1..=8`.
 const CDEF_STRENGTHS_MIN: u8 = 1;
-/// `CdefStrengths` upper bound (see [`CDEF_STRENGTHS_MIN`]).
-const CDEF_STRENGTHS_MAX: u8 = 8;
 /// `cdef_y_pri_strength` / `cdef_uv_pri_strength` are `f(4)` when coded (AV2 v1.0.0
 /// § 5.18.7.10), so each fits `0..16`.
 const CDEF_PRI_STRENGTH_MAX_PLUS_1: u8 = 16;
@@ -516,7 +514,7 @@ fn check_cdef_encodable(
             what: "cdef_damping",
         });
     }
-    if !(CDEF_STRENGTHS_MIN..=CDEF_STRENGTHS_MAX).contains(&strengths) {
+    if strengths < CDEF_STRENGTHS_MIN || usize::from(strengths) > MAX_CDEF_STRENGTH_SETS {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "cdef_strengths",
         });

@@ -32,8 +32,7 @@ fn terminal_row(error: crate::DecodeError) -> ReconRow {
         filter_records: TileFilterRecords::default(),
         motion_folded: false,
         motion_derived: false,
-        precompute_error: None,
-        terminal: Some(error),
+        failure: ReconRowFailure::Terminal(error),
     }
 }
 
@@ -84,7 +83,7 @@ fn terminal_parse_error_prevents_resolve_and_remains_first() {
         return;
     };
     assert!(matches!(
-        row.terminal.take(),
+        row.failure.take_terminal(),
         Some(crate::DecodeError::MalformedSource { issue })
             if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
                 && issue.spec_section() == Some("8.2.4")
@@ -116,6 +115,43 @@ fn terminal_parse_error_prevents_commit_side_effects() {
                 && issue.spec_section() == Some("8.2.4")
                 && issue.offset() == Some(offset)
     ));
+}
+
+#[test]
+fn terminal_failure_cannot_be_overwritten_by_precompute_failure() {
+    let mut failure = ReconRowFailure::None;
+    failure.record_terminal(crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into());
+    failure.record_terminal(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
+    failure.record_precompute(
+        11,
+        crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into(),
+    );
+
+    assert!(matches!(
+        failure.take_terminal(),
+        Some(crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
+        })
+    ));
+    assert!(failure.take_precompute().is_none());
+}
+
+#[test]
+fn terminal_failure_replaces_precompute_failure() {
+    let mut failure = ReconRowFailure::None;
+    failure.record_precompute(
+        13,
+        crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into(),
+    );
+    failure.record_terminal(crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into());
+
+    assert!(matches!(
+        failure.take_terminal(),
+        Some(crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
+        })
+    ));
+    assert!(failure.take_precompute().is_none());
 }
 
 #[test]
@@ -209,8 +245,11 @@ fn ready_row_pipeline_calls_a_terminal_parser_exactly_once() {
 }
 
 #[test]
-fn recon_row_entry_stays_compact() {
+fn recon_row_layout_stays_compact() {
+    assert_eq!(core::mem::size_of::<ReconRow>(), 336);
+    assert_eq!(core::mem::align_of::<ReconRow>(), 8);
     assert_eq!(core::mem::size_of::<ReconRowEntry>(), 424);
+    assert_eq!(core::mem::align_of::<ReconRowEntry>(), 8);
 }
 
 #[test]

@@ -91,8 +91,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// Both planes are tightly strided over the same storage size, so the row
     /// range is one contiguous run in each.
     fn copy_rows_into(&self, target: &mut Self, start: usize, end: usize) -> Result<()> {
-        if target.storage_size != self.storage_size || target.stride_samples != self.stride_samples
-        {
+        if target.storage_size != self.storage_size {
             return Err(ReconError::PlaneSizeMismatch {
                 plane: self.plane,
                 expected: self.storage_size,
@@ -111,7 +110,8 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 )?,
             });
         }
-        let range = start * self.stride_samples..end * self.stride_samples;
+        let stride_samples = self.stride_samples();
+        let range = start * stride_samples..end * stride_samples;
         let sealed = &self.samples[range.clone()];
         target.samples[range].copy_from_slice(sealed); // splot-copy-ok: seal completed rows for the stage that filters them
         Ok(())
@@ -259,7 +259,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         if target.clamp_rect_to_storage(rect)? != rect {
             return Ok(None);
         }
-        let stride_samples = target.stride_samples;
+        let stride_samples = target.stride_samples();
         let first = target.row_range(rect.y(), rect.x(), rect.width())?;
         let end = (rect.height() - 1)
             .checked_mul(stride_samples)

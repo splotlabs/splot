@@ -317,9 +317,9 @@ fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
     let with_tip = find_mode_ctx_with_tip(&grid, &block, Some((0, 1)));
     let wrong_pair = find_mode_ctx_with_tip(&grid, &block, Some((0, 2)));
 
-    assert_eq!(without_tip.new_mv_count, 0);
-    assert_eq!(wrong_pair.new_mv_count, 0);
-    assert_eq!(with_tip.new_mv_count, 2);
+    assert_eq!(without_tip.new_mv_context, 0);
+    assert_eq!(wrong_pair.new_mv_context, 0);
+    assert_eq!(with_tip.new_mv_context, 3);
     assert_eq!(block_neighbour_ctx(&grid, &block).tip_mode_ctx(), 2);
 }
 
@@ -1057,7 +1057,6 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
 
     let ctx = find_mode_ctx(&grid, &block0);
     assert_eq!(ctx.new_mv_context, 0, "top-left NewMvContext");
-    assert_eq!(ctx.new_mv_count, 0, "top-left NewMvCount");
     assert_eq!(ctx.warp_mv_count, 0, "top-left WarpMvCount");
 
     let nctx = block_neighbour_ctx(&grid, &block0);
@@ -1245,7 +1244,6 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
     let block1 = block_at(0, N4_32);
 
     let ctx = find_mode_ctx(&grid, &block1);
-    assert_eq!(ctx.new_mv_count, 2, "both left probes hit the NEWMV block");
     assert_eq!(ctx.new_mv_context, 3, "left-NEWMV NewMvContext");
 
     let nctx = block_neighbour_ctx(&grid, &block1);
@@ -1296,7 +1294,6 @@ fn block2_predicts_block0_mv_via_above_neighbour() {
     let block2 = block_at(N4_32, 0);
 
     let ctx = find_mode_ctx(&grid, &block2);
-    assert_eq!(ctx.new_mv_count, 2, "both above probes hit the NEWMV block");
     assert_eq!(ctx.new_mv_context, 3, "above-NEWMV NewMvContext");
 
     let stack = find_mv_stack(
@@ -1324,7 +1321,6 @@ fn block3_predicts_block0_mv_via_above_and_left() {
     let block3 = block_at(N4_32, N4_32);
 
     let ctx = find_mode_ctx(&grid, &block3);
-    assert_eq!(ctx.new_mv_count, 0, "NEARMV neighbours are not NEW MVs");
     assert_eq!(ctx.new_mv_context, 2, "above+left NEARMV NewMvContext");
 
     let nctx = block_neighbour_ctx(&grid, &block3);
@@ -1441,10 +1437,6 @@ fn single_ref_mode_ctx_matches_compound_list1_without_counting_list0_newmv() {
 
     let ctx = find_mode_ctx(&grid, &block1);
     assert_eq!(
-        ctx.new_mv_count, 0,
-        "list-1 ref match must not count list-0 NEWMV"
-    );
-    assert_eq!(
         ctx.new_mv_context, 1,
         "left list-1 match contributes nearestMatch only"
     );
@@ -1470,10 +1462,6 @@ fn single_ref_mode_ctx_counts_compound_list1_newmv_when_list1_matches() {
     let block1 = block_at(0, N4_32);
 
     let ctx = find_mode_ctx(&grid, &block1);
-    assert_eq!(
-        ctx.new_mv_count, 2,
-        "both left probes count the matching list-1 NEWMV"
-    );
     assert_eq!(ctx.new_mv_context, 3, "left NEWMV context");
 }
 
@@ -1623,10 +1611,6 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
     let sb2 = sb_block_at(N4_64, 0);
 
     let ctx = find_mode_ctx(&grid, &sb2);
-    assert_eq!(
-        ctx.new_mv_count, 2,
-        "both above probes hit SB0 across SB row"
-    );
     assert_eq!(ctx.new_mv_context, 3, "above-SB NewMvContext");
 
     let nctx = block_neighbour_ctx(&grid, &sb2);

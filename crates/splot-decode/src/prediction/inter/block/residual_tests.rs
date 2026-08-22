@@ -348,8 +348,6 @@ fn inter_residual_parse_scratch_reuses_tile_local_storage() {
             chroma_inter_tx_type: DCT_DCT,
         },
         block_index: 0,
-        uses_cctx: false,
-        u_nonzero: true,
     });
     let luma_capacity = scratch.luma_tx_types.values.capacity();
     let luma_pointer = scratch.luma_tx_types.values.as_ptr();

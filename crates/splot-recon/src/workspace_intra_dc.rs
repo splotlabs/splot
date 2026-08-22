@@ -134,19 +134,20 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         self.ensure_rect(rect)?;
         let edges = self.dc_edges_for_rect(rect)?;
         let output_start = self.sample_index(rect.x(), rect.y())?;
+        let stride_samples = self.stride_samples();
         predict_intra_dc_rect_into(
             bit_depth,
             size,
             edges.as_dc_edges(),
             &mut self.samples[output_start..],
-            self.stride_samples,
+            stride_samples,
         )?;
         apply_intra_ibp_dc_rect(
             bit_depth,
             size,
             edges.as_dc_edges(),
             &mut self.samples[output_start..],
-            self.stride_samples,
+            stride_samples,
         )
     }
 }

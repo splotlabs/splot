@@ -5,6 +5,7 @@
 
 use super::super::{OwnedFilterJob, OwnedFilterSetup};
 use super::*;
+use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 use splot_recon::{BitDepth, CurrentFrameWorkspace};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -75,6 +76,57 @@ fn lr_sink(snapshot: &[u8]) -> WienerNsLrReconSink<u8> {
     sink.tx_skip_grid =
         Some(crate::filters::wienerns_lr::WienerNsLrTxSkipGrid::new(4, 4, vec![0; 16]).unwrap());
     sink
+}
+
+fn skip_grid_records(skip_flag: bool, eob: usize) -> Vec<WienerNsLrTxSkipTransformRecord> {
+    vec![WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 0,
+        rows: 4,
+        cols: 4,
+        skip_flag,
+        eob,
+    }]
+}
+
+#[test]
+fn cdef_only_builds_cdef_grid_without_retaining_lr_grid() {
+    let mut core = switchable_core();
+    core.cdef_params
+        .as_mut()
+        .unwrap()
+        .cdef_on_skip_txfm_frame_enable = Some(false);
+    core.lr_params = None;
+    let workspace = crate::test_support::yuv420_workspace(16, 16, 0);
+    let mut sink =
+        WienerNsLrReconSink::for_final_filtering(workspace, 16, 16, splot_recon::BitDepth::Eight);
+    sink.filter_records.tx_skip_records = skip_grid_records(true, 0);
+
+    assert!(!sink.needs_lr_tx_skip_grid(&core));
+    assert_eq!(
+        sink.cdef_skip_grid(&core, 4, 4).unwrap(),
+        Some(crate::filters::cdef::CdefSkipGrid::new(4, 4, vec![true; 16]).unwrap())
+    );
+    assert!(sink.tx_skip_grid.is_none());
+}
+
+#[test]
+fn luma_lr_path_retains_its_distinct_tx_skip_grid() {
+    let core = switchable_core();
+    let workspace = crate::test_support::yuv420_workspace(16, 16, 0);
+    let mut sink =
+        WienerNsLrReconSink::for_final_filtering(workspace, 16, 16, splot_recon::BitDepth::Eight);
+    sink.filter_records.tx_skip_records = skip_grid_records(false, 0);
+    sink.filter_records.lr_source_blocks.push(block(0, 0, 0));
+
+    assert!(sink.needs_lr_tx_skip_grid(&core));
+    sink.ensure_tx_skip_grid(4, 4).unwrap();
+    let grid = sink.tx_skip_grid.as_ref().unwrap();
+    assert_eq!(
+        grid.lookup(crate::filters::wienerns_lr::WienerNsLrTxSkipLookup { row: 0, col: 0 })
+            .unwrap(),
+        1
+    );
 }
 
 const fn deblock_prediction(r: usize, c: usize) -> crate::filters::deblock::DeblockPredictionUnit {

@@ -210,7 +210,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         intra_edge,
         luma_context,
     )?;
-    read_plane_prediction(workspace, u_plane, &mut scratch.cctx_u_prediction)?;
+    read_plane_prediction(workspace, u_plane, &mut scratch.cctx_mut().u_prediction)?;
     let v_prediction_block = prediction_only_coeff_block(&v_coeffs);
     v_plane.reconstruct(
         scratch,
@@ -222,23 +222,24 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         intra_edge,
         luma_context,
     )?;
-    read_plane_prediction(workspace, v_plane, &mut scratch.cctx_v_prediction)?;
+    let cctx = scratch.cctx_mut();
+    read_plane_prediction(workspace, v_plane, &mut cctx.v_prediction)?;
     reconstruct_general_intra_chroma_cctx_pair_into(
         &u_coeffs,
-        &scratch.cctx_u_prediction,
+        &cctx.u_prediction,
         &v_coeffs,
-        &scratch.cctx_v_prediction,
+        &cctx.v_prediction,
         qindex,
         u_plane.tx.width_log2(),
         u_plane.tx.height_log2(),
         cctx_type,
         false,
         u_plane.block_ctx.bit_depth(),
-        &mut scratch.cctx_u_output,
-        &mut scratch.cctx_v_output,
+        &mut cctx.u_output,
+        &mut cctx.v_output,
     )?;
-    write_plane_block(workspace, u_plane, &scratch.cctx_u_output)?;
-    write_plane_block(workspace, v_plane, &scratch.cctx_v_output)?;
+    write_plane_block(workspace, u_plane, &cctx.u_output)?;
+    write_plane_block(workspace, v_plane, &cctx.v_output)?;
     Ok(())
 }
 

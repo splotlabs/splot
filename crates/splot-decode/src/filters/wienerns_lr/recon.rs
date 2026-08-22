@@ -506,7 +506,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?,
             );
         }
-        if self.needs_tx_skip_grid(&core) {
+        if self.needs_lr_tx_skip_grid(&core) {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
         let cdef_skip_grid = self.cdef_skip_grid(&core, mi_rows, mi_cols)?;
@@ -1361,12 +1361,8 @@ impl StripeChain<'_> {
 }
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
-    fn needs_tx_skip_grid(&self, core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
-        let cdef_needs_skip_grid = core
-            .cdef_params
-            .as_ref()
-            .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false));
-        let luma_lr_needs_skip_grid = core.lr_params.as_ref().is_some_and(|lr| {
+    fn needs_lr_tx_skip_grid(&self, core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
+        core.lr_params.as_ref().is_some_and(|lr| {
             lr.planes.get(PlaneId::Y.index()).is_some_and(|plane| {
                 matches!(
                     plane.restoration_type,
@@ -1381,8 +1377,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .filter_records
             .lr_source_blocks
             .iter()
-            .any(|block| block.plane == PlaneId::Y.index());
-        cdef_needs_skip_grid || luma_lr_needs_skip_grid
+            .any(|block| block.plane == PlaneId::Y.index())
     }
 
     fn ensure_tx_skip_grid(&mut self, mi_rows: usize, mi_cols: usize) -> Result<()> {
@@ -1455,6 +1450,31 @@ pub(crate) fn chroma_transform_deblock_block(
     lossless: bool,
 ) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
     let (log2_width, log2_height) = tx_size_log2(chroma_tx)?;
+    chroma_transform_deblock_block_with_log2(
+        plane_id,
+        x,
+        y,
+        chroma_tx,
+        log2_width,
+        log2_height,
+        chroma_subsampling,
+        qindex,
+        lossless,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chroma_transform_deblock_block_with_log2(
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    chroma_tx: usize,
+    log2_width: u32,
+    log2_height: u32,
+    chroma_subsampling: (u32, u32),
+    qindex: u32,
+    lossless: bool,
+) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
     let plane_index = match plane_id {
         PlaneId::U => 0,
         PlaneId::V => 1,

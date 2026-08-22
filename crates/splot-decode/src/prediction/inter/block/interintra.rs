@@ -85,7 +85,6 @@ pub(super) struct InterIntraPlanePrediction {
     pub(super) y: usize,
     pub(super) size: IntraRectBlockSize,
     sample_start: usize,
-    sample_len: usize,
 }
 
 #[derive(Debug)]
@@ -113,7 +112,7 @@ impl<T> InterIntraScratch<T> {
             .iter()
             .flatten()
             .map(|plane| {
-                let end = plane.sample_start + plane.sample_len;
+                let end = plane.sample_start + plane.size.sample_count();
                 (*plane, &self.samples[plane.sample_start..end])
             })
     }
@@ -183,11 +182,8 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                 _ => DecodeError::from(error),
             })?;
         let sample_start = scratch.samples.len();
-        let sample_len = w
-            .checked_mul(h)
-            .ok_or(DecodeHeaderStateError::InvalidBlockGeometry)?;
         let sample_end = sample_start
-            .checked_add(sample_len)
+            .checked_add(size.sample_count())
             .ok_or(DecodeHeaderStateError::InvalidBlockGeometry)?;
         scratch.samples.resize(sample_end, T::default());
         let samples = &mut scratch.samples[sample_start..];
@@ -278,7 +274,6 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
             y,
             size,
             sample_start,
-            sample_len,
         };
         scratch.planes[scratch.plane_count] = Some(prediction);
         scratch.plane_count += 1;

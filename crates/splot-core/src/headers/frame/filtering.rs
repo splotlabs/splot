@@ -31,10 +31,15 @@ const GDF_MIN_SIZE: u32 = 128;
 /// `MI_SIZE` (AV2 v1.0.0 § 3): smallest mode-info block size in luma samples.
 const MI_SIZE: u32 = 4;
 
-/// `CdefStrengths` is `cdef_strengths_minus_1 + 1` with `cdef_strengths_minus_1`
-/// read as `f(3)` (§ 5.18.7.10), so it is at most `8`. Bounds the per-strength loop
-/// allocation.
-const MAX_CDEF_STRENGTHS: usize = 8;
+/// Maximum number of CDEF strength sets in one frame.
+///
+/// AV2 v1.0.0 § 5.18.7.10
+/// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-10`) reads
+/// `cdef_strengths_minus_1` as `f(3)` and derives
+/// `CdefStrengths = cdef_strengths_minus_1 + 1`, so an enabled frame has at most eight
+/// sets. § 6.17.7.6 gives that field its number-of-strength-settings semantics
+/// (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-7-6`).
+pub const MAX_CDEF_STRENGTH_SETS: usize = 8;
 
 /// `Block_Width[SbSize]` (AV2 v1.0.0): the superblock width in luma samples.
 const fn block_width(sb_size: SuperblockSize) -> u32 {
@@ -154,7 +159,7 @@ pub struct GdfParams {
 }
 
 /// One `(i)` strength set parsed in `cdef_params()` (AV2 v1.0.0 § 5.18.7.10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CdefStrengthSet {
     /// Primary luma strength derived from the packed AVM CDEF strength value.
     pub y_pri_strength: u8,
@@ -168,11 +173,91 @@ pub struct CdefStrengthSet {
     pub uv_sec_strength: u8,
 }
 
+/// Fixed storage for the active CDEF strength-set prefix (AV2 v1.0.0 § 5.18.7.10).
+///
+/// Disabled frames use an empty prefix. Enabled parser output contains between one and
+/// [`MAX_CDEF_STRENGTH_SETS`] entries. The unused tail is kept private and exposed only
+/// through [`Self::as_slice`] / iteration, so consumers cannot accidentally process it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CdefStrengthSets {
+    values: [CdefStrengthSet; MAX_CDEF_STRENGTH_SETS],
+    len: u8,
+}
+
+impl CdefStrengthSets {
+    /// Creates empty CDEF strength-set storage for a disabled frame.
+    pub const fn empty() -> Self {
+        Self {
+            values: [CdefStrengthSet {
+                y_pri_strength: 0,
+                y_sec_strength: 0,
+                uv_pri_strength: 0,
+                uv_sec_strength: 0,
+            }; MAX_CDEF_STRENGTH_SETS],
+            len: 0,
+        }
+    }
+
+    /// Copies a validated active prefix into fixed CDEF strength-set storage.
+    ///
+    /// Returns `None` when `values` exceeds the § 5.18.7.10 maximum.
+    pub fn from_slice(values: &[CdefStrengthSet]) -> Option<Self> {
+        if values.len() > MAX_CDEF_STRENGTH_SETS {
+            return None;
+        }
+        let mut storage = Self::empty();
+        storage.values[..values.len()].copy_from_slice(values);
+        storage.len = values.len() as u8;
+        Some(storage)
+    }
+
+    /// Returns the validated active prefix.
+    pub fn as_slice(&self) -> &[CdefStrengthSet] {
+        &self.values[..usize::from(self.len)]
+    }
+
+    /// Returns the active strength-set count.
+    pub const fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Returns whether the active prefix is empty.
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Iterates over the active strength-set prefix.
+    pub fn iter(&self) -> core::slice::Iter<'_, CdefStrengthSet> {
+        self.as_slice().iter()
+    }
+}
+
+impl core::fmt::Debug for CdefStrengthSets {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_list().entries(self.as_slice()).finish()
+    }
+}
+
+impl Default for CdefStrengthSets {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a CdefStrengthSets {
+    type Item = &'a CdefStrengthSet;
+    type IntoIter = core::slice::Iter<'a, CdefStrengthSet>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Parsed `cdef_params()` (AV2 v1.0.0 § 5.18.7.10).
 ///
 /// Fields after `cdef_frame_enable` are present only when CDEF is frame-enabled (the
 /// disabled paths return early per the mirror).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CdefParams {
     /// `cdef_frame_enable`: `0` when `CodedLossless || !enable_cdef`, inferred `1` for
@@ -188,7 +273,7 @@ pub struct CdefParams {
     pub cdef_on_skip_txfm_frame_enable: Option<bool>,
     /// The `CdefStrengths` parsed strength sets, present only when CDEF is
     /// frame-enabled.
-    pub strengths: Vec<CdefStrengthSet>,
+    pub strengths: CdefStrengthSets,
 }
 
 /// Parses `deblocking_filter_params()` (AV2 v1.0.0 § 5.18.5.2,
@@ -500,7 +585,7 @@ pub fn parse_cdef_params(
             cdef_damping: None,
             cdef_strengths: None,
             cdef_on_skip_txfm_frame_enable: None,
-            strengths: Vec::new(),
+            strengths: CdefStrengthSets::empty(),
         });
     }
 
@@ -513,21 +598,27 @@ pub fn parse_cdef_params(
         CdefOnSkipTxfm::Disabled => false,
     };
 
-    let mut strengths = Vec::with_capacity(usize::from(cdef_strengths).min(MAX_CDEF_STRENGTHS));
-    for _ in 0..cdef_strengths {
+    let mut strength_values = [CdefStrengthSet::default(); MAX_CDEF_STRENGTH_SETS];
+    let mut strength_len = 0u8;
+    for slot in strength_values.iter_mut().take(usize::from(cdef_strengths)) {
         let (y_pri_strength, y_sec_strength) = read_cdef_strength(reader)?;
         let (uv_pri_strength, uv_sec_strength) = if num_planes > 1 {
             read_cdef_strength(reader)?
         } else {
             (0, 0)
         };
-        strengths.push(CdefStrengthSet {
+        *slot = CdefStrengthSet {
             y_pri_strength,
             y_sec_strength,
             uv_pri_strength,
             uv_sec_strength,
-        });
+        };
+        strength_len += 1;
     }
+    let strengths = CdefStrengthSets {
+        values: strength_values,
+        len: strength_len,
+    };
 
     Ok(CdefParams {
         cdef_frame_enable: true,
@@ -876,6 +967,7 @@ mod tests {
         let mut r = reader(&[]);
         let params = parse_cdef_params(&mut r, true, 3, &base_filter()).unwrap();
         assert!(!params.cdef_frame_enable);
+        assert!(params.strengths.is_empty());
         assert_eq!(r.consumed_bits(), 0);
     }
 
@@ -914,14 +1006,60 @@ mod tests {
         assert_eq!(params.cdef_strengths, Some(2));
         assert_eq!(params.cdef_on_skip_txfm_frame_enable, Some(true));
         assert_eq!(params.strengths.len(), 2);
-        assert_eq!(params.strengths[0].y_pri_strength, 9);
-        assert_eq!(params.strengths[0].y_sec_strength, 4); // 3 -> 4
-        assert_eq!(params.strengths[0].uv_pri_strength, 0);
-        assert_eq!(params.strengths[0].uv_sec_strength, 2);
-        assert_eq!(params.strengths[1].y_pri_strength, 0);
-        assert_eq!(params.strengths[1].y_sec_strength, 1);
-        assert_eq!(params.strengths[1].uv_pri_strength, 5);
-        assert_eq!(params.strengths[1].uv_sec_strength, 4); // 3 -> 4
+        let strengths = params.strengths.as_slice();
+        assert_eq!(strengths[0].y_pri_strength, 9);
+        assert_eq!(strengths[0].y_sec_strength, 4); // 3 -> 4
+        assert_eq!(strengths[0].uv_pri_strength, 0);
+        assert_eq!(strengths[0].uv_sec_strength, 2);
+        assert_eq!(strengths[1].y_pri_strength, 0);
+        assert_eq!(strengths[1].y_sec_strength, 1);
+        assert_eq!(strengths[1].uv_pri_strength, 5);
+        assert_eq!(strengths[1].uv_sec_strength, 4); // 3 -> 4
+    }
+
+    #[test]
+    fn cdef_max_strength_count_fits_fixed_storage() {
+        let mut filter = base_filter();
+        filter.single_picture_header_flag = true;
+        let mut bits = Bits::default();
+        bits.f(0, 2); // cdef_damping_minus_3
+        bits.f(7, 3); // cdef_strengths_minus_1 -> CdefStrengths = 8
+        bits.bit(1); // cdef_on_skip_txfm_frame_enable
+        for _ in 0..MAX_CDEF_STRENGTH_SETS {
+            bits.bit(1); // cdef_y_pri_zero
+            bits.f(0, 2); // cdef_y_sec_strength
+            bits.bit(1); // cdef_uv_pri_zero
+            bits.f(0, 2); // cdef_uv_sec_strength
+        }
+        let data = bits.into_bytes();
+        let params = parse_cdef_params(&mut reader(&data), false, 3, &filter).unwrap();
+        assert_eq!(params.cdef_strengths, Some(8));
+        assert_eq!(params.strengths.len(), MAX_CDEF_STRENGTH_SETS);
+    }
+
+    #[test]
+    fn cdef_strength_storage_rejects_over_capacity_prefix() {
+        assert!(
+            CdefStrengthSets::from_slice(&[CdefStrengthSet::default(); MAX_CDEF_STRENGTH_SETS + 1])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cdef_strength_storage_debug_shows_only_active_prefix() {
+        assert_eq!(format!("{:?}", CdefStrengthSets::empty()), "[]");
+
+        let strengths = CdefStrengthSets::from_slice(&[CdefStrengthSet {
+            y_pri_strength: 1,
+            y_sec_strength: 2,
+            uv_pri_strength: 3,
+            uv_sec_strength: 4,
+        }])
+        .unwrap();
+        assert_eq!(
+            format!("{strengths:?}"),
+            "[CdefStrengthSet { y_pri_strength: 1, y_sec_strength: 2, uv_pri_strength: 3, uv_sec_strength: 4 }]"
+        );
     }
 
     #[test]
@@ -938,9 +1076,10 @@ mod tests {
         let mut r = reader(&data);
         let params = parse_cdef_params(&mut r, false, 1, &base_filter()).unwrap();
         assert_eq!(params.strengths.len(), 1);
-        assert_eq!(params.strengths[0].y_pri_strength, 7);
-        assert_eq!(params.strengths[0].uv_pri_strength, 0);
-        assert_eq!(params.strengths[0].uv_sec_strength, 0);
+        let strength = &params.strengths.as_slice()[0];
+        assert_eq!(strength.y_pri_strength, 7);
+        assert_eq!(strength.uv_pri_strength, 0);
+        assert_eq!(strength.uv_sec_strength, 0);
     }
 
     #[test]
@@ -999,6 +1138,21 @@ mod tests {
         let mut r = reader(&[]);
         assert!(matches!(
             parse_cdef_params(&mut r, false, 3, &base_filter()),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
+    fn cdef_eof_inside_max_strength_prefix_is_structured_error() {
+        let mut bits = Bits::default();
+        bits.bit(1); // cdef_frame_enable
+        bits.f(0, 2); // cdef_damping_minus_3
+        bits.f(7, 3); // cdef_strengths_minus_1 -> CdefStrengths = 8
+        bits.bit(1); // cdef_on_skip_txfm_frame_enable
+        bits.bit(1); // first cdef_y_pri_zero; cdef_y_sec_strength is missing
+        let data = bits.into_bytes();
+        assert!(matches!(
+            parse_cdef_params(&mut reader(&data), false, 3, &base_filter()),
             Err(Error::UnexpectedEof { .. })
         ));
     }

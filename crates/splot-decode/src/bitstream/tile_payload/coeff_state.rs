@@ -207,7 +207,6 @@ impl Drop for super::general_intra_residual::LumaCoeffBlock {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockState {
-    width: usize,
     height: usize,
     stride: usize,
     level: Vec<u8>,
@@ -239,7 +238,6 @@ impl TransformCoeffBlockState {
             }
         };
         Ok(Self {
-            width,
             height,
             stride,
             level,
@@ -259,7 +257,7 @@ impl TransformCoeffBlockState {
 
     #[must_use]
     pub(crate) const fn width(&self) -> usize {
-        self.width
+        self.stride - LEVEL_GRID_PAD
     }
 
     #[must_use]
@@ -281,7 +279,7 @@ impl TransformCoeffBlockState {
     /// Number of real (unpadded) coefficient positions in the block.
     #[must_use]
     pub(crate) const fn coeff_count(&self) -> usize {
-        self.width * self.height
+        self.quant.len()
     }
 
     #[must_use]
@@ -342,12 +340,13 @@ impl TransformCoeffBlockState {
     }
 
     fn index(&self, row: usize, col: usize) -> Result<usize, TileCoeffStateError> {
-        if row >= self.height || col >= self.width {
+        let width = self.width();
+        if row >= self.height || col >= width {
             return Err(TileCoeffStateError::TransformCoordinateOutOfBounds {
                 row,
                 col,
                 height: self.height,
-                width: self.width,
+                width,
             });
         }
         row.checked_mul(self.stride)

@@ -213,6 +213,108 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
     }
 }
 
+#[test]
+fn invalid_inter_residual_tx_size_is_reconstruction_state() {
+    let residual_blocks = [super::super::InterResidualBlock {
+        plane: PlaneId::Y,
+        x: 0,
+        y: 0,
+        tx_size: usize::MAX,
+        log2_width: 0,
+        log2_height: 0,
+        cctx_pair_delta: 0,
+        coeffs: all_zero_inter_coeff_block(),
+    }];
+    let residual = super::super::InterResidual { block_range: 0..1 };
+    let mut scratch = super::super::InterResidualReconScratch::default();
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+        4,
+        4,
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+    )
+    .unwrap();
+
+    let error = super::super::add_inter_residual_to_workspace(
+        &mut scratch,
+        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
+        &residual,
+        &residual_blocks,
+        0,
+        false,
+        false,
+        false,
+        BitDepth::Eight,
+        ByteOffset::new(47),
+    )
+    .expect_err("invalid stored transform size");
+
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::InvalidInterResidualReconstruction,
+        }
+    ));
+}
+
+#[test]
+fn invalid_inter_residual_cctx_tx_size_fails_closed() {
+    let mut u_coeffs = all_zero_inter_coeff_block();
+    u_coeffs.cctx_type = Some(1);
+    let residual_blocks = [
+        super::super::InterResidualBlock {
+            plane: PlaneId::U,
+            x: 0,
+            y: 0,
+            tx_size: usize::MAX,
+            log2_width: 0,
+            log2_height: 0,
+            cctx_pair_delta: 1,
+            coeffs: u_coeffs,
+        },
+        super::super::InterResidualBlock {
+            plane: PlaneId::V,
+            x: 0,
+            y: 0,
+            tx_size: usize::MAX,
+            log2_width: 0,
+            log2_height: 0,
+            cctx_pair_delta: -1,
+            coeffs: all_zero_inter_coeff_block(),
+        },
+    ];
+    let residual = super::super::InterResidual { block_range: 0..2 };
+    let mut scratch = super::super::InterResidualReconScratch::default();
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+        16,
+        16,
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+    )
+    .unwrap();
+
+    let error = super::super::add_inter_residual_to_workspace(
+        &mut scratch,
+        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
+        &residual,
+        &residual_blocks,
+        0,
+        false,
+        false,
+        false,
+        BitDepth::Eight,
+        ByteOffset::new(47),
+    )
+    .expect_err("invalid stored CCTX transform size");
+
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::InvalidInterResidualReconstruction,
+        }
+    ));
+}
+
 fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
     let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
     let mut header = parsed.header.expect("SEF fixture has an IVF header");

@@ -623,10 +623,13 @@ pub(super) fn prepass_write_is_contained(
                 let Some(storage) = storage else {
                     return false;
                 };
-                let Some(width) = 1usize.checked_shl(block.log2_width) else {
+                let Ok((log2_width, log2_height)) = super::super::inter_residual_log2(block) else {
                     return false;
                 };
-                let Some(height) = 1usize.checked_shl(block.log2_height) else {
+                let Some(width) = 1usize.checked_shl(log2_width) else {
+                    return false;
+                };
+                let Some(height) = 1usize.checked_shl(log2_height) else {
                     return false;
                 };
                 clipped_rect_is_inside_band(
@@ -686,6 +689,7 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use splot_core::span::ByteOffset;
+    use splot_core::tables::conversion::{TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2};
     use splot_recon::{
         BitDepth, DecodedFrameInfo, InterpolationFilter, OutputIndex, PixelFormat, PlaneId,
         PlaneRect, PlaneSize,
@@ -769,15 +773,24 @@ mod tests {
         plane: PlaneId,
         x: usize,
         y: usize,
-        log2_width: u32,
-        log2_height: u32,
+        tx_size: usize,
     ) -> InterResidual {
         let start = blocks.len();
+        let log2_width = TX_WIDTH_LOG2
+            .get(tx_size)
+            .copied()
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(0);
+        let log2_height = TX_HEIGHT_LOG2
+            .get(tx_size)
+            .copied()
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(0);
         blocks.push(InterResidualBlock {
             plane,
             x,
             y,
-            tx_size: 0,
+            tx_size,
             log2_width,
             log2_height,
             cctx_pair_delta: 0,
@@ -794,6 +807,14 @@ mod tests {
         InterResidual {
             block_range: start..blocks.len(),
         }
+    }
+
+    fn tx_size_for(width: usize, height: usize) -> usize {
+        TX_WIDTH
+            .iter()
+            .zip(&TX_HEIGHT)
+            .position(|(&w, &h)| w == width as i32 && h == height as i32)
+            .expect("transform size")
     }
 
     #[test]
@@ -836,8 +857,22 @@ mod tests {
         let mut residual_crossing = command(0, 0, 64, 64);
         let mut blocks = Vec::new();
         residual_crossing.placed.block.residual =
-            Some(residual(&mut blocks, PlaneId::Y, 0, 63, 1, 1));
+            Some(residual(&mut blocks, PlaneId::Y, 0, 63, tx_size_for(4, 4)));
         assert!(!residual_crossing.prepass_write_is_contained(
+            [0, 0],
+            16,
+            info(128, 128, PixelFormat::Monochrome),
+            &blocks,
+        ));
+    }
+
+    #[test]
+    fn footprint_rejects_invalid_residual_tx_size() {
+        let mut command = command(0, 0, 64, 64);
+        let mut blocks = Vec::new();
+        command.placed.block.residual = Some(residual(&mut blocks, PlaneId::Y, 0, 0, usize::MAX));
+
+        assert!(!command.prepass_write_is_contained(
             [0, 0],
             16,
             info(128, 128, PixelFormat::Monochrome),
@@ -852,16 +887,25 @@ mod tests {
             (PixelFormat::Yuv422, 64usize),
             (PixelFormat::Yuv444, 64usize),
         ] {
-            let log2_height = plane_height.ilog2();
             let mut blocks = Vec::new();
             let mut exact = command(0, 0, 64, 64);
-            exact.placed.block.residual =
-                Some(residual(&mut blocks, PlaneId::U, 0, 0, 1, log2_height));
+            exact.placed.block.residual = Some(residual(
+                &mut blocks,
+                PlaneId::U,
+                0,
+                0,
+                tx_size_for(16, plane_height),
+            ));
             assert!(exact.prepass_write_is_contained([0, 0], 16, info(128, 128, format), &blocks,));
 
             let mut crossing = command(0, 0, 64, 64);
-            crossing.placed.block.residual =
-                Some(residual(&mut blocks, PlaneId::V, 0, plane_height - 1, 1, 1));
+            crossing.placed.block.residual = Some(residual(
+                &mut blocks,
+                PlaneId::V,
+                0,
+                plane_height - 1,
+                tx_size_for(4, 4),
+            ));
             assert!(!crossing.prepass_write_is_contained(
                 [0, 0],
                 16,
@@ -872,7 +916,8 @@ mod tests {
 
         let mut monochrome = command(0, 0, 64, 64);
         let mut blocks = Vec::new();
-        monochrome.placed.block.residual = Some(residual(&mut blocks, PlaneId::U, 0, 0, 1, 1));
+        monochrome.placed.block.residual =
+            Some(residual(&mut blocks, PlaneId::U, 0, 0, tx_size_for(4, 4)));
         assert!(!monochrome.prepass_write_is_contained(
             [0, 0],
             16,

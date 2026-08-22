@@ -33,12 +33,6 @@ where
     fitting.or(fallback).map(|(index, _)| index)
 }
 
-fn recycle_buffer<B>(buffers: &mut Vec<B>, buffer: B, capacity: usize, max_buffers: usize) {
-    if capacity != 0 && buffers.len() < max_buffers && buffers.try_reserve(1).is_ok() {
-        buffers.push(buffer);
-    }
-}
-
 /// Why a stripe/window copy failed: inconsistent geometry, or storage that
 /// could not be reserved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,9 +77,10 @@ fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
         return;
     }
     buffer.clear();
-    let capacity = buffer.capacity();
     let mut buffers = lock_stripe_sample_buffers();
-    recycle_buffer(&mut buffers, buffer, capacity, MAX_RETAINED_STRIPE_BUFFERS);
+    if buffers.len() < MAX_RETAINED_STRIPE_BUFFERS && buffers.try_reserve(1).is_ok() {
+        buffers.push(buffer);
+    }
 }
 
 /// A read view of one frame plane, or of a contiguous row window of it.
@@ -264,16 +259,14 @@ fn recycle_window_buffer<T: ReconSample>(mut buffer: Vec<T>) {
         return;
     }
     buffer.clear();
-    let capacity = buffer.capacity();
     let mut buffers = WINDOW_SAMPLE_BUFFERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    recycle_buffer(
-        &mut buffers,
-        Box::new(buffer),
-        capacity,
-        MAX_RETAINED_WINDOW_BUFFERS,
-    );
+    if buffers.len() < MAX_RETAINED_WINDOW_BUFFERS && buffers.try_reserve(1).is_ok() {
+        buffers.push(Box::new(buffer));
+    } else {
+        drop(buffer);
+    }
 }
 
 /// One owned copy of the deblocked rows a run of filter stripes reads.
