@@ -17,8 +17,6 @@ pub struct Plane<T: ReconSample> {
     storage_size: PlaneSize,
     stride_samples: usize,
     visible_rect: PlaneRect,
-    required_samples: usize,
-    allocation_bytes: usize,
     samples: Vec<T>,
 }
 
@@ -61,7 +59,7 @@ impl<T: ReconSample> Plane<T> {
             });
         }
 
-        let allocation_bytes = required_samples.checked_mul(mem::size_of::<T>()).ok_or(
+        required_samples.checked_mul(mem::size_of::<T>()).ok_or(
             ReconError::ArithmeticOverflow {
                 context: "plane allocation byte count",
             },
@@ -71,8 +69,6 @@ impl<T: ReconSample> Plane<T> {
             storage_size,
             stride_samples,
             visible_rect,
-            required_samples,
-            allocation_bytes,
             samples,
         })
     }
@@ -99,12 +95,12 @@ impl<T: ReconSample> Plane<T> {
 
     /// Returns the required backing sample count.
     pub const fn required_samples(&self) -> usize {
-        self.required_samples
+        self.samples.len()
     }
 
     /// Returns the backing allocation size in bytes for the sample type.
     pub const fn allocation_bytes(&self) -> usize {
-        self.allocation_bytes
+        self.samples.len() * mem::size_of::<T>()
     }
 
     /// Returns the complete backing sample buffer, including padding.

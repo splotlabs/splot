@@ -95,18 +95,6 @@ impl WienerNsLrTxSkipGrid {
         Ok(Self { rows, cols, values })
     }
 
-    pub(crate) const fn rows(&self) -> usize {
-        self.rows
-    }
-
-    pub(crate) const fn cols(&self) -> usize {
-        self.cols
-    }
-
-    pub(crate) fn into_values(self) -> Vec<u8> {
-        self.values
-    }
-
     pub(crate) fn lookup(&self, lookup: WienerNsLrTxSkipLookup) -> ReconResult<i32> {
         if lookup.row >= self.rows || lookup.col >= self.cols {
             return Err(ReconError::PcWienerInvalidBounds {
@@ -161,8 +149,65 @@ pub(crate) fn derive_cdef_skip_grid(
     rows: usize,
     cols: usize,
     records: &[WienerNsLrTxSkipTransformRecord],
-) -> ReconResult<WienerNsLrTxSkipGrid> {
-    derive_wienerns_lr_skip_grid(rows, cols, records, |record| record.skip_flag)
+) -> ReconResult<crate::filters::cdef::CdefSkipGrid> {
+    let expected = wienerns_lr_tx_skip_grid_len(rows, cols)?;
+    let mut values = vec![false; expected];
+    let mut written = vec![false; expected];
+    let mut populated = 0usize;
+    for record in records {
+        write_cdef_skip_record(
+            rows,
+            cols,
+            record,
+            &mut values,
+            &mut written,
+            &mut populated,
+        )?;
+    }
+    if populated != expected {
+        return Err(ReconError::BufferLengthMismatch {
+            expected,
+            actual: populated,
+        });
+    }
+    crate::filters::cdef::CdefSkipGrid::new(rows, cols, values).map_err(|_| {
+        ReconError::PcWienerInvalidBounds {
+            field: "CDEF skip grid dimensions",
+        }
+    })
+}
+
+fn write_cdef_skip_record(
+    rows: usize,
+    cols: usize,
+    record: &WienerNsLrTxSkipTransformRecord,
+    values: &mut [bool],
+    written: &mut [bool],
+    populated: &mut usize,
+) -> ReconResult<()> {
+    for_each_wienerns_lr_tx_skip_record_cell(rows, cols, record, |index| {
+        let actual = values.len().min(written.len());
+        let Some((value, was_written)) = values.get_mut(index).zip(written.get_mut(index)) else {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: index.saturating_add(1),
+                actual,
+            });
+        };
+        if !*was_written {
+            *value = record.skip_flag;
+            *was_written = true;
+            *populated = populated
+                .checked_add(1)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "CDEF skip populated sample count",
+                })?;
+        } else if *value != record.skip_flag {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LrTxSkip conflicting transform records",
+            });
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn derive_wienerns_lr_tx_skip_grid_retention(
@@ -205,6 +250,36 @@ fn write_wienerns_lr_tx_skip_record(
     values: &mut [u8],
     populated: &mut usize,
 ) -> ReconResult<()> {
+    for_each_wienerns_lr_tx_skip_record_cell(rows, cols, record, |index| {
+        let actual = values.len();
+        let Some(slot) = values.get_mut(index) else {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: index.saturating_add(1),
+                actual,
+            });
+        };
+        if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
+            *slot = value;
+            *populated = populated
+                .checked_add(1)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "LrTxSkip populated sample count",
+                })?;
+        } else if *slot != value {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LrTxSkip conflicting transform records",
+            });
+        }
+        Ok(())
+    })
+}
+
+fn for_each_wienerns_lr_tx_skip_record_cell(
+    rows: usize,
+    cols: usize,
+    record: &WienerNsLrTxSkipTransformRecord,
+    mut visit: impl FnMut(usize) -> ReconResult<()>,
+) -> ReconResult<()> {
     if record.rows == 0 || record.cols == 0 {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip transform record dimensions",
@@ -235,24 +310,7 @@ fn write_wienerns_lr_tx_skip_record(
     for row in record.row..end_row {
         for col in record.col..end_col {
             let index = wienerns_lr_tx_skip_grid_index(row, col, cols)?;
-            let Some(slot) = values.get_mut(index) else {
-                return Err(ReconError::BufferLengthMismatch {
-                    expected: index.saturating_add(1),
-                    actual: values.len(),
-                });
-            };
-            if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
-                *slot = value;
-                *populated = populated
-                    .checked_add(1)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "LrTxSkip populated sample count",
-                    })?;
-            } else if *slot != value {
-                return Err(ReconError::PcWienerInvalidBounds {
-                    field: "LrTxSkip conflicting transform records",
-                });
-            }
+            visit(index)?;
         }
     }
     Ok(())

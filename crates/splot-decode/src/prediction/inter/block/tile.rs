@@ -412,14 +412,13 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             filter_records: TileFilterRecords::default(),
             motion_folded: false,
             motion_derived: false,
-            precompute_error: None,
-            terminal: None,
+            failure: ReconRowFailure::None,
         };
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
         let walk = match self.walk.active_mut() {
             Ok(walk) => walk,
             Err(error) => {
-                recon_row.terminal = Some(error);
+                recon_row.record_terminal_error(error);
                 return ParserStep::Last(recon_row);
             }
         };
@@ -532,14 +531,14 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         match decoded_row {
             Ok(true) => ParserStep::More(recon_row),
             Err(error) => {
-                recon_row.terminal = Some(map_inter_multiblock_error(error, tile_offset));
+                recon_row.record_terminal_error(map_inter_multiblock_error(error, tile_offset));
                 ParserStep::Last(recon_row)
             }
             Ok(false) => {
                 let walk = match self.walk.finish() {
                     Ok(walk) => walk,
                     Err(error) => {
-                        recon_row.terminal = Some(error);
+                        recon_row.record_terminal_error(error);
                         return ParserStep::Last(recon_row);
                     }
                 };
@@ -548,7 +547,9 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     active_source_blocks,
                     unit_filters,
                 } = walk.into_output();
-                recon_row.terminal = finish_tile_symbols(symbols, tile_offset).err();
+                if let Err(error) = finish_tile_symbols(symbols, tile_offset) {
+                    recon_row.record_terminal_error(error);
+                }
                 self.output.active_source_blocks = active_source_blocks;
                 self.output.unit_filters = unit_filters;
                 ParserStep::Last(recon_row)
@@ -662,10 +663,10 @@ fn resolve_parser_step(
         ParserStep::More(row) => (row, false),
         ParserStep::Last(row) => (row, true),
     };
-    if row.terminal.is_none()
+    if !row.has_terminal_error()
         && let Err(error) = resolve(&mut row)
     {
-        row.terminal = Some(error);
+        row.record_terminal_error(error);
         return ParserStep::Last(row);
     }
     if last {
@@ -841,16 +842,76 @@ pub(super) struct ReconRow {
     /// Whether the motion pass already derived every entry's grid and records,
     /// so no later pass may derive either again.
     pub(super) motion_derived: bool,
-    pub(super) precompute_error: Option<(usize, crate::DecodeError)>,
-    pub(super) terminal: Option<crate::DecodeError>,
+    failure: ReconRowFailure,
 }
 
 impl ReconRow {
+    fn has_terminal_error(&self) -> bool {
+        matches!(self.failure, ReconRowFailure::Terminal(_))
+    }
+
+    fn record_terminal_error(&mut self, error: crate::DecodeError) {
+        self.failure.record_terminal(error);
+    }
+
+    fn record_precompute_error(&mut self, index: usize, error: crate::DecodeError) {
+        self.failure.record_precompute(index, error);
+    }
+
     pub(super) fn return_terminal_error(&mut self) -> Result<()> {
-        if let Some(error) = self.terminal.take() {
+        if let Some(error) = self.failure.take_terminal() {
             return Err(error);
         }
         Ok(())
+    }
+
+    pub(super) fn take_precompute_error(&mut self) -> Option<(usize, crate::DecodeError)> {
+        self.failure.take_precompute()
+    }
+}
+
+#[derive(Default)]
+enum ReconRowFailure {
+    #[default]
+    None,
+    Terminal(crate::DecodeError),
+    Precompute {
+        index: usize,
+        error: crate::DecodeError,
+    },
+}
+
+impl ReconRowFailure {
+    fn record_terminal(&mut self, error: crate::DecodeError) {
+        if !matches!(self, Self::Terminal(_)) {
+            *self = Self::Terminal(error);
+        }
+    }
+
+    fn record_precompute(&mut self, index: usize, error: crate::DecodeError) {
+        if matches!(self, Self::None) {
+            *self = Self::Precompute { index, error };
+        }
+    }
+
+    fn take_terminal(&mut self) -> Option<crate::DecodeError> {
+        match core::mem::take(self) {
+            Self::Terminal(error) => Some(error),
+            failure => {
+                *self = failure;
+                None
+            }
+        }
+    }
+
+    fn take_precompute(&mut self) -> Option<(usize, crate::DecodeError)> {
+        match core::mem::take(self) {
+            Self::Precompute { index, error } => Some((index, error)),
+            failure => {
+                *self = failure;
+                None
+            }
+        }
     }
 }
 
@@ -1180,7 +1241,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
 ) -> ReconRow {
-    if row.terminal.is_some() {
+    if row.has_terminal_error() {
         return row;
     }
     let _quantizer_scopes = quantizer.install_frame();
@@ -1278,7 +1339,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 }
                 Err(error) => {
                     row.temporal.truncate(start);
-                    row.precompute_error = Some((entry_start + offset, error));
+                    row.record_precompute_error(entry_start + offset, error);
                     break 'superblocks;
                 }
             }

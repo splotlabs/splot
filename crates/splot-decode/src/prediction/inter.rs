@@ -14,6 +14,7 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
+use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
@@ -363,7 +364,7 @@ fn resolve_initial_frame_cdfs(
 pub(crate) struct EntropyDependencies {
     cdfs: Vec<FrameCdfHandle>,
     ccso_grids: Vec<CcsoGridHandle>,
-    segment_ids: Vec<SegmentIdMapHandle>,
+    segment_ids: Option<SegmentIdMapHandle>,
 }
 
 impl EntropyDependencies {
@@ -477,9 +478,7 @@ pub(crate) fn entropy_dependencies(
         .flatten()
         .and_then(|slot| reference.ref_segment_ids.get(slot))
         .and_then(Option::as_ref)
-        .cloned()
-        .into_iter()
-        .collect();
+        .cloned();
     EntropyDependencies {
         cdfs,
         ccso_grids,
@@ -911,14 +910,16 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             continue;
         }
         let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
+        let (log2_width, log2_height) = inter_residual_log2(block)
+            .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
         crate::pipeline::reconstruct::reconstruct_inter_block_residual_rect_into(
             sink,
             &block.coeffs,
             block.plane,
             block.x,
             block.y,
-            block.log2_width,
-            block.log2_height,
+            log2_width,
+            log2_height,
             qindex,
             use_tcq,
             use_ddt,
@@ -974,12 +975,7 @@ fn inter_residual_chroma_pair<'a>(
 }
 
 fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualBlock) -> bool {
-    v.plane == ReconPlaneId::V
-        && u.x == v.x
-        && u.y == v.y
-        && u.tx_size == v.tx_size
-        && u.log2_width == v.log2_width
-        && u.log2_height == v.log2_height
+    v.plane == ReconPlaneId::V && u.x == v.x && u.y == v.y && u.tx_size == v.tx_size
 }
 
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
@@ -991,33 +987,43 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    read_inter_residual_prediction(sink, u, &mut scratch.u_prediction)?;
-    read_inter_residual_prediction(sink, v, &mut scratch.v_prediction)?;
+    let (log2_width, log2_height) = inter_residual_log2(u).map_err(|table| {
+        GeneralIntraResidualError::TransformPartitionGeometry {
+            table,
+            index: u.tx_size,
+        }
+    })?;
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let u_rect = PlaneRect::new(u.x, u.y, width, height)?;
+    let v_rect = PlaneRect::new(v.x, v.y, width, height)?;
+    read_inter_residual_prediction(sink, u, u_rect, &mut scratch.u_prediction)?;
+    read_inter_residual_prediction(sink, v, v_rect, &mut scratch.v_prediction)?;
     reconstruct_general_intra_chroma_cctx_pair_into(
         &u.coeffs,
         &scratch.u_prediction,
         &v.coeffs,
         &scratch.v_prediction,
         qindex,
-        u.log2_width,
-        u.log2_height,
+        log2_width,
+        log2_height,
         cctx_type,
         use_ddt,
         bit_depth,
         &mut scratch.u_output,
         &mut scratch.v_output,
     )?;
-    write_inter_residual_block(sink, u, &scratch.u_output)?;
-    write_inter_residual_block(sink, v, &scratch.v_output)?;
+    write_inter_residual_block(sink, u, u_rect, &scratch.u_output)?;
+    write_inter_residual_block(sink, v, v_rect, &scratch.v_output)?;
     Ok(())
 }
 
 fn read_inter_residual_prediction<T: ReconSample>(
     sink: &mc::WorkspaceSink<'_, '_, T>,
     block: &InterResidualBlock,
+    rect: PlaneRect,
     prediction: &mut Vec<T>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let rect = inter_residual_block_rect(block)?;
     prediction.clear();
     prediction.reserve(rect.width() * rect.height());
     for row in sink.rect_rows(block.plane, rect)? {
@@ -1029,23 +1035,23 @@ fn read_inter_residual_prediction<T: ReconSample>(
 fn write_inter_residual_block<T: ReconSample>(
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     block: &InterResidualBlock,
+    rect: PlaneRect,
     samples: &[T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let rect = inter_residual_block_rect(block)?;
     sink.write_rect(block.plane, rect, samples, rect.width())?;
     Ok(())
 }
 
-fn inter_residual_block_rect(
+fn inter_residual_log2(
     block: &InterResidualBlock,
-) -> core::result::Result<PlaneRect, GeneralIntraResidualError> {
-    PlaneRect::new(
-        block.x,
-        block.y,
-        1usize << block.log2_width,
-        1usize << block.log2_height,
-    )
-    .map_err(GeneralIntraResidualError::from)
+) -> core::result::Result<(u32, u32), &'static str> {
+    if block.tx_size >= TX_WIDTH_LOG2.len() {
+        return Err("Tx_Width_Log2");
+    }
+    if block.tx_size >= TX_HEIGHT_LOG2.len() {
+        return Err("Tx_Height_Log2");
+    }
+    Ok((u32::from(block.log2_width), u32::from(block.log2_height)))
 }
 #[derive(Clone, Debug)]
 pub(crate) struct InterBlock {
@@ -1152,8 +1158,8 @@ pub(crate) struct InterResidualBlock {
     pub(crate) x: usize,
     pub(crate) y: usize,
     pub(crate) tx_size: usize,
-    pub(crate) log2_width: u32,
-    pub(crate) log2_height: u32,
+    log2_width: u8,
+    log2_height: u8,
     pub(crate) cctx_pair_delta: i16,
     pub(crate) coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
 }

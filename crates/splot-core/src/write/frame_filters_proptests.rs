@@ -8,7 +8,8 @@ mod proptests {
     use super::*;
     use crate::bitio::BitReader;
     use crate::headers::frame::{
-        CdefStrengthSet, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
+        CdefStrengthSet, CdefStrengthSets, MAX_CDEF_STRENGTH_SETS, parse_cdef_params,
+        parse_deblocking_filter_params, parse_gdf_params,
     };
     use crate::headers::sequence::SuperblockSize;
     use crate::span::ByteOffset;
@@ -291,7 +292,7 @@ mod proptests {
                 enable_df_sub_pu: false,
                 single_picture_header_flag,
             };
-            let strengths = sets
+            let sets = sets
                 .into_iter()
                 .map(|(y_pri, y_sec, uv_pri, uv_sec)| CdefStrengthSet {
                     y_pri_strength: y_pri,
@@ -299,7 +300,11 @@ mod proptests {
                     uv_pri_strength: uv_pri,
                     uv_sec_strength: uv_sec,
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            let strengths = CdefStrengthSets::from_slice(
+                &sets[..sets.len().min(MAX_CDEF_STRENGTH_SETS)],
+            )
+            .unwrap();
             let params = CdefParams {
                 cdef_frame_enable,
                 cdef_damping,

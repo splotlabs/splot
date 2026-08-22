@@ -133,10 +133,12 @@ pub(crate) fn record_inter_deblock_geometry(
         .blocks(residual_blocks)
         .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
     for block in blocks {
+        let (log2_width, log2_height) = super::super::inter_residual_log2(block)
+            .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
         match block.plane {
             ReconPlaneId::Y => {
-                let tx_w4 = (1usize << block.log2_width) / MI_SIZE;
-                let tx_h4 = (1usize << block.log2_height) / MI_SIZE;
+                let tx_w4 = (1usize << log2_width) / MI_SIZE;
+                let tx_h4 = (1usize << log2_height) / MI_SIZE;
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
                     r: block.y / MI_SIZE,
                     c: block.x / MI_SIZE,
@@ -175,6 +177,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         block.x,
                         block.y,
                         block.tx_size,
+                        Some((log2_width, log2_height)),
                         chroma_subsampling,
                         qindex,
                         lossless,
@@ -235,6 +238,7 @@ fn record_skipped_chroma_deblock_geometry(
                     base_x + x,
                     base_y + y,
                     chroma_tx,
+                    None,
                     subsampling,
                     qindex,
                     lossless,
@@ -283,6 +287,7 @@ mod tests {
             8,
             12,
             3,
+            None,
             (1, 1),
             77,
             false,

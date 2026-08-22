@@ -87,6 +87,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     let row_has_entries = !row.superblocks.is_empty();
     let motion_owed = !row.motion_folded;
     let motion_derived = row.motion_derived;
+    let mut precompute_error = row.take_precompute_error();
     let _quantizer_scopes = quantizer.install_frame();
     let ReconRow {
         mut superblocks,
@@ -96,10 +97,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         mut motion_grids,
         mut flag_log,
         filter_records: mut row_filter_records,
-        precompute_error,
         ..
     } = row;
-    let mut precompute_error = precompute_error;
     for superblock in &superblocks {
         let superblock_entries = entries
             .get_mut(superblock.entries.clone())

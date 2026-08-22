@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, MAX_CDEF_STRENGTH_SETS};
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
@@ -325,8 +325,8 @@ impl CdefState {
         if skip_txfm && cdef.cdef_on_skip_txfm_frame_enable == Some(false) {
             return Ok(());
         }
-        let strengths = cdef.cdef_strengths.ok_or_else(selectable_state_error)? as usize;
-        if !(1..=8).contains(&strengths) {
+        let strengths = usize::from(cdef.cdef_strengths.ok_or_else(selectable_state_error)?);
+        if !(1..=MAX_CDEF_STRENGTH_SETS).contains(&strengths) {
             return Err(selectable_state_error());
         }
 

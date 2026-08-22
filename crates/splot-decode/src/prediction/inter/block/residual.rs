@@ -6,6 +6,8 @@
 //!
 //! Feature tracking: `DECODE-INTER-RESIDUAL-DCT`.
 
+use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
+
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -40,8 +42,6 @@ struct InterChromaUnit {
 struct InterChromaURead {
     unit: InterChromaUnit,
     block_index: usize,
-    uses_cctx: bool,
-    u_nonzero: bool,
 }
 
 #[derive(Default)]
@@ -593,8 +593,6 @@ fn read_inter_residual_chroma_group(
                 residual_tool_policy,
                 tile_offset,
             )?;
-            let u_nonzero = u.eob != 0;
-            let uses_cctx = u.cctx_type.unwrap_or(0) != 0;
             let block_index = push_inter_residual_block(
                 blocks,
                 ReconPlaneId::U,
@@ -607,12 +605,7 @@ fn read_inter_residual_chroma_group(
             chroma_reads
                 .try_reserve(1)
                 .map_err(|_| inter_allocation!("inter residual chroma read list"))?;
-            chroma_reads.push(InterChromaURead {
-                unit,
-                block_index,
-                uses_cctx,
-                u_nonzero,
-            });
+            chroma_reads.push(InterChromaURead { unit, block_index });
             x4 = x4
                 .checked_add(tx_w4)
                 .ok_or_else(|| residual_geometry_error(tile_offset))?;
@@ -625,6 +618,11 @@ fn read_inter_residual_chroma_group(
     for read in chroma_reads.iter().copied() {
         let start_x = (base_x4 + read.unit.x4) * MI_SIZE;
         let start_y = (base_y4 + read.unit.y4) * MI_SIZE;
+        let u = blocks
+            .get(read.block_index)
+            .ok_or_else(|| residual_geometry_error(tile_offset))?;
+        let u_nonzero = u.coeffs.eob != 0;
+        let uses_cctx = u.coeffs.cctx_type.unwrap_or(0) != 0;
         let v = read_inter_residual_plane(
             work_unit,
             symbols,
@@ -635,7 +633,7 @@ fn read_inter_residual_chroma_group(
             start_y,
             read.unit.tx_fills_block,
             read.unit.chroma_inter_tx_type,
-            read.u_nonzero,
+            u_nonzero,
             cctx_allowed,
             residual_tool_policy,
             tile_offset,
@@ -649,7 +647,7 @@ fn read_inter_residual_chroma_group(
             v,
             tile_offset,
         )?;
-        if read.uses_cctx {
+        if uses_cctx {
             record_inter_residual_chroma_pair(blocks, read.block_index, v_index, tile_offset)?;
         }
     }
@@ -686,9 +684,9 @@ fn push_inter_residual_block(
 ) -> Result<usize> {
     let log2_width = tx_size_dimension(&TX_WIDTH_LOG2, tx_size, tile_offset)?;
     let log2_height = tx_size_dimension(&TX_HEIGHT_LOG2, tx_size, tile_offset)?;
-    let log2_width = u32::try_from(log2_width).map_err(|_| residual_geometry_error(tile_offset))?;
+    let log2_width = u8::try_from(log2_width).map_err(|_| residual_geometry_error(tile_offset))?;
     let log2_height =
-        u32::try_from(log2_height).map_err(|_| residual_geometry_error(tile_offset))?;
+        u8::try_from(log2_height).map_err(|_| residual_geometry_error(tile_offset))?;
     blocks
         .try_reserve(1)
         .map_err(|_| residual_allocation_error())?;

@@ -5,7 +5,7 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use splot_recon::ReconError;
 
-use super::super::derive_wienerns_lr_tx_skip_grid_retention;
+use super::super::{derive_cdef_skip_grid, derive_wienerns_lr_tx_skip_grid_retention};
 use super::*;
 use crate::bitstream::tile_payload::{encode_symbol_sequence, make_test_work_unit};
 
@@ -15,6 +15,24 @@ const TX_64X64: usize = 4;
 const TX_8X8: usize = 1;
 const TX_8X32: usize = 15;
 const TX_4X32: usize = 19;
+const CONFLICTING_TX_SKIP_RECORDS: [WienerNsLrTxSkipTransformRecord; 2] = [
+    WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 0,
+        rows: 1,
+        cols: 2,
+        skip_flag: true,
+        eob: 3,
+    },
+    WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 1,
+        rows: 1,
+        cols: 1,
+        skip_flag: false,
+        eob: 3,
+    },
+];
 
 #[test]
 fn inter_partition_reader_uses_sequence_selected_reduced_cdf() {
@@ -404,6 +422,109 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
     );
 }
 
+#[test]
+fn cdef_skip_grid_writes_final_bit_grid_for_mixed_records() {
+    let records = [
+        WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 2,
+            skip_flag: true,
+            eob: 5,
+        },
+        WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 2,
+            rows: 1,
+            cols: 1,
+            skip_flag: false,
+            eob: 0,
+        },
+        WienerNsLrTxSkipTransformRecord {
+            row: 1,
+            col: 0,
+            rows: 1,
+            cols: 3,
+            skip_flag: false,
+            eob: 0,
+        },
+    ];
+
+    let actual = derive_cdef_skip_grid(2, 3, &records).unwrap();
+    let expected =
+        crate::filters::cdef::CdefSkipGrid::new(2, 3, vec![true, true, false, false, false, false])
+            .unwrap();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn cdef_skip_grid_clamps_boundary_overhang_without_changing_predicate() {
+    let records = [
+        WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 0,
+            rows: 2,
+            cols: 2,
+            skip_flag: true,
+            eob: 4,
+        },
+        WienerNsLrTxSkipTransformRecord {
+            row: 2,
+            col: 0,
+            rows: 3,
+            cols: 2,
+            skip_flag: false,
+            eob: 0,
+        },
+    ];
+
+    let actual = derive_cdef_skip_grid(3, 2, &records).unwrap();
+    let expected =
+        crate::filters::cdef::CdefSkipGrid::new(3, 2, vec![true, true, true, true, false, false])
+            .unwrap();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn cdef_and_lr_keep_distinct_empty_transform_predicates() {
+    let records = [WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 0,
+        rows: 1,
+        cols: 2,
+        skip_flag: false,
+        eob: 0,
+    }];
+
+    let cdef = derive_cdef_skip_grid(1, 2, &records).unwrap();
+    let lr = derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap();
+
+    assert_eq!(
+        cdef,
+        crate::filters::cdef::CdefSkipGrid::new(1, 2, vec![false, false]).unwrap()
+    );
+    for col in 0..2 {
+        assert_eq!(
+            lr.lookup(super::super::WienerNsLrTxSkipLookup { row: 0, col })
+                .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn cdef_skip_grid_rejects_conflicting_overlapping_records() {
+    assert!(matches!(
+        derive_cdef_skip_grid(1, 2, &CONFLICTING_TX_SKIP_RECORDS).unwrap_err(),
+        ReconError::PcWienerInvalidBounds {
+            field: "LrTxSkip conflicting transform records"
+        }
+    ));
+}
+
 /// §5.20.6.1 PC-Wiener `LrTxSkip` FilterClass grid retention drops the off-frame MI
 /// cells of a bottom-edge skipped block instead of erroring on the overhang. Models
 /// the mission-stream case: a skipped 16x16-MI block at MI(256,0) overhangs the 270-row
@@ -473,27 +594,8 @@ fn tx_skip_grid_retention_clamps_right_edge_overhang() {
 /// pick one value must fail closed instead.
 #[test]
 fn tx_skip_grid_retention_rejects_conflicting_overlapping_records() {
-    let records = [
-        WienerNsLrTxSkipTransformRecord {
-            row: 0,
-            col: 0,
-            rows: 1,
-            cols: 2,
-            skip_flag: true,
-            eob: 3,
-        },
-        WienerNsLrTxSkipTransformRecord {
-            row: 0,
-            col: 1,
-            rows: 1,
-            cols: 1,
-            skip_flag: false,
-            eob: 3,
-        },
-    ];
-
     assert!(matches!(
-        derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap_err(),
+        derive_wienerns_lr_tx_skip_grid_retention(1, 2, &CONFLICTING_TX_SKIP_RECORDS).unwrap_err(),
         ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip conflicting transform records"
         }

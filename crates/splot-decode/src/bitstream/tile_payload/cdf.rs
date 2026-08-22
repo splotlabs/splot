@@ -72,6 +72,7 @@ mod util;
 use core::fmt;
 use std::sync::Arc;
 
+use splot_core::headers::frame::MAX_CDEF_STRENGTH_SETS;
 use splot_core::symbol::CdfUpdateMode;
 use splot_core::tables::cdf::{
     DEFAULT_CCSO_BLK_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF, DEFAULT_CDEF_INDEX_MINUS1_WITH4_CDF,
@@ -129,7 +130,7 @@ const CDEF_INDEX_MINUS1_WITH4_ROW_LEN: usize = 4;
 const CDEF_INDEX_MINUS1_WITH5_ROW_LEN: usize = 5;
 const CDEF_INDEX_MINUS1_WITH6_ROW_LEN: usize = 6;
 const CDEF_INDEX_MINUS1_WITH7_ROW_LEN: usize = 7;
-const CDEF_INDEX_MINUS1_WITH8_ROW_LEN: usize = 8;
+const CDEF_INDEX_MINUS1_WITH8_ROW_LEN: usize = MAX_CDEF_STRENGTH_SETS;
 const INTRABC_CONTEXTS: usize = 3;
 const MORPH_PRED_CONTEXTS: usize = 3;
 const MRL_INDEX_CONTEXTS: usize = 3;
@@ -1459,12 +1460,12 @@ macro_rules! select_cdef_index_minus1_row {
             5 => Ok($rows.cdef_index_minus1_with5.$slice()),
             6 => Ok($rows.cdef_index_minus1_with6.$slice()),
             7 => Ok($rows.cdef_index_minus1_with7.$slice()),
-            8 => Ok($rows.cdef_index_minus1_with8.$slice()),
+            MAX_CDEF_STRENGTH_SETS => Ok($rows.cdef_index_minus1_with8.$slice()),
             actual => Err(TileCdfError::SelectorOutOfRange {
                 array: TileCdfArray::CdefIndexMinus1,
                 index_name: "strengths",
                 actual,
-                max_exclusive: 9,
+                max_exclusive: MAX_CDEF_STRENGTH_SETS + 1,
             }),
         }
     };

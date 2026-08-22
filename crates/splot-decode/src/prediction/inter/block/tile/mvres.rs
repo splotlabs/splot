@@ -119,6 +119,6 @@ fn derive_row_motion<T: ReconSample>(
         entry.motion = None;
         entry.temporal = 0..0;
     }
-    row.terminal.get_or_insert(error);
+    row.record_terminal_error(error);
     false
 }

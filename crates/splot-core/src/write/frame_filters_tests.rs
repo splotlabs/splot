@@ -8,7 +8,8 @@ mod tests {
     use super::*;
     use crate::bitio::BitReader;
     use crate::headers::frame::{
-        CdefStrengthSet, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
+        CdefStrengthSet, CdefStrengthSets, parse_cdef_params, parse_deblocking_filter_params,
+        parse_gdf_params,
     };
     use crate::headers::sequence::SuperblockSize;
     use crate::span::ByteOffset;
@@ -656,7 +657,7 @@ mod tests {
             cdef_damping: None,
             cdef_strengths: None,
             cdef_on_skip_txfm_frame_enable: None,
-            strengths: Vec::new(),
+            strengths: CdefStrengthSets::empty(),
         };
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, true, 3, &base_filter()).unwrap_err();
@@ -678,7 +679,7 @@ mod tests {
             cdef_damping: None,
             cdef_strengths: None,
             cdef_on_skip_txfm_frame_enable: None,
-            strengths: Vec::new(),
+            strengths: CdefStrengthSets::empty(),
         };
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &filter).unwrap_err();
@@ -698,7 +699,7 @@ mod tests {
             cdef_damping: Some(4),
             cdef_strengths: None,
             cdef_on_skip_txfm_frame_enable: None,
-            strengths: Vec::new(),
+            strengths: CdefStrengthSets::empty(),
         };
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
@@ -718,7 +719,7 @@ mod tests {
             cdef_damping: Some(4),
             cdef_strengths: None, // should be Some
             cdef_on_skip_txfm_frame_enable: Some(true),
-            strengths: Vec::new(),
+            strengths: CdefStrengthSets::empty(),
         };
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
@@ -740,19 +741,19 @@ mod tests {
         }
     }
 
-    fn enabled_cdef(strengths: u8, sets: Vec<CdefStrengthSet>) -> CdefParams {
+    fn enabled_cdef(strengths: u8, sets: &[CdefStrengthSet]) -> CdefParams {
         CdefParams {
             cdef_frame_enable: true,
             cdef_damping: Some(4),
             cdef_strengths: Some(strengths),
             cdef_on_skip_txfm_frame_enable: Some(true),
-            strengths: sets,
+            strengths: CdefStrengthSets::from_slice(sets).unwrap(),
         }
     }
 
     #[test]
     fn cdef_damping_below_min_rejected() {
-        let mut params = enabled_cdef(1, vec![one_set()]);
+        let mut params = enabled_cdef(1, &[one_set()]);
         params.cdef_damping = Some(2); // < 3
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
@@ -767,7 +768,7 @@ mod tests {
 
     #[test]
     fn cdef_damping_above_max_rejected() {
-        let mut params = enabled_cdef(1, vec![one_set()]);
+        let mut params = enabled_cdef(1, &[one_set()]);
         params.cdef_damping = Some(7); // > 6
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
@@ -782,7 +783,7 @@ mod tests {
 
     #[test]
     fn cdef_strengths_zero_rejected() {
-        let params = enabled_cdef(0, Vec::new()); // CdefStrengths 0 < 1
+        let params = enabled_cdef(0, &[]); // CdefStrengths 0 < 1
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
         assert_eq!(
@@ -796,7 +797,7 @@ mod tests {
 
     #[test]
     fn cdef_strengths_above_max_rejected() {
-        let params = enabled_cdef(9, vec![one_set(); 9]); // > 8
+        let params = enabled_cdef(9, &[]); // > 8
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
         assert_eq!(
@@ -810,7 +811,7 @@ mod tests {
 
     #[test]
     fn cdef_strengths_len_mismatch_rejected() {
-        let params = enabled_cdef(2, vec![one_set()]); // says 2, has 1
+        let params = enabled_cdef(2, &[one_set()]); // says 2, has 1
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
         assert_eq!(
@@ -826,7 +827,7 @@ mod tests {
     fn cdef_skip_txfm_always_on_false_rejected() {
         let mut filter = base_filter();
         filter.cdef_on_skip_txfm = CdefOnSkipTxfm::AlwaysOn;
-        let mut params = enabled_cdef(1, vec![one_set()]);
+        let mut params = enabled_cdef(1, &[one_set()]);
         params.cdef_on_skip_txfm_frame_enable = Some(false); // AlwaysOn infers true
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &filter).unwrap_err();
@@ -843,7 +844,7 @@ mod tests {
     fn cdef_skip_txfm_disabled_true_rejected() {
         let mut filter = base_filter();
         filter.cdef_on_skip_txfm = CdefOnSkipTxfm::Disabled;
-        let mut params = enabled_cdef(1, vec![one_set()]);
+        let mut params = enabled_cdef(1, &[one_set()]);
         params.cdef_on_skip_txfm_frame_enable = Some(true); // Disabled infers false
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &filter).unwrap_err();
@@ -860,7 +861,7 @@ mod tests {
     fn cdef_pri_strength_too_wide_rejected() {
         let mut set = one_set();
         set.y_pri_strength = 16; // f(4) max is 15
-        let params = enabled_cdef(1, vec![set]);
+        let params = enabled_cdef(1, &[set]);
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
         assert_eq!(
@@ -876,7 +877,7 @@ mod tests {
     fn cdef_sec_strength_three_rejected() {
         let mut set = one_set();
         set.y_sec_strength = 3; // impossible: 3 is remapped to 4 on parse
-        let params = enabled_cdef(1, vec![set]);
+        let params = enabled_cdef(1, &[set]);
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
         assert_eq!(
@@ -892,7 +893,7 @@ mod tests {
     fn cdef_sec_strength_above_four_rejected() {
         let mut set = one_set();
         set.y_sec_strength = 5; // not in {0,1,2,4}
-        let params = enabled_cdef(1, vec![set]);
+        let params = enabled_cdef(1, &[set]);
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap_err();
         assert_eq!(
@@ -908,7 +909,7 @@ mod tests {
     fn cdef_monochrome_nonzero_uv_rejected() {
         let mut set = one_set();
         set.uv_pri_strength = 5; // monochrome never codes UV
-        let params = enabled_cdef(1, vec![set]);
+        let params = enabled_cdef(1, &[set]);
         let mut writer = BitWriter::new();
         let err = write_cdef_params(&mut writer, &params, false, 1, &base_filter()).unwrap_err();
         assert_eq!(
@@ -934,7 +935,7 @@ mod tests {
         bits.f(0, 2); // uv_sec_strength
         let data = bits.into_bytes();
         let params = parse_cdef_params(&mut reader(&data), false, 3, &base_filter()).unwrap();
-        assert_eq!(params.strengths[0].y_pri_strength, 0);
+        assert_eq!(params.strengths.as_slice()[0].y_pri_strength, 0);
         let mut writer = BitWriter::new();
         write_cdef_params(&mut writer, &params, false, 3, &base_filter()).unwrap();
         assert_eq!(writer.bit_len(), 13);

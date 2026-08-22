@@ -479,12 +479,13 @@ fn surface_add_residual_rejects_inputs_atomically() {
 #[test]
 fn workspace_allocates_yuv420_planes_from_frame_info() {
     let workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(5, 3), 7).unwrap();
+    let luma = workspace.plane(PlaneId::Y).unwrap();
 
     assert_eq!(workspace.info().pixel_format(), PixelFormat::Yuv420);
-    assert_eq!(
-        workspace.plane(PlaneId::Y).unwrap().storage_size(),
-        size(5, 3)
-    );
+    assert_eq!(luma.storage_size(), size(5, 3));
+    assert_eq!(luma.stride_samples(), 5);
+    assert_eq!(luma.required_samples(), 15);
+    assert_eq!(luma.allocation_bytes(), 15);
     assert_eq!(
         workspace.plane(PlaneId::U).unwrap().storage_size(),
         size(3, 2)

@@ -296,7 +296,6 @@ fn mode_ctx_match_newmv(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ModeContext {
     pub(crate) new_mv_context: usize,
-    pub(crate) new_mv_count: usize,
     pub(crate) warp_mv_count: usize,
     pub(crate) warp_sample_found: bool,
     pub(crate) warp_sample_found1: bool,
@@ -357,7 +356,6 @@ pub(crate) fn find_mode_ctx_with_tip(
     let new_mv_context = nearest_match + if new_mv_count > 0 { 2 } else { 0 };
     ModeContext {
         new_mv_context,
-        new_mv_count,
         warp_mv_count,
         warp_sample_found,
         warp_sample_found1,

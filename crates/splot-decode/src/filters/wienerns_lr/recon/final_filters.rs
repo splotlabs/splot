@@ -678,23 +678,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if cdef.cdef_on_skip_txfm_frame_enable != Some(false) {
             return Ok(None);
         }
-        let tx_skip_grid = crate::filters::wienerns_lr::derive_cdef_skip_grid(
+        let skip_grid = crate::filters::wienerns_lr::derive_cdef_skip_grid(
             mi_rows,
             mi_cols,
             &self.filter_records.tx_skip_records,
         )
         .map_err(|_| super::lr_pipeline_state_error())?;
-        if tx_skip_grid.rows() != mi_rows || tx_skip_grid.cols() != mi_cols {
-            return Err(super::lr_pipeline_state_error());
-        }
-        let values = tx_skip_grid
-            .into_values()
-            .into_iter()
-            .map(|skip| skip != 0)
-            .collect();
-        CdefSkipGrid::new(mi_rows, mi_cols, values)
-            .map(Some)
-            .map_err(|_| super::lr_pipeline_state_error())
+        Ok(Some(skip_grid))
     }
 }
 

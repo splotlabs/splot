@@ -62,9 +62,10 @@ pub use encoder_input::{
 };
 pub(crate) use filtering::gdf_per_block_is_coded;
 pub use filtering::{
-    CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
-    InterpolationFilter, MfhDeblockingView, gdf_block_size, parse_cdef_params,
-    parse_deblocking_filter_params, parse_gdf_params, read_interpolation_filter,
+    CdefParams, CdefStrengthSet, CdefStrengthSets, CoreSeqFilterView, DeblockingFilterParams,
+    GdfGeometry, GdfParams, InterpolationFilter, MAX_CDEF_STRENGTH_SETS, MfhDeblockingView,
+    gdf_block_size, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
+    read_interpolation_filter,
 };
 pub use get_ref_frames::{RESTRICTED_OH, RefIdxBuf, get_relative_dist};
 pub use global_motion::{
