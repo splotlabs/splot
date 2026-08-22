@@ -117,16 +117,18 @@ if_not_else = "allow"
 # arithmetic bugs, while `release` disables the checks for decode throughput
 # (measured ~5% first-frame latency on the 1080p10 reference stream; decoded
 # output is byte-identical either way). Fat cross-crate LTO with one codegen unit
-# is temporarily disabled below: SCALE-066 measured it byte-exact and 1.2-1.9%
-# faster at every width from 1 to 10 workers, but it raises a local
-# `cargo build --release` from 26s to 78s. Re-enable it only if a fresh
-# measurement shows that the runtime gain still justifies the build-time cost.
-# It does not touch `cargo xtask ci`, which builds only `dev`/`test`/`doc`.
-# `panic = "abort"` stays at its default.
+# is enabled: the crate split puts every hot kernel in `splot-recon` and every
+# driver in `splot-decode`, so it deletes a non-inlinable edge. SCALE-113 re-priced
+# it on `6dc3694a2` at -1.8 to -2.3% for 1 to 10 workers, 30/30 pairs, byte-exact
+# over 3000 frames at six widths, and it is what flips eight workers past dav2d.
+# It costs a local `cargo build --release` 26s -> 1m49s, and `.github/workflows/ci.yml`
+# builds the release profile twice, so every PR pays it; `cargo xtask ci` does not.
+# `panic = "abort"` stays at its default and must: `output/raw.rs` converts a panic
+# in the raw-output task into a typed error, which aborting would turn into a crash.
 [profile.release]
 overflow-checks = false
-# lto = "fat"
-# codegen-units = 1
+lto = "fat"
+codegen-units = 1
 
 [profile.dev]
 overflow-checks = true
