@@ -368,11 +368,24 @@ struct FinishOutcome {
     records: Option<FrameFilterRecords>,
 }
 
+struct FinishReportWriter {
+    cell: Arc<CompletionCell<Mutex<FinishOutcome>>>,
+    outcome: FinishOutcome,
+}
+
+impl Drop for FinishReportWriter {
+    fn drop(&mut self) {
+        let _ = self
+            .cell
+            .set(Mutex::new(core::mem::take(&mut self.outcome)));
+    }
+}
+
 /// One frame whose filter phase the driver has not collected yet.
 struct InflightEntry {
     frame_index: usize,
     slot: PipelineFrameSlot,
-    outcome: Arc<Mutex<FinishOutcome>>,
+    report: Arc<CompletionCell<Mutex<FinishOutcome>>>,
 }
 
 /// The bounded set of frames whose filter phase runs on the pool.
@@ -465,8 +478,9 @@ impl InflightRing {
         };
         let started = crate::timing::start();
         let _ = entry.slot.wait_settled();
+        let report = entry.report.wait_with_pool_assist();
         crate::timing::report("pipeline_harvest_wait", started);
-        let mut outcome = entry.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut outcome = report.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(records) = outcome.records.take() {
             match entry.slot {
                 PipelineFrameSlot::Eight(_) => eight.recycle_frame_filter_records(records),
@@ -558,7 +572,7 @@ where
 pub(crate) struct PendingFinish<T: ReconSample> {
     writer: FrameSlotWriter<T>,
     progress: Option<Arc<FrameProgress<T>>>,
-    outcome: Arc<Mutex<FinishOutcome>>,
+    report: FinishReportWriter,
 }
 
 /// Reserves one frame's decoded-frame handle from its known geometry and
@@ -575,18 +589,21 @@ pub(crate) fn reserve_pending_slot<T: ReconSample>(
 ) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
     let (slot, writer) = RefFrameSlot::pending(info)?;
     let progress = slot.progress.clone();
-    let outcome = Arc::new(Mutex::new(FinishOutcome::default()));
+    let report = Arc::new(CompletionCell::new());
     ring.push(InflightEntry {
         frame_index,
         slot: erase(slot.share()),
-        outcome: Arc::clone(&outcome),
+        report: Arc::clone(&report),
     });
     Ok((
         erase(slot),
         PendingFinish {
             writer,
             progress,
-            outcome,
+            report: FinishReportWriter {
+                cell: report,
+                outcome: FinishOutcome::default(),
+            },
         },
     ))
 }
@@ -600,7 +617,13 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     /// Publishes a frame whose reconstruction is already terminal and has no
     /// filter records to return to the driver's scratch pool.
     pub(crate) fn complete_frame(self, frame: DecodedFrame<T>) {
-        self.writer.complete(SharedFrame::new(frame));
+        let Self {
+            writer,
+            progress: _,
+            report,
+        } = self;
+        writer.complete(SharedFrame::new(frame));
+        drop(report);
     }
 
     /// Runs the owed filter phase in the calling scheduler job.
@@ -612,20 +635,17 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         let Self {
             writer,
             progress,
-            outcome,
+            mut report,
         } = self;
         let started = crate::timing::start();
         match finish_walked_frame(walked, progress.as_deref(), admit, |frame| {
             writer.complete(frame);
         }) {
             Ok(finished) => {
-                outcome
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .records = Some(finished.filter_records);
+                report.outcome.records = Some(finished.filter_records);
             }
             Err(error) => {
-                outcome.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
+                report.outcome.error = Some(error);
             }
         }
         crate::timing::report("finish_task", started);
@@ -639,18 +659,15 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         let Self {
             writer,
             progress: _,
-            outcome,
+            mut report,
         } = self;
         let started = crate::timing::start();
         match filter.finish(|frame| writer.complete(SharedFrame::new(frame))) {
             Ok(((), records)) => {
-                outcome
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .records = Some(records);
+                report.outcome.records = Some(records);
             }
             Err(error) => {
-                outcome.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
+                report.outcome.error = Some(error);
             }
         }
         crate::timing::report("finish_task", started);
@@ -658,11 +675,8 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
 
     /// Settles the reserved slot as failed and records the reconstruction
     /// diagnostic for the in-flight ring.
-    pub(crate) fn fail(self, error: DecodeError) {
-        self.outcome
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .error = Some(error);
+    pub(crate) fn fail(mut self, error: DecodeError) {
+        self.report.outcome.error = Some(error);
     }
 
     /// Hands one walked frame's § 7.2 filter phase to a worker task.

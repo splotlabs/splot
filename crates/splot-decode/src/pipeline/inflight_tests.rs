@@ -16,16 +16,22 @@ fn nz(value: usize) -> NonZeroUsize {
 fn pending_entry(
     ring: &mut InflightRing,
     frame_index: usize,
-) -> (FrameSlotWriter<u8>, Arc<Mutex<FinishOutcome>>) {
+) -> (FrameSlotWriter<u8>, FinishReportWriter) {
     let frame = decoded_frame(4, 4);
     let (slot, writer) = RefFrameSlot::pending(frame.info()).expect("pending slot");
-    let outcome = Arc::new(Mutex::new(FinishOutcome::default()));
+    let report = Arc::new(CompletionCell::new());
     ring.push(InflightEntry {
         frame_index,
         slot: PipelineFrameSlot::Eight(slot),
-        outcome: Arc::clone(&outcome),
+        report: Arc::clone(&report),
     });
-    (writer, outcome)
+    (
+        writer,
+        FinishReportWriter {
+            cell: report,
+            outcome: FinishOutcome::default(),
+        },
+    )
 }
 
 #[test]
@@ -132,12 +138,13 @@ fn ring_admission_harvests_the_oldest_entry_first() {
     let mut ten = InterDecodeScratch::<u16>::default();
     let mut ring = InflightRing::new(nz(3));
 
-    let (first, _first_outcome) = pending_entry(&mut ring, 0);
-    let (second, _second_outcome) = pending_entry(&mut ring, 1);
-    let (third, _third_outcome) = pending_entry(&mut ring, 2);
+    let (first, first_report) = pending_entry(&mut ring, 0);
+    let (second, second_report) = pending_entry(&mut ring, 1);
+    let (third, third_report) = pending_entry(&mut ring, 2);
     first.complete(SharedFrame::new(decoded_frame(4, 4)));
     second.complete(SharedFrame::new(decoded_frame(4, 4)));
     third.complete(SharedFrame::new(decoded_frame(4, 4)));
+    drop((first_report, second_report, third_report));
     assert_eq!(ring.max_in_flight(), 3);
 
     ring.reserve(&mut eight, &mut ten);
@@ -156,8 +163,9 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     let mut ten = InterDecodeScratch::<u16>::default();
     let mut ring = InflightRing::new(nz(2));
 
-    let (first, _first_outcome) = pending_entry(&mut ring, 0);
+    let (first, first_report) = pending_entry(&mut ring, 0);
     first.complete(SharedFrame::new(decoded_frame(4, 4)));
+    drop(first_report);
     ring.reserve(&mut eight, &mut ten);
 
     assert!(
@@ -165,8 +173,9 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
         "admitting frame 1 must not harvest frame 0 at depth two"
     );
 
-    let (second, _second_outcome) = pending_entry(&mut ring, 1);
+    let (second, second_report) = pending_entry(&mut ring, 1);
     second.complete(SharedFrame::new(decoded_frame(4, 4)));
+    drop(second_report);
     assert_eq!(ring.max_in_flight(), 2);
 
     ring.reserve(&mut eight, &mut ten);
@@ -199,10 +208,10 @@ fn the_lowest_indexed_filter_failure_outranks_later_ones() {
     let mut ring = InflightRing::new(nz(4));
 
     for (frame_index, reason) in [(2usize, "later_failure"), (1usize, "earlier_failure")] {
-        let (writer, outcome) = pending_entry(&mut ring, frame_index);
-        outcome.lock().unwrap_or_else(PoisonError::into_inner).error =
-            Some(unsupported(reason, None, "test filter phase failure"));
+        let (writer, mut report) = pending_entry(&mut ring, frame_index);
+        report.outcome.error = Some(unsupported(reason, None, "test filter phase failure"));
         drop(writer);
+        drop(report);
     }
 
     ring.harvest_all(&mut eight, &mut ten);
@@ -221,17 +230,57 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
     let mut ten = InterDecodeScratch::<u16>::default();
     let mut ring = InflightRing::new(nz(2));
 
-    let (writer, outcome) = pending_entry(&mut ring, 0);
+    let (writer, mut report) = pending_entry(&mut ring, 0);
     let mut records = FrameFilterRecords::default();
     records.deblock_blocks.reserve(64);
-    outcome
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .records = Some(records);
+    report.outcome.records = Some(records);
     writer.complete(SharedFrame::new(decoded_frame(4, 4)));
+    assert!(
+        ring.entries
+            .front()
+            .is_some_and(|entry| entry.slot.is_settled())
+    );
+    assert!(
+        ring.entries
+            .front()
+            .is_some_and(|entry| !entry.report.is_set())
+    );
+    drop(report);
+    assert!(
+        ring.entries
+            .front()
+            .is_some_and(|entry| entry.report.is_set())
+    );
 
     ring.harvest_all(&mut eight, &mut ten);
 
     assert!(eight.frame_filter_records_capacity() >= 64);
     assert_eq!(ten.frame_filter_records_capacity(), 0);
+}
+
+#[test]
+fn failed_finish_reports_its_error_before_harvest() {
+    let mut eight = InterDecodeScratch::<u8>::default();
+    let mut ten = InterDecodeScratch::<u16>::default();
+    let mut ring = InflightRing::new(nz(2));
+    let frame = decoded_frame(4, 4);
+    let (_slot, finish) =
+        reserve_pending_slot(frame.info(), PipelineFrameSlot::Eight, &mut ring, 0)
+            .expect("pending finish");
+
+    finish.fail(unsupported(
+        "reported_finish_failure",
+        None,
+        "test filter phase failure",
+    ));
+    assert!(
+        ring.entries
+            .front()
+            .is_some_and(|entry| entry.report.is_set())
+    );
+
+    ring.harvest_all(&mut eight, &mut ten);
+
+    let failure = ring.take_failure().expect("reported failure");
+    assert!(format!("{failure:?}").contains("reported_finish_failure"));
 }

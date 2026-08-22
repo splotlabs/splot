@@ -103,7 +103,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use crate::AdmissionMetrics;
 use crate::admission_metrics::AdmissionDiagnosticCounters;
@@ -241,21 +241,18 @@ struct OrderedJob<'job> {
     job: Job<'job>,
 }
 
+#[derive(Default)]
 struct ContinuationSlot<'job> {
-    pending: Mutex<Option<OrderedJob<'job>>>,
-}
-
-impl Default for ContinuationSlot<'_> {
-    fn default() -> Self {
-        Self {
-            pending: Mutex::new(None),
-        }
-    }
+    pending: OnceLock<Mutex<Option<OrderedJob<'job>>>>,
 }
 
 impl<'job> ContinuationSlot<'job> {
     fn put(&self, next: OrderedJob<'job>) -> Result<(), OrderedJob<'job>> {
-        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self
+            .pending
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if pending.is_some() {
             return Err(next);
         }
@@ -264,10 +261,12 @@ impl<'job> ContinuationSlot<'job> {
     }
 
     fn take(&self) -> Option<OrderedJob<'job>> {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
+        self.pending.get().and_then(|pending| {
+            pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+        })
     }
 }
 
