@@ -30,6 +30,7 @@ impl DeblockRecorder<'_> {
                 x,
                 y,
                 tx_size,
+                None,
                 self.chroma_subsampling,
                 self.qindex,
                 self.lossless,

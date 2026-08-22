@@ -1369,6 +1369,7 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
         8,
         12,
         3,
+        None,
         (1, 1),
         77,
         false,

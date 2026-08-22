@@ -1440,41 +1440,18 @@ fn publish_filter_stripe_to<T: ReconSample>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn chroma_transform_deblock_block(
     plane_id: PlaneId,
     x: usize,
     y: usize,
     chroma_tx: usize,
+    log2_dimensions: Option<(u32, u32)>,
     chroma_subsampling: (u32, u32),
     qindex: u32,
     lossless: bool,
 ) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
-    let (log2_width, log2_height) = tx_size_log2(chroma_tx)?;
-    chroma_transform_deblock_block_with_log2(
-        plane_id,
-        x,
-        y,
-        chroma_tx,
-        log2_width,
-        log2_height,
-        chroma_subsampling,
-        qindex,
-        lossless,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn chroma_transform_deblock_block_with_log2(
-    plane_id: PlaneId,
-    x: usize,
-    y: usize,
-    chroma_tx: usize,
-    log2_width: u32,
-    log2_height: u32,
-    chroma_subsampling: (u32, u32),
-    qindex: u32,
-    lossless: bool,
-) -> Option<(usize, crate::filters::deblock::DeblockBlock)> {
+    let (log2_width, log2_height) = log2_dimensions.or_else(|| tx_size_log2(chroma_tx))?;
     let plane_index = match plane_id {
         PlaneId::U => 0,
         PlaneId::V => 1,

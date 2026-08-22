@@ -172,13 +172,12 @@ pub(crate) fn record_inter_deblock_geometry(
             }
             ReconPlaneId::U | ReconPlaneId::V => {
                 if let Some((plane_index, mut record)) =
-                    crate::filters::wienerns_lr::chroma_transform_deblock_block_with_log2(
+                    crate::filters::wienerns_lr::chroma_transform_deblock_block(
                         block.plane,
                         block.x,
                         block.y,
                         block.tx_size,
-                        log2_width,
-                        log2_height,
+                        Some((log2_width, log2_height)),
                         chroma_subsampling,
                         qindex,
                         lossless,
@@ -239,6 +238,7 @@ fn record_skipped_chroma_deblock_geometry(
                     base_x + x,
                     base_y + y,
                     chroma_tx,
+                    None,
                     subsampling,
                     qindex,
                     lossless,
@@ -287,6 +287,7 @@ mod tests {
             8,
             12,
             3,
+            None,
             (1, 1),
             77,
             false,

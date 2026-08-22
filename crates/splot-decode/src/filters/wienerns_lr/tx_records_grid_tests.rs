@@ -15,6 +15,24 @@ const TX_64X64: usize = 4;
 const TX_8X8: usize = 1;
 const TX_8X32: usize = 15;
 const TX_4X32: usize = 19;
+const CONFLICTING_TX_SKIP_RECORDS: [WienerNsLrTxSkipTransformRecord; 2] = [
+    WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 0,
+        rows: 1,
+        cols: 2,
+        skip_flag: true,
+        eob: 3,
+    },
+    WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 1,
+        rows: 1,
+        cols: 1,
+        skip_flag: false,
+        eob: 3,
+    },
+];
 
 #[test]
 fn inter_partition_reader_uses_sequence_selected_reduced_cdf() {
@@ -499,27 +517,8 @@ fn cdef_and_lr_keep_distinct_empty_transform_predicates() {
 
 #[test]
 fn cdef_skip_grid_rejects_conflicting_overlapping_records() {
-    let records = [
-        WienerNsLrTxSkipTransformRecord {
-            row: 0,
-            col: 0,
-            rows: 1,
-            cols: 2,
-            skip_flag: true,
-            eob: 3,
-        },
-        WienerNsLrTxSkipTransformRecord {
-            row: 0,
-            col: 1,
-            rows: 1,
-            cols: 1,
-            skip_flag: false,
-            eob: 3,
-        },
-    ];
-
     assert!(matches!(
-        derive_cdef_skip_grid(1, 2, &records).unwrap_err(),
+        derive_cdef_skip_grid(1, 2, &CONFLICTING_TX_SKIP_RECORDS).unwrap_err(),
         ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip conflicting transform records"
         }
@@ -595,27 +594,8 @@ fn tx_skip_grid_retention_clamps_right_edge_overhang() {
 /// pick one value must fail closed instead.
 #[test]
 fn tx_skip_grid_retention_rejects_conflicting_overlapping_records() {
-    let records = [
-        WienerNsLrTxSkipTransformRecord {
-            row: 0,
-            col: 0,
-            rows: 1,
-            cols: 2,
-            skip_flag: true,
-            eob: 3,
-        },
-        WienerNsLrTxSkipTransformRecord {
-            row: 0,
-            col: 1,
-            rows: 1,
-            cols: 1,
-            skip_flag: false,
-            eob: 3,
-        },
-    ];
-
     assert!(matches!(
-        derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap_err(),
+        derive_wienerns_lr_tx_skip_grid_retention(1, 2, &CONFLICTING_TX_SKIP_RECORDS).unwrap_err(),
         ReconError::PcWienerInvalidBounds {
             field: "LrTxSkip conflicting transform records"
         }

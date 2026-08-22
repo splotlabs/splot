@@ -119,11 +119,12 @@ pub(crate) struct CctxReconScratch<T: ReconSample> {
 
 impl<T: ReconSample> Default for CctxReconScratch<T> {
     fn default() -> Self {
+        let vector = || Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES);
         Self {
-            u_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
-            v_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
-            u_output: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
-            v_output: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            u_prediction: vector(),
+            v_prediction: vector(),
+            u_output: vector(),
+            v_output: vector(),
         }
     }
 }
