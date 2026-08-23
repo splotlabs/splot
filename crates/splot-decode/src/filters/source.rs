@@ -5,7 +5,20 @@ use splot_recon::{CurrentFrameWorkspace, OwnedFrameBands, PlaneId, PlaneRect, Re
 use std::any::Any;
 use std::sync::{Mutex, MutexGuard};
 
-const MAX_RETAINED_STRIPE_BUFFERS: usize = 128;
+/// Fewest stripe sample buffers retained, and the floor the pool-width bound
+/// never drops below.
+const MIN_RETAINED_STRIPE_BUFFERS: usize = 128;
+/// Stripe sample buffers retained per worker: a wide pool has that many more
+/// stripe chains in flight, each holding its own copy.
+const RETAINED_STRIPE_BUFFERS_PER_WORKER: usize = 16;
+
+/// Retains one worker's share per worker, with [`MIN_RETAINED_STRIPE_BUFFERS`]
+/// as the floor.
+fn max_retained_stripe_buffers() -> usize {
+    splot_parallel::current_pool_width()
+        .saturating_mul(RETAINED_STRIPE_BUFFERS_PER_WORKER)
+        .max(MIN_RETAINED_STRIPE_BUFFERS)
+}
 static STRIPE_SAMPLE_BUFFERS: Mutex<Vec<Vec<u16>>> = Mutex::new(Vec::new());
 
 fn lock_stripe_sample_buffers() -> MutexGuard<'static, Vec<Vec<u16>>> {
@@ -52,7 +65,7 @@ impl StripeCopyError {
 
 fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
     let mut buffers = lock_stripe_sample_buffers();
-    let pool_is_full = buffers.len() >= MAX_RETAINED_STRIPE_BUFFERS;
+    let pool_is_full = buffers.len() >= max_retained_stripe_buffers();
     let index = select_buffer_index(
         buffers
             .iter()
@@ -78,7 +91,7 @@ fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
     }
     buffer.clear();
     let mut buffers = lock_stripe_sample_buffers();
-    if buffers.len() < MAX_RETAINED_STRIPE_BUFFERS && buffers.try_reserve(1).is_ok() {
+    if buffers.len() < max_retained_stripe_buffers() && buffers.try_reserve(1).is_ok() {
         buffers.push(buffer);
     }
 }
@@ -224,7 +237,20 @@ impl<'a, T: ReconSample> DeblockedPlanes<'a, T> {
     }
 }
 
-const MAX_RETAINED_WINDOW_BUFFERS: usize = 64;
+/// Fewest deblocked-window buffers retained, and the floor the pool-width bound
+/// never drops below.
+const MIN_RETAINED_WINDOW_BUFFERS: usize = 64;
+/// Window buffers retained per worker: one window per plane per filter chain in
+/// flight, and a wide pool runs that many more chains at once.
+const RETAINED_WINDOW_BUFFERS_PER_WORKER: usize = 8;
+
+/// Retains one worker's share per worker, with [`MIN_RETAINED_WINDOW_BUFFERS`]
+/// as the floor.
+fn max_retained_window_buffers() -> usize {
+    splot_parallel::current_pool_width()
+        .saturating_mul(RETAINED_WINDOW_BUFFERS_PER_WORKER)
+        .max(MIN_RETAINED_WINDOW_BUFFERS)
+}
 static WINDOW_SAMPLE_BUFFERS: Mutex<Vec<Box<dyn Any + Send>>> = Mutex::new(Vec::new());
 
 fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, StripeCopyError> {
@@ -232,7 +258,7 @@ fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, Str
         let mut buffers = WINDOW_SAMPLE_BUFFERS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pool_is_full = buffers.len() >= MAX_RETAINED_WINDOW_BUFFERS;
+        let pool_is_full = buffers.len() >= max_retained_window_buffers();
         let index = select_buffer_index(
             buffers.iter().enumerate().filter_map(|(index, buffer)| {
                 buffer
@@ -262,7 +288,7 @@ fn recycle_window_buffer<T: ReconSample>(mut buffer: Vec<T>) {
     let mut buffers = WINDOW_SAMPLE_BUFFERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if buffers.len() < MAX_RETAINED_WINDOW_BUFFERS && buffers.try_reserve(1).is_ok() {
+    if buffers.len() < max_retained_window_buffers() && buffers.try_reserve(1).is_ok() {
         buffers.push(Box::new(buffer));
     } else {
         drop(buffer);

@@ -930,7 +930,20 @@ struct ReconRowBufferPool {
     available: Mutex<Vec<ReconRowBuffers>>,
 }
 
-const MAX_RETAINED_RECON_ROW_BUFFERS: usize = 512;
+/// Fewest recycled per-unit buffer sets retained, and the floor the pool-width
+/// bound never drops below.
+const MIN_RETAINED_RECON_ROW_BUFFERS: usize = 512;
+/// Buffer sets retained per worker. The parse-ahead path holds one set per unit
+/// in flight, so the sets returning between frames follow the pool width.
+const RETAINED_RECON_ROW_BUFFERS_PER_WORKER: usize = 256;
+
+/// Retains one worker's share per worker, with
+/// [`MIN_RETAINED_RECON_ROW_BUFFERS`] as the floor.
+fn max_retained_recon_row_buffers() -> usize {
+    splot_parallel::current_pool_width()
+        .saturating_mul(RETAINED_RECON_ROW_BUFFERS_PER_WORKER)
+        .max(MIN_RETAINED_RECON_ROW_BUFFERS)
+}
 static RETAINED_RECON_ROW_BUFFERS: Mutex<Vec<ReconRowBuffers>> = Mutex::new(Vec::new());
 
 impl ReconRowBufferPool {
@@ -993,7 +1006,7 @@ fn recycle_retained_recon_row_buffers(buffers: ReconRowBuffers) {
     let mut retained = RETAINED_RECON_ROW_BUFFERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.len() < MAX_RETAINED_RECON_ROW_BUFFERS {
+    if retained.len() < max_retained_recon_row_buffers() {
         retained.push(buffers);
     }
 }
@@ -1007,7 +1020,8 @@ impl Drop for ReconRowBufferPool {
         let mut retained = RETAINED_RECON_ROW_BUFFERS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while retained.len() < MAX_RETAINED_RECON_ROW_BUFFERS {
+        let limit = max_retained_recon_row_buffers();
+        while retained.len() < limit {
             let Some(buffers) = available.pop() else {
                 break;
             };

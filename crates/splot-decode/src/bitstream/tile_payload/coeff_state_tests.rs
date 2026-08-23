@@ -156,12 +156,12 @@ fn transform_block_recycler_tolerates_reentrant_recycle() {
 #[test]
 fn transform_block_recycler_has_a_retention_limit() {
     let buffers = SharedQuantBuffers::new(QuantBufferPool::new());
-    for _ in 0..=MAX_RETAINED_SHARED_QUANT_BUFFERS {
+    for _ in 0..=MIN_RETAINED_SHARED_QUANT_BUFFERS {
         recycle_coeff_quant_into(&buffers, vec![0]);
     }
     assert_eq!(
         lock_transform_coeff_quant_buffers(&buffers).len(),
-        MAX_RETAINED_SHARED_QUANT_BUFFERS
+        MIN_RETAINED_SHARED_QUANT_BUFFERS
     );
 
     let oversized = SharedQuantBuffers::new(QuantBufferPool::new());
@@ -176,12 +176,12 @@ fn transform_block_recycler_has_a_retention_limit() {
 #[test]
 fn quant_recycler_retains_and_selects_the_largest_useful_buffers() {
     let buffers = SharedQuantBuffers::new(QuantBufferPool::new());
-    for _ in 0..MAX_RETAINED_SHARED_QUANT_BUFFERS {
+    for _ in 0..MIN_RETAINED_SHARED_QUANT_BUFFERS {
         recycle_coeff_quant_into(&buffers, Vec::with_capacity(1));
     }
     recycle_coeff_quant_into(&buffers, Vec::with_capacity(32));
     let retained = lock_transform_coeff_quant_buffers(&buffers);
-    assert_eq!(retained.len(), MAX_RETAINED_SHARED_QUANT_BUFFERS);
+    assert_eq!(retained.len(), MIN_RETAINED_SHARED_QUANT_BUFFERS);
     assert!(retained.iter().any(|buffer| buffer.capacity() >= 32));
     drop(retained);
 
