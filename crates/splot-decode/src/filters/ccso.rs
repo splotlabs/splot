@@ -569,7 +569,7 @@ fn clamped_luma_row<T: ReconSample>(
 
 /// Luma-sample clamp range for the tile containing `mi`.
 ///
-/// § 7.16 keeps CCSO's luma taps inside the current tile when the frame sets
+/// § 7.19.1 keeps CCSO's luma taps inside the current tile when the frame sets
 /// `disable_loopfilters_across_tiles`; without it the range is the picture.
 fn luma_tile_clamp(starts: Option<&[u32]>, mi: usize, frame_max: usize) -> (usize, usize) {
     let (start_mi, end_mi) = super::cdef::tile_span(starts, mi, usize::MAX);
