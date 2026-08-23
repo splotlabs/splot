@@ -278,26 +278,24 @@ impl<T: ReconSample> SharedFrame<T> {
     pub fn handle_count(&self) -> usize {
         Arc::strong_count(&self.inner)
     }
+}
 
-    /// Retires the frame, returning its plane sample buffers to the
-    /// reconstruction-plane pool for reuse when this is the sole handle.
-    ///
-    /// If another handle still shares the storage (for example a live
-    /// show-existing-frame), `Arc::into_inner` yields `None` and the storage is
-    /// left untouched — only the unique-owner case can soundly reclaim a buffer,
-    /// so this can never disturb a still-referenced frame.
-    pub fn reclaim_planes(self) {
-        let Some(frame) = Arc::into_inner(self.inner) else {
-            return;
-        };
-        let DecodedFrame { planes, .. } = frame;
-        let FramePlanes { y, u, v } = planes;
-        crate::workspace::recycle_recon_plane_buffer(y.into_samples());
-        if let Some(u) = u {
-            crate::workspace::recycle_recon_plane_buffer(u.into_samples());
+/// Returns the frame's plane sample buffers to the reconstruction-plane pool
+/// when the last owner releases the frame.
+///
+/// Reclaiming on drop covers every release path — the driver retiring a frame,
+/// a reference slot being replaced, an output handle going away — so a decoded
+/// frame's storage funds the next frame's workspace instead of being freed and
+/// reallocated. It can never disturb a still-referenced frame: the drop only
+/// runs once no handle remains.
+impl<T: ReconSample> Drop for DecodedFrame<T> {
+    fn drop(&mut self) {
+        crate::workspace::recycle_recon_plane_buffer(self.planes.y.take_samples());
+        if let Some(u) = self.planes.u.as_mut() {
+            crate::workspace::recycle_recon_plane_buffer(u.take_samples());
         }
-        if let Some(v) = v {
-            crate::workspace::recycle_recon_plane_buffer(v.into_samples());
+        if let Some(v) = self.planes.v.as_mut() {
+            crate::workspace::recycle_recon_plane_buffer(v.take_samples());
         }
     }
 }
@@ -636,10 +634,10 @@ mod tests {
         assert_eq!(shared.handle_count(), 1);
     }
 
-    /// A still-shared frame (`Arc::into_inner` returns `None`) must be left
-    /// untouched, so a surviving handle still reads its original samples.
+    /// Dropping one handle must leave the storage untouched, so a surviving
+    /// handle still reads its original samples.
     #[test]
-    fn reclaim_planes_leaves_still_shared_storage_intact() {
+    fn dropping_one_handle_leaves_still_shared_storage_intact() {
         let frame = DecodedFrame::try_new(
             info(
                 BitDepth::Eight,
@@ -654,14 +652,14 @@ mod tests {
         let survivor = shared.share();
         assert_eq!(survivor.handle_count(), 2);
 
-        shared.reclaim_planes();
+        drop(shared);
         assert_eq!(survivor.handle_count(), 1);
         assert!(survivor.get().y().samples().iter().all(|&s| s == 7));
     }
 
-    /// The sole-owner path runs the extraction chain and recycles without panic.
+    /// The sole-owner path runs the recycling drop without panic.
     #[test]
-    fn reclaim_planes_consumes_the_sole_handle() {
+    fn dropping_the_sole_handle_recycles_the_planes() {
         let frame = DecodedFrame::try_new(
             info(
                 BitDepth::Eight,
@@ -675,6 +673,6 @@ mod tests {
         let shared = SharedFrame::new(frame);
         assert_eq!(shared.handle_count(), 1);
 
-        shared.reclaim_planes();
+        drop(shared);
     }
 }

@@ -930,7 +930,21 @@ struct ReconRowBufferPool {
     available: Mutex<Vec<ReconRowBuffers>>,
 }
 
-const MAX_RETAINED_RECON_ROW_BUFFERS: usize = 512;
+/// Fewest recycled per-unit buffer sets retained, and the floor the pool-width
+/// bound never drops below.
+const MIN_RETAINED_RECON_ROW_BUFFERS: usize = 512;
+/// Buffer sets retained per worker. The parse-ahead path holds one set per unit
+/// in flight, so the sets returning between frames follow the pool width.
+const RETAINED_RECON_ROW_BUFFERS_PER_WORKER: usize = 256;
+
+/// Retains one worker's share per worker, with
+/// [`MIN_RETAINED_RECON_ROW_BUFFERS`] as the floor.
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
+fn max_retained_recon_row_buffers() -> usize {
+    splot_parallel::current_pool_width()
+        .saturating_mul(RETAINED_RECON_ROW_BUFFERS_PER_WORKER)
+        .max(MIN_RETAINED_RECON_ROW_BUFFERS)
+}
 static RETAINED_RECON_ROW_BUFFERS: Mutex<Vec<ReconRowBuffers>> = Mutex::new(Vec::new());
 
 impl ReconRowBufferPool {
@@ -993,7 +1007,7 @@ fn recycle_retained_recon_row_buffers(buffers: ReconRowBuffers) {
     let mut retained = RETAINED_RECON_ROW_BUFFERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.len() < MAX_RETAINED_RECON_ROW_BUFFERS {
+    if retained.len() < max_retained_recon_row_buffers() {
         retained.push(buffers);
     }
 }
@@ -1007,7 +1021,8 @@ impl Drop for ReconRowBufferPool {
         let mut retained = RETAINED_RECON_ROW_BUFFERS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while retained.len() < MAX_RETAINED_RECON_ROW_BUFFERS {
+        let limit = max_retained_recon_row_buffers();
+        while retained.len() < limit {
             let Some(buffers) = available.pop() else {
                 break;
             };
@@ -1128,6 +1143,14 @@ impl<T: ReconSample> TileDecodeScratch<T> {
         }
     }
 
+    /// A reused surface keeps the previous frame's samples: the prepass and the
+    /// commit replay together write every sample of the rectangle before
+    /// `publish_into` copies it, so there is nothing for a fill to establish.
+    ///
+    /// [`poison_reused_surface`] makes that invariant self-checking: every
+    /// debug and test build hands the surface back stamped with a sentinel, so
+    /// a sample neither pass wrote reaches the output as an obvious value
+    /// instead of the previous frame's plausible one.
     fn take_surface(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
@@ -1139,7 +1162,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             .is_some_and(|surface| surface.info() == info && surface.luma_rect() == rect)
             && let Some(mut surface) = self.surfaces.pop()
         {
-            surface.fill(T::default());
+            poison_reused_surface(&mut surface);
             return Ok(surface);
         }
         if let Some(index) = self
@@ -1148,12 +1171,31 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             .position(|surface| surface.info() == info && surface.luma_rect() == rect)
         {
             let mut surface = self.surfaces.swap_remove(index);
-            surface.fill(T::default());
+            poison_reused_surface(&mut surface);
             return Ok(surface);
         }
         splot_recon::OwnedFrameRect::new(info, rect, T::default())
     }
 }
+
+/// Stamps a reused reconstruction surface with a sentinel legal at every bit
+/// depth, so any sample the prepass and commit replay leave unwritten is an
+/// obviously wrong output rather than the previous frame's plausible one.
+///
+/// Guarded exactly as `debug_assert!` is, and so is not compiled into a release
+/// build at all.
+#[cfg(debug_assertions)]
+fn poison_reused_surface<T: ReconSample>(surface: &mut splot_recon::OwnedFrameRect<T>) {
+    surface.fill(T::try_from_u16(u8::MAX.into()).unwrap_or_default());
+}
+
+#[cfg(not(debug_assertions))]
+#[expect(
+    clippy::inline_always,
+    reason = "empty in release; inlining removes the call the poison check costs"
+)]
+#[inline(always)]
+fn poison_reused_surface<T: ReconSample>(_surface: &mut splot_recon::OwnedFrameRect<T>) {}
 
 impl<T: ReconSample> OrderedDone for ReadyReconRow<'_, T> {
     fn ordinal(&self) -> usize {

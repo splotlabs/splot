@@ -38,9 +38,9 @@ pub use completion::CompletionCell;
 pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;
 pub use pool::{
-    PoolProgressSnapshot, TaskScope, WorkerPool, assist_pool_or_park, current_pool_width,
-    current_worker_index, on_multiworker_pool, on_worker_pool, pool_progress_snapshot,
-    ready_task_scope,
+    PoolProgressSnapshot, TaskScope, WorkerPool, assist_pool_once, assist_pool_or_park,
+    current_pool_width, current_worker_index, on_multiworker_pool, on_worker_pool,
+    pool_progress_snapshot, ready_task_scope,
 };
 pub use progress::PoolWaitMetrics;
 pub use thread_count::ThreadCount;

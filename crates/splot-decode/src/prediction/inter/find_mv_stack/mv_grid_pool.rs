@@ -18,6 +18,7 @@ const MIN_RETAINED_NEIGHBOUR_MV_GRIDS: usize = 8;
 /// Retains one grid per worker so a pool wider than the floor still covers its
 /// concurrent tiles, bounded below by [`MIN_RETAINED_NEIGHBOUR_MV_GRIDS`] and
 /// per-entry by [`MAX_RETAINED_NEIGHBOUR_MV_CELLS`].
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
 fn max_retained_neighbour_mv_grids() -> usize {
     splot_parallel::current_pool_width().max(MIN_RETAINED_NEIGHBOUR_MV_GRIDS)
 }

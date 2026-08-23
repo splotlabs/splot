@@ -209,16 +209,6 @@ impl<T: ReconSample> RefFrameSlot<T> {
             SlotValue::Failed => Err(failed_slot()),
         }
     }
-
-    /// Retires the handle, returning the plane sample buffers to the
-    /// reconstruction-plane pool when this was the last handle.
-    pub(crate) fn reclaim_planes(self) {
-        if let Some(SlotValue::Ready(frame)) =
-            Arc::into_inner(self.cell).and_then(CompletionCell::into_inner)
-        {
-            frame.reclaim_planes();
-        }
-    }
 }
 
 /// The single publisher of one pending decoded-frame slot.
@@ -340,15 +330,6 @@ impl PipelineFrameSlot {
         match self {
             Self::Eight(slot) => slot.wait_settled(),
             Self::Ten(slot) => slot.wait_settled(),
-        }
-    }
-
-    /// Retires the handle, returning the plane sample buffers to the
-    /// reconstruction-plane pool when this was the last handle.
-    pub(crate) fn reclaim_planes(self) {
-        match self {
-            Self::Eight(slot) => slot.reclaim_planes(),
-            Self::Ten(slot) => slot.reclaim_planes(),
         }
     }
 }

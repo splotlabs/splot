@@ -110,6 +110,7 @@ const MIN_RETAINED_DEBLOCK_GRIDS: usize = 4;
 
 /// Retains one grid per worker so a wide pool does not reallocate the grids its
 /// extra workers need, with [`MIN_RETAINED_DEBLOCK_GRIDS`] as the floor.
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
 fn max_retained_deblock_grids() -> usize {
     splot_parallel::current_pool_width().max(MIN_RETAINED_DEBLOCK_GRIDS)
 }

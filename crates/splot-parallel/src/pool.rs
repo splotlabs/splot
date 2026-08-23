@@ -265,6 +265,19 @@ pub fn assist_pool_or_park(snapshot: &PoolProgressSnapshot) {
     }
 }
 
+/// Runs one pending job of the driver's installed pool, reporting whether one
+/// ran, and never parks when the pool has nothing queued.
+///
+/// This is the nonblocking half of [`assist_pool_or_park`] and carries the same
+/// reentrancy contract: the executed job is arbitrary, so the caller must hold
+/// no lock, no thread-local scope guard, and no borrow such a job could need.
+/// It suits a driver that has work of its own to fall back on: `false` means
+/// the pool had nothing to run, so the driver's own work is what is left to do.
+#[must_use]
+pub fn assist_pool_once() -> bool {
+    matches!(assist_installed_pool(), PoolAssist::Executed)
+}
+
 /// Returns whether the calling thread is a worker of an installed pool that
 /// has more than one thread.
 ///
@@ -293,6 +306,9 @@ pub fn current_worker_index() -> Option<usize> {
 ///
 /// Parallel stages use this to choose a work-unit grain that yields a few
 /// units per worker instead of thousands of tiny tasks.
+///
+/// A retention bound built on this scales with the pool only for calls made on
+/// a worker; a caller outside the pool reads `1` and so gets the bound's floor.
 #[must_use]
 pub fn current_pool_width() -> usize {
     if rayon::current_thread_index().is_some() {

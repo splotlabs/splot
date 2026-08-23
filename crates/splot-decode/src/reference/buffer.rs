@@ -514,6 +514,22 @@ impl ReferenceMetadata {
 
 static METADATA_RECYCLER: Mutex<Vec<ReferenceMetadata>> = Mutex::new(Vec::new());
 
+/// Fewest reference-metadata sets retained, and the floor the pool-width bound
+/// never drops below.
+const MIN_RETAINED_REFERENCE_METADATA: usize = 32;
+/// Metadata sets retained per worker: a wide pool has that many more frames in
+/// flight, each holding its own set.
+const RETAINED_REFERENCE_METADATA_PER_WORKER: usize = 2;
+
+/// Retains one worker's share per worker, with
+/// [`MIN_RETAINED_REFERENCE_METADATA`] as the floor.
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
+fn max_retained_reference_metadata() -> usize {
+    splot_parallel::current_pool_width()
+        .saturating_mul(RETAINED_REFERENCE_METADATA_PER_WORKER)
+        .max(MIN_RETAINED_REFERENCE_METADATA)
+}
+
 pub(crate) fn take_reference_metadata(capacity: usize) -> ReferenceMetadata {
     let mut meta = METADATA_RECYCLER
         .lock()
@@ -528,7 +544,7 @@ pub(crate) fn recycle_reference_metadata(meta: ReferenceMetadata) {
     let mut recycler = METADATA_RECYCLER
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if recycler.len() < 32 {
+    if recycler.len() < max_retained_reference_metadata() {
         recycler.push(meta);
     }
 }
