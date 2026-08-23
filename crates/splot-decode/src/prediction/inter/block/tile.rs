@@ -1128,6 +1128,9 @@ impl<T: ReconSample> TileDecodeScratch<T> {
         }
     }
 
+    /// A reused surface keeps the previous frame's samples: the prepass and the
+    /// commit replay together write every sample of the rectangle before
+    /// `publish_into` copies it, so there is nothing for a fill to establish.
     fn take_surface(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
@@ -1137,9 +1140,8 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             .surfaces
             .last()
             .is_some_and(|surface| surface.info() == info && surface.luma_rect() == rect)
-            && let Some(mut surface) = self.surfaces.pop()
+            && let Some(surface) = self.surfaces.pop()
         {
-            surface.fill(T::default());
             return Ok(surface);
         }
         if let Some(index) = self
@@ -1147,8 +1149,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             .iter()
             .position(|surface| surface.info() == info && surface.luma_rect() == rect)
         {
-            let mut surface = self.surfaces.swap_remove(index);
-            surface.fill(T::default());
+            let surface = self.surfaces.swap_remove(index);
             return Ok(surface);
         }
         splot_recon::OwnedFrameRect::new(info, rect, T::default())
