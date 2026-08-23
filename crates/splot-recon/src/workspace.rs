@@ -1423,6 +1423,16 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 /// sized for one decode shape.
 const MAX_RETAINED_RECON_PLANE_SAMPLES: usize = 1 << 25;
 
+/// Caps the retained buffer count as well, so the sample budget alone cannot
+/// admit a crowd of one-sample buffers whose `Vec<Vec<T>>` metadata outweighs
+/// the samples it bounds, and so the capacity scan below stays bounded — a
+/// batch of frames returning their planes costs a fixed amount per buffer
+/// rather than growing with the pool.
+///
+/// This bounds memory, not concurrency: a buffer over the cap is dropped rather
+/// than retained, and a taker that finds the pool empty allocates its own.
+const MAX_RETAINED_RECON_PLANE_BUFFERS: usize = 64;
+
 /// Takes a plane sample buffer from the per-type retained pool, reusing a prior
 /// frame's recycled reconstruction-workspace allocation when available.
 ///
@@ -1448,7 +1458,7 @@ fn take_recon_plane_buffer<T: ReconSample>(clear: bool, required_samples: usize)
 }
 
 /// Returns a plane sample buffer to the per-type retained pool, dropping it when
-/// the pool is full or the buffer is oversized.
+/// the pool is full by either bound or the buffer is oversized.
 pub(crate) fn recycle_recon_plane_buffer<T: ReconSample>(buffer: Vec<T>) {
     if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_RECON_PLANE_SAMPLES {
         return;
@@ -1456,6 +1466,9 @@ pub(crate) fn recycle_recon_plane_buffer<T: ReconSample>(buffer: Vec<T>) {
     let mut pool = T::recon_plane_pool()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pool.len() >= MAX_RETAINED_RECON_PLANE_BUFFERS {
+        return;
+    }
     let retained = pool.iter().map(Vec::capacity).sum::<usize>();
     if retained.saturating_add(buffer.capacity()) <= MAX_RETAINED_RECON_PLANE_SAMPLES {
         pool.push(buffer);

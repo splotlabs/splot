@@ -939,6 +939,7 @@ const RETAINED_RECON_ROW_BUFFERS_PER_WORKER: usize = 256;
 
 /// Retains one worker's share per worker, with
 /// [`MIN_RETAINED_RECON_ROW_BUFFERS`] as the floor.
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
 fn max_retained_recon_row_buffers() -> usize {
     splot_parallel::current_pool_width()
         .saturating_mul(RETAINED_RECON_ROW_BUFFERS_PER_WORKER)
@@ -1145,6 +1146,11 @@ impl<T: ReconSample> TileDecodeScratch<T> {
     /// A reused surface keeps the previous frame's samples: the prepass and the
     /// commit replay together write every sample of the rectangle before
     /// `publish_into` copies it, so there is nothing for a fill to establish.
+    ///
+    /// [`poison_reused_surface`] makes that invariant self-checking: every
+    /// debug and test build hands the surface back stamped with a sentinel, so
+    /// a sample neither pass wrote reaches the output as an obvious value
+    /// instead of the previous frame's plausible one.
     fn take_surface(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
@@ -1154,8 +1160,9 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             .surfaces
             .last()
             .is_some_and(|surface| surface.info() == info && surface.luma_rect() == rect)
-            && let Some(surface) = self.surfaces.pop()
+            && let Some(mut surface) = self.surfaces.pop()
         {
+            poison_reused_surface(&mut surface);
             return Ok(surface);
         }
         if let Some(index) = self
@@ -1163,12 +1170,32 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             .iter()
             .position(|surface| surface.info() == info && surface.luma_rect() == rect)
         {
-            let surface = self.surfaces.swap_remove(index);
+            let mut surface = self.surfaces.swap_remove(index);
+            poison_reused_surface(&mut surface);
             return Ok(surface);
         }
         splot_recon::OwnedFrameRect::new(info, rect, T::default())
     }
 }
+
+/// Stamps a reused reconstruction surface with a sentinel legal at every bit
+/// depth, so any sample the prepass and commit replay leave unwritten is an
+/// obviously wrong output rather than the previous frame's plausible one.
+///
+/// Guarded exactly as `debug_assert!` is, and so is not compiled into a release
+/// build at all.
+#[cfg(debug_assertions)]
+fn poison_reused_surface<T: ReconSample>(surface: &mut splot_recon::OwnedFrameRect<T>) {
+    surface.fill(T::try_from_u16(u8::MAX.into()).unwrap_or_default());
+}
+
+#[cfg(not(debug_assertions))]
+#[expect(
+    clippy::inline_always,
+    reason = "empty in release; inlining removes the call the poison check costs"
+)]
+#[inline(always)]
+fn poison_reused_surface<T: ReconSample>(_surface: &mut splot_recon::OwnedFrameRect<T>) {}
 
 impl<T: ReconSample> OrderedDone for ReadyReconRow<'_, T> {
     fn ordinal(&self) -> usize {

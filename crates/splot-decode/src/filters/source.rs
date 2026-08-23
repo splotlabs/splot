@@ -14,6 +14,7 @@ const RETAINED_STRIPE_BUFFERS_PER_WORKER: usize = 16;
 
 /// Retains one worker's share per worker, with [`MIN_RETAINED_STRIPE_BUFFERS`]
 /// as the floor.
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
 fn max_retained_stripe_buffers() -> usize {
     splot_parallel::current_pool_width()
         .saturating_mul(RETAINED_STRIPE_BUFFERS_PER_WORKER)
@@ -246,6 +247,7 @@ const RETAINED_WINDOW_BUFFERS_PER_WORKER: usize = 8;
 
 /// Retains one worker's share per worker, with [`MIN_RETAINED_WINDOW_BUFFERS`]
 /// as the floor.
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
 fn max_retained_window_buffers() -> usize {
     splot_parallel::current_pool_width()
         .saturating_mul(RETAINED_WINDOW_BUFFERS_PER_WORKER)

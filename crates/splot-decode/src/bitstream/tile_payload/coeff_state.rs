@@ -36,11 +36,14 @@ const RETAINED_SHARED_QUANT_BUFFERS_PER_WORKER: usize = 1_280;
 /// Retains one worker's share per worker, with
 /// [`MIN_RETAINED_SHARED_QUANT_BUFFERS`] as the floor and
 /// [`MAX_RETAINED_COEFF_BUFFER_CAPACITY`] bounding each retained buffer.
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
 fn max_retained_shared_quant_buffers() -> usize {
     splot_parallel::current_pool_width()
         .saturating_mul(RETAINED_SHARED_QUANT_BUFFERS_PER_WORKER)
         .max(MIN_RETAINED_SHARED_QUANT_BUFFERS)
 }
+/// Buffers shed per recycle once the retained count is over the limit.
+const SHED_PER_RECYCLE: usize = 8;
 const MAX_RETAINED_COEFF_BUFFER_CAPACITY: usize = MAX_PADDED_COEFF_LEN;
 static ZERO_QUANT_SIGN: [i8; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
@@ -117,15 +120,38 @@ impl QuantBufferPool {
         }
     }
 
+    /// Drops at most [`SHED_PER_RECYCLE`] buffers from the smallest occupied
+    /// buckets, so a limit that fell with the pool width is reached over the
+    /// next recycles instead of in one long hold of the shared lock.
+    fn shed_excess(&mut self) {
+        for _ in 0..SHED_PER_RECYCLE {
+            if self.retained <= self.limit {
+                return;
+            }
+            let Some(bucket) = (0..QUANT_BUCKETS).find(|bucket| !self.buckets[*bucket].is_empty())
+            else {
+                return;
+            };
+            self.buckets[bucket].pop();
+            self.retained -= 1;
+        }
+    }
+
     /// Retains `buffer`, keeping it in place of the smallest retained buffer
     /// once the pool is full.
+    ///
+    /// Only the branch that would already have rejected the buffer asks the
+    /// active pool for its width, keeping that query off the per-coefficient
+    /// path, and it takes the width's bound as-is so the limit falls again
+    /// once a wide decode is over.
     fn recycle(&mut self, buffer: Vec<i32>) {
         let bucket = Self::bucket_of(buffer.capacity());
         if self.buckets[bucket].try_reserve(1).is_err() {
             return;
         }
         if self.retained >= self.limit {
-            self.limit = self.limit.max(max_retained_shared_quant_buffers());
+            self.limit = max_retained_shared_quant_buffers();
+            self.shed_excess();
         }
         if self.retained < self.limit {
             self.retained += 1;

@@ -523,6 +523,7 @@ const RETAINED_REFERENCE_METADATA_PER_WORKER: usize = 2;
 
 /// Retains one worker's share per worker, with
 /// [`MIN_RETAINED_REFERENCE_METADATA`] as the floor.
+/// Scales per worker only on a pool thread; off-pool callers get the floor.
 fn max_retained_reference_metadata() -> usize {
     splot_parallel::current_pool_width()
         .saturating_mul(RETAINED_REFERENCE_METADATA_PER_WORKER)

@@ -306,6 +306,9 @@ pub fn current_worker_index() -> Option<usize> {
 ///
 /// Parallel stages use this to choose a work-unit grain that yields a few
 /// units per worker instead of thousands of tiny tasks.
+///
+/// A retention bound built on this scales with the pool only for calls made on
+/// a worker; a caller outside the pool reads `1` and so gets the bound's floor.
 #[must_use]
 pub fn current_pool_width() -> usize {
     if rayon::current_thread_index().is_some() {
