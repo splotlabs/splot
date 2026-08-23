@@ -392,7 +392,7 @@ fn ccso_apply<L: ReconSample>(
                         offset_rows,
                         x,
                         x_end,
-                        max_luma_x,
+                        (min_luma_x, max_luma_x),
                         config,
                     );
                 }
@@ -442,18 +442,28 @@ fn ccso_apply<L: ReconSample>(
     Ok(())
 }
 
+/// Vectorises one CCSO row, returning the first column left to the scalar loop.
+///
+/// `tile_clamp` is the § 7.19.1 luma range the scalar path clamps every tap to
+/// ([`docs/spec/av2/1.0.0/07-decoding-process.md`](../../../../docs/spec/av2/1.0.0/07-decoding-process.md));
+/// the vector loop cannot clamp per lane, so it declines any span whose centre
+/// or taps would leave that range.
 fn ccso_simd_row<L: ReconSample>(
     destination: &mut [u16],
     center_row: &[L],
     offset_rows: Option<(&[L], &[L])>,
     x_start: usize,
     x_end: usize,
-    max_luma_x: usize,
+    tile_clamp: (usize, usize),
     config: &CcsoPlaneConfig,
 ) -> usize {
     const LANES: usize = 16;
 
+    let (min_luma_x, max_luma_x) = tile_clamp;
     if config.sub_x != 0 || x_end > destination.len() {
+        return x_start;
+    }
+    if x_start < min_luma_x || x_end.saturating_sub(1) > max_luma_x {
         return x_start;
     }
     let Some(center_row) = L::u16_slice(center_row) else {
@@ -470,7 +480,9 @@ fn ccso_simd_row<L: ReconSample>(
             };
             let min_dx = config.sample_offsets[0].0.min(config.sample_offsets[1].0);
             let max_dx = config.sample_offsets[0].0.max(config.sample_offsets[1].0);
-            if x_start as isize + min_dx < 0 || x_end as isize - 1 + max_dx > max_luma_x as isize {
+            if x_start as isize + min_dx < min_luma_x as isize
+                || x_end as isize - 1 + max_dx > max_luma_x as isize
+            {
                 return x_start;
             }
             Some((row0, row1))

@@ -415,3 +415,152 @@ fn luma_ccso_preserves_lossless_4x4_samples() {
         101
     );
 }
+
+fn tile_ref_sample(
+    pre: u16,
+    curr: &[u16],
+    lw: usize,
+    at: (usize, usize),
+    x_clamp: (usize, usize),
+    y_clamp: (usize, usize),
+    params: &CcsoPlaneParams,
+) -> u16 {
+    let bit_depth = BitDepth::Eight;
+    let edge_clf = params.ccso_edge_clf.unwrap();
+    let bo_only = params.ccso_bo_only.unwrap();
+    let mei = if bo_only {
+        1usize
+    } else if edge_clf {
+        2
+    } else {
+        3
+    };
+    let max_band = 1usize << params.ccso_max_band_log2.unwrap();
+    let band_shift = bit_depth.bits() - params.ccso_max_band_log2.unwrap();
+    let quant_step = i32::from(ccso_quant_step(
+        params.ccso_scale_idx.unwrap(),
+        params.ccso_quant_idx.unwrap(),
+    ));
+    let offsets = ccso_sample_offsets(params.ccso_ext_filter.unwrap()).unwrap();
+    let tap = |dx: isize, dy: isize| -> i32 {
+        let sx = (at.0 as isize + dx).clamp(x_clamp.0 as isize, x_clamp.1 as isize) as usize;
+        let sy = (at.1 as isize + dy).clamp(y_clamp.0 as isize, y_clamp.1 as isize) as usize;
+        i32::from(curr[sy * lw + sx])
+    };
+    let center = tap(0, 0);
+    let band = (center >> band_shift) as usize;
+    let (cls0, cls1) = if bo_only {
+        (0, 0)
+    } else {
+        (
+            ccso_score(
+                tap(offsets[0].0, offsets[0].1) - center,
+                quant_step,
+                edge_clf,
+            ),
+            ccso_score(
+                tap(offsets[1].0, offsets[1].1) - center,
+                quant_step,
+                edge_clf,
+            ),
+        )
+    };
+    let index = (cls0 * mei + cls1) * max_band + band;
+    let base = CCSO_OFFSET[usize::from(params.ccso_offset_idx[index])];
+    let offset = base * (i32::from(params.ccso_scale_idx.unwrap()) + 1);
+    (i32::from(pre) + offset).clamp(0, i32::from(bit_depth.max_sample())) as u16
+}
+
+/// Filters one 8-bit luma plane and returns `(actual, tile-aware reference)`.
+fn tiled_luma_ccso(
+    params: &CcsoPlaneParams,
+    shift: u32,
+    luma: (usize, usize),
+    tiles: Option<(&[u32], &[u32])>,
+) -> (Vec<u16>, Vec<u16>) {
+    let (lw, lh) = luma;
+    let curr_luma = asymmetric_luma(lw, lh);
+    let blk = 4usize << shift;
+    let grid_cols = lw.div_ceil(blk);
+    let grid_rows = lh.div_ceil(blk);
+    let cells = grid_rows * grid_cols;
+    let grid = CcsoUnitGrid::new(
+        true,
+        shift,
+        [true, false, false],
+        [vec![1; cells], vec![0; cells], vec![0; cells]],
+        grid_rows,
+        grid_cols,
+    )
+    .unwrap();
+    let pre: Vec<u16> = (0..lw * lh).map(|i| ((i * 37 + 11) % 251) as u16).collect();
+    let mut destination = StripePlane::from_samples(lw, lh, 0, pre.clone()).unwrap();
+    let prepared = prepare_ccso_plane(0, params, &grid, BitDepth::Eight, (0, 0)).unwrap();
+    ccso_apply(
+        &mut destination,
+        FramePlane::window(&curr_luma, lw, lh, 0, lh).unwrap(),
+        0,
+        &prepared,
+        &grid,
+        None,
+        tiles,
+    )
+    .unwrap();
+    let expected = (0..lw * lh)
+        .map(|index| {
+            let (x, y) = (index % lw, index / lw);
+            let x_clamp =
+                luma_tile_clamp(tiles.map(|(_, cols)| cols), x / blk * blk / MI_SIZE, lw - 1);
+            let y_clamp =
+                luma_tile_clamp(tiles.map(|(rows, _)| rows), y / blk * blk / MI_SIZE, lh - 1);
+            tile_ref_sample(pre[index], &curr_luma, lw, (x, y), x_clamp, y_clamp, params)
+        })
+        .collect();
+    (destination.samples().to_vec(), expected)
+}
+
+fn assert_luma_matches(actual: &[u16], expected: &[u16], lw: usize, label: &str) {
+    for (index, (&got, &want)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(
+            got,
+            want,
+            "{label}: luma sample ({}, {}) expected {want} got {got}",
+            index % lw,
+            index / lw
+        );
+    }
+}
+
+#[test]
+fn ccso_honours_tile_column_clamp_on_left_tile_edge() {
+    let params = edge_plane(1, false, 2, 36);
+    let (actual, expected) = tiled_luma_ccso(&params, 3, (256, 8), Some((&[0, 2], &[0, 16, 64])));
+    assert_luma_matches(&actual, &expected, 256, "ext_filter 1");
+}
+
+#[test]
+fn ccso_honours_tile_column_clamp_for_diagonal_taps() {
+    let params = edge_plane(2, false, 2, 36);
+    let (actual, expected) = tiled_luma_ccso(&params, 3, (256, 8), Some((&[0, 2], &[0, 16, 64])));
+    assert_luma_matches(&actual, &expected, 256, "ext_filter 2");
+}
+
+#[test]
+fn ccso_bo_only_honours_tile_column_clamp() {
+    let mut params = bo_plane(1);
+    params.ccso_offset_idx = vec![1, 4];
+    let (actual, expected) = tiled_luma_ccso(&params, 3, (128, 8), Some((&[0, 2], &[0, 20, 32])));
+    assert_luma_matches(&actual, &expected, 128, "bo_only");
+}
+
+#[test]
+fn ccso_single_tile_column_is_unchanged_by_the_tile_clamp() {
+    let params = edge_plane(1, false, 2, 36);
+    let (tiled, expected) = tiled_luma_ccso(&params, 3, (128, 8), Some((&[0, 2], &[0, 32])));
+    let (untiled, _) = tiled_luma_ccso(&params, 3, (128, 8), None);
+    assert_luma_matches(&tiled, &expected, 128, "single tile column");
+    assert_eq!(
+        tiled, untiled,
+        "single tile column must match the untiled run"
+    );
+}
