@@ -983,14 +983,18 @@ fn drain_ready_entropy<'scope, 'job>(
 where
     'job: 'scope,
 {
-    while entropy
-        .entries
-        .front()
-        .is_some_and(PendingEntropy::is_settled)
-    {
-        promote_front(entropy, spawner, scheduler, lane)?;
+    loop {
+        while entropy
+            .entries
+            .front()
+            .is_some_and(PendingEntropy::is_settled)
+        {
+            promote_front(entropy, spawner, scheduler, lane)?;
+        }
+        if entropy.entries.is_empty() || !splot_parallel::assist_pool_once() {
+            return Ok(());
+        }
     }
-    Ok(())
 }
 
 /// Opens one bounded entropy-context slot before the caller reserves frame storage.
