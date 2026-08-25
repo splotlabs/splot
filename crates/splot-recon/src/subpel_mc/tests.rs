@@ -1322,6 +1322,141 @@ fn compound_average_u8_output_matches_u16_output() {
 }
 
 #[test]
+fn compound_average_sink_matches_scalar_oracle_across_shapes_and_clamps() {
+    let shapes = [
+        (1usize, 1usize),
+        (2, 2),
+        (3, 3),
+        (4, 4),
+        (5, 7),
+        (7, 5),
+        (8, 8),
+        (9, 3),
+        (12, 5),
+        (15, 2),
+        (16, 4),
+        (17, 6),
+        (23, 3),
+        (31, 2),
+        (32, 3),
+        (33, 1),
+    ];
+    let phases = [(0i32, 0i32), (0, 8), (11, 0), (5, 13)];
+    let ref_w = 48usize;
+    let ref_h = 24usize;
+    let samples = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 73 + index / ref_w * 29) % 1024) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let pred0_pattern = |w: usize, h: usize| {
+        (0..w * h)
+            .map(|index| ((index * 97) % 4001) as i32 * 48 - 96_000)
+            .collect::<Vec<_>>()
+    };
+
+    for (w, h) in shapes {
+        let base = SubpelPredictParams {
+            interp: InterpolationFilter::EightTap,
+            w,
+            h,
+            start_x: 0,
+            start_y: 0,
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_w as i32 - 1,
+            last_y: ref_h as i32 - 1,
+            bit_depth: BitDepth::Ten,
+        };
+        for (px, py) in phases {
+            let params = SubpelPredictParams {
+                start_x: (2 + px) << 6,
+                start_y: (2 + py) << 6,
+                ..base
+            };
+            let pred0 = pred0_pattern(w, h);
+            let pred1 = subpel_predict_block_compound_intermediate(&view, &params).unwrap();
+            let stride = w + 5;
+            for cwp_weight in [0i16, 1, 7, 8, 9, 15, 16] {
+                for depth in [BitDepth::Eight, BitDepth::Ten] {
+                    let params = SubpelPredictParams {
+                        bit_depth: depth,
+                        ..params
+                    };
+                    let expected = pred0
+                        .iter()
+                        .zip(&pred1)
+                        .map(|(&left, &right)| {
+                            blend_compound_average_weighted_sample(left, right, depth, cwp_weight)
+                        })
+                        .collect::<Vec<_>>();
+
+                    let mut actual = vec![u16::MAX; stride * h + 2];
+                    subpel_predict_block_compound_average_strided_into(
+                        &view,
+                        &params,
+                        &pred0,
+                        cwp_weight,
+                        None,
+                        &mut actual,
+                        stride,
+                    )
+                    .unwrap();
+
+                    for row in 0..h {
+                        assert_eq!(
+                            &actual[row * stride..row * stride + w],
+                            &expected[row * w..(row + 1) * w],
+                            "{depth:?} w={w} h={h} px={px} py={py} cwp={cwp_weight} row={row}"
+                        );
+                        assert!(
+                            actual[row * stride + w..(row + 1) * stride]
+                                .iter()
+                                .all(|&sample| sample == u16::MAX)
+                        );
+                    }
+                    assert!(
+                        actual[stride * h..]
+                            .iter()
+                            .all(|&sample| sample == u16::MAX),
+                        "trailing sentinel disturbed"
+                    );
+
+                    if depth == BitDepth::Eight {
+                        let mut actual_u8 = vec![u8::MAX; stride * h];
+                        subpel_predict_block_compound_average_strided_into_u8(
+                            &view,
+                            &params,
+                            &pred0,
+                            cwp_weight,
+                            None,
+                            &mut actual_u8,
+                            stride,
+                        )
+                        .unwrap();
+                        for row in 0..h {
+                            assert_eq!(
+                                &actual_u8[row * stride..row * stride + w]
+                                    .iter()
+                                    .map(|&sample| u16::from(sample))
+                                    .collect::<Vec<_>>(),
+                                &expected[row * w..(row + 1) * w],
+                                "u8 w={w} h={h} px={px} py={py} cwp={cwp_weight} row={row}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn fullpel_compound_average_matches_materialized_predictors() {
     let ref_w = 24usize;
     let ref_h = 20usize;
