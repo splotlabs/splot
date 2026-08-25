@@ -72,29 +72,74 @@ pub(super) struct CompoundAverageSubpelOutput<'a> {
     pub(super) max_sample: i32,
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "measured compound-average subpel hot path"
+)]
+#[inline(always)]
+fn blend_compound_average_lanes<const LANES: usize>(
+    pred0: Simd<i32, LANES>,
+    values: Simd<i32, LANES>,
+    forward: i32,
+    backward: i32,
+) -> Simd<i32, LANES> {
+    (pred0 * Simd::splat(forward)
+        + values * Simd::splat(backward)
+        + Simd::splat(1 << (3 + compound_inter_post_round())))
+        >> (4 + compound_inter_post_round()) as i32
+}
+
+#[allow(
+    clippy::inline_always,
+    reason = "measured compound-average subpel hot path"
+)]
+#[inline(always)]
+fn clip_blend_lanes<const LANES: usize>(
+    blended: Simd<i32, LANES>,
+    max_sample: i32,
+) -> Simd<i32, LANES> {
+    blended
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(max_sample))
+}
+
+#[allow(
+    clippy::inline_always,
+    reason = "measured compound-average subpel hot path"
+)]
+#[inline(always)]
+fn blend_compound_average_sample(
+    pred0: i32,
+    value: i32,
+    forward: i32,
+    backward: i32,
+    max_sample: i32,
+) -> i32 {
+    round2_i32(
+        forward * pred0 + backward * value,
+        4 + compound_inter_post_round(),
+    )
+    .clamp(0, max_sample)
+}
+
 impl CompoundAverageSubpelOutput<'_> {
     #[cold]
     fn blend_cold<const LANES: usize>(&mut self, values: Simd<i32, LANES>) -> Simd<u16, LANES> {
         let pred0 = Simd::<i32, LANES>::from_slice(&self.pred0[self.index..]);
         self.index += LANES;
-        let blended = (pred0 * Simd::splat(self.forward)
-            + values * Simd::splat(self.backward)
-            + Simd::splat(1 << (3 + compound_inter_post_round())))
-            >> (4 + compound_inter_post_round()) as i32;
-        blended
-            .simd_clamp(Simd::splat(0), Simd::splat(self.max_sample))
-            .cast::<u16>()
+        clip_blend_lanes(
+            blend_compound_average_lanes(pred0, values, self.forward, self.backward),
+            self.max_sample,
+        )
+        .cast()
     }
 
     #[cold]
     fn one_cold(&mut self, value: i32) -> u16 {
         let pred0 = self.pred0[self.index];
         self.index += 1;
-        let blended = round2_i32(
-            self.forward * pred0 + self.backward * value,
-            4 + compound_inter_post_round(),
-        );
-        blended.clamp(0, self.max_sample) as u16
+        blend_compound_average_sample(pred0, value, self.forward, self.backward, self.max_sample)
+            as u16
     }
 
     #[allow(
@@ -109,14 +154,16 @@ impl CompoundAverageSubpelOutput<'_> {
             .and_then(|rest| rest.first_chunk::<LANES>())
         {
             self.index += LANES;
-            let blended = (Simd::from(*pred0) * Simd::splat(self.forward)
-                + values * Simd::splat(self.backward)
-                + Simd::splat(1 << (3 + compound_inter_post_round())))
-                >> (4 + compound_inter_post_round()) as i32;
-            return blended
-                .simd_max(Simd::splat(0))
-                .simd_min(Simd::splat(self.max_sample))
-                .cast();
+            return clip_blend_lanes(
+                blend_compound_average_lanes(
+                    Simd::from(*pred0),
+                    values,
+                    self.forward,
+                    self.backward,
+                ),
+                self.max_sample,
+            )
+            .cast();
         }
         self.blend_cold(values)
     }
@@ -131,11 +178,13 @@ impl SubpelOutput<u16> for CompoundAverageSubpelOutput<'_> {
     fn one(&mut self, value: i32) -> u16 {
         if let Some(&pred0) = self.pred0.get(self.index) {
             self.index += 1;
-            let blended = round2_i32(
-                self.forward * pred0 + self.backward * value,
-                4 + compound_inter_post_round(),
-            );
-            return blended.clamp(0, self.max_sample) as u16;
+            return blend_compound_average_sample(
+                pred0,
+                value,
+                self.forward,
+                self.backward,
+                self.max_sample,
+            ) as u16;
         }
         self.one_cold(value)
     }
@@ -180,24 +229,24 @@ impl CompoundAverageSubpelOutputU8<'_> {
     fn blend_cold<const LANES: usize>(&mut self, values: Simd<i32, LANES>) -> Simd<u8, LANES> {
         let pred0 = Simd::<i32, LANES>::from_slice(&self.pred0[self.index..]);
         self.index += LANES;
-        let blended = (pred0 * Simd::splat(self.forward)
-            + values * Simd::splat(self.backward)
-            + Simd::splat(1 << (3 + compound_inter_post_round())))
-            >> (4 + compound_inter_post_round()) as i32;
-        blended
-            .simd_clamp(Simd::splat(0), Simd::splat(i32::from(u8::MAX)))
-            .cast()
+        clip_blend_lanes(
+            blend_compound_average_lanes(pred0, values, self.forward, self.backward),
+            i32::from(u8::MAX),
+        )
+        .cast()
     }
 
     #[cold]
     fn one_cold(&mut self, value: i32) -> u8 {
         let pred0 = self.pred0[self.index];
         self.index += 1;
-        let blended = round2_i32(
-            self.forward * pred0 + self.backward * value,
-            4 + compound_inter_post_round(),
-        );
-        blended.clamp(0, i32::from(u8::MAX)) as u8
+        blend_compound_average_sample(
+            pred0,
+            value,
+            self.forward,
+            self.backward,
+            i32::from(u8::MAX),
+        ) as u8
     }
 
     #[allow(
@@ -212,14 +261,16 @@ impl CompoundAverageSubpelOutputU8<'_> {
             .and_then(|rest| rest.first_chunk::<LANES>())
         {
             self.index += LANES;
-            let blended = (Simd::from(*pred0) * Simd::splat(self.forward)
-                + values * Simd::splat(self.backward)
-                + Simd::splat(1 << (3 + compound_inter_post_round())))
-                >> (4 + compound_inter_post_round()) as i32;
-            return blended
-                .simd_max(Simd::splat(0))
-                .simd_min(Simd::splat(i32::from(u8::MAX)))
-                .cast();
+            return clip_blend_lanes(
+                blend_compound_average_lanes(
+                    Simd::from(*pred0),
+                    values,
+                    self.forward,
+                    self.backward,
+                ),
+                i32::from(u8::MAX),
+            )
+            .cast();
         }
         self.blend_cold(values)
     }
@@ -234,11 +285,13 @@ impl SubpelOutput<u8> for CompoundAverageSubpelOutputU8<'_> {
     fn one(&mut self, value: i32) -> u8 {
         if let Some(&pred0) = self.pred0.get(self.index) {
             self.index += 1;
-            let blended = round2_i32(
-                self.forward * pred0 + self.backward * value,
-                4 + compound_inter_post_round(),
-            );
-            return blended.clamp(0, i32::from(u8::MAX)) as u8;
+            return blend_compound_average_sample(
+                pred0,
+                value,
+                self.forward,
+                self.backward,
+                i32::from(u8::MAX),
+            ) as u8;
         }
         self.one_cold(value)
     }
