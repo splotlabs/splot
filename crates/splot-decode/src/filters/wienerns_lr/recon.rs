@@ -1193,10 +1193,10 @@ impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
 ///
 /// CDEF reaches two samples past the stripe, § 7.17 loop restoration clamps its
 /// own reads to the stripe it is filtering plus one row, and a tile end that is
-/// not stripe aligned adds eight. Eight rows of each plane covers all of them,
+/// not stripe aligned adds eight. Ten rows of each plane covers all of them,
 /// and every read outside the window is refused rather than served from another
 /// stripe's rows.
-const STRIPE_WINDOW_MARGIN: usize = 16;
+const STRIPE_WINDOW_MARGIN: usize = 10;
 
 /// Deblocks far enough for one stripe's window to be final, then copies it out.
 ///
