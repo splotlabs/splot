@@ -83,9 +83,10 @@ impl<T: ReconSample> OwnedFramePlaneRect<T> {
         for row in 0..rect.height() {
             let source = row * row_stride_samples;
             let target = (local_y + row) * stride + local_x;
-            // splot-copy-ok: materialize an exclusive scheduler-owned reconstruction row
-            self.samples[target..target + rect.width()]
-                .copy_from_slice(&samples[source..source + rect.width()]);
+            copy_row_samples(
+                &mut self.samples[target..target + rect.width()],
+                &samples[source..source + rect.width()],
+            );
         }
         Ok(())
     }
@@ -103,9 +104,11 @@ impl<T: ReconSample> OwnedFramePlaneRect<T> {
         for row in 0..self.rect.height() {
             let source = row * stride;
             let target_start = (self.rect.y() + row) * target.stride_samples() + self.rect.x();
-            // splot-copy-ok: commit an exclusive scheduler-owned row into the frame surface
-            target.samples[target_start..target_start + stride]
-                .copy_from_slice(&self.samples[source..source + stride]);
+            let target_end = target_start + stride;
+            copy_row_samples(
+                &mut target.samples[target_start..target_end],
+                &self.samples[source..source + stride],
+            );
         }
         Ok(())
     }

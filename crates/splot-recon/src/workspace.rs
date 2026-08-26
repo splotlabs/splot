@@ -206,9 +206,10 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
             .enumerate()
         {
             let source_start = row * row_stride_samples;
-            // splot-copy-ok: publish caller-owned samples into this exclusive rectangle.
-            target[x..x + rect.width()]
-                .copy_from_slice(&samples[source_start..source_start + rect.width()]);
+            copy_row_samples(
+                &mut target[x..x + rect.width()],
+                &samples[source_start..source_start + rect.width()],
+            );
         }
         Ok(())
     }
@@ -244,7 +245,7 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
                         storage: target.storage_size,
                         rect: self.rect,
                     })?;
-            output.copy_from_slice(samples); // splot-copy-ok: publish an owned decoded rectangle into its frame surface
+            copy_row_samples(output, samples);
         }
         Ok(())
     }
@@ -2046,14 +2047,18 @@ fn write_rect_to_samples<T: ReconSample>(
         });
     }
 
-    for row_index in 0..rect.height() {
-        let source_start = row_index * row_stride_samples;
-        let target_start = target_base + row_index * target_stride_samples;
-        // splot-copy-ok: write caller samples into exclusive current-frame target storage
-        target[target_start..target_start + rect.width()]
-            .copy_from_slice(&samples[source_start..source_start + rect.width()]);
-    }
-    Ok(())
+    copy_rect_rows(
+        target,
+        target_stride_samples,
+        target_base,
+        rect,
+        samples,
+        row_stride_samples,
+        |target, source| {
+            copy_row_samples(target, source);
+            Ok(())
+        },
+    )
 }
 
 fn write_u16_rect_to_samples<T: ReconSample>(
@@ -2084,15 +2089,98 @@ fn write_u16_rect_to_samples<T: ReconSample>(
             actual: target.len(),
         });
     }
+    copy_rect_rows(
+        target,
+        target_stride_samples,
+        target_base,
+        rect,
+        samples,
+        row_stride_samples,
+        copy_u16_samples,
+    )
+}
+
+#[inline]
+fn copy_rect_rows<T, S>(
+    target: &mut [T],
+    target_stride_samples: usize,
+    target_base: usize,
+    rect: PlaneRect,
+    samples: &[S],
+    row_stride_samples: usize,
+    mut copy_row: impl FnMut(&mut [T], &[S]) -> Result<()>,
+) -> Result<()> {
     for row in 0..rect.height() {
         let source_start = row * row_stride_samples;
         let target_start = target_base + row * target_stride_samples;
-        copy_u16_samples(
+        copy_row(
             &mut target[target_start..target_start + rect.width()],
             &samples[source_start..source_start + rect.width()],
         )?;
     }
     Ok(())
+}
+
+/// Copies one rectangle row inline instead of through a size-dispatched memmove.
+///
+/// Rect rows run 8..2048 samples; at those widths a runtime-length
+/// [`slice::copy_from_slice`] lowers to a `memmove`/`memcpy` call whose entry
+/// cost dominates the move, so hot block writes pay call overhead per row.
+/// Rows below the 512-byte crossover are copied as straight-line fixed-size
+/// power-of-two pieces that fold into inline vector loads and stores; any copy
+/// loop here would be recognized by LLVM and re-lowered to a library call.
+/// Rows at or above 512 bytes keep the tuned library memcpy, where it wins.
+#[inline]
+fn copy_row_samples<T: ReconSample>(dst: &mut [T], src: &[T]) {
+    assert_eq!(dst.len(), src.len(), "rect row copy length mismatch");
+    let len = dst.len();
+    if std::mem::size_of_val(dst) >= 512 {
+        // splot-copy-ok: full-width rows take the tuned library memcpy past the crossover.
+        dst[..len].copy_from_slice(&src[..len]);
+        return;
+    }
+    let mut done = 0;
+    if done + 256 <= len {
+        copy_fixed_chunk::<256, T>(dst, src, done);
+        done += 256;
+    }
+    if done + 128 <= len {
+        copy_fixed_chunk::<128, T>(dst, src, done);
+        done += 128;
+    }
+    if done + 64 <= len {
+        copy_fixed_chunk::<64, T>(dst, src, done);
+        done += 64;
+    }
+    if done + 32 <= len {
+        copy_fixed_chunk::<32, T>(dst, src, done);
+        done += 32;
+    }
+    if done + 16 <= len {
+        copy_fixed_chunk::<16, T>(dst, src, done);
+        done += 16;
+    }
+    if done + 8 <= len {
+        copy_fixed_chunk::<8, T>(dst, src, done);
+        done += 8;
+    }
+    if done + 4 <= len {
+        copy_fixed_chunk::<4, T>(dst, src, done);
+        done += 4;
+    }
+    if done + 2 <= len {
+        copy_fixed_chunk::<2, T>(dst, src, done);
+        done += 2;
+    }
+    if done < len {
+        dst[done] = src[done];
+    }
+}
+
+#[inline]
+fn copy_fixed_chunk<const N: usize, T: ReconSample>(dst: &mut [T], src: &[T], at: usize) {
+    // splot-copy-ok: a fixed chunk length folds into inline vector loads and stores.
+    dst[at..at + N].copy_from_slice(&src[at..at + N]);
 }
 
 fn copy_u16_samples<T: ReconSample>(target: &mut [T], samples: &[u16]) -> Result<()> {
