@@ -255,6 +255,11 @@ pub(super) fn overlay_mi_grid(
     mi_rows: usize,
     mi_cols: usize,
 ) -> Result<ChromaMiGridStorage, DeblockError> {
+    let plane_id = match plane {
+        0 => splot_recon::PlaneId::U,
+        1 => splot_recon::PlaneId::V,
+        _ => return Err(DeblockError::Workspace),
+    };
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
@@ -263,7 +268,7 @@ pub(super) fn overlay_mi_grid(
     cells
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Allocation {
-            plane: splot_recon::PlaneId::Y,
+            plane: plane_id,
             context: "chroma deblock MI grid",
         })?;
     cells.resize(count, ChromaMiCell::default());
