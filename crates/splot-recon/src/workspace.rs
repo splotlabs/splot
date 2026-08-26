@@ -2132,7 +2132,7 @@ fn copy_rect_rows<T, S>(
 /// Rows at or above 512 bytes keep the tuned library memcpy, where it wins.
 #[inline]
 fn copy_row_samples<T: ReconSample>(dst: &mut [T], src: &[T]) {
-    assert_eq!(dst.len(), src.len(), "rect row copy length mismatch");
+    debug_assert_eq!(dst.len(), src.len(), "rect row copy length mismatch");
     let len = dst.len();
     if std::mem::size_of_val(dst) >= 512 {
         // splot-copy-ok: full-width rows take the tuned library memcpy past the crossover.
