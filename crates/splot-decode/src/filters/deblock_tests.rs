@@ -693,11 +693,7 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
         cells,
         candidates: vec![0; 4 * 16],
     }));
-    MiGrid {
-        storage,
-        base_blocks: blocks,
-        overlay_blocks: &EMPTY_CHROMA_RECORDS,
-    }
+    MiGrid::new(storage, None, blocks, &EMPTY_CHROMA_RECORDS)
 }
 
 fn assert_candidate_mask_superset(
@@ -771,11 +767,7 @@ fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
         block(1, 3, 3, 3, None),
     ];
     let storage = build_mi_grid(&blocks, 4, 6).unwrap();
-    let grid = MiGrid {
-        storage: &storage,
-        base_blocks: &blocks,
-        overlay_blocks: &EMPTY_CHROMA_RECORDS,
-    };
+    let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
 
     for (plane, sub_x, sub_y) in [(0, 0, 0), (1, 1, 1)] {
         for pass in 0..2 {
@@ -1205,11 +1197,7 @@ fn mi_grid_covers_decoded_blocks() {
         lossless: true,
     }];
     let storage = build_mi_grid(&blocks, 16, 16).unwrap();
-    let grid = MiGrid {
-        storage: &storage,
-        base_blocks: &blocks,
-        overlay_blocks: &EMPTY_CHROMA_RECORDS,
-    };
+    let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
     assert!(grid.get_edge(0, 0).is_some(), "top-left MI is covered");
     assert!(
         grid.get_edge(0, 0).is_some_and(|info| info.block.lossless),
@@ -1282,16 +1270,12 @@ fn inherited_chroma_residual_transform_retains_prediction_metadata() {
         skip: false,
         lossless: false,
     };
-    let grid = build_mi_grid(&luma, 8, 8).unwrap();
+    let base = build_mi_grid(&luma, 8, 8).unwrap();
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, metadata);
     chroma.push(0, transform);
-    let storage = overlay_mi_grid(&grid, &chroma, 0, 8, 8).unwrap();
-    let grid = MiGrid {
-        storage: &storage,
-        base_blocks: &luma,
-        overlay_blocks: &chroma,
-    };
+    let storage = overlay_mi_grid(&base, &chroma, 0, 8, 8).unwrap();
+    let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
 
     let inherited = grid.get_edge(1, 3).unwrap();
     let chroma_prediction = inherited.prediction(1);
@@ -1341,15 +1325,11 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
         skip: false,
         lossless: true,
     };
-    let grid = build_mi_grid(&luma, 8, 8).unwrap();
+    let base = build_mi_grid(&luma, 8, 8).unwrap();
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, ordinary);
-    let storage = overlay_mi_grid(&grid, &chroma, 0, 8, 8).unwrap();
-    let grid = MiGrid {
-        storage: &storage,
-        base_blocks: &luma,
-        overlay_blocks: &chroma,
-    };
+    let storage = overlay_mi_grid(&base, &chroma, 0, 8, 8).unwrap();
+    let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
 
     let info = grid.get_edge(1, 3).unwrap();
     let chroma_prediction = info.prediction(1);
@@ -1392,15 +1372,11 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     assert!(!record.chroma_transform_only);
 
     let luma = deblock_blocks(16, 16);
-    let grid = build_mi_grid(&luma, 16, 16).unwrap();
+    let base = build_mi_grid(&luma, 16, 16).unwrap();
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, record);
-    let storage = overlay_mi_grid(&grid, &chroma, 0, 16, 16).unwrap();
-    let grid = MiGrid {
-        storage: &storage,
-        base_blocks: &luma,
-        overlay_blocks: &chroma,
-    };
+    let storage = overlay_mi_grid(&base, &chroma, 0, 16, 16).unwrap();
+    let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
     let info = grid.get_edge(6, 4).unwrap();
     let chroma_prediction = info.prediction(1);
     assert_eq!((chroma_prediction.base_r, chroma_prediction.base_c), (6, 4));

@@ -28,7 +28,7 @@ mod grid;
 
 #[cfg(test)]
 use grid::MiCell;
-use grid::{MiGrid, MiGridStorage, build_mi_grid, overlay_mi_grid, recycle_deblock_grid_scratch};
+use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, build_mi_grid, overlay_mi_grid};
 
 const MI_SIZE: usize = 4;
 
@@ -259,7 +259,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
 pub(crate) struct FrameDeblock<'a> {
     records: DeblockRecords<'a>,
     grid: MiGridStorage,
-    chroma: [Option<MiGridStorage>; 2],
+    chroma: [Option<ChromaMiGridStorage>; 2],
     mi_rows: usize,
     filter: DeblockingFilterParams,
     tile_info: TileInfoSource<'a>,
@@ -814,18 +814,16 @@ impl<'a> FrameDeblock<'a> {
 
     /// The mode-info grid one plane's edges read.
     fn plane_grid(&self, plane: usize) -> MiGrid<'_> {
-        let (storage, overlay_blocks) = match plane.checked_sub(1) {
-            Some(chroma) => (
-                self.chroma[chroma].as_ref().unwrap_or(&self.grid),
-                self.records.chroma(),
-            ),
-            None => (&self.grid, self.records.chroma()),
+        let chroma = match plane.checked_sub(1) {
+            Some(chroma) => self.chroma[chroma].as_ref(),
+            None => None,
         };
-        MiGrid {
-            storage,
-            base_blocks: self.records.blocks(),
-            overlay_blocks,
-        }
+        MiGrid::new(
+            &self.grid,
+            chroma,
+            self.records.blocks(),
+            self.records.chroma(),
+        )
     }
 
     /// The luma rows whose deblocked samples are final now, given how far
@@ -865,11 +863,9 @@ impl<'a> FrameDeblock<'a> {
     /// Returns the grid scratch buffers to the pool.
     pub(crate) fn finish(self) -> Option<OwnedDeblockRecords> {
         for grid in self.chroma.into_iter().flatten() {
-            let (cells, candidates) = grid.into_scratch();
-            recycle_deblock_grid_scratch(cells, candidates);
+            grid.recycle();
         }
-        let (cells, candidates) = self.grid.into_scratch();
-        recycle_deblock_grid_scratch(cells, candidates);
+        self.grid.recycle();
         match self.records {
             DeblockRecords::Borrowed { .. } => None,
             DeblockRecords::Owned(records) => Some(records),
@@ -1092,12 +1088,12 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
             };
         for r in mi_row_range {
             let row_start = r * mi_cols;
-            let row_candidates = &grid.storage.candidates[row_start..row_start + mi_cols];
+            let row_candidates = &grid.candidates[row_start..row_start + mi_cols];
             let chunks = row_candidates.chunks_exact(32);
             let tail = chunks.remainder();
             for (chunk_index, chunk) in chunks.enumerate() {
                 let values = Simd::<u8, 32>::from_slice(chunk);
-                let eligible = if grid.storage.fully_covered {
+                let eligible = if grid.fully_covered {
                     (values & Simd::splat(requested)).simd_ne(Simd::splat(0))
                 } else {
                     (values & Simd::splat(requested)).simd_ne(Simd::splat(0))
