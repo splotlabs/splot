@@ -237,7 +237,7 @@ fn gather<const LANES: usize, T: ReconSample>(
 ) -> Simd<u16, LANES> {
     let first = (params.start_x >> SCALE_SUBPEL_BITS) + col as i32 + tap as i32 - 3;
     let last = first + LANES as i32 - 1;
-    let row_start = row.min(reference.height - 1) * reference.stride;
+    let row_start = row.min(reference.readable_rows - 1) * reference.stride;
     if first >= params.first_x
         && last <= params.last_x
         && first >= 0

@@ -251,7 +251,7 @@ pub(crate) struct FinishedFrame<R> {
 /// fails.
 pub(crate) fn finish_walked_frame<T: ReconSample, R>(
     walked: WalkedFrame<T>,
-    progress: Option<&FrameProgress<T>>,
+    progress: Option<Arc<FrameProgress<T>>>,
     admit: Option<&dyn splot_parallel::Admit<'_>>,
     publish: impl FnOnce(SharedFrame<T>) -> R,
 ) -> Result<FinishedFrame<R>> {

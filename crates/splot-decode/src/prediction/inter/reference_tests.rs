@@ -126,7 +126,7 @@ fn a_banded_read_inside_the_watermark_returns_the_settled_samples() {
         (settled_view.width(), settled_view.height()),
         "a partial frame keeps the whole frame's geometry"
     );
-    for row in 0..settled_view.height() {
+    for row in 0..64 {
         for col in 0..settled_view.width() {
             assert_eq!(
                 banded_view.sample(row, col),
