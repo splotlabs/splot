@@ -614,6 +614,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     .map_err(|_| lr_pipeline_state_error())?;
                 crate::timing::report("filter_deblock_prime", prime_timer);
             }
+            let mut source = crate::filters::source::DeblockedSource::new(workspace);
+            if sections.is_none() && !source.publish_final_rows(setup.luma_height) {
+                return Err(lr_pipeline_state_error());
+            }
             let mut slots: Vec<Option<Result<()>>> =
                 (0..setup.stripe_ranges().len()).map(|_| None).collect();
             let mut owed: Option<crate::error::DecodeError> = None;
@@ -623,7 +627,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 {
                     if let Err(error) = advance_deblock_for_stripe(
                         sections.as_mut(),
-                        &mut workspace,
+                        &mut source,
                         range,
                         setup.subsampling.1,
                         bit_depth,
@@ -631,18 +635,32 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         owed = Some(error);
                         return;
                     }
-                    let window = match setup.extract_terminal_window(stripe, &workspace) {
-                        Ok(window) => window,
-                        Err(error) => {
-                            owed = Some(error);
-                            return;
-                        }
+                    let lease = match sections.as_ref() {
+                        Some(sections) => match setup.lease_ready_rows(stripe, sections, &source) {
+                            Ok(Some(lease)) => lease,
+                            Ok(None) => {
+                                owed = Some(lr_pipeline_state_error());
+                                return;
+                            }
+                            Err(error) => {
+                                owed = Some(error);
+                                return;
+                            }
+                        },
+                        None => match setup.lease_terminal_rows(stripe, &source) {
+                            Ok(lease) => lease,
+                            Err(error) => {
+                                owed = Some(error);
+                                return;
+                            }
+                        },
                     };
+                    let source = crate::filters::source::DeblockedStripe::Lease(lease);
                     let setup = &setup;
                     scope.spawn(move |_| {
                         *slot = Some(
                             setup
-                                .run_owned_window(stripe, window)
+                                .run_owned_source(stripe, source)
                                 .and_then(|filtered| setup.publish(filtered)),
                         );
                     });
@@ -657,17 +675,26 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 slot.unwrap_or_else(|| Err(missing()))?;
             }
         } else {
+            let mut source = crate::filters::source::DeblockedSource::new(workspace);
             if let Some(sections) = sections.as_mut() {
                 let deblock_timer = crate::timing::start();
                 sections
-                    .advance(&mut workspace, mi_rows, bit_depth)
+                    .advance_source(&mut source, mi_rows, bit_depth)
                     .map_err(|_| lr_pipeline_state_error())?;
                 crate::timing::accumulate(crate::timing::Phase::FilterDeblock, deblock_timer);
+            } else if !source.publish_final_rows(setup.luma_height) {
+                return Err(lr_pipeline_state_error());
             }
-            let deblocked = crate::filters::source::DeblockedPlanes::frame(&workspace)
-                .ok_or_else(lr_pipeline_state_error)?;
-            for (stripe, range) in setup.stripe_ranges().iter().enumerate() {
-                let filtered = setup.run_borrowed_planes(stripe, range, deblocked)?;
+            let mut lease = None;
+            for stripe in 0..setup.stripe_ranges().len() {
+                match lease.as_mut() {
+                    Some(lease) => setup.retarget_terminal_rows(stripe, &source, lease)?,
+                    None => lease = Some(setup.lease_terminal_rows(stripe, &source)?),
+                }
+                let filtered = setup.run_borrowed_lease(
+                    stripe,
+                    lease.as_ref().ok_or_else(lr_pipeline_state_error)?,
+                )?;
                 setup.publish(filtered)?;
             }
         }
@@ -678,7 +705,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let freeze_timer = crate::timing::start();
         let frame = setup.finish(publish)?;
         crate::timing::accumulate(crate::timing::Phase::FilterFreeze, freeze_timer);
-        workspace.recycle_planes();
         Ok(frame)
     }
 }
@@ -718,23 +744,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         &self.ranges
     }
 
-    /// Extracts one stripe window only after incremental deblock has made every
-    /// source row and halo final.
-    pub(crate) fn extract_ready_window(
-        &self,
-        stripe: usize,
-        deblock: &crate::filters::deblock::FrameDeblock<'_>,
-        workspace: &CurrentFrameWorkspace<T>,
-    ) -> Result<Option<crate::filters::source::DeblockedWindow<T>>> {
-        let Some(_) = self.ready_stripe(stripe, deblock)? else {
-            return Ok(None);
-        };
-        self.extract_window_with(stripe, |sequence| {
-            sequence.extract(workspace, &self.ranges, stripe, STRIPE_WINDOW_MARGIN)
-        })
-        .map(Some)
-    }
-
     /// Leases one stripe's final rows directly from contiguous deblock storage.
     pub(crate) fn lease_ready_rows(
         &self,
@@ -761,6 +770,20 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::FilterStripeWindow);
         source
             .lease(start, end, STRIPE_WINDOW_MARGIN)
+            .ok_or_else(lr_pipeline_state_error)
+    }
+
+    fn retarget_terminal_rows(
+        &self,
+        stripe: usize,
+        source: &crate::filters::source::DeblockedSource<T>,
+        lease: &mut crate::filters::source::DeblockedReadLease<T>,
+    ) -> Result<()> {
+        let (start, end) = self.stripe_bounds(stripe)?;
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::FilterStripeWindow);
+        source
+            .retarget_lease(lease, start, end, STRIPE_WINDOW_MARGIN)
+            .then_some(())
             .ok_or_else(lr_pipeline_state_error)
     }
 
@@ -795,17 +818,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .min(self.luma_height)
             >= needed)
             .then_some((start, end)))
-    }
-
-    /// Extracts one terminal window when the frame has no active deblock plan.
-    pub(crate) fn extract_terminal_window(
-        &self,
-        stripe: usize,
-        workspace: &CurrentFrameWorkspace<T>,
-    ) -> Result<crate::filters::source::DeblockedWindow<T>> {
-        self.extract_window_with(stripe, |sequence| {
-            sequence.extract(workspace, &self.ranges, stripe, STRIPE_WINDOW_MARGIN)
-        })
     }
 
     /// Extracts one terminal stripe directly from segmented canonical bands
@@ -880,6 +892,16 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         self.run_claimed_planes(stripe, range, deblocked)
     }
 
+    fn run_borrowed_lease(
+        &self,
+        stripe: usize,
+        lease: &crate::filters::source::DeblockedReadLease<T>,
+    ) -> Result<OwnedFilteredStripe<T>> {
+        let range = self.claim(stripe)?;
+        let deblocked = lease.planes().ok_or_else(lr_pipeline_state_error)?;
+        self.run_claimed_planes(stripe, range, deblocked)
+    }
+
     fn run_claimed_planes(
         &self,
         stripe: usize,
@@ -898,6 +920,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn run_owned_window(
         &self,
         stripe: usize,
@@ -907,19 +930,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             stripe,
             crate::filters::source::DeblockedStripe::Window(window),
         )
-    }
-
-    fn run_borrowed_planes(
-        &self,
-        stripe: usize,
-        range: &(usize, usize),
-        deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
-    ) -> Result<OwnedFilteredStripe<T>> {
-        let claimed = self.claim(stripe)?;
-        if claimed != range {
-            return Err(lr_pipeline_state_error());
-        }
-        self.run_claimed_planes(stripe, range, deblocked)
     }
 
     /// Moves one completed stripe into the frame output exactly once.
@@ -1248,7 +1258,7 @@ const STRIPE_WINDOW_MARGIN: usize = 10;
 /// the frame to itself and neither waits for the other.
 fn advance_deblock_for_stripe<T: ReconSample>(
     sections: Option<&mut crate::filters::deblock::FrameDeblock<'_>>,
-    workspace: &mut CurrentFrameWorkspace<T>,
+    source: &mut crate::filters::source::DeblockedSource<T>,
     range: &(usize, usize),
     subsampling_y: usize,
     bit_depth: BitDepth,
@@ -1258,8 +1268,8 @@ fn advance_deblock_for_stripe<T: ReconSample>(
         let deblock_timer = crate::timing::start();
         let reach = crate::filters::deblock::DEBLOCK_PASS_1_REACH << subsampling_y;
         sections
-            .advance(
-                workspace,
+            .advance_source(
+                source,
                 needed.saturating_add(reach).div_ceil(MI_SIZE),
                 bit_depth,
             )
