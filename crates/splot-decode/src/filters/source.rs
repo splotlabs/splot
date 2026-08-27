@@ -10,6 +10,8 @@ use splot_recon::{CurrentFrameWorkspace, OwnedFrameBands, PlaneId, PlaneRect, Re
 use std::any::Any;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone, Copy)]
@@ -32,6 +34,8 @@ struct DeblockedStorage<T: ReconSample> {
     workspace: ManuallyDrop<CurrentFrameWorkspace<T>>,
     info: splot_recon::DecodedFrameInfo,
     planes: [Option<DeblockedPlaneStorage<T>>; 3],
+    #[cfg(test)]
+    recycled: Option<Arc<AtomicBool>>,
 }
 
 /// Safety: `DeblockedSource` is the sole mutable writer, admits writes only below
@@ -74,9 +78,23 @@ impl<T: ReconSample> DeblockedSource<T> {
                 workspace: ManuallyDrop::new(workspace),
                 info,
                 planes,
+                #[cfg(test)]
+                recycled: None,
             }),
             final_luma_rows: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_recycle_probe(
+        workspace: CurrentFrameWorkspace<T>,
+        recycled: Arc<AtomicBool>,
+    ) -> Self {
+        let mut source = Self::new(workspace);
+        if let Some(storage) = Arc::get_mut(&mut source.storage) {
+            storage.recycled = Some(recycled);
+        }
+        source
     }
 
     pub(crate) fn info(&self) -> splot_recon::DecodedFrameInfo {
@@ -189,6 +207,37 @@ impl<T: ReconSample> DeblockedSource<T> {
         luma_end: usize,
         margin: usize,
     ) -> Option<DeblockedReadLease<T>> {
+        let ranges = self.lease_ranges(luma_start, luma_end, margin)?;
+        Some(DeblockedReadLease {
+            source: Arc::clone(&self.storage),
+            ranges,
+        })
+    }
+
+    /// Reuses one serial reader's storage owner for another checked stripe.
+    pub(crate) fn retarget_lease(
+        &self,
+        lease: &mut DeblockedReadLease<T>,
+        luma_start: usize,
+        luma_end: usize,
+        margin: usize,
+    ) -> bool {
+        if !Arc::ptr_eq(&self.storage, &lease.source) {
+            return false;
+        }
+        let Some(ranges) = self.lease_ranges(luma_start, luma_end, margin) else {
+            return false;
+        };
+        lease.ranges = ranges;
+        true
+    }
+
+    fn lease_ranges(
+        &self,
+        luma_start: usize,
+        luma_end: usize,
+        margin: usize,
+    ) -> Option<[Option<(usize, usize)>; 3]> {
         let luma_height = self.storage.info.coded_luma_size().height();
         let needed = luma_end
             .checked_add(margin << usize::from(self.storage.info.pixel_format().subsampling_y()))?
@@ -206,10 +255,7 @@ impl<T: ReconSample> DeblockedSource<T> {
             ranges[plane.index()] =
                 Some(window_bounds((luma_start, luma_end), shift, margin, storage.height).ok()?);
         }
-        Some(DeblockedReadLease {
-            source: Arc::clone(&self.storage),
-            ranges,
-        })
+        Some(ranges)
     }
 }
 
@@ -248,6 +294,10 @@ impl<T: ReconSample> Drop for DeblockedStorage<T> {
         unsafe {
             ManuallyDrop::take(&mut self.workspace).recycle_planes();
         } // SAFETY: the final owning Arc has exclusive workspace access.
+        #[cfg(test)]
+        if let Some(recycled) = &self.recycled {
+            recycled.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -404,6 +454,7 @@ pub(crate) struct PackedPlane<'a, T> {
 }
 
 impl<'a, T: ReconSample> FramePlane<'a, T> {
+    #[cfg(test)]
     pub(crate) fn new(workspace: &'a CurrentFrameWorkspace<T>, plane: PlaneId) -> Option<Self> {
         let source = workspace.plane(plane).ok()?;
         let size = source.storage_size();
@@ -676,6 +727,7 @@ pub(crate) struct DeblockedPlanes<'a, T> {
     pub(crate) v: Option<FramePlane<'a, T>>,
 }
 
+#[cfg(test)]
 impl<'a, T: ReconSample> DeblockedPlanes<'a, T> {
     /// Borrows a whole deblocked frame.
     pub(crate) fn frame(workspace: &'a CurrentFrameWorkspace<T>) -> Option<Self> {
@@ -924,6 +976,7 @@ impl<T: ReconSample> WindowPart<T> {
 }
 
 impl<T: ReconSample> WindowRows<T> {
+    #[cfg(test)]
     fn copy(source: FramePlane<'_, T>, start: usize, end: usize) -> Result<Self, StripeCopyError> {
         let geometry = StripeCopyError::Geometry;
         let rows = end.checked_sub(start).ok_or(geometry)?;
@@ -997,6 +1050,7 @@ impl<T: ReconSample> Drop for WindowRows<T> {
 }
 
 impl<T: ReconSample> DeblockedWindowSequence<T> {
+    #[cfg(test)]
     pub(crate) fn extract(
         &mut self,
         workspace: &CurrentFrameWorkspace<T>,

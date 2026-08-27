@@ -15,21 +15,33 @@ use splot_recon::{
 };
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(miri))]
 use std::sync::{Barrier, Mutex};
 
 fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u16> {
+    workspace_with_format(width, height, PixelFormat::Yuv420)
+}
+
+fn workspace_with_format(
+    width: usize,
+    height: usize,
+    format: PixelFormat,
+) -> CurrentFrameWorkspace<u16> {
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
         BitDepth::Eight,
-        PixelFormat::Yuv420,
+        format,
         PlaneSize::new(width, height).expect("frame size"),
         PlaneRect::new(0, 0, width, height).expect("visible rect"),
     )
     .expect("frame info");
     let mut workspace = CurrentFrameWorkspace::new(info, 0).expect("workspace");
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        let size = workspace.plane(plane).expect("plane").storage_size();
+        let Ok(view) = workspace.plane(plane) else {
+            continue;
+        };
+        let size = view.storage_size();
         for y in 0..size.height() {
             for x in 0..size.width() {
                 workspace
@@ -39,6 +51,151 @@ fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u16> {
         }
     }
     workspace
+}
+
+#[test]
+fn finalized_leases_cover_first_middle_and_terminal_margins_for_all_formats() {
+    let ranges = [(0, 56), (56, 120), (120, 129)];
+    for format in [
+        PixelFormat::Monochrome,
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv444,
+    ] {
+        let mut source = DeblockedSource::new(workspace_with_format(16, 129, format));
+        assert!(source.publish_final_rows(129));
+        for (start, end) in ranges {
+            let lease = source.lease(start, end, 10).expect("final stripe lease");
+            let planes = lease.planes().expect("leased planes");
+            let expected_y = window_bounds((start, end), 0, 10, 129).expect("luma bounds");
+            assert_eq!((planes.y.origin_y(), planes.y.end_y()), expected_y);
+            if format.is_monochrome() {
+                assert!(planes.u.is_none() && planes.v.is_none());
+                continue;
+            }
+            let shift = usize::from(format.subsampling_y());
+            let chroma_height = 129usize.div_ceil(1 << shift);
+            let expected =
+                window_bounds((start, end), shift, 10, chroma_height).expect("chroma bounds");
+            for plane in [planes.u.expect("u plane"), planes.v.expect("v plane")] {
+                assert_eq!((plane.origin_y(), plane.end_y()), expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn serial_lease_retarget_keeps_checked_ranges_and_source_owner() {
+    let mut source = DeblockedSource::new(workspace(16, 129));
+    assert!(source.publish_final_rows(129));
+    let mut lease = source.lease(0, 56, 10).expect("first stripe lease");
+    assert!(source.retarget_lease(&mut lease, 56, 120, 10));
+    let middle = lease.planes().expect("middle stripe planes");
+    assert_eq!((middle.y.origin_y(), middle.y.end_y()), (46, 129));
+
+    assert!(!source.retarget_lease(&mut lease, 120, 130, 10));
+    let unchanged = lease.planes().expect("unchanged stripe planes");
+    assert_eq!((unchanged.y.origin_y(), unchanged.y.end_y()), (46, 129));
+
+    let mut other = DeblockedSource::new(workspace(16, 129));
+    assert!(other.publish_final_rows(129));
+    assert!(!other.retarget_lease(&mut lease, 0, 56, 10));
+    let unchanged = lease.planes().expect("original source planes");
+    assert_eq!((unchanged.y.origin_y(), unchanged.y.end_y()), (46, 129));
+}
+
+#[test]
+fn multiple_immutable_leases_keep_the_source_alive_until_the_last_drop() {
+    let recycled = Arc::new(AtomicBool::new(false));
+    let mut source = DeblockedSource::new_with_recycle_probe(
+        workspace_with_format(16, 129, PixelFormat::Yuv420),
+        Arc::clone(&recycled),
+    );
+    assert!(source.publish_final_rows(129));
+    let first = Arc::new(source.lease(0, 56, 10).expect("first lease"));
+    let middle = Arc::new(source.lease(56, 120, 10).expect("middle lease"));
+
+    #[cfg(not(miri))]
+    {
+        let ready = Arc::new(Barrier::new(3));
+        let first_reader = Arc::clone(&first);
+        let first_ready = Arc::clone(&ready);
+        let middle_reader = Arc::clone(&middle);
+        let middle_ready = Arc::clone(&ready);
+        let pool = splot_parallel::WorkerPool::new(splot_parallel::ThreadCount::Fixed(
+            3.try_into().expect("three workers"),
+        ))
+        .expect("worker pool");
+        pool.install(|| {
+            splot_parallel::ready_task_scope(|scope| {
+                scope.spawn(move |_| {
+                    first_ready.wait();
+                    assert!(
+                        first_reader
+                            .planes()
+                            .and_then(|planes| planes.y.row(55))
+                            .is_some()
+                    );
+                });
+                scope.spawn(move |_| {
+                    middle_ready.wait();
+                    assert!(
+                        middle_reader
+                            .planes()
+                            .and_then(|planes| planes.y.row(56))
+                            .is_some()
+                    );
+                });
+                ready.wait();
+            })
+            .expect("ready task scope");
+        });
+    }
+
+    assert_eq!(
+        first
+            .planes()
+            .expect("first planes")
+            .y
+            .row(55)
+            .expect("first lease row")
+            .len(),
+        16
+    );
+    assert_eq!(
+        middle
+            .planes()
+            .expect("middle planes")
+            .y
+            .row(56)
+            .expect("middle lease row")
+            .len(),
+        16
+    );
+
+    drop(source);
+    assert!(!recycled.load(Ordering::SeqCst));
+    drop(first);
+    assert!(!recycled.load(Ordering::SeqCst));
+    drop(middle);
+    assert!(recycled.load(Ordering::SeqCst));
+}
+
+#[test]
+fn refused_leases_leave_the_source_fail_closed_and_recyclable() {
+    let recycled = Arc::new(AtomicBool::new(false));
+    let mut source = DeblockedSource::new_with_recycle_probe(
+        workspace_with_format(16, 65, PixelFormat::Yuv420),
+        Arc::clone(&recycled),
+    );
+    assert!(source.lease(0, 16, 10).is_none());
+    assert!(source.publish_final_rows(32));
+    assert!(source.lease(16, 16, 0).is_none());
+    assert!(source.lease(32, 66, 0).is_none());
+    assert!(source.lease(16, 32, usize::MAX).is_none());
+    assert!(!source.publish_final_rows(31));
+    assert!(source.lease(16, 32, 0).is_some());
+    drop(source);
+    assert!(recycled.load(Ordering::SeqCst));
 }
 
 #[test]

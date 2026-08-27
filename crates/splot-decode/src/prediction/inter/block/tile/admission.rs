@@ -38,7 +38,7 @@ struct ScheduledCommit<T: ReconSample> {
 struct ScheduledFrontier<T: ReconSample> {
     sealed: Option<crate::filters::source::DeblockedSource<T>>,
     sealed_rows: usize,
-    terminal_workspace: Option<CurrentFrameWorkspace<T>>,
+    terminal_workspace: Option<crate::filters::source::DeblockedSource<T>>,
     bands: Option<splot_recon::OwnedFrameBands<T>>,
     deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
     filter: Option<Arc<crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>>>,
@@ -668,7 +668,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     deblock.advance_bands(bands, safe_mi_end.get(), self.params.bit_depth)
                 }
                 (None, None, Some(filtered)) => {
-                    deblock.advance(filtered, safe_mi_end.get(), self.params.bit_depth)
+                    deblock.advance_source(filtered, safe_mi_end.get(), self.params.bit_depth)
                 }
                 (None, None, None) => Err(crate::filters::deblock::DeblockError::Workspace),
             }
@@ -683,8 +683,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                         .extract_ready_band_window(stripe, deblock, bands)?
                         .map(crate::filters::source::DeblockedStripe::Window),
                     (None, None, Some(filtered)) => filter
-                        .extract_ready_window(stripe, deblock, filtered)?
-                        .map(crate::filters::source::DeblockedStripe::Window),
+                        .lease_ready_rows(stripe, deblock, filtered)?
+                        .map(crate::filters::source::DeblockedStripe::Lease),
                     (None, None, None) => None,
                 };
                 let Some(source) = source else {
@@ -734,8 +734,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 (None, Some(bands), _) => crate::filters::source::DeblockedStripe::Window(
                     filter.extract_terminal_band_window(stripe, bands)?,
                 ),
-                (None, None, Some(filtered)) => crate::filters::source::DeblockedStripe::Window(
-                    filter.extract_terminal_window(stripe, filtered)?,
+                (None, None, Some(filtered)) => crate::filters::source::DeblockedStripe::Lease(
+                    filter.lease_terminal_rows(stripe, filtered)?,
                 ),
                 (None, None, None) => {
                     return Err(crate::filters::wienerns_lr::recon::lr_pipeline_state_error());
@@ -748,9 +748,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             frontier.next_filter_stripe += 1;
         }
         drop(frontier.sealed.take());
-        if let Some(workspace) = frontier.terminal_workspace.take() {
-            workspace.recycle_planes();
-        }
+        drop(frontier.terminal_workspace.take());
         Ok(ScheduledTileProgress {
             filters,
             output: Some(ScheduledTileOutput {
@@ -882,7 +880,13 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             if frontier.sealed.is_some() || frontier.bands.is_some() {
                 commit.workspace.recycle_planes();
             } else {
-                frontier.terminal_workspace = Some(commit.workspace);
+                let mut source = crate::filters::source::DeblockedSource::new(commit.workspace);
+                if frontier.deblock.is_none()
+                    && !source.publish_final_rows(self.info.coded_luma_size().height())
+                {
+                    return Err(invalid_inter_tile_scheduling_state());
+                }
+                frontier.terminal_workspace = Some(source);
             }
         }
         Ok(ScheduledCommitProgress {

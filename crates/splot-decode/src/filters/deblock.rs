@@ -554,6 +554,7 @@ impl<'a> FrameDeblock<'a> {
     }
 
     /// Deblocks every mode-info row before `mi_row_end` that is still owed.
+    #[cfg(test)]
     pub(crate) fn advance<T: ReconSample>(
         &mut self,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -670,6 +671,7 @@ impl<'a> FrameDeblock<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
     fn run_ranges<T: ReconSample>(
         &self,
         workspace: &mut CurrentFrameWorkspace<T>,
