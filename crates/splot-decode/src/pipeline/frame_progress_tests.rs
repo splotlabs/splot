@@ -274,6 +274,26 @@ fn chroma_rows_truncate_to_the_fully_published_luma_pairs() {
 }
 
 #[test]
+fn a_complete_odd_height_frame_publishes_its_terminal_chroma_row() {
+    let progress = new_progress(64, 129, PixelFormat::Yuv420);
+    assert!(progress.begin(&[(0, 64), (64, 129)]));
+
+    progress.publish(0);
+    assert_eq!(
+        progress.read().expect("an interior prefix").chroma_rows(),
+        32,
+        "an interior prefix still requires complete luma pairs"
+    );
+
+    progress.publish(1);
+    assert_eq!(
+        progress.read().expect("the complete frame").chroma_rows(),
+        65,
+        "the final unpaired luma row completes the terminal chroma row"
+    );
+}
+
+#[test]
 fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
     assert!(progress.begin(&[(0, 64), (64, 128)]));

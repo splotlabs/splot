@@ -10,6 +10,37 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[derive(Default)]
+struct AdmitCounter(AtomicUsize);
+
+impl<'job> splot_parallel::Admit<'job> for AdmitCounter {
+    fn admit_ready(&self) -> usize {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    fn submit(
+        &self,
+        _order_key: u64,
+        _conditions: &[splot_parallel::Condition<'_>],
+        job: splot_parallel::Job<'job>,
+    ) {
+        drop(job);
+    }
+
+    fn spawn_ready(&self, job: splot_parallel::Job<'job>) {
+        drop(job);
+    }
+
+    fn submit_ready_batch(&self, _order_key: u64, jobs: Vec<splot_parallel::Job<'job>>) {
+        drop(jobs);
+    }
+
+    fn continue_ready(&self, _order_key: u64, job: splot_parallel::Job<'job>) {
+        drop(job);
+    }
+}
+
 fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
         restoration_type: crate::bitstream::tile_payload::LrUnitRestorationType::WienerNonsep,
@@ -309,8 +340,14 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
     let sink = final_filter_sink_8bit::<u8>();
     let progress =
         Arc::new(crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap());
+    let admit = AdmitCounter::default();
     let (setup, workspace) = sink
-        .into_owned_filter_setup(Arc::clone(&core), false, Some(Arc::clone(&progress)), None)
+        .into_owned_filter_setup(
+            Arc::clone(&core),
+            false,
+            Some(Arc::clone(&progress)),
+            Some(&admit),
+        )
         .unwrap();
     let workspace = workspace.unwrap();
     let ranges = setup.stripe_ranges().to_vec();
@@ -328,6 +365,11 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
         let filtered = setup.run_owned_window(stripe, window).unwrap();
         setup.publish(filtered).unwrap();
     }
+    assert_eq!(
+        admit.0.load(Ordering::SeqCst),
+        ranges.len(),
+        "every direct publication must wake row-gated dependents"
+    );
     assert!(
         progress.publish_stripe(0, Box::new(|_| Ok(()))).is_err(),
         "the u8 filter path must have selected direct publication"

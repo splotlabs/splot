@@ -578,11 +578,16 @@ impl<T: ReconSample> FrameProgress<T> {
         if workspace.is_none() {
             return None;
         }
+        let chroma_rows = if rows == self.luma_height {
+            rows.div_ceil(1 << self.subsampling_y)
+        } else {
+            rows >> self.subsampling_y
+        };
         Some(PublishedFrame {
             progress: self,
             workspace: Some(workspace),
             luma_rows,
-            chroma_rows: rows >> self.subsampling_y,
+            chroma_rows,
         })
     }
 
@@ -819,9 +824,9 @@ impl<T: ReconSample> PublishedFrame<'_, T> {
 
     /// The number of final chroma rows.
     ///
-    /// A chroma row is final once every luma row it subsamples is, so the count
-    /// truncates rather than rounds: § 6.4.1 pairs chroma row `r` with luma rows
-    /// `r << subsampling_y ..= (r << subsampling_y) + subsampling_y`.
+    /// A chroma row is final once every in-frame luma row it subsamples is, so
+    /// interior prefixes truncate while a complete odd-height frame includes
+    /// its terminal chroma row.
     pub(crate) const fn chroma_rows(&self) -> usize {
         self.chroma_rows
     }

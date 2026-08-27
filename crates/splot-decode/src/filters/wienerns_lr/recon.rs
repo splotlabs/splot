@@ -94,6 +94,9 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
             if !direct.submit() {
                 return Err(lr_pipeline_state_error());
             }
+            if let Some(admit) = self.admit {
+                admit.admit_ready();
+            }
             return Ok(());
         }
         let copy = move |output: &mut CurrentFrameWorkspace<T>| {
