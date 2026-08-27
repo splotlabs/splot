@@ -60,7 +60,7 @@ mod slide;
 mod tip_overlap;
 pub use copy::{
     blend_compound_average_equal, blend_compound_average_weighted,
-    blend_compound_average_weighted_sample, subpel_predict_block_row_into,
+    blend_compound_average_weighted_sample,
 };
 use copy::{
     compound_inter_post_round, subpel_copy_block_into, subpel_copy_block_u16_into,
@@ -608,7 +608,6 @@ pub fn subpel_predict_block_strided_into<T: ReconSample>(
     subpel_predict_block_internal_into_validated(
         reference,
         params,
-        params.h,
         INTER_ROUND1_NON_COMPOUND,
         intermediate_height,
         None,
@@ -1102,7 +1101,6 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
     subpel_predict_block_internal_into_validated(
         reference,
         params,
-        params.h,
         INTER_ROUND1_COMPOUND,
         intermediate_height,
         scratch,
@@ -1186,7 +1184,6 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
     subpel_predict_block_internal_into_validated(
         reference,
         params,
-        params.h,
         INTER_ROUND1_COMPOUND,
         intermediate_height,
         scratch,
@@ -1232,7 +1229,6 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
     subpel_predict_block_internal_into_validated(
         reference,
         params,
-        params.h,
         INTER_ROUND1_COMPOUND,
         intermediate_height,
         scratch,
@@ -2096,7 +2092,6 @@ fn subpel_predict_block_internal<T: ReconSample, O: Clone + Default>(
     subpel_predict_block_internal_into_validated(
         reference,
         params,
-        params.h,
         inter_round1,
         intermediate_height,
         None,
@@ -2156,7 +2151,6 @@ fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
 fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    vertical_filter_height: usize,
     inter_round1: u32,
     intermediate_height: usize,
     scratch: Option<&mut [i16]>,
@@ -2221,7 +2215,6 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             (true, false) => subpel_vertical_only_into(
                 reference,
                 params,
-                vertical_filter_height,
                 inter_round1,
                 output,
                 output_stride,
@@ -2243,7 +2236,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
         None
     };
 
-    let v_filter = interp.pass_index(vertical_filter_height as u32);
+    let v_filter = interp.pass_index(h as u32);
     let mut read_lo = intermediate_height;
     let mut read_hi = 0usize;
     for r in 0..h {

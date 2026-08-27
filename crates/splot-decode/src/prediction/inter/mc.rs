@@ -13,7 +13,7 @@ use splot_recon::{
     subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
-    subpel_predict_block_row_into, subpel_predict_block_strided_into, wedge_mask_plane_sample,
+    subpel_predict_block_strided_into, wedge_mask_plane_sample,
 };
 
 use super::Mv;
@@ -879,11 +879,6 @@ fn predict_plane<T: ReconSample>(
         })?
         .is_some()
     {
-        return Ok(());
-    }
-    if sink.with_sliced_u16_rect_rows_mut(plane, target, |row, output| {
-        subpel_predict_block_row_into(&view, &params, row, output)
-    })? {
         return Ok(());
     }
     let len = params

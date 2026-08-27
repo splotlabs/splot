@@ -3,61 +3,6 @@
 
 use super::*;
 
-/// Writes one output row of a single-reference prediction.
-///
-/// This is the disjoint-rectangle counterpart of
-/// [`subpel_predict_block_strided_into`]: callers whose destination is split
-/// into exact row slices can reconstruct without first materializing a packed
-/// block.
-///
-/// # Errors
-/// Returns the same errors as [`subpel_predict_block_strided_into`], or
-/// [`ReconError::BufferLengthMismatch`] when `row` or `output` is invalid.
-pub fn subpel_predict_block_row_into<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    row: usize,
-    output: &mut [u16],
-) -> Result<()> {
-    if row >= params.h || output.len() < params.w {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: params.w,
-            actual: output.len(),
-        });
-    }
-    let mut row_params = *params;
-    row_params.h = 1;
-    row_params.start_y = params
-        .start_y
-        .checked_add(
-            i32::try_from(row)
-                .map_err(|_| ReconError::ArithmeticOverflow {
-                    context: "subpel output row",
-                })?
-                .checked_mul(params.step_y)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "subpel output row position",
-                })?,
-        )
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "subpel output row position",
-        })?;
-    let intermediate_height = validate_subpel_params(&row_params)?;
-    subpel_predict_block_internal_into_validated(
-        reference,
-        &row_params,
-        params.h,
-        INTER_ROUND1_NON_COMPOUND,
-        intermediate_height,
-        None,
-        output,
-        params.w,
-        ClippedU16SubpelOutput {
-            max_sample: i32::from(params.bit_depth.max_sample()),
-        },
-    )
-}
-
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
 /// COMPOUND_AVERAGE and the supplied `cwpWeight`, then applies the final § 4.8
 /// `Clip1`.
@@ -586,13 +531,12 @@ fn subpel_vertical_interior_into<O>(
 pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    filter_height: usize,
     inter_round1: u32,
     output: &mut [O],
     output_stride: usize,
     finish: &mut impl SubpelOutput<O>,
 ) {
-    let v_filter = params.interp.pass_index(filter_height as u32) as usize;
+    let v_filter = params.interp.pass_index(params.h as u32) as usize;
     let phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
     let full_taps = &SUBPEL_FILTERS[v_filter][phase];
     let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter][phase];

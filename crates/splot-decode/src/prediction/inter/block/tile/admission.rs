@@ -20,8 +20,7 @@ struct ScheduledCommit<T: ReconSample> {
     next: usize,
     handed_rows: usize,
     ordered: deferred_recon::InterReconScratch<T>,
-    workspace: Option<CurrentFrameWorkspace<T>>,
-    overlap: Option<Arc<direct_recon::OverlappedReconWorkspace<T>>>,
+    workspace: CurrentFrameWorkspace<T>,
     block_decoded: TileBlockDecodedState,
     current_block_decoded_superblock: Option<[usize; 2]>,
     decoded_any: bool,
@@ -489,7 +488,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     let mut surface = band.surface_mut();
                     let mut rows = Vec::with_capacity(ready.len());
                     for mut ready in ready {
-                        scratch.with_installed(|scratch| {
+                        let mut row = scratch.with_installed(|scratch| {
                             if !ready.row.has_terminal_error() && !ready.row.motion_derived {
                                 mvres::derive_unit_motion_on_surface(
                                     &mut ready.row,
@@ -500,7 +499,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                                 );
                             }
                             precompute_recon_row_on_surface(
-                                &mut ready.row,
+                                ready.row,
                                 &mut surface,
                                 scratch,
                                 &self.prepass_block_decoded,
@@ -518,9 +517,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                                 self.params.luma_use_tcq,
                                 self.params.residual_use_ddt,
                                 self.params.bit_depth,
-                            );
+                            )
                         });
-                        let mut row = ready.row;
                         let first_remaining = row
                             .entries
                             .iter()
@@ -589,7 +587,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// the sealed copy, so deblock never writes rows a later current-frame
     /// prediction can still read. The copy needs no fill: this seals whole
     /// rows upward from row zero, and the frontier reads only below them.
-    fn seal_committed_rows(&self, workspace: &CurrentFrameWorkspace<T>, rows: usize) -> Result<()> {
+    fn seal_committed_rows(&self, commit: &ScheduledCommit<T>, rows: usize) -> Result<()> {
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
         let ScheduledFrontier {
             sealed,
@@ -603,7 +601,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .saturating_mul(self.params.sb_h4.saturating_mul(4).max(1))
             .min(self.info.coded_luma_size().height());
         if end > *sealed_rows {
-            sealed.copy_rows_from(workspace, *sealed_rows..end)?;
+            sealed.copy_rows_from(&commit.workspace, *sealed_rows..end)?;
             *sealed_rows = end;
         }
         Ok(())
@@ -808,83 +806,40 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 Some(band),
             ),
         };
-        let mut ready = Some(ready);
-        let mut overlap_count = 0usize;
-        if commit.overlap.is_some()
-            && let Some(rows) = ready.as_mut()
-        {
-            for ready in rows {
-                let Some(surface) = ready.surface.take() else {
-                    continue;
-                };
-                match surface {
-                    ReadyReconSurface::Direct(surface) => {
-                        surface.retire()?;
-                        overlap_count = overlap_count.saturating_add(1);
-                    }
-                    surface => ready.surface = Some(surface),
+        for mut ready in ready {
+            validate_commit_ordinal(ready.row.ordinal, commit.next)?;
+            if let Some(surface) = ready.surface.take() {
+                surface.publish_into(&mut commit.workspace)?;
+                if let ReadyReconSurface::Owned(surface) = surface {
+                    commit.surfaces.push(surface);
                 }
             }
-        }
-        let mut closed_rows = commit.handed_rows;
-        let mut replay = |workspace: &mut CurrentFrameWorkspace<T>| -> Result<()> {
-            for mut ready in ready
-                .take()
-                .ok_or_else(invalid_inter_tile_scheduling_state)?
-            {
-                validate_commit_ordinal(ready.row.ordinal, commit.next)?;
-                if let Some(surface) = ready.surface.take() {
-                    surface.publish_into(workspace)?;
-                    if let ReadyReconSurface::Owned(surface) = surface {
-                        commit.surfaces.push(surface);
-                    }
-                }
-                let buffers = commit.ordered.with_installed(|scratch| {
-                    pixel_commit::replay_recon_row(
-                        ready.row,
-                        &mut commit.next,
-                        &mut commit.decoded_any,
-                        &self.quantizer,
-                        scratch,
-                        workspace,
-                        &mut commit.block_decoded,
-                        &mut commit.current_block_decoded_superblock,
-                        &self.motion,
-                        &mut crate::filters::wienerns_lr::FrameFilterRecords::default(),
-                        &self.temporal,
-                        &self.reference,
-                        self.ref_frame_idx.as_slice(),
-                        &self.sequence,
-                        &self.core,
-                        self.params.mi_rows,
-                        self.params.mi_cols,
-                        self.params.current_order_hint,
-                        self.params.luma_use_tcq,
-                        self.params.residual_use_ddt,
-                        self.params.bit_depth,
-                    )
-                })?;
-                recycle_retained_recon_row_buffers(buffers);
-            }
-            closed_rows = closed_frontier_rows(
-                commit.next,
-                self.unit_count,
-                self.units_per_row,
-                self.frontier_rows,
-            );
-            if closed_rows > commit.handed_rows {
-                self.seal_committed_rows(workspace, closed_rows)?;
-            }
-            Ok(())
-        };
-        if let Some(overlap) = commit.overlap.as_ref() {
-            overlap.with_commit(overlap_count, &mut replay)?;
-        } else {
-            let workspace = commit
-                .workspace
-                .as_mut()
-                .ok_or_else(invalid_inter_tile_scheduling_state)?;
-            replay(workspace)?;
+            let buffers = commit.ordered.with_installed(|scratch| {
+                pixel_commit::replay_recon_row(
+                    ready.row,
+                    &mut commit.next,
+                    &mut commit.decoded_any,
+                    &self.quantizer,
+                    scratch,
+                    &mut commit.workspace,
+                    &mut commit.block_decoded,
+                    &mut commit.current_block_decoded_superblock,
+                    &self.motion,
+                    &mut crate::filters::wienerns_lr::FrameFilterRecords::default(),
+                    &self.temporal,
+                    &self.reference,
+                    self.ref_frame_idx.as_slice(),
+                    &self.sequence,
+                    &self.core,
+                    self.params.mi_rows,
+                    self.params.mi_cols,
+                    self.params.current_order_hint,
+                    self.params.luma_use_tcq,
+                    self.params.residual_use_ddt,
+                    self.params.bit_depth,
+                )
+            })?;
+            recycle_retained_recon_row_buffers(buffers);
         }
         if let Some(band) = completed_band {
             let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
@@ -895,6 +850,15 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 .push(band)?;
         }
         let terminal = commit.next == self.unit_count;
+        let closed_rows = closed_frontier_rows(
+            commit.next,
+            self.unit_count,
+            self.units_per_row,
+            self.frontier_rows,
+        );
+        if closed_rows > commit.handed_rows {
+            self.seal_committed_rows(&commit, closed_rows)?;
+        }
         let frontier_rows = commit.handed_rows..closed_rows;
         commit.handed_rows = closed_rows;
         if !terminal {
@@ -913,19 +877,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let scratch =
             TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, commit.surfaces);
         *self.scratch.lock().unwrap_or_else(PoisonError::into_inner) = Some(scratch);
-        let workspace = match commit.overlap.as_ref() {
-            Some(overlap) => overlap.take()?,
-            None => commit
-                .workspace
-                .take()
-                .ok_or_else(invalid_inter_tile_scheduling_state)?,
-        };
         {
             let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
             if frontier.sealed.is_some() || frontier.bands.is_some() {
-                workspace.recycle_planes();
+                commit.workspace.recycle_planes();
             } else {
-                frontier.terminal_workspace = Some(workspace);
+                frontier.terminal_workspace = Some(commit.workspace);
             }
         }
         Ok(ScheduledCommitProgress {
@@ -1331,7 +1288,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         )
     };
     let owned_bands = storage_plan.owned_bands();
-    let overlap_admitted = !owned_bands && core.intrabc.is_none();
     let storage_started = crate::timing::start();
     if storage_started.is_some() {
         crate::timing::report_detail(
@@ -1349,41 +1305,26 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         motion_handle,
         crate::timing::start(),
     )?;
-    let rects = if owned_bands {
+    let surfaces = if owned_bands {
         Vec::new()
     } else {
-        superblock_luma_rects(
+        let rects = superblock_luma_rects(
             &geometry.mi_rows,
             &geometry.mi_cols,
             &workspace,
             params.sb_h4,
-        )?
-    };
-    let (workspace, overlap, surfaces) = if overlap_admitted {
-        let (owner, surfaces) = direct_recon::OverlappedReconWorkspace::new(workspace, &rects)?;
-        (
-            None,
-            Some(owner),
-            surfaces
-                .into_iter()
-                .map(ReadyReconSurface::Direct)
-                .collect(),
-        )
-    } else if owned_bands {
-        (Some(workspace), None, Vec::new())
-    } else {
+        )?;
         scratch
             .surfaces
             .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
-        let surfaces = rects
+        rects
             .into_iter()
             .map(|rect| {
                 scratch
                     .take_surface(info, rect)
                     .map(ReadyReconSurface::Owned)
             })
-            .collect::<splot_recon::Result<Vec<_>>>()?;
-        (Some(workspace), None, surfaces)
+            .collect::<splot_recon::Result<Vec<_>>>()?
     };
     let mut surface_cursor = surfaces.into_iter();
     if unit_count == 0 {
@@ -1433,7 +1374,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             handed_rows: 0,
             ordered,
             workspace,
-            overlap,
             block_decoded,
             current_block_decoded_superblock: None,
             decoded_any: false,

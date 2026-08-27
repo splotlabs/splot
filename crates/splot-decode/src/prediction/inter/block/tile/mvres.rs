@@ -36,12 +36,11 @@ pub(super) fn derive_unit_motion<T: ReconSample>(
         row.motion_folded = true;
         return;
     }
-    if let Some(surface) = surface
-        && surface
-            .with_sink(|sink| derive_row_motion(row, scratch, sink, shared))
-            .is_none_or(|derived| !derived)
-    {
-        return;
+    if let Some(surface) = surface {
+        let sink = surface.sink();
+        if !derive_row_motion(row, scratch, &sink, shared) {
+            return;
+        }
     }
     row.motion_derived = true;
     row.motion_folded = true;

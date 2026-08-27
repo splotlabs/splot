@@ -14,7 +14,6 @@ use splot_recon::{PlaneId, ReconError};
 use super::*;
 
 mod admission;
-mod direct_recon;
 mod mvres;
 mod ready_rows;
 
@@ -1041,41 +1040,20 @@ impl OrderedDone for ReconRow {
 enum ReadyReconSurface<'a, T: ReconSample> {
     Borrowed(splot_recon::CurrentFrameRect<'a, T>),
     Owned(splot_recon::OwnedFrameRect<T>),
-    Direct(direct_recon::DirectReconRect<T>),
 }
 
-impl<T: ReconSample> ReadyReconSurface<'_, T> {
+impl<'storage, T: ReconSample> ReadyReconSurface<'storage, T> {
     fn publish_into(&self, workspace: &mut CurrentFrameWorkspace<T>) -> splot_recon::Result<()> {
         match self {
             Self::Borrowed(surface) => surface.publish_into(workspace),
             Self::Owned(surface) => surface.publish_into(workspace),
-            Self::Direct(_) => Ok(()),
         }
     }
 
-    fn with_sink<R>(
-        &mut self,
-        use_sink: impl FnOnce(&mut mc::WorkspaceSink<'_, '_, T>) -> R,
-    ) -> Option<R> {
+    fn sink<'surface>(&'surface mut self) -> mc::WorkspaceSink<'surface, 'storage, T> {
         match self {
-            Self::Borrowed(surface) => {
-                let mut sink = mc::WorkspaceSink::Rect(surface);
-                Some(use_sink(&mut sink))
-            }
-            Self::Owned(surface) => {
-                let mut sink = mc::WorkspaceSink::OwnedRect(surface);
-                Some(use_sink(&mut sink))
-            }
-            Self::Direct(surface) => surface.with_surface(|surface| {
-                let mut sink = mc::WorkspaceSink::Rect(surface);
-                use_sink(&mut sink)
-            }),
-        }
-    }
-
-    fn finish_writes(&mut self) {
-        if let Self::Direct(surface) = self {
-            let _ = surface.finish_writes();
+            Self::Borrowed(surface) => mc::WorkspaceSink::Rect(surface),
+            Self::Owned(surface) => mc::WorkspaceSink::OwnedRect(surface),
         }
     }
 }
@@ -1252,29 +1230,27 @@ fn precompute_recon_row<'surface, T: ReconSample>(
     let Some(surface) = ready.surface.as_mut() else {
         return ready;
     };
-    let _ = surface.with_sink(|surface| {
-        precompute_recon_row_on_surface(
-            &mut ready.row,
-            surface,
-            scratch,
-            block_decoded,
-            motion,
-            quantizer,
-            temporal_context,
-            reference,
-            ref_frame_idx,
-            sequence,
-            core,
-            sb_h4,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-            luma_use_tcq,
-            residual_use_ddt,
-            bit_depth,
-        );
-    });
-    surface.finish_writes();
+    let mut surface = surface.sink();
+    ready.row = precompute_recon_row_on_surface(
+        ready.row,
+        &mut surface,
+        scratch,
+        block_decoded,
+        motion,
+        quantizer,
+        temporal_context,
+        reference,
+        ref_frame_idx,
+        sequence,
+        core,
+        sb_h4,
+        mi_rows,
+        mi_cols,
+        current_order_hint,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+    );
     ready
 }
 
@@ -1288,7 +1264,7 @@ fn precompute_recon_row<'surface, T: ReconSample>(
 /// prepublish samples as its residual base.
 #[allow(clippy::too_many_arguments)]
 fn precompute_recon_row_on_surface<T: ReconSample>(
-    row: &mut ReconRow,
+    mut row: ReconRow,
     surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
@@ -1306,9 +1282,9 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-) {
+) -> ReconRow {
     if row.has_terminal_error() {
-        return;
+        return row;
     }
     let _quantizer_scopes = quantizer.install_frame();
     let info = surface.info();
@@ -1412,7 +1388,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         }
     }
     if row.motion_derived {
-        return;
+        return row;
     }
     row.motion_folded = row
         .entries
@@ -1429,6 +1405,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         motion.fold_unit(row.ordinal, &row.temporal);
         motion.unit_landed_for(row.ordinal, true);
     }
+    row
 }
 
 /// The prepass state one tile carries across calls: the block-decoded snapshot
@@ -2054,9 +2031,9 @@ fn prepare_tile<T: ReconSample>(
             ParserStep::Last(row) => (row, true),
         };
         row.return_terminal_error()?;
-        scratch_pool.with_scratch(|scratch| {
+        rows.push(scratch_pool.with_scratch(|scratch| {
             precompute_recon_row_on_surface(
-                &mut row,
+                row,
                 &mut sink,
                 scratch,
                 &block_decoded,
@@ -2074,9 +2051,8 @@ fn prepare_tile<T: ReconSample>(
                 context.luma_use_tcq,
                 context.residual_use_ddt,
                 context.bit_depth,
-            );
-        });
-        rows.push(row);
+            )
+        }));
         if last {
             break;
         }
