@@ -359,6 +359,22 @@ pub fn wiener_ns_filter_chroma_block_padded_into<T: ReconSample>(
         &context,
     )?;
 
+    if let (Some(chroma), Some(output)) = (
+        T::u16_slice(source.chroma_samples),
+        T::u16_slice_mut(output),
+    ) {
+        filter_chroma_padded_u16(
+            output,
+            params,
+            chroma,
+            source.chroma_stride,
+            &scratch.luma_ds,
+            ds_width,
+            max_sample,
+        );
+        return Ok(());
+    }
+
     scratch.filtered.clear();
     scratch
         .filtered
@@ -368,30 +384,15 @@ pub fn wiener_ns_filter_chroma_block_padded_into<T: ReconSample>(
             context: "Wiener NS chroma filtered scratch",
         })?;
     scratch.filtered.resize(context.sample_count, T::default());
-    if let (Some(chroma), Some(filtered)) = (
-        T::u16_slice(source.chroma_samples),
-        T::u16_slice_mut(&mut scratch.filtered),
-    ) {
-        filter_chroma_padded_u16(
-            filtered,
-            params,
-            chroma,
-            source.chroma_stride,
-            &scratch.luma_ds,
-            ds_width,
-            max_sample,
-        );
-    } else {
-        filter_chroma_padded_scalar(
-            &mut scratch.filtered,
-            params,
-            source.chroma_samples,
-            source.chroma_stride,
-            &scratch.luma_ds,
-            ds_width,
-            max_sample,
-        )?;
-    }
+    filter_chroma_padded_scalar(
+        &mut scratch.filtered,
+        params,
+        source.chroma_samples,
+        source.chroma_stride,
+        &scratch.luma_ds,
+        ds_width,
+        max_sample,
+    )?;
 
     for row in 0..params.height {
         let src = row * params.width;
@@ -643,7 +644,7 @@ fn padded_tap_offset(stride: usize, dy: isize, dx: isize) -> usize {
 }
 
 fn filter_chroma_padded_u16(
-    filtered: &mut [u16],
+    output: &mut [u16],
     params: &WienerNsChromaFilter<'_>,
     chroma: &[u16],
     chroma_stride: usize,
@@ -657,7 +658,7 @@ fn filter_chroma_padded_u16(
     for r in 0..params.height {
         let chroma_base = r * chroma_stride;
         let luma_base = r * luma_stride;
-        let output = &mut filtered[r * params.width..][..params.width];
+        let output = &mut output[r * params.output_stride..][..params.width];
         let vector_width = params.width - params.width % LANES;
         for c in (0..vector_width).step_by(LANES) {
             let center = Simd::<u16, LANES>::from_slice(&chroma[chroma_base + center_offset + c..])
@@ -1446,6 +1447,112 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn padded_u16_filter_writes_strided_output_without_filtered_scratch() {
+        let width = 65;
+        let height = 3;
+        let source_stride = width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+        let source_rows = height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+        let chroma: Vec<u16> = (0..source_stride * source_rows)
+            .map(|index| (index * 37 % 1024) as u16)
+            .collect();
+        let luma: Vec<u16> = (0..source_stride * source_rows)
+            .map(|index| (index * 53 % 1024) as u16)
+            .collect();
+        let source = WienerNsChromaPaddedSource::new(
+            &chroma,
+            source_stride,
+            &luma,
+            source_stride,
+            width,
+            height,
+            (0, 0),
+        )
+        .unwrap();
+        let mut coeffs = ZERO_CHROMA;
+        for (index, coeff) in coeffs.iter_mut().enumerate() {
+            *coeff = (index as i16 * 7 % 23) - 11;
+        }
+
+        let mut packed_params = chroma_params(width, height, width, BitDepth::Ten, &coeffs);
+        packed_params.luma_end_x = 127;
+        packed_params.mi_rows = 16;
+        let mut packed = vec![0; width * height];
+        wiener_ns_filter_chroma_block_padded_into(
+            &mut packed,
+            &packed_params,
+            &source,
+            &mut WienerNsChromaScratch::default(),
+        )
+        .unwrap();
+
+        let output_stride = width + 7;
+        let mut strided_params = packed_params;
+        strided_params.output_stride = output_stride;
+        let mut strided = vec![u16::MAX; output_stride * height];
+        let mut scratch = WienerNsChromaScratch::default();
+        wiener_ns_filter_chroma_block_padded_into(
+            &mut strided,
+            &strided_params,
+            &source,
+            &mut scratch,
+        )
+        .unwrap();
+
+        for row in 0..height {
+            assert_eq!(
+                &strided[row * output_stride..row * output_stride + width],
+                &packed[row * width..(row + 1) * width],
+            );
+            assert!(
+                strided[row * output_stride + width..(row + 1) * output_stride]
+                    .iter()
+                    .all(|&sample| sample == u16::MAX)
+            );
+        }
+        assert_eq!(scratch.filtered.capacity(), 0);
+    }
+
+    #[test]
+    fn padded_u16_filter_validates_every_source_before_direct_output() {
+        let width = 2;
+        let height = 2;
+        let source_stride = width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+        let source_rows = height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+        let mut chroma = vec![0u16; source_stride * source_rows];
+        *chroma.last_mut().unwrap() = 1024;
+        let luma = vec![0u16; source_stride * source_rows];
+        let source = WienerNsChromaPaddedSource::new(
+            &chroma,
+            source_stride,
+            &luma,
+            source_stride,
+            width,
+            height,
+            (0, 0),
+        )
+        .unwrap();
+        let params = chroma_params(width, height, width + 1, BitDepth::Ten, &ZERO_CHROMA);
+        let mut output = vec![77u16; params.output_stride * height];
+        let mut scratch = WienerNsChromaScratch::default();
+
+        let error =
+            wiener_ns_filter_chroma_block_padded_into(&mut output, &params, &source, &mut scratch)
+                .unwrap_err();
+
+        assert_eq!(
+            error,
+            ReconError::WienerNsFilterSourceSampleOutOfRange {
+                x: source_stride as isize - 1,
+                y: source_rows as isize - 1,
+                value: 1024,
+                max: 1023,
+            }
+        );
+        assert_eq!(output, vec![77; params.output_stride * height]);
+        assert_eq!(scratch.filtered.capacity(), 0);
     }
 
     #[test]

@@ -409,7 +409,15 @@ fn block_published_rows(
 ) -> Option<u32> {
     let reference_size = reference.coded_luma_size();
     let frame_size = frame.coded_luma_size();
-    let mut rows = reach.bawp.min(reference_size.height() as u32);
+    let mut rows = if reach.bawp == 0 {
+        0
+    } else {
+        let visible_y = u32::try_from(reference.visible_luma_rect().y()).unwrap_or(u32::MAX);
+        reach
+            .bawp
+            .saturating_add(visible_y)
+            .min(reference_size.height() as u32)
+    };
     for (plane, sub_x, sub_y) in mc_planes(frame.pixel_format()) {
         if plane == PlaneId::V || (plane != PlaneId::Y && !predict_chroma) {
             continue;
@@ -444,7 +452,16 @@ fn block_published_rows(
                 scaling.last_y,
             ));
         }
-        rows = rows.max((last.max(0) as u32).saturating_add(1) << sub_y);
+        let plane_visible_y =
+            u32::try_from(reference.visible_luma_rect().y() >> sub_y).unwrap_or(u32::MAX);
+        let plane_rows = (last.max(0) as u32)
+            .saturating_add(1)
+            .saturating_add(plane_visible_y);
+        rows = rows.max(
+            plane_rows
+                .saturating_mul(1 << sub_y)
+                .min(reference_size.height() as u32),
+        );
     }
     Some(rows)
 }

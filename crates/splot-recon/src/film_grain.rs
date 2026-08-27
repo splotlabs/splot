@@ -109,10 +109,13 @@ fn plane_from_visible<T: ReconSample>(
 ) -> Result<Plane<T>> {
     let size = PlaneSize::new(width, height)?;
     let rect = PlaneRect::new(0, 0, width, height)?;
-    let mut converted = Vec::with_capacity(samples.len());
-    for sample in samples {
-        converted.push(T::try_from_u16(sample)?);
-    }
+    let converted = match T::reuse_u16_vec(samples) {
+        Ok(samples) => samples,
+        Err(samples) => samples
+            .into_iter()
+            .map(T::try_from_u16)
+            .collect::<Result<Vec<_>>>()?,
+    };
     Plane::from_vec(size, width, rect, converted)
 }
 
@@ -806,5 +809,34 @@ impl GrainRng {
                 & 1;
         self.register = (self.register >> 1) | (bit << 15);
         usize::from((self.register >> (16 - bits)) & ((1_u16 << bits) - 1))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::plane_from_visible;
+
+    #[test]
+    fn u16_plane_reuses_the_synthesized_sample_allocation() {
+        let mut samples = Vec::with_capacity(8);
+        samples.extend([1_u16, 2, 3, 4]);
+        let pointer = samples.as_ptr();
+        let capacity = samples.capacity();
+
+        let plane = plane_from_visible::<u16>(2, 2, samples).unwrap();
+        let samples = plane.into_samples();
+
+        assert_eq!(samples.as_ptr(), pointer);
+        assert_eq!(samples.capacity(), capacity);
+        assert_eq!(samples, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn u8_plane_keeps_the_checked_conversion_fallback() {
+        let plane = plane_from_visible::<u8>(2, 2, vec![0, 1, 254, 255]).unwrap();
+
+        assert_eq!(plane.samples(), [0, 1, 254, 255]);
+        assert!(plane_from_visible::<u8>(1, 1, vec![256]).is_err());
     }
 }

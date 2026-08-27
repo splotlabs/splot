@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#[cfg(test)]
 use crate::filters::source::DeblockedWindow;
 use splot_core::headers::frame::{
     DeblockingFilterParams, FrameHeaderCore, QuantizationParams, TileInfo,
@@ -28,7 +29,7 @@ mod grid;
 
 #[cfg(test)]
 use grid::MiCell;
-use grid::{MiGrid, MiGridStorage, build_mi_grid, overlay_mi_grid, recycle_deblock_grid_scratch};
+use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, build_mi_grid, overlay_mi_grid};
 
 const MI_SIZE: usize = 4;
 
@@ -259,7 +260,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
 pub(crate) struct FrameDeblock<'a> {
     records: DeblockRecords<'a>,
     grid: MiGridStorage,
-    chroma: [Option<MiGridStorage>; 2],
+    chroma: [Option<ChromaMiGridStorage>; 2],
     mi_rows: usize,
     filter: DeblockingFilterParams,
     tile_info: TileInfoSource<'a>,
@@ -564,6 +565,24 @@ impl<'a> FrameDeblock<'a> {
         })
     }
 
+    /// Deblocks only the mutable rows below a contiguous source's immutable
+    /// filter prefix, then releases the newly final prefix for read leases.
+    pub(crate) fn advance_source<T: ReconSample>(
+        &mut self,
+        source: &mut crate::filters::source::DeblockedSource<T>,
+        mi_row_end: usize,
+        bit_depth: BitDepth,
+    ) -> Result<(), DeblockError> {
+        self.advance_with(mi_row_end, bit_depth, |this, ranges, depth| {
+            this.run_ranges_source(source, ranges, depth)
+        })?;
+        let sub_y = usize::from(source.info().pixel_format().subsampling_y());
+        if !source.publish_final_rows(self.final_luma_rows(sub_y)) {
+            return Err(DeblockError::Workspace);
+        }
+        Ok(())
+    }
+
     /// Deblocks every mode-info row before `mi_row_end` in movable canonical
     /// row-band storage.
     pub(crate) fn advance_bands<T: ReconSample>(
@@ -612,6 +631,7 @@ impl<'a> FrameDeblock<'a> {
 
     /// Copies a final deblocked row window for an independently owned filter
     /// continuation.
+    #[cfg(test)]
     pub(crate) fn extract_window<T: ReconSample>(
         &self,
         workspace: &CurrentFrameWorkspace<T>,
@@ -624,20 +644,7 @@ impl<'a> FrameDeblock<'a> {
             .map_err(DeblockError::from)
     }
 
-    /// Copies a final deblocked row window directly from segmented canonical
-    /// row bands.
-    pub(crate) fn extract_band_window<T: ReconSample>(
-        &self,
-        frame: &OwnedFrameBands<T>,
-        luma_start: usize,
-        luma_end: usize,
-        margin: usize,
-    ) -> Result<DeblockedWindow<T>, DeblockError> {
-        self.validate_window(frame.info(), luma_start, luma_end, margin)?;
-        DeblockedWindow::extract_bands(frame, luma_start, luma_end, margin)
-            .map_err(DeblockError::from)
-    }
-
+    #[cfg(test)]
     fn validate_window(
         &self,
         info: splot_recon::DecodedFrameInfo,
@@ -785,6 +792,69 @@ impl<'a> FrameDeblock<'a> {
         Ok(())
     }
 
+    fn run_ranges_source<T: ReconSample>(
+        &self,
+        source: &mut crate::filters::source::DeblockedSource<T>,
+        ranges: &[core::ops::Range<usize>; 2],
+        bit_depth: BitDepth,
+    ) -> Result<(), DeblockError> {
+        if ranges.iter().all(Range::is_empty) {
+            return Ok(());
+        }
+        let pixel_format = source.info().pixel_format();
+        for plane in 0..3 {
+            let plane_id = plane_index_to_id(plane);
+            if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
+                continue;
+            }
+            let passes = [0usize, 1].map(|pass| {
+                (!ranges[pass].is_empty())
+                    .then(|| {
+                        PlanePass::active(
+                            plane,
+                            pass,
+                            self.filter,
+                            self.quant_deltas,
+                            bit_depth,
+                            pixel_format,
+                            &ranges[pass],
+                        )
+                    })
+                    .flatten()
+            });
+            if passes.iter().all(Option::is_none) {
+                continue;
+            }
+            let Some((_, height)) = source.plane_size(plane_id) else {
+                continue;
+            };
+            let (start, end) =
+                deblock_plane_row_bounds(passes, height).ok_or(DeblockError::Workspace)?;
+            source
+                .with_plane_rows_mut(
+                    plane_id,
+                    start,
+                    end,
+                    |samples, stride, width, height, y_origin| {
+                        self.run_plane_job(PlaneJob {
+                            band: PlaneBand {
+                                storage: PlaneRows::Contiguous { samples, stride },
+                                stride,
+                                width,
+                                height,
+                                y_origin,
+                                row_count: end - start,
+                            },
+                            grid: self.plane_grid(plane),
+                            passes,
+                        })
+                    },
+                )
+                .ok_or(DeblockError::Workspace)??;
+        }
+        Ok(())
+    }
+
     /// Runs one plane's owed passes over their mode-info row ranges.
     ///
     /// Planes hold disjoint sample buffers and read only their own, so the
@@ -814,18 +884,16 @@ impl<'a> FrameDeblock<'a> {
 
     /// The mode-info grid one plane's edges read.
     fn plane_grid(&self, plane: usize) -> MiGrid<'_> {
-        let (storage, overlay_blocks) = match plane.checked_sub(1) {
-            Some(chroma) => (
-                self.chroma[chroma].as_ref().unwrap_or(&self.grid),
-                self.records.chroma(),
-            ),
-            None => (&self.grid, self.records.chroma()),
+        let chroma = match plane.checked_sub(1) {
+            Some(chroma) => self.chroma[chroma].as_ref(),
+            None => None,
         };
-        MiGrid {
-            storage,
-            base_blocks: self.records.blocks(),
-            overlay_blocks,
-        }
+        MiGrid::new(
+            &self.grid,
+            chroma,
+            self.records.blocks(),
+            self.records.chroma(),
+        )
     }
 
     /// The luma rows whose deblocked samples are final now, given how far
@@ -865,11 +933,9 @@ impl<'a> FrameDeblock<'a> {
     /// Returns the grid scratch buffers to the pool.
     pub(crate) fn finish(self) -> Option<OwnedDeblockRecords> {
         for grid in self.chroma.into_iter().flatten() {
-            let (cells, candidates) = grid.into_scratch();
-            recycle_deblock_grid_scratch(cells, candidates);
+            grid.recycle();
         }
-        let (cells, candidates) = self.grid.into_scratch();
-        recycle_deblock_grid_scratch(cells, candidates);
+        self.grid.recycle();
         match self.records {
             DeblockRecords::Borrowed { .. } => None,
             DeblockRecords::Owned(records) => Some(records),
@@ -1092,12 +1158,12 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
             };
         for r in mi_row_range {
             let row_start = r * mi_cols;
-            let row_candidates = &grid.storage.candidates[row_start..row_start + mi_cols];
+            let row_candidates = &grid.candidates[row_start..row_start + mi_cols];
             let chunks = row_candidates.chunks_exact(32);
             let tail = chunks.remainder();
             for (chunk_index, chunk) in chunks.enumerate() {
                 let values = Simd::<u8, 32>::from_slice(chunk);
-                let eligible = if grid.storage.fully_covered {
+                let eligible = if grid.fully_covered {
                     (values & Simd::splat(requested)).simd_ne(Simd::splat(0))
                 } else {
                     (values & Simd::splat(requested)).simd_ne(Simd::splat(0))
@@ -1379,6 +1445,31 @@ struct PlanePass {
     quant_delta: i32,
     bit_depth: BitDepth,
     allow_df_sub_pu: bool,
+}
+
+fn deblock_plane_row_bounds(
+    passes: [Option<PlanePass>; 2],
+    height: usize,
+) -> Option<(usize, usize)> {
+    let mut bounds: Option<(usize, usize)> = None;
+    for pass in passes.into_iter().flatten() {
+        let (mi_start, mi_end) = pass.mi_row_range;
+        if mi_start >= mi_end {
+            continue;
+        }
+        let first = (mi_start * MI_SIZE) >> pass.plane_sub_y;
+        let last = ((mi_end - 1) * MI_SIZE) >> pass.plane_sub_y;
+        let (start, end) = if pass.pass == 0 {
+            (first, last.saturating_add(MI_SIZE).min(height))
+        } else {
+            (
+                first.saturating_sub(GATHER_HALF),
+                last.saturating_add(GATHER_HALF).min(height),
+            )
+        };
+        bounds = Some(bounds.map_or((start, end), |(low, high)| (low.min(start), high.max(end))));
+    }
+    bounds.filter(|(start, end)| start < end)
 }
 
 impl PlanePass {

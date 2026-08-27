@@ -1483,6 +1483,39 @@ fn workspace_reconstructed_sample_rejects_out_of_bounds_and_missing_plane() {
     ));
 }
 
+fn assert_copy_row_samples_equals_slice_copy<T: ReconSample + core::fmt::Debug + Eq>(
+    width: usize,
+    height: usize,
+) {
+    let source: Vec<T> = (0..width * height)
+        .map(|index| {
+            let raw = (((index.wrapping_mul(2_654_435_761) >> 13) as u16) % 1009).min(T::MAX_VALUE);
+            T::try_from_u16(raw).unwrap()
+        })
+        .collect();
+    for row in 0..height {
+        let src = &source[row * width..(row + 1) * width];
+        let mut expected = vec![T::default(); width];
+        expected.copy_from_slice(src); // splot-copy-ok: build the slice-copy oracle for this equivalence test
+
+        let mut actual = vec![T::default(); width];
+        copy_row_samples(&mut actual, src);
+
+        assert_eq!(actual, expected, "width {width} height {height} row {row}");
+    }
+}
+
+#[test]
+fn copy_row_samples_matches_slice_copy_for_every_chunk_and_tail_path() {
+    let shapes = (1..=80usize)
+        .chain([127, 128, 129, 255, 256, 257, 510, 511, 512, 1024, 1921])
+        .flat_map(|width| (1..=5).map(move |height| (width, height)));
+    for (width, height) in shapes {
+        assert_copy_row_samples_equals_slice_copy::<u8>(width, height);
+        assert_copy_row_samples_equals_slice_copy::<u16>(width, height);
+    }
+}
+
 #[test]
 fn workspace_set_reconstructed_sample_writes_and_validates() {
     let mut workspace =

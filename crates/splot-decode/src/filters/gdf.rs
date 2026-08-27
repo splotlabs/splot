@@ -173,6 +173,21 @@ impl GdfBlockGrid {
         let index = row.checked_mul(self.cols)?.checked_add(col)?;
         self.values.get(index).map(|&value| value != 0)
     }
+
+    fn any_enabled(&self, stripe_row: usize, x: usize, width: usize) -> Option<bool> {
+        let row = stripe_row.checked_mul(MI_SIZE)? / self.block_size;
+        let first_col = x / self.block_size;
+        let last_col = x.checked_add(width)?.checked_sub(1)? / self.block_size;
+        if row >= self.rows || last_col >= self.cols {
+            return None;
+        }
+        let row_start = row.checked_mul(self.cols)?;
+        let start = row_start.checked_add(first_col)?;
+        let end = row_start.checked_add(last_col)?.checked_add(1)?;
+        self.values
+            .get(start..end)
+            .map(|values| values.contains(&1))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -293,6 +308,13 @@ pub(crate) fn apply_stripe<T: ReconSample>(
             } else {
                 (0, width)
             };
+            if config.per_block
+                && !block_grid
+                    .and_then(|grid| grid.any_enabled(stripe_row, segment_x, segment_width))
+                    .ok_or_else(gdf_state_error)?
+            {
+                continue;
+            }
             let stripe_block = GdfBlock {
                 x: segment_x,
                 y,
@@ -372,6 +394,9 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                     } else {
                         true
                     };
+                    if !block_enabled {
+                        continue;
+                    }
                     let block = GdfBlock {
                         x,
                         y: block_y,
@@ -379,28 +404,13 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                         height: block_height,
                         ..stripe_block
                     };
-                    let mut output = if block_enabled {
-                        compute_block::<u16>(
-                            &source,
-                            post_lr_luma.samples(),
-                            classes,
-                            class_cols,
-                            block,
-                        )?
-                    } else {
-                        let mut block = [0; MI_SIZE * MI_SIZE];
-                        copy_base_block::<u16>(
-                            post_lr_luma.samples(),
-                            width,
-                            y,
-                            x,
-                            block_y,
-                            block_width,
-                            block_height,
-                            &mut block,
-                        )?;
-                        block
-                    };
+                    let mut output = compute_block::<u16>(
+                        &source,
+                        post_lr_luma.samples(),
+                        classes,
+                        class_cols,
+                        block,
+                    )?;
                     preserve_lossless_luma_samples(
                         lossless_grid,
                         post_lr_luma.samples(),
@@ -439,38 +449,6 @@ fn gdf_stripe_row_for_tile_end(y: usize, tile_end_y: usize) -> Result<usize> {
         .map(|value| (value >> 4) << 4)
         .ok_or_else(gdf_state_error)?;
     Ok(stripe_row.min(tile_end_y / MI_SIZE))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn copy_base_block<T: ReconSample>(
-    base_luma: &[u16],
-    stride: usize,
-    origin_y: usize,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    output: &mut [T],
-) -> Result<()> {
-    for row in 0..height {
-        let start = y
-            .checked_add(row)
-            .and_then(|sample_y| sample_y.checked_sub(origin_y))
-            .and_then(|sample_y| sample_y.checked_mul(stride))
-            .and_then(|row_start| row_start.checked_add(x))
-            .ok_or_else(gdf_state_error)?;
-        let end = start.checked_add(width).ok_or_else(gdf_state_error)?;
-        let samples = base_luma.get(start..end).ok_or_else(gdf_state_error)?;
-        let destination = row
-            .checked_mul(width)
-            .and_then(|start| start.checked_add(width).map(|end| start..end))
-            .and_then(|range| output.get_mut(range))
-            .ok_or_else(gdf_state_error)?;
-        for (slot, &sample) in destination.iter_mut().zip(samples) {
-            *slot = T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
-        }
-    }
-    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1658,7 +1636,7 @@ mod tests {
     use super::{
         GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
         GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes,
-        band_classes_from_source, band_gradients, compute_block, copy_base_block, gdf_band_segment,
+        band_classes_from_source, band_gradients, compute_block, gdf_band_segment,
         gdf_band_segments, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist,
         gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end, grad_sum,
         preserve_lossless_luma_samples, resize_overwrite_scratch, tile_axis_bounds,
@@ -1693,6 +1671,35 @@ mod tests {
         assert_eq!(grid.enabled(0, 64), Some(true));
         assert_eq!(grid.enabled(16, 0), Some(false));
         assert_eq!(grid.enabled(16, 64), Some(true));
+    }
+
+    #[test]
+    fn per_block_grid_skips_only_fully_disabled_segments() {
+        let result = GdfBlockGrid::new(64, 1, 3, vec![0, 1, 0]);
+        assert!(result.is_ok());
+        let Ok(grid) = result else {
+            return;
+        };
+
+        assert_eq!(grid.any_enabled(0, 0, 64), Some(false));
+        assert_eq!(grid.any_enabled(0, 64, 64), Some(true));
+        assert_eq!(grid.any_enabled(0, 0, 192), Some(true));
+        assert_eq!(grid.any_enabled(0, 128, 64), Some(false));
+    }
+
+    #[test]
+    fn per_block_grid_segment_scan_includes_partial_units() {
+        let result = GdfBlockGrid::new(64, 1, 2, vec![0, 1]);
+        assert!(result.is_ok());
+        let Ok(grid) = result else {
+            return;
+        };
+
+        assert_eq!(grid.any_enabled(0, 0, 64), Some(false));
+        assert_eq!(grid.any_enabled(0, 60, 4), Some(false));
+        assert_eq!(grid.any_enabled(0, 60, 8), Some(true));
+        assert_eq!(grid.any_enabled(0, 124, 8), None);
+        assert_eq!(grid.any_enabled(0, 0, 0), None);
     }
 
     #[test]
@@ -1823,23 +1830,6 @@ mod tests {
             })
         ));
         assert_eq!(visits, 0);
-    }
-
-    #[test]
-    fn disabled_gdf_unit_copies_base_samples() {
-        let base: Vec<u16> = (0..64).collect();
-
-        let mut copied = [0u8; 16];
-        let result = copy_base_block::<u8>(&base, 8, 0, 4, 2, 4, 4, &mut copied);
-        assert!(result.is_ok());
-
-        assert_eq!(
-            copied,
-            [
-                20, 21, 22, 23, 28, 29, 30, 31, 36, 37, 38, 39, 44, 45, 46, 47
-            ]
-        );
-        assert!(copy_base_block::<u8>(&base[..60], 8, 0, 4, 6, 4, 4, &mut copied).is_err());
     }
 
     #[test]
