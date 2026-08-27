@@ -128,7 +128,7 @@ impl<T: ReconSample> DeblockedSource<T> {
                 return Err(splot_recon::ReconError::ArithmeticOverflow {
                     context: "deblocked source row geometry",
                 });
-            }
+            } // SAFETY: the mutable owner lends only unpublished rows in bounds.
             unsafe {
                 core::slice::from_raw_parts_mut(
                     storage.samples.as_ptr().add(sample_start),
@@ -158,7 +158,7 @@ impl<T: ReconSample> DeblockedSource<T> {
         let sample_end = end.checked_mul(storage.stride)?;
         if sample_end > storage.len {
             return None;
-        }
+        } // SAFETY: the mutable owner lends only unpublished rows in bounds.
         let samples = unsafe {
             core::slice::from_raw_parts_mut(
                 storage.samples.as_ptr().add(sample_start),
@@ -222,7 +222,7 @@ impl<T: ReconSample> DeblockedStorage<T> {
         let sample_end = end.checked_mul(storage.stride)?;
         if start >= end || end > storage.height || sample_end > storage.len {
             return None;
-        }
+        } // SAFETY: leases expose only checked immutable finalized rows.
         let samples = unsafe {
             core::slice::from_raw_parts(
                 storage.samples.as_ptr().add(sample_start),
@@ -247,7 +247,7 @@ impl<T: ReconSample> Drop for DeblockedStorage<T> {
     fn drop(&mut self) {
         unsafe {
             ManuallyDrop::take(&mut self.workspace).recycle_planes();
-        }
+        } // SAFETY: the final owning Arc has exclusive workspace access.
     }
 }
 

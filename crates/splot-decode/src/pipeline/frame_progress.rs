@@ -224,7 +224,7 @@ impl DirectPlaneTarget {
     pub(crate) fn u8_samples_mut(&mut self) -> Option<&mut [u8]> {
         let DirectPlaneSamples::U8(samples) = self.region.samples else {
             return None;
-        };
+        }; // SAFETY: this target owns a checked non-overlapping stripe region.
         Some(unsafe { slice::from_raw_parts_mut(samples.as_ptr(), self.region.len) })
     }
 

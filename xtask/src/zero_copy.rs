@@ -10,8 +10,8 @@
 //! media-storage type, an unmarked sample copy (`.to_vec()` /
 //! `copy_from_slice` / `extend_from_slice` / `clone_from_slice` /
 //! `Vec::from(&…)`), a `.clone()` on a media-named binding, `Arc/Rc::make_mut`,
-//! an unmarked `read_from_bytes`, unaudited `unsafe` / `transmute` /
-//! `from_raw_parts`, an
+//! an unmarked `read_from_bytes`, unaudited `unsafe` / `from_raw_parts`,
+//! `transmute`, an
 //! `include!` bypass — plus banned byte/transmute dependencies and a `zerocopy`
 //! dependency outside its approved crates. A flagged copy passes only with a
 //! nearby specific `splot-copy-ok: <reason>` marker. The policy and the
@@ -378,6 +378,24 @@ fn is_audited_unsafe_media_module(path: &str) -> bool {
     AUDITED_UNSAFE_MEDIA_MODULES.contains(&path)
 }
 
+fn has_safety_rationale(sources: &[ZcSourceLine], i: usize) -> bool {
+    let target = &sources[i];
+    let start = i.saturating_sub(2);
+    let end = i.saturating_add(2).min(sources.len().saturating_sub(1));
+    sources[start..=end].iter().any(|line| {
+        line.path == target.path
+            && line
+                .text
+                .find("//")
+                .or_else(|| line.text.find("/*"))
+                .is_some_and(|comment| {
+                    line.text[comment..]
+                        .to_ascii_lowercase()
+                        .contains("safety:")
+                })
+    })
+}
+
 /// Evaluates the zero-copy policy against owned manifest and source inputs,
 /// returning sorted, human-readable violation strings.
 ///
@@ -464,7 +482,8 @@ pub(crate) fn evaluate_zero_copy_policy(
                     "{where_at}: `make_mut` copy-on-write on shared storage is banned; never mutate shared frame storage in place"
                 ));
             }
-            let audited_unsafe = is_audited_unsafe_media_module(&line.path);
+            let audited_unsafe =
+                is_audited_unsafe_media_module(&line.path) && has_safety_rationale(sources, i);
             if uses_unsafe_keyword(text) && !audited_unsafe {
                 violations.push(format!(
                     "{where_at}: `unsafe` is banned (workspace `unsafe_code = \"forbid\"`); do not reinterpret bytes as samples"
@@ -1115,11 +1134,18 @@ mod tests {
         let reviewed = file(
             "crates/splot-decode/src/filters/source.rs",
             &[
+                "    // SAFETY: the lease owns this disjoint sample range.",
                 "    unsafe { do_it(); }",
                 "    let s = slice::from_raw_parts(p, n);",
             ],
         );
         assert!(run_src(&reviewed).is_empty());
+
+        let unreviewed = file(
+            "crates/splot-decode/src/filters/source.rs",
+            &["    unsafe { do_it(); }"],
+        );
+        assert!(!run_src(&unreviewed).is_empty());
 
         let adjacent = file(
             "crates/splot-decode/src/filters/cdef.rs",
