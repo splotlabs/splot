@@ -1300,6 +1300,82 @@ fn uniform_motion_direct_average_matches_materialized_path() {
 }
 
 #[test]
+fn translational_compound_average_direct_output_matches_staged_publication() {
+    let width = 16usize;
+    let height = 16usize;
+    let chroma_len = width.div_ceil(2) * height.div_ceil(2);
+    let reference0 = frame_for(
+        BitDepth::Ten,
+        PixelFormat::Yuv420,
+        width,
+        height,
+        (0..width * height)
+            .map(|index| 128 + (index * 13 % 700) as u16)
+            .collect(),
+        (0..chroma_len)
+            .map(|index| 256 + (index * 7 % 500) as u16)
+            .collect(),
+        (0..chroma_len)
+            .map(|index| 384 + (index * 11 % 400) as u16)
+            .collect(),
+    );
+    let reference1 = frame_for(
+        BitDepth::Ten,
+        PixelFormat::Yuv420,
+        width,
+        height,
+        (0..width * height)
+            .map(|index| 192 + (index * 17 % 600) as u16)
+            .collect(),
+        (0..chroma_len)
+            .map(|index| 320 + (index * 9 % 450) as u16)
+            .collect(),
+        (0..chroma_len)
+            .map(|index| 448 + (index * 5 % 350) as u16)
+            .collect(),
+    );
+    let block = InterBlockParams::compound_average(
+        ReferenceSamples::settled(&reference0),
+        ReferenceSamples::settled(&reference1),
+        rect(4, 4, 8, 8),
+        Mv { row: 1, col: 1 },
+        Mv { row: -1, col: 2 },
+        InterpolationFilter::EightTap,
+        CompoundBlend::default().average_with_cwp_weight(12),
+    )
+    .into_compound()
+    .expect("compound block");
+    let offset = ByteOffset::new(0);
+
+    let mut direct = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
+    assert!(
+        compound_average::predict_translational_direct(
+            &mut WorkspaceSink::Frame(&mut direct),
+            block,
+            offset,
+        )
+        .expect("direct compound prediction")
+    );
+
+    let mut staged = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
+    let output =
+        predict_compound_average_block(&WorkspaceSink::Frame(&mut staged), block, None, offset)
+            .expect("staged compound prediction");
+    output
+        .publish(&mut WorkspaceSink::Frame(&mut staged))
+        .expect("publish staged compound prediction");
+
+    let direct = direct.freeze().expect("freeze direct workspace");
+    let staged = staged.freeze().expect("freeze staged workspace");
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            visible_samples(&direct, plane),
+            visible_samples(&staged, plane)
+        );
+    }
+}
+
+#[test]
 fn direct_compound_blend_preserves_sample_storage_width() {
     let pred0 = [20 * 16, 60 * 16, 255 * 16];
     let pred1 = [44 * 16, 120 * 16, 255 * 16];

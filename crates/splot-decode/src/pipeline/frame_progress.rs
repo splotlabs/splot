@@ -20,12 +20,20 @@
 //! shared lock and are refused past the watermark, so a consumer can never
 //! observe a row the filter chain has not written.
 
+#![allow(
+    unsafe_code,
+    reason = "disjoint filter stripes write directly into one canonical frame allocation"
+)]
+
+use core::cell::UnsafeCell;
 use core::num::NonZeroUsize;
-use core::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard, TryLockError};
+use core::ptr::NonNull;
+use core::slice;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard, TryLockError};
 
 use splot_parallel::{Condition, WatermarkCell};
-use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, ReconSample};
+use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample};
 
 use crate::error::{DecodeError, Result};
 use crate::pipeline::unsupported;
@@ -36,8 +44,314 @@ struct ProgressLayout {
     stripe_ends: Vec<usize>,
     /// Whether each stripe has landed, indexed as `stripe_ends`.
     landed: Vec<bool>,
+    leased: Vec<bool>,
+    direct_aligned: bool,
+    output_mode: OutputMode,
+    freezing: bool,
     /// The next stripe the contiguous prefix is waiting for.
     prefix: usize,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OutputMode {
+    Unset,
+    Copy,
+    Direct,
+}
+
+#[derive(Clone, Copy)]
+enum DirectPlaneSamples {
+    U8(NonNull<u8>),
+    U16(NonNull<u16>),
+}
+
+impl DirectPlaneSamples {
+    fn offset(self, offset: usize) -> Option<Self> {
+        match self {
+            Self::U8(samples) => Some(Self::U8(NonNull::new(
+                samples.as_ptr().wrapping_add(offset),
+            )?)),
+            Self::U16(samples) => Some(Self::U16(NonNull::new(
+                samples.as_ptr().wrapping_add(offset),
+            )?)),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PlaneStorage<T> {
+    samples: NonNull<T>,
+    direct_samples: Option<DirectPlaneSamples>,
+    len: usize,
+    stride: usize,
+    height: usize,
+    visible: PlaneRect,
+}
+
+struct DirectWorkspace<T: ReconSample> {
+    workspace: UnsafeCell<CurrentFrameWorkspace<T>>,
+    info: DecodedFrameInfo,
+    planes: [Option<PlaneStorage<T>>; 3],
+}
+
+// SAFETY: tracked disjoint lends exclude published prefixes and terminal freeze.
+unsafe impl<T: ReconSample> Send for DirectWorkspace<T> {}
+// SAFETY: shared access exposes only immutable geometry or published rows.
+unsafe impl<T: ReconSample> Sync for DirectWorkspace<T> {}
+
+impl<T: ReconSample> DirectWorkspace<T> {
+    fn new(mut workspace: CurrentFrameWorkspace<T>) -> Self {
+        let info = workspace.info();
+        let mut planes = [None, None, None];
+        {
+            let mut frame = workspace.as_frame_mut();
+            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+                let Some(view) = frame.plane_mut(plane) else {
+                    continue;
+                };
+                let stride = view.stride_samples();
+                let visible = view.visible_rect();
+                let samples = view.samples_mut();
+                let len = samples.len();
+                let (samples, direct_samples) = if let Some(samples) = T::u16_slice_mut(samples) {
+                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
+                        continue;
+                    };
+                    (samples.cast(), Some(DirectPlaneSamples::U16(samples)))
+                } else if let Some(samples) = T::u8_slice_mut(samples) {
+                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
+                        continue;
+                    };
+                    (samples.cast(), Some(DirectPlaneSamples::U8(samples)))
+                } else {
+                    let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
+                        continue;
+                    };
+                    (samples, None)
+                };
+                planes[plane.index()] = Some(PlaneStorage {
+                    samples,
+                    direct_samples,
+                    len,
+                    stride,
+                    height: len / stride,
+                    visible,
+                });
+            }
+        }
+        Self {
+            workspace: UnsafeCell::new(workspace),
+            info,
+            planes,
+        }
+    }
+
+    fn direct_region(&self, plane: PlaneId, start: usize, end: usize) -> Option<DirectPlaneRegion> {
+        let storage = self.planes[plane.index()]?;
+        if start >= end || end > storage.height {
+            return None;
+        }
+        let start_sample = start.checked_mul(storage.stride)?;
+        let len = (end - start).checked_mul(storage.stride)?;
+        if start_sample.checked_add(len)? > storage.len {
+            return None;
+        }
+        let samples = storage.direct_samples?.offset(start_sample)?;
+        Some(DirectPlaneRegion {
+            samples,
+            len,
+            width: storage.stride,
+            frame_height: storage.height,
+            origin_y: start,
+        })
+    }
+
+    fn published_plane(&self, plane: PlaneId, rows: usize) -> Option<PublishedPlane<'_, T>> {
+        let storage = self.planes[plane.index()]?;
+        let rows = rows.min(storage.height);
+        let len = rows.checked_mul(storage.stride)?.min(storage.len);
+        let samples = unsafe {
+            // SAFETY: release/acquire publishes this prefix before it is read.
+            slice::from_raw_parts(storage.samples.as_ptr(), len)
+        };
+        Some(PublishedPlane {
+            samples,
+            stride: storage.stride,
+            visible: storage.visible,
+        })
+    }
+
+    fn into_workspace(self) -> CurrentFrameWorkspace<T> {
+        self.workspace.into_inner()
+    }
+}
+
+struct DirectPlaneRegion {
+    samples: DirectPlaneSamples,
+    len: usize,
+    width: usize,
+    frame_height: usize,
+    origin_y: usize,
+}
+
+pub(crate) struct DirectPlaneTarget {
+    region: DirectPlaneRegion,
+    lease_guard: Arc<DirectLeaseGuard>,
+}
+
+/// SAFETY: moving this unique disjoint-band capability transfers ownership.
+unsafe impl Send for DirectPlaneTarget {}
+
+impl DirectPlaneTarget {
+    pub(crate) const fn width(&self) -> usize {
+        self.region.width
+    }
+
+    pub(crate) const fn frame_height(&self) -> usize {
+        self.region.frame_height
+    }
+
+    pub(crate) const fn origin_y(&self) -> usize {
+        self.region.origin_y
+    }
+
+    pub(crate) const fn len(&self) -> usize {
+        self.region.len
+    }
+
+    #[inline]
+    /// The target uniquely owns this non-overlapping stripe region.
+    pub(crate) fn u8_samples_mut(&mut self) -> Option<&mut [u8]> {
+        let DirectPlaneSamples::U8(samples) = self.region.samples else {
+            return None;
+        };
+        Some(unsafe { slice::from_raw_parts_mut(samples.as_ptr(), self.region.len) })
+    }
+
+    #[inline]
+    pub(crate) fn u16_samples_mut(&mut self) -> Option<&mut [u16]> {
+        let DirectPlaneSamples::U16(samples) = self.region.samples else {
+            return None;
+        };
+        Some(unsafe {
+            // SAFETY: the layout lends each non-overlapping stripe once.
+            slice::from_raw_parts_mut(samples.as_ptr(), self.region.len)
+        })
+    }
+}
+
+impl Drop for DirectPlaneTarget {
+    fn drop(&mut self) {
+        self.lease_guard
+            .remaining_targets
+            .fetch_sub(1, Ordering::Release);
+    }
+}
+
+impl DirectPlaneRegion {
+    fn into_target(self, lease_guard: Arc<DirectLeaseGuard>) -> DirectPlaneTarget {
+        DirectPlaneTarget {
+            region: self,
+            lease_guard,
+        }
+    }
+}
+
+pub(crate) struct DirectStripeTarget {
+    planes: [Option<DirectPlaneTarget>; 3],
+}
+
+impl DirectStripeTarget {
+    pub(crate) fn take(&mut self, plane: PlaneId) -> Option<DirectPlaneTarget> {
+        self.planes[plane.index()].take()
+    }
+
+    pub(crate) fn split(mut self, second: [bool; 3]) -> (Self, Self) {
+        let mut first_planes = [None, None, None];
+        let mut second_planes = [None, None, None];
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            let target = self.take(plane);
+            if second[plane.index()] {
+                second_planes[plane.index()] = target;
+            } else {
+                first_planes[plane.index()] = target;
+            }
+        }
+        (
+            Self {
+                planes: first_planes,
+            },
+            Self {
+                planes: second_planes,
+            },
+        )
+    }
+}
+
+pub(crate) struct DirectStripeLease<T: ReconSample> {
+    progress: Arc<FrameProgress<T>>,
+    stripe: usize,
+    target: Option<DirectStripeTarget>,
+    lease: Arc<DirectLeaseGuard>,
+}
+
+impl<T: ReconSample> DirectStripeLease<T> {
+    pub(crate) fn take_target(&mut self) -> Option<DirectStripeTarget> {
+        self.target.take()
+    }
+
+    pub(crate) fn submit(mut self) -> bool {
+        drop(self.target.take());
+        if self.lease.remaining_targets.load(Ordering::Acquire) != 0 {
+            return false;
+        }
+        self.progress.publish_direct(self.stripe);
+        true
+    }
+}
+
+trait DirectLeaseRelease: Send + Sync {
+    fn release(&self, stripe: usize);
+}
+
+struct DirectLeaseGuard {
+    progress: Arc<dyn DirectLeaseRelease>,
+    stripe: usize,
+    remaining_targets: AtomicUsize,
+}
+
+impl Drop for DirectLeaseGuard {
+    fn drop(&mut self) {
+        self.progress.release(self.stripe);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PublishedPlane<'a, T> {
+    pub(crate) samples: &'a [T],
+    pub(crate) stride: usize,
+    pub(crate) visible: PlaneRect,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PublishedStorage<'a, T: ReconSample> {
+    workspace: &'a DirectWorkspace<T>,
+}
+
+impl<T: ReconSample> core::fmt::Debug for PublishedStorage<'_, T> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("PublishedStorage")
+    }
+}
+
+impl<'a, T: ReconSample> PublishedStorage<'a, T> {
+    pub(crate) const fn info(self) -> DecodedFrameInfo {
+        self.workspace.info
+    }
+
+    pub(crate) fn plane(self, plane: PlaneId, rows: usize) -> Option<PublishedPlane<'a, T>> {
+        self.workspace.published_plane(plane, rows)
+    }
 }
 
 /// One finished stripe's copy into the filtered workspace.
@@ -52,13 +366,19 @@ struct PendingStripes<T: ReconSample> {
 
 /// One pending frame's filtered workspace and its published-row watermark.
 pub(crate) struct FrameProgress<T: ReconSample> {
-    workspace: RwLock<Option<CurrentFrameWorkspace<T>>>,
+    workspace: RwLock<Option<DirectWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
     pending: Mutex<PendingStripes<T>>,
     has_pending: AtomicBool,
     published_luma_rows: WatermarkCell,
     luma_height: usize,
     subsampling_y: usize,
+}
+
+impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
+    fn release(&self, stripe: usize) {
+        self.release_direct(stripe);
+    }
 }
 
 impl<T: ReconSample> FrameProgress<T> {
@@ -69,7 +389,7 @@ impl<T: ReconSample> FrameProgress<T> {
     ///
     /// Returns the workspace allocation's own diagnostic.
     pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
-        let workspace = CurrentFrameWorkspace::new_recycled(info)?; // every row is published by a filter stripe before any consumer may read past the watermark
+        let workspace = DirectWorkspace::new(CurrentFrameWorkspace::new_recycled(info)?); // every row is published by a filter stripe before any consumer may read past the watermark
         Ok(Self {
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
@@ -115,9 +435,83 @@ impl<T: ReconSample> FrameProgress<T> {
         let layout = ProgressLayout {
             stripe_ends: ranges.iter().map(|&(_, end)| end).collect(),
             landed: vec![false; ranges.len()],
+            leased: vec![false; ranges.len()],
+            direct_aligned: ranges
+                .iter()
+                .take(ranges.len().saturating_sub(1))
+                .all(|&(_, end)| end.is_multiple_of(1 << self.subsampling_y)),
+            output_mode: OutputMode::Unset,
+            freezing: false,
             prefix: 0,
         };
         self.layout.set(Mutex::new(layout)).is_ok()
+    }
+
+    pub(crate) fn direct_stripe(
+        self: &std::sync::Arc<Self>,
+        stripe: usize,
+    ) -> Option<DirectStripeLease<T>> {
+        let layout = self.layout.get()?;
+        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+        if layout.freezing
+            || !layout.direct_aligned
+            || layout.output_mode == OutputMode::Copy
+            || layout.landed.get(stripe).copied()?
+            || *layout.leased.get(stripe)?
+        {
+            return None;
+        }
+        let start = if stripe == 0 {
+            0
+        } else {
+            *layout.stripe_ends.get(stripe - 1)?
+        };
+        let end = *layout.stripe_ends.get(stripe)?;
+        let workspace_guard = self
+            .workspace
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let workspace = workspace_guard.as_ref()?;
+        let chroma_start = start >> self.subsampling_y;
+        let chroma_end = end.div_ceil(1 << self.subsampling_y);
+        let y = workspace.direct_region(PlaneId::Y, start, end)?;
+        let u = workspace.direct_region(PlaneId::U, chroma_start, chroma_end);
+        let v = workspace.direct_region(PlaneId::V, chroma_start, chroma_end);
+        if u.is_some() != v.is_some() {
+            return None;
+        }
+        layout.output_mode = OutputMode::Direct;
+        layout.leased[stripe] = true;
+        drop(workspace_guard);
+        drop(layout);
+        let progress: Arc<dyn DirectLeaseRelease> = self.clone();
+        let lease = Arc::new(DirectLeaseGuard {
+            progress,
+            stripe,
+            remaining_targets: AtomicUsize::new(
+                1 + usize::from(u.is_some()) + usize::from(v.is_some()),
+            ),
+        });
+        let y = y.into_target(Arc::clone(&lease));
+        let u = u.map(|region| region.into_target(Arc::clone(&lease)));
+        let v = v.map(|region| region.into_target(Arc::clone(&lease)));
+        Some(DirectStripeLease {
+            progress: Arc::clone(self),
+            stripe,
+            target: Some(DirectStripeTarget {
+                planes: [Some(y), u, v],
+            }),
+            lease,
+        })
+    }
+
+    fn release_direct(&self, stripe: usize) {
+        if let Some(layout) = self.layout.get() {
+            let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(leased) = layout.leased.get_mut(stripe) {
+                *leased = false;
+            }
+        }
     }
 
     /// Records that one stripe's samples have landed in the workspace and
@@ -127,23 +521,21 @@ impl<T: ReconSample> FrameProgress<T> {
             return;
         };
         let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(landed) = layout.landed.get_mut(stripe) else {
+        let rows = complete_stripe(&mut layout, stripe);
+        drop(layout);
+        self.published_luma_rows.publish(rows);
+    }
+
+    fn publish_direct(&self, stripe: usize) {
+        let Some(layout) = self.layout.get() else {
             return;
         };
-        *landed = true;
-        while layout
-            .landed
-            .get(layout.prefix)
-            .copied()
-            .unwrap_or_default()
-        {
-            layout.prefix += 1;
-        }
-        let rows = layout
-            .prefix
-            .checked_sub(1)
-            .and_then(|last| layout.stripe_ends.get(last).copied())
-            .unwrap_or_default();
+        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(leased) = layout.leased.get_mut(stripe) else {
+            return;
+        };
+        *leased = false;
+        let rows = complete_stripe(&mut layout, stripe);
         drop(layout);
         self.published_luma_rows.publish(rows);
     }
@@ -210,6 +602,13 @@ impl<T: ReconSample> FrameProgress<T> {
     /// Returns the first diagnostic a queued copy failed with, on whichever
     /// thread reaches it first.
     pub(crate) fn publish_stripe(&self, stripe: usize, copy: StripeCopy<T>) -> Result<()> {
+        if let Some(layout) = self.layout.get() {
+            let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+            if layout.freezing || layout.output_mode == OutputMode::Direct {
+                return Err(mixed_output());
+            }
+            layout.output_mode = OutputMode::Copy;
+        }
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         pending.queued.push((stripe, copy));
         self.has_pending.store(true, Ordering::Release);
@@ -234,7 +633,11 @@ impl<T: ReconSample> FrameProgress<T> {
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(TryLockError::WouldBlock) => return,
         };
-        let landed = self.copy_queued(guard.as_mut());
+        let landed = self.copy_queued(
+            guard
+                .as_mut()
+                .map(|workspace| workspace.workspace.get_mut()),
+        );
         drop(guard);
         for stripe in landed {
             self.publish(stripe);
@@ -257,7 +660,11 @@ impl<T: ReconSample> FrameProgress<T> {
             .workspace
             .write()
             .unwrap_or_else(PoisonError::into_inner);
-        let landed = self.copy_queued(guard.as_mut());
+        let landed = self.copy_queued(
+            guard
+                .as_mut()
+                .map(|workspace| workspace.workspace.get_mut()),
+        );
         drop(guard);
         for stripe in landed {
             self.publish(stripe);
@@ -321,13 +728,44 @@ impl<T: ReconSample> FrameProgress<T> {
         &self,
         publish: impl FnOnce(splot_recon::DecodedFrame<T>) -> R,
     ) -> Result<R> {
+        if let Some(layout) = self.layout.get() {
+            let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+            if layout.leased.iter().any(|&leased| leased) {
+                return Err(live_direct_lease());
+            }
+            layout.freezing = true;
+        }
         let mut guard = self
             .workspace
             .write()
             .unwrap_or_else(PoisonError::into_inner);
         let workspace = guard.take().ok_or_else(taken_workspace)?;
-        Ok(publish(workspace.freeze()?))
+        Ok(publish(workspace.into_workspace().freeze()?))
     }
+}
+
+fn complete_stripe(layout: &mut ProgressLayout, stripe: usize) -> usize {
+    let Some(landed) = layout.landed.get_mut(stripe) else {
+        return layout
+            .prefix
+            .checked_sub(1)
+            .and_then(|last| layout.stripe_ends.get(last).copied())
+            .unwrap_or_default();
+    };
+    *landed = true;
+    while layout
+        .landed
+        .get(layout.prefix)
+        .copied()
+        .unwrap_or_default()
+    {
+        layout.prefix += 1;
+    }
+    layout
+        .prefix
+        .checked_sub(1)
+        .and_then(|last| layout.stripe_ends.get(last).copied())
+        .unwrap_or_default()
 }
 
 /// A shared borrow of one frame's published filtered prefix.
@@ -338,7 +776,7 @@ impl<T: ReconSample> FrameProgress<T> {
 /// it rather than waiting for the next stripe to finish.
 pub(crate) struct PublishedFrame<'a, T: ReconSample> {
     progress: &'a FrameProgress<T>,
-    workspace: Option<RwLockReadGuard<'a, Option<CurrentFrameWorkspace<T>>>>,
+    workspace: Option<RwLockReadGuard<'a, Option<DirectWorkspace<T>>>>,
     luma_rows: NonZeroUsize,
     chroma_rows: usize,
 }
@@ -351,16 +789,26 @@ impl<T: ReconSample> Drop for PublishedFrame<'_, T> {
 }
 
 impl<T: ReconSample> PublishedFrame<'_, T> {
-    /// Borrows the workspace the published rows live in.
-    ///
-    /// # Errors
-    ///
-    /// Returns an internal diagnostic when the workspace has been taken, which
-    /// [`FrameProgress::read`] already rules out for a live borrow.
-    pub(crate) fn workspace(&self) -> Result<&CurrentFrameWorkspace<T>> {
+    #[cfg(test)]
+    pub(crate) fn plane(&self, plane: PlaneId) -> Result<Option<PublishedPlane<'_, T>>> {
+        let workspace = self
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.as_ref())
+            .ok_or_else(taken_workspace)?;
+        let rows = if plane == PlaneId::Y {
+            self.luma_rows()
+        } else {
+            self.chroma_rows()
+        };
+        Ok(workspace.published_plane(plane, rows))
+    }
+
+    pub(crate) fn storage(&self) -> Result<PublishedStorage<'_, T>> {
         self.workspace
             .as_ref()
             .and_then(|workspace| workspace.as_ref())
+            .map(|workspace| PublishedStorage { workspace })
             .ok_or_else(taken_workspace)
     }
 
@@ -384,6 +832,22 @@ fn taken_workspace() -> DecodeError {
         "decoded_frame_progress_taken",
         None,
         "internal invariant violation: a pending frame's filtered workspace was read after the freeze took it",
+    )
+}
+
+fn mixed_output() -> DecodeError {
+    unsupported(
+        "decoded_frame_progress_mixed_output",
+        None,
+        "internal invariant violation: one pending frame mixed direct stripe storage with queued stripe copies",
+    )
+}
+
+fn live_direct_lease() -> DecodeError {
+    unsupported(
+        "decoded_frame_progress_live_direct_lease",
+        None,
+        "internal invariant violation: a pending frame froze while a filter stripe still owned its direct destination",
     )
 }
 

@@ -32,6 +32,17 @@ fn info(width: usize, height: usize) -> DecodedFrameInfo {
     .expect("frame info")
 }
 
+fn cropped_info(width: usize, height: usize, crop_y: usize) -> DecodedFrameInfo {
+    DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+        PlaneSize::new(width, height).expect("frame size"),
+        PlaneRect::new(0, crop_y, width, height - crop_y).expect("visible rect"),
+    )
+    .expect("frame info")
+}
+
 fn placed(luma_y: usize, luma_h: usize, mv_row: i32) -> PlacedInterBlock {
     PlacedInterBlock {
         luma_x: 0,
@@ -156,6 +167,50 @@ fn the_chroma_plane_sets_the_bound_of_an_unshifted_block() {
         Some(136),
         "luma reads rows 64..=127 plus the four-tap reach (132 rows), chroma \
          reads rows 32..=63 plus the same reach (68 chroma rows, 136 luma)"
+    );
+}
+
+#[test]
+fn a_cropped_reference_gate_uses_storage_row_coordinates() {
+    let frame = info(FRAME_WIDTH, FRAME_HEIGHT);
+    let reference = cropped_info(FRAME_WIDTH, FRAME_HEIGHT, 8);
+    let block = placed(64, 64, 0);
+
+    assert_eq!(
+        block_published_rows(
+            frame,
+            reference,
+            block.motion_compensation_rect(),
+            block.predict_chroma,
+            block.block.mv,
+            ListReach::default(),
+        ),
+        Some(144),
+        "the visible-local 136-row prediction starts eight storage rows down"
+    );
+}
+
+#[test]
+fn a_cropped_reference_gate_offsets_the_bawp_template() {
+    let frame = info(FRAME_WIDTH, FRAME_HEIGHT);
+    let reference = cropped_info(FRAME_WIDTH, FRAME_HEIGHT, 8);
+    let block = placed(64, 8, 8 * 40);
+    let bawp = 200;
+
+    assert_eq!(
+        block_published_rows(
+            frame,
+            reference,
+            block.motion_compensation_rect(),
+            block.predict_chroma,
+            block.block.mv,
+            ListReach {
+                bawp,
+                ..ListReach::default()
+            },
+        ),
+        Some(208),
+        "the visible-local BAWP bound starts eight storage rows down"
     );
 }
 

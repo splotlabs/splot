@@ -25,6 +25,7 @@ use crate::Result;
 use splot_core::span::ByteOffset;
 use splot_recon::math::{clip3, round2_i32};
 
+mod compound_average;
 mod optflow;
 mod refinemv;
 pub(crate) mod sink;
@@ -557,6 +558,12 @@ pub(crate) fn predict_inter_block_from_grid<T: ReconSample>(
             Ok(motion)
         }
         InterPrediction::CompoundAverage { .. } => match block.into_compound() {
+            Some(compound)
+                if motion.is_none()
+                    && compound_average::predict_translational_direct(sink, compound, offset)? =>
+            {
+                Ok(None)
+            }
             Some(compound) => {
                 predict_compound_average_block(sink, compound, motion, offset)?.publish(sink)
             }
@@ -1214,7 +1221,7 @@ fn predict_compound_plane_output<T: ReconSample>(
             (frame_w, frame_h),
         )
     {
-        return predict_compound_average_into(
+        predict_compound_average_into(
             &translation.plane,
             &translation.params,
             cwp_weight,
@@ -1222,7 +1229,8 @@ fn predict_compound_plane_output<T: ReconSample>(
             None,
             output,
             translation.plane.block_w,
-        );
+        )?;
+        return Ok(());
     }
     let prediction = match translation {
         Some(translation) => compound_plane_prediction_from_translation(translation)?,
@@ -1304,7 +1312,7 @@ fn predict_compound_average_into<T: ReconSample, O: CompoundAverageOutput>(
     intermediate_scratch: Option<&mut [i16]>,
     output: &mut [O],
     output_stride: usize,
-) -> Result<()> {
+) -> splot_recon::Result<()> {
     let sample_count =
         plane
             .block_w
@@ -1344,7 +1352,7 @@ fn predict_compound_average_pred0_into<T: ReconSample, O: CompoundAverageOutput>
     mut intermediate_scratch: Option<&mut [i16]>,
     output: &mut [O],
     output_stride: usize,
-) -> Result<()> {
+) -> splot_recon::Result<()> {
     subpel_predict_block_compound_intermediate_into(
         &plane.views[0],
         &params[0],
@@ -1507,8 +1515,8 @@ fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {
 
 fn with_compound_primary_prediction<R>(
     len: usize,
-    predict: impl FnOnce(&mut [i32]) -> Result<R>,
-) -> Result<R> {
+    predict: impl FnOnce(&mut [i32]) -> splot_recon::Result<R>,
+) -> splot_recon::Result<R> {
     COMPOUND_PREDICTION_BUFFERS.with(|slot| {
         let mut buffers = slot.take().unwrap_or_default();
         buffers[0].resize(len, 0);

@@ -263,6 +263,84 @@ fn final_filter_sink_10bit() -> WienerNsLrReconSink<u16> {
     )
 }
 
+fn patterned_8bit_workspace<T: splot_recon::ReconSample>(
+    width: usize,
+    height: usize,
+) -> CurrentFrameWorkspace<T> {
+    let mut workspace =
+        crate::test_support::yuv420_workspace_with(BitDepth::Eight, width, height, T::default());
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = workspace.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let value = ((x * 3 + y * 5 + plane.index() * 17) & 255) as u16;
+                workspace
+                    .set_reconstructed_sample(plane, x, y, T::try_from_u16(value).unwrap())
+                    .unwrap();
+            }
+        }
+    }
+    workspace
+}
+
+fn final_filter_sink_8bit<T: splot_recon::ReconSample>() -> WienerNsLrReconSink<T> {
+    WienerNsLrReconSink::for_final_filtering(
+        patterned_8bit_workspace(128, 128),
+        128,
+        128,
+        BitDepth::Eight,
+    )
+}
+
+#[test]
+fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
+    let core = Arc::new(switchable_core());
+    let (expected, _) = final_filter_sink_8bit::<u16>()
+        .into_filtered_frame_from_deblocked(
+            Arc::clone(&core),
+            false,
+            crate::filters::deblock::DeblockQuantDeltas::ZERO,
+            None,
+            None,
+            core::convert::identity,
+        )
+        .unwrap();
+
+    let sink = final_filter_sink_8bit::<u8>();
+    let progress =
+        Arc::new(crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap());
+    let (setup, workspace) = sink
+        .into_owned_filter_setup(Arc::clone(&core), false, Some(Arc::clone(&progress)), None)
+        .unwrap();
+    let workspace = workspace.unwrap();
+    let ranges = setup.stripe_ranges().to_vec();
+    assert_eq!(ranges.len(), 3, "fixture must exercise multiple stripes");
+
+    for stripe in [1usize, 0, 2] {
+        let (start, end) = ranges[stripe];
+        let window = crate::filters::source::DeblockedWindow::extract(
+            &workspace,
+            start,
+            end,
+            super::super::STRIPE_WINDOW_MARGIN,
+        )
+        .unwrap();
+        let filtered = setup.run_owned_window(stripe, window).unwrap();
+        setup.publish(filtered).unwrap();
+    }
+    assert!(
+        progress.publish_stripe(0, Box::new(|_| Ok(()))).is_err(),
+        "the u8 filter path must have selected direct publication"
+    );
+
+    let (actual, _) = setup.finish(core::convert::identity).unwrap();
+    workspace.recycle_planes();
+    assert_eq!(
+        splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
+        splot_recon::DecodedFrameHashInput::new(&expected).compute_hash(),
+    );
+}
+
 #[test]
 fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously() {
     let core = Arc::new(switchable_core());
@@ -278,9 +356,10 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
         .unwrap();
 
     let info = final_filter_sink_10bit().frame_info();
-    let progress = crate::pipeline::frame_progress::FrameProgress::<u16>::new(info).unwrap();
+    let progress =
+        Arc::new(crate::pipeline::frame_progress::FrameProgress::<u16>::new(info).unwrap());
     let (setup, workspace) = final_filter_sink_10bit()
-        .into_owned_filter_setup(Arc::clone(&core), false, Some(&progress), None)
+        .into_owned_filter_setup(Arc::clone(&core), false, Some(Arc::clone(&progress)), None)
         .unwrap();
     let workspace = workspace.unwrap();
     let ranges = setup.stripe_ranges().to_vec();
@@ -326,7 +405,7 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
     let sink = final_filter_sink_10bit();
     let info = sink.frame_info();
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::<u16>::pending(info).unwrap();
-    let progress = slot.progress().unwrap();
+    let progress = slot.progress_handle().unwrap();
     let (setup, workspace) = sink
         .into_owned_filter_setup(Arc::clone(&core), false, Some(progress), None)
         .unwrap();
@@ -422,9 +501,10 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
     let expected_count = records.len();
     let mut sink = final_filter_sink_10bit();
     sink.filter_records.deblock_blocks = records;
-    let progress = crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap();
+    let progress =
+        Arc::new(crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap());
     let (mut setup, workspace) = sink
-        .into_owned_filter_setup(Arc::new(core), false, Some(&progress), None)
+        .into_owned_filter_setup(Arc::new(core), false, Some(progress), None)
         .unwrap();
     let workspace = workspace.unwrap();
 
@@ -561,7 +641,7 @@ fn owned_filter_task_values_are_send_and_shared_setup_is_sync() {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
 
-    assert_send::<super::super::OwnedFilteredStripe>();
+    assert_send::<super::super::OwnedFilteredStripe<u16>>();
     assert_send::<super::super::OwnedFilterJob<u16>>();
     assert_send::<super::super::OwnedFilterFinish<u16>>();
     assert_sync::<super::super::OwnedFilterSetup<'static, 'static, u16>>();
@@ -594,7 +674,17 @@ fn apply_luma_lr(
     .unwrap();
     let filtered = sink
         .stripe_chain()
-        .apply_lr_stripe(core, cdef, &CdefOverlap::default(), [blocks, &[], &[]], &[])
+        .apply_lr_stripe(
+            core,
+            cdef,
+            &CdefOverlap::default(),
+            [blocks, &[], &[]],
+            &[],
+            super::LrStripeOutput {
+                active_planes: [true, false, false],
+                target: None,
+            },
+        )
         .unwrap()
         .into_filtered();
     super::super::publish_filter_stripe_to(
@@ -631,6 +721,10 @@ fn inactive_filter_planes_reuse_cdef_storage() {
             &CdefOverlap::default(),
             [&[], &[], &[]],
             &[],
+            super::LrStripeOutput {
+                active_planes: [false; 3],
+                target: None,
+            },
         )
         .unwrap()
         .into_filtered();

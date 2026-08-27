@@ -217,6 +217,15 @@ pub trait ReconSample: private::Sealed + Copy + Default + Send + Sync + 'static 
     /// staging buffer; `None` for narrower storage types.
     fn from_u16_slice_mut(samples: &mut [u16]) -> Option<&mut [Self]>;
 
+    /// Reuses owned `u16` storage when this sample type is `u16`.
+    ///
+    /// Returns the original buffer when conversion is still required for a
+    /// narrower sample type.
+    ///
+    /// # Errors
+    /// Returns `samples` unchanged when its storage type differs from `Self`.
+    fn reuse_u16_vec(samples: Vec<u16>) -> core::result::Result<Vec<Self>, Vec<u16>>;
+
     /// Reinterprets a mutable sample slice as `u8` storage when this type is
     /// `u8`; `None` for wider storage types.
     fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]>;
@@ -254,6 +263,10 @@ impl ReconSample for u8 {
         None
     }
 
+    fn reuse_u16_vec(samples: Vec<u16>) -> core::result::Result<Vec<Self>, Vec<u16>> {
+        Err(samples)
+    }
+
     fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]> {
         Some(samples)
     }
@@ -285,6 +298,10 @@ impl ReconSample for u16 {
 
     fn from_u16_slice_mut(samples: &mut [u16]) -> Option<&mut [Self]> {
         Some(samples)
+    }
+
+    fn reuse_u16_vec(samples: Vec<u16>) -> core::result::Result<Vec<Self>, Vec<u16>> {
+        Ok(samples)
     }
 
     fn u8_slice_mut(_samples: &mut [Self]) -> Option<&mut [u8]> {
