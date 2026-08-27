@@ -12,8 +12,40 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[lints]
-workspace = true
+# This crate owns the reviewed raw row-descriptor boundary used by direct
+# reconstruction leases; every other workspace crate retains
+# `unsafe_code = "forbid"`. Keep the rest synchronized with the workspace lint
+# table.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+cast_precision_loss = "allow"
+chunks_exact_to_as_chunks = "allow"
+doc_markdown = "allow"
+manual_bit_width = "allow"
+manual_midpoint = "allow"
+manual_slice_fill = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+wildcard_imports = "allow"
+if_not_else = "allow"
 
 [dependencies]
 sha2.workspace = true

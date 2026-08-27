@@ -176,7 +176,7 @@ pub use subpel_mc::{
     subpel_predict_block_compound_average_into, subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
-    subpel_predict_block_into, subpel_predict_block_strided_into,
+    subpel_predict_block_into, subpel_predict_block_row_into, subpel_predict_block_strided_into,
 };
 pub use transform_params::{
     TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,
@@ -198,11 +198,11 @@ pub use wienerns_filter::{
     wiener_ns_filter_luma_block_padded_into,
 };
 pub use workspace::{
-    CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect,
-    CurrentFrameRectRows, CurrentFrameRectRowsMut, CurrentFrameSurface, CurrentFrameWorkspace,
-    InterIntraMode, IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameBands,
-    OwnedFramePlaneBand, OwnedFrameRect, OwnedFrameRectRows, OwnedFrameRowBand, WorkspaceRectRows,
-    wedge_mask_plane_sample,
+    CurrentFrameIntraEdges, CurrentFrameLeaseProvenance, CurrentFramePlane, CurrentFramePlaneRect,
+    CurrentFrameRect, CurrentFrameRectRows, CurrentFrameRectRowsMut, CurrentFrameSurface,
+    CurrentFrameWorkspace, InterIntraMode, IntraPredictionScratch, IntraPredictionScratchBuffer,
+    OwnedFrameBands, OwnedFramePlaneBand, OwnedFrameRect, OwnedFrameRectRows, OwnedFrameRowBand,
+    SuspendedCurrentFrameRect, WorkspaceRectRows, wedge_mask_plane_sample,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

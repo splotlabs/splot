@@ -11,6 +11,11 @@
 //! `RECON-INTRA-CARDINAL-DIRECTIONAL-PREDICTION`,
 //! `RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION`.
 
+#![allow(
+    unsafe_code,
+    reason = "direct reconstruction suspends exclusive row references without reallocating descriptors"
+)]
+
 use core::mem;
 use core::ops::Range;
 
@@ -279,6 +284,19 @@ impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
         self.y.rect
     }
 
+    /// Suspends this rectangle's exclusive row references as inert pointers.
+    ///
+    /// The returned descriptor cannot access samples until the owner resumes
+    /// it after any whole-workspace borrow has ended.
+    pub fn suspend(self) -> SuspendedCurrentFrameRect<T> {
+        SuspendedCurrentFrameRect {
+            info: self.info,
+            y: suspend_plane_rect(self.y),
+            u: self.u.map(suspend_plane_rect),
+            v: self.v.map(suspend_plane_rect),
+        }
+    }
+
     fn plane(&self, plane: PlaneId) -> Result<&CurrentFramePlaneRect<'storage, T>> {
         select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref())
     }
@@ -314,6 +332,171 @@ impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct SuspendedCurrentFramePlaneRect<T: ReconSample> {
+    plane: PlaneId,
+    storage_size: PlaneSize,
+    rect: PlaneRect,
+    rows: Vec<SuspendedCurrentFrameRow<T>>,
+}
+
+#[derive(Debug)]
+struct SuspendedCurrentFrameRow<T: ReconSample> {
+    address: usize,
+    length: usize,
+    sample: core::marker::PhantomData<T>,
+}
+
+/// Inert row descriptors for a suspended exclusive current-frame rectangle.
+/// This exposes no sample access; resumption derives fresh pointer provenance
+/// from retained addresses after the whole-workspace borrow ends.
+#[derive(Debug)]
+pub struct SuspendedCurrentFrameRect<T: ReconSample> {
+    info: DecodedFrameInfo,
+    y: SuspendedCurrentFramePlaneRect<T>,
+    u: Option<SuspendedCurrentFramePlaneRect<T>>,
+    v: Option<SuspendedCurrentFramePlaneRect<T>>,
+}
+
+/// Fresh allocation provenance used to resume suspended frame rectangles after
+/// every earlier rectangle reference has ended.
+#[derive(Debug)]
+pub struct CurrentFrameLeaseProvenance<T: ReconSample> {
+    y: *mut T,
+    u: Option<*mut T>,
+    v: Option<*mut T>,
+}
+
+impl<T: ReconSample> CurrentFrameLeaseProvenance<T> {
+    fn plane(&self, plane: PlaneId) -> Result<*mut T> {
+        select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref()).copied()
+    }
+}
+
+impl<T: ReconSample> SuspendedCurrentFrameRect<T> {
+    /// Restores exclusive row references after the whole-workspace borrow ends.
+    ///
+    /// # Safety
+    /// The allocations must remain alive and unmoved, no other reference may
+    /// access these rectangles, and whole-workspace access must stay excluded.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the fresh provenance lacks a plane carried
+    /// by this rectangle.
+    pub unsafe fn resume<'a>(
+        self,
+        provenance: &CurrentFrameLeaseProvenance<T>,
+    ) -> Result<CurrentFrameRect<'a, T>> {
+        Ok(CurrentFrameRect {
+            info: self.info,
+            y: unsafe { resume_plane_rect(self.y, provenance)? },
+            u: self
+                .u
+                .map(|plane| unsafe { resume_plane_rect(plane, provenance) })
+                .transpose()?,
+            v: self
+                .v
+                .map(|plane| unsafe { resume_plane_rect(plane, provenance) })
+                .transpose()?,
+        })
+    }
+}
+
+fn suspend_plane_rect<T: ReconSample>(
+    plane: CurrentFramePlaneRect<'_, T>,
+) -> SuspendedCurrentFramePlaneRect<T> {
+    SuspendedCurrentFramePlaneRect {
+        plane: plane.plane,
+        storage_size: plane.storage_size,
+        rect: plane.rect,
+        rows: suspend_rows(plane.rows),
+    }
+}
+
+unsafe fn resume_plane_rect<'a, T: ReconSample>(
+    plane: SuspendedCurrentFramePlaneRect<T>,
+    provenance: &CurrentFrameLeaseProvenance<T>,
+) -> Result<CurrentFramePlaneRect<'a, T>> {
+    Ok(CurrentFramePlaneRect {
+        plane: plane.plane,
+        storage_size: plane.storage_size,
+        rect: plane.rect,
+        rows: unsafe { resume_rows(plane.rows, provenance.plane(plane.plane)?) },
+    })
+}
+
+fn suspend_rows<T: ReconSample>(rows: Vec<&mut [T]>) -> Vec<SuspendedCurrentFrameRow<T>> {
+    if mem::size_of::<&mut [T]>() != mem::size_of::<SuspendedCurrentFrameRow<T>>()
+        || mem::align_of::<&mut [T]>() != mem::align_of::<SuspendedCurrentFrameRow<T>>()
+    {
+        return rows
+            .into_iter()
+            .map(|row| SuspendedCurrentFrameRow {
+                address: row.as_mut_ptr().addr(),
+                length: row.len(),
+                sample: core::marker::PhantomData,
+            })
+            .collect();
+    }
+    let mut rows = mem::ManuallyDrop::new(rows);
+    let input = rows.as_mut_ptr();
+    let output = input.cast::<SuspendedCurrentFrameRow<T>>();
+    for index in 0..rows.len() {
+        unsafe {
+            // SAFETY: the checked element layouts allow reuse of the allocation.
+            // Reading moves out the reference before its slot is overwritten,
+            // so no live reference remains in the suspended vector.
+            let row = input.add(index).read();
+            output.add(index).write(SuspendedCurrentFrameRow {
+                address: row.as_mut_ptr().addr(),
+                length: row.len(),
+                sample: core::marker::PhantomData,
+            });
+        }
+    }
+    unsafe {
+        // SAFETY: every initialized input element was replaced with one output
+        // element and the checked allocation layout is identical.
+        Vec::from_raw_parts(output, rows.len(), rows.capacity())
+    }
+}
+
+unsafe fn resume_rows<'a, T: ReconSample>(
+    rows: Vec<SuspendedCurrentFrameRow<T>>,
+    provenance: *mut T,
+) -> Vec<&'a mut [T]> {
+    if mem::size_of::<&mut [T]>() != mem::size_of::<SuspendedCurrentFrameRow<T>>()
+        || mem::align_of::<&mut [T]>() != mem::align_of::<SuspendedCurrentFrameRow<T>>()
+    {
+        return rows
+            .into_iter()
+            .map(|row| unsafe {
+                core::slice::from_raw_parts_mut(provenance.with_addr(row.address), row.length)
+            })
+            .collect();
+    }
+    let mut rows = mem::ManuallyDrop::new(rows);
+    let input = rows.as_mut_ptr();
+    let output = input.cast::<&'a mut [T]>();
+    for index in 0..rows.len() {
+        unsafe {
+            // SAFETY: the caller guarantees exclusive access to the row. The
+            // fresh allocation provenance selects its retained address, and
+            // the checked element layouts allow in-place descriptor reuse.
+            let row = input.add(index).read();
+            output.add(index).write(core::slice::from_raw_parts_mut(
+                provenance.with_addr(row.address),
+                row.length,
+            ));
+        }
+    }
+    unsafe {
+        // SAFETY: every raw descriptor was replaced with one initialized slice
+        // reference and the checked allocation layout is identical.
+        Vec::from_raw_parts(output, rows.len(), rows.capacity())
     }
 }
 
@@ -630,6 +813,36 @@ impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
                 actual: available,
             })?;
         write(target, stride).map(Some)
+    }
+
+    /// Runs a writer over each exact `u16` row of a sliced rectangle target.
+    /// Returns `Ok(false)` unless this is an enclosing `u16` rectangle surface.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, the target geometry is
+    /// invalid, a row target would cross its exclusive band, or `write` fails.
+    pub fn with_sliced_u16_rect_rows_mut(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+        mut write: impl FnMut(usize, &mut [u16]) -> Result<()>,
+    ) -> Result<bool> {
+        let Self::Rect(surface) = self else {
+            return Ok(false);
+        };
+        let target = surface.plane_mut(plane)?;
+        let rect = clamp_rect_to_storage(plane, target.storage_size, rect)?;
+        target.ensure_rect(rect)?;
+        let row_start = rect.y() - target.rect.y();
+        let x = rect.x() - target.rect.x();
+        let rows = &mut target.rows[row_start..row_start + rect.height()];
+        for (row_index, target) in rows.iter_mut().enumerate() {
+            let Some(target) = T::u16_slice_mut(&mut target[x..x + rect.width()]) else {
+                return Ok(false);
+            };
+            write(row_index, target)?;
+        }
+        Ok(true)
     }
 
     /// Writes one contiguous rectangular prediction block.
@@ -1010,6 +1223,16 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Returns the decoded-frame metadata used to construct the workspace.
     pub const fn info(&self) -> DecodedFrameInfo {
         self.info
+    }
+
+    /// Captures plane-allocation provenance for suspended rectangle leases.
+    /// It expires when another whole-workspace sample borrow begins.
+    pub fn lease_provenance(&mut self) -> CurrentFrameLeaseProvenance<T> {
+        CurrentFrameLeaseProvenance {
+            y: self.y.samples.as_mut_ptr(),
+            u: self.u.as_mut().map(|plane| plane.samples.as_mut_ptr()),
+            v: self.v.as_mut().map(|plane| plane.samples.as_mut_ptr()),
+        }
     }
 
     /// Returns an immutable workspace plane by identifier.

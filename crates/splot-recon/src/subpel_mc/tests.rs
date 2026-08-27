@@ -1022,6 +1022,38 @@ fn single_prediction_strided_matches_contiguous_and_preserves_padding() {
 }
 
 #[test]
+fn single_prediction_rows_match_full_block_filter_selection() {
+    let ref_w = 32usize;
+    let ref_h = 32usize;
+    let samples = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 73 + 19) & 1023) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    for (interp, width, height) in [
+        (InterpolationFilter::EightTap, 8, 8),
+        (InterpolationFilter::EightTapSharp, 4, 4),
+        (InterpolationFilter::Bilinear, 8, 16),
+    ] {
+        let params = SubpelPredictParams {
+            start_x: (5 << SCALE_SUBPEL_BITS) + (7 << 6),
+            start_y: (4 << SCALE_SUBPEL_BITS) + (11 << 6),
+            ..full_pel_params(interp, width, height, 5, 4, ref_w as i32, ref_h as i32)
+        };
+        let mut expected = vec![0; params.w * params.h];
+        subpel_predict_block_into(&view, &params, &mut expected).unwrap();
+        for row in 0..params.h {
+            let mut actual = vec![0; params.w];
+            subpel_predict_block_row_into(&view, &params, row, &mut actual).unwrap();
+            assert_eq!(actual, expected[row * params.w..(row + 1) * params.w]);
+        }
+    }
+}
+
+#[test]
 fn single_prediction_into_rejects_short_output_without_writes() {
     let ref_w = 8usize;
     let ref_h = 8usize;
