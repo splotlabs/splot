@@ -12,7 +12,7 @@ use splot_recon::{
     cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 
-use super::source::{DeblockedPlanes, FramePlane, PackedPlane, StripePlane};
+use super::source::{DeblockedPlanes, FramePlane, StripePlane};
 
 const MI_SIZE: usize = 4;
 const MI_SIZE_LOG2: u32 = 2;
@@ -224,7 +224,6 @@ impl CdefBlockLookup<'_> {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     deblocked: DeblockedPlanes<'a, T>,
     strengths: Option<&[CdefFrameParams]>,
@@ -238,37 +237,6 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     luma_start: usize,
     luma_end: usize,
 ) -> Result<CdefFrame<'a, T>, CdefError> {
-    cdef_stripe_into(
-        deblocked,
-        strengths,
-        grid,
-        skip_grid,
-        lossless_grid,
-        mi_size,
-        subsampling,
-        bit_depth,
-        tile_starts,
-        luma_start,
-        luma_end,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
-    deblocked: DeblockedPlanes<'a, T>,
-    strengths: Option<&[CdefFrameParams]>,
-    grid: Option<&CdefUnitGrid>,
-    skip_grid: Option<&CdefSkipGrid>,
-    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
-    mi_size: (usize, usize),
-    subsampling: (usize, usize),
-    bit_depth: BitDepth,
-    tile_starts: Option<(&[u32], &[u32])>,
-    luma_start: usize,
-    luma_end: usize,
-    mut target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
-) -> Result<CdefFrame<'a, T>, CdefError> {
     let (mi_rows, mi_cols) = mi_size;
     if luma_start >= luma_end || !luma_start.is_multiple_of(STEP4 * MI_SIZE) {
         return Err(CdefError::Geometry);
@@ -278,32 +246,17 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     let (sub_x, sub_y) = subsampling;
     let has_chroma = deblocked.u.is_some();
     let deblocked_y = deblocked.y;
-    let filtered_y = StripePlane::copy_from_into(
-        deblocked_y,
-        luma_start,
-        luma_end,
-        target.as_mut().and_then(|target| target.take(PlaneId::Y)),
-    )
-    .map_err(CdefError::from)?;
+    let filtered_y =
+        StripePlane::copy_from(deblocked_y, luma_start, luma_end).map_err(CdefError::from)?;
     let chroma_start = luma_start >> sub_y;
     let chroma_end = luma_end.div_ceil(1usize << sub_y);
     let (deblocked_u, deblocked_v, filtered_u, filtered_v) = if has_chroma {
         let u = deblocked.u.ok_or(CdefError::Workspace)?;
         let v = deblocked.v.ok_or(CdefError::Workspace)?;
-        let filtered_u = StripePlane::copy_from_into(
-            u,
-            chroma_start,
-            chroma_end,
-            target.as_mut().and_then(|target| target.take(PlaneId::U)),
-        )
-        .map_err(|error| CdefError::from(error.for_plane(PlaneId::U)))?;
-        let filtered_v = StripePlane::copy_from_into(
-            v,
-            chroma_start,
-            chroma_end,
-            target.as_mut().and_then(|target| target.take(PlaneId::V)),
-        )
-        .map_err(|error| CdefError::from(error.for_plane(PlaneId::V)))?;
+        let filtered_u = StripePlane::copy_from(u, chroma_start, chroma_end)
+            .map_err(|error| CdefError::from(error.for_plane(PlaneId::U)))?;
+        let filtered_v = StripePlane::copy_from(v, chroma_start, chroma_end)
+            .map_err(|error| CdefError::from(error.for_plane(PlaneId::V)))?;
         (Some(u), Some(v), Some(filtered_u), Some(filtered_v))
     } else {
         (None, None, None, None)
@@ -335,37 +288,19 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
 
         let mut r = luma_start / MI_SIZE;
         let r_end = luma_end.div_ceil(MI_SIZE).min(mi_rows);
+        // Each interior block's gather overwrites exactly the padded region the
+        // kernel reads, so one stripe-scoped scratch is reused without re-zeroing.
         let mut pad = [0u16; CDEF_PADDED_AREA];
-        let whole_y = frame.deblocked_y.whole_packed().map(CdefPlane::Packed);
-        let whole_u = frame
-            .deblocked_u
-            .and_then(FramePlane::whole_packed)
-            .map(CdefPlane::Packed);
-        let whole_v = frame
-            .deblocked_v
-            .and_then(FramePlane::whole_packed)
-            .map(CdefPlane::Packed);
         while r < r_end {
-            let row_y = whole_y.unwrap_or(cdef_plane(frame.deblocked_y, r, 0)?);
-            let row_u = match (whole_u, frame.deblocked_u) {
-                (Some(plane), _) => Some(plane),
-                (None, Some(plane)) => Some(cdef_plane(plane, r, sub_y)?),
-                (None, None) => None,
-            };
-            let row_v = match (whole_v, frame.deblocked_v) {
-                (Some(plane), _) => Some(plane),
-                (None, Some(plane)) => Some(cdef_plane(plane, r, sub_y)?),
-                (None, None) => None,
-            };
             let mut c = 0;
             while c < mi_cols {
                 if let Some(ctx) = lookup.at(r, c)? {
                     compute_cdef_block::<T>(
                         &ctx,
                         &mut pad,
-                        row_y,
-                        row_u,
-                        row_v,
+                        frame.deblocked_y,
+                        frame.deblocked_u,
+                        frame.deblocked_v,
                         &mut frame.filtered_y,
                         frame.filtered_u.as_mut(),
                         frame.filtered_v.as_mut(),
@@ -377,83 +312,6 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         }
     }
     Ok(frame)
-}
-
-fn cdef_plane<T: ReconSample>(
-    plane: FramePlane<'_, T>,
-    mi_row: usize,
-    sub_y: usize,
-) -> Result<CdefPlane<'_, T>, CdefError> {
-    let y = (mi_row * MI_SIZE) >> sub_y;
-    let height = (8 >> sub_y).min(plane.frame_height().saturating_sub(y));
-    let start = y.saturating_sub(CDEF_TAP_REACH);
-    let end = (y + height + CDEF_TAP_REACH).min(plane.frame_height());
-    if start < plane.origin_y() || end > plane.end_y() {
-        return Err(CdefError::Workspace);
-    }
-    Ok(plane
-        .packed_plane(start, end)
-        .map_or(CdefPlane::Segmented(plane), CdefPlane::Packed))
-}
-
-#[derive(Clone, Copy)]
-enum CdefPlane<'a, T> {
-    Packed(PackedPlane<'a, T>),
-    Segmented(FramePlane<'a, T>),
-}
-
-impl<'a, T: ReconSample> CdefPlane<'a, T> {
-    fn width(self) -> usize {
-        match self {
-            Self::Packed(plane) => plane.width(),
-            Self::Segmented(plane) => plane.width(),
-        }
-    }
-
-    fn frame_height(self) -> usize {
-        match self {
-            Self::Packed(plane) => plane.frame_height(),
-            Self::Segmented(plane) => plane.frame_height(),
-        }
-    }
-
-    fn origin_y(self) -> usize {
-        match self {
-            Self::Packed(plane) => plane.origin_y(),
-            Self::Segmented(plane) => plane.origin_y(),
-        }
-    }
-
-    fn end_y(self) -> usize {
-        match self {
-            Self::Packed(plane) => plane.end_y(),
-            Self::Segmented(plane) => plane.end_y(),
-        }
-    }
-
-    fn row(self, y: usize) -> Option<&'a [T]> {
-        match self {
-            Self::Packed(plane) => plane.row(y),
-            Self::Segmented(plane) => plane.row(y),
-        }
-    }
-
-    fn packed(self) -> Option<PackedPlane<'a, T>> {
-        match self {
-            Self::Packed(plane) => Some(plane),
-            Self::Segmented(_) => None,
-        }
-    }
-
-    fn get(self, x: isize, y: isize) -> Option<i32> {
-        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
-        if x >= self.width() || y >= self.frame_height() {
-            return None;
-        }
-        self.row(y)
-            .and_then(|row| row.get(x))
-            .map(|value| i32::from(value.to_u16()))
-    }
 }
 
 struct CdefBlockCtx {
@@ -505,9 +363,9 @@ impl CdefBlockCtx {
 fn compute_cdef_block<S: ReconSample>(
     ctx: &CdefBlockCtx,
     pad: &mut [u16; CDEF_PADDED_AREA],
-    luma_snap: CdefPlane<'_, S>,
-    u_snap: Option<CdefPlane<'_, S>>,
-    v_snap: Option<CdefPlane<'_, S>>,
+    luma_snap: FramePlane<'_, S>,
+    u_snap: Option<FramePlane<'_, S>>,
+    v_snap: Option<FramePlane<'_, S>>,
     filtered_y: &mut StripePlane,
     filtered_u: Option<&mut StripePlane>,
     filtered_v: Option<&mut StripePlane>,
@@ -532,6 +390,9 @@ fn compute_cdef_block<S: ReconSample>(
         && y0 >= luma_start_y + CDEF_TAP_REACH
         && x0 + block_w - 1 + CDEF_TAP_REACH < luma_inside_x
         && y0 + block_h - 1 + CDEF_TAP_REACH < luma_inside_y;
+    // Gather the luma pad up front when the luma plane will be filtered: that same
+    // padded neighbourhood feeds both the direction search and the kernel, removing
+    // the separate direction-only read of the 8x8 block from the source plane.
     let luma_pad_ready = luma_interior && !ctx.luma_lossless && (sec_str != 0 || pri_base != 0);
     if luma_pad_ready {
         gather_interior_pad(luma_snap, pad, x0, y0, block_w, block_h)?;
@@ -607,16 +468,13 @@ fn compute_cdef_block<S: ReconSample>(
 /// is not the interior `4x4` case the interleaved scratch covers, which leaves
 /// the caller on the per-plane path.
 fn compute_cdef_chroma_pair<S: ReconSample>(
-    u_snap: CdefPlane<'_, S>,
-    v_snap: CdefPlane<'_, S>,
+    u_snap: FramePlane<'_, S>,
+    v_snap: FramePlane<'_, S>,
     ctx: &CdefFilterCtx,
     pad: &mut [u16; CDEF_PADDED_AREA],
     filtered_u: &mut StripePlane,
     filtered_v: &mut StripePlane,
 ) -> Result<bool, CdefError> {
-    let (Some(u_snap), Some(v_snap)) = (u_snap.packed(), v_snap.packed()) else {
-        return Ok(false);
-    };
     let x0 = (ctx.c * MI_SIZE) >> ctx.frame_sub_x;
     let y0 = (ctx.r * MI_SIZE) >> ctx.frame_sub_y;
     let (w, h) = ((8 >> ctx.frame_sub_x), (8 >> ctx.frame_sub_y));
@@ -636,17 +494,17 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
     {
         return Ok(false);
     }
-    let span = w + 2 * CDEF_TAP_REACH;
-    let left = x0 - CDEF_TAP_REACH;
-    if left + span > u_snap.width() || u_snap.stride() != v_snap.stride() {
-        return Ok(false);
-    }
     let (Some(u_samples), Some(v_samples)) = (
         S::u16_slice(u_snap.samples()),
         S::u16_slice(v_snap.samples()),
     ) else {
         return Ok(false);
     };
+    let span = w + 2 * CDEF_TAP_REACH;
+    let left = x0 - CDEF_TAP_REACH;
+    if left + span > u_snap.width() || u_snap.stride() != v_snap.stride() {
+        return Ok(false);
+    }
     let mut base = (y0 - u_snap.origin_y() - CDEF_TAP_REACH) * u_snap.stride() + left;
     for row in 0..h + 2 * CDEF_TAP_REACH {
         let u_row = u_samples
@@ -714,7 +572,7 @@ struct CdefFilterCtx {
 }
 
 fn compute_cdef_filter_plane<S: ReconSample>(
-    snap: CdefPlane<'_, S>,
+    snap: FramePlane<'_, S>,
     ctx: &CdefFilterCtx,
     pad: &mut [u16; CDEF_PADDED_AREA],
     filtered: &mut StripePlane,
@@ -788,7 +646,7 @@ fn compute_cdef_filter_plane<S: ReconSample>(
 /// guarantees the bordered region is inside the filter region (interior block), so the
 /// gather covers exactly the samples the kernel reads and `pad` needs no re-zeroing.
 fn gather_interior_pad<S: ReconSample>(
-    snap: CdefPlane<'_, S>,
+    snap: FramePlane<'_, S>,
     pad: &mut [u16; CDEF_PADDED_AREA],
     x0: usize,
     y0: usize,
@@ -797,30 +655,13 @@ fn gather_interior_pad<S: ReconSample>(
 ) -> Result<(), CdefError> {
     let inside = y0 >= snap.origin_y() + CDEF_TAP_REACH && y0 + h + CDEF_TAP_REACH <= snap.end_y();
     let window_y = inside.then(|| y0 - snap.origin_y());
-    let packed = snap.packed();
-    match (
-        packed.and_then(|plane| S::u16_slice(plane.samples())),
-        window_y,
-        w,
-    ) {
-        (Some(samples), Some(y0), 8) => gather_interior_rows::<12>(
-            samples,
-            snap.width(),
-            packed.ok_or(CdefError::Workspace)?.stride(),
-            pad,
-            x0,
-            y0,
-            h,
-        ),
-        (Some(samples), Some(y0), 4) => gather_interior_rows::<8>(
-            samples,
-            snap.width(),
-            packed.ok_or(CdefError::Workspace)?.stride(),
-            pad,
-            x0,
-            y0,
-            h,
-        ),
+    match (S::u16_slice(snap.samples()), window_y, w) {
+        (Some(samples), Some(y0), 8) => {
+            gather_interior_rows::<12>(samples, snap.width(), snap.stride(), pad, x0, y0, h)
+        }
+        (Some(samples), Some(y0), 4) => {
+            gather_interior_rows::<8>(samples, snap.width(), snap.stride(), pad, x0, y0, h)
+        }
         _ => {
             for r in 0..h + 2 * CDEF_TAP_REACH {
                 let src = snap
@@ -831,12 +672,8 @@ fn gather_interior_pad<S: ReconSample>(
                 let dst = pad
                     .get_mut(dst_start..dst_start + src.len())
                     .ok_or(CdefError::Workspace)?;
-                if let Some(src) = S::u16_slice(src) {
-                    dst.copy_from_slice(src);
-                } else {
-                    for (dst, src) in dst.iter_mut().zip(src) {
-                        *dst = src.to_u16();
-                    }
+                for (dst, src) in dst.iter_mut().zip(src) {
+                    *dst = src.to_u16();
                 }
             }
             Ok(())
@@ -880,7 +717,7 @@ fn gather_interior_rows<const SPAN: usize>(
 
 #[allow(clippy::too_many_arguments)]
 fn gather_boundary_pad<S: ReconSample>(
-    snap: CdefPlane<'_, S>,
+    snap: FramePlane<'_, S>,
     pad: &mut [u16; CDEF_PADDED_AREA],
     x0: usize,
     y0: usize,
@@ -986,7 +823,7 @@ impl CdefTapOffsets {
 
 #[allow(clippy::too_many_arguments)]
 fn gather_taps<T: ReconSample>(
-    snap: CdefPlane<'_, T>,
+    snap: FramePlane<'_, T>,
     offsets: &CdefTapOffsets,
     x: usize,
     y: usize,

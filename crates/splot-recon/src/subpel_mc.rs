@@ -342,7 +342,6 @@ pub struct ReferencePlaneView<'a, T: ReconSample = u16> {
     stride: usize,
     width: usize,
     height: usize,
-    readable_rows: usize,
 }
 
 impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
@@ -384,33 +383,6 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         width: usize,
         height: usize,
     ) -> Result<Self> {
-        Self::from_strided_rows(samples, stride, width, height, height)
-    }
-
-    /// Builds a full-geometry view backed by an already-published row prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ReconError::ZeroDimension`] when a dimension is zero, or
-    /// [`ReconError::SubpelReferencePlaneMismatch`] when the geometry or
-    /// published prefix cannot be represented by `samples`.
-    pub fn from_published_strided(
-        samples: &'a [T],
-        stride: usize,
-        width: usize,
-        height: usize,
-        readable_rows: usize,
-    ) -> Result<Self> {
-        Self::from_strided_rows(samples, stride, width, height, readable_rows)
-    }
-
-    fn from_strided_rows(
-        samples: &'a [T],
-        stride: usize,
-        width: usize,
-        height: usize,
-        readable_rows: usize,
-    ) -> Result<Self> {
         if width == 0 {
             return Err(ReconError::ZeroDimension {
                 field: "subpel reference plane width",
@@ -421,13 +393,7 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
                 field: "subpel reference plane height",
             });
         }
-        if readable_rows == 0 || readable_rows > height {
-            return Err(ReconError::SubpelReferencePlaneMismatch {
-                expected: width,
-                actual: 0,
-            });
-        }
-        let required = readable_rows
+        let required = height
             .checked_sub(1)
             .and_then(|rows| rows.checked_mul(stride))
             .and_then(|prefix| prefix.checked_add(width))
@@ -445,7 +411,6 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
             stride,
             width,
             height,
-            readable_rows,
         })
     }
 
@@ -461,17 +426,17 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
 
     /// Reads `ref[plane][row][col]`. The convolution clips the requested indices
     /// to the caller-supplied `[firstX, lastX] x [firstY, lastY]` region; this
-    /// read additionally clamps to the view's own width and readable row prefix
-    /// so it is total even if a caller passes a clipping region wider than the
-    /// available samples (defense in depth — it never indexes out of bounds).
+    /// read additionally clamps to the view's own `width`/`height` so it is total
+    /// even if a caller passes a clipping region wider than the actual plane
+    /// (defense in depth — the function never indexes out of bounds).
     pub fn sample(&self, row: usize, col: usize) -> i32 {
-        let row = row.min(self.readable_rows - 1);
+        let row = row.min(self.height - 1);
         let col = col.min(self.width - 1);
         i32::from(self.samples[row * self.stride + col].to_u16())
     }
 
     pub(crate) fn row(&self, row: usize) -> &[T] {
-        let row = row.min(self.readable_rows - 1);
+        let row = row.min(self.height - 1);
         let start = row * self.stride;
         &self.samples[start..start + self.width]
     }
@@ -648,7 +613,7 @@ fn fixed_16x16_window_in_bounds<T: ReconSample>(
     x0 + 1 >= 0
         && x0 + 15 < reference.width as i32
         && y0 + 1 >= 0
-        && y0 + 15 < reference.readable_rows as i32
+        && y0 + 15 < reference.height as i32
 }
 
 /// One AV2 § 7.13.3.18 `BILINEAR` tap pair, entirely in 16-bit lanes.
@@ -733,7 +698,7 @@ fn subpel_bilinear_horizontal_into<T: ReconSample>(
     for r in 0..params.h {
         let row = (y0 + r as i32)
             .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
+            .clamp(0, reference.height as i32 - 1) as usize;
         let source = reference.row(row);
         let destination = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
@@ -831,10 +796,10 @@ fn subpel_bilinear_vertical_into<T: ReconSample>(
     for r in 0..params.h {
         let top = (y0 + r as i32)
             .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
+            .clamp(0, reference.height as i32 - 1) as usize;
         let bottom = (y0 + r as i32 + 1)
             .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
+            .clamp(0, reference.height as i32 - 1) as usize;
         let top = reference.row(top);
         let bottom = reference.row(bottom);
         let destination = &mut output[r * output_stride..][..params.w];
@@ -960,10 +925,10 @@ fn subpel_bilinear_2d_into<T: ReconSample>(
         for r in 0..params.h {
             let top_row = (y0 + r as i32)
                 .clamp(params.first_y, params.last_y)
-                .clamp(0, reference.readable_rows as i32 - 1) as usize;
+                .clamp(0, reference.height as i32 - 1) as usize;
             let bottom_row = (y0 + r as i32 + 1)
                 .clamp(params.first_y, params.last_y)
-                .clamp(0, reference.readable_rows as i32 - 1) as usize;
+                .clamp(0, reference.height as i32 - 1) as usize;
             let top = &samples[top_row * reference.stride..][..reference.width];
             let bottom = &samples[bottom_row * reference.stride..][..reference.width];
             let destination = &mut output[r * output_stride..][..params.w];
@@ -1005,7 +970,7 @@ fn subpel_bilinear_2d_into<T: ReconSample>(
     let horizontal_row = |row: i32, destination: &mut [i32]| {
         let row = row
             .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
+            .clamp(0, reference.height as i32 - 1) as usize;
         let source = reference.row(row);
         if let Some(x) = direct_x {
             for (out, pair) in destination
@@ -2273,7 +2238,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
     let mut run = |intermediate: &mut [i16]| {
         for r in read_lo..read_hi {
             let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
-            let ref_row = (ref_row as usize).min(reference.readable_rows - 1);
+            let ref_row = (ref_row as usize).min(reference.height - 1);
             let row_out = &mut intermediate[r * w..(r + 1) * w];
             let window = x_window_start.and_then(|window_start| {
                 let row_base = ref_row * reference.stride + window_start;

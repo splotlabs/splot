@@ -164,8 +164,8 @@ pub(super) fn vertical_only<T: ReconSample, O>(
             let t = tap_start + tap_offset;
             let ref_row =
                 (y0 + row as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
-            let start = ref_row.min(reference.readable_rows - 1) * reference.stride
-                + (x0 + c as i32) as usize;
+            let start =
+                ref_row.min(reference.height - 1) * reference.stride + (x0 + c as i32) as usize;
             sum = tap_mac(
                 sum,
                 Simd::<u16, 8>::from_slice(&source[start..]).cast(),
@@ -182,8 +182,8 @@ pub(super) fn vertical_only<T: ReconSample, O>(
             let t = tap_start + tap_offset;
             let ref_row =
                 (y0 + row as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
-            let start = ref_row.min(reference.readable_rows - 1) * reference.stride
-                + (x0 + c as i32) as usize;
+            let start =
+                ref_row.min(reference.height - 1) * reference.stride + (x0 + c as i32) as usize;
             sum = tap_mac(
                 sum,
                 Simd::<u16, 4>::from_slice(&source[start..]).cast(),

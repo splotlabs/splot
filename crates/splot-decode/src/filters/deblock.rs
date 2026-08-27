@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#[cfg(test)]
 use crate::filters::source::DeblockedWindow;
 use splot_core::headers::frame::{
     DeblockingFilterParams, FrameHeaderCore, QuantizationParams, TileInfo,
@@ -565,24 +564,6 @@ impl<'a> FrameDeblock<'a> {
         })
     }
 
-    /// Deblocks only the mutable rows below a contiguous source's immutable
-    /// filter prefix, then releases the newly final prefix for read leases.
-    pub(crate) fn advance_source<T: ReconSample>(
-        &mut self,
-        source: &mut crate::filters::source::DeblockedSource<T>,
-        mi_row_end: usize,
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        self.advance_with(mi_row_end, bit_depth, |this, ranges, depth| {
-            this.run_ranges_source(source, ranges, depth)
-        })?;
-        let sub_y = usize::from(source.info().pixel_format().subsampling_y());
-        if !source.publish_final_rows(self.final_luma_rows(sub_y)) {
-            return Err(DeblockError::Workspace);
-        }
-        Ok(())
-    }
-
     /// Deblocks every mode-info row before `mi_row_end` in movable canonical
     /// row-band storage.
     pub(crate) fn advance_bands<T: ReconSample>(
@@ -631,7 +612,6 @@ impl<'a> FrameDeblock<'a> {
 
     /// Copies a final deblocked row window for an independently owned filter
     /// continuation.
-    #[cfg(test)]
     pub(crate) fn extract_window<T: ReconSample>(
         &self,
         workspace: &CurrentFrameWorkspace<T>,
@@ -644,7 +624,20 @@ impl<'a> FrameDeblock<'a> {
             .map_err(DeblockError::from)
     }
 
-    #[cfg(test)]
+    /// Copies a final deblocked row window directly from segmented canonical
+    /// row bands.
+    pub(crate) fn extract_band_window<T: ReconSample>(
+        &self,
+        frame: &OwnedFrameBands<T>,
+        luma_start: usize,
+        luma_end: usize,
+        margin: usize,
+    ) -> Result<DeblockedWindow<T>, DeblockError> {
+        self.validate_window(frame.info(), luma_start, luma_end, margin)?;
+        DeblockedWindow::extract_bands(frame, luma_start, luma_end, margin)
+            .map_err(DeblockError::from)
+    }
+
     fn validate_window(
         &self,
         info: splot_recon::DecodedFrameInfo,
@@ -788,69 +781,6 @@ impl<'a> FrameDeblock<'a> {
             jobs.into_par_iter().try_for_each(run)?;
         } else {
             jobs.into_iter().try_for_each(run)?;
-        }
-        Ok(())
-    }
-
-    fn run_ranges_source<T: ReconSample>(
-        &self,
-        source: &mut crate::filters::source::DeblockedSource<T>,
-        ranges: &[core::ops::Range<usize>; 2],
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        if ranges.iter().all(Range::is_empty) {
-            return Ok(());
-        }
-        let pixel_format = source.info().pixel_format();
-        for plane in 0..3 {
-            let plane_id = plane_index_to_id(plane);
-            if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
-                continue;
-            }
-            let passes = [0usize, 1].map(|pass| {
-                (!ranges[pass].is_empty())
-                    .then(|| {
-                        PlanePass::active(
-                            plane,
-                            pass,
-                            self.filter,
-                            self.quant_deltas,
-                            bit_depth,
-                            pixel_format,
-                            &ranges[pass],
-                        )
-                    })
-                    .flatten()
-            });
-            if passes.iter().all(Option::is_none) {
-                continue;
-            }
-            let Some((_, height)) = source.plane_size(plane_id) else {
-                continue;
-            };
-            let (start, end) =
-                deblock_plane_row_bounds(passes, height).ok_or(DeblockError::Workspace)?;
-            source
-                .with_plane_rows_mut(
-                    plane_id,
-                    start,
-                    end,
-                    |samples, stride, width, height, y_origin| {
-                        self.run_plane_job(PlaneJob {
-                            band: PlaneBand {
-                                storage: PlaneRows::Contiguous { samples, stride },
-                                stride,
-                                width,
-                                height,
-                                y_origin,
-                                row_count: end - start,
-                            },
-                            grid: self.plane_grid(plane),
-                            passes,
-                        })
-                    },
-                )
-                .ok_or(DeblockError::Workspace)??;
         }
         Ok(())
     }
@@ -1445,31 +1375,6 @@ struct PlanePass {
     quant_delta: i32,
     bit_depth: BitDepth,
     allow_df_sub_pu: bool,
-}
-
-fn deblock_plane_row_bounds(
-    passes: [Option<PlanePass>; 2],
-    height: usize,
-) -> Option<(usize, usize)> {
-    let mut bounds: Option<(usize, usize)> = None;
-    for pass in passes.into_iter().flatten() {
-        let (mi_start, mi_end) = pass.mi_row_range;
-        if mi_start >= mi_end {
-            continue;
-        }
-        let first = (mi_start * MI_SIZE) >> pass.plane_sub_y;
-        let last = ((mi_end - 1) * MI_SIZE) >> pass.plane_sub_y;
-        let (start, end) = if pass.pass == 0 {
-            (first, last.saturating_add(MI_SIZE).min(height))
-        } else {
-            (
-                first.saturating_sub(GATHER_HALF),
-                last.saturating_add(GATHER_HALF).min(height),
-            )
-        };
-        bounds = Some(bounds.map_or((start, end), |(low, high)| (low.min(start), high.max(end))));
-    }
-    bounds.filter(|(start, end)| start < end)
 }
 
 impl PlanePass {

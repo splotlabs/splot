@@ -23,17 +23,15 @@
 //! block plane, against the last row that block's prediction can reach.
 
 use splot_core::span::ByteOffset;
-#[cfg(test)]
-use splot_recon::CurrentFrameWorkspace;
 use splot_recon::{
-    DecodedFrame, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample, ReferencePlaneView,
-    SubpelPredictParams,
+    CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample,
+    ReferencePlaneView, SubpelPredictParams,
 };
 
 use super::mv_scaling::PlaneScaling;
 use super::{SPEC_MC, unsupported_at};
 use crate::Result;
-use crate::pipeline::frame_progress::{PublishedFrame, PublishedStorage};
+use crate::pipeline::frame_progress::PublishedFrame;
 
 /// Row bound for a reader that cannot bound its reference rows before the
 /// prediction geometry exists: the whole plane must be final.
@@ -69,9 +67,7 @@ enum SampleSource<'a, T: ReconSample> {
     /// The frame has settled into its slot.
     Frozen(&'a DecodedFrame<T>),
     /// The frame's filter phase still owns its output workspace.
-    #[cfg(test)]
     Filtering(&'a CurrentFrameWorkspace<T>),
-    Publishing(PublishedStorage<'a, T>),
 }
 
 /// One reference frame's samples as one block's prediction reads them.
@@ -96,7 +92,6 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
 
     /// Reads the published prefix of a frame whose filter phase is still
     /// running, leaving the frame's true geometry intact.
-    #[cfg(test)]
     pub(crate) const fn filtering(
         workspace: &'a CurrentFrameWorkspace<T>,
         luma: usize,
@@ -108,23 +103,11 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         }
     }
 
-    pub(crate) fn publishing(published: &'a PublishedFrame<'_, T>) -> Result<Self> {
-        Ok(Self {
-            source: SampleSource::Publishing(published.storage()?),
-            published: Some(PublishedRows {
-                luma: published.luma_rows(),
-                chroma: published.chroma_rows(),
-            }),
-        })
-    }
-
     /// Returns the reference frame's decoded geometry.
     pub(crate) fn info(self) -> DecodedFrameInfo {
         match self.source {
             SampleSource::Frozen(frame) => frame.info(),
-            #[cfg(test)]
             SampleSource::Filtering(workspace) => workspace.info(),
-            SampleSource::Publishing(storage) => storage.info(),
         }
     }
 
@@ -146,10 +129,9 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         last_row: i32,
         offset: ByteOffset,
     ) -> Result<(ReferencePlaneView<'a, T>, i32, i32)> {
-        let Some((samples, stride, visible, readable_rows)) = self.plane_storage(plane) else {
+        let Some((samples, stride, visible)) = self.plane_storage(plane) else {
             return Err(missing_plane(offset));
         };
-        self.ensure_published(plane, last_row, visible, offset)?;
         let view = visible
             .y()
             .checked_mul(stride)
@@ -157,26 +139,13 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
             .and_then(|start| samples.get(start..))
             .ok_or(())
             .and_then(|samples| {
-                match readable_rows {
-                    Some(rows) => ReferencePlaneView::from_published_strided(
-                        samples,
-                        stride,
-                        visible.width(),
-                        visible.height(),
-                        rows.saturating_sub(visible.y()),
-                    ),
-                    None => ReferencePlaneView::from_strided(
-                        samples,
-                        stride,
-                        visible.width(),
-                        visible.height(),
-                    ),
-                }
-                .map_err(|_| ())
+                ReferencePlaneView::from_strided(samples, stride, visible.width(), visible.height())
+                    .map_err(|_| ())
             })
             .map_err(|()| plane_geometry(offset))?;
+        self.ensure_published(plane, last_row, visible.height(), offset)?;
 
-        let Some((_, _, luma_visible, _)) = self.plane_storage(PlaneId::Y) else {
+        let Some((_, _, luma_visible)) = self.plane_storage(PlaneId::Y) else {
             return Err(missing_plane(offset));
         };
         let ref_mi_cols = luma_visible.width().div_ceil(4) as i32;
@@ -190,7 +159,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         self,
         plane: PlaneId,
         last_row: i32,
-        visible: PlaneRect,
+        plane_rows: usize,
         offset: ByteOffset,
     ) -> Result<()> {
         let Some(published) = self.published else {
@@ -201,10 +170,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         } else {
             published.chroma
         };
-        let needed = (last_row.max(0) as usize)
-            .saturating_add(1)
-            .min(visible.height())
-            .saturating_add(visible.y());
+        let needed = (last_row.max(0) as usize).saturating_add(1).min(plane_rows);
         if needed <= published {
             return Ok(());
         }
@@ -212,42 +178,22 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     }
 
     /// Borrows one plane's backing samples, stride, and visible rectangle.
-    fn plane_storage(self, plane: PlaneId) -> Option<(&'a [T], usize, PlaneRect, Option<usize>)> {
+    fn plane_storage(self, plane: PlaneId) -> Option<(&'a [T], usize, PlaneRect)> {
         match self.source {
             SampleSource::Frozen(frame) => frame.plane(plane).map(|plane| {
                 (
                     plane.samples(),
                     plane.stride_samples(),
                     plane.visible_rect(),
-                    None,
                 )
             }),
-            #[cfg(test)]
             SampleSource::Filtering(workspace) => workspace.plane(plane).ok().map(|plane| {
                 (
                     plane.samples(),
                     plane.stride_samples(),
                     plane.visible_rect(),
-                    None,
                 )
             }),
-            SampleSource::Publishing(storage) => {
-                let rows = self.published.map(|rows| {
-                    if plane == PlaneId::Y {
-                        rows.luma
-                    } else {
-                        rows.chroma
-                    }
-                })?;
-                storage.plane(plane, rows).map(|plane| {
-                    (
-                        plane.samples,
-                        plane.stride,
-                        plane.visible,
-                        Some(plane.samples.len() / plane.stride),
-                    )
-                })
-            }
         }
     }
 }
@@ -383,7 +329,11 @@ impl<T: ReconSample> HeldFrameSamples<'_, T> {
     pub(crate) fn samples(&self) -> Result<ReferenceSamples<'_, T>> {
         Ok(match self {
             Self::Settled(frame) => ReferenceSamples::settled(frame),
-            Self::Filtering(published) => ReferenceSamples::publishing(published)?,
+            Self::Filtering(published) => ReferenceSamples::filtering(
+                published.workspace()?,
+                published.luma_rows(),
+                published.chroma_rows(),
+            ),
         })
     }
 }

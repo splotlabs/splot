@@ -121,10 +121,10 @@ pub fn subpel_predict_16x16_bilinear_horizontal_overlap_into<T: ReconSample>(
     for row in 0..params.h {
         let top = (y0 + row as i32)
             .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
+            .clamp(0, reference.height as i32 - 1) as usize;
         let bottom = (y0 + row as i32 + 1)
             .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
+            .clamp(0, reference.height as i32 - 1) as usize;
         let top_samples = reference.row(top);
         let bottom_samples = reference.row(bottom);
         let destination = &mut output[row * params.w..][..params.w];

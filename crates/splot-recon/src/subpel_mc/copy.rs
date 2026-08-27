@@ -98,7 +98,7 @@ pub(super) fn subpel_copy_block_into<T: ReconSample, O>(
         let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
         let output = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
-            let row = row.min(reference.readable_rows - 1);
+            let row = row.min(reference.height - 1);
             let start = row * reference.stride + x;
             for (out, sample) in output
                 .iter_mut()
@@ -155,7 +155,7 @@ pub(super) fn subpel_copy_block_u16_into<T: ReconSample>(
         let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
         let output = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
-            let row = row.min(reference.readable_rows - 1);
+            let row = row.min(reference.height - 1);
             let start = row * reference.stride + x;
             let source = &reference.samples[start..start + params.w];
             if let Some(source) = T::u16_slice(source) {
@@ -173,7 +173,7 @@ pub(super) fn subpel_copy_block_u16_into<T: ReconSample>(
                 }
             }
         } else {
-            let row = row.min(reference.readable_rows - 1);
+            let row = row.min(reference.height - 1);
             if let Some(source) = T::u16_slice(reference.row(row)) {
                 let first_x = params.first_x.clamp(0, reference.width as i32 - 1);
                 let last_x = params.last_x.clamp(0, reference.width as i32 - 1);
@@ -343,7 +343,7 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
     for r in 0..params.h {
         let ref_row = ((params.start_y >> SCALE_SUBPEL_BITS) + r as i32)
             .clamp(params.first_y, params.last_y) as usize;
-        let ref_row = ref_row.min(reference.readable_rows - 1);
+        let ref_row = ref_row.min(reference.height - 1);
         let row_out = &mut output[r * output_stride..][..params.w];
         if let Some(window_start) = x_window_start {
             let row_base = ref_row * reference.stride + window_start;
@@ -459,7 +459,7 @@ fn vertical_interior_top<T: ReconSample>(
     let bottom = top + params.h + NUM_TAPS - 2;
     (i64::from(params.first_y) <= top as i64
         && bottom as i64 <= i64::from(params.last_y)
-        && bottom < reference.readable_rows)
+        && bottom < reference.height)
         .then_some(top)
 }
 
@@ -577,7 +577,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
                     let ref_row = (y0 + r as i32 + t as i32 - 3)
                         .clamp(params.first_y, params.last_y)
                         as usize;
-                    let ref_row = ref_row.min(reference.readable_rows - 1);
+                    let ref_row = ref_row.min(reference.height - 1);
                     let start = ref_row * reference.stride + x + c;
                     sum = tap_mac(
                         sum,
@@ -596,7 +596,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
                     let ref_row = (y0 + r as i32 + t as i32 - 3)
                         .clamp(params.first_y, params.last_y)
                         as usize;
-                    let ref_row = ref_row.min(reference.readable_rows - 1);
+                    let ref_row = ref_row.min(reference.height - 1);
                     let start = ref_row * reference.stride + x + c;
                     sum = tap_mac(
                         sum,
@@ -614,7 +614,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
                     let ref_row = (y0 + r as i32 + t as i32 - 3)
                         .clamp(params.first_y, params.last_y)
                         as usize;
-                    let ref_row = ref_row.min(reference.readable_rows - 1);
+                    let ref_row = ref_row.min(reference.height - 1);
                     sum += tap * reference.sample(ref_row, x + c);
                 }
                 output[r * output_stride + c] = finish.one(round2_i32(
@@ -643,7 +643,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
             let t = tap_start + tap_offset;
             let ref_row =
                 (y0 + r as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
-            let ref_row = ref_row.min(reference.readable_rows - 1);
+            let ref_row = ref_row.min(reference.height - 1);
             if let Some(x) = direct_x {
                 let start = ref_row * reference.stride + x;
                 for (sum, sample) in acc

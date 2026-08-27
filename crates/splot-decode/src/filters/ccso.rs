@@ -323,13 +323,17 @@ fn ccso_apply<L: ReconSample>(
     tile_starts: Option<(&[u32], &[u32])>,
 ) -> Result<(), CcsoError> {
     let destination_end_y = destination.end_y().ok_or(CcsoError::Geometry)?;
+    let luma_len = (curr_luma.end_y() - curr_luma.origin_y())
+        .saturating_sub(1)
+        .checked_mul(curr_luma.stride())
+        .and_then(|start| start.checked_add(curr_luma.width()))
+        .ok_or(CcsoError::Geometry)?;
     if destination.width() == 0
         || destination_end_y > destination.frame_height()
         || curr_luma.width() == 0
         || curr_luma.end_y() > curr_luma.frame_height()
         || curr_luma.stride() < curr_luma.width()
-        || curr_luma.row(curr_luma.origin_y()).is_none()
-        || curr_luma.row(curr_luma.end_y() - 1).is_none()
+        || curr_luma.samples().len() < luma_len
     {
         return Err(CcsoError::Geometry);
     }

@@ -4,7 +4,6 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::filters::source::DeblockedWindowSequence;
 use crate::test_support::yuv420_workspace as workspace_8bit;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
@@ -392,7 +391,6 @@ fn assert_cdef_block_matches_per_sample_reference(
         }
     }
     let snap = FramePlane::new(&ws, PlaneId::Y).unwrap();
-    let packed = snap.packed_plane(0, 64).unwrap();
     let (x0, y0) = (c * MI_SIZE, r * MI_SIZE);
     for dir in 0..8usize {
         for (pri_str, sec_str) in [(0, 3), (5, 0), (5, 3), (12, 4)] {
@@ -415,29 +413,13 @@ fn assert_cdef_block_matches_per_sample_reference(
             };
             let mut pad = [0u16; CDEF_PADDED_AREA];
             let mut filtered = StripePlane::copy_from(snap, 0, 64).unwrap();
-            compute_cdef_filter_plane::<u8>(
-                CdefPlane::Packed(packed),
-                &ctx,
-                &mut pad,
-                &mut filtered,
-            )
-            .unwrap();
+            compute_cdef_filter_plane::<u8>(snap, &ctx, &mut pad, &mut filtered).unwrap();
             let offsets = CdefTapOffsets::for_direction(ctx.dir);
             for i in 0..8 {
                 for j in 0..8 {
                     let (x, y) = (x0 + j, y0 + i);
-                    let center = packed.get(x as isize, y as isize).unwrap();
-                    let taps = gather_taps(
-                        CdefPlane::Packed(packed),
-                        &offsets,
-                        x,
-                        y,
-                        0,
-                        0,
-                        64,
-                        64,
-                        center,
-                    );
+                    let center = snap.get(x as isize, y as isize).unwrap();
+                    let taps = gather_taps(snap, &offsets, x, y, 0, 0, 64, 64, center);
                     let expected = cdef_filter_sample(
                         &taps,
                         ctx.pri_str,
@@ -539,32 +521,11 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
     )
     .unwrap();
 
-    let ranges = [(0, 56), (56, 120), (120, 128)];
-    let mut sequence = DeblockedWindowSequence::default();
-    let windows = ranges
-        .iter()
-        .enumerate()
-        .map(|(stripe, _)| sequence.extract(&striped, &ranges, stripe, 10).unwrap())
-        .collect::<Vec<_>>();
-    let middle = windows[1].planes().unwrap().y;
-    assert!(matches!(
-        cdef_plane(middle, 14, 0).unwrap(),
-        CdefPlane::Packed(_)
-    ));
-    assert!(matches!(
-        cdef_plane(middle, 16, 0).unwrap(),
-        CdefPlane::Segmented(_)
-    ));
-    assert!(matches!(
-        cdef_plane(middle, 18, 0).unwrap(),
-        CdefPlane::Packed(_)
-    ));
-    let frames = ranges
+    let frames = [(0, 56), (56, 120), (120, 128)]
         .into_iter()
-        .zip(&windows)
-        .map(|((start, end), deblocked)| {
+        .map(|(start, end)| {
             cdef_stripe(
-                deblocked.planes().unwrap(),
+                DeblockedPlanes::frame(&striped).unwrap(),
                 Some(&[params]),
                 Some(&grid),
                 None,
