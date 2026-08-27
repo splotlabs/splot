@@ -22,7 +22,7 @@ use splot_recon::{
     WienerNsLumaPaddedSource, WienerNsLumaScratch, loop_restoration_source_sample,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
     pc_wiener_filter_set_index, pc_wiener_subclass_table,
-    wiener_ns_filter_chroma_block_padded_into, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_chroma_block_padded_u16_into, wiener_ns_filter_luma_block_padded_cells_into,
     wiener_ns_filter_luma_block_padded_into,
 };
 
@@ -400,18 +400,7 @@ fn filter_lr_block_into<T: ReconSample>(
     block: &WienerNsLrSourceBlock,
     filter: impl FnOnce(&mut [T], usize) -> Result<()>,
 ) -> Result<()> {
-    if block
-        .x
-        .checked_add(block.width)
-        .is_none_or(|end_x| end_x > plane.width())
-    {
-        return Err(super::lr_pipeline_state_error());
-    }
-    let rect = splot_recon::PlaneRect::new(block.x, block.y, block.width, block.height)
-        .map_err(|_| super::lr_pipeline_state_error())?;
-    let (destination, stride) = plane
-        .rect_mut(rect)
-        .ok_or_else(super::lr_pipeline_state_error)?;
+    let (destination, stride) = lr_block_destination(plane, block)?;
     if let Some(output) = T::from_u16_slice_mut(destination) {
         return filter(output, stride);
     }
@@ -439,6 +428,25 @@ fn filter_lr_block_into<T: ReconSample>(
         }
         Ok(())
     })
+}
+
+fn lr_block_destination<'a>(
+    plane: &'a mut StripePlane,
+    block: &WienerNsLrSourceBlock,
+) -> Result<(&'a mut [u16], usize)> {
+    if block
+        .x
+        .checked_add(block.width)
+        .is_none_or(|end_x| end_x > plane.width())
+    {
+        return Err(super::lr_pipeline_state_error());
+    }
+    let rect = splot_recon::PlaneRect::new(block.x, block.y, block.width, block.height)
+        .map_err(|_| super::lr_pipeline_state_error())?;
+    let (destination, stride) = plane
+        .rect_mut(rect)
+        .ok_or_else(super::lr_pipeline_state_error)?;
+    Ok((destination, stride))
 }
 
 /// Post-CCSO rows adjacent to a stripe band, split per plane.
@@ -972,6 +980,7 @@ impl StripeChain<'_> {
                     curr_luma,
                     output,
                     output_stride,
+                    |slot, sample| *slot = sample,
                 )
             })
         })
@@ -1022,7 +1031,8 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        filter_lr_block_into(post_lr, &block, |output, output_stride| {
+        let (output, output_stride) = lr_block_destination(post_lr, &block)?;
+        {
             let params = WienerNsChromaFilter {
                 x: block.x,
                 y: block.y,
@@ -1105,7 +1115,7 @@ impl StripeChain<'_> {
                 )
                 .map_err(|error| lr_plane_window_error(&error, plane_id))?;
                 with_wiener_ns_chroma_scratch(|scratch| {
-                    wiener_ns_filter_chroma_block_padded_into(
+                    wiener_ns_filter_chroma_block_padded_u16_into(
                         output,
                         &params,
                         &padded_source,
@@ -1114,8 +1124,15 @@ impl StripeChain<'_> {
                 })
                 .map_err(|error| lr_plane_window_error(&error, plane_id))
             })?;
-            self.preserve_lossless_lr_samples(plane_id, &block, curr_chroma, output, output_stride)
-        })
+            self.preserve_lossless_lr_samples(
+                plane_id,
+                &block,
+                curr_chroma,
+                output,
+                output_stride,
+                |slot, sample| *slot = sample.to_u16(),
+            )
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1226,17 +1243,26 @@ impl StripeChain<'_> {
                 crate::timing::accumulate(crate::timing::Phase::WienerNsLuma, timer);
                 Ok(())
             })?;
-            self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, output_stride)
+            self.preserve_lossless_lr_samples(
+                PlaneId::Y,
+                &block,
+                curr_luma,
+                output,
+                output_stride,
+                |slot, sample| *slot = sample,
+            )
         })
     }
 
-    fn preserve_lossless_lr_samples<T: ReconSample>(
+    #[allow(clippy::too_many_arguments)]
+    fn preserve_lossless_lr_samples<T: ReconSample, O>(
         &self,
         plane_id: PlaneId,
         block: &WienerNsLrSourceBlock,
         curr_plane: FramePlane<'_, T>,
-        output: &mut [T],
+        output: &mut [O],
         output_stride: usize,
+        mut write_sample: impl FnMut(&mut O, T),
     ) -> Result<()> {
         let Some(lossless_grid) = self.lossless_grid else {
             return Ok(());
@@ -1266,7 +1292,7 @@ impl StripeChain<'_> {
                 let Some(slot) = output.get_mut(output_index) else {
                     return Err(super::lr_pipeline_state_error());
                 };
-                *slot = sample;
+                write_sample(slot, sample);
             }
         }
         Ok(())
