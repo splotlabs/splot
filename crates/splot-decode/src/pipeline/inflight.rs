@@ -116,6 +116,11 @@ impl<T: ReconSample> RefFrameSlot<T> {
         self.progress.as_deref()
     }
 
+    #[cfg(test)]
+    pub(crate) fn progress_handle(&self) -> Option<Arc<FrameProgress<T>>> {
+        self.progress.clone()
+    }
+
     /// How many luma rows from the frame top this slot has published.
     ///
     /// A slot with no filter phase to watch publishes nothing row by row; its
@@ -619,7 +624,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
             mut report,
         } = self;
         let started = crate::timing::start();
-        match finish_walked_frame(walked, progress.as_deref(), admit, |frame| {
+        match finish_walked_frame(walked, progress, admit, |frame| {
             writer.complete(frame);
         }) {
             Ok(finished) => {

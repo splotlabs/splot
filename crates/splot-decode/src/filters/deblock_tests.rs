@@ -285,6 +285,69 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
 }
 
 #[test]
+fn contiguous_source_deblock_matches_workspace_while_an_older_lease_is_live() {
+    let mi_rows = 32;
+    let mi_cols = 32;
+    let blocks = deblock_blocks(mi_rows, mi_cols);
+    let params = filter([true; 4]);
+    let mut expected = patterned_yuv420_workspace(128, 128);
+    let mut source =
+        crate::filters::source::DeblockedSource::new(patterned_yuv420_workspace(128, 128));
+
+    deblock_general_intra_frame(
+        &mut expected,
+        &blocks,
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+        BitDepth::Eight,
+    )
+    .unwrap();
+    let mut plan = FrameDeblock::prepare(
+        &blocks,
+        &EMPTY_CHROMA_RECORDS,
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+    )
+    .unwrap()
+    .unwrap();
+    plan.advance_source(&mut source, 16, BitDepth::Eight)
+        .unwrap();
+    let earlier = source.lease(0, 32, 8).unwrap();
+    plan.advance_source(&mut source, 32, BitDepth::Eight)
+        .unwrap();
+
+    assert!(earlier.planes().is_some());
+    let actual = source.lease(0, 128, 0).unwrap();
+    let actual = actual.planes().unwrap();
+    for (plane, actual) in [
+        (PlaneId::Y, Some(actual.y)),
+        (PlaneId::U, actual.u),
+        (PlaneId::V, actual.v),
+    ] {
+        let actual = actual.unwrap();
+        let expected = expected.plane(plane).unwrap();
+        let width = expected.storage_size().width();
+        let stride = expected.stride_samples();
+        for y in 0..expected.storage_size().height() {
+            assert_eq!(
+                actual.row(y).unwrap(),
+                &expected.samples()[y * stride..y * stride + width],
+                "{plane:?} row {y} differs"
+            );
+        }
+    }
+    assert!(plan.finish().is_none());
+}
+
+#[test]
 fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
     let mi_rows = 32;
     let mi_cols = 32;

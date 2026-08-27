@@ -8,6 +8,7 @@
 use splot_recon::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
 use super::FrameProgress;
+use std::sync::Arc;
 
 fn info(width: usize, height: usize, format: PixelFormat) -> DecodedFrameInfo {
     DecodedFrameInfo::new(
@@ -22,6 +23,141 @@ fn info(width: usize, height: usize, format: PixelFormat) -> DecodedFrameInfo {
 
 fn new_progress(width: usize, height: usize, format: PixelFormat) -> FrameProgress<u8> {
     FrameProgress::new(info(width, height, format)).expect("frame progress")
+}
+
+#[test]
+fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
+    let progress = Arc::new(
+        FrameProgress::<u16>::new(info(8, 8, PixelFormat::Monochrome)).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 4), (4, 8)]));
+
+    let mut bottom = progress.direct_stripe(1).expect("bottom stripe lend");
+    assert!(progress.direct_stripe(1).is_none(), "a live lend is unique");
+    assert!(
+        progress.freeze_workspace(core::convert::identity).is_err(),
+        "freeze must refuse a live direct lend"
+    );
+    assert!(
+        progress.publish_stripe(0, Box::new(|_| Ok(()))).is_err(),
+        "a direct frame cannot fall back to queued copies"
+    );
+    let mut bottom_target = bottom.take_target().expect("bottom target");
+    bottom_target
+        .take(splot_recon::PlaneId::Y)
+        .expect("bottom luma")
+        .u16_samples_mut()
+        .expect("u16 luma")
+        .fill(22);
+    assert!(bottom.submit());
+    assert_eq!(progress.published_luma_rows(), 0);
+
+    let mut top = progress.direct_stripe(0).expect("top stripe lend");
+    let mut top_target = top.take_target().expect("top target");
+    top_target
+        .take(splot_recon::PlaneId::Y)
+        .expect("top luma")
+        .u16_samples_mut()
+        .expect("u16 luma")
+        .fill(11);
+    assert!(top.submit());
+    assert_eq!(progress.published_luma_rows(), 8);
+
+    let published = progress.read().expect("published frame");
+    let samples = published
+        .plane(splot_recon::PlaneId::Y)
+        .expect("published luma")
+        .expect("present luma")
+        .samples;
+    assert!(samples[..32].iter().all(|&sample| sample == 11));
+    assert!(samples[32..].iter().all(|&sample| sample == 22));
+    drop(published);
+
+    let frame = progress
+        .freeze_workspace(core::convert::identity)
+        .expect("frozen frame");
+    assert_eq!(&frame.y().samples()[..32], &[11; 32]);
+    assert_eq!(&frame.y().samples()[32..], &[22; 32]);
+}
+
+#[test]
+fn detached_direct_target_keeps_its_stripe_leased() {
+    let progress = Arc::new(
+        FrameProgress::<u16>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 4)]));
+
+    let mut lease = progress.direct_stripe(0).expect("stripe lend");
+    let mut target = lease.take_target().expect("stripe target");
+    let plane = target.take(splot_recon::PlaneId::Y).expect("luma target");
+    assert!(!lease.submit(), "a detached target cannot be published");
+    assert!(progress.direct_stripe(0).is_none());
+    assert!(progress.freeze_workspace(drop).is_err());
+
+    drop(plane);
+    assert!(progress.direct_stripe(0).is_some());
+}
+
+#[cfg(test)]
+#[test]
+fn detached_target_drop_hands_writes_back_before_submit() {
+    let progress = Arc::new(
+        FrameProgress::<u16>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 4)]));
+
+    let mut lease = progress.direct_stripe(0).expect("stripe lend");
+    let mut target = lease.take_target().expect("stripe target");
+    let mut plane = target.take(splot_recon::PlaneId::Y).expect("luma target");
+    std::thread::spawn(move || plane.u16_samples_mut().expect("u16 luma").fill(33))
+        .join()
+        .expect("target worker");
+    assert!(lease.submit());
+
+    let published = progress.read().expect("published frame");
+    assert!(
+        published
+            .plane(splot_recon::PlaneId::Y)
+            .expect("published luma")
+            .expect("present luma")
+            .samples
+            .iter()
+            .all(|&sample| sample == 33)
+    );
+}
+
+#[test]
+fn u8_direct_stripe_writes_the_canonical_allocation() {
+    let progress = Arc::new(
+        FrameProgress::<u8>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 4)]));
+
+    let mut lease = progress.direct_stripe(0).expect("stripe lend");
+    let mut target = lease.take_target().expect("stripe target");
+    target
+        .take(splot_recon::PlaneId::Y)
+        .expect("luma target")
+        .u8_samples_mut()
+        .expect("u8 luma")
+        .fill(77);
+    assert!(lease.submit());
+
+    let frame = progress
+        .freeze_workspace(core::convert::identity)
+        .expect("frozen frame");
+    assert_eq!(frame.y().samples(), &[77; 32]);
+}
+
+#[test]
+fn direct_mode_rejects_misaligned_subsampled_stripes() {
+    let progress = Arc::new(
+        FrameProgress::<u16>::new(info(8, 128, PixelFormat::Yuv420)).expect("frame progress"),
+    );
+
+    assert!(progress.begin(&[(0, 65), (65, 128)]));
+    assert!(progress.direct_stripe(0).is_none());
+    assert!(progress.direct_stripe(1).is_none());
 }
 
 #[test]
@@ -138,6 +274,26 @@ fn chroma_rows_truncate_to_the_fully_published_luma_pairs() {
 }
 
 #[test]
+fn a_complete_odd_height_frame_publishes_its_terminal_chroma_row() {
+    let progress = new_progress(64, 129, PixelFormat::Yuv420);
+    assert!(progress.begin(&[(0, 64), (64, 129)]));
+
+    progress.publish(0);
+    assert_eq!(
+        progress.read().expect("an interior prefix").chroma_rows(),
+        32,
+        "an interior prefix still requires complete luma pairs"
+    );
+
+    progress.publish(1);
+    assert_eq!(
+        progress.read().expect("the complete frame").chroma_rows(),
+        65,
+        "the final unpaired luma row completes the terminal chroma row"
+    );
+}
+
+#[test]
 fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
     assert!(progress.begin(&[(0, 64), (64, 128)]));
@@ -149,7 +305,10 @@ fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
     progress.publish(0);
     let published = progress.read().expect("a published prefix");
     assert_eq!(published.luma_rows(), 64);
-    assert!(published.workspace().is_ok());
+    assert!(matches!(
+        published.plane(splot_recon::PlaneId::Y),
+        Ok(Some(_))
+    ));
     drop(published);
 
     let frame = progress

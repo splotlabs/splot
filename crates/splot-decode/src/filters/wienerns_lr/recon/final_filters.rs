@@ -99,25 +99,34 @@ pub(crate) struct FilteredStripe {
     pub(crate) v: Option<StripePlane>,
 }
 
+pub(crate) struct LrStripeOutput {
+    pub(crate) active_planes: [bool; 3],
+    pub(crate) target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
+}
+
 impl<'a, T: ReconSample> LrFrame<'a, T> {
     fn from_cdef(
         frame: CdefFrame<'a, T>,
         active_planes: [bool; 3],
+        mut target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
     ) -> core::result::Result<Self, StripeCopyError> {
-        let copy = |plane: &StripePlane| {
-            plane.copy_rows(
+        let mut copy = |plane_id: PlaneId, plane: &StripePlane| {
+            plane.copy_rows_into(
                 plane.origin_y(),
                 plane.end_y().ok_or(StripeCopyError::Geometry)?,
+                target.as_mut().and_then(|target| target.take(plane_id)),
             )
         };
         let post_lr_y = if active_planes[PlaneId::Y.index()] {
-            Some(copy(&frame.filtered_y).map_err(|error| error.for_plane(PlaneId::Y))?)
+            Some(copy(PlaneId::Y, &frame.filtered_y).map_err(|error| error.for_plane(PlaneId::Y))?)
         } else {
             None
         };
         let post_lr_u = if active_planes[PlaneId::U.index()] {
             match frame.filtered_u.as_ref() {
-                Some(plane) => Some(copy(plane).map_err(|error| error.for_plane(PlaneId::U))?),
+                Some(plane) => {
+                    Some(copy(PlaneId::U, plane).map_err(|error| error.for_plane(PlaneId::U))?)
+                }
                 None => None,
             }
         } else {
@@ -125,7 +134,9 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         };
         let post_lr_v = if active_planes[PlaneId::V.index()] {
             match frame.filtered_v.as_ref() {
-                Some(plane) => Some(copy(plane).map_err(|error| error.for_plane(PlaneId::V))?),
+                Some(plane) => {
+                    Some(copy(PlaneId::V, plane).map_err(|error| error.for_plane(PlaneId::V))?)
+                }
                 None => None,
             }
         } else {
@@ -689,6 +700,23 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 }
 
 impl StripeChain<'_> {
+    pub(crate) fn active_lr_planes(
+        &self,
+        luma_start: usize,
+        luma_end: usize,
+        plane_blocks: [&[WienerNsLrSourceBlock]; 3],
+    ) -> [bool; 3] {
+        let sub_y = usize::from(self.pixel_format.subsampling_y());
+        core::array::from_fn(|plane| {
+            let shift = usize::from(plane != PlaneId::Y.index()) * sub_y;
+            let start = luma_start >> shift;
+            let end = luma_end.div_ceil(1 << shift);
+            plane_blocks[plane]
+                .iter()
+                .any(|block| lr_block_in_rows(block, start, end).is_some())
+        })
+    }
+
     pub(crate) fn apply_lr_stripe<'a, T: ReconSample>(
         &self,
         core: &FrameHeaderCore,
@@ -696,30 +724,20 @@ impl StripeChain<'_> {
         cdef_overlap: &CdefOverlap,
         plane_blocks: [&[WienerNsLrSourceBlock]; 3],
         lr_unit_filters: &[WienerNsLrUnitFilter],
+        output: LrStripeOutput,
     ) -> Result<LrFrame<'a, T>> {
-        let has_blocks = |plane: usize, stripe: Option<&StripePlane>| {
-            stripe.is_some_and(|stripe| {
-                stripe.end_y().is_some_and(|end_y| {
-                    plane_blocks[plane]
-                        .iter()
-                        .any(|block| lr_block_in_rows(block, stripe.origin_y(), end_y).is_some())
-                })
-            })
-        };
-        let active_planes = [
-            has_blocks(PlaneId::Y.index(), Some(&cdef.filtered_y)),
-            has_blocks(PlaneId::U.index(), cdef.filtered_u.as_ref()),
-            has_blocks(PlaneId::V.index(), cdef.filtered_v.as_ref()),
-        ];
-        let mut frame = LrFrame::from_cdef(cdef, active_planes).map_err(|error| match error {
-            StripeCopyError::Allocation(plane) => {
-                crate::error::DecodeError::from(ReconError::WorkspaceAllocationFailed {
-                    plane,
-                    context: "post-LR stripe copy",
-                })
-            }
-            StripeCopyError::Geometry => super::lr_pipeline_state_error(),
-        })?;
+        let mut frame =
+            LrFrame::from_cdef(cdef, output.active_planes, output.target).map_err(|error| {
+                match error {
+                    StripeCopyError::Allocation(plane) => {
+                        crate::error::DecodeError::from(ReconError::WorkspaceAllocationFailed {
+                            plane,
+                            context: "post-LR stripe copy",
+                        })
+                    }
+                    StripeCopyError::Geometry => super::lr_pipeline_state_error(),
+                }
+            })?;
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };
@@ -731,7 +749,7 @@ impl StripeChain<'_> {
                     | FrameRestorationType::PcWiener
                     | FrameRestorationType::Switchable
             )
-            && active_planes[PlaneId::Y.index()]
+            && output.active_planes[PlaneId::Y.index()]
         {
             let qindex = core
                 .quantization_params
@@ -806,7 +824,7 @@ impl StripeChain<'_> {
         }
 
         for plane_id in [PlaneId::U, PlaneId::V] {
-            if !active_planes[plane_id.index()] {
+            if !output.active_planes[plane_id.index()] {
                 continue;
             }
             let Some(plane) = lr_params.planes.get(plane_id.index()) else {

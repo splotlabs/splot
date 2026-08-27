@@ -850,6 +850,55 @@ fn strided_view_matches_contiguous_view() {
 }
 
 #[test]
+fn published_view_clamps_reads_to_the_available_prefix() {
+    let samples = [1u16, 2, 3, 4, 5, 6];
+    let view = ReferencePlaneView::from_published_strided(&samples, 3, 3, 4, 2).unwrap();
+
+    assert_eq!(view.sample(3, 2), 6);
+    assert_eq!(view.row(3), &[4, 5, 6]);
+}
+
+#[test]
+fn published_view_fast_path_stays_within_the_available_prefix() {
+    let samples = vec![511u16; 16 * 2];
+    let view = ReferencePlaneView::from_published_strided(&samples, 16, 16, 16, 2).unwrap();
+    let params = SubpelPredictParams {
+        interp: InterpolationFilter::Bilinear,
+        w: 16,
+        h: 16,
+        start_x: (-1 << SCALE_SUBPEL_BITS) + (8 << 6),
+        start_y: (-1 << SCALE_SUBPEL_BITS) + (8 << 6),
+        step_x: 1 << SCALE_SUBPEL_BITS,
+        step_y: 1 << SCALE_SUBPEL_BITS,
+        first_x: 0,
+        first_y: 0,
+        last_x: 14,
+        last_y: 14,
+        bit_depth: BitDepth::Ten,
+    };
+
+    assert!(
+        subpel_predict_block(&view, &params)
+            .unwrap()
+            .iter()
+            .all(|&sample| sample == 511)
+    );
+}
+
+#[test]
+fn published_view_zero_phase_copy_stays_within_the_available_prefix() {
+    let mut samples = vec![1u16; 16 * 2];
+    samples[16..].fill(2);
+    let view = ReferencePlaneView::from_published_strided(&samples, 16, 16, 16, 2).unwrap();
+    let params = full_pel_params(InterpolationFilter::Bilinear, 8, 4, 0, 8, 16, 16);
+
+    assert_eq!(
+        subpel_predict_block(&view, &params).unwrap(),
+        vec![2; 8 * 4]
+    );
+}
+
+#[test]
 fn ten_bit_clip_uses_full_range() {
     let ref_w = 12usize;
     let ref_h = 12usize;

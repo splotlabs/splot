@@ -36,7 +36,7 @@ struct ScheduledCommit<T: ReconSample> {
 /// would only add a copy; it receives the spine's whole workspace once
 /// reconstruction is complete.
 struct ScheduledFrontier<T: ReconSample> {
-    sealed: Option<CurrentFrameWorkspace<T>>,
+    sealed: Option<crate::filters::source::DeblockedSource<T>>,
     sealed_rows: usize,
     terminal_workspace: Option<CurrentFrameWorkspace<T>>,
     bands: Option<splot_recon::OwnedFrameBands<T>>,
@@ -342,7 +342,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .flatten();
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
         frontier.sealed = seals_filter_copy(self.owned_bands, deblock.is_some(), self.whole_frame)
-            .then(|| CurrentFrameWorkspace::new_recycled(self.info))
+            .then(|| {
+                CurrentFrameWorkspace::new_recycled(self.info)
+                    .map(crate::filters::source::DeblockedSource::new)
+            })
             .transpose()?;
         frontier.deblock = deblock;
         frontier.filter = Some(Arc::new(filter_setup));
@@ -598,7 +601,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .saturating_mul(self.params.sb_h4.saturating_mul(4).max(1))
             .min(self.info.coded_luma_size().height());
         if end > *sealed_rows {
-            commit.workspace.copy_rows_into(sealed, *sealed_rows..end)?;
+            sealed.copy_rows_from(&commit.workspace, *sealed_rows..end)?;
             *sealed_rows = end;
         }
         Ok(())
@@ -634,7 +637,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             ..
         } = &mut *frontier;
         let sealed_rows = sealed.as_ref().map(|_| *sealed_rows);
-        let filtered = sealed.as_mut().or(terminal_workspace.as_mut());
+        let filtered = terminal_workspace.as_mut();
         let mut filters = Vec::new();
         if let Some(deblock) = deblock.as_mut()
             && let Some(safe_mi_end) = safe_deblock_mi_end(
@@ -657,35 +660,40 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 }),
                 "the frontier read a row the spine had not sealed"
             );
-            match (bands.as_mut(), filtered) {
-                (Some(bands), _) => {
+            match (sealed.as_mut(), bands.as_mut(), filtered) {
+                (Some(source), _, _) => {
+                    deblock.advance_source(source, safe_mi_end.get(), self.params.bit_depth)
+                }
+                (None, Some(bands), _) => {
                     deblock.advance_bands(bands, safe_mi_end.get(), self.params.bit_depth)
                 }
-                (None, Some(filtered)) => {
+                (None, None, Some(filtered)) => {
                     deblock.advance(filtered, safe_mi_end.get(), self.params.bit_depth)
                 }
-                (None, None) => Err(crate::filters::deblock::DeblockError::Workspace),
+                (None, None, None) => Err(crate::filters::deblock::DeblockError::Workspace),
             }
             .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))?;
             while *next_filter_stripe < filter.stripe_ranges().len() {
                 let stripe = *next_filter_stripe;
-                let window = match (
-                    bands.as_ref(),
-                    sealed.as_ref().or(terminal_workspace.as_ref()),
-                ) {
-                    (Some(bands), _) => filter.extract_ready_band_window(stripe, deblock, bands)?,
-                    (None, Some(filtered)) => {
-                        filter.extract_ready_window(stripe, deblock, filtered)?
-                    }
-                    (None, None) => None,
+                let source = match (sealed.as_ref(), bands.as_ref(), terminal_workspace.as_ref()) {
+                    (Some(source), _, _) => filter
+                        .lease_ready_rows(stripe, deblock, source)?
+                        .map(crate::filters::source::DeblockedStripe::Lease),
+                    (None, Some(bands), _) => filter
+                        .extract_ready_band_window(stripe, deblock, bands)?
+                        .map(crate::filters::source::DeblockedStripe::Window),
+                    (None, None, Some(filtered)) => filter
+                        .extract_ready_window(stripe, deblock, filtered)?
+                        .map(crate::filters::source::DeblockedStripe::Window),
+                    (None, None, None) => None,
                 };
-                let Some(window) = window else {
+                let Some(source) = source else {
                     break;
                 };
                 filters
                     .try_reserve(1)
                     .map_err(|_| inter_allocation!("inter admission filter jobs"))?;
-                filters.push(filter.owned_job(stripe, window));
+                filters.push(filter.source_job(stripe, source));
                 *next_filter_stripe += 1;
             }
         }
@@ -715,29 +723,32 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
         while frontier.next_filter_stripe < filter.stripe_ranges().len() {
             let stripe = frontier.next_filter_stripe;
-            let window = match (
+            let source = match (
+                frontier.sealed.as_ref(),
                 frontier.bands.as_ref(),
-                frontier
-                    .sealed
-                    .as_ref()
-                    .or(frontier.terminal_workspace.as_ref()),
+                frontier.terminal_workspace.as_ref(),
             ) {
-                (Some(bands), _) => filter.extract_terminal_band_window(stripe, bands)?,
-                (None, Some(filtered)) => filter.extract_terminal_window(stripe, filtered)?,
-                (None, None) => {
+                (Some(source), _, _) => crate::filters::source::DeblockedStripe::Lease(
+                    filter.lease_terminal_rows(stripe, source)?,
+                ),
+                (None, Some(bands), _) => crate::filters::source::DeblockedStripe::Window(
+                    filter.extract_terminal_band_window(stripe, bands)?,
+                ),
+                (None, None, Some(filtered)) => crate::filters::source::DeblockedStripe::Window(
+                    filter.extract_terminal_window(stripe, filtered)?,
+                ),
+                (None, None, None) => {
                     return Err(crate::filters::wienerns_lr::recon::lr_pipeline_state_error());
                 }
             };
             filters
                 .try_reserve(1)
                 .map_err(|_| inter_allocation!("inter admission filter jobs"))?;
-            filters.push(filter.owned_job(stripe, window));
+            filters.push(filter.source_job(stripe, source));
             frontier.next_filter_stripe += 1;
         }
-        for workspace in [frontier.sealed.take(), frontier.terminal_workspace.take()]
-            .into_iter()
-            .flatten()
-        {
+        drop(frontier.sealed.take());
+        if let Some(workspace) = frontier.terminal_workspace.take() {
             workspace.recycle_planes();
         }
         Ok(ScheduledTileProgress {
