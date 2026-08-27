@@ -230,6 +230,10 @@ pub trait ReconSample: private::Sealed + Copy + Default + Send + Sync + 'static 
     /// `u8`; `None` for wider storage types.
     fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]>;
 
+    /// Reinterprets a sample slice as `u8` storage when this type is `u8`;
+    /// `None` for wider storage types.
+    fn u8_slice(samples: &[Self]) -> Option<&[u8]>;
+
     /// Process-global retained pool of transient reconstruction-workspace plane
     /// sample buffers for this storage type.
     #[doc(hidden)]
@@ -271,6 +275,10 @@ impl ReconSample for u8 {
         Some(samples)
     }
 
+    fn u8_slice(samples: &[Self]) -> Option<&[u8]> {
+        Some(samples)
+    }
+
     fn recon_plane_pool() -> &'static std::sync::Mutex<Vec<Vec<Self>>> {
         static POOL: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
         &POOL
@@ -305,6 +313,10 @@ impl ReconSample for u16 {
     }
 
     fn u8_slice_mut(_samples: &mut [Self]) -> Option<&mut [u8]> {
+        None
+    }
+
+    fn u8_slice(_samples: &[Self]) -> Option<&[u8]> {
         None
     }
 
