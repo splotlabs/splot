@@ -1079,21 +1079,27 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             let Some(target_end_y) = target.end_y() else {
                 return false;
             };
-            let frame_wiener = self.core.lr_params.as_ref().is_some_and(|params| {
-                params.planes.get(index).is_some_and(|plane| {
-                    plane.restoration_type
-                        == splot_core::headers::frame::FrameRestorationType::WienerNonsep
+            let frame_type = self
+                .core
+                .lr_params
+                .as_ref()
+                .and_then(|params| params.planes.get(index))
+                .map(|plane| plane.restoration_type);
+            !target.is_u16()
+                && frame_type.is_some_and(|frame_type| {
+                    final_filters::lr_plane_fully_overwritten(
+                        plane_blocks[index],
+                        plane,
+                        frame_type,
+                        target.width(),
+                        target.frame_height(),
+                        target.origin_y(),
+                        target_end_y,
+                    )
                 })
-            });
-            frame_wiener
-                && !target.is_u16()
-                && final_filters::terminal_chroma_wiener_covers(
-                    plane_blocks[index],
-                    target.width(),
-                    target.origin_y(),
-                    target_end_y,
-                )
         });
+        let lr_initializations =
+            final_filters::lr_initializations(&self.core, active_lr, plane_blocks, &target);
         let (cdef_target, lr_target) = target.split(active_lr);
         let cdef = self.cdef_ccso_range(deblocked, &chain, start, end, Some(cdef_target))?;
         let cdef_overlap = self.cdef_overlap_planes(deblocked, &chain, start, end)?;
@@ -1107,6 +1113,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             final_filters::LrStripeOutput {
                 active_planes: active_lr,
                 direct_u8_planes: direct_u8_lr,
+                initializations: lr_initializations,
                 target: lr_target,
             },
         )?;

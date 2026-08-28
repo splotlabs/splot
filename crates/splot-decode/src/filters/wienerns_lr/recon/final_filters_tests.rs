@@ -729,6 +729,7 @@ fn apply_luma_lr(
             super::LrStripeOutput {
                 active_planes: [true, false, false],
                 direct_u8_planes: [false; 3],
+                initializations: [StripeInitialization::CopyAll; 3],
                 target,
             },
         )
@@ -777,6 +778,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
             super::LrStripeOutput {
                 active_planes: [false; 3],
                 direct_u8_planes: [false; 3],
+                initializations: [StripeInitialization::CopyAll; 3],
                 target,
             },
         )
@@ -851,29 +853,210 @@ fn keeps_switchable_restoration_types_in_separate_runs() {
 }
 
 #[test]
-fn terminal_chroma_wiener_requires_exact_full_plane_coverage() {
+fn loop_restoration_requires_exact_full_plane_coverage() {
     let covered = [
         block(1, 0, 0),
         block(1, 4, 0),
         block(1, 0, 4),
         block(1, 4, 4),
     ];
-    assert!(terminal_chroma_wiener_covers(&covered, 8, 0, 8));
-    assert!(terminal_chroma_wiener_covers(&covered, 8, 2, 7));
+    assert!(lr_plane_fully_overwritten(
+        &covered,
+        PlaneId::U,
+        FrameRestorationType::WienerNonsep,
+        8,
+        8,
+        0,
+        8,
+    ));
+    assert!(lr_plane_fully_overwritten(
+        &covered,
+        PlaneId::U,
+        FrameRestorationType::WienerNonsep,
+        8,
+        8,
+        2,
+        7,
+    ));
     let mut later_stripe = covered.to_vec();
     later_stripe.extend([block(1, 0, 8), block(1, 4, 8)]);
-    assert!(terminal_chroma_wiener_covers(&later_stripe, 8, 8, 12));
+    assert!(lr_plane_fully_overwritten(
+        &later_stripe,
+        PlaneId::U,
+        FrameRestorationType::WienerNonsep,
+        8,
+        12,
+        8,
+        12,
+    ));
 
-    assert!(!terminal_chroma_wiener_covers(&covered[..3], 8, 0, 8));
+    assert!(!lr_plane_fully_overwritten(
+        &covered[..3],
+        PlaneId::U,
+        FrameRestorationType::WienerNonsep,
+        8,
+        8,
+        0,
+        8,
+    ));
     let mut overlapping = covered.to_vec();
     overlapping.push(block(1, 0, 0));
-    assert!(!terminal_chroma_wiener_covers(&overlapping, 8, 0, 8));
+    assert!(!lr_plane_fully_overwritten(
+        &overlapping,
+        PlaneId::U,
+        FrameRestorationType::WienerNonsep,
+        8,
+        8,
+        0,
+        8,
+    ));
 
     let mut mixed = covered;
     mixed[3].restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
-    assert!(!terminal_chroma_wiener_covers(&mixed, 8, 0, 8));
-    assert!(!terminal_chroma_wiener_covers(&covered, 0, 0, 8));
-    assert!(!terminal_chroma_wiener_covers(&covered, 8, 8, 8));
+    assert!(!lr_plane_fully_overwritten(
+        &mixed,
+        PlaneId::U,
+        FrameRestorationType::WienerNonsep,
+        8,
+        8,
+        0,
+        8,
+    ));
+    assert!(!lr_plane_fully_overwritten(
+        &covered,
+        PlaneId::U,
+        FrameRestorationType::WienerNonsep,
+        0,
+        8,
+        0,
+        8,
+    ));
+    assert!(!lr_plane_fully_overwritten(
+        &covered,
+        PlaneId::U,
+        FrameRestorationType::WienerNonsep,
+        8,
+        8,
+        8,
+        8,
+    ));
+}
+
+fn tiled_lr_blocks(plane: PlaneId, width: usize, height: usize) -> Vec<WienerNsLrSourceBlock> {
+    let mut blocks = Vec::new();
+    for y in (0..height).step_by(4) {
+        for x in (0..width).step_by(4) {
+            let mut next = block(plane.index(), x, y);
+            next.width = 4;
+            next.height = 4;
+            blocks.push(next);
+        }
+    }
+    blocks
+}
+
+#[test]
+fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
+    let mut mixed = tiled_lr_blocks(PlaneId::Y, 9, 7);
+    for (index, block) in mixed.iter_mut().enumerate() {
+        block.restoration_type = if index.is_multiple_of(2) {
+            LrUnitRestorationType::PcWiener
+        } else {
+            LrUnitRestorationType::WienerNonsep
+        };
+    }
+    assert!(lr_plane_fully_overwritten(
+        &mixed,
+        PlaneId::Y,
+        FrameRestorationType::Switchable,
+        9,
+        7,
+        0,
+        7,
+    ));
+
+    let mut pc_wiener = tiled_lr_blocks(PlaneId::Y, 9, 7);
+    for block in &mut pc_wiener {
+        block.restoration_type = LrUnitRestorationType::PcWiener;
+    }
+    assert!(lr_plane_fully_overwritten(
+        &pc_wiener,
+        PlaneId::Y,
+        FrameRestorationType::PcWiener,
+        9,
+        7,
+        0,
+        7,
+    ));
+    assert!(!lr_plane_fully_overwritten(
+        &pc_wiener,
+        PlaneId::U,
+        FrameRestorationType::PcWiener,
+        9,
+        7,
+        0,
+        7,
+    ));
+}
+
+#[test]
+fn loop_restoration_coverage_rejects_one_pixel_and_one_block_holes() {
+    let mut one_pixel = tiled_lr_blocks(PlaneId::Y, 8, 4);
+    one_pixel[0].width = 3;
+    assert!(!lr_plane_fully_overwritten(
+        &one_pixel,
+        PlaneId::Y,
+        FrameRestorationType::WienerNonsep,
+        8,
+        4,
+        0,
+        4,
+    ));
+
+    let mut one_block = tiled_lr_blocks(PlaneId::Y, 8, 8);
+    one_block.remove(2);
+    assert!(!lr_plane_fully_overwritten(
+        &one_block,
+        PlaneId::Y,
+        FrameRestorationType::WienerNonsep,
+        8,
+        8,
+        0,
+        8,
+    ));
+}
+
+#[test]
+fn loop_restoration_coverage_is_plane_independent_for_every_pixel_format() {
+    let formats = [
+        (
+            splot_recon::PixelFormat::Monochrome,
+            [(9, 7), (0, 0), (0, 0)],
+        ),
+        (splot_recon::PixelFormat::Yuv420, [(9, 7), (5, 4), (5, 4)]),
+        (splot_recon::PixelFormat::Yuv422, [(9, 7), (5, 7), (5, 7)]),
+        (splot_recon::PixelFormat::Yuv444, [(9, 7), (9, 7), (9, 7)]),
+    ];
+    for (format, dimensions) in formats {
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            let (width, height) = dimensions[plane.index()];
+            if width == 0 {
+                continue;
+            }
+            assert!(
+                lr_plane_fully_overwritten(
+                    &tiled_lr_blocks(plane, width, height),
+                    plane,
+                    FrameRestorationType::WienerNonsep,
+                    width,
+                    height,
+                    0,
+                    height,
+                ),
+                "{format:?} {plane:?}"
+            );
+        }
+    }
 }
 
 #[test]
