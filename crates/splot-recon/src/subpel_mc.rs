@@ -68,7 +68,10 @@ use copy::{
     subpel_copy_compound_average_u16_into, subpel_direct_copy_x, subpel_horizontal_only_into,
     subpel_horizontal_window_x, subpel_vertical_only_into,
 };
-pub use fullpel_u8::subpel_predict_block_compound_average_fullpel_strided_into_u8;
+pub use fullpel_u8::{
+    subpel_predict_block_compound_average_fullpel_strided_into_u8,
+    subpel_predict_block_strided_into_u8,
+};
 use output::*;
 use slide::SlideLanes;
 pub use tip_overlap::subpel_predict_16x16_bilinear_horizontal_overlap_into;

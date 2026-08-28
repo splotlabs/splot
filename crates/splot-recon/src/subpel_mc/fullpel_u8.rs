@@ -3,6 +3,80 @@
 
 use super::*;
 
+/// Writes one eight-bit single-reference prediction into row-strided `u8` storage.
+///
+/// `output` starts at the prediction's top-left sample. The complete parameter
+/// and output geometry is validated before the first sample is written.
+///
+/// # Errors
+/// Returns the same parameter and output-layout errors as
+/// [`subpel_predict_block_strided_into`].
+pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u8],
+    output_stride: usize,
+) -> Result<()> {
+    let intermediate_height = validate_subpel_params(params)?;
+    if params.step_x == 1 << SCALE_SUBPEL_BITS
+        && params.step_y == 1 << SCALE_SUBPEL_BITS
+        && (params.start_x >> 6) & SUBPEL_MASK == 0
+        && (params.start_y >> 6) & SUBPEL_MASK == 0
+    {
+        return subpel_copy_block_u8_into(reference, params, output, output_stride);
+    }
+    subpel_predict_block_internal_into_validated(
+        reference,
+        params,
+        INTER_ROUND1_NON_COMPOUND,
+        intermediate_height,
+        None,
+        output,
+        output_stride,
+        ClippedU8SubpelOutput,
+    )
+}
+
+fn subpel_copy_block_u8_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u8],
+    output_stride: usize,
+) -> Result<()> {
+    let output_len = subpel_output_len(params, output_stride)?;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
+    let direct_x = subpel_direct_copy_x(reference, params);
+    for r in 0..params.h {
+        let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
+        let output = &mut output[r * output_stride..][..params.w];
+        if let Some(x) = direct_x {
+            let row = row.min(reference.readable_rows - 1);
+            let source = &reference.samples
+                [row * reference.stride + x..row * reference.stride + x + params.w];
+            if let Some(source) = T::u8_slice(source) {
+                output.copy_from_slice(source); // splot-copy-ok: direct full-pel prediction into canonical u8 storage
+            } else {
+                for (output, sample) in output.iter_mut().zip(source) {
+                    *output = sample.to_u16().min(u16::from(u8::MAX)) as u8;
+                }
+            }
+        } else {
+            for (c, output) in output.iter_mut().enumerate() {
+                let col = (x0 + c as i32).clamp(params.first_x, params.last_x) as usize;
+                *output = reference.sample(row, col).min(i32::from(u8::MAX)) as u8;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Directly blends two zero-phase unscaled predictors into eight-bit output,
 /// returning `Ok(false)` outside the direct source-window subset.
 ///
