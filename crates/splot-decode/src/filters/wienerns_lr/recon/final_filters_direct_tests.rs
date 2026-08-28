@@ -44,6 +44,37 @@ fn workspace(format: PixelFormat, width: usize, height: usize) -> CurrentFrameWo
     workspace
 }
 
+fn workspace_u8(format: PixelFormat, width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        format,
+        PlaneSize::new(width, height).unwrap(),
+        PlaneRect::new(0, 0, width, height).unwrap(),
+    )
+    .unwrap();
+    let mut workspace = CurrentFrameWorkspace::new(info, 0_u8).unwrap();
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let Ok(view) = workspace.plane(plane) else {
+            continue;
+        };
+        let size = view.storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                workspace
+                    .set_reconstructed_sample(
+                        plane,
+                        x,
+                        y,
+                        20 + ((x * 7 + y * 11 + plane.index() * 23) % 200) as u8,
+                    )
+                    .unwrap();
+            }
+        }
+    }
+    workspace
+}
+
 fn lr_core(restoration: [FrameRestorationType; 3]) -> FrameHeaderCore {
     let fixture = include_bytes!(
         "../../../../../../tests/conformance/vectors/valid/\
@@ -430,6 +461,60 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
                 777
             };
             assert_eq!(actual, expected, "sample ({x}, {y})");
+        }
+    }
+}
+
+#[test]
+fn u8_lossless_luma_samples_are_widened_into_the_direct_u16_destination() {
+    let workspace = workspace_u8(PixelFormat::Monochrome, 8, 8);
+    let records = [lossless_block()];
+    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+        2,
+        2,
+        &records,
+        [&[], &[]],
+    )
+    .unwrap();
+    let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+        workspace
+            .plane(plane)
+            .ok()
+            .map(splot_recon::CurrentFramePlane::storage_size)
+    });
+    let chain = StripeChain {
+        bit_depth: BitDepth::Eight,
+        cfl_ds_filter_index: 0,
+        luma_width: 8,
+        luma_height: 8,
+        pixel_format: PixelFormat::Monochrome,
+        cdef_grid: None,
+        ccso_grid: None,
+        gdf_grid: None,
+        tx_skip_grid: None,
+        gdf_reference: None,
+        lossless_grid: Some(&lossless),
+        plane_sizes,
+        max_sample_fits: true,
+    };
+    let block = block(PlaneId::Y, LrUnitRestorationType::WienerNonsep, 0, 0, 8, 8);
+    let curr = FramePlane::new(&workspace, PlaneId::Y).unwrap();
+    let mut output = [777u16; 64];
+
+    chain
+        .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, &mut output, 8, |slot, sample| {
+            *slot = sample.to_u16();
+        })
+        .unwrap();
+
+    for y in 0..8 {
+        for x in 0..8 {
+            let expected = if x < 4 && y < 4 {
+                u16::from(workspace.samples(PlaneId::Y).unwrap()[y * 8 + x])
+            } else {
+                777
+            };
+            assert_eq!(output[y * 8 + x], expected, "sample ({x}, {y})");
         }
     }
 }
