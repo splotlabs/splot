@@ -1819,7 +1819,7 @@ mod tests {
     }
 
     #[test]
-    fn packed_and_strided_chroma_outputs_match_all_runtime_shapes() {
+    fn packed_and_u16_strided_chroma_outputs_match_all_runtime_shapes() {
         let mins = [
             -24, -24, -14, -14, -16, -16, -16, -16, -16, -16, -8, -8, -8, -8, -8, -8, -8, -8,
         ];

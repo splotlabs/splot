@@ -416,42 +416,41 @@ pub(crate) fn terminal_chroma_wiener_covers(
     if width == 0 || start_y >= end_y {
         return false;
     }
+    let relevant_end = blocks.partition_point(|block| block.y < end_y);
+    let Some(relevant_start) = blocks[..relevant_end].iter().position(|block| {
+        block
+            .y
+            .checked_add(block.height)
+            .is_some_and(|block_end| block_end > start_y)
+    }) else {
+        return false;
+    };
+    let blocks = &blocks[relevant_start..relevant_end];
     for y in start_y..end_y {
-        let mut row_samples = 0usize;
-        for block in blocks.iter().filter(|block| {
-            block.y <= y && block.y.checked_add(block.height).is_some_and(|end| y < end)
-        }) {
+        let mut x = 0usize;
+        for block in blocks {
+            let Some(block_end_y) = block.y.checked_add(block.height) else {
+                return false;
+            };
+            if block.y > y || block_end_y <= y {
+                continue;
+            }
             if block.restoration_type != LrUnitRestorationType::WienerNonsep
                 || block.width == 0
-                || block
-                    .x
-                    .checked_add(block.width)
-                    .is_none_or(|end| end > width)
+                || block.x != x
             {
                 return false;
             }
-            let Some(total) = row_samples.checked_add(block.width) else {
-                return false;
-            };
-            row_samples = total;
-        }
-        if row_samples != width {
-            return false;
-        }
-        let mut x = 0usize;
-        while x < width {
-            let Some(block) = blocks.iter().find(|block| {
-                block.restoration_type == LrUnitRestorationType::WienerNonsep
-                    && block.x == x
-                    && block.y <= y
-                    && block.y.checked_add(block.height).is_some_and(|end| y < end)
-            }) else {
-                return false;
-            };
             let Some(next) = x.checked_add(block.width) else {
                 return false;
             };
+            if next > width {
+                return false;
+            }
             x = next;
+        }
+        if x != width {
+            return false;
         }
     }
     true

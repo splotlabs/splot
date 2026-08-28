@@ -850,6 +850,9 @@ fn terminal_chroma_wiener_requires_exact_full_plane_coverage() {
     ];
     assert!(terminal_chroma_wiener_covers(&covered, 8, 0, 8));
     assert!(terminal_chroma_wiener_covers(&covered, 8, 2, 7));
+    let mut later_stripe = covered.to_vec();
+    later_stripe.extend([block(1, 0, 8), block(1, 4, 8)]);
+    assert!(terminal_chroma_wiener_covers(&later_stripe, 8, 8, 12));
 
     assert!(!terminal_chroma_wiener_covers(&covered[..3], 8, 0, 8));
     let mut overlapping = covered.to_vec();
