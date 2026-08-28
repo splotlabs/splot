@@ -2405,6 +2405,15 @@ pub(crate) fn intrabc_copy_plane_into<T: ReconSample>(
     source: PlaneRect,
     target: PlaneRect,
 ) -> Result<()> {
+    let storage = workspace.plane(plane)?.storage_size();
+    let visible_width = target
+        .width()
+        .min(storage.width().saturating_sub(target.x()));
+    let visible_height = target
+        .height()
+        .min(storage.height().saturating_sub(target.y()));
+    let source = PlaneRect::new(source.x(), source.y(), visible_width, visible_height)?;
+    let target = PlaneRect::new(target.x(), target.y(), visible_width, visible_height)?;
     let mut samples = RecycledMcSamples::take();
     workspace
         .copy_rect_within_plane_into(plane, source, target, &mut samples)

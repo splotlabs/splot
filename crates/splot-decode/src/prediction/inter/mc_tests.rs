@@ -46,6 +46,24 @@ fn motion_compensation_planes_follow_output_chroma_format() {
 }
 
 #[test]
+fn intrabc_integer_copy_clips_bottom_edge_to_coded_storage() {
+    let mut workspace = workspace(8, 6);
+    let source = PlaneRect::new(0, 0, 4, 4).expect("source rect");
+    let target = PlaneRect::new(0, 4, 4, 4).expect("nominal target rect");
+    let samples = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    workspace
+        .write_rect(PlaneId::Y, source, &samples, 4)
+        .expect("source samples");
+
+    intrabc_copy_plane_into(&mut workspace, PlaneId::Y, source, target)
+        .expect("edge-clipped IntraBC copy");
+
+    let y = workspace.samples(PlaneId::Y).expect("luma samples");
+    assert_eq!(&y[4 * 8..4 * 8 + 4], [1, 2, 3, 4]);
+    assert_eq!(&y[5 * 8..5 * 8 + 4], [5, 6, 7, 8]);
+}
+
+#[test]
 fn compound_sample_recycler_keeps_its_box_and_sample_storage() {
     MC_SAMPLES_RECYCLER.with(|cell| *cell.borrow_mut() = [None, None]);
 
