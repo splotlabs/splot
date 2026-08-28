@@ -219,6 +219,12 @@ impl DirectPlaneTarget {
         self.region.len
     }
 
+    pub(crate) fn end_y(&self) -> Option<usize> {
+        self.region
+            .origin_y
+            .checked_add(self.region.len.checked_div(self.region.width)?)
+    }
+
     pub(crate) const fn is_u16(&self) -> bool {
         matches!(self.region.samples, DirectPlaneSamples::U16(_))
     }

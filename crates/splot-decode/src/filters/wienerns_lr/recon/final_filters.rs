@@ -9,21 +9,21 @@ use crate::bitstream::tile_payload::{
     LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
 };
 use crate::filters::cdef::{CdefFrame, CdefSkipGrid};
-use crate::filters::source::{FramePlane, StripeCopyError, StripePlane};
+use crate::filters::source::{FramePlane, StripeCopyError, StripeOutputPlane, StripePlane};
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
 use splot_recon::{
     LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
     PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyPaddedSource,
     PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PlaneId,
-    ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
+    PlaneRect, ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
     WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
     WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch, WienerNsLumaFilter,
     WienerNsLumaPaddedSource, WienerNsLumaScratch, loop_restoration_source_sample,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
     pc_wiener_filter_set_index, pc_wiener_subclass_table,
-    wiener_ns_filter_chroma_block_padded_u16_into, wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_chroma_block_padded_u8_into, wiener_ns_filter_chroma_block_padded_u16_into,
+    wiener_ns_filter_luma_block_padded_cells_into, wiener_ns_filter_luma_block_padded_into,
 };
 
 thread_local! {
@@ -88,19 +88,20 @@ pub(crate) struct LrFrame<'a, T> {
     pub(crate) cdef_y: StripePlane,
     pub(crate) cdef_u: Option<StripePlane>,
     pub(crate) cdef_v: Option<StripePlane>,
-    pub(crate) post_lr_y: Option<StripePlane>,
-    pub(crate) post_lr_u: Option<StripePlane>,
-    pub(crate) post_lr_v: Option<StripePlane>,
+    pub(crate) post_lr_y: Option<StripeOutputPlane>,
+    pub(crate) post_lr_u: Option<StripeOutputPlane>,
+    pub(crate) post_lr_v: Option<StripeOutputPlane>,
 }
 
 pub(crate) struct FilteredStripe {
-    pub(crate) y: StripePlane,
-    pub(crate) u: Option<StripePlane>,
-    pub(crate) v: Option<StripePlane>,
+    pub(crate) y: StripeOutputPlane,
+    pub(crate) u: Option<StripeOutputPlane>,
+    pub(crate) v: Option<StripeOutputPlane>,
 }
 
 pub(crate) struct LrStripeOutput {
     pub(crate) active_planes: [bool; 3],
+    pub(crate) direct_u8_planes: [bool; 3],
     pub(crate) target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
 }
 
@@ -108,14 +109,24 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
     fn from_cdef(
         frame: CdefFrame<'a, T>,
         active_planes: [bool; 3],
+        direct_u8_planes: [bool; 3],
         mut target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
     ) -> core::result::Result<Self, StripeCopyError> {
         let mut copy = |plane_id: PlaneId, plane: &StripePlane| {
-            plane.copy_rows_into(
-                plane.origin_y(),
-                plane.end_y().ok_or(StripeCopyError::Geometry)?,
-                target.as_mut().and_then(|target| target.take(plane_id)),
-            )
+            let target = target.as_mut().and_then(|target| target.take(plane_id));
+            if direct_u8_planes[plane_id.index()] {
+                return StripeOutputPlane::direct_u8(
+                    target.ok_or(StripeCopyError::Geometry)?,
+                    plane,
+                );
+            }
+            plane
+                .copy_rows_into(
+                    plane.origin_y(),
+                    plane.end_y().ok_or(StripeCopyError::Geometry)?,
+                    target,
+                )
+                .map(StripeOutputPlane::u16)
         };
         let post_lr_y = if active_planes[PlaneId::Y.index()] {
             Some(copy(PlaneId::Y, &frame.filtered_y).map_err(|error| error.for_plane(PlaneId::Y))?)
@@ -157,9 +168,15 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
 
     pub(crate) fn into_filtered(self) -> FilteredStripe {
         FilteredStripe {
-            y: self.post_lr_y.unwrap_or(self.cdef_y),
-            u: self.post_lr_u.or(self.cdef_u),
-            v: self.post_lr_v.or(self.cdef_v),
+            y: self
+                .post_lr_y
+                .unwrap_or_else(|| StripeOutputPlane::u16(self.cdef_y)),
+            u: self
+                .post_lr_u
+                .or_else(|| self.cdef_u.map(StripeOutputPlane::u16)),
+            v: self
+                .post_lr_v
+                .or_else(|| self.cdef_v.map(StripeOutputPlane::u16)),
         }
     }
 }
@@ -390,6 +407,55 @@ fn lr_block_in_rows(
     Some(clipped)
 }
 
+pub(crate) fn terminal_chroma_wiener_covers(
+    blocks: &[WienerNsLrSourceBlock],
+    width: usize,
+    start_y: usize,
+    end_y: usize,
+) -> bool {
+    if width == 0 || start_y >= end_y {
+        return false;
+    }
+    let relevant_end = blocks.partition_point(|block| block.y < end_y);
+    let Some(relevant_start) = blocks[..relevant_end].iter().position(|block| {
+        block
+            .y
+            .checked_add(block.height)
+            .is_some_and(|block_end| block_end > start_y)
+    }) else {
+        return false;
+    };
+    let blocks = &blocks[relevant_start..relevant_end];
+    for y in start_y..end_y {
+        let mut x = 0usize;
+        for block in blocks {
+            let Some(block_end_y) = block.y.checked_add(block.height) else {
+                return false;
+            };
+            if block.y > y || block_end_y <= y {
+                continue;
+            }
+            if block.restoration_type != LrUnitRestorationType::WienerNonsep
+                || block.width == 0
+                || block.x != x
+            {
+                return false;
+            }
+            let Some(next) = x.checked_add(block.width) else {
+                return false;
+            };
+            if next > width {
+                return false;
+            }
+            x = next;
+        }
+        if x != width {
+            return false;
+        }
+    }
+    true
+}
+
 /// Runs one loop-restoration block filter over its own destination rows.
 ///
 /// No LR block reads the post-LR stripe, so `u16` storage hands the filter the
@@ -447,6 +513,40 @@ fn lr_block_destination<'a>(
         .rect_mut(rect)
         .ok_or_else(super::lr_pipeline_state_error)?;
     Ok((destination, stride))
+}
+
+enum ChromaLrDestination<'a> {
+    U16(&'a mut [u16]),
+    U8(&'a mut [u8]),
+}
+
+fn chroma_lr_block_destination<'a>(
+    plane: &'a mut StripeOutputPlane,
+    block: &WienerNsLrSourceBlock,
+) -> Result<(ChromaLrDestination<'a>, usize)> {
+    if block
+        .x
+        .checked_add(block.width)
+        .is_none_or(|end_x| end_x > plane.width())
+    {
+        return Err(super::lr_pipeline_state_error());
+    }
+    let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
+        .map_err(|_| super::lr_pipeline_state_error())?;
+    match plane {
+        StripeOutputPlane::U16(plane) => {
+            let (destination, stride) = plane
+                .rect_mut(rect)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            Ok((ChromaLrDestination::U16(destination), stride))
+        }
+        StripeOutputPlane::DirectU8(_) => {
+            let (destination, stride) = plane
+                .u8_rect_mut(rect)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            Ok((ChromaLrDestination::U8(destination), stride))
+        }
+    }
 }
 
 /// Post-CCSO rows adjacent to a stripe band, split per plane.
@@ -734,18 +834,21 @@ impl StripeChain<'_> {
         lr_unit_filters: &[WienerNsLrUnitFilter],
         output: LrStripeOutput,
     ) -> Result<LrFrame<'a, T>> {
-        let mut frame =
-            LrFrame::from_cdef(cdef, output.active_planes, output.target).map_err(|error| {
-                match error {
-                    StripeCopyError::Allocation(plane) => {
-                        crate::error::DecodeError::from(ReconError::WorkspaceAllocationFailed {
-                            plane,
-                            context: "post-LR stripe copy",
-                        })
-                    }
-                    StripeCopyError::Geometry => super::lr_pipeline_state_error(),
-                }
-            })?;
+        let mut frame = LrFrame::from_cdef(
+            cdef,
+            output.active_planes,
+            output.direct_u8_planes,
+            output.target,
+        )
+        .map_err(|error| match error {
+            StripeCopyError::Allocation(plane) => {
+                crate::error::DecodeError::from(ReconError::WorkspaceAllocationFailed {
+                    plane,
+                    context: "post-LR stripe copy",
+                })
+            }
+            StripeCopyError::Geometry => super::lr_pipeline_state_error(),
+        })?;
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };
@@ -783,6 +886,7 @@ impl StripeChain<'_> {
             let post_lr_y = frame
                 .post_lr_y
                 .as_mut()
+                .and_then(StripeOutputPlane::as_u16_mut)
                 .ok_or_else(super::lr_pipeline_state_error)?;
             for block in plane_blocks[PlaneId::Y.index()]
                 .iter()
@@ -1007,7 +1111,7 @@ impl StripeChain<'_> {
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane,
         cdef_luma_overlap: &[StripePlane],
-        post_lr: &mut StripePlane,
+        post_lr: &mut StripeOutputPlane,
     ) -> Result<()> {
         let (plane_width, plane_height) = self.plane_dimensions(plane_id);
         let (sub_x, sub_y) = self.plane_subsampling(plane_id);
@@ -1031,7 +1135,7 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let (output, output_stride) = lr_block_destination(post_lr, &block)?;
+        let (mut output, output_stride) = chroma_lr_block_destination(post_lr, &block)?;
         {
             let params = WienerNsChromaFilter {
                 x: block.x,
@@ -1114,24 +1218,44 @@ impl StripeChain<'_> {
                     (sub_x as u8, sub_y as u8),
                 )
                 .map_err(|error| lr_plane_window_error(&error, plane_id))?;
-                with_wiener_ns_chroma_scratch(|scratch| {
-                    wiener_ns_filter_chroma_block_padded_u16_into(
-                        output,
-                        &params,
-                        &padded_source,
-                        scratch,
-                    )
+                with_wiener_ns_chroma_scratch(|scratch| match &mut output {
+                    ChromaLrDestination::U16(output) => {
+                        wiener_ns_filter_chroma_block_padded_u16_into(
+                            output,
+                            &params,
+                            &padded_source,
+                            scratch,
+                        )
+                    }
+                    ChromaLrDestination::U8(output) => {
+                        wiener_ns_filter_chroma_block_padded_u8_into(
+                            output,
+                            &params,
+                            &padded_source,
+                            scratch,
+                        )
+                    }
                 })
                 .map_err(|error| lr_plane_window_error(&error, plane_id))
             })?;
-            self.preserve_lossless_lr_samples(
-                plane_id,
-                &block,
-                curr_chroma,
-                output,
-                output_stride,
-                |slot, sample| *slot = sample.to_u16(),
-            )
+            match output {
+                ChromaLrDestination::U16(output) => self.preserve_lossless_lr_samples(
+                    plane_id,
+                    &block,
+                    curr_chroma,
+                    output,
+                    output_stride,
+                    |slot, sample| *slot = sample.to_u16(),
+                ),
+                ChromaLrDestination::U8(output) => self.preserve_lossless_lr_samples(
+                    plane_id,
+                    &block,
+                    curr_chroma,
+                    output,
+                    output_stride,
+                    |slot, sample| *slot = sample.to_u16() as u8,
+                ),
+            }
         }
     }
 

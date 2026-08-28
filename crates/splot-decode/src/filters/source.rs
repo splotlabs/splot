@@ -1456,6 +1456,11 @@ pub(crate) struct StripePlane {
     samples: StripeSamples,
 }
 
+pub(crate) enum StripeOutputPlane {
+    U16(StripePlane),
+    DirectU8(crate::pipeline::frame_progress::DirectPlaneTarget),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StripeInitialization {
     CopyAll,
@@ -1777,6 +1782,105 @@ impl StripePlane {
 
     pub(crate) fn finish_direct(&mut self) -> Result<(), StripeCopyError> {
         self.samples.finish_direct()
+    }
+}
+
+impl StripeOutputPlane {
+    pub(crate) const fn u16(plane: StripePlane) -> Self {
+        Self::U16(plane)
+    }
+
+    pub(crate) fn direct_u8(
+        mut target: crate::pipeline::frame_progress::DirectPlaneTarget,
+        source: &StripePlane,
+    ) -> Result<Self, StripeCopyError> {
+        let end_y = source.end_y().ok_or(StripeCopyError::Geometry)?;
+        if target.is_u16()
+            || target.width() != source.width()
+            || target.frame_height() != source.frame_height()
+            || target.origin_y() != source.origin_y()
+            || target.len() != source.samples().len()
+            || target.u8_samples_mut().is_none()
+            || end_y > source.frame_height()
+        {
+            return Err(StripeCopyError::Geometry);
+        }
+        Ok(Self::DirectU8(target))
+    }
+
+    pub(crate) const fn width(&self) -> usize {
+        match self {
+            Self::U16(plane) => plane.width(),
+            Self::DirectU8(target) => target.width(),
+        }
+    }
+
+    pub(crate) const fn frame_height(&self) -> usize {
+        match self {
+            Self::U16(plane) => plane.frame_height(),
+            Self::DirectU8(target) => target.frame_height(),
+        }
+    }
+
+    pub(crate) const fn origin_y(&self) -> usize {
+        match self {
+            Self::U16(plane) => plane.origin_y(),
+            Self::DirectU8(target) => target.origin_y(),
+        }
+    }
+
+    pub(crate) fn end_y(&self) -> Option<usize> {
+        match self {
+            Self::U16(plane) => plane.end_y(),
+            Self::DirectU8(target) => target.end_y(),
+        }
+    }
+
+    pub(crate) const fn as_u16(&self) -> Option<&StripePlane> {
+        match self {
+            Self::U16(plane) => Some(plane),
+            Self::DirectU8(_) => None,
+        }
+    }
+
+    pub(crate) const fn as_u16_mut(&mut self) -> Option<&mut StripePlane> {
+        match self {
+            Self::U16(plane) => Some(plane),
+            Self::DirectU8(_) => None,
+        }
+    }
+
+    pub(crate) fn u8_rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+        let Self::DirectU8(target) = self else {
+            return None;
+        };
+        let width = target.width();
+        if rect.x().checked_add(rect.width())? > width {
+            return None;
+        }
+        let row = rect.y().checked_sub(target.origin_y())?;
+        let start = row.checked_mul(width)?.checked_add(rect.x())?;
+        let end = rect
+            .height()
+            .checked_sub(1)?
+            .checked_mul(width)?
+            .checked_add(start)?
+            .checked_add(rect.width())?;
+        Some((target.u8_samples_mut()?.get_mut(start..end)?, width))
+    }
+
+    pub(crate) fn is_direct(&self) -> bool {
+        match self {
+            Self::U16(plane) => plane.is_direct(),
+            Self::DirectU8(_) => true,
+        }
+    }
+
+    pub(crate) fn finish_direct(&mut self) -> Result<(), StripeCopyError> {
+        match self {
+            Self::U16(plane) => plane.finish_direct(),
+            Self::DirectU8(_) => Ok(()),
+        }
     }
 }
 

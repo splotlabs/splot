@@ -6,8 +6,8 @@
 #![allow(clippy::expect_used)]
 
 use super::{
-    DeblockedSource, DeblockedWindow, DeblockedWindowSequence, FramePlane, StripePlane,
-    intersect_rows, lock_stripe_sample_buffers, recycle_stripe_sample_buffer,
+    DeblockedSource, DeblockedWindow, DeblockedWindowSequence, FramePlane, StripeOutputPlane,
+    StripePlane, intersect_rows, lock_stripe_sample_buffers, recycle_stripe_sample_buffer,
     recycle_stripe_sample_buffer_into_pool, select_buffer_index, take_stripe_sample_buffer,
     take_stripe_sample_buffer_from_pool, window_bounds,
 };
@@ -509,6 +509,88 @@ fn u8_direct_stripe_rejects_unrepresentable_filter_samples_without_publication()
     drop(output);
     drop(target);
     drop(lease);
+    assert_eq!(progress.published_luma_rows(), 0);
+    assert!(progress.direct_stripe(0).is_some(), "the lease is reusable");
+}
+
+#[test]
+fn completed_direct_u8_and_staged_fallback_planes_publish_together() {
+    let workspace = crate::test_support::yuv420_workspace(8, 8, 91);
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(workspace.info())
+            .expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 8)]));
+    let mut lease = progress.direct_stripe(0).expect("stripe lease");
+    let mut target = lease.take_target().expect("stripe target");
+
+    let y_source = FramePlane::new(&workspace, PlaneId::Y).expect("luma source");
+    let mut y =
+        StripePlane::copy_from_into(y_source, 0, 8, target.take(PlaneId::Y)).expect("staged luma");
+    let u_source = FramePlane::new(&workspace, PlaneId::U).expect("U source");
+    let u_reference = StripePlane::copy_from(u_source, 0, 4).expect("U geometry");
+    let mut u =
+        StripeOutputPlane::direct_u8(target.take(PlaneId::U).expect("U target"), &u_reference)
+            .expect("direct U output");
+    let v_source = FramePlane::new(&workspace, PlaneId::V).expect("V source");
+    let mut v =
+        StripePlane::copy_from_into(v_source, 0, 4, target.take(PlaneId::V)).expect("staged V");
+
+    let rect =
+        PlaneRect::new(0, 0, u.width(), u.end_y().expect("U stripe end")).expect("U rectangle");
+    u.u8_rect_mut(rect).expect("direct U rectangle").0.fill(77);
+    y.finish_direct().expect("luma flush");
+    v.finish_direct().expect("V flush");
+    u.finish_direct().expect("direct U completion");
+    drop((y, u, v, target));
+    assert!(lease.submit());
+
+    let frame = progress
+        .freeze_workspace(core::convert::identity)
+        .expect("frozen frame");
+    assert!(frame.y().samples().iter().all(|&sample| sample == 91));
+    assert!(
+        frame
+            .u()
+            .expect("U plane")
+            .samples()
+            .iter()
+            .all(|&sample| sample == 77)
+    );
+    assert!(
+        frame
+            .v()
+            .expect("V plane")
+            .samples()
+            .iter()
+            .all(|&sample| sample == 91)
+    );
+}
+
+#[test]
+fn invalid_direct_u8_geometry_drops_without_publication_and_releases_lease() {
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        PlaneSize::new(4, 2).expect("frame size"),
+        PlaneRect::new(0, 0, 4, 2).expect("visible rect"),
+    )
+    .expect("frame info");
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 2)]));
+    let source = StripePlane::from_samples(4, 2, 0, vec![0; 8]).expect("source geometry");
+    let mut lease = progress.direct_stripe(0).expect("stripe lease");
+    let mut target = lease.take_target().expect("stripe target");
+    target.shorten_for_test(PlaneId::Y);
+
+    assert!(
+        StripeOutputPlane::direct_u8(target.take(PlaneId::Y).expect("luma target"), &source)
+            .is_err()
+    );
+    drop((target, lease));
     assert_eq!(progress.published_luma_rows(), 0);
     assert!(progress.direct_stripe(0).is_some(), "the lease is reusable");
 }

@@ -354,6 +354,38 @@ pub fn wiener_ns_filter_chroma_block_padded_u16_into<T: ReconSample>(
     scratch: &mut WienerNsChromaScratch<T>,
 ) -> Result<()> {
     prepare_chroma_padded(output.len(), params, source, scratch)?;
+    filter_chroma_padded_output(output, params, source, scratch);
+    Ok(())
+}
+
+/// Applies 8-bit chroma Wiener NS filtering directly into strided `u8` storage.
+///
+/// This uses the same rounded and clipped kernel as
+/// [`wiener_ns_filter_chroma_block_padded_u16_into`]. All output and source
+/// geometry and every fallible source transformation are validated before the
+/// first destination write.
+///
+/// # Errors
+/// Returns the same errors as the `u16` output path, and rejects a bit depth
+/// that cannot be represented by `u8`.
+pub fn wiener_ns_filter_chroma_block_padded_u8_into<T: ReconSample>(
+    output: &mut [u8],
+    params: &WienerNsChromaFilter<'_>,
+    source: &WienerNsChromaPaddedSource<'_, T>,
+    scratch: &mut WienerNsChromaScratch<T>,
+) -> Result<()> {
+    validate_sample_type::<u8>(params.bit_depth)?;
+    prepare_chroma_padded(output.len(), params, source, scratch)?;
+    filter_chroma_padded_output(output, params, source, scratch);
+    Ok(())
+}
+
+fn filter_chroma_padded_output<O: ChromaOutputSample, T: ReconSample>(
+    output: &mut [O],
+    params: &WienerNsChromaFilter<'_>,
+    source: &WienerNsChromaPaddedSource<'_, T>,
+    scratch: &WienerNsChromaScratch<T>,
+) {
     let max_sample = params.bit_depth.max_sample();
     let luma_stride = params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
     if let Some(chroma) = T::u16_slice(source.chroma_samples) {
@@ -387,7 +419,6 @@ pub fn wiener_ns_filter_chroma_block_padded_u16_into<T: ReconSample>(
             max_sample,
         );
     }
-    Ok(())
 }
 
 fn prepare_chroma_padded<T: ReconSample>(
@@ -705,13 +736,39 @@ const WIENER_NS_CONFIG_UV_PAIRS: [(isize, isize, usize); WIENER_NS_CHROMA_COEFF_
 
 const WIENER_NS_CHROMA_SIMD_LANES: usize = 64;
 
+trait ChromaOutputSample: Copy {
+    fn from_clamped_u16(value: u16) -> Self;
+
+    fn write_lanes<const LANES: usize>(output: &mut [Self], values: [u16; LANES]) {
+        for (output, value) in output.iter_mut().zip(values) {
+            *output = Self::from_clamped_u16(value);
+        }
+    }
+}
+
+impl ChromaOutputSample for u16 {
+    fn from_clamped_u16(value: u16) -> Self {
+        value
+    }
+
+    fn write_lanes<const LANES: usize>(output: &mut [Self], values: [u16; LANES]) {
+        output.copy_from_slice(&values); // splot-copy-ok: publish SIMD chroma Wiener NS samples
+    }
+}
+
+impl ChromaOutputSample for u8 {
+    fn from_clamped_u16(value: u16) -> Self {
+        value as u8
+    }
+}
+
 fn padded_tap_offset(stride: usize, dy: isize, dx: isize) -> usize {
     (dy + WIENER_NS_CHROMA_TAP_RADIUS as isize) as usize * stride
         + (dx + WIENER_NS_CHROMA_TAP_RADIUS as isize) as usize
 }
 
-fn filter_chroma_padded_u16(
-    output: &mut [u16],
+fn filter_chroma_padded_u16<O: ChromaOutputSample>(
+    output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     chroma: &[u16],
     chroma_stride: usize,
@@ -731,8 +788,8 @@ fn filter_chroma_padded_u16(
     );
 }
 
-fn filter_chroma_padded_u8(
-    output: &mut [u16],
+fn filter_chroma_padded_u8<O: ChromaOutputSample>(
+    output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     chroma: &[u8],
     chroma_stride: usize,
@@ -755,8 +812,8 @@ fn filter_chroma_padded_u8(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn filter_chroma_padded_simd<T: ReconSample>(
-    output: &mut [u16],
+fn filter_chroma_padded_simd<O: ChromaOutputSample, T: ReconSample>(
+    output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     chroma: &[T],
     chroma_stride: usize,
@@ -812,10 +869,10 @@ fn filter_chroma_padded_simd<T: ReconSample>(
                 .simd_min(Simd::splat(i32::from(max_sample)))
                 .cast::<u16>()
                 .to_array();
-            output[c..c + WIENER_NS_CHROMA_SIMD_LANES].copy_from_slice(&values); // splot-copy-ok: publish SIMD chroma Wiener NS samples
+            O::write_lanes(&mut output[c..c + WIENER_NS_CHROMA_SIMD_LANES], values);
         }
         for (c, slot) in output[vector_width..].iter_mut().enumerate() {
-            *slot = filter_chroma_padded_sample(
+            *slot = O::from_clamped_u16(filter_chroma_padded_sample(
                 params,
                 chroma,
                 chroma_stride,
@@ -824,14 +881,14 @@ fn filter_chroma_padded_simd<T: ReconSample>(
                 r,
                 vector_width + c,
                 max_sample,
-            );
+            ));
         }
     }
 }
 
 #[inline(never)]
-fn filter_chroma_padded_u16_scalar<T: ReconSample>(
-    output: &mut [u16],
+fn filter_chroma_padded_u16_scalar<O: ChromaOutputSample, T: ReconSample>(
+    output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     chroma: &[T],
     chroma_stride: usize,
@@ -842,7 +899,7 @@ fn filter_chroma_padded_u16_scalar<T: ReconSample>(
     for r in 0..params.height {
         let output = &mut output[r * params.output_stride..][..params.width];
         for (c, slot) in output.iter_mut().enumerate() {
-            *slot = filter_chroma_padded_sample(
+            *slot = O::from_clamped_u16(filter_chroma_padded_sample(
                 params,
                 chroma,
                 chroma_stride,
@@ -851,7 +908,7 @@ fn filter_chroma_padded_u16_scalar<T: ReconSample>(
                 r,
                 c,
                 max_sample,
-            );
+            ));
         }
     }
 }
@@ -1732,6 +1789,33 @@ mod tests {
             );
         }
         assert_eq!(scratch.filtered.capacity(), 0);
+
+        if bit_depth == BitDepth::Eight {
+            let mut direct_u8 = vec![0xde; stride * height];
+            wiener_ns_filter_chroma_block_padded_u8_into(
+                &mut direct_u8,
+                &strided_params,
+                &source,
+                &mut WienerNsChromaScratch::default(),
+            )
+            .unwrap();
+            for row in 0..height {
+                let expected: Vec<_> = packed[row * width..(row + 1) * width]
+                    .iter()
+                    .map(|sample| sample.to_u16() as u8)
+                    .collect();
+                assert_eq!(
+                    &direct_u8[row * stride..row * stride + width],
+                    expected,
+                    "direct u8 {width}x{height} sub=({sub_x},{sub_y}) filter={filter_index}",
+                );
+                assert!(
+                    direct_u8[row * stride + width..(row + 1) * stride]
+                        .iter()
+                        .all(|&sample| sample == 0xde)
+                );
+            }
+        }
     }
 
     #[test]

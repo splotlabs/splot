@@ -1104,6 +1104,32 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let v_runs = &self.lr_source_blocks[u_end..];
         let plane_blocks = [y_runs, u_runs, v_runs];
         let active_lr = chain.active_lr_planes(start, end, plane_blocks);
+        let direct_u8_lr = core::array::from_fn(|index| {
+            let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
+            if plane == PlaneId::Y || self.bit_depth != BitDepth::Eight || !active_lr[index] {
+                return false;
+            }
+            let Some(target) = target.as_ref().and_then(|target| target.get(plane)) else {
+                return false;
+            };
+            let Some(target_end_y) = target.end_y() else {
+                return false;
+            };
+            let frame_wiener = self.core.lr_params.as_ref().is_some_and(|params| {
+                params.planes.get(index).is_some_and(|plane| {
+                    plane.restoration_type
+                        == splot_core::headers::frame::FrameRestorationType::WienerNonsep
+                })
+            });
+            frame_wiener
+                && !target.is_u16()
+                && final_filters::terminal_chroma_wiener_covers(
+                    plane_blocks[index],
+                    target.width(),
+                    target.origin_y(),
+                    target_end_y,
+                )
+        });
         let (cdef_target, lr_target) = target
             .map(|target| target.split(active_lr))
             .map_or((None, None), |(cdef, lr)| (Some(cdef), Some(lr)));
@@ -1118,12 +1144,16 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             &self.lr_unit_filters,
             final_filters::LrStripeOutput {
                 active_planes: active_lr,
+                direct_u8_planes: direct_u8_lr,
                 target: lr_target,
             },
         )?;
         crate::timing::accumulate(crate::timing::Phase::FilterLrStripe, lr_timer);
         let (separate_cdef_luma, output_luma) = if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
-            (Some(&frame.cdef_y), post_lr_y)
+            (
+                Some(&frame.cdef_y),
+                post_lr_y.as_u16_mut().ok_or_else(lr_pipeline_state_error)?,
+            )
         } else {
             (None, &mut frame.cdef_y)
         };
@@ -1389,7 +1419,7 @@ impl StripeChain<'_> {
     fn validate_filter_stripe(
         &self,
         plane: PlaneId,
-        stripe: &crate::filters::source::StripePlane,
+        stripe: &crate::filters::source::StripeOutputPlane,
     ) -> Result<()> {
         let error = || lr_pipeline_state_error();
         let size = self.plane_sizes[plane.index()].ok_or_else(&error)?;
@@ -1444,9 +1474,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 fn publish_filter_stripe_to<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
-    stripe: &crate::filters::source::StripePlane,
+    stripe: &crate::filters::source::StripeOutputPlane,
 ) -> Result<()> {
     let error = || lr_pipeline_state_error();
+    let stripe = stripe.as_u16().ok_or_else(&error)?;
     let end_y = stripe.end_y().ok_or_else(&error)?;
     let size = workspace.plane(plane).map_err(|_| error())?.storage_size();
     let mut frame = workspace.as_frame_mut();

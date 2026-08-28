@@ -724,6 +724,7 @@ fn apply_luma_lr(
             &[],
             super::LrStripeOutput {
                 active_planes: [true, false, false],
+                direct_u8_planes: [false; 3],
                 target: None,
             },
         )
@@ -765,13 +766,14 @@ fn inactive_filter_planes_reuse_cdef_storage() {
             &[],
             super::LrStripeOutput {
                 active_planes: [false; 3],
+                direct_u8_planes: [false; 3],
                 target: None,
             },
         )
         .unwrap()
         .into_filtered();
 
-    assert_eq!(filtered.y.samples().as_ptr(), cdef_ptr);
+    assert_eq!(filtered.y.as_u16().unwrap().samples().as_ptr(), cdef_ptr);
 }
 
 #[test]
@@ -836,6 +838,32 @@ fn keeps_switchable_restoration_types_in_separate_runs() {
         runs[1].restoration_type,
         crate::bitstream::tile_payload::LrUnitRestorationType::WienerNonsep
     );
+}
+
+#[test]
+fn terminal_chroma_wiener_requires_exact_full_plane_coverage() {
+    let covered = [
+        block(1, 0, 0),
+        block(1, 4, 0),
+        block(1, 0, 4),
+        block(1, 4, 4),
+    ];
+    assert!(terminal_chroma_wiener_covers(&covered, 8, 0, 8));
+    assert!(terminal_chroma_wiener_covers(&covered, 8, 2, 7));
+    let mut later_stripe = covered.to_vec();
+    later_stripe.extend([block(1, 0, 8), block(1, 4, 8)]);
+    assert!(terminal_chroma_wiener_covers(&later_stripe, 8, 8, 12));
+
+    assert!(!terminal_chroma_wiener_covers(&covered[..3], 8, 0, 8));
+    let mut overlapping = covered.to_vec();
+    overlapping.push(block(1, 0, 0));
+    assert!(!terminal_chroma_wiener_covers(&overlapping, 8, 0, 8));
+
+    let mut mixed = covered;
+    mixed[3].restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
+    assert!(!terminal_chroma_wiener_covers(&mixed, 8, 0, 8));
+    assert!(!terminal_chroma_wiener_covers(&covered, 0, 0, 8));
+    assert!(!terminal_chroma_wiener_covers(&covered, 8, 8, 8));
 }
 
 #[test]
