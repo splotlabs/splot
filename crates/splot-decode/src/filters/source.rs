@@ -1349,6 +1349,7 @@ pub(crate) struct StripePlane {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StripeInitialization {
     CopyAll,
+    /// The caller proves every destination sample is written before publication.
     FullyOverwritten,
 }
 
