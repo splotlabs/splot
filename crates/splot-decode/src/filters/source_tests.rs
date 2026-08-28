@@ -7,8 +7,9 @@
 
 use super::{
     DeblockedSource, DeblockedWindow, DeblockedWindowSequence, FramePlane, StripePlane,
-    intersect_rows, recycle_stripe_sample_buffer, select_buffer_index, take_stripe_sample_buffer,
-    window_bounds,
+    intersect_rows, lock_stripe_sample_buffers, recycle_stripe_sample_buffer,
+    recycle_stripe_sample_buffer_into_pool, select_buffer_index, take_stripe_sample_buffer,
+    take_stripe_sample_buffer_from_pool, window_bounds,
 };
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
@@ -299,6 +300,22 @@ fn stripe_cache_selection_uses_fresh_storage_until_full() {
 }
 
 #[test]
+fn stripe_pool_reuses_returned_allocation_while_exclusively_locked() {
+    let sample_count = 8_196;
+    let mut buffers = lock_stripe_sample_buffers();
+    buffers.clear();
+    let first = Vec::<u16>::with_capacity(sample_count);
+    let allocation = first.as_ptr();
+
+    recycle_stripe_sample_buffer_into_pool(&mut buffers, first);
+    let second = take_stripe_sample_buffer_from_pool(&mut buffers, sample_count);
+
+    assert_eq!(second.len(), 0);
+    assert_eq!(second.as_ptr(), allocation);
+    recycle_stripe_sample_buffer_into_pool(&mut buffers, second);
+}
+
+#[test]
 fn stripe_rect_mut_rejects_a_rectangle_overhanging_the_row() {
     let mut stripe = StripePlane::from_samples(4, 2, 0, vec![0; 8]).expect("a valid stripe");
     let rect = PlaneRect::new(3, 0, 2, 1).expect("a valid rectangle");
@@ -427,14 +444,9 @@ fn partial_u8_source_failure_recycles_length_zero_staging() {
     assert_eq!(progress.published_luma_rows(), 0);
     assert!(progress.direct_stripe(0).is_some(), "the lease is reusable");
 
-    let first = take_stripe_sample_buffer(sample_count).expect("recycled failed staging");
-    assert_eq!(first.len(), 0);
-    let allocation = first.as_ptr();
-    recycle_stripe_sample_buffer(first);
-    let second = take_stripe_sample_buffer(sample_count).expect("reused staging allocation");
-    assert_eq!(second.len(), 0);
-    assert_eq!(second.as_ptr(), allocation);
-    recycle_stripe_sample_buffer(second);
+    let staging = take_stripe_sample_buffer(sample_count).expect("recycled failed staging");
+    assert_eq!(staging.len(), 0);
+    recycle_stripe_sample_buffer(staging);
 }
 
 #[test]

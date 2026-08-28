@@ -395,6 +395,19 @@ impl StripeCopyError {
 
 fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
     let mut buffers = lock_stripe_sample_buffers();
+    let mut buffer = take_stripe_sample_buffer_from_pool(&mut buffers, sample_count);
+    drop(buffers);
+    buffer.clear();
+    buffer
+        .try_reserve_exact(sample_count)
+        .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
+    Ok(buffer)
+}
+
+fn take_stripe_sample_buffer_from_pool(
+    buffers: &mut Vec<Vec<u16>>,
+    sample_count: usize,
+) -> Vec<u16> {
     let pool_is_full = buffers.len() >= max_retained_stripe_buffers();
     let index = select_buffer_index(
         buffers
@@ -404,15 +417,9 @@ fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopy
         sample_count,
         pool_is_full,
     );
-    let mut buffer = index
+    index
         .map(|index| buffers.swap_remove(index))
-        .unwrap_or_default();
-    drop(buffers);
-    buffer.clear();
-    buffer
-        .try_reserve_exact(sample_count)
-        .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
-    Ok(buffer)
+        .unwrap_or_default()
 }
 
 fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
@@ -421,6 +428,10 @@ fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
     }
     buffer.clear();
     let mut buffers = lock_stripe_sample_buffers();
+    recycle_stripe_sample_buffer_into_pool(&mut buffers, buffer);
+}
+
+fn recycle_stripe_sample_buffer_into_pool(buffers: &mut Vec<Vec<u16>>, buffer: Vec<u16>) {
     if buffers.len() < max_retained_stripe_buffers() && buffers.try_reserve(1).is_ok() {
         buffers.push(buffer);
     }
