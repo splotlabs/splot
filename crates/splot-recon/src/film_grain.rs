@@ -51,9 +51,9 @@ fn apply_grain<T: ReconSample>(
     let sub_y = usize::from(pixel_format.subsampling_y());
     let num_planes = pixel_format.num_planes();
 
-    let mut y = visible_plane_samples(frame.y());
-    let mut u = frame.u().map(visible_plane_samples);
-    let mut v = frame.v().map(visible_plane_samples);
+    let mut y = GrainDestination::from_visible(frame.y());
+    let mut u = frame.u().map(GrainDestination::from_visible);
+    let mut v = frame.v().map(GrainDestination::from_visible);
 
     synthesize_into(
         &mut y,
@@ -66,7 +66,7 @@ fn apply_grain<T: ReconSample>(
         bit_depth,
         num_planes,
         grain,
-    );
+    )?;
 
     let info = DecodedFrameInfo::new(
         OutputIndex::new(frame.output_index().get()),
@@ -93,37 +93,45 @@ fn apply_grain<T: ReconSample>(
     DecodedFrame::try_new(info, FramePlanes::new(y, u, v))
 }
 
-fn visible_plane_samples<T: ReconSample>(plane: &Plane<T>) -> Vec<u16> {
-    let mut samples =
-        Vec::with_capacity(plane.visible_size().width() * plane.visible_size().height());
-    for row in plane.visible_rows() {
-        samples.extend(row.iter().map(|sample| sample.to_u16()));
+struct GrainDestination<T: ReconSample> {
+    samples: Vec<T>,
+}
+
+impl<T: ReconSample> GrainDestination<T> {
+    fn from_visible(plane: &Plane<T>) -> Self {
+        let mut samples =
+            Vec::with_capacity(plane.visible_size().width() * plane.visible_size().height());
+        for row in plane.visible_rows() {
+            samples.extend_from_slice(row); // splot-copy-ok: final film-grain output materialization
+        }
+        Self { samples }
     }
-    samples
+
+    fn get(&self, index: usize) -> i32 {
+        i32::from(self.samples[index].to_u16())
+    }
+
+    fn set(&mut self, index: usize, value: u16) -> Result<()> {
+        self.samples[index] = T::try_from_u16(value)?;
+        Ok(())
+    }
 }
 
 fn plane_from_visible<T: ReconSample>(
     width: usize,
     height: usize,
-    samples: Vec<u16>,
+    destination: GrainDestination<T>,
 ) -> Result<Plane<T>> {
     let size = PlaneSize::new(width, height)?;
     let rect = PlaneRect::new(0, 0, width, height)?;
-    let converted = match T::reuse_u16_vec(samples) {
-        Ok(samples) => samples,
-        Err(samples) => samples
-            .into_iter()
-            .map(T::try_from_u16)
-            .collect::<Result<Vec<_>>>()?,
-    };
-    Plane::from_vec(size, width, rect, converted)
+    Plane::from_vec(size, width, rect, destination.samples)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn synthesize_into(
-    y: &mut [u16],
-    u: Option<&mut Vec<u16>>,
-    v: Option<&mut Vec<u16>>,
+fn synthesize_into<T: ReconSample>(
+    y: &mut GrainDestination<T>,
+    u: Option<&mut GrainDestination<T>>,
+    v: Option<&mut GrainDestination<T>>,
     width: usize,
     height: usize,
     sub_x: usize,
@@ -131,7 +139,7 @@ fn synthesize_into(
     bit_depth: u8,
     num_planes: usize,
     grain: &ActiveFilmGrain,
-) {
+) -> Result<()> {
     let grain_min = -(1_i32 << (bit_depth - 1));
     let grain_max = (1_i32 << (bit_depth - 1)) - 1;
     let templates = generate_grain(grain, sub_x, sub_y, bit_depth, grain_min, grain_max);
@@ -141,7 +149,7 @@ fn synthesize_into(
     );
     add_noise_to_samples(
         y, u, v, width, height, sub_x, sub_y, bit_depth, num_planes, grain, &scaling, &noise,
-    );
+    )
 }
 
 struct GrainTemplates {
@@ -590,10 +598,10 @@ fn template_sample(templates: &GrainTemplates, plane: usize, row: usize, col: us
 }
 
 #[allow(clippy::too_many_arguments)]
-fn add_noise_to_samples(
-    y: &mut [u16],
-    u: Option<&mut Vec<u16>>,
-    v: Option<&mut Vec<u16>>,
+fn add_noise_to_samples<T: ReconSample>(
+    y: &mut GrainDestination<T>,
+    u: Option<&mut GrainDestination<T>>,
+    v: Option<&mut GrainDestination<T>>,
     width: usize,
     height: usize,
     sub_x: usize,
@@ -603,7 +611,7 @@ fn add_noise_to_samples(
     grain: &ActiveFilmGrain,
     scaling: &[[i32; 256]],
     noise: &NoiseImage,
-) {
+) -> Result<()> {
     let (min_value, max_luma, max_chroma) = output_ranges(grain, bit_depth);
     let scaling_shift = grain.model.grain_scaling_minus_8 + 8;
     if num_planes > 1 {
@@ -626,28 +634,29 @@ fn add_noise_to_samples(
                 grain,
                 scaling,
                 noise,
-            );
+            )?;
         }
     }
     if grain.model.num_y_points > 0 {
         for row in 0..height {
             for col in 0..width {
                 let index = row * width + col;
-                let orig = i32::from(y[index]);
+                let orig = y.get(index);
                 let scaled = scale_lut(&scaling[0], orig, bit_depth);
                 let noise_sample = noise.planes[0][row * noise.widths[0] + col];
                 let delta = round2(scaled * noise_sample, scaling_shift);
-                y[index] = clip3(orig + delta, min_value, max_luma) as u16;
+                y.set(index, clip3(orig + delta, min_value, max_luma) as u16)?;
             }
         }
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn add_chroma_noise(
-    y: &[u16],
-    u: &mut [u16],
-    v: &mut [u16],
+fn add_chroma_noise<T: ReconSample>(
+    y: &GrainDestination<T>,
+    u: &mut GrainDestination<T>,
+    v: &mut GrainDestination<T>,
     luma_width: usize,
     chroma_width: usize,
     chroma_height: usize,
@@ -660,7 +669,7 @@ fn add_chroma_noise(
     grain: &ActiveFilmGrain,
     scaling: &[[i32; 256]],
     noise: &NoiseImage,
-) {
+) -> Result<()> {
     let model = &grain.model;
     let sample_max = (1_i32 << bit_depth) - 1;
     for row in 0..chroma_height {
@@ -670,16 +679,15 @@ fn add_chroma_noise(
             let luma_next_x = (luma_x + 1).min(luma_width - 1);
             let average_luma = if sub_x == 1 {
                 round2(
-                    i32::from(y[luma_y * luma_width + luma_x])
-                        + i32::from(y[luma_y * luma_width + luma_next_x]),
+                    y.get(luma_y * luma_width + luma_x) + y.get(luma_y * luma_width + luma_next_x),
                     1,
                 )
             } else {
-                i32::from(y[luma_y * luma_width + luma_x])
+                y.get(luma_y * luma_width + luma_x)
             };
             let index = row * chroma_width + col;
             if model.num_cb_points > 0 || model.chroma_scaling_from_luma {
-                let orig = i32::from(u[index]);
+                let orig = u.get(index);
                 let merged = chroma_merged_sample(
                     average_luma,
                     orig,
@@ -694,10 +702,10 @@ fn add_chroma_noise(
                     scale_lut(&scaling[1], merged, bit_depth) * noise.planes[1][index],
                     scaling_shift,
                 );
-                u[index] = clip3(orig + delta, min_value, max_chroma) as u16;
+                u.set(index, clip3(orig + delta, min_value, max_chroma) as u16)?;
             }
             if model.num_cr_points > 0 || model.chroma_scaling_from_luma {
-                let orig = i32::from(v[index]);
+                let orig = v.get(index);
                 let merged = chroma_merged_sample(
                     average_luma,
                     orig,
@@ -712,10 +720,11 @@ fn add_chroma_noise(
                     scale_lut(&scaling[2], merged, bit_depth) * noise.planes[2][index],
                     scaling_shift,
                 );
-                v[index] = clip3(orig + delta, min_value, max_chroma) as u16;
+                v.set(index, clip3(orig + delta, min_value, max_chroma) as u16)?;
             }
         }
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -813,30 +822,5 @@ impl GrainRng {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::plane_from_visible;
-
-    #[test]
-    fn u16_plane_reuses_the_synthesized_sample_allocation() {
-        let mut samples = Vec::with_capacity(8);
-        samples.extend([1_u16, 2, 3, 4]);
-        let pointer = samples.as_ptr();
-        let capacity = samples.capacity();
-
-        let plane = plane_from_visible::<u16>(2, 2, samples).unwrap();
-        let samples = plane.into_samples();
-
-        assert_eq!(samples.as_ptr(), pointer);
-        assert_eq!(samples.capacity(), capacity);
-        assert_eq!(samples, [1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn u8_plane_keeps_the_checked_conversion_fallback() {
-        let plane = plane_from_visible::<u8>(2, 2, vec![0, 1, 254, 255]).unwrap();
-
-        assert_eq!(plane.samples(), [0, 1, 254, 255]);
-        assert!(plane_from_visible::<u8>(1, 1, vec![256]).is_err());
-    }
-}
+#[allow(clippy::panic, clippy::unwrap_used)]
+mod tests;
