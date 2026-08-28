@@ -2,13 +2,21 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::span::ByteOffset;
-use splot_recon::{PlaneId, PlaneRect, ReconSample};
+use splot_recon::{
+    PlaneId, PlaneRect, ReconSample, subpel_predict_block_compound_average_fullpel_strided_into_u8,
+};
 
 use super::{
     CompoundBlend, CompoundMcBlock, WorkspaceSink, compound_average_weights_are_uniform, mc_planes,
     predict_compound_average_into, translational_compound_plane,
 };
 use crate::Result;
+
+#[derive(Clone, Copy)]
+enum DirectDestination {
+    U8,
+    U16,
+}
 
 pub(super) fn predict_translational_direct<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
@@ -22,10 +30,14 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
     else {
         return Ok(false);
     };
-    if T::u16_slice(&[]).is_none()
-        || block.sub8x8_chroma
-        || block.warp_params.iter().any(Option::is_some)
-    {
+    let destination = if T::u16_slice(&[]).is_some() {
+        DirectDestination::U16
+    } else if T::u8_slice(&[]).is_some() {
+        DirectDestination::U8
+    } else {
+        return Ok(false);
+    };
+    if block.sub8x8_chroma || block.warp_params.iter().any(Option::is_some) {
         return Ok(false);
     }
 
@@ -60,22 +72,59 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
         translation_count += 1;
     }
 
-    for (plane, target, translation) in translations.into_iter().flatten() {
-        if sink
-            .with_contiguous_u16_rect_mut(plane, target, |output, stride| {
-                predict_compound_average_into(
-                    &translation.plane,
-                    &translation.params,
-                    cwp_weight,
-                    None,
-                    None,
-                    output,
-                    stride,
-                )
-            })?
-            .is_none()
-        {
+    for (plane, target, _) in translations.iter().flatten() {
+        let available = match destination {
+            DirectDestination::U16 => sink
+                .with_contiguous_u16_rect_mut(*plane, *target, |_, _| Ok(()))?
+                .is_some(),
+            DirectDestination::U8 => sink
+                .with_contiguous_u8_rect_mut(*plane, *target, |_, _| Ok(()))?
+                .is_some(),
+        };
+        if !available {
             return Ok(false);
+        }
+    }
+
+    for (plane, target, translation) in translations.into_iter().flatten() {
+        match destination {
+            DirectDestination::U16 => {
+                sink.with_contiguous_u16_rect_mut(plane, target, |output, stride| {
+                    predict_compound_average_into(
+                        &translation.plane,
+                        &translation.params,
+                        cwp_weight,
+                        None,
+                        None,
+                        output,
+                        stride,
+                    )
+                })?;
+            }
+            DirectDestination::U8 => {
+                sink.with_contiguous_u8_rect_mut(plane, target, |output, stride| {
+                    if subpel_predict_block_compound_average_fullpel_strided_into_u8(
+                        &translation.plane.views[0],
+                        &translation.params[0],
+                        &translation.plane.views[1],
+                        &translation.params[1],
+                        cwp_weight,
+                        output,
+                        stride,
+                    )? {
+                        return Ok(());
+                    }
+                    predict_compound_average_into(
+                        &translation.plane,
+                        &translation.params,
+                        cwp_weight,
+                        None,
+                        None,
+                        output,
+                        stride,
+                    )
+                })?;
+            }
         }
     }
     Ok(true)

@@ -43,6 +43,73 @@ pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
 pub use workspace_rows::{CurrentFrameRectRows, CurrentFrameRectRowsMut, WorkspaceRectRows};
 
+macro_rules! contiguous_rect_writer {
+    ($name:ident, $sample:ty, $slice_mut:ident, $offset:literal, $span:literal) => {
+        #[doc = concat!(
+            "Runs a writer over contiguous `",
+            stringify!($sample),
+            "` storage for one exact target rectangle.\n\n",
+            "The returned slice starts at the rectangle's top-left sample and spans through its ",
+            "final row; `stride` is the destination row stride. Returns `Ok(None)` for other ",
+            "sample storage, sliced rectangle surfaces, or a rectangle clipped at the frame edge.\n\n",
+            "# Errors\n",
+            "Returns [`ReconError`] when the plane is absent, the target geometry is invalid, ",
+            "or a row target would cross its exclusive band."
+        )]
+        pub fn $name<R>(
+            &mut self,
+            plane: PlaneId,
+            rect: PlaneRect,
+            write: impl FnOnce(&mut [$sample], usize) -> Result<R>,
+        ) -> Result<Option<R>> {
+            let storage = self.plane_storage_size(plane)?;
+            let clipped = clamp_rect_to_storage(plane, storage, rect)?;
+            if clipped != rect {
+                return Ok(None);
+            }
+            self.rect_rows(plane, rect)?;
+            let (samples, stride, local_x, local_y) = match self {
+                Self::Frame(workspace) => {
+                    let target = workspace.plane_mut(plane)?;
+                    let stride_samples = target.stride_samples();
+                    (&mut target.samples[..], stride_samples, rect.x(), rect.y())
+                }
+                Self::Rect(_) => return Ok(None),
+                Self::OwnedRect(surface) => {
+                    let target = surface.plane_mut(plane)?;
+                    target.ensure_rect(rect)?;
+                    (
+                        &mut target.samples[..],
+                        target.rect.width(),
+                        rect.x() - target.rect.x(),
+                        rect.y() - target.rect.y(),
+                    )
+                }
+            };
+            let Some(samples) = T::$slice_mut(samples) else {
+                return Ok(None);
+            };
+            let base = local_y
+                .checked_mul(stride)
+                .and_then(|start| start.checked_add(local_x))
+                .ok_or(ReconError::ArithmeticOverflow { context: $offset })?;
+            let end = (rect.height() - 1)
+                .checked_mul(stride)
+                .and_then(|offset| base.checked_add(offset))
+                .and_then(|start| start.checked_add(rect.width()))
+                .ok_or(ReconError::ArithmeticOverflow { context: $span })?;
+            let available = samples.len();
+            let target = samples
+                .get_mut(base..end)
+                .ok_or(ReconError::BufferLengthMismatch {
+                    expected: end,
+                    actual: available,
+                })?;
+            write(target, stride).map(Some)
+        }
+    };
+}
+
 /// Mutable current-frame reconstruction workspace.
 ///
 /// The workspace owns checked plane storage that future decode or encoder paths
@@ -566,71 +633,20 @@ impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
         }
     }
 
-    /// Runs a writer over contiguous `u16` storage for one exact target rectangle.
-    ///
-    /// The returned slice starts at the rectangle's top-left sample and spans
-    /// through its final row; `stride` is the destination row stride. Returns
-    /// `Ok(None)` for non-`u16` sample storage, sliced rectangle surfaces, or a
-    /// rectangle clipped at the frame edge.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] when the plane is absent, the target geometry is
-    /// invalid, or a row target would cross its exclusive band.
-    pub fn with_contiguous_u16_rect_mut<R>(
-        &mut self,
-        plane: PlaneId,
-        rect: PlaneRect,
-        write: impl FnOnce(&mut [u16], usize) -> Result<R>,
-    ) -> Result<Option<R>> {
-        let storage = self.plane_storage_size(plane)?;
-        let clipped = clamp_rect_to_storage(plane, storage, rect)?;
-        if clipped != rect {
-            return Ok(None);
-        }
-        self.rect_rows(plane, rect)?;
-        let (samples, stride, local_x, local_y) = match self {
-            Self::Frame(workspace) => {
-                let target = workspace.plane_mut(plane)?;
-                let stride_samples = target.stride_samples();
-                (&mut target.samples[..], stride_samples, rect.x(), rect.y())
-            }
-            Self::Rect(_) => return Ok(None),
-            Self::OwnedRect(surface) => {
-                let target = surface.plane_mut(plane)?;
-                target.ensure_rect(rect)?;
-                (
-                    &mut target.samples[..],
-                    target.rect.width(),
-                    rect.x() - target.rect.x(),
-                    rect.y() - target.rect.y(),
-                )
-            }
-        };
-        let Some(samples) = T::u16_slice_mut(samples) else {
-            return Ok(None);
-        };
-        let base = local_y
-            .checked_mul(stride)
-            .and_then(|start| start.checked_add(local_x))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "contiguous u16 target offset",
-            })?;
-        let end = (rect.height() - 1)
-            .checked_mul(stride)
-            .and_then(|offset| base.checked_add(offset))
-            .and_then(|start| start.checked_add(rect.width()))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "contiguous u16 target span",
-            })?;
-        let available = samples.len();
-        let target = samples
-            .get_mut(base..end)
-            .ok_or(ReconError::BufferLengthMismatch {
-                expected: end,
-                actual: available,
-            })?;
-        write(target, stride).map(Some)
-    }
+    contiguous_rect_writer!(
+        with_contiguous_u16_rect_mut,
+        u16,
+        u16_slice_mut,
+        "contiguous u16 target offset",
+        "contiguous u16 target span"
+    );
+    contiguous_rect_writer!(
+        with_contiguous_u8_rect_mut,
+        u8,
+        u8_slice_mut,
+        "contiguous u8 target offset",
+        "contiguous u8 target span"
+    );
 
     /// Writes one contiguous rectangular prediction block.
     ///

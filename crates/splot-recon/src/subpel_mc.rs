@@ -55,6 +55,7 @@ macro_rules! finish_fused_compound_2d {
 mod clipped_compound;
 mod clipped_edges;
 mod copy;
+mod fullpel_u8;
 mod output;
 mod slide;
 mod tip_overlap;
@@ -67,6 +68,7 @@ use copy::{
     subpel_copy_compound_average_u16_into, subpel_direct_copy_x, subpel_horizontal_only_into,
     subpel_horizontal_window_x, subpel_vertical_only_into,
 };
+pub use fullpel_u8::subpel_predict_block_compound_average_fullpel_strided_into_u8;
 use output::*;
 use slide::SlideLanes;
 pub use tip_overlap::subpel_predict_16x16_bilinear_horizontal_overlap_into;
@@ -1434,9 +1436,9 @@ fn blend_fullpel_8(
 }
 
 #[inline]
-fn validate_compound_output(
+fn validate_compound_output<O>(
     params: &SubpelPredictParams,
-    output: &[u16],
+    output: &[O],
     output_stride: usize,
 ) -> Result<()> {
     if output_stride < params.w {

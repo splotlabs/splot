@@ -1579,6 +1579,80 @@ fn fullpel_compound_average_matches_materialized_predictors() {
 }
 
 #[test]
+fn fullpel_compound_average_u8_matches_materialized_predictors() {
+    let ref_w = 24usize;
+    let ref_h = 20usize;
+    let samples0 = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 3) % 256) as u8)
+        .collect::<Vec<_>>();
+    let samples1 = (0..ref_w * ref_h)
+        .map(|index| ((index * 29 + 11) % 256) as u8)
+        .collect::<Vec<_>>();
+    let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
+    let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
+    let params0 = full_pel_params(InterpolationFilter::EightTapSharp, 7, 5, 6, 7, 24, 20);
+    let params1 = SubpelPredictParams {
+        start_x: 9 << SCALE_SUBPEL_BITS,
+        start_y: 4 << SCALE_SUBPEL_BITS,
+        ..params0
+    };
+    let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
+    let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
+
+    for weight in [-4, 8, 20] {
+        let expected =
+            blend_compound_average_weighted(&pred0, &pred1, BitDepth::Eight, weight).unwrap();
+        let stride = params0.w + 3;
+        let mut actual = vec![u8::MAX; stride * params0.h];
+        assert!(
+            subpel_predict_block_compound_average_fullpel_strided_into_u8(
+                &view0,
+                &params0,
+                &view1,
+                &params1,
+                weight,
+                &mut actual,
+                stride,
+            )
+            .unwrap()
+        );
+        for row in 0..params0.h {
+            assert_eq!(
+                &actual[row * stride..row * stride + params0.w],
+                &expected[row * params0.w..(row + 1) * params0.w]
+                    .iter()
+                    .map(|&sample| sample as u8)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                actual[row * stride + params0.w..(row + 1) * stride]
+                    .iter()
+                    .all(|&sample| sample == u8::MAX)
+            );
+        }
+    }
+
+    let fractional = SubpelPredictParams {
+        start_x: params0.start_x + (1 << 6),
+        ..params0
+    };
+    let mut untouched = [u8::MAX; 35];
+    assert!(
+        !subpel_predict_block_compound_average_fullpel_strided_into_u8(
+            &view0,
+            &fractional,
+            &view1,
+            &params1,
+            8,
+            &mut untouched,
+            7,
+        )
+        .unwrap()
+    );
+    assert_eq!(untouched, [u8::MAX; 35]);
+}
+
+#[test]
 fn clipped_horizontal_compound_matches_materialized_predictors() {
     let ref_w = 24usize;
     let ref_h = 16usize;

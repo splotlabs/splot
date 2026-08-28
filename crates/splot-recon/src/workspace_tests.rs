@@ -162,6 +162,60 @@ fn rectangular_surfaces_write_adjacent_column_tiles_independently() {
 }
 
 #[test]
+fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 5, 4), 3).unwrap();
+    let target = rect(1, 1, 3, 2);
+    let written = CurrentFrameSurface::Frame(&mut workspace)
+        .with_contiguous_u8_rect_mut(PlaneId::Y, target, |samples, stride| {
+            samples[0] = 10;
+            samples[1] = 11;
+            samples[2] = 12;
+            samples[stride] = 20;
+            samples[stride + 1] = 21;
+            samples[stride + 2] = 22;
+            Ok(6)
+        })
+        .unwrap();
+    assert_eq!(written, Some(6));
+    let expected = [
+        3, 3, 3, 3, 3, 3, 10, 11, 12, 3, 3, 20, 21, 22, 3, 3, 3, 3, 3, 3,
+    ];
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &expected);
+
+    assert!(
+        CurrentFrameSurface::Frame(&mut workspace)
+            .with_contiguous_u8_rect_mut(PlaneId::Y, rect(4, 3, 2, 1), |_, _| Ok(()))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &expected);
+
+    let mut wide =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Ten, 5, 4), 7).unwrap();
+    assert!(
+        CurrentFrameSurface::Frame(&mut wide)
+            .with_contiguous_u8_rect_mut(PlaneId::Y, target, |_, _| Ok(()))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        wide.samples(PlaneId::Y)
+            .unwrap()
+            .iter()
+            .all(|&sample| sample == 7)
+    );
+
+    let mut split = workspace.rect_surfaces(&[rect(0, 0, 5, 4)]).unwrap();
+    assert!(
+        CurrentFrameSurface::Rect(&mut split[0])
+            .with_contiguous_u8_rect_mut(PlaneId::Y, target, |_, _| Ok(()))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn rectangular_surface_publishes_only_its_owned_region() {
     let info = yuv420_info(8, 8);
     let mut shadow = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();

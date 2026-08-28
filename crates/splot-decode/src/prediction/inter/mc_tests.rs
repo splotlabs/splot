@@ -1376,6 +1376,133 @@ fn translational_compound_average_direct_output_matches_staged_publication() {
 }
 
 #[test]
+fn u8_translational_compound_direct_matches_staged_for_every_relevant_block_size() {
+    const BLOCK_SIZES: &[(usize, usize)] = &[
+        (4, 4),
+        (4, 8),
+        (8, 4),
+        (8, 8),
+        (8, 16),
+        (16, 8),
+        (16, 16),
+        (16, 32),
+        (32, 16),
+        (32, 32),
+        (32, 64),
+        (64, 32),
+        (64, 64),
+        (64, 128),
+        (128, 64),
+        (128, 128),
+        (4, 16),
+        (16, 4),
+        (8, 32),
+        (32, 8),
+        (16, 64),
+        (64, 16),
+        (4, 32),
+        (32, 4),
+        (8, 64),
+        (64, 8),
+    ];
+    let (width, height) = (265, 263);
+    let reference0 = patterned_frame_with_format(PixelFormat::Monochrome, width, height, 17);
+    let reference1 = patterned_frame_with_format(PixelFormat::Monochrome, width, height, 91);
+
+    for &(block_w, block_h) in BLOCK_SIZES {
+        for (x, y) in [(8, 8), ((width - block_w) & !3, (height - block_h) & !3)] {
+            assert_u8_direct_matches_staged(
+                &reference0,
+                &reference1,
+                PixelFormat::Monochrome,
+                width,
+                height,
+                rect(x, y, block_w, block_h),
+                [Mv { row: 3, col: 5 }, Mv { row: -5, col: -3 }],
+                CWP_EQUAL,
+                false,
+            );
+        }
+    }
+}
+
+#[test]
+fn u8_translational_compound_direct_matches_staged_across_formats_weights_and_subpel() {
+    let (width, height) = (67, 65);
+    let motion_cases = [
+        [Mv::ZERO, Mv::ZERO],
+        [Mv { row: 0, col: 3 }, Mv { row: 0, col: -5 }],
+        [Mv { row: 3, col: 0 }, Mv { row: -5, col: 0 }],
+        [Mv { row: 3, col: 5 }, Mv { row: -5, col: -3 }],
+    ];
+    for format in [
+        PixelFormat::Monochrome,
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+    ] {
+        let reference0 = patterned_frame_with_format(format, width, height, 23);
+        let reference1 = patterned_frame_with_format(format, width, height, 107);
+        for cwp_weight in [-4, 4, CWP_EQUAL, 12, 20] {
+            for mvs in motion_cases {
+                for block_rect in [rect(8, 8, 16, 16), rect(48, 48, 16, 16)] {
+                    assert_u8_direct_matches_staged(
+                        &reference0,
+                        &reference1,
+                        format,
+                        width,
+                        height,
+                        block_rect,
+                        mvs,
+                        cwp_weight,
+                        format != PixelFormat::Monochrome,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn u8_translational_compound_direct_preflights_all_planes_before_writing() {
+    let (width, height) = (17, 15);
+    let reference0 = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 11);
+    let reference1 = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 71);
+    let mut block = InterBlockParams::compound_average(
+        ReferenceSamples::settled(&reference0),
+        ReferenceSamples::settled(&reference1),
+        rect(0, 0, 8, 8),
+        Mv::ZERO,
+        Mv::ZERO,
+        InterpolationFilter::EightTap,
+        CompoundBlend::default(),
+    )
+    .into_compound()
+    .expect("compound block");
+    block.rect.chroma_luma_x = 16;
+
+    let mut workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
+    assert!(
+        !compound_average::predict_translational_direct(
+            &mut WorkspaceSink::Frame(&mut workspace),
+            block,
+            ByteOffset::new(0),
+        )
+        .expect("geometry fallback")
+    );
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert!(
+            workspace
+                .samples(plane)
+                .expect("workspace plane")
+                .iter()
+                .all(|&sample| sample == 0),
+            "{plane:?} mutated before geometry fallback"
+        );
+    }
+}
+
+#[test]
 fn direct_compound_blend_preserves_sample_storage_width() {
     let pred0 = [20 * 16, 60 * 16, 255 * 16];
     let pred1 = [44 * 16, 120 * 16, 255 * 16];
@@ -1598,6 +1725,87 @@ fn patterned_frame(width: usize, height: usize) -> DecodedFrame<u8> {
     frame(width, height, y, u, v)
 }
 
+fn patterned_frame_with_format(
+    pixel_format: PixelFormat,
+    width: usize,
+    height: usize,
+    seed: usize,
+) -> DecodedFrame<u8> {
+    let samples = |len: usize, offset: usize| {
+        (0..len)
+            .map(|index| ((index * 29 + seed + offset) % 251) as u8)
+            .collect()
+    };
+    let chroma_width = width.div_ceil(1 << pixel_format.subsampling_x());
+    let chroma_height = height.div_ceil(1 << pixel_format.subsampling_y());
+    frame_for(
+        BitDepth::Eight,
+        pixel_format,
+        width,
+        height,
+        samples(width * height, 0),
+        samples(chroma_width * chroma_height, 37),
+        samples(chroma_width * chroma_height, 83),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assert_u8_direct_matches_staged(
+    reference0: &DecodedFrame<u8>,
+    reference1: &DecodedFrame<u8>,
+    format: PixelFormat,
+    width: usize,
+    height: usize,
+    block_rect: McBlockRect,
+    mvs: [Mv; 2],
+    cwp_weight: i16,
+    has_chroma: bool,
+) {
+    let block = InterBlockParams::compound_average(
+        ReferenceSamples::settled(reference0),
+        ReferenceSamples::settled(reference1),
+        block_rect,
+        mvs[0],
+        mvs[1],
+        InterpolationFilter::EightTap,
+        CompoundBlend::default().average_with_cwp_weight(cwp_weight),
+    )
+    .with_chroma(has_chroma)
+    .into_compound()
+    .expect("compound block");
+    let offset = ByteOffset::new(0);
+    let mut direct = workspace_for::<u8>(BitDepth::Eight, format, width, height);
+    assert!(
+        compound_average::predict_translational_direct(
+            &mut WorkspaceSink::Frame(&mut direct),
+            block,
+            offset,
+        )
+        .expect("direct u8 compound prediction"),
+        "direct fallback for {format:?} {block_rect:?} {mvs:?} weight {cwp_weight}"
+    );
+
+    let mut staged = workspace_for::<u8>(BitDepth::Eight, format, width, height);
+    predict_compound_average_block(&WorkspaceSink::Frame(&mut staged), block, None, offset)
+        .expect("staged compound prediction")
+        .publish(&mut WorkspaceSink::Frame(&mut staged))
+        .expect("publish staged compound prediction");
+
+    let direct = direct.freeze().expect("freeze direct workspace");
+    let staged = staged.freeze().expect("freeze staged workspace");
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        match (direct.plane(plane), staged.plane(plane)) {
+            (Some(direct), Some(staged)) => assert_eq!(
+                direct.samples(),
+                staged.samples(),
+                "{format:?} {plane:?} {block_rect:?} {mvs:?} weight {cwp_weight}"
+            ),
+            (None, None) => {}
+            (direct, staged) => panic!("plane presence differs: {direct:?} versus {staged:?}"),
+        }
+    }
+}
+
 fn flat_frame(width: usize, height: usize, y: u8, u: u8, v: u8) -> DecodedFrame<u8> {
     flat_frame_with_format(PixelFormat::Yuv420, width, height, y, u, v)
 }
@@ -1661,15 +1869,17 @@ fn frame_for<T: ReconSample>(
     )
     .expect("frame info");
 
-    DecodedFrame::try_new(
-        info,
+    let planes = if pixel_format == PixelFormat::Monochrome {
+        FramePlanes::new(plane(luma_size, width, luma_rect, y), None, None)
+    } else {
         FramePlanes::new(
             plane(luma_size, width, luma_rect, y),
             Some(plane(chroma_size, chroma_width, chroma_rect, u)),
             Some(plane(chroma_size, chroma_width, chroma_rect, v)),
-        ),
-    )
-    .expect("decoded frame")
+        )
+    };
+
+    DecodedFrame::try_new(info, planes).expect("decoded frame")
 }
 
 fn plane<T: ReconSample>(
