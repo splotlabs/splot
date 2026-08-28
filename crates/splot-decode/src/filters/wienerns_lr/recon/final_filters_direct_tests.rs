@@ -7,53 +7,34 @@ use super::*;
 use crate::filters::source::StripeInitialization;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
-    PlaneRect, PlaneSize,
+    PlaneRect, PlaneSize, ReconSample,
 };
 use std::sync::Arc;
 
 const POISON: u16 = 0xdead;
 
 fn workspace(format: PixelFormat, width: usize, height: usize) -> CurrentFrameWorkspace<u16> {
-    let info = DecodedFrameInfo::new(
-        OutputIndex::new(0),
-        BitDepth::Ten,
-        format,
-        PlaneSize::new(width, height).unwrap(),
-        PlaneRect::new(0, 0, width, height).unwrap(),
-    )
-    .unwrap();
-    let mut workspace = CurrentFrameWorkspace::new(info, 0_u16).unwrap();
-    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        let Ok(view) = workspace.plane(plane) else {
-            continue;
-        };
-        let size = view.storage_size();
-        for y in 0..size.height() {
-            for x in 0..size.width() {
-                workspace
-                    .set_reconstructed_sample(
-                        plane,
-                        x,
-                        y,
-                        64 + ((x * 7 + y * 11 + plane.index() * 23) % 900) as u16,
-                    )
-                    .unwrap();
-            }
-        }
-    }
-    workspace
+    workspace_with(BitDepth::Ten, format, width, height, |x, y, plane| {
+        64 + ((x * 7 + y * 11 + plane.index() * 23) % 900) as u16
+    })
 }
 
-fn workspace_u8(format: PixelFormat, width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
+fn workspace_with<T: ReconSample>(
+    bit_depth: BitDepth,
+    format: PixelFormat,
+    width: usize,
+    height: usize,
+    mut sample_at: impl FnMut(usize, usize, PlaneId) -> T,
+) -> CurrentFrameWorkspace<T> {
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
-        BitDepth::Eight,
+        bit_depth,
         format,
         PlaneSize::new(width, height).unwrap(),
         PlaneRect::new(0, 0, width, height).unwrap(),
     )
     .unwrap();
-    let mut workspace = CurrentFrameWorkspace::new(info, 0_u8).unwrap();
+    let mut workspace = CurrentFrameWorkspace::new(info, T::default()).unwrap();
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         let Ok(view) = workspace.plane(plane) else {
             continue;
@@ -62,12 +43,7 @@ fn workspace_u8(format: PixelFormat, width: usize, height: usize) -> CurrentFram
         for y in 0..size.height() {
             for x in 0..size.width() {
                 workspace
-                    .set_reconstructed_sample(
-                        plane,
-                        x,
-                        y,
-                        20 + ((x * 7 + y * 11 + plane.index() * 23) % 200) as u8,
-                    )
+                    .set_reconstructed_sample(plane, x, y, sample_at(x, y, plane))
                     .unwrap();
             }
         }
@@ -467,7 +443,13 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
 
 #[test]
 fn u8_lossless_luma_samples_are_widened_into_the_direct_u16_destination() {
-    let workspace = workspace_u8(PixelFormat::Monochrome, 8, 8);
+    let workspace = workspace_with(
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        8,
+        8,
+        |x, y, plane| 20 + ((x * 7 + y * 11 + plane.index() * 23) % 200) as u8,
+    );
     let records = [lossless_block()];
     let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
         2,
