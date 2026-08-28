@@ -497,6 +497,86 @@ fn dispatcher_blends_compound_average_with_odd_chroma_extents() {
 }
 
 #[test]
+fn single_reference_u8_direct_matches_sliced_fallback_across_chroma_formats_and_edges() {
+    for format in [
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+    ] {
+        let width = 17;
+        let height = 15;
+        let reference = patterned_frame_with_format(format, width, height, 23);
+        for (block_rect, mv, interp) in [
+            (
+                rect(0, 0, width, height),
+                Mv::ZERO,
+                InterpolationFilter::EightTap,
+            ),
+            (
+                rect(1, 1, width - 1, height - 1),
+                Mv { row: 5, col: -3 },
+                InterpolationFilter::EightTapSharp,
+            ),
+        ] {
+            SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+            let block = InterBlockParams::single(
+                ReferenceSamples::settled(&reference),
+                block_rect,
+                mv,
+                interp,
+            );
+            let mut direct = workspace_with_format(format, width, height);
+            motion_compensate_inter_block_into(
+                &mut WorkspaceSink::Frame(&mut direct),
+                block,
+                ByteOffset::new(0),
+            )
+            .expect("direct u8 single-reference prediction");
+            SUBPEL_PREDICTION_BUFFER
+                .with(|slot| assert!(slot.take().is_none(), "direct path used packed u16 storage"));
+
+            let mut staged = workspace_with_format(format, width, height);
+            let luma_rect = PlaneRect::new(
+                block_rect.luma_x,
+                block_rect.luma_y,
+                block_rect.luma_w,
+                block_rect.luma_h,
+            )
+            .expect("surface rectangle");
+            {
+                let mut surfaces = staged
+                    .rect_surfaces(&[luma_rect])
+                    .expect("rectangle surface");
+                let surface = surfaces.first_mut().expect("one rectangle surface");
+                motion_compensate_inter_block_into(
+                    &mut WorkspaceSink::Rect(surface),
+                    block,
+                    ByteOffset::new(0),
+                )
+                .expect("sliced u8 single-reference prediction");
+            }
+            SUBPEL_PREDICTION_BUFFER.with(|slot| {
+                assert!(
+                    slot.take().is_some(),
+                    "sliced fallback skipped packed u16 storage"
+                );
+            });
+
+            let direct = direct.freeze().expect("freeze direct workspace");
+            let staged = staged.freeze().expect("freeze staged workspace");
+            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+                assert_eq!(
+                    visible_samples(&direct, plane),
+                    visible_samples(&staged, plane),
+                    "{format:?} {plane:?} {block_rect:?} {mv:?}"
+                );
+            }
+        }
+    }
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+}
+
+#[test]
 fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);

@@ -64,6 +64,44 @@ impl SubpelOutput<u16> for ClippedU16SubpelOutput {
     }
 }
 
+pub(super) struct ClippedU8SubpelOutput;
+
+impl ClippedU8SubpelOutput {
+    #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
+    #[inline(always)]
+    fn clip<const LANES: usize>(values: Simd<i32, LANES>) -> Simd<u8, LANES> {
+        values
+            .simd_clamp(Simd::splat(0), Simd::splat(i32::from(u8::MAX)))
+            .cast()
+    }
+}
+
+impl SubpelOutput<u8> for ClippedU8SubpelOutput {
+    #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
+    #[inline(always)]
+    fn one(&mut self, value: i32) -> u8 {
+        value.clamp(0, i32::from(u8::MAX)) as u8
+    }
+
+    #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
+    #[inline(always)]
+    fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [u8]) {
+        output.copy_from_slice(&Self::clip(values).to_array()); // splot-copy-ok: publish sixteen clipped SIMD prediction lanes
+    }
+
+    #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
+    #[inline(always)]
+    fn eight(&mut self, values: Simd<i32, 8>, output: &mut [u8]) {
+        output.copy_from_slice(&Self::clip(values).to_array()); // splot-copy-ok: publish eight clipped SIMD prediction lanes
+    }
+
+    #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
+    #[inline(always)]
+    fn four(&mut self, values: Simd<i32, 4>, output: &mut [u8]) {
+        output.copy_from_slice(&Self::clip(values).to_array()); // splot-copy-ok: publish four clipped SIMD prediction lanes
+    }
+}
+
 pub(super) struct CompoundAverageSubpelOutput<'a> {
     pub(super) pred0: &'a [i32],
     pub(super) index: usize,

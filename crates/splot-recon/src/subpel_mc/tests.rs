@@ -1022,6 +1022,133 @@ fn single_prediction_strided_matches_contiguous_and_preserves_padding() {
 }
 
 #[test]
+fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edges() {
+    let (ref_w, ref_h) = (80usize, 72usize);
+    let samples = (0..ref_w * ref_h)
+        .map(|index| {
+            let row = index / ref_w;
+            let col = index % ref_w;
+            if (row * 5 + col * 3).is_multiple_of(7) {
+                255u8
+            } else {
+                ((row * 41 + col * 73 + index * 11) & 255) as u8
+            }
+        })
+        .collect::<Vec<_>>();
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let filters = [
+        InterpolationFilter::EightTap,
+        InterpolationFilter::EightTapSmooth,
+        InterpolationFilter::EightTapSharp,
+        InterpolationFilter::Bilinear,
+    ];
+    let widths = [1usize, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33];
+    let heights = [1usize, 3, 5, 7, 9];
+    let mut saw_clip_ends = [false; 2];
+
+    for (filter_index, interp) in filters.into_iter().enumerate() {
+        for scaled in [false, true] {
+            for horizontal_phase in 0..16i32 {
+                for vertical_phase in 0..16i32 {
+                    let case = filter_index * 512
+                        + usize::from(scaled) * 256
+                        + horizontal_phase as usize * 16
+                        + vertical_phase as usize;
+                    let w = widths[case % widths.len()];
+                    let h = heights[(case / widths.len()) % heights.len()];
+                    let base_x = [-3, 7, ref_w as i32 - 2][case % 3];
+                    let base_y = [-2, 9, ref_h as i32 - 2][(case / 3) % 3];
+                    let params = SubpelPredictParams {
+                        interp,
+                        w,
+                        h,
+                        start_x: (base_x << SCALE_SUBPEL_BITS) + (horizontal_phase << 6),
+                        start_y: (base_y << SCALE_SUBPEL_BITS) + (vertical_phase << 6),
+                        step_x: if scaled { 896 } else { 1 << SCALE_SUBPEL_BITS },
+                        step_y: if scaled { 1152 } else { 1 << SCALE_SUBPEL_BITS },
+                        first_x: 0,
+                        first_y: 0,
+                        last_x: ref_w as i32 - 1,
+                        last_y: ref_h as i32 - 1,
+                        bit_depth: BitDepth::Eight,
+                    };
+                    let stride = w + 5;
+                    let mut expected = vec![u16::MAX; stride * h + 3];
+                    subpel_predict_block_strided_into(&view, &params, &mut expected, stride)
+                        .unwrap();
+                    let mut actual = (0..expected.len())
+                        .map(|index| (index as u8).wrapping_mul(37).wrapping_add(0x5a))
+                        .collect::<Vec<_>>();
+                    let before = actual.clone();
+                    subpel_predict_block_strided_into_u8(&view, &params, &mut actual, stride)
+                        .unwrap();
+
+                    for row in 0..h {
+                        let expected_row = &expected[row * stride..row * stride + w];
+                        saw_clip_ends[0] |= expected_row.contains(&0);
+                        saw_clip_ends[1] |= expected_row.contains(&u16::from(u8::MAX));
+                        assert!(
+                            actual[row * stride..row * stride + w]
+                                .iter()
+                                .zip(expected_row)
+                                .all(|(&actual, &expected)| u16::from(actual) == expected),
+                            "{interp:?} scaled={scaled} {w}x{h} phases={horizontal_phase},{vertical_phase} row={row}"
+                        );
+                        assert_eq!(
+                            &actual[row * stride + w..(row + 1) * stride],
+                            &before[row * stride + w..(row + 1) * stride],
+                            "row padding changed"
+                        );
+                    }
+                    assert_eq!(&actual[stride * h..], &before[stride * h..]);
+                }
+            }
+        }
+    }
+    assert_eq!(saw_clip_ends, [true; 2], "both clipping ends exercised");
+}
+
+#[test]
+fn single_prediction_u8_rejects_destination_geometry_before_mutation() {
+    let samples = vec![91u8; 32 * 32];
+    let view = ReferencePlaneView::new(&samples, 32, 32).unwrap();
+    let valid = full_pel_params(InterpolationFilter::EightTap, 17, 3, 2, 2, 32, 32);
+    let sentinel = 0xa5;
+
+    let invalid_params = SubpelPredictParams { w: 0, ..valid };
+    let mut invalid_output = vec![sentinel; 8];
+    assert_eq!(
+        subpel_predict_block_strided_into_u8(&view, &invalid_params, &mut invalid_output, 0),
+        Err(ReconError::ZeroDimension {
+            field: "subpel block width"
+        })
+    );
+    assert!(invalid_output.iter().all(|&sample| sample == sentinel));
+
+    let mut short_stride = vec![sentinel; 128];
+    assert_eq!(
+        subpel_predict_block_strided_into_u8(&view, &valid, &mut short_stride, valid.w - 1),
+        Err(ReconError::StrideTooSmall {
+            stride_samples: valid.w - 1,
+            storage_width: valid.w,
+        })
+    );
+    assert!(short_stride.iter().all(|&sample| sample == sentinel));
+
+    let stride = valid.w + 5;
+    let required = (valid.h - 1) * stride + valid.w;
+    let mut short_output = vec![sentinel; required - 1];
+    assert_eq!(
+        subpel_predict_block_strided_into_u8(&view, &valid, &mut short_output, stride),
+        Err(ReconError::BufferLengthMismatch {
+            expected: required,
+            actual: required - 1,
+        })
+    );
+    assert!(short_output.iter().all(|&sample| sample == sentinel));
+}
+
+#[test]
 fn single_prediction_into_rejects_short_output_without_writes() {
     let ref_w = 8usize;
     let ref_h = 8usize;

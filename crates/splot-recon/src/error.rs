@@ -944,6 +944,18 @@ pub enum ReconError {
         /// Supplied reference-plane sample-buffer length.
         actual: usize,
     },
+    /// A § 7.13.3.18 sub-pel reference clipping interval was inverted.
+    #[error("invalid subpel reference bounds x={first_x}..{last_x}, y={first_y}..{last_y}")]
+    SubpelReferenceBoundsInvalid {
+        /// Supplied horizontal lower bound (`firstX`).
+        first_x: i32,
+        /// Supplied vertical lower bound (`firstY`).
+        first_y: i32,
+        /// Supplied horizontal upper bound (`lastX`).
+        last_x: i32,
+        /// Supplied vertical upper bound (`lastY`).
+        last_y: i32,
+    },
     /// A § 7.13.3.18 sub-pel motion-compensation block dimension exceeded the
     /// supported maximum (a 128-sample super-block side).
     #[error("unsupported subpel block dimension {w}x{h}; each side must be at most 128")]
