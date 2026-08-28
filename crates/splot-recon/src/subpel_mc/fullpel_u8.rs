@@ -19,6 +19,14 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     output_stride: usize,
 ) -> Result<()> {
     let intermediate_height = validate_subpel_u8_output(params, output, output_stride)?;
+    let params = SubpelPredictParams {
+        first_x: params.first_x.clamp(0, reference.width as i32 - 1),
+        first_y: params.first_y.clamp(0, reference.readable_rows as i32 - 1),
+        last_x: params.last_x.clamp(0, reference.width as i32 - 1),
+        last_y: params.last_y.clamp(0, reference.readable_rows as i32 - 1),
+        ..*params
+    };
+    let params = &params;
     if params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
         && (params.start_x >> 6) & SUBPEL_MASK == 0
@@ -266,6 +274,39 @@ mod tests {
         subpel_predict_block_strided_into_u8(&view, &params, &mut output, params.w)?;
 
         assert_eq!(output, [samples[0]; 4]);
+        Ok(())
+    }
+
+    #[test]
+    fn single_u8_filtered_clamps_negative_bounds_before_index_conversion() -> Result<()> {
+        let samples = (0..16u8).map(|value| value * 13).collect::<Vec<_>>();
+        let view = ReferencePlaneView::new(&samples, 4, 4)?;
+        let negative = SubpelPredictParams {
+            interp: InterpolationFilter::EightTapSharp,
+            start_x: -2 * (1 << SCALE_SUBPEL_BITS) + 5 * (1 << 6),
+            start_y: -2 * (1 << SCALE_SUBPEL_BITS) + 7 * (1 << 6),
+            step_x: 896,
+            step_y: 1152,
+            first_x: -2,
+            first_y: -2,
+            last_x: -1,
+            last_y: -1,
+            ..params(BitDepth::Eight)
+        };
+        let normalized = SubpelPredictParams {
+            first_x: 0,
+            first_y: 0,
+            last_x: 0,
+            last_y: 0,
+            ..negative
+        };
+        let mut expected = [u16::MAX; 4];
+        let mut actual = [u8::MAX; 4];
+
+        subpel_predict_block_strided_into(&view, &normalized, &mut expected, normalized.w)?;
+        subpel_predict_block_strided_into_u8(&view, &negative, &mut actual, negative.w)?;
+
+        assert_eq!(actual.map(u16::from), expected);
         Ok(())
     }
 }
