@@ -219,6 +219,10 @@ impl DirectPlaneTarget {
         self.region.len
     }
 
+    pub(crate) const fn is_u16(&self) -> bool {
+        matches!(self.region.samples, DirectPlaneSamples::U16(_))
+    }
+
     #[inline]
     /// The target uniquely owns this non-overlapping stripe region.
     pub(crate) fn u8_samples_mut(&mut self) -> Option<&mut [u8]> {
@@ -262,8 +266,19 @@ pub(crate) struct DirectStripeTarget {
 }
 
 impl DirectStripeTarget {
+    pub(crate) fn get(&self, plane: PlaneId) -> Option<&DirectPlaneTarget> {
+        self.planes[plane.index()].as_ref()
+    }
+
     pub(crate) fn take(&mut self, plane: PlaneId) -> Option<DirectPlaneTarget> {
         self.planes[plane.index()].take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shorten_for_test(&mut self, plane: PlaneId) {
+        if let Some(target) = self.planes[plane.index()].as_mut() {
+            target.region.len = target.region.len.saturating_sub(1);
+        }
     }
 
     pub(crate) fn split(mut self, second: [bool; 3]) -> (Self, Self) {

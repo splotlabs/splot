@@ -11,7 +11,7 @@ use splot_recon::{
     cdef_filter_sample,
 };
 
-fn constant_cdef_grid(
+pub(super) fn constant_cdef_grid(
     mi_rows: usize,
     mi_cols: usize,
     value: usize,
@@ -297,7 +297,7 @@ fn lossless_grid_leaves_lossless_luma_8x8_unfiltered() {
     assert_eq!(before, luma_8x8(&ws));
 }
 
-fn deblock_block(
+pub(super) fn deblock_block(
     r: usize,
     c: usize,
     n4w: usize,
