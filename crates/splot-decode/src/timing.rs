@@ -172,8 +172,6 @@ pub(crate) enum Phase {
     DeblockPlanePass,
     /// One stripe's deblocked source window copied out of the workspace.
     FilterStripeWindow,
-    /// One drain of the finished stripes into the frame being published.
-    FilterStripePublish,
     /// The filtered frame's freeze, once the last stripe has landed.
     FilterFreeze,
     /// Wiener NS luma restoration of one block.
@@ -184,7 +182,7 @@ pub(crate) enum Phase {
     PcWienerFilter,
 }
 
-const PHASE_NAMES: [&str; 35] = [
+const PHASE_NAMES: [&str; 34] = [
     "row",
     "block",
     "resolve_row",
@@ -215,7 +213,6 @@ const PHASE_NAMES: [&str; 35] = [
     "filter_deblock",
     "deblock_plane_pass",
     "filter_stripe_window",
-    "filter_stripe_publish",
     "filter_freeze",
     "wiener_ns_luma",
     "pc_wiener_classify",

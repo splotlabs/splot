@@ -22,8 +22,8 @@ const MI_SIZE: usize = 4;
 ///
 /// A pipelined frame publishes into the [`FrameProgress`] its slot already
 /// shares, so a consumer can read the published prefix before the freeze. An
-/// inline frame creates the same sink privately, keeping one output path for
-/// direct stripe writes and fallback copies.
+/// inline frame creates the same sink privately, keeping one direct stripe
+/// output path.
 ///
 /// [`FrameProgress`]: crate::pipeline::frame_progress::FrameProgress
 struct FilteredFrameSink<'a, 'job, T: ReconSample> {
@@ -48,81 +48,49 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
         Ok(Self { progress, admit })
     }
 
-    /// Moves one finished stripe's samples into the output exactly once.
-    ///
-    /// A published output is shared with the blocks of the next frame reading
-    /// this frame's published prefix, so the copy is queued rather than waited
-    /// for: a stripe that took a turn behind those readers would stall its own
-    /// worker and, under a writer-preferring lock, hold up every reader arriving
-    /// behind it. Whichever thread next finds the output free copies the whole
-    /// queue, so nothing lands twice and the copies stay off every wait path.
+    /// Lends one stripe's exact output region.
     fn direct_stripe(
         &self,
         stripe: usize,
-    ) -> Option<crate::pipeline::frame_progress::DirectStripeLease<T>> {
-        self.progress.direct_stripe(stripe)
+    ) -> Result<crate::pipeline::frame_progress::DirectStripeLease<T>> {
+        self.progress
+            .direct_stripe(stripe)
+            .ok_or_else(lr_pipeline_state_error)
     }
 
     fn publish_stripe(
         &self,
-        stripe: usize,
         mut samples: final_filters::FilteredStripe,
-        direct: Option<crate::pipeline::frame_progress::DirectStripeLease<T>>,
+        direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
     ) -> Result<()> {
-        if let Some(direct) = direct {
-            if !samples.y.is_direct()
-                || samples.u.as_ref().is_some_and(|plane| !plane.is_direct())
-                || samples.v.as_ref().is_some_and(|plane| !plane.is_direct())
-            {
-                return Err(lr_pipeline_state_error());
-            }
-            samples
-                .y
+        if !samples.y.is_direct()
+            || samples.u.as_ref().is_some_and(|plane| !plane.is_direct())
+            || samples.v.as_ref().is_some_and(|plane| !plane.is_direct())
+        {
+            return Err(lr_pipeline_state_error());
+        }
+        samples
+            .y
+            .finish_direct()
+            .map_err(|_| lr_pipeline_state_error())?;
+        if let Some(plane) = samples.u.as_mut() {
+            plane
                 .finish_direct()
                 .map_err(|_| lr_pipeline_state_error())?;
-            if let Some(plane) = samples.u.as_mut() {
-                plane
-                    .finish_direct()
-                    .map_err(|_| lr_pipeline_state_error())?;
-            }
-            if let Some(plane) = samples.v.as_mut() {
-                plane
-                    .finish_direct()
-                    .map_err(|_| lr_pipeline_state_error())?;
-            }
-            drop(samples);
-            if !direct.submit() {
-                return Err(lr_pipeline_state_error());
-            }
-            if let Some(admit) = self.admit {
-                admit.admit_ready();
-            }
-            return Ok(());
         }
-        let copy = move |output: &mut CurrentFrameWorkspace<T>| {
-            publish_filter_stripe_to(output, PlaneId::Y, &samples.y)?;
-            if let Some(plane) = samples.u.as_ref() {
-                publish_filter_stripe_to(output, PlaneId::U, plane)?;
-            }
-            if let Some(plane) = samples.v.as_ref() {
-                publish_filter_stripe_to(output, PlaneId::V, plane)?;
-            }
-            Ok(())
-        };
-        let published = self.progress.publish_stripe(stripe, Box::new(copy));
+        if let Some(plane) = samples.v.as_mut() {
+            plane
+                .finish_direct()
+                .map_err(|_| lr_pipeline_state_error())?;
+        }
+        drop(samples);
+        if !direct.submit() {
+            return Err(lr_pipeline_state_error());
+        }
         if let Some(admit) = self.admit {
             admit.admit_ready();
         }
-        published
-    }
-
-    /// Copies every stripe still queued into the output, waiting for it.
-    ///
-    /// This is what makes every stripe's samples present before the freeze even
-    /// when the output was busy each time a stripe finished. Waiting is safe
-    /// only here: the filter phase is over, so no stripe can queue behind it.
-    fn drain_before_freeze(&self) -> Result<()> {
-        self.progress.drain_pending_blocking()
+        Ok(())
     }
 
     /// Freezes the filtered output and hands the frozen frame to `publish`.
@@ -196,7 +164,7 @@ pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
 pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
     stripe: usize,
     frame: final_filters::FilteredStripe,
-    direct: Option<crate::pipeline::frame_progress::DirectStripeLease<T>>,
+    direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
 }
 
 /// One scheduled stripe with sole ownership of its deblocked input window.
@@ -908,11 +876,8 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         range: &(usize, usize),
         deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
     ) -> Result<OwnedFilteredStripe<T>> {
-        let mut direct = self.sink.direct_stripe(stripe);
-        let target = match direct.as_mut() {
-            Some(direct) => direct.take_target(),
-            None => None,
-        };
+        let mut direct = self.sink.direct_stripe(stripe)?;
+        let target = direct.take_target().ok_or_else(lr_pipeline_state_error)?;
         Ok(OwnedFilteredStripe {
             stripe,
             frame: self.run_planes(range, deblocked, target)?,
@@ -955,8 +920,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             }
             *lifecycle = StripeLifecycle::Submitted;
         }
-        self.sink
-            .publish_stripe(stripe.stripe, stripe.frame, stripe.direct)
+        self.sink.publish_stripe(stripe.frame, stripe.direct)
     }
 
     fn claim(&self, stripe: usize) -> Result<&(usize, usize)> {
@@ -1095,7 +1059,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         &self,
         &(start, end): &(usize, usize),
         deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
-        target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
+        target: crate::pipeline::frame_progress::DirectStripeTarget,
     ) -> Result<final_filters::FilteredStripe> {
         let chain = self.chain();
         let [y_end, u_end] = self.lr_plane_ends;
@@ -1109,7 +1073,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             if plane == PlaneId::Y || self.bit_depth != BitDepth::Eight || !active_lr[index] {
                 return false;
             }
-            let Some(target) = target.as_ref().and_then(|target| target.get(plane)) else {
+            let Some(target) = target.get(plane) else {
                 return false;
             };
             let Some(target_end_y) = target.end_y() else {
@@ -1130,10 +1094,8 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
                     target_end_y,
                 )
         });
-        let (cdef_target, lr_target) = target
-            .map(|target| target.split(active_lr))
-            .map_or((None, None), |(cdef, lr)| (Some(cdef), Some(lr)));
-        let cdef = self.cdef_ccso_range(deblocked, &chain, start, end, cdef_target)?;
+        let (cdef_target, lr_target) = target.split(active_lr);
+        let cdef = self.cdef_ccso_range(deblocked, &chain, start, end, Some(cdef_target))?;
         let cdef_overlap = self.cdef_overlap_planes(deblocked, &chain, start, end)?;
         let lr_timer = crate::timing::start();
         let mut frame = chain.apply_lr_stripe(
@@ -1189,7 +1151,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         if !complete {
             return Err(lr_pipeline_state_error());
         }
-        self.sink.drain_before_freeze()?;
         self.filter_records.lr_source_blocks = self.lr_source_blocks;
         self.filter_records.lr_unit_filters = self.lr_unit_filters;
         let has_restored_deblock = self
@@ -1469,52 +1430,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.tx_skip_grid = Some(grid);
         Ok(())
     }
-}
-
-fn publish_filter_stripe_to<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    plane: PlaneId,
-    stripe: &crate::filters::source::StripeOutputPlane,
-) -> Result<()> {
-    let error = || lr_pipeline_state_error();
-    let stripe = stripe.as_u16().ok_or_else(&error)?;
-    let end_y = stripe.end_y().ok_or_else(&error)?;
-    let size = workspace.plane(plane).map_err(|_| error())?.storage_size();
-    let mut frame = workspace.as_frame_mut();
-    let view = frame.plane_mut(plane).ok_or_else(&error)?;
-    let stride = view.stride_samples();
-    if stripe.width() != size.width() || stripe.frame_height() != size.height() {
-        return Err(error());
-    }
-    let samples = view.samples_mut();
-    if stride == stripe.width()
-        && let Some(destination) = T::u16_slice_mut(samples)
-    {
-        let start = stripe.origin_y().checked_mul(stride).ok_or_else(&error)?;
-        let end = start
-            .checked_add(stripe.samples().len())
-            .ok_or_else(&error)?;
-        destination
-            .get_mut(start..end)
-            .ok_or_else(&error)?
-            .copy_from_slice(stripe.samples());
-        return Ok(());
-    }
-    for y in stripe.origin_y()..end_y {
-        let source = stripe.row(y).ok_or_else(&error)?;
-        let start = y.checked_mul(stride).ok_or_else(&error)?;
-        let destination = samples
-            .get_mut(start..start.checked_add(source.len()).ok_or_else(&error)?)
-            .ok_or_else(&error)?;
-        if let Some(destination) = T::u16_slice_mut(destination) {
-            destination.copy_from_slice(source);
-        } else {
-            for (destination, &source) in destination.iter_mut().zip(source) {
-                *destination = T::try_from_u16(source).map_err(|_| error())?;
-            }
-        }
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

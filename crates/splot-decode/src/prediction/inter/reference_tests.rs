@@ -78,18 +78,25 @@ fn settled_frame() -> DecodedFrame<u8> {
 
 /// Opens a progress whose first stripe covers `published` rows of the ramp.
 fn published_progress(published: usize) -> FrameProgress<u8> {
-    let progress = FrameProgress::new(info(WIDTH, HEIGHT)).expect("frame progress");
+    let progress =
+        std::sync::Arc::new(FrameProgress::new(info(WIDTH, HEIGHT)).expect("frame progress"));
     assert!(progress.begin(&[(0, published), (published, HEIGHT)]));
-    progress
-        .publish_stripe(
-            0,
-            Box::new(|workspace| {
-                fill_ramp(workspace, HEIGHT);
-                Ok(())
-            }),
-        )
-        .expect("stripe publication");
-    progress
+    let mut lease = progress.direct_stripe(0).expect("stripe lease");
+    let mut target = lease.take_target().expect("stripe target");
+    let mut y = target.take(PlaneId::Y).expect("luma target");
+    let stride = y.width();
+    let origin_y = y.origin_y();
+    for (row, samples) in y
+        .u8_samples_mut()
+        .expect("u8 luma")
+        .chunks_exact_mut(stride)
+        .enumerate()
+    {
+        samples.fill(((origin_y + row) % 251) as u8);
+    }
+    drop(y);
+    assert!(lease.submit());
+    std::sync::Arc::into_inner(progress).expect("sole progress owner")
 }
 
 fn block(

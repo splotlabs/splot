@@ -338,8 +338,9 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
         .unwrap();
 
     let sink = final_filter_sink_8bit::<u8>();
-    let progress =
-        Arc::new(crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap());
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
+    );
     let admit = AdmitCounter::default();
     let (setup, workspace) = sink
         .into_owned_filter_setup(
@@ -370,11 +371,6 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
         ranges.len(),
         "every direct publication must wake row-gated dependents"
     );
-    assert!(
-        progress.publish_stripe(0, Box::new(|_| Ok(()))).is_err(),
-        "the u8 filter path must have selected direct publication"
-    );
-
     let (actual, _) = setup.finish(core::convert::identity).unwrap();
     workspace.recycle_planes();
     assert_eq!(
@@ -696,10 +692,18 @@ fn luma_rect(samples: &[u8], x: usize) -> Vec<u8> {
 }
 
 fn apply_luma_lr(
-    sink: &mut WienerNsLrReconSink<u8>,
+    sink: &WienerNsLrReconSink<u8>,
     core: &FrameHeaderCore,
     blocks: &[WienerNsLrSourceBlock],
-) {
+) -> Vec<u8> {
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
+    );
+    assert!(progress.begin(&[(0, 16)]));
+    let mut lease = progress.direct_stripe(0).unwrap();
+    let target = lease.take_target().unwrap();
+    let (target, chroma) = target.split([false, true, true]);
+    drop(chroma);
     let cdef = crate::filters::cdef::cdef_stripe(
         crate::filters::source::DeblockedPlanes::frame(sink.workspace.as_ref().unwrap()).unwrap(),
         None,
@@ -725,22 +729,28 @@ fn apply_luma_lr(
             super::LrStripeOutput {
                 active_planes: [true, false, false],
                 direct_u8_planes: [false; 3],
-                target: None,
+                target,
             },
         )
         .unwrap()
         .into_filtered();
-    super::super::publish_filter_stripe_to(
-        sink.workspace.as_mut().unwrap(),
-        PlaneId::Y,
-        &filtered.y,
-    )
-    .unwrap();
+    let mut filtered = filtered;
+    filtered.y.finish_direct().unwrap();
+    drop(filtered);
+    assert!(lease.submit());
+    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    frame.y().samples().to_vec()
 }
 
 #[test]
 fn inactive_filter_planes_reuse_cdef_storage() {
     let sink = lr_sink(&[0; 16 * 16]);
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
+    );
+    assert!(progress.begin(&[(0, 16)]));
+    let mut lease = progress.direct_stripe(0).unwrap();
+    let target = lease.take_target().unwrap();
     let cdef = crate::filters::cdef::cdef_stripe(
         crate::filters::source::DeblockedPlanes::frame(sink.workspace.as_ref().unwrap()).unwrap(),
         None,
@@ -767,7 +777,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
             super::LrStripeOutput {
                 active_planes: [false; 3],
                 direct_u8_planes: [false; 3],
-                target: None,
+                target,
             },
         )
         .unwrap()
@@ -888,36 +898,19 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     with_lr_source_scratch::<u8, _>(|scratch| {
         scratch.cell_subclasses.resize(32, usize::MAX);
     });
-    let mut mixed = lr_sink(&snapshot);
-    apply_luma_lr(&mut mixed, &mixed_core, &[pc_block, wiener_ns_block]);
-    let mut pc_only = lr_sink(&snapshot);
-    apply_luma_lr(&mut pc_only, &pc_core, &[pc_block]);
-    let mut wiener_ns_only = lr_sink(&snapshot);
-    apply_luma_lr(&mut wiener_ns_only, &wiener_ns_core, &[wiener_ns_block]);
+    let mixed_luma = apply_luma_lr(
+        &lr_sink(&snapshot),
+        &mixed_core,
+        &[pc_block, wiener_ns_block],
+    );
+    let pc_luma = apply_luma_lr(&lr_sink(&snapshot), &pc_core, &[pc_block]);
+    let wiener_ns_luma = apply_luma_lr(&lr_sink(&snapshot), &wiener_ns_core, &[wiener_ns_block]);
 
-    let mixed_luma = mixed
-        .workspace
-        .as_ref()
-        .unwrap()
-        .samples(PlaneId::Y)
-        .unwrap();
-    let pc_luma = pc_only
-        .workspace
-        .as_ref()
-        .unwrap()
-        .samples(PlaneId::Y)
-        .unwrap();
-    let wiener_ns_luma = wiener_ns_only
-        .workspace
-        .as_ref()
-        .unwrap()
-        .samples(PlaneId::Y)
-        .unwrap();
-    assert_eq!(luma_rect(mixed_luma, 0), luma_rect(pc_luma, 0));
-    assert_eq!(luma_rect(mixed_luma, 8), luma_rect(wiener_ns_luma, 8));
-    assert_eq!(luma_rect(mixed_luma, 4), luma_rect(&snapshot, 4));
-    assert_ne!(luma_rect(mixed_luma, 0), luma_rect(&snapshot, 0));
-    assert_ne!(luma_rect(mixed_luma, 8), luma_rect(&snapshot, 8));
+    assert_eq!(luma_rect(&mixed_luma, 0), luma_rect(&pc_luma, 0));
+    assert_eq!(luma_rect(&mixed_luma, 8), luma_rect(&wiener_ns_luma, 8));
+    assert_eq!(luma_rect(&mixed_luma, 4), luma_rect(&snapshot, 4));
+    assert_ne!(luma_rect(&mixed_luma, 0), luma_rect(&snapshot, 0));
+    assert_ne!(luma_rect(&mixed_luma, 8), luma_rect(&snapshot, 8));
 }
 
 #[test]
