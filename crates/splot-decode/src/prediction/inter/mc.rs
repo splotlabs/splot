@@ -883,7 +883,6 @@ fn predict_plane<T: ReconSample>(
             subpel_predict_block_strided_into_u8(&view, &params, output, stride)
         })?
     } else {
-        let _ = sink.with_contiguous_u16_rect_mut(plane, target, |_, _| Ok(()))?;
         None
     };
     if direct.is_some() {
