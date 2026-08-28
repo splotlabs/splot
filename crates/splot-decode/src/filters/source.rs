@@ -1346,6 +1346,13 @@ pub(crate) struct StripePlane {
     samples: StripeSamples,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StripeInitialization {
+    CopyAll,
+    /// The caller proves every destination sample is written before publication.
+    FullyOverwritten,
+}
+
 impl StripePlane {
     #[cfg(test)]
     pub(crate) fn from_samples(
@@ -1389,16 +1396,59 @@ impl StripePlane {
         Self::copy_from_into(source, origin_y, end_y, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn copy_from_into<T: ReconSample>(
         source: FramePlane<'_, T>,
         origin_y: usize,
         end_y: usize,
         target: Option<crate::pipeline::frame_progress::DirectPlaneTarget>,
     ) -> Result<Self, StripeCopyError> {
+        Self::copy_from_into_mode(
+            source,
+            origin_y,
+            end_y,
+            target,
+            StripeInitialization::CopyAll,
+        )
+    }
+
+    pub(crate) fn preflight_copy_from_into<T: ReconSample>(
+        source: FramePlane<'_, T>,
+        origin_y: usize,
+        end_y: usize,
+        target: Option<&crate::pipeline::frame_progress::DirectPlaneTarget>,
+        initialization: StripeInitialization,
+    ) -> Result<(), StripeCopyError> {
         let geometry = StripeCopyError::Geometry;
         if origin_y > end_y || end_y > source.frame_height() {
             return Err(geometry);
         }
+        let sample_count = source
+            .width()
+            .checked_mul(end_y - origin_y)
+            .ok_or(geometry)?;
+        match target {
+            Some(target) => (target.width() == source.width()
+                && target.frame_height() == source.frame_height()
+                && target.origin_y() == origin_y
+                && target.len() == sample_count
+                && (initialization == StripeInitialization::CopyAll || target.is_u16()))
+            .then_some(())
+            .ok_or(geometry),
+            None if initialization == StripeInitialization::FullyOverwritten => Err(geometry),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn copy_from_into_mode<T: ReconSample>(
+        source: FramePlane<'_, T>,
+        origin_y: usize,
+        end_y: usize,
+        target: Option<crate::pipeline::frame_progress::DirectPlaneTarget>,
+        initialization: StripeInitialization,
+    ) -> Result<Self, StripeCopyError> {
+        Self::preflight_copy_from_into(source, origin_y, end_y, target.as_ref(), initialization)?;
+        let geometry = StripeCopyError::Geometry;
         let sample_count = source
             .width()
             .checked_mul(end_y - origin_y)
@@ -1443,6 +1493,9 @@ impl StripePlane {
                 });
             }
         };
+        if initialization == StripeInitialization::FullyOverwritten {
+            return Ok(output);
+        }
         let samples = output.samples_mut();
         if source.copy_u16_rows(origin_y, end_y, samples).is_none() {
             let mut written = 0usize;

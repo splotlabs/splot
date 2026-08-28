@@ -12,7 +12,7 @@ use splot_recon::{
     cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 
-use super::source::{DeblockedPlanes, FramePlane, PackedPlane, StripePlane};
+use super::source::{DeblockedPlanes, FramePlane, PackedPlane, StripeInitialization, StripePlane};
 
 const MI_SIZE: usize = 4;
 const MI_SIZE_LOG2: u32 = 2;
@@ -107,12 +107,68 @@ pub(crate) struct CdefSkipGrid {
     rows: usize,
     cols: usize,
     values: Vec<bool>,
+    skipped_block_prefix: Vec<usize>,
 }
 
 impl CdefSkipGrid {
     pub(crate) fn new(rows: usize, cols: usize, values: Vec<bool>) -> Result<Self, CdefError> {
         validate_grid_len(rows, cols, values.len())?;
-        Ok(Self { rows, cols, values })
+        let mut skipped_block_prefix = Vec::with_capacity(rows.div_ceil(STEP4) + 1);
+        skipped_block_prefix.push(0usize);
+        for row in (0..rows).step_by(STEP4) {
+            let mut skipped = 0usize;
+            for col in (0..cols).step_by(STEP4) {
+                let row_end = row.saturating_add(STEP4).min(rows);
+                let col_end = col.saturating_add(STEP4).min(cols);
+                if (row..row_end).all(|row| (col..col_end).all(|col| values[row * cols + col])) {
+                    skipped += 1;
+                }
+            }
+            skipped_block_prefix.push(
+                skipped_block_prefix
+                    .last()
+                    .copied()
+                    .unwrap_or_default()
+                    .checked_add(skipped)
+                    .ok_or(CdefError::Geometry)?,
+            );
+        }
+        Ok(Self {
+            rows,
+            cols,
+            values,
+            skipped_block_prefix,
+        })
+    }
+
+    fn has_all_skipped_8x8(
+        &self,
+        r_start: usize,
+        r_end: usize,
+        mi_rows: usize,
+        mi_cols: usize,
+    ) -> Result<bool, CdefError> {
+        if self.rows != mi_rows
+            || self.cols != mi_cols
+            || r_start > r_end
+            || r_end > mi_rows
+            || !r_start.is_multiple_of(STEP4)
+        {
+            return Err(CdefError::Geometry);
+        }
+        let start = r_start / STEP4;
+        let end = r_end.div_ceil(STEP4);
+        let before = self
+            .skipped_block_prefix
+            .get(start)
+            .copied()
+            .ok_or(CdefError::Geometry)?;
+        let after = self
+            .skipped_block_prefix
+            .get(end)
+            .copied()
+            .ok_or(CdefError::Geometry)?;
+        Ok(after != before)
     }
 
     fn all_skipped_8x8(
@@ -179,6 +235,47 @@ struct CdefBlockLookup<'a> {
     max_sample: i32,
 }
 
+#[derive(Clone, Copy)]
+struct CdefPlaneGeometry {
+    width: usize,
+    frame_height: usize,
+    origin_y: usize,
+    end_y: usize,
+}
+
+impl CdefPlaneGeometry {
+    fn block_count(
+        self,
+        r_start: usize,
+        r_end: usize,
+        mi_cols: usize,
+        sub_x: usize,
+        sub_y: usize,
+    ) -> Option<usize> {
+        let block_width = 8usize.checked_shr(u32::try_from(sub_x).ok()?)?;
+        let block_height = 8usize.checked_shr(u32::try_from(sub_y).ok()?)?;
+        let columns = mi_cols.div_ceil(STEP4);
+        let rows = r_end.checked_sub(r_start)?.div_ceil(STEP4);
+        let expected_origin = r_start.checked_mul(MI_SIZE)?.checked_shr(sub_y as u32)?;
+        let expected_end = expected_origin
+            .checked_add(rows.checked_mul(block_height)?)?
+            .min(self.frame_height);
+        (self.width > 0
+            && self.origin_y == expected_origin
+            && self.end_y == expected_end
+            && columns == self.width.div_ceil(block_width)
+            && rows == (self.end_y - self.origin_y).div_ceil(block_height))
+        .then(|| rows.checked_mul(columns))?
+    }
+}
+
+fn cdef_params_guarantee_write(params: CdefFrameParams, plane: PlaneId) -> bool {
+    match plane {
+        PlaneId::Y => params.y_sec != 0,
+        PlaneId::U | PlaneId::V => params.uv_pri != 0 || params.uv_sec != 0,
+    }
+}
+
 impl CdefBlockLookup<'_> {
     fn at(&self, r: usize, c: usize) -> Result<Option<CdefBlockCtx>, CdefError> {
         let Some(strength_index) = self.grid.strength_for_mi(r, c)? else {
@@ -221,6 +318,99 @@ impl CdefBlockLookup<'_> {
             chroma_lossless,
         }))
     }
+}
+
+fn cdef_initializations(
+    lookup: Option<&CdefBlockLookup<'_>>,
+    target: Option<&crate::pipeline::frame_progress::DirectStripeTarget>,
+    geometry: [Option<CdefPlaneGeometry>; 3],
+    luma_rows: (usize, usize),
+) -> Result<[StripeInitialization; 3], CdefError> {
+    let Some(lookup) = lookup else {
+        return Ok([StripeInitialization::CopyAll; 3]);
+    };
+    let r_start = luma_rows.0 / MI_SIZE;
+    let r_end = luma_rows.1.div_ceil(MI_SIZE).min(lookup.mi_rows);
+    let mut remaining: [Option<usize>; 3] = core::array::from_fn(|index| {
+        let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
+        target
+            .and_then(|target| target.get(plane))
+            .filter(|target| target.is_u16())
+            .and(geometry[index])
+            .and_then(|geometry| {
+                let (sub_x, sub_y) = if plane == PlaneId::Y {
+                    (0, 0)
+                } else {
+                    (lookup.sub_x, lookup.sub_y)
+                };
+                geometry.block_count(r_start, r_end, lookup.mi_cols, sub_x, sub_y)
+            })
+    });
+    if remaining.iter().all(Option::is_none) {
+        return Ok([StripeInitialization::CopyAll; 3]);
+    }
+
+    let unit_row_start = r_start / CDEF_UNIT_MI;
+    let unit_row_end = r_end.div_ceil(CDEF_UNIT_MI);
+    let unit_cols = lookup.mi_cols.div_ceil(CDEF_UNIT_MI);
+    'units: for unit_row in unit_row_start..unit_row_end {
+        for unit_col in 0..unit_cols {
+            let params = lookup
+                .grid
+                .strength_for_mi(unit_row * CDEF_UNIT_MI, unit_col * CDEF_UNIT_MI)?
+                .and_then(|index| lookup.strengths.get(index))
+                .copied();
+            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+                if remaining[plane.index()].is_some()
+                    && !params.is_some_and(|params| cdef_params_guarantee_write(params, plane))
+                {
+                    remaining[plane.index()] = None;
+                }
+            }
+            if remaining.iter().all(Option::is_none) {
+                break 'units;
+            }
+        }
+    }
+
+    if lookup.skip_grid.is_some_and(|skip_grid| {
+        skip_grid
+            .has_all_skipped_8x8(r_start, r_end, lookup.mi_rows, lookup.mi_cols)
+            .unwrap_or(true)
+    }) {
+        return Ok([StripeInitialization::CopyAll; 3]);
+    }
+    if let Some(lossless_grid) = lookup.lossless_grid {
+        let mut r = r_start;
+        'lossless: while r < r_end {
+            let mut c = 0;
+            while c < lookup.mi_cols {
+                if remaining[PlaneId::Y.index()].is_some() && lossless_grid.cdef_luma_lossless(r, c)
+                {
+                    remaining[PlaneId::Y.index()] = None;
+                }
+                for plane in [PlaneId::U, PlaneId::V] {
+                    if remaining[plane.index()].is_some()
+                        && lossless_grid.cdef_chroma_lossless(plane, r, c)
+                    {
+                        remaining[plane.index()] = None;
+                    }
+                }
+                if remaining.iter().all(Option::is_none) {
+                    break 'lossless;
+                }
+                c += STEP4;
+            }
+            r += STEP4;
+        }
+    }
+    Ok(remaining.map(|remaining| {
+        if remaining.is_some() {
+            StripeInitialization::FullyOverwritten
+        } else {
+            StripeInitialization::CopyAll
+        }
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -278,46 +468,18 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     let (sub_x, sub_y) = subsampling;
     let has_chroma = deblocked.u.is_some();
     let deblocked_y = deblocked.y;
-    let filtered_y = StripePlane::copy_from_into(
-        deblocked_y,
-        luma_start,
-        luma_end,
-        target.as_mut().and_then(|target| target.take(PlaneId::Y)),
-    )
-    .map_err(CdefError::from)?;
+    let (deblocked_u, deblocked_v) = if has_chroma {
+        (
+            Some(deblocked.u.ok_or(CdefError::Workspace)?),
+            Some(deblocked.v.ok_or(CdefError::Workspace)?),
+        )
+    } else {
+        (None, None)
+    };
     let chroma_start = luma_start >> sub_y;
     let chroma_end = luma_end.div_ceil(1usize << sub_y);
-    let (deblocked_u, deblocked_v, filtered_u, filtered_v) = if has_chroma {
-        let u = deblocked.u.ok_or(CdefError::Workspace)?;
-        let v = deblocked.v.ok_or(CdefError::Workspace)?;
-        let filtered_u = StripePlane::copy_from_into(
-            u,
-            chroma_start,
-            chroma_end,
-            target.as_mut().and_then(|target| target.take(PlaneId::U)),
-        )
-        .map_err(|error| CdefError::from(error.for_plane(PlaneId::U)))?;
-        let filtered_v = StripePlane::copy_from_into(
-            v,
-            chroma_start,
-            chroma_end,
-            target.as_mut().and_then(|target| target.take(PlaneId::V)),
-        )
-        .map_err(|error| CdefError::from(error.for_plane(PlaneId::V)))?;
-        (Some(u), Some(v), Some(filtered_u), Some(filtered_v))
-    } else {
-        (None, None, None, None)
-    };
-    let mut frame = CdefFrame {
-        deblocked_y,
-        deblocked_u,
-        deblocked_v,
-        filtered_y,
-        filtered_u,
-        filtered_v,
-    };
-    if let (Some(strengths), Some(grid)) = (strengths, grid) {
-        let lookup = CdefBlockLookup {
+    let lookup = if let (Some(strengths), Some(grid)) = (strengths, grid) {
+        Some(CdefBlockLookup {
             strengths,
             grid,
             tile_row_starts: tile_starts.map(|(rows, _)| rows),
@@ -331,8 +493,103 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             has_chroma,
             coeff_shift,
             max_sample,
-        };
-
+        })
+    } else {
+        None
+    };
+    let geometry = [
+        Some(CdefPlaneGeometry {
+            width: deblocked_y.width(),
+            frame_height: deblocked_y.frame_height(),
+            origin_y: luma_start,
+            end_y: luma_end,
+        }),
+        deblocked_u.map(|plane| CdefPlaneGeometry {
+            width: plane.width(),
+            frame_height: plane.frame_height(),
+            origin_y: chroma_start,
+            end_y: chroma_end,
+        }),
+        deblocked_v.map(|plane| CdefPlaneGeometry {
+            width: plane.width(),
+            frame_height: plane.frame_height(),
+            origin_y: chroma_start,
+            end_y: chroma_end,
+        }),
+    ];
+    let initializations = cdef_initializations(
+        lookup.as_ref(),
+        target.as_ref(),
+        geometry,
+        (luma_start, luma_end),
+    )?;
+    StripePlane::preflight_copy_from_into(
+        deblocked_y,
+        luma_start,
+        luma_end,
+        target.as_ref().and_then(|target| target.get(PlaneId::Y)),
+        initializations[PlaneId::Y.index()],
+    )
+    .map_err(CdefError::from)?;
+    if let (Some(u), Some(v)) = (deblocked_u, deblocked_v) {
+        StripePlane::preflight_copy_from_into(
+            u,
+            chroma_start,
+            chroma_end,
+            target.as_ref().and_then(|target| target.get(PlaneId::U)),
+            initializations[PlaneId::U.index()],
+        )
+        .map_err(|error| CdefError::from(error.for_plane(PlaneId::U)))?;
+        StripePlane::preflight_copy_from_into(
+            v,
+            chroma_start,
+            chroma_end,
+            target.as_ref().and_then(|target| target.get(PlaneId::V)),
+            initializations[PlaneId::V.index()],
+        )
+        .map_err(|error| CdefError::from(error.for_plane(PlaneId::V)))?;
+    }
+    let filtered_y = StripePlane::copy_from_into_mode(
+        deblocked_y,
+        luma_start,
+        luma_end,
+        target.as_mut().and_then(|target| target.take(PlaneId::Y)),
+        initializations[PlaneId::Y.index()],
+    )
+    .map_err(CdefError::from)?;
+    let filtered_u = deblocked_u
+        .map(|u| {
+            StripePlane::copy_from_into_mode(
+                u,
+                chroma_start,
+                chroma_end,
+                target.as_mut().and_then(|target| target.take(PlaneId::U)),
+                initializations[PlaneId::U.index()],
+            )
+            .map_err(|error| CdefError::from(error.for_plane(PlaneId::U)))
+        })
+        .transpose()?;
+    let filtered_v = deblocked_v
+        .map(|v| {
+            StripePlane::copy_from_into_mode(
+                v,
+                chroma_start,
+                chroma_end,
+                target.as_mut().and_then(|target| target.take(PlaneId::V)),
+                initializations[PlaneId::V.index()],
+            )
+            .map_err(|error| CdefError::from(error.for_plane(PlaneId::V)))
+        })
+        .transpose()?;
+    let mut frame = CdefFrame {
+        deblocked_y,
+        deblocked_u,
+        deblocked_v,
+        filtered_y,
+        filtered_u,
+        filtered_v,
+    };
+    if let Some(lookup) = lookup.as_ref() {
         let mut r = luma_start / MI_SIZE;
         let r_end = luma_end.div_ceil(MI_SIZE).min(mi_rows);
         let mut pad = [0u16; CDEF_PADDED_AREA];
@@ -1056,3 +1313,7 @@ impl From<crate::filters::source::StripeCopyError> for CdefError {
 #[cfg(test)]
 #[path = "cdef_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cdef_direct_tests.rs"]
+mod direct_tests;
