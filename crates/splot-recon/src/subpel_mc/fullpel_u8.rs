@@ -10,14 +10,15 @@ use super::*;
 ///
 /// # Errors
 /// Returns the same parameter and output-layout errors as
-/// [`subpel_predict_block_strided_into`].
+/// [`subpel_predict_block_strided_into`], and rejects non-eight-bit output or
+/// inverted reference clipping bounds before writing any sample.
 pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u8],
     output_stride: usize,
 ) -> Result<()> {
-    let intermediate_height = validate_subpel_params(params)?;
+    let intermediate_height = validate_subpel_u8_output(params, output, output_stride)?;
     if params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
         && (params.start_x >> 6) & SUBPEL_MASK == 0
@@ -37,6 +38,31 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     )
 }
 
+fn validate_subpel_u8_output(
+    params: &SubpelPredictParams,
+    output: &[u8],
+    output_stride: usize,
+) -> Result<usize> {
+    crate::intra_dc_math::validate_sample_type::<u8>(params.bit_depth)?;
+    let intermediate_height = validate_subpel_params(params)?;
+    let output_len = subpel_output_len(params, output_stride)?;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+    if params.first_x > params.last_x || params.first_y > params.last_y {
+        return Err(ReconError::SubpelReferenceBoundsInvalid {
+            first_x: params.first_x,
+            first_y: params.first_y,
+            last_x: params.last_x,
+            last_y: params.last_y,
+        });
+    }
+    Ok(intermediate_height)
+}
+
 fn subpel_copy_block_u8_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -54,10 +80,11 @@ fn subpel_copy_block_u8_into<T: ReconSample>(
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let direct_x = subpel_direct_copy_x(reference, params);
     for r in 0..params.h {
-        let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
+        let row = (y0 + r as i32)
+            .clamp(params.first_y, params.last_y)
+            .clamp(0, reference.readable_rows as i32 - 1) as usize;
         let output = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
-            let row = row.min(reference.readable_rows - 1);
             let source = &reference.samples
                 [row * reference.stride + x..row * reference.stride + x + params.w];
             if let Some(source) = T::u8_slice(source) {
@@ -69,7 +96,9 @@ fn subpel_copy_block_u8_into<T: ReconSample>(
             }
         } else {
             for (c, output) in output.iter_mut().enumerate() {
-                let col = (x0 + c as i32).clamp(params.first_x, params.last_x) as usize;
+                let col = (x0 + c as i32)
+                    .clamp(params.first_x, params.last_x)
+                    .clamp(0, reference.width as i32 - 1) as usize;
                 *output = reference.sample(row, col).min(i32::from(u8::MAX)) as u8;
             }
         }
@@ -148,4 +177,95 @@ fn subpel_direct_u8_copy_x<T: ReconSample>(
     let last = i32::try_from(end.checked_sub(1)?).ok()?;
     (x >= params.first_x.max(0) as usize && end <= reference.width && last <= params.last_x)
         .then_some(x)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(bit_depth: BitDepth) -> SubpelPredictParams {
+        SubpelPredictParams {
+            interp: InterpolationFilter::EightTap,
+            w: 2,
+            h: 2,
+            start_x: 1 << SCALE_SUBPEL_BITS,
+            start_y: 1 << SCALE_SUBPEL_BITS,
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x: 3,
+            last_y: 3,
+            bit_depth,
+        }
+    }
+
+    #[test]
+    fn single_u8_rejects_bit_depth_and_inverted_bounds_before_mutation() -> Result<()> {
+        let ten_bit_samples = [512u16; 16];
+        let ten_bit_view = ReferencePlaneView::new(&ten_bit_samples, 4, 4)?;
+        let sentinel = 0xa5;
+        let mut output = [sentinel; 5];
+        assert_eq!(
+            subpel_predict_block_strided_into_u8(
+                &ten_bit_view,
+                &params(BitDepth::Ten),
+                &mut output,
+                3,
+            ),
+            Err(ReconError::SampleTypeUnsupportedBitDepth {
+                sample_type: "u8",
+                bit_depth: BitDepth::Ten,
+            })
+        );
+        assert_eq!(output, [sentinel; 5]);
+
+        let samples = [91u8; 16];
+        let view = ReferencePlaneView::new(&samples, 4, 4)?;
+        for invalid in [
+            SubpelPredictParams {
+                first_x: 2,
+                last_x: 1,
+                ..params(BitDepth::Eight)
+            },
+            SubpelPredictParams {
+                first_y: 2,
+                last_y: 1,
+                ..params(BitDepth::Eight)
+            },
+        ] {
+            assert_eq!(
+                subpel_predict_block_strided_into_u8(&view, &invalid, &mut output, 3),
+                Err(ReconError::SubpelReferenceBoundsInvalid {
+                    first_x: invalid.first_x,
+                    first_y: invalid.first_y,
+                    last_x: invalid.last_x,
+                    last_y: invalid.last_y,
+                })
+            );
+            assert_eq!(output, [sentinel; 5]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn single_u8_fullpel_clamps_negative_bounds_before_index_conversion() -> Result<()> {
+        let samples = (0..16u8).collect::<Vec<_>>();
+        let view = ReferencePlaneView::new(&samples, 4, 4)?;
+        let params = SubpelPredictParams {
+            start_x: -2 * (1 << SCALE_SUBPEL_BITS),
+            start_y: -2 * (1 << SCALE_SUBPEL_BITS),
+            first_x: -2,
+            first_y: -2,
+            last_x: -1,
+            last_y: -1,
+            ..params(BitDepth::Eight)
+        };
+        let mut output = [u8::MAX; 4];
+
+        subpel_predict_block_strided_into_u8(&view, &params, &mut output, params.w)?;
+
+        assert_eq!(output, [samples[0]; 4]);
+        Ok(())
+    }
 }
