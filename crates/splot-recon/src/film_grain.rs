@@ -111,8 +111,8 @@ impl<T: ReconSample> GrainDestination<T> {
         i32::from(self.samples[index].to_u16())
     }
 
-    fn set(&mut self, index: usize, value: i32) -> Result<()> {
-        self.samples[index] = T::try_from_u16(value as u16)?;
+    fn set(&mut self, index: usize, value: u16) -> Result<()> {
+        self.samples[index] = T::try_from_u16(value)?;
         Ok(())
     }
 }
@@ -645,7 +645,7 @@ fn add_noise_to_samples<T: ReconSample>(
                 let scaled = scale_lut(&scaling[0], orig, bit_depth);
                 let noise_sample = noise.planes[0][row * noise.widths[0] + col];
                 let delta = round2(scaled * noise_sample, scaling_shift);
-                y.set(index, clip3(orig + delta, min_value, max_luma))?;
+                y.set(index, clip3(orig + delta, min_value, max_luma) as u16)?;
             }
         }
     }
@@ -702,7 +702,7 @@ fn add_chroma_noise<T: ReconSample>(
                     scale_lut(&scaling[1], merged, bit_depth) * noise.planes[1][index],
                     scaling_shift,
                 );
-                u.set(index, clip3(orig + delta, min_value, max_chroma))?;
+                u.set(index, clip3(orig + delta, min_value, max_chroma) as u16)?;
             }
             if model.num_cr_points > 0 || model.chroma_scaling_from_luma {
                 let orig = v.get(index);
@@ -720,7 +720,7 @@ fn add_chroma_noise<T: ReconSample>(
                     scale_lut(&scaling[2], merged, bit_depth) * noise.planes[2][index],
                     scaling_shift,
                 );
-                v.set(index, clip3(orig + delta, min_value, max_chroma))?;
+                v.set(index, clip3(orig + delta, min_value, max_chroma) as u16)?;
             }
         }
     }
