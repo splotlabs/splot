@@ -8,7 +8,7 @@
 
 use splot_recon::{CurrentFrameWorkspace, OwnedFrameBands, PlaneId, PlaneRect, ReconSample};
 use std::any::Any;
-use std::mem::ManuallyDrop;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr::NonNull;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1268,21 +1268,103 @@ impl StripeSamples {
         }
     }
 
-    fn direct(
+    fn direct_u16(
         mut target: crate::pipeline::frame_progress::DirectPlaneTarget,
     ) -> Result<Self, StripeCopyError> {
-        if let Some(samples) = target.u16_samples_mut() {
-            let pointer = core::ptr::NonNull::from(samples);
-            return Ok(Self {
-                samples: pointer,
-                owner: StripeOwner::DirectU16 { _target: target },
-            });
-        }
+        let samples = target.u16_samples_mut().ok_or(StripeCopyError::Geometry)?;
+        let pointer = core::ptr::NonNull::from(samples);
+        Ok(Self {
+            samples: pointer,
+            owner: StripeOwner::DirectU16 { _target: target },
+        })
+    }
+
+    fn direct_u8_from_frame<T: ReconSample>(
+        mut target: crate::pipeline::frame_progress::DirectPlaneTarget,
+        source: FramePlane<'_, T>,
+        origin_y: usize,
+        end_y: usize,
+    ) -> Result<Self, StripeCopyError> {
         if target.u8_samples_mut().is_none() {
             return Err(StripeCopyError::Geometry);
         }
-        let mut staging = take_stripe_sample_buffer(target.len())?;
-        staging.resize(target.len(), 0);
+        let sample_count = end_y
+            .checked_sub(origin_y)
+            .and_then(|rows| rows.checked_mul(source.width()))
+            .ok_or(StripeCopyError::Geometry)?;
+        if target.len() != sample_count {
+            return Err(StripeCopyError::Geometry);
+        }
+        let mut staging = take_stripe_sample_buffer(sample_count)?;
+        let initialized = (|| {
+            let destination = staging
+                .spare_capacity_mut()
+                .get_mut(..sample_count)
+                .ok_or(StripeCopyError::Geometry)?;
+            if let Some((upper, lower)) = source.u16_row_spans(origin_y, end_y) {
+                let split = upper.len();
+                write_uninit_u16(
+                    destination
+                        .get_mut(..split)
+                        .ok_or(StripeCopyError::Geometry)?,
+                    upper,
+                )?;
+                write_uninit_u16(
+                    destination
+                        .get_mut(split..)
+                        .ok_or(StripeCopyError::Geometry)?,
+                    lower,
+                )?;
+                return Ok(());
+            }
+            let mut written = 0usize;
+            for y in origin_y..end_y {
+                let row = source.row(y).ok_or(StripeCopyError::Geometry)?;
+                let end = written
+                    .checked_add(row.len())
+                    .ok_or(StripeCopyError::Geometry)?;
+                let output = destination
+                    .get_mut(written..end)
+                    .ok_or(StripeCopyError::Geometry)?;
+                for (output, &sample) in output.iter_mut().zip(row) {
+                    output.write(sample.to_u16());
+                }
+                written = end;
+            }
+            (written == sample_count)
+                .then_some(())
+                .ok_or(StripeCopyError::Geometry)
+        })();
+        if let Err(error) = initialized {
+            recycle_stripe_sample_buffer(staging);
+            return Err(error);
+        }
+        unsafe { staging.set_len(sample_count) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; every in-bounds spare slot is initialized without a `&mut [u16]` before this non-panicking call, errors recycle and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
+        let pointer = core::ptr::NonNull::from(staging.as_mut_slice());
+        Ok(Self {
+            samples: pointer,
+            owner: StripeOwner::DirectU8 { target, staging },
+        })
+    }
+
+    fn direct_u8_from_u16_slice(
+        mut target: crate::pipeline::frame_progress::DirectPlaneTarget,
+        source: &[u16],
+    ) -> Result<Self, StripeCopyError> {
+        if target.u8_samples_mut().is_none() || target.len() != source.len() {
+            return Err(StripeCopyError::Geometry);
+        }
+        let mut staging = take_stripe_sample_buffer(source.len())?;
+        let initialized = staging
+            .spare_capacity_mut()
+            .get_mut(..source.len())
+            .ok_or(StripeCopyError::Geometry)
+            .and_then(|destination| write_uninit_u16(destination, source));
+        if let Err(error) = initialized {
+            recycle_stripe_sample_buffer(staging);
+            return Err(error);
+        }
+        unsafe { staging.set_len(source.len()) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; the equal-length helper initialized every in-bounds spare slot without a `&mut [u16]` before this non-panicking call, errors recycle and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
         let pointer = core::ptr::NonNull::from(staging.as_mut_slice());
         Ok(Self {
             samples: pointer,
@@ -1314,15 +1396,32 @@ impl StripeSamples {
         let StripeOwner::DirectU8 { target, staging } = &mut self.owner else {
             return Ok(());
         };
-        let destination = target.u8_samples_mut().ok_or(StripeCopyError::Geometry)?;
-        if destination.len() != staging.len() {
+        let unpublished_destination = target.u8_samples_mut().ok_or(StripeCopyError::Geometry)?;
+        if unpublished_destination.len() != staging.len() {
             return Err(StripeCopyError::Geometry);
         }
-        for (destination, &sample) in destination.iter_mut().zip(staging.iter()) {
-            *destination = u8::try_from(sample).map_err(|_| StripeCopyError::Geometry)?;
+        let mut discarded_high_bits = 0u16;
+        for (destination, &sample) in unpublished_destination.iter_mut().zip(staging.iter()) {
+            discarded_high_bits |= sample & !u16::from(u8::MAX);
+            *destination = sample as u8;
         }
-        Ok(())
+        (discarded_high_bits == 0)
+            .then_some(())
+            .ok_or(StripeCopyError::Geometry)
     }
+}
+
+fn write_uninit_u16(
+    destination: &mut [MaybeUninit<u16>],
+    source: &[u16],
+) -> Result<(), StripeCopyError> {
+    if destination.len() != source.len() {
+        return Err(StripeCopyError::Geometry);
+    }
+    for (destination, &source) in destination.iter_mut().zip(source) {
+        destination.write(source);
+    }
+    Ok(())
 }
 
 impl Drop for StripeSamples {
@@ -1383,7 +1482,7 @@ impl StripePlane {
             width: target.width(),
             frame_height: target.frame_height(),
             origin_y: target.origin_y(),
-            samples: StripeSamples::direct(target)?,
+            samples: StripeSamples::direct_u16(target)?,
         })
     }
 
@@ -1460,7 +1559,21 @@ impl StripePlane {
                     && target.origin_y() == origin_y
                     && target.len() == sample_count =>
             {
-                Self::from_target(target)?
+                if target.is_u16() {
+                    Self::from_target(target)?
+                } else {
+                    if initialization != StripeInitialization::CopyAll {
+                        return Err(geometry);
+                    }
+                    return Ok(Self {
+                        width: source.width(),
+                        frame_height: source.frame_height(),
+                        origin_y,
+                        samples: StripeSamples::direct_u8_from_frame(
+                            target, source, origin_y, end_y,
+                        )?,
+                    });
+                }
             }
             Some(_) => return Err(geometry),
             None => {
@@ -1545,7 +1658,16 @@ impl StripePlane {
                     && target.origin_y() == origin_y
                     && target.len() == source.len() =>
             {
-                Self::from_target(target)?
+                if target.is_u16() {
+                    Self::from_target(target)?
+                } else {
+                    return Ok(Self {
+                        width: self.width,
+                        frame_height: self.frame_height,
+                        origin_y,
+                        samples: StripeSamples::direct_u8_from_u16_slice(target, source)?,
+                    });
+                }
             }
             Some(_) => return Err(geometry),
             None => {
