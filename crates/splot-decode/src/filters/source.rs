@@ -1649,12 +1649,56 @@ impl StripePlane {
         Ok(output)
     }
 
+    #[cfg(test)]
     pub(crate) fn copy_rows_into(
         &self,
         origin_y: usize,
         end_y: usize,
         target: Option<crate::pipeline::frame_progress::DirectPlaneTarget>,
     ) -> Result<Self, StripeCopyError> {
+        self.copy_rows_into_mode(origin_y, end_y, target, StripeInitialization::CopyAll)
+    }
+
+    pub(crate) fn preflight_copy_rows_into(
+        &self,
+        origin_y: usize,
+        end_y: usize,
+        target: Option<&crate::pipeline::frame_progress::DirectPlaneTarget>,
+        initialization: StripeInitialization,
+    ) -> Result<(), StripeCopyError> {
+        let geometry = StripeCopyError::Geometry;
+        let start = origin_y
+            .checked_sub(self.origin_y)
+            .ok_or(geometry)?
+            .checked_mul(self.width)
+            .ok_or(geometry)?;
+        let end = end_y
+            .checked_sub(self.origin_y)
+            .ok_or(geometry)?
+            .checked_mul(self.width)
+            .ok_or(geometry)?;
+        let source = self.samples().get(start..end).ok_or(geometry)?;
+        match target {
+            Some(target) => (target.width() == self.width
+                && target.frame_height() == self.frame_height
+                && target.origin_y() == origin_y
+                && target.len() == source.len()
+                && (initialization == StripeInitialization::CopyAll || target.is_u16()))
+            .then_some(())
+            .ok_or(geometry),
+            None if initialization == StripeInitialization::FullyOverwritten => Err(geometry),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn copy_rows_into_mode(
+        &self,
+        origin_y: usize,
+        end_y: usize,
+        target: Option<crate::pipeline::frame_progress::DirectPlaneTarget>,
+        initialization: StripeInitialization,
+    ) -> Result<Self, StripeCopyError> {
+        self.preflight_copy_rows_into(origin_y, end_y, target.as_ref(), initialization)?;
         let geometry = StripeCopyError::Geometry;
         let start = origin_y
             .checked_sub(self.origin_y)
@@ -1697,6 +1741,9 @@ impl StripePlane {
                 });
             }
         };
+        if initialization == StripeInitialization::FullyOverwritten {
+            return Ok(output);
+        }
         output.samples_mut().copy_from_slice(source);
         Ok(output)
     }

@@ -9,7 +9,9 @@ use crate::bitstream::tile_payload::{
     LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
 };
 use crate::filters::cdef::{CdefFrame, CdefSkipGrid};
-use crate::filters::source::{FramePlane, StripeCopyError, StripeOutputPlane, StripePlane};
+use crate::filters::source::{
+    FramePlane, StripeCopyError, StripeInitialization, StripeOutputPlane, StripePlane,
+};
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
 use splot_recon::{
@@ -102,6 +104,7 @@ pub(crate) struct FilteredStripe {
 pub(crate) struct LrStripeOutput {
     pub(crate) active_planes: [bool; 3],
     pub(crate) direct_u8_planes: [bool; 3],
+    pub(crate) initializations: [StripeInitialization; 3],
     pub(crate) target: crate::pipeline::frame_progress::DirectStripeTarget,
 }
 
@@ -110,18 +113,41 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         frame: CdefFrame<'a, T>,
         active_planes: [bool; 3],
         direct_u8_planes: [bool; 3],
+        initializations: [StripeInitialization; 3],
         mut target: crate::pipeline::frame_progress::DirectStripeTarget,
     ) -> core::result::Result<Self, StripeCopyError> {
+        let planes = [
+            Some(&frame.filtered_y),
+            frame.filtered_u.as_ref(),
+            frame.filtered_v.as_ref(),
+        ];
+        for plane_id in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            if !active_planes[plane_id.index()] {
+                continue;
+            }
+            let plane = planes[plane_id.index()].ok_or(StripeCopyError::Geometry)?;
+            let direct_target = target.get(plane_id).ok_or(StripeCopyError::Geometry)?;
+            if direct_u8_planes[plane_id.index()] && direct_target.is_u16() {
+                return Err(StripeCopyError::Geometry);
+            }
+            plane.preflight_copy_rows_into(
+                plane.origin_y(),
+                plane.end_y().ok_or(StripeCopyError::Geometry)?,
+                Some(direct_target),
+                initializations[plane_id.index()],
+            )?;
+        }
         let mut copy = |plane_id: PlaneId, plane: &StripePlane| {
             let target = target.take(plane_id).ok_or(StripeCopyError::Geometry)?;
             if direct_u8_planes[plane_id.index()] {
                 return StripeOutputPlane::direct_u8(target, plane);
             }
             plane
-                .copy_rows_into(
+                .copy_rows_into_mode(
                     plane.origin_y(),
                     plane.end_y().ok_or(StripeCopyError::Geometry)?,
                     Some(target),
+                    initializations[plane_id.index()],
                 )
                 .map(StripeOutputPlane::u16)
         };
@@ -404,13 +430,38 @@ fn lr_block_in_rows(
     Some(clipped)
 }
 
-pub(crate) fn terminal_chroma_wiener_covers(
+fn lr_restoration_writes_complete_rectangle(
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    block_type: LrUnitRestorationType,
+) -> bool {
+    match plane {
+        PlaneId::Y => match frame_type {
+            FrameRestorationType::WienerNonsep => block_type == LrUnitRestorationType::WienerNonsep,
+            FrameRestorationType::PcWiener => block_type == LrUnitRestorationType::PcWiener,
+            FrameRestorationType::Switchable => matches!(
+                block_type,
+                LrUnitRestorationType::PcWiener | LrUnitRestorationType::WienerNonsep
+            ),
+            FrameRestorationType::None => false,
+        },
+        PlaneId::U | PlaneId::V => {
+            frame_type == FrameRestorationType::WienerNonsep
+                && block_type == LrUnitRestorationType::WienerNonsep
+        }
+    }
+}
+
+pub(crate) fn lr_plane_fully_overwritten(
     blocks: &[WienerNsLrSourceBlock],
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
     width: usize,
+    frame_height: usize,
     start_y: usize,
     end_y: usize,
 ) -> bool {
-    if width == 0 || start_y >= end_y {
+    if width == 0 || start_y >= end_y || end_y > frame_height {
         return false;
     }
     let relevant_end = blocks.partition_point(|block| block.y < end_y);
@@ -429,28 +480,65 @@ pub(crate) fn terminal_chroma_wiener_covers(
             let Some(block_end_y) = block.y.checked_add(block.height) else {
                 return false;
             };
+            let block_end_y = block_end_y.min(frame_height);
             if block.y > y || block_end_y <= y {
                 continue;
             }
-            if block.restoration_type != LrUnitRestorationType::WienerNonsep
-                || block.width == 0
+            let Some(block_end_x) = block.x.checked_add(block.width) else {
+                return false;
+            };
+            let block_end_x = block_end_x.min(width);
+            if !lr_restoration_writes_complete_rectangle(plane, frame_type, block.restoration_type)
+                || block.x >= block_end_x
                 || block.x != x
             {
                 return false;
             }
-            let Some(next) = x.checked_add(block.width) else {
-                return false;
-            };
-            if next > width {
-                return false;
-            }
-            x = next;
+            x = block_end_x;
         }
         if x != width {
             return false;
         }
     }
     true
+}
+
+pub(crate) fn lr_initializations(
+    core: &FrameHeaderCore,
+    active_planes: [bool; 3],
+    plane_blocks: [&[WienerNsLrSourceBlock]; 3],
+    target: &crate::pipeline::frame_progress::DirectStripeTarget,
+) -> [StripeInitialization; 3] {
+    core::array::from_fn(|index| {
+        let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
+        let Some(target) = target.get(plane).filter(|target| target.is_u16()) else {
+            return StripeInitialization::CopyAll;
+        };
+        if !active_planes[index] {
+            return StripeInitialization::CopyAll;
+        }
+        let covered = target.end_y().is_some_and(|end_y| {
+            core.lr_params
+                .as_ref()
+                .and_then(|params| params.planes.get(index))
+                .is_some_and(|params| {
+                    lr_plane_fully_overwritten(
+                        plane_blocks[index],
+                        plane,
+                        params.restoration_type,
+                        target.width(),
+                        target.frame_height(),
+                        target.origin_y(),
+                        end_y,
+                    )
+                })
+        });
+        if covered {
+            StripeInitialization::FullyOverwritten
+        } else {
+            StripeInitialization::CopyAll
+        }
+    })
 }
 
 /// Runs one loop-restoration block filter over its own destination rows.
@@ -835,6 +923,7 @@ impl StripeChain<'_> {
             cdef,
             output.active_planes,
             output.direct_u8_planes,
+            output.initializations,
             output.target,
         )
         .map_err(|error| match error {
@@ -1571,3 +1660,7 @@ impl StripeChain<'_> {
 #[cfg(test)]
 #[path = "final_filters_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "final_filters_direct_tests.rs"]
+mod direct_tests;
