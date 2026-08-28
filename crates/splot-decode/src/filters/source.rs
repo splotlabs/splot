@@ -1836,6 +1836,7 @@ impl StripeOutputPlane {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn as_u16(&self) -> Option<&StripePlane> {
         match self {
             Self::U16(plane) => Some(plane),

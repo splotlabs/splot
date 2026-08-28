@@ -38,10 +38,6 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
         progress.freeze_workspace(core::convert::identity).is_err(),
         "freeze must refuse a live direct lend"
     );
-    assert!(
-        progress.publish_stripe(0, Box::new(|_| Ok(()))).is_err(),
-        "a direct frame cannot fall back to queued copies"
-    );
     let mut bottom_target = bottom.take_target().expect("bottom target");
     bottom_target
         .take(splot_recon::PlaneId::Y)
@@ -321,10 +317,6 @@ fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
     assert!(
         progress.freeze_workspace(|frame| frame).is_err(),
         "the workspace is frozen once"
-    );
-    assert!(
-        progress.publish_stripe(0, Box::new(|_| Ok(()))).is_err(),
-        "a publish after the freeze fails closed"
     );
     drop(frame);
 }

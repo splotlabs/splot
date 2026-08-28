@@ -102,7 +102,7 @@ pub(crate) struct FilteredStripe {
 pub(crate) struct LrStripeOutput {
     pub(crate) active_planes: [bool; 3],
     pub(crate) direct_u8_planes: [bool; 3],
-    pub(crate) target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
+    pub(crate) target: crate::pipeline::frame_progress::DirectStripeTarget,
 }
 
 impl<'a, T: ReconSample> LrFrame<'a, T> {
@@ -110,21 +110,18 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         frame: CdefFrame<'a, T>,
         active_planes: [bool; 3],
         direct_u8_planes: [bool; 3],
-        mut target: Option<crate::pipeline::frame_progress::DirectStripeTarget>,
+        mut target: crate::pipeline::frame_progress::DirectStripeTarget,
     ) -> core::result::Result<Self, StripeCopyError> {
         let mut copy = |plane_id: PlaneId, plane: &StripePlane| {
-            let target = target.as_mut().and_then(|target| target.take(plane_id));
+            let target = target.take(plane_id).ok_or(StripeCopyError::Geometry)?;
             if direct_u8_planes[plane_id.index()] {
-                return StripeOutputPlane::direct_u8(
-                    target.ok_or(StripeCopyError::Geometry)?,
-                    plane,
-                );
+                return StripeOutputPlane::direct_u8(target, plane);
             }
             plane
                 .copy_rows_into(
                     plane.origin_y(),
                     plane.end_y().ok_or(StripeCopyError::Geometry)?,
-                    target,
+                    Some(target),
                 )
                 .map(StripeOutputPlane::u16)
         };
