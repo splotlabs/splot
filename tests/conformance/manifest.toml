@@ -1833,3 +1833,8 @@ expect = "clean"
 path = "vectors/valid/syn-sb256-intra-129x16-q180.ivf"
 description = "Deterministic 68-byte single-key-frame 129x16 AVM stream with sequence SB256 enabled. AV2 § 5.18.2 makes the effective intra-frame superblock size SB128, so the frame has two horizontal partition roots even though an inter frame in the same sequence would use SB256. Exact base 3699dd83ed8eeee8bd7c8fe950c0fd9a11f87123 decoded byte-exact at one thread, but each integer thread width from 2 through 12 failed closed with inter_row_prepass_capacity because the scheduler allocated one SB256 surface while the partition cursor emitted two SB128 roots. Fixed splot decodes byte-exact at one and eight threads to the same 3,104-byte AVM raw SHA-256 6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intrabc-bottom-edge-320x180-q180.ivf"
+description = "Deterministic 5,252-byte single-key-frame 320x180 8-bit 4:2:0 AVMenc stream with a bottom-edge IntraBC block at luma y=160 whose nominal 24-row footprint reaches the padded MI height 184. Before the fix splot passed that valid MI-domain target directly to the cropped workspace and rejected the 32x24 copy against coded 320x180 storage; the integer-copy bridge now preserves the padded prediction geometry while clipping the writable copy to the visible 32x20 target. Pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774, current AVM revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03, and fixed splot at one and eight threads produce byte-identical 86,400-byte raw I420 SHA-256 0442b4c7b20cab3ec12878277786c8e363cd09798376c95fa3e8fde708836895; validates clean."
+expect = "clean"

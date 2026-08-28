@@ -7,7 +7,9 @@
 
 use super::{
     DeblockedSource, DeblockedWindow, DeblockedWindowSequence, FramePlane, StripePlane,
-    intersect_rows, select_buffer_index, window_bounds,
+    intersect_rows, lock_stripe_sample_buffers, recycle_stripe_sample_buffer,
+    recycle_stripe_sample_buffer_into_pool, select_buffer_index, take_stripe_sample_buffer,
+    take_stripe_sample_buffer_from_pool, window_bounds,
 };
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
@@ -298,6 +300,22 @@ fn stripe_cache_selection_uses_fresh_storage_until_full() {
 }
 
 #[test]
+fn stripe_pool_reuses_returned_allocation_while_exclusively_locked() {
+    let sample_count = 8_196;
+    let mut buffers = lock_stripe_sample_buffers();
+    buffers.clear();
+    let first = Vec::<u16>::with_capacity(sample_count);
+    let allocation = first.as_ptr();
+
+    recycle_stripe_sample_buffer_into_pool(&mut buffers, first);
+    let second = take_stripe_sample_buffer_from_pool(&mut buffers, sample_count);
+
+    assert_eq!(second.len(), 0);
+    assert_eq!(second.as_ptr(), allocation);
+    recycle_stripe_sample_buffer_into_pool(&mut buffers, second);
+}
+
+#[test]
 fn stripe_rect_mut_rejects_a_rectangle_overhanging_the_row() {
     let mut stripe = StripePlane::from_samples(4, 2, 0, vec![0; 8]).expect("a valid stripe");
     let rect = PlaneRect::new(3, 0, 2, 1).expect("a valid rectangle");
@@ -313,6 +331,122 @@ fn stripe_copy_preserves_u8_source_samples() {
     let stripe = StripePlane::copy_from(plane, 0, 2).expect("a valid stripe copy");
 
     assert_eq!(stripe.samples(), [1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn u8_direct_stripe_initializes_contiguous_u16_source() {
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        PlaneSize::new(4, 2).expect("frame size"),
+        PlaneRect::new(0, 0, 4, 2).expect("visible rect"),
+    )
+    .expect("frame info");
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 2)]));
+    let source_samples = [1_u16, 2, 3, 4, 5, 6, 7, 8];
+    let source = FramePlane::window(&source_samples, 4, 2, 0, 2).expect("source plane");
+    let mut lease = progress.direct_stripe(0).expect("stripe lease");
+    let mut target = lease.take_target().expect("stripe target");
+    let mut output =
+        StripePlane::copy_from_into(source, 0, 2, target.take(PlaneId::Y)).expect("direct stripe");
+
+    assert_eq!(output.samples(), source_samples);
+    output.finish_direct().expect("u8 flush");
+    drop(output);
+    assert!(lease.submit());
+    let frame = progress
+        .freeze_workspace(core::convert::identity)
+        .expect("frozen frame");
+    assert_eq!(frame.y().samples(), [1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn u8_direct_stripe_initializes_strided_u8_rows() {
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        PlaneSize::new(4, 2).expect("frame size"),
+        PlaneRect::new(0, 0, 4, 2).expect("visible rect"),
+    )
+    .expect("frame info");
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 2)]));
+    let source_samples = [1_u8, 2, 3, 4, 99, 99, 5, 6, 7, 8, 99, 99];
+    let source = FramePlane {
+        width: 4,
+        height: 2,
+        stride: 6,
+        origin_y: 0,
+        storage_origin_y: 0,
+        storage_rows: 2,
+        samples: &source_samples,
+        secondary: &[],
+    };
+    let mut lease = progress.direct_stripe(0).expect("stripe lease");
+    let mut target = lease.take_target().expect("stripe target");
+    let mut output =
+        StripePlane::copy_from_into(source, 0, 2, target.take(PlaneId::Y)).expect("direct stripe");
+
+    assert_eq!(output.samples(), [1, 2, 3, 4, 5, 6, 7, 8]);
+    output.finish_direct().expect("u8 flush");
+    drop(output);
+    assert!(lease.submit());
+    let frame = progress
+        .freeze_workspace(core::convert::identity)
+        .expect("frozen frame");
+    assert_eq!(frame.y().samples(), [1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn partial_u8_source_failure_recycles_length_zero_staging() {
+    let width = 4;
+    let height = 2_049;
+    let valid_rows = height / 2;
+    let sample_count = width * height;
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        PlaneSize::new(width, height).expect("frame size"),
+        PlaneRect::new(0, 0, width, height).expect("visible rect"),
+    )
+    .expect("frame info");
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, height)]));
+    let source_samples = vec![73_u8; width * valid_rows];
+    let malformed_source = FramePlane {
+        width,
+        height,
+        stride: width,
+        origin_y: 0,
+        storage_origin_y: 0,
+        storage_rows: height,
+        samples: &source_samples,
+        secondary: &[],
+    };
+    let mut lease = progress.direct_stripe(0).expect("stripe lease");
+    let mut target = lease.take_target().expect("stripe target");
+
+    assert!(
+        StripePlane::copy_from_into(malformed_source, 0, height, target.take(PlaneId::Y),).is_err()
+    );
+    drop(target);
+    drop(lease);
+    assert_eq!(progress.published_luma_rows(), 0);
+    assert!(progress.direct_stripe(0).is_some(), "the lease is reusable");
+
+    let staging = take_stripe_sample_buffer(sample_count).expect("recycled failed staging");
+    assert_eq!(staging.len(), 0);
+    recycle_stripe_sample_buffer(staging);
 }
 
 #[test]

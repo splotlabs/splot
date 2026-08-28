@@ -1681,3 +1681,9 @@ id = "syn-sb256-intra-129x16-q180"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "seq.superblock.256_intra_128", "tile.single"]
 ivf_sha256 = "bfdf8c13d29f022dfbc1abd03f69efd51d6361bb51ae600af7812a2df11fedaf"
 avm_raw_sha256 = "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6"
+
+[[fixture]]
+id = "syn-intrabc-bottom-edge-320x180-q180"
+features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.key_closed_loop", "inter.intrabc", "inter.mv_prediction_spatial", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+ivf_sha256 = "6e311b663cafa04df9c0998d7e0bb5d23d6d0d340a1a936ab460cd7698bfa75e"
+avm_raw_sha256 = "0442b4c7b20cab3ec12878277786c8e363cd09798376c95fa3e8fde708836895"
