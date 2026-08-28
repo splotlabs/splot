@@ -172,6 +172,7 @@ pub use subpel_mc::{
     subpel_predict_block_compound_average_fast_strided_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_fullpel_strided_into,
+    subpel_predict_block_compound_average_fullpel_strided_into_u8,
     subpel_predict_block_compound_average_horizontal_strided_into,
     subpel_predict_block_compound_average_into, subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
