@@ -1456,6 +1456,56 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
     }
 }
 
+struct PcWienerPaddedFilterSetup {
+    sample_count: usize,
+    filters: &'static [[i32; 13]; PC_WIENER_FULL_CLASSES],
+    stride: usize,
+    center_offset: usize,
+    pos_offsets: [usize; PC_WIENER_CONFIG.len()],
+    neg_offsets: [usize; PC_WIENER_CONFIG.len()],
+    max_sample: u16,
+    source_is_valid: bool,
+}
+
+fn prepare_pc_wiener_padded_filter<T: ReconSample>(
+    output_len: usize,
+    params: &PcWienerFilter<'_>,
+    source: &PcWienerPaddedSource<'_, T>,
+) -> Result<PcWienerPaddedFilterSetup> {
+    validate_sample_type::<T>(params.bit_depth)?;
+    let (sample_count, filters) = validate_pc_wiener_filter(output_len, params)?;
+    PcWienerPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
+
+    let stride = source.stride;
+    let center_offset = padded_filter_offset(stride, 0, 0)?;
+    let mut pos_offsets = [0usize; PC_WIENER_CONFIG.len()];
+    let mut neg_offsets = [0usize; PC_WIENER_CONFIG.len()];
+    for (i, &(dy, dx)) in PC_WIENER_CONFIG.iter().enumerate() {
+        pos_offsets[i] = padded_filter_offset(stride, dy, dx)?;
+        neg_offsets[i] = padded_filter_offset(stride, -dy, -dx)?;
+    }
+
+    let max_sample = params.bit_depth.max_sample();
+    let padded_width = params.width + 2 * PC_WIENER_FILTER_TAP_RADIUS;
+    let padded_rows = params.height + 2 * PC_WIENER_FILTER_TAP_RADIUS;
+    let source_is_valid = (0..padded_rows).all(|row| {
+        let start = row * stride;
+        source.samples[start..start + padded_width]
+            .iter()
+            .all(|sample| sample.to_u16() <= max_sample)
+    });
+    Ok(PcWienerPaddedFilterSetup {
+        sample_count,
+        filters,
+        stride,
+        center_offset,
+        pos_offsets,
+        neg_offsets,
+        max_sample,
+        source_is_valid,
+    })
+}
+
 /// Applies the fixed AV2 § 7.20.4 PC-Wiener filter from a padded pre-resolved
 /// source.
 ///
@@ -1474,32 +1524,10 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     params: &PcWienerFilter<'_>,
     source: &PcWienerPaddedSource<'_, T>,
 ) -> Result<()> {
-    validate_sample_type::<T>(params.bit_depth)?;
-    let (sample_count, filters) = validate_pc_wiener_filter(output.len(), params)?;
-    PcWienerPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
-
-    let stride = source.stride;
-    let center_offset = padded_filter_offset(stride, 0, 0)?;
-    let mut pos_offsets = [0usize; PC_WIENER_CONFIG.len()];
-    let mut neg_offsets = [0usize; PC_WIENER_CONFIG.len()];
-    for (i, &(dy, dx)) in PC_WIENER_CONFIG.iter().enumerate() {
-        pos_offsets[i] = padded_filter_offset(stride, dy, dx)?;
-        neg_offsets[i] = padded_filter_offset(stride, -dy, -dx)?;
-    }
-
-    let max_sample = params.bit_depth.max_sample();
-    let padded_width = params.width + 2 * PC_WIENER_FILTER_TAP_RADIUS;
-    let padded_rows = params.height + 2 * PC_WIENER_FILTER_TAP_RADIUS;
-    // Invalid input still takes the original access order, preserving its exact error.
-    let source_is_valid = (0..padded_rows).all(|row| {
-        let start = row * stride;
-        source.samples[start..start + padded_width]
-            .iter()
-            .all(|sample| sample.to_u16() <= max_sample)
-    });
-    if !source_is_valid {
+    let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
+    if !setup.source_is_valid {
         return pc_wiener_filter_block(output, params, |x, y| {
-            let index = padded_filter_offset(stride, y, x)?;
+            let index = padded_filter_offset(setup.stride, y, x)?;
             Ok(source.samples[index])
         });
     }
@@ -1510,29 +1538,19 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
                 field: "PC-Wiener sample storage",
             });
         };
-        filter_pc_wiener_padded_u16(
-            destination,
-            params,
-            samples,
-            stride,
-            center_offset,
-            &pos_offsets,
-            &neg_offsets,
-            filters,
-            max_sample,
-        );
+        filter_pc_wiener_padded_u16(destination, params, samples, &setup);
         return Ok(());
     }
 
-    let mut filtered = Vec::with_capacity(sample_count);
+    let mut filtered = Vec::with_capacity(setup.sample_count);
     let mut acc = vec![0i32; params.width];
-    let max_sample = i32::from(max_sample);
+    let max_sample = i32::from(setup.max_sample);
     let subclass_cols = params.width.div_ceil(params.subclass_block_size);
     for row in 0..params.height {
         let subclass_row = row / params.subclass_block_size;
         let row_subclasses =
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
-        let row_base = row * stride;
+        let row_base = row * setup.stride;
         let mut c0 = 0usize;
         while c0 < params.width {
             let subclass_col = c0 / params.subclass_block_size;
@@ -1542,21 +1560,23 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
                 subclass_end += 1;
             }
             let c1 = (subclass_end * params.subclass_block_size).min(params.width);
-            let coeffs = &filters[subclass];
+            let coeffs = &setup.filters[subclass];
             let len = c1 - c0;
             let seg_base = row_base + c0;
             let seg = &mut acc[..len];
-            let center = &source.samples[seg_base + center_offset..seg_base + center_offset + len];
+            let center = &source.samples
+                [seg_base + setup.center_offset..seg_base + setup.center_offset + len];
             for (a, &m) in seg.iter_mut().zip(center) {
                 let m = i32::from(m.to_u16());
                 *a = (m << PC_WIENER_PREC_BITS) + m * coeffs[12];
             }
-            for i in 0..PC_WIENER_CONFIG.len() {
-                let coeff = coeffs[i];
-                let plus =
-                    &source.samples[seg_base + pos_offsets[i]..seg_base + pos_offsets[i] + len];
-                let minus =
-                    &source.samples[seg_base + neg_offsets[i]..seg_base + neg_offsets[i] + len];
+            for ((&coeff, &pos), &neg) in coeffs
+                .iter()
+                .zip(&setup.pos_offsets)
+                .zip(&setup.neg_offsets)
+            {
+                let plus = &source.samples[seg_base + pos..seg_base + pos + len];
+                let minus = &source.samples[seg_base + neg..seg_base + neg + len];
                 for ((a, &tp), &tm) in seg.iter_mut().zip(plus).zip(minus) {
                     *a += (i32::from(tp.to_u16()) + i32::from(tm.to_u16())) * coeff;
                 }
@@ -1573,31 +1593,93 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn filter_pc_wiener_padded_u16(
+/// Applies padded PC-Wiener filtering directly into strided `u16` storage.
+///
+/// Both supported source storage types use the same filter arithmetic and SIMD
+/// row kernel. Output geometry, source geometry, filter selection, subclasses,
+/// and every source sample reached by the filter are validated before the
+/// first destination write.
+///
+/// # Errors
+/// Returns the same parameter, source-range, output-shape, and subclass errors
+/// as [`pc_wiener_filter_block_padded`].
+#[inline]
+pub fn pc_wiener_filter_block_padded_u16_into<T: ReconSample>(
+    output: &mut [u16],
+    params: &PcWienerFilter<'_>,
+    source: &PcWienerPaddedSource<'_, T>,
+) -> Result<()> {
+    let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
+    if !setup.source_is_valid {
+        let packed_params = PcWienerFilter {
+            width: params.width,
+            height: params.height,
+            output_stride: params.width,
+            bit_depth: params.bit_depth,
+            filter_set_index: params.filter_set_index,
+            subclass_block_size: params.subclass_block_size,
+            subclasses: params.subclasses,
+        };
+        let mut staged = vec![T::default(); setup.sample_count];
+        pc_wiener_filter_block_padded(&mut staged, &packed_params, source)?;
+        for row in 0..params.height {
+            let source = &staged[row * params.width..(row + 1) * params.width];
+            let destination =
+                &mut output[row * params.output_stride..row * params.output_stride + params.width];
+            for (destination, source) in destination.iter_mut().zip(source) {
+                *destination = source.to_u16();
+            }
+        }
+        return Ok(());
+    }
+    if let Some(samples) = T::u16_slice(source.samples) {
+        filter_pc_wiener_padded_u16(output, params, samples, &setup);
+        return Ok(());
+    }
+    if let Some(samples) = T::u8_slice(source.samples) {
+        filter_pc_wiener_padded_u16(output, params, samples, &setup);
+        return Ok(());
+    }
+    Err(ReconError::PcWienerInvalidBounds {
+        field: "PC-Wiener sample storage",
+    })
+}
+
+trait PcWienerPaddedSample: ReconSample {
+    fn load_lanes<const LANES: usize>(samples: &[Self], start: usize) -> Simd<i16, LANES>;
+}
+
+impl PcWienerPaddedSample for u16 {
+    fn load_lanes<const LANES: usize>(samples: &[Self], start: usize) -> Simd<i16, LANES> {
+        Simd::<u16, LANES>::from_slice(&samples[start..]).cast()
+    }
+}
+
+impl PcWienerPaddedSample for u8 {
+    fn load_lanes<const LANES: usize>(samples: &[Self], start: usize) -> Simd<i16, LANES> {
+        Simd::<u8, LANES>::from_slice(&samples[start..]).cast()
+    }
+}
+
+fn filter_pc_wiener_padded_u16<T: PcWienerPaddedSample>(
     destination: &mut [u16],
     params: &PcWienerFilter<'_>,
-    samples: &[u16],
-    stride: usize,
-    center_offset: usize,
-    pos_offsets: &[usize; PC_WIENER_CONFIG.len()],
-    neg_offsets: &[usize; PC_WIENER_CONFIG.len()],
-    filters: &[[i32; 13]; PC_WIENER_FULL_CLASSES],
-    max_sample: u16,
+    samples: &[T],
+    setup: &PcWienerPaddedFilterSetup,
 ) {
     let subclass_cols = params.width.div_ceil(params.subclass_block_size);
     for row in 0..params.height {
         let subclass_row = row / params.subclass_block_size;
         let row_subclasses =
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
-        let row_base = row * stride;
+        let row_base = row * setup.stride;
         let output = &mut destination[row * params.output_stride..][..params.width];
-        let center_row = &samples[row_base + center_offset..][..params.width];
-        let mut tap_rows: [(&[u16], &[u16]); PC_WIENER_CONFIG.len()] =
+        let center_row = &samples[row_base + setup.center_offset..][..params.width];
+        let mut tap_rows: [(&[T], &[T]); PC_WIENER_CONFIG.len()] =
             [(&[], &[]); PC_WIENER_CONFIG.len()];
         for (tap, (&pos, &neg)) in tap_rows
             .iter_mut()
-            .zip(pos_offsets.iter().zip(neg_offsets.iter()))
+            .zip(setup.pos_offsets.iter().zip(setup.neg_offsets.iter()))
         {
             *tap = (
                 &samples[row_base + pos..][..params.width],
@@ -1613,7 +1695,7 @@ fn filter_pc_wiener_padded_u16(
                 subclass_end += 1;
             }
             let c1 = (subclass_end * params.subclass_block_size).min(params.width);
-            let coeffs = &filters[subclass];
+            let coeffs = &setup.filters[subclass];
             let mut coeffs16 = [0i16; 13];
             for (slot, &coeff) in coeffs16.iter_mut().zip(coeffs) {
                 *slot = coeff as i16;
@@ -1623,13 +1705,13 @@ fn filter_pc_wiener_padded_u16(
             macro_rules! filter_chunks {
                 ($lanes:literal) => {
                     while col + $lanes <= c1 {
-                        filter_pc_wiener_padded_u16_simd::<$lanes>(
+                        filter_pc_wiener_padded_u16_simd::<$lanes, T>(
                             &mut output[col..],
                             center_row,
                             &tap_rows,
                             col,
                             &coeffs16,
-                            max_sample,
+                            setup.max_sample,
                         );
                         col += $lanes;
                     }
@@ -1642,14 +1724,19 @@ fn filter_pc_wiener_padded_u16(
             filter_chunks!(4);
             for (offset, slot) in output[col..c1].iter_mut().enumerate() {
                 let base = row_base + col + offset;
-                let center = i32::from(samples[base + center_offset]);
+                let center = i32::from(samples[base + setup.center_offset].to_u16());
                 let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
-                for i in 0..PC_WIENER_CONFIG.len() {
-                    sum += (i32::from(samples[base + pos_offsets[i]])
-                        + i32::from(samples[base + neg_offsets[i]]))
-                        * coeffs[i];
+                for ((&coeff, &pos), &neg) in coeffs
+                    .iter()
+                    .zip(&setup.pos_offsets)
+                    .zip(&setup.neg_offsets)
+                {
+                    sum += (i32::from(samples[base + pos].to_u16())
+                        + i32::from(samples[base + neg].to_u16()))
+                        * coeff;
                 }
-                *slot = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, i32::from(max_sample)) as u16;
+                *slot = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, i32::from(setup.max_sample))
+                    as u16;
             }
             c0 = c1;
         }
@@ -1663,19 +1750,19 @@ fn filter_pc_wiener_padded_u16(
 /// folded `(1 << PC_WIENER_PREC_BITS) + centerCoeff` scale.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn filter_pc_wiener_padded_u16_simd<const LANES: usize>(
+fn filter_pc_wiener_padded_u16_simd<const LANES: usize, T: PcWienerPaddedSample>(
     output: &mut [u16],
-    center_row: &[u16],
-    tap_rows: &[(&[u16], &[u16]); PC_WIENER_CONFIG.len()],
+    center_row: &[T],
+    tap_rows: &[(&[T], &[T]); PC_WIENER_CONFIG.len()],
     col: usize,
     coeffs: &[i16; 13],
     max_sample: u16,
 ) {
-    let center = Simd::<u16, LANES>::from_slice(&center_row[col..]).cast::<i16>();
+    let center = T::load_lanes::<LANES>(center_row, col);
     let mut sum = center.cast::<i32>() * Simd::<i16, LANES>::splat(coeffs[12]).cast::<i32>();
     for (i, &(pos, neg)) in tap_rows.iter().enumerate() {
-        let plus = Simd::<u16, LANES>::from_slice(&pos[col..]).cast::<i16>();
-        let minus = Simd::<u16, LANES>::from_slice(&neg[col..]).cast::<i16>();
+        let plus = T::load_lanes::<LANES>(pos, col);
+        let minus = T::load_lanes::<LANES>(neg, col);
         sum += (plus + minus).cast::<i32>() * Simd::<i16, LANES>::splat(coeffs[i]).cast::<i32>();
     }
     let values = ((sum + Simd::splat(1 << (PC_WIENER_PREC_BITS - 1)))

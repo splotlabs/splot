@@ -147,8 +147,8 @@ pub use pc_wiener::{
     PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PcWienerTxSkipLookup,
     pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_into,
-    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_set_index,
-    pc_wiener_subclass, pc_wiener_subclass_table,
+    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_block_padded_u16_into,
+    pc_wiener_filter_set_index, pc_wiener_subclass, pc_wiener_subclass_table,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
