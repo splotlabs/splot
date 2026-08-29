@@ -449,47 +449,24 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
     let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
-    let stride = source.stride;
-    for r in 0..params.height {
-        let window_in_range = scratch
-            .clean_rows
-            .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
-            .is_some_and(|rows| rows.iter().all(|&clean| clean));
-        if window_in_range {
-            let filtered = if context.direct {
-                &mut output[r * params.output_stride..][..params.width]
-            } else {
-                &mut scratch.filtered[r * params.width..(r + 1) * params.width]
-            };
+    if context.direct {
+        for r in 0..params.height {
+            let filtered = &mut output[r * params.output_stride..][..params.width];
             filter_padded_luma_row_in_range(
                 filtered,
                 &mut scratch.acc,
                 source.samples,
-                stride,
+                source.stride,
                 r,
                 params,
                 &scratch.prepared_classes,
                 subclasses,
                 context.max_sample,
             )?;
-        } else {
-            filter_padded_luma_row_validated(
-                &mut scratch.filtered[r * params.width..(r + 1) * params.width],
-                source.samples,
-                stride,
-                &context.tap_offsets,
-                context.center_offset,
-                r,
-                params,
-                subclasses,
-                context.max_sample,
-            )?;
         }
-    }
-
-    if context.direct {
         return Ok(());
     }
+    filter_luma_rows_to_scratch(params, source, subclasses, scratch, &context)?;
     for row_index in 0..params.height {
         let src_start = row_index * params.width;
         let src_end = src_start + params.width;
@@ -646,7 +623,22 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
     subclasses: LumaSubclassLayout<'_>,
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
+    validate_sample_type::<u8>(params.bit_depth)?;
     let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
+    if !context.direct {
+        filter_luma_rows_to_scratch(params, source, subclasses, scratch, &context)?;
+        for row_index in 0..params.height {
+            let src_start = row_index * params.width;
+            let dst_start = row_index * params.output_stride;
+            for (dst, src) in output[dst_start..dst_start + params.width]
+                .iter_mut()
+                .zip(&scratch.filtered[src_start..src_start + params.width])
+            {
+                *dst = src.to_u16() as u8;
+            }
+        }
+        return Ok(());
+    }
     macro_rules! filter_source {
         ($samples:expr) => {
             for r in 0..params.height {
@@ -673,6 +665,48 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
             sample_type: T::TYPE_NAME,
             bit_depth: params.bit_depth,
         });
+    }
+    Ok(())
+}
+
+fn filter_luma_rows_to_scratch<T: ReconSample>(
+    params: &WienerNsLumaFilter<'_>,
+    source: &WienerNsLumaPaddedSource<'_, T>,
+    subclasses: LumaSubclassLayout<'_>,
+    scratch: &mut WienerNsLumaScratch<T>,
+    context: &PreparedLumaFilter,
+) -> Result<()> {
+    for r in 0..params.height {
+        let filtered = &mut scratch.filtered[r * params.width..(r + 1) * params.width];
+        let window_in_range = scratch
+            .clean_rows
+            .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
+            .is_some_and(|rows| rows.iter().all(|&clean| clean));
+        if window_in_range {
+            filter_padded_luma_row_in_range(
+                filtered,
+                &mut scratch.acc,
+                source.samples,
+                source.stride,
+                r,
+                params,
+                &scratch.prepared_classes,
+                subclasses,
+                context.max_sample,
+            )?;
+        } else {
+            filter_padded_luma_row_validated(
+                filtered,
+                source.samples,
+                source.stride,
+                &context.tap_offsets,
+                context.center_offset,
+                r,
+                params,
+                subclasses,
+                context.max_sample,
+            )?;
+        }
     }
     Ok(())
 }
@@ -1797,7 +1831,7 @@ mod tests {
     }
 
     #[test]
-    fn strided_u16_luma_u16_source_error_is_fail_atomic() {
+    fn strided_luma_u16_source_errors_are_fail_atomic() {
         let width = 2;
         let height = 2;
         let source_stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
@@ -1807,12 +1841,12 @@ mod tests {
         samples[invalid] = 1024;
         let source = WienerNsLumaPaddedSource::new(&samples, source_stride, width, height).unwrap();
         let coeffs = [ZERO];
-        let params = params(width, height, 4, BitDepth::Ten, &coeffs, None);
+        let ten_bit_params = params(width, height, 4, BitDepth::Ten, &coeffs, None);
         let mut output = [77u16; 8];
 
         let error = wiener_ns_filter_luma_block_padded_u16_into(
             &mut output,
-            &params,
+            &ten_bit_params,
             &source,
             &mut WienerNsLumaScratch::default(),
         )
@@ -1828,6 +1862,48 @@ mod tests {
             }
         );
         assert_eq!(output, [77; 8]);
+
+        let mut direct = [0xa5u8; 8];
+        let error = wiener_ns_filter_luma_block_padded_u8_into(
+            &mut direct,
+            &ten_bit_params,
+            &source,
+            &mut WienerNsLumaScratch::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ReconError::SampleTypeUnsupportedBitDepth {
+                sample_type: "u8",
+                bit_depth: BitDepth::Ten,
+            }
+        );
+        assert_eq!(direct, [0xa5; 8]);
+
+        let mut eight_bit_samples = vec![23u16; source_stride * source_rows];
+        let center = WIENER_NS_LUMA_TAP_RADIUS * source_stride + WIENER_NS_LUMA_TAP_RADIUS;
+        eight_bit_samples[center] = 256;
+        let eight_bit_source =
+            WienerNsLumaPaddedSource::new(&eight_bit_samples, source_stride, width, height)
+                .unwrap();
+        let eight_bit_params = params(width, height, 4, BitDepth::Eight, &coeffs, None);
+        let error = wiener_ns_filter_luma_block_padded_u8_into(
+            &mut direct,
+            &eight_bit_params,
+            &eight_bit_source,
+            &mut WienerNsLumaScratch::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ReconError::WienerNsFilterSourceSampleOutOfRange {
+                x: 0,
+                y: 0,
+                value: 256,
+                max: 255,
+            }
+        );
+        assert_eq!(direct, [0xa5; 8]);
     }
     #[test]
     fn padded_and_callback_filters_match_bit_exactly() {
