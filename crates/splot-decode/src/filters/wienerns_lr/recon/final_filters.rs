@@ -656,7 +656,7 @@ enum LrDestination<'a> {
     U8(&'a mut [u8]),
 }
 
-fn lr_output_block_destination<'a>(
+fn chroma_lr_block_destination<'a>(
     plane: &'a mut StripeOutputPlane,
     block: &WienerNsLrSourceBlock,
 ) -> Result<(LrDestination<'a>, usize)> {
@@ -1279,7 +1279,7 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let (mut output, output_stride) = lr_output_block_destination(post_lr, &block)?;
+        let (mut output, output_stride) = chroma_lr_block_destination(post_lr, &block)?;
         {
             let params = WienerNsChromaFilter {
                 x: block.x,
@@ -1428,7 +1428,7 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "luma LR block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let (mut output, output_stride) = lr_output_block_destination(post_lr, &block)?;
+        let (mut output, output_stride) = chroma_lr_block_destination(post_lr, &block)?;
         with_lr_source_scratch(|scratch| -> Result<()> {
             let LrSourceScratch {
                 primary,

@@ -625,7 +625,7 @@ fn wiener_ns_filter_luma_block_padded_layout_u16_into<T: ReconSample>(
     };
     for r in 0..params.height {
         let output_row = &mut output[r * params.output_stride..][..params.width];
-        filter_padded_luma_row_u8_source_output(
+        filter_padded_luma_row_u8_source_u16_output(
             output_row,
             samples,
             source.stride,
@@ -647,24 +647,32 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
     let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
-    let Some(samples) = T::u8_slice(source.samples) else {
+    macro_rules! filter_source {
+        ($samples:expr) => {
+            for r in 0..params.height {
+                let output_row = &mut output[r * params.output_stride..][..params.width];
+                filter_padded_luma_row_u8_source_u16_output(
+                    output_row,
+                    $samples,
+                    source.stride,
+                    r,
+                    params,
+                    &scratch.prepared_classes,
+                    subclasses,
+                    context.max_sample,
+                )?;
+            }
+        };
+    }
+    if let Some(samples) = T::u8_slice(source.samples) {
+        filter_source!(samples);
+    } else if let Some(samples) = T::u16_slice(source.samples) {
+        filter_source!(samples);
+    } else {
         return Err(ReconError::SampleTypeUnsupportedBitDepth {
             sample_type: T::TYPE_NAME,
             bit_depth: params.bit_depth,
         });
-    };
-    for r in 0..params.height {
-        let output_row = &mut output[r * params.output_stride..][..params.width];
-        filter_padded_luma_row_u8_source_output(
-            output_row,
-            samples,
-            source.stride,
-            r,
-            params,
-            &scratch.prepared_classes,
-            subclasses,
-            context.max_sample,
-        )?;
     }
     Ok(())
 }
@@ -791,9 +799,9 @@ fn for_each_luma_segment(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn filter_padded_luma_row_u8_source_output<O: LumaSimdOutput>(
+fn filter_padded_luma_row_u8_source_u16_output<T: LumaSimdSource, O: LumaSimdOutput>(
     output: &mut [O],
-    samples: &[u8],
+    samples: &[T],
     stride: usize,
     r: usize,
     params: &WienerNsLumaFilter<'_>,
@@ -919,9 +927,9 @@ fn filter_luma_segment_u16(
     filter_luma_segment_simd(filtered, samples, base, center_offset, class, max_sample);
 }
 
-fn filter_luma_segment_u8<O: LumaSimdOutput>(
+fn filter_luma_segment_u8<T: LumaSimdSource, O: LumaSimdOutput>(
     filtered: &mut [O],
-    samples: &[u8],
+    samples: &[T],
     base: usize,
     center_offset: usize,
     class: &PreparedLumaClass,
@@ -1559,6 +1567,17 @@ mod tests {
                 let source =
                     WienerNsLumaPaddedSource::new(&source_samples, source_stride, width, height)
                         .unwrap();
+                let source_samples_u16: Vec<u16> = source_samples
+                    .iter()
+                    .map(|&sample| u16::from(sample))
+                    .collect();
+                let source_u16 = WienerNsLumaPaddedSource::new(
+                    &source_samples_u16,
+                    source_stride,
+                    width,
+                    height,
+                )
+                .unwrap();
                 let cells: Vec<usize> = (0..width.div_ceil(4) * height.div_ceil(4))
                     .map(|index| index % class_count)
                     .collect();
@@ -1566,6 +1585,7 @@ mod tests {
                 let params = params(width, height, output_stride, BitDepth::Eight, &coeffs, None);
                 let mut staged = vec![u16::MAX; output_stride * height];
                 let mut direct = vec![0xa5; output_stride * height];
+                let mut direct_from_u16 = vec![0xa5; output_stride * height];
                 if class_count == 1 {
                     wiener_ns_filter_luma_block_padded_u16_into(
                         &mut staged,
@@ -1578,6 +1598,13 @@ mod tests {
                         &mut direct,
                         &params,
                         &source,
+                        &mut WienerNsLumaScratch::default(),
+                    )
+                    .unwrap();
+                    wiener_ns_filter_luma_block_padded_u8_into(
+                        &mut direct_from_u16,
+                        &params,
+                        &source_u16,
                         &mut WienerNsLumaScratch::default(),
                     )
                     .unwrap();
@@ -1598,6 +1625,14 @@ mod tests {
                         &mut WienerNsLumaScratch::default(),
                     )
                     .unwrap();
+                    wiener_ns_filter_luma_block_padded_cells_u8_into(
+                        &mut direct_from_u16,
+                        &params,
+                        &source_u16,
+                        &cells,
+                        &mut WienerNsLumaScratch::default(),
+                    )
+                    .unwrap();
                 }
                 for row in 0..height {
                     assert_eq!(
@@ -1608,8 +1643,18 @@ mod tests {
                             .collect::<Vec<_>>(),
                         "{width}x{height} classes={class_count}",
                     );
+                    assert_eq!(
+                        &direct_from_u16[row * output_stride..row * output_stride + width],
+                        &direct[row * output_stride..row * output_stride + width],
+                        "u16 source {width}x{height} classes={class_count}",
+                    );
                     assert!(
                         direct[row * output_stride + width..(row + 1) * output_stride]
+                            .iter()
+                            .all(|&sample| sample == 0xa5)
+                    );
+                    assert!(
+                        direct_from_u16[row * output_stride + width..(row + 1) * output_stride]
                             .iter()
                             .all(|&sample| sample == 0xa5)
                     );
