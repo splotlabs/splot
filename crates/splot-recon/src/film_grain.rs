@@ -14,6 +14,7 @@ use crate::{
 const LUMA_GRAIN_WIDTH: usize = 82;
 const LUMA_GRAIN_HEIGHT: usize = 73;
 const LUMA_GRAIN_BASE: usize = 3;
+const MAX_AR_COEFFICIENTS: usize = 24;
 
 struct ActiveFilmGrain {
     model: FilmGrainModel,
@@ -225,26 +226,18 @@ fn generate_grain(
 }
 
 fn apply_luma_ar(model: &FilmGrainModel, luma: &mut [i32], grain_min: i32, grain_max: i32) {
-    let lag = i32::from(model.ar_coeff_lag);
+    let (offsets, offset_count) = ar_neighbor_offsets(model.ar_coeff_lag, LUMA_GRAIN_WIDTH);
     let shift = model.ar_coeff_shift_minus_6 + 6;
     for row in LUMA_GRAIN_BASE..LUMA_GRAIN_HEIGHT {
         for col in LUMA_GRAIN_BASE..(LUMA_GRAIN_WIDTH - LUMA_GRAIN_BASE) {
+            let index = row * LUMA_GRAIN_WIDTH + col;
             let mut sum = 0;
-            let mut pos = 0usize;
-            'outer: for delta_row in -lag..=0 {
-                for delta_col in -lag..=lag {
-                    if delta_row == 0 && delta_col == 0 {
-                        break 'outer;
-                    }
-                    let source_row = (row as i32 + delta_row) as usize;
-                    let source_col = (col as i32 + delta_col) as usize;
-                    let coeff = model.ar_coeffs_y.get(pos).copied().unwrap_or(0);
-                    sum += luma[source_row * LUMA_GRAIN_WIDTH + source_col] * coeff;
-                    pos += 1;
-                }
+            for (&offset, &coeff) in offsets[..offset_count].iter().zip(&model.ar_coeffs_y) {
+                let source = (index as isize + offset) as usize;
+                sum += luma[source] * coeff;
             }
-            let sample = luma[row * LUMA_GRAIN_WIDTH + col] + round2(sum, shift);
-            luma[row * LUMA_GRAIN_WIDTH + col] = clip3(sample, grain_min, grain_max);
+            let sample = luma[index] + round2(sum, shift);
+            luma[index] = clip3(sample, grain_min, grain_max);
         }
     }
 }
@@ -283,47 +276,53 @@ fn apply_chroma_ar(
     grain_min: i32,
     grain_max: i32,
 ) {
-    let lag = i32::from(model.ar_coeff_lag);
+    let (offsets, offset_count) = ar_neighbor_offsets(model.ar_coeff_lag, width);
+    let luma_coeff_cb = model.ar_coeffs_cb.get(offset_count).copied().unwrap_or(0);
+    let luma_coeff_cr = model.ar_coeffs_cr.get(offset_count).copied().unwrap_or(0);
     let shift = model.ar_coeff_shift_minus_6 + 6;
     for row in LUMA_GRAIN_BASE..height {
         for col in LUMA_GRAIN_BASE..(width - LUMA_GRAIN_BASE) {
+            let index = row * width + col;
             let mut sum_cb = 0;
             let mut sum_cr = 0;
-            let mut pos = 0usize;
-            'outer: for delta_row in -lag..=0 {
-                for delta_col in -lag..=lag {
-                    let coeff_cb = model.ar_coeffs_cb.get(pos).copied().unwrap_or(0);
-                    let coeff_cr = model.ar_coeffs_cr.get(pos).copied().unwrap_or(0);
-                    if delta_row == 0 && delta_col == 0 {
-                        if model.num_y_points > 0 {
-                            let luma_x = ((col - LUMA_GRAIN_BASE) << sub_x) + LUMA_GRAIN_BASE;
-                            let luma_y = ((row - LUMA_GRAIN_BASE) << sub_y) + LUMA_GRAIN_BASE;
-                            let mut average = 0;
-                            for y_offset in 0..=sub_y {
-                                for x_offset in 0..=sub_x {
-                                    average += luma[(luma_y + y_offset) * LUMA_GRAIN_WIDTH
-                                        + luma_x
-                                        + x_offset];
-                                }
-                            }
-                            let average = round2(average, (sub_x + sub_y) as u8);
-                            sum_cb += average * coeff_cb;
-                            sum_cr += average * coeff_cr;
-                        }
-                        break 'outer;
-                    }
-                    let source_row = (row as i32 + delta_row) as usize;
-                    let source_col = (col as i32 + delta_col) as usize;
-                    sum_cb += cb[source_row * width + source_col] * coeff_cb;
-                    sum_cr += cr[source_row * width + source_col] * coeff_cr;
-                    pos += 1;
-                }
+            for (pos, &offset) in offsets[..offset_count].iter().enumerate() {
+                let source = (index as isize + offset) as usize;
+                sum_cb += cb[source] * model.ar_coeffs_cb.get(pos).copied().unwrap_or(0);
+                sum_cr += cr[source] * model.ar_coeffs_cr.get(pos).copied().unwrap_or(0);
             }
-            let index = row * width + col;
+            if model.num_y_points > 0 {
+                let luma_x = ((col - LUMA_GRAIN_BASE) << sub_x) + LUMA_GRAIN_BASE;
+                let luma_y = ((row - LUMA_GRAIN_BASE) << sub_y) + LUMA_GRAIN_BASE;
+                let mut average = 0;
+                for y_offset in 0..=sub_y {
+                    for x_offset in 0..=sub_x {
+                        average += luma[(luma_y + y_offset) * LUMA_GRAIN_WIDTH + luma_x + x_offset];
+                    }
+                }
+                let average = round2(average, (sub_x + sub_y) as u8);
+                sum_cb += average * luma_coeff_cb;
+                sum_cr += average * luma_coeff_cr;
+            }
             cb[index] = clip3(cb[index] + round2(sum_cb, shift), grain_min, grain_max);
             cr[index] = clip3(cr[index] + round2(sum_cr, shift), grain_min, grain_max);
         }
     }
+}
+
+fn ar_neighbor_offsets(lag: u8, stride: usize) -> ([isize; MAX_AR_COEFFICIENTS], usize) {
+    let lag = i32::from(lag);
+    let mut offsets = [0; MAX_AR_COEFFICIENTS];
+    let mut count = 0;
+    'outer: for delta_row in -lag..=0 {
+        for delta_col in -lag..=lag {
+            if delta_row == 0 && delta_col == 0 {
+                break 'outer;
+            }
+            offsets[count] = delta_row as isize * stride as isize + delta_col as isize;
+            count += 1;
+        }
+    }
+    (offsets, count)
 }
 
 fn scaling_luts(grain: &ActiveFilmGrain, num_planes: usize) -> Vec<[i32; 256]> {
@@ -419,12 +418,24 @@ fn build_noise_image(
     for plane in 0..num_planes {
         let plane_sub_y = if plane > 0 { sub_y } else { 0 };
         let stripe_shift = 4 + usize::from(grain.model.film_grain_block_size) - plane_sub_y;
+        if !grain.model.overlap_flag {
+            for row in 0..plane_heights[plane] {
+                let luma_num = row >> stripe_shift;
+                let stripe_row = row - (luma_num << stripe_shift);
+                let stripe = &stripes[luma_num];
+                let source = stripe_row * stripe.widths[plane];
+                let destination = row * plane_widths[plane];
+                planes[plane][destination..destination + plane_widths[plane]]
+                    .copy_from_slice(&stripe.planes[plane][source..source + plane_widths[plane]]); // splot-copy-ok: assembled film-grain noise image
+            }
+            continue;
+        }
         for row in 0..plane_heights[plane] {
             let luma_num = row >> stripe_shift;
             let stripe_row = row - (luma_num << stripe_shift);
             for col in 0..plane_widths[plane] {
                 let mut sample = stripes[luma_num].get(plane, stripe_row, col);
-                if grain.model.overlap_flag && luma_num > 0 {
+                if luma_num > 0 {
                     if plane_sub_y == 0 && stripe_row < 2 {
                         let old = stripes[luma_num - 1].get(plane, stripe_row + luma_size, col);
                         sample = if stripe_row == 0 {
@@ -561,6 +572,25 @@ fn fill_stripe_plane(
     };
     let block_height = (luma_size + 2) >> plane_sub_y;
     let block_width = (luma_size + 2) >> plane_sub_x;
+    if !grain.model.overlap_flag {
+        let (template, template_width) = match plane {
+            0 => (&templates.y, LUMA_GRAIN_WIDTH),
+            1 => (&templates.cb, templates.chroma_width),
+            _ => (&templates.cr, templates.chroma_width),
+        };
+        let dst_col = if plane_sub_x == 0 {
+            block_x * 2
+        } else {
+            block_x
+        };
+        for row in 0..block_height {
+            let source = (plane_offset_y + row) * template_width + plane_offset_x;
+            let destination = row * stripe.widths[plane] + dst_col;
+            stripe.planes[plane][destination..destination + block_width]
+                .copy_from_slice(&template[source..source + block_width]); // splot-copy-ok: no-overlap grain block publication
+        }
+        return;
+    }
     for row in 0..block_height {
         for col in 0..block_width {
             let mut sample =
@@ -570,7 +600,7 @@ fn fill_stripe_plane(
             } else {
                 block_x + col
             };
-            if grain.model.overlap_flag && block_x > 0 {
+            if block_x > 0 {
                 if plane_sub_x == 0 && col < 2 {
                     let old = stripe.get(plane, row, dst_col);
                     sample = if col == 0 {
