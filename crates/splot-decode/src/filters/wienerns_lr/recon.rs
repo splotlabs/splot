@@ -1068,15 +1068,18 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let v_runs = &self.lr_source_blocks[u_end..];
         let plane_blocks = [y_runs, u_runs, v_runs];
         let active_lr = chain.active_lr_planes(start, end, plane_blocks);
+        let gdf_active = crate::filters::gdf::is_active(
+            &self.core,
+            chain.gdf_grid,
+            self.bit_depth,
+            chain.gdf_reference,
+        )?;
         let direct_u8_lr = core::array::from_fn(|index| {
             let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
-            if plane == PlaneId::Y || self.bit_depth != BitDepth::Eight || !active_lr[index] {
+            if self.bit_depth != BitDepth::Eight || !active_lr[index] {
                 return false;
             }
             let Some(target) = target.get(plane) else {
-                return false;
-            };
-            let Some(target_end_y) = target.end_y() else {
                 return false;
             };
             let frame_type = self
@@ -1085,18 +1088,29 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
                 .as_ref()
                 .and_then(|params| params.planes.get(index))
                 .map(|plane| plane.restoration_type);
-            !target.is_u16()
-                && frame_type.is_some_and(|frame_type| {
-                    final_filters::lr_plane_fully_overwritten(
-                        plane_blocks[index],
-                        plane,
-                        frame_type,
-                        target.width(),
-                        target.frame_height(),
-                        target.origin_y(),
-                        target_end_y,
-                    )
-                })
+            if plane == PlaneId::Y {
+                return final_filters::terminal_luma_wiener_direct_u8(
+                    self.bit_depth,
+                    frame_type,
+                    gdf_active,
+                    plane_blocks[index],
+                    target,
+                );
+            }
+            let Some(target_end_y) = target.end_y().filter(|_| !target.is_u16()) else {
+                return false;
+            };
+            frame_type.is_some_and(|frame_type| {
+                final_filters::lr_plane_fully_overwritten(
+                    plane_blocks[index],
+                    plane,
+                    frame_type,
+                    target.width(),
+                    target.frame_height(),
+                    target.origin_y(),
+                    target_end_y,
+                )
+            })
         });
         let lr_initializations =
             final_filters::lr_initializations(&self.core, active_lr, plane_blocks, &target);
@@ -1118,28 +1132,31 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             },
         )?;
         crate::timing::accumulate(crate::timing::Phase::FilterLrStripe, lr_timer);
-        let (separate_cdef_luma, output_luma) = if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
-            (
-                Some(&frame.cdef_y),
-                post_lr_y.as_u16_mut().ok_or_else(lr_pipeline_state_error)?,
-            )
-        } else {
-            (None, &mut frame.cdef_y)
-        };
-        let gdf_timer = crate::timing::start();
-        crate::filters::gdf::apply_stripe(
-            &self.core,
-            frame.deblocked_y,
-            separate_cdef_luma,
-            &cdef_overlap.y,
-            output_luma,
-            chain.gdf_grid,
-            chain.lossless_grid,
-            self.bit_depth,
-            self.disable_loopfilters_across_tiles,
-            chain.gdf_reference,
-        )?;
-        crate::timing::accumulate(crate::timing::Phase::FilterGdfStripe, gdf_timer);
+        if gdf_active {
+            let (separate_cdef_luma, output_luma) =
+                if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
+                    (
+                        Some(&frame.cdef_y),
+                        post_lr_y.as_u16_mut().ok_or_else(lr_pipeline_state_error)?,
+                    )
+                } else {
+                    (None, &mut frame.cdef_y)
+                };
+            let gdf_timer = crate::timing::start();
+            crate::filters::gdf::apply_stripe(
+                &self.core,
+                frame.deblocked_y,
+                separate_cdef_luma,
+                &cdef_overlap.y,
+                output_luma,
+                chain.gdf_grid,
+                chain.lossless_grid,
+                self.bit_depth,
+                self.disable_loopfilters_across_tiles,
+                chain.gdf_reference,
+            )?;
+            crate::timing::accumulate(crate::timing::Phase::FilterGdfStripe, gdf_timer);
+        }
         Ok(frame.into_filtered())
     }
 

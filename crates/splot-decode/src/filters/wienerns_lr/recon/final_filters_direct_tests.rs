@@ -442,7 +442,7 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
 }
 
 #[test]
-fn u8_lossless_luma_samples_are_widened_into_the_direct_u16_destination() {
+fn u8_lossless_luma_samples_write_exactly_to_both_output_representations() {
     let workspace = workspace_with(
         BitDepth::Eight,
         PixelFormat::Monochrome,
@@ -482,10 +482,16 @@ fn u8_lossless_luma_samples_are_widened_into_the_direct_u16_destination() {
     let block = block(PlaneId::Y, LrUnitRestorationType::WienerNonsep, 0, 0, 8, 8);
     let curr = FramePlane::new(&workspace, PlaneId::Y).unwrap();
     let mut output = [777u16; 64];
+    let mut direct = [0xeeu8; 64];
 
     chain
         .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, &mut output, 8, |slot, sample| {
             *slot = sample.to_u16();
+        })
+        .unwrap();
+    chain
+        .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, &mut direct, 8, |slot, sample| {
+            *slot = sample;
         })
         .unwrap();
 
@@ -497,6 +503,12 @@ fn u8_lossless_luma_samples_are_widened_into_the_direct_u16_destination() {
                 777
             };
             assert_eq!(output[y * 8 + x], expected, "sample ({x}, {y})");
+            let expected = if x < 4 && y < 4 {
+                workspace.samples(PlaneId::Y).unwrap()[y * 8 + x]
+            } else {
+                0xee
+            };
+            assert_eq!(direct[y * 8 + x], expected, "direct sample ({x}, {y})");
         }
     }
 }
@@ -538,6 +550,54 @@ fn poison_oracle_exposes_one_suppressed_lr_block_write() {
 }
 
 #[test]
+#[should_panic(expected = "omitted direct-u8 LR block write escaped poison oracle")]
+fn direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write() {
+    let workspace = workspace_with(BitDepth::Eight, PixelFormat::Monochrome, 8, 8, |x, y, _| {
+        ((x * 17 + y * 29) % 256) as u8
+    });
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(workspace.info()).unwrap(),
+    );
+    assert!(progress.begin(&[(0, 8)]));
+    let mut poison_lease = progress.direct_stripe(0).unwrap();
+    let mut poison_target = poison_lease.take_target().unwrap();
+    poison_target
+        .take(PlaneId::Y)
+        .unwrap()
+        .u8_samples_mut()
+        .unwrap()
+        .fill(0xde);
+    drop(poison_target);
+    drop(poison_lease);
+
+    let mut lease = progress.direct_stripe(0).unwrap();
+    let mut target = lease.take_target().unwrap();
+    let target = target.take(PlaneId::Y).unwrap();
+    let source =
+        StripePlane::copy_from(FramePlane::new(&workspace, PlaneId::Y).unwrap(), 0, 8).unwrap();
+    let blocks = blocks_for_target(&target, PlaneId::Y);
+    let mut output = StripeOutputPlane::direct_u8(target, &source).unwrap();
+    for block in &blocks[1..] {
+        let rect = PlaneRect::new(block.x, block.y, block.width, block.height).unwrap();
+        let (samples, stride) = output.u8_rect_mut(rect).unwrap();
+        for row in 0..block.height {
+            samples[row * stride..row * stride + block.width].fill(77);
+        }
+    }
+    assert!(
+        match output {
+            StripeOutputPlane::DirectU8(mut target) => target
+                .u8_samples_mut()
+                .unwrap()
+                .iter()
+                .all(|&sample| sample != 0xde),
+            StripeOutputPlane::U16(_) => false,
+        },
+        "omitted direct-u8 LR block write escaped poison oracle"
+    );
+}
+
+#[test]
 fn gdf_active_luma_keeps_the_full_overwrite_initialization() {
     let workspace = workspace(PixelFormat::Monochrome, 8, 8);
     let mut core = lr_core([
@@ -561,4 +621,84 @@ fn gdf_active_luma_keeps_the_full_overwrite_initialization() {
         lr_initializations(&core, [true, false, false], [&blocks, &[], &[]], &target)[0],
         StripeInitialization::FullyOverwritten
     );
+}
+
+#[test]
+fn terminal_luma_direct_u8_eligibility_keeps_every_non_class_a_fallback() {
+    let workspace_u8 = workspace_with(BitDepth::Eight, PixelFormat::Monochrome, 9, 7, |x, y, _| {
+        ((x * 17 + y * 29) % 256) as u8
+    });
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u8>::new(workspace_u8.info()).unwrap(),
+    );
+    assert!(progress.begin(&[(0, 7)]));
+    let mut lease = progress.direct_stripe(0).unwrap();
+    let target = lease.take_target().unwrap();
+    let target = target.get(PlaneId::Y).unwrap();
+    let mut blocks = blocks_for_target(target, PlaneId::Y);
+
+    assert!(terminal_luma_wiener_direct_u8(
+        BitDepth::Eight,
+        Some(FrameRestorationType::WienerNonsep),
+        false,
+        &blocks,
+        target,
+    ));
+    assert!(!terminal_luma_wiener_direct_u8(
+        BitDepth::Eight,
+        Some(FrameRestorationType::WienerNonsep),
+        true,
+        &blocks,
+        target,
+    ));
+    assert!(!terminal_luma_wiener_direct_u8(
+        BitDepth::Eight,
+        Some(FrameRestorationType::PcWiener),
+        false,
+        &blocks,
+        target,
+    ));
+    blocks.remove(1);
+    assert!(!terminal_luma_wiener_direct_u8(
+        BitDepth::Eight,
+        Some(FrameRestorationType::WienerNonsep),
+        false,
+        &blocks,
+        target,
+    ));
+
+    let workspace = workspace(PixelFormat::Monochrome, 9, 7);
+    let progress = Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
+    );
+    assert!(progress.begin(&[(0, 7)]));
+    let mut lease = progress.direct_stripe(0).unwrap();
+    let target = lease.take_target().unwrap();
+    let target = target.get(PlaneId::Y).unwrap();
+    let blocks = blocks_for_target(target, PlaneId::Y);
+    assert!(!terminal_luma_wiener_direct_u8(
+        BitDepth::Ten,
+        Some(FrameRestorationType::WienerNonsep),
+        false,
+        &blocks,
+        target,
+    ));
+}
+
+#[test]
+fn active_gdf_state_is_checked_before_output_selection() {
+    let mut core = lr_core([
+        FrameRestorationType::WienerNonsep,
+        FrameRestorationType::None,
+        FrameRestorationType::None,
+    ]);
+    let gdf = core.gdf_params.as_mut().unwrap();
+    gdf.gdf_frame_enable = true;
+    gdf.gdf_per_block = Some(false);
+    gdf.gdf_pic_qc_idx = Some(0);
+    gdf.gdf_pic_scale_idx = Some(0);
+    assert!(crate::filters::gdf::is_active(&core, None, BitDepth::Eight, None).unwrap());
+
+    core.gdf_params.as_mut().unwrap().gdf_per_block = None;
+    assert!(crate::filters::gdf::is_active(&core, None, BitDepth::Eight, None).is_err());
 }

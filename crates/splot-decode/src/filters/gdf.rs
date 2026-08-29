@@ -205,14 +205,10 @@ fn gdf_config(
     bit_depth: BitDepth,
     reference: Option<GdfReferenceContext>,
 ) -> Result<Option<GdfConfig>> {
-    let Some((gdf, per_block)) = core
-        .gdf_params
-        .as_ref()
-        .filter(|gdf| gdf.gdf_frame_enable)
-        .and_then(|gdf| gdf.gdf_per_block.map(|per_block| (gdf, per_block)))
-    else {
+    let Some(gdf) = core.gdf_params.as_ref().filter(|gdf| gdf.gdf_frame_enable) else {
         return Ok(None);
     };
+    let per_block = gdf.gdf_per_block.ok_or_else(gdf_state_error)?;
     if per_block && block_grid.is_none() {
         return Err(gdf_state_error());
     }
@@ -239,6 +235,15 @@ fn gdf_config(
         pix_scale: i32::from(gdf.gdf_pic_scale_idx.unwrap_or(0)) + 1,
         max_sample: i32::from(bit_depth.max_sample()),
     }))
+}
+
+pub(crate) fn is_active(
+    core: &FrameHeaderCore,
+    block_grid: Option<&GdfBlockGrid>,
+    bit_depth: BitDepth,
+    reference: Option<GdfReferenceContext>,
+) -> Result<bool> {
+    gdf_config(core, block_grid, bit_depth, reference).map(|config| config.is_some())
 }
 
 #[allow(clippy::too_many_arguments)]

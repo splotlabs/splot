@@ -367,6 +367,53 @@ pub fn wiener_ns_filter_luma_block_padded_cells_u16_into<T: ReconSample>(
     )
 }
 
+/// Applies padded luma Wiener NS filtering directly into strided `u8` storage.
+///
+/// Output geometry, source geometry, subclass selection, and every fallible
+/// allocation are validated before the first destination write.
+///
+/// # Errors
+/// Returns the same parameter, source-range, output-shape, subclass, and
+/// allocation errors as [`wiener_ns_filter_luma_block_padded_into`].
+#[inline]
+pub fn wiener_ns_filter_luma_block_padded_u8_into<T: ReconSample>(
+    output: &mut [u8],
+    params: &WienerNsLumaFilter<'_>,
+    source: &WienerNsLumaPaddedSource<'_, T>,
+    scratch: &mut WienerNsLumaScratch<T>,
+) -> Result<()> {
+    let subclasses = params
+        .subclasses
+        .map_or(LumaSubclassLayout::Uniform, LumaSubclassLayout::Samples);
+    wiener_ns_filter_luma_block_padded_layout_u8_into(output, params, source, subclasses, scratch)
+}
+
+/// Applies padded luma Wiener NS filtering with one subclass per 4x4 cell
+/// directly into strided `u8` storage.
+///
+/// # Errors
+/// Returns the same errors as
+/// [`wiener_ns_filter_luma_block_padded_cells_into`].
+#[inline]
+pub fn wiener_ns_filter_luma_block_padded_cells_u8_into<T: ReconSample>(
+    output: &mut [u8],
+    params: &WienerNsLumaFilter<'_>,
+    source: &WienerNsLumaPaddedSource<'_, T>,
+    cell_subclasses: &[usize],
+    scratch: &mut WienerNsLumaScratch<T>,
+) -> Result<()> {
+    wiener_ns_filter_luma_block_padded_layout_u8_into(
+        output,
+        params,
+        source,
+        LumaSubclassLayout::Cells {
+            values: cell_subclasses,
+            cols: params.width.div_ceil(4),
+        },
+        scratch,
+    )
+}
+
 fn padded_luma_offsets(stride: usize) -> Result<([usize; WIENER_NS_LUMA_TAPS], usize)> {
     let center = WIENER_NS_LUMA_TAP_RADIUS
         .checked_mul(stride)
@@ -578,7 +625,37 @@ fn wiener_ns_filter_luma_block_padded_layout_u16_into<T: ReconSample>(
     };
     for r in 0..params.height {
         let output_row = &mut output[r * params.output_stride..][..params.width];
-        filter_padded_luma_row_u8_source_u16_output(
+        filter_padded_luma_row_u8_source_output(
+            output_row,
+            samples,
+            source.stride,
+            r,
+            params,
+            &scratch.prepared_classes,
+            subclasses,
+            context.max_sample,
+        )?;
+    }
+    Ok(())
+}
+
+fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
+    output: &mut [u8],
+    params: &WienerNsLumaFilter<'_>,
+    source: &WienerNsLumaPaddedSource<'_, T>,
+    subclasses: LumaSubclassLayout<'_>,
+    scratch: &mut WienerNsLumaScratch<T>,
+) -> Result<()> {
+    let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
+    let Some(samples) = T::u8_slice(source.samples) else {
+        return Err(ReconError::SampleTypeUnsupportedBitDepth {
+            sample_type: T::TYPE_NAME,
+            bit_depth: params.bit_depth,
+        });
+    };
+    for r in 0..params.height {
+        let output_row = &mut output[r * params.output_stride..][..params.width];
+        filter_padded_luma_row_u8_source_output(
             output_row,
             samples,
             source.stride,
@@ -714,8 +791,8 @@ fn for_each_luma_segment(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn filter_padded_luma_row_u8_source_u16_output(
-    output: &mut [u16],
+fn filter_padded_luma_row_u8_source_output<O: LumaSimdOutput>(
+    output: &mut [O],
     samples: &[u8],
     stride: usize,
     r: usize,
@@ -842,8 +919,8 @@ fn filter_luma_segment_u16(
     filter_luma_segment_simd(filtered, samples, base, center_offset, class, max_sample);
 }
 
-fn filter_luma_segment_u8(
-    filtered: &mut [u16],
+fn filter_luma_segment_u8<O: LumaSimdOutput>(
+    filtered: &mut [O],
     samples: &[u8],
     base: usize,
     center_offset: usize,
@@ -851,6 +928,36 @@ fn filter_luma_segment_u8(
     max_sample: u16,
 ) {
     filter_luma_segment_simd(filtered, samples, base, center_offset, class, max_sample);
+}
+
+trait LumaSimdOutput: Copy {
+    fn from_u16(value: u16) -> Self;
+
+    fn write<const LANES: usize>(output: &mut [Self], values: Simd<u16, LANES>);
+}
+
+impl LumaSimdOutput for u16 {
+    #[inline]
+    fn from_u16(value: u16) -> Self {
+        value
+    }
+
+    #[inline]
+    fn write<const LANES: usize>(output: &mut [Self], values: Simd<u16, LANES>) {
+        output[..LANES].copy_from_slice(&values.to_array()); // splot-copy-ok: publish Wiener NS SIMD lanes
+    }
+}
+
+impl LumaSimdOutput for u8 {
+    #[inline]
+    fn from_u16(value: u16) -> Self {
+        value as u8
+    }
+
+    #[inline]
+    fn write<const LANES: usize>(output: &mut [Self], values: Simd<u16, LANES>) {
+        output[..LANES].copy_from_slice(&values.cast::<u8>().to_array()); // splot-copy-ok: publish Wiener NS SIMD lanes
+    }
 }
 
 trait LumaSimdSource: Copy {
@@ -883,8 +990,8 @@ impl LumaSimdSource for u8 {
     }
 }
 
-fn filter_luma_segment_simd<T: LumaSimdSource>(
-    filtered: &mut [u16],
+fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
+    filtered: &mut [O],
     samples: &[T],
     base: usize,
     center_offset: usize,
@@ -897,7 +1004,7 @@ fn filter_luma_segment_simd<T: LumaSimdSource>(
     macro_rules! filter_lane_group {
         ($lanes:literal) => {
             while col + $lanes <= len {
-                filter_luma_lanes::<$lanes, T>(
+                filter_luma_lanes::<$lanes, T, O>(
                     &mut filtered[col..],
                     samples,
                     base + col,
@@ -922,7 +1029,9 @@ fn filter_luma_segment_simd<T: LumaSimdSource>(
                 * (i32::from(T::scalar(samples, sample + plus))
                     + i32::from(T::scalar(samples, sample + minus)));
         }
-        *slot = round2_i32(sum, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample)) as u16;
+        *slot = O::from_u16(
+            round2_i32(sum, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample)) as u16,
+        );
     }
 }
 
@@ -935,8 +1044,8 @@ fn filter_luma_segment_simd<T: LumaSimdSource>(
 /// multiply factors are 16-bit and the widening folds into the accumulate.
 #[allow(clippy::inline_always, reason = "measured Wiener NS luma hot path")]
 #[inline(always)]
-fn filter_luma_lanes<const LANES: usize, T: LumaSimdSource>(
-    filtered: &mut [u16],
+fn filter_luma_lanes<const LANES: usize, T: LumaSimdSource, O: LumaSimdOutput>(
+    filtered: &mut [O],
     samples: &[T],
     base: usize,
     center_offset: usize,
@@ -954,9 +1063,8 @@ fn filter_luma_lanes<const LANES: usize, T: LumaSimdSource>(
     let rounded = (sum >> Simd::splat(shift)) + ((sum >> Simd::splat(shift - 1)) & Simd::splat(1));
     let values = rounded
         .simd_clamp(Simd::splat(0), Simd::splat(i32::from(max_sample)))
-        .cast::<u16>()
-        .to_array();
-    filtered[..LANES].copy_from_slice(&values); // splot-copy-ok: publish Wiener NS SIMD lanes
+        .cast::<u16>();
+    O::write(filtered, values);
 }
 
 /// Resolves the padded-row segment for one § 7.20.3 tap `(dy, dx)`, preserving
@@ -1435,6 +1543,82 @@ mod tests {
     }
 
     #[test]
+    fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
+        for class_count in [1, 2, 4, 8, 16] {
+            for (width, height) in [(1, 1), (3, 3), (31, 8), (37, 63), (128, 56)] {
+                let coeffs: Vec<_> = (0..class_count)
+                    .map(|class| {
+                        core::array::from_fn(|index| ((class * 11 + index * 7) % 33) as i16 - 16)
+                    })
+                    .collect();
+                let source_stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS + 3;
+                let source_rows = height + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+                let source_samples: Vec<u8> = (0..source_stride * source_rows)
+                    .map(|index| ((index * 37 + index / source_stride * 53 + 17) % 256) as u8)
+                    .collect();
+                let source =
+                    WienerNsLumaPaddedSource::new(&source_samples, source_stride, width, height)
+                        .unwrap();
+                let cells: Vec<usize> = (0..width.div_ceil(4) * height.div_ceil(4))
+                    .map(|index| index % class_count)
+                    .collect();
+                let output_stride = width + 5;
+                let params = params(width, height, output_stride, BitDepth::Eight, &coeffs, None);
+                let mut staged = vec![u16::MAX; output_stride * height];
+                let mut direct = vec![0xa5; output_stride * height];
+                if class_count == 1 {
+                    wiener_ns_filter_luma_block_padded_u16_into(
+                        &mut staged,
+                        &params,
+                        &source,
+                        &mut WienerNsLumaScratch::default(),
+                    )
+                    .unwrap();
+                    wiener_ns_filter_luma_block_padded_u8_into(
+                        &mut direct,
+                        &params,
+                        &source,
+                        &mut WienerNsLumaScratch::default(),
+                    )
+                    .unwrap();
+                } else {
+                    wiener_ns_filter_luma_block_padded_cells_u16_into(
+                        &mut staged,
+                        &params,
+                        &source,
+                        &cells,
+                        &mut WienerNsLumaScratch::default(),
+                    )
+                    .unwrap();
+                    wiener_ns_filter_luma_block_padded_cells_u8_into(
+                        &mut direct,
+                        &params,
+                        &source,
+                        &cells,
+                        &mut WienerNsLumaScratch::default(),
+                    )
+                    .unwrap();
+                }
+                for row in 0..height {
+                    assert_eq!(
+                        &direct[row * output_stride..row * output_stride + width],
+                        &staged[row * output_stride..row * output_stride + width]
+                            .iter()
+                            .map(|&sample| sample as u8)
+                            .collect::<Vec<_>>(),
+                        "{width}x{height} classes={class_count}",
+                    );
+                    assert!(
+                        direct[row * output_stride + width..(row + 1) * output_stride]
+                            .iter()
+                            .all(|&sample| sample == 0xa5)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn u8_source_strided_u16_simd_has_a_mutation_sensitive_oracle() {
         let width = 32;
         let height = 1;
@@ -1462,6 +1646,18 @@ mod tests {
         assert_eq!(output[0], 101);
         assert!(output[1..width].iter().all(|&sample| sample == 100));
         assert!(output[width..].iter().all(|&sample| sample == u16::MAX));
+
+        let mut direct = vec![0xa5; output_stride];
+        wiener_ns_filter_luma_block_padded_u8_into(
+            &mut direct,
+            &params,
+            &source,
+            &mut WienerNsLumaScratch::default(),
+        )
+        .unwrap();
+        assert_eq!(direct[0], 101);
+        assert!(direct[1..width].iter().all(|&sample| sample == 100));
+        assert!(direct[width..].iter().all(|&sample| sample == 0xa5));
     }
 
     #[test]

@@ -695,11 +695,22 @@ fn apply_luma_lr(
     sink: &WienerNsLrReconSink<u8>,
     core: &FrameHeaderCore,
     blocks: &[WienerNsLrSourceBlock],
+    direct_u8: bool,
 ) -> Vec<u8> {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
     );
     assert!(progress.begin(&[(0, 16)]));
+    let mut poison_lease = progress.direct_stripe(0).unwrap();
+    let mut poison_target = poison_lease.take_target().unwrap();
+    poison_target
+        .take(PlaneId::Y)
+        .unwrap()
+        .u8_samples_mut()
+        .unwrap()
+        .fill(0xa5);
+    drop(poison_target);
+    drop(poison_lease);
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let (target, chroma) = target.split([false, true, true]);
@@ -728,7 +739,7 @@ fn apply_luma_lr(
             &[],
             super::LrStripeOutput {
                 active_planes: [true, false, false],
-                direct_u8_planes: [false; 3],
+                direct_u8_planes: [direct_u8, false, false],
                 initializations: [StripeInitialization::CopyAll; 3],
                 target,
             },
@@ -957,6 +968,9 @@ fn tiled_lr_blocks(plane: PlaneId, width: usize, height: usize) -> Vec<WienerNsL
 
 #[test]
 fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
+    let wiener = tiled_lr_blocks(PlaneId::Y, 9, 7);
+    assert!(terminal_luma_wiener_covers(&wiener, 9, 7, 0, 7));
+
     let mut mixed = tiled_lr_blocks(PlaneId::Y, 9, 7);
     for (index, block) in mixed.iter_mut().enumerate() {
         block.restoration_type = if index.is_multiple_of(2) {
@@ -974,6 +988,7 @@ fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
         0,
         7,
     ));
+    assert!(!terminal_luma_wiener_covers(&mixed, 9, 7, 0, 7));
 
     let mut pc_wiener = tiled_lr_blocks(PlaneId::Y, 9, 7);
     for block in &mut pc_wiener {
@@ -988,6 +1003,7 @@ fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
         0,
         7,
     ));
+    assert!(!terminal_luma_wiener_covers(&pc_wiener, 9, 7, 0, 7));
     assert!(!lr_plane_fully_overwritten(
         &pc_wiener,
         PlaneId::U,
@@ -1012,6 +1028,7 @@ fn loop_restoration_coverage_rejects_one_pixel_and_one_block_holes() {
         0,
         4,
     ));
+    assert!(!terminal_luma_wiener_covers(&one_pixel, 8, 4, 0, 4));
 
     let mut one_block = tiled_lr_blocks(PlaneId::Y, 8, 8);
     one_block.remove(2);
@@ -1024,6 +1041,7 @@ fn loop_restoration_coverage_rejects_one_pixel_and_one_block_holes() {
         0,
         8,
     ));
+    assert!(!terminal_luma_wiener_covers(&one_block, 8, 8, 0, 8));
 }
 
 #[test]
@@ -1060,6 +1078,37 @@ fn loop_restoration_coverage_is_plane_independent_for_every_pixel_format() {
 }
 
 #[test]
+fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
+    let snapshot: Vec<u8> = (0..256)
+        .map(|index| 32 + ((index * 37 + index / 16 * 19) % 192) as u8)
+        .collect();
+    let blocks = tiled_lr_blocks(PlaneId::Y, 16, 16);
+    assert!(terminal_luma_wiener_covers(&blocks, 16, 16, 0, 16));
+
+    let mut cell_core = switchable_core();
+    if let Some(gdf) = cell_core.gdf_params.as_mut() {
+        gdf.gdf_frame_enable = false;
+    }
+    let mut single_core = cell_core.clone();
+    let luma = &mut single_core.lr_params.as_mut().unwrap().planes[0];
+    assert!(luma.frame_filters_on);
+    luma.num_filter_classes = Some(1);
+    luma.frame_filter_bank.as_mut().unwrap().classes.truncate(1);
+
+    let luma = &mut cell_core.lr_params.as_mut().unwrap().planes[0];
+    let class = luma.frame_filter_bank.as_ref().unwrap().classes[0].clone();
+    luma.frame_filter_bank.as_mut().unwrap().classes.push(class);
+    luma.num_filter_classes = Some(2);
+
+    for core in [&single_core, &cell_core] {
+        let staged = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, false);
+        let direct = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, true);
+        assert_eq!(direct, staged);
+        assert!(direct.iter().any(|&sample| sample != 0xa5));
+    }
+}
+
+#[test]
 fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     let snapshot: Vec<u8> = (0..256)
         .map(|index| 48 + ((index * 37 + index / 16 * 19) % 160) as u8)
@@ -1085,9 +1134,15 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
         &lr_sink(&snapshot),
         &mixed_core,
         &[pc_block, wiener_ns_block],
+        false,
     );
-    let pc_luma = apply_luma_lr(&lr_sink(&snapshot), &pc_core, &[pc_block]);
-    let wiener_ns_luma = apply_luma_lr(&lr_sink(&snapshot), &wiener_ns_core, &[wiener_ns_block]);
+    let pc_luma = apply_luma_lr(&lr_sink(&snapshot), &pc_core, &[pc_block], false);
+    let wiener_ns_luma = apply_luma_lr(
+        &lr_sink(&snapshot),
+        &wiener_ns_core,
+        &[wiener_ns_block],
+        false,
+    );
 
     assert_eq!(luma_rect(&mixed_luma, 0), luma_rect(&pc_luma, 0));
     assert_eq!(luma_rect(&mixed_luma, 8), luma_rect(&wiener_ns_luma, 8));
