@@ -1165,13 +1165,11 @@ impl StripeChain<'_> {
                 PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
                     .map_err(lr_window_error)?;
             let timer = crate::timing::start();
-            if T::u8_slice(&[]).is_some() {
-                pc_wiener_filter_block_padded_u16_into(output, &params, &padded_source)
+            if let Some(output) = T::from_u16_slice_mut(output) {
+                pc_wiener_filter_block_padded(output, &params, &padded_source)
                     .map_err(lr_window_error)?;
             } else {
-                let output =
-                    T::from_u16_slice_mut(output).ok_or_else(super::lr_pipeline_state_error)?;
-                pc_wiener_filter_block_padded(output, &params, &padded_source)
+                pc_wiener_filter_block_padded_u16_into(output, &params, &padded_source)
                     .map_err(lr_window_error)?;
             }
             crate::timing::accumulate(crate::timing::Phase::PcWienerFilter, timer);
