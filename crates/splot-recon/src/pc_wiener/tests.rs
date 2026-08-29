@@ -402,6 +402,163 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
     }
 }
 
+fn packed_and_strided_pc_wiener_match<T: ReconSample>(
+    bit_depth: BitDepth,
+    width: usize,
+    height: usize,
+) {
+    let radius = PC_WIENER_FILTER_TAP_RADIUS;
+    let source_stride = width + 2 * radius + 3;
+    let source_rows = height + 2 * radius;
+    let max = usize::from(bit_depth.max_sample()) + 1;
+    let source_values: Vec<T> = (0..source_stride * source_rows)
+        .map(|index| T::try_from_u16(((index * 37 + index / source_stride * 19) % max) as u16))
+        .collect::<Result<_>>()
+        .unwrap();
+    let source = PcWienerPaddedSource::new(&source_values, source_stride, width, height).unwrap();
+    let subclass_cols = width.div_ceil(PC_WIENER_BLOCK_SIZE);
+    let subclass_rows = height.div_ceil(PC_WIENER_BLOCK_SIZE);
+    let subclasses: Vec<usize> = (0..subclass_cols * subclass_rows)
+        .map(|index| index % PC_WIENER_FULL_CLASSES)
+        .collect();
+
+    for filter_set_index in 0..4 {
+        let packed_params = PcWienerFilter {
+            width,
+            height,
+            output_stride: width,
+            bit_depth,
+            filter_set_index,
+            subclass_block_size: PC_WIENER_BLOCK_SIZE,
+            subclasses: &subclasses,
+        };
+        let mut packed = vec![T::default(); width * height];
+        pc_wiener_filter_block_padded(&mut packed, &packed_params, &source).unwrap();
+
+        let output_stride = width + 7;
+        let strided_params = PcWienerFilter {
+            output_stride,
+            ..packed_params
+        };
+        let mut strided = vec![u16::MAX; output_stride * height];
+        pc_wiener_filter_block_padded_u16_into(&mut strided, &strided_params, &source).unwrap();
+
+        for row in 0..height {
+            let expected = &packed[row * width..(row + 1) * width];
+            let actual = &strided[row * output_stride..row * output_stride + width];
+            assert!(
+                actual
+                    .iter()
+                    .zip(expected)
+                    .all(|(&actual, &expected)| actual == expected.to_u16()),
+                "{} {bit_depth:?} {width}x{height} set {filter_set_index}",
+                T::TYPE_NAME,
+            );
+            assert!(
+                strided[row * output_stride + width..(row + 1) * output_stride]
+                    .iter()
+                    .all(|&sample| sample == u16::MAX),
+                "destination padding changed"
+            );
+        }
+    }
+}
+
+#[test]
+fn packed_and_strided_pc_wiener_match_all_source_widths_sets_classes_and_edges() {
+    for &(width, height) in &[(128, 8), (17, 7), (64, 56)] {
+        packed_and_strided_pc_wiener_match::<u8>(BitDepth::Eight, width, height);
+        packed_and_strided_pc_wiener_match::<u16>(BitDepth::Eight, width, height);
+        packed_and_strided_pc_wiener_match::<u16>(BitDepth::Ten, width, height);
+    }
+}
+
+#[test]
+fn pc_wiener_filter_set_qindex_extrema_are_stable() {
+    for &(qindex, expected) in &[
+        (0, 0),
+        (129, 0),
+        (130, 1),
+        (189, 1),
+        (190, 2),
+        (219, 2),
+        (220, 3),
+        (u32::MAX, 3),
+    ] {
+        assert_eq!(
+            pc_wiener_filter_set_index(qindex),
+            expected,
+            "qindex {qindex}"
+        );
+    }
+}
+
+#[test]
+fn strided_pc_wiener_validates_all_geometry_and_samples_before_writing() {
+    let width = 8;
+    let height = 3;
+    let radius = PC_WIENER_FILTER_TAP_RADIUS;
+    let source_stride = width + 2 * radius;
+    let source_rows = height + 2 * radius;
+    let mut source_values = vec![0u16; source_stride * source_rows];
+    source_values[(source_rows - 1) * source_stride + width + 2 * radius - 1] = 256;
+    let source = PcWienerPaddedSource::new(&source_values, source_stride, width, height).unwrap();
+    let subclasses = vec![0; width.div_ceil(4) * height.div_ceil(4)];
+    let params = PcWienerFilter {
+        width,
+        height,
+        output_stride: width + 3,
+        bit_depth: BitDepth::Eight,
+        filter_set_index: 0,
+        subclass_block_size: PC_WIENER_BLOCK_SIZE,
+        subclasses: &subclasses,
+    };
+    let mut output = vec![77u16; params.output_stride * height];
+
+    pc_wiener_filter_block_padded_u16_into(&mut output, &params, &source).unwrap();
+    assert_ne!(output[0], 77);
+
+    let used_index = (height - 1 + radius) * source_stride + radius + width - 1;
+    source_values[used_index] = 256;
+    let source = PcWienerPaddedSource::new(&source_values, source_stride, width, height).unwrap();
+    output.fill(77);
+    assert!(pc_wiener_filter_block_padded_u16_into(&mut output, &params, &source).is_err());
+    assert!(output.iter().all(|&sample| sample == 77));
+
+    let mut short_output = vec![91u16; (height - 1) * params.output_stride + width - 1];
+    assert!(pc_wiener_filter_block_padded_u16_into(&mut short_output, &params, &source).is_err());
+    assert!(short_output.iter().all(|&sample| sample == 91));
+}
+
+#[test]
+fn u8_source_strided_pc_wiener_simd_has_a_mutation_sensitive_oracle() {
+    let width = 64;
+    let height = 1;
+    let radius = PC_WIENER_FILTER_TAP_RADIUS;
+    let source_stride = width + 2 * radius;
+    let source_rows = height + 2 * radius;
+    let mut samples = vec![100u8; source_stride * source_rows];
+    samples[(radius + 1) * source_stride + radius] = 120;
+    let source = PcWienerPaddedSource::new(&samples, source_stride, width, height).unwrap();
+    let output_stride = width + 7;
+    let params = PcWienerFilter {
+        width,
+        height,
+        output_stride,
+        bit_depth: BitDepth::Eight,
+        filter_set_index: 0,
+        subclass_block_size: PC_WIENER_BLOCK_SIZE,
+        subclasses: &[0; 16],
+    };
+    let mut output = vec![u16::MAX; output_stride];
+
+    pc_wiener_filter_block_padded_u16_into(&mut output, &params, &source).unwrap();
+
+    assert_eq!(&output[..2], &[111, 95]);
+    assert!(output[2..width].iter().all(|&sample| sample == 100));
+    assert!(output[width..].iter().all(|&sample| sample == u16::MAX));
+}
+
 #[test]
 fn padded_and_callback_filters_match_bit_exactly() {
     let width = 31;
