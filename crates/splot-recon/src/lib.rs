@@ -198,8 +198,9 @@ pub use wienerns_filter::{
     WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter,
     WienerNsLumaPaddedSource, WienerNsLumaScratch, wiener_ns_filter_luma_block,
     wiener_ns_filter_luma_block_padded, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_luma_block_padded_cells_u8_into,
     wiener_ns_filter_luma_block_padded_cells_u16_into, wiener_ns_filter_luma_block_padded_into,
-    wiener_ns_filter_luma_block_padded_u16_into,
+    wiener_ns_filter_luma_block_padded_u8_into, wiener_ns_filter_luma_block_padded_u16_into,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect,
