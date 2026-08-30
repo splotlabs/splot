@@ -789,25 +789,15 @@ fn compute_cdef_block<S: ReconSample>(
         && y0 >= luma_start_y + CDEF_TAP_REACH
         && x0 + block_w - 1 + CDEF_TAP_REACH < luma_inside_x
         && y0 + block_h - 1 + CDEF_TAP_REACH < luma_inside_y;
-    let luma_ready = luma_interior && !ctx.luma_lossless && (sec_str != 0 || pri_base != 0);
-    let luma_window = if luma_ready {
-        interior_window(luma_snap, x0, y0, block_w, block_h)
-    } else {
-        None
-    };
-    let luma_pad_ready = luma_ready && luma_window.is_none();
+    let luma_pad_ready = luma_interior && !ctx.luma_lossless && (sec_str != 0 || pri_base != 0);
     if luma_pad_ready {
         gather_interior_pad(luma_snap, pad, x0, y0, block_w, block_h)?;
     }
 
     let (y_dir, var) = if pri_base == 0 && uv_pri == 0 {
         (0, 0)
-    } else if let Some((samples, center, stride)) = luma_window {
-        cdef_direction_padded(samples, center, stride, ctx.coeff_shift)
-            .ok_or(CdefError::Workspace)?
     } else if luma_pad_ready {
-        cdef_direction_padded(pad, PAD_CENTER, CDEF_PADDED_SIDE, ctx.coeff_shift)
-            .ok_or(CdefError::Workspace)?
+        cdef_direction_padded(pad, ctx.coeff_shift)
     } else {
         let mut block = [[0i32; 8]; 8];
         for (i, row) in block.iter_mut().enumerate() {
@@ -842,11 +832,7 @@ fn compute_cdef_block<S: ReconSample>(
     let y_zero = pri_str == 0 && sec_str == 0;
     let uv_zero = uv_pri == 0 && uv_sec == 0;
     if !(y_zero || ctx.luma_lossless) {
-        if let Some((samples, center, stride)) = luma_window {
-            filter_window_into(
-                filtered_y, samples, center, stride, x0, y0, block_w, block_h, &y_filter,
-            )?;
-        } else if luma_pad_ready {
+        if luma_pad_ready {
             filter_pad_into(filtered_y, pad, x0, y0, block_w, block_h, &y_filter, false)?;
         } else {
             compute_cdef_filter_plane::<S>(luma_snap, &y_filter, pad, filtered_y)?;
@@ -1010,9 +996,6 @@ fn compute_cdef_filter_plane<S: ReconSample>(
         && y0 + h - 1 + CDEF_TAP_REACH < inside_y;
 
     if interior {
-        if let Some((samples, center, stride)) = interior_window(snap, x0, y0, w, h) {
-            return filter_window_into(filtered, samples, center, stride, x0, y0, w, h, ctx);
-        }
         gather_interior_pad(snap, pad, x0, y0, w, h)?;
         return filter_pad_into(filtered, pad, x0, y0, w, h, ctx, false);
     }
@@ -1055,37 +1038,6 @@ fn compute_cdef_filter_plane<S: ReconSample>(
     filtered
         .write_rect(rect, &filtered_block, w)
         .ok_or(CdefError::Workspace)
-}
-
-/// Views an interior block's own tap neighbourhood inside `snap`'s packed `u16`
-/// storage as `(samples, center, stride)`, so the kernel reads the plane where it
-/// already lives instead of gathering a padded copy of it first.
-///
-/// `None` whenever the storage is not packed `u16`, or the two-sample border
-/// leaves the rows this view carries, which leaves the caller on the gather path.
-fn interior_window<S: ReconSample>(
-    snap: CdefPlane<'_, S>,
-    x0: usize,
-    y0: usize,
-    w: usize,
-    h: usize,
-) -> Option<(&[u16], usize, usize)> {
-    let packed = snap.packed()?;
-    let samples = S::u16_slice(packed.samples())?;
-    let stride = packed.stride();
-    let left = x0.checked_sub(CDEF_TAP_REACH)?;
-    let top = y0.checked_sub(CDEF_TAP_REACH)?;
-    if top < packed.origin_y()
-        || y0.checked_add(h)?.checked_add(CDEF_TAP_REACH)? > packed.end_y()
-        || left.checked_add(w)?.checked_add(2 * CDEF_TAP_REACH)? > packed.width()
-        || packed.width() > stride
-    {
-        return None;
-    }
-    let center = (y0 - packed.origin_y())
-        .checked_mul(stride)?
-        .checked_add(x0)?;
-    Some((samples, center, stride))
 }
 
 /// Gathers the `w`x`h` block plus a two-sample border from `snap` into `pad`, in the
@@ -1234,67 +1186,24 @@ fn filter_pad_into(
     ctx: &CdefFilterCtx,
     has_unavailable: bool,
 ) -> Result<(), CdefError> {
-    if !has_unavailable {
-        return filter_window_into(
-            filtered,
-            pad,
-            PAD_CENTER,
-            CDEF_PADDED_SIDE,
-            x0,
-            y0,
-            w,
-            h,
-            ctx,
-        );
-    }
-    let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
-    let (output, stride) = filtered.rect_mut(rect).ok_or(CdefError::Workspace)?;
-    if cdef_filter_block_boundary_to_valid_stride(pad, w, h, &block_filter(ctx), output, stride) {
-        Ok(())
-    } else {
-        Err(CdefError::Workspace)
-    }
-}
-
-/// Filters one block straight out of a strided `u16` source whose block origin is
-/// `source[center]`, without an intermediate padded gather.
-#[allow(clippy::too_many_arguments)]
-fn filter_window_into(
-    filtered: &mut StripePlane,
-    source: &[u16],
-    center: usize,
-    source_stride: usize,
-    x0: usize,
-    y0: usize,
-    w: usize,
-    h: usize,
-    ctx: &CdefFilterCtx,
-) -> Result<(), CdefError> {
-    let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
-    let (output, stride) = filtered.rect_mut(rect).ok_or(CdefError::Workspace)?;
-    if cdef_filter_block_interior_to_valid_stride(
-        source,
-        center,
-        source_stride,
-        w,
-        h,
-        &block_filter(ctx),
-        output,
-        stride,
-    ) {
-        Ok(())
-    } else {
-        Err(CdefError::Workspace)
-    }
-}
-
-fn block_filter(ctx: &CdefFilterCtx) -> CdefBlockFilter {
-    CdefBlockFilter {
+    let filter = CdefBlockFilter {
         pri_str: ctx.pri_str,
         sec_str: ctx.sec_str,
         damping: ctx.damping,
         dir: ctx.dir,
         coeff_shift: ctx.coeff_shift,
+    };
+    let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
+    let (output, stride) = filtered.rect_mut(rect).ok_or(CdefError::Workspace)?;
+    let filtered = if has_unavailable {
+        cdef_filter_block_boundary_to_valid_stride(pad, w, h, &filter, output, stride)
+    } else {
+        cdef_filter_block_interior_to_valid_stride(pad, w, h, &filter, output, stride)
+    };
+    if filtered {
+        Ok(())
+    } else {
+        Err(CdefError::Workspace)
     }
 }
 
@@ -1304,9 +1213,6 @@ fn storage_sample(filtered: i32, max_sample: i32) -> Result<u16, CdefError> {
 }
 
 const CDEF_TAP_REACH: usize = 2;
-
-/// Index of a block's first sample in the padded scratch layout.
-const PAD_CENTER: usize = 2 * CDEF_PADDED_SIDE + CDEF_TAP_REACH;
 
 struct CdefTapOffsets {
     primary: [[(isize, isize); 2]; 2],
