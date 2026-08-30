@@ -6,8 +6,7 @@
     reason = "stripe buffers and final deblocked-row leases retain their unique allocation owner"
 )]
 
-use splot_recon::{CurrentFrameWorkspace, OwnedFrameBands, PlaneId, PlaneRect, ReconSample};
-use std::any::Any;
+use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr::NonNull;
 #[cfg(test)]
@@ -279,11 +278,9 @@ impl<T: ReconSample> DeblockedStorage<T> {
             width: storage.width,
             height: storage.height,
             stride: storage.stride,
-            origin_y: start,
             storage_origin_y: start,
             storage_rows: end - start,
             samples,
-            secondary: &[],
         })
     }
 }
@@ -317,20 +314,6 @@ impl<T: ReconSample> DeblockedReadLease<T> {
             v: self.ranges[PlaneId::V.index()]
                 .and_then(|range| self.source.plane(PlaneId::V, range)),
         })
-    }
-}
-
-pub(crate) enum DeblockedStripe<T: ReconSample> {
-    Window(DeblockedWindow<T>),
-    Lease(DeblockedReadLease<T>),
-}
-
-impl<T: ReconSample> DeblockedStripe<T> {
-    pub(crate) fn planes(&self) -> Option<DeblockedPlanes<'_, T>> {
-        match self {
-            Self::Window(window) => window.planes(),
-            Self::Lease(lease) => lease.planes(),
-        }
     }
 }
 
@@ -437,7 +420,7 @@ fn recycle_stripe_sample_buffer_into_pool(buffers: &mut Vec<Vec<u16>>, buffer: V
     }
 }
 
-/// A frame plane backed by one or two packed row spans.
+/// A frame plane backed by one contiguous row span.
 ///
 /// `height` is always the plane's frame height, so callers keep reasoning in
 /// frame coordinates; `origin_y` and `rows` name the window the view actually
@@ -447,11 +430,9 @@ pub(crate) struct FramePlane<'a, T> {
     width: usize,
     height: usize,
     stride: usize,
-    origin_y: usize,
     storage_origin_y: usize,
     storage_rows: usize,
     samples: &'a [T],
-    secondary: &'a [T],
 }
 
 #[derive(Clone, Copy)]
@@ -473,11 +454,9 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
             width: size.width(),
             height: size.height(),
             stride: source.stride_samples(),
-            origin_y: 0,
             storage_origin_y: 0,
             storage_rows: size.height(),
             samples: source.samples(),
-            secondary: &[],
         })
     }
 
@@ -498,11 +477,9 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
             width,
             height,
             stride: width,
-            origin_y,
             storage_origin_y: origin_y,
             storage_rows: rows,
             samples,
-            secondary: &[],
         })
     }
 
@@ -520,7 +497,7 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
 
     /// The first plane row this view carries.
     pub(crate) const fn origin_y(self) -> usize {
-        self.origin_y
+        self.storage_origin_y
     }
 
     /// The exclusive last plane row this view carries.
@@ -529,115 +506,50 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
     }
 
     pub(crate) fn contiguous_rows(self, origin_y: usize, end_y: usize) -> Option<&'a [T]> {
-        if self.stride == self.width && origin_y <= end_y {
-            let offsets = origin_y
-                .checked_sub(self.storage_origin_y)
-                .and_then(|start| start.checked_mul(self.stride))
-                .zip(
-                    end_y
-                        .checked_sub(self.storage_origin_y)
-                        .and_then(|end| end.checked_mul(self.stride)),
-                );
-            if let Some((start, end)) = offsets
-                && end_y <= self.storage_origin_y + self.storage_rows
-            {
-                return self.samples.get(start..end);
-            }
-        }
-        let secondary_rows = self.secondary.len().checked_div(self.width)?;
-        if self.secondary.is_empty()
-            || origin_y < self.origin_y
-            || end_y < origin_y
-            || end_y > self.origin_y + secondary_rows
-        {
+        if self.stride != self.width || origin_y > end_y {
             return None;
         }
-        let start = (origin_y - self.origin_y).checked_mul(self.width)?;
-        let end = (end_y - self.origin_y).checked_mul(self.width)?;
-        self.secondary.get(start..end)
-    }
-
-    #[inline]
-    pub(crate) fn packed_storage(self, origin_y: usize, end_y: usize) -> Option<(&'a [T], usize)> {
-        if self.stride == self.width
-            && origin_y <= end_y
-            && origin_y >= self.storage_origin_y
+        let offsets = origin_y
+            .checked_sub(self.storage_origin_y)
+            .and_then(|start| start.checked_mul(self.stride))
+            .zip(
+                end_y
+                    .checked_sub(self.storage_origin_y)
+                    .and_then(|end| end.checked_mul(self.stride)),
+            );
+        if let Some((start, end)) = offsets
             && end_y <= self.storage_origin_y + self.storage_rows
         {
-            return Some((self.samples, self.storage_origin_y));
+            return self.samples.get(start..end);
         }
-        let secondary_rows = self.secondary.len().checked_div(self.width)?;
-        (!self.secondary.is_empty()
-            && origin_y >= self.origin_y
-            && end_y <= self.origin_y + secondary_rows)
-            .then_some((self.secondary, self.origin_y))
+        None
     }
 
-    pub(crate) fn packed_plane(self, origin_y: usize, end_y: usize) -> Option<PackedPlane<'a, T>> {
-        let (samples, storage_origin_y) = self.packed_storage(origin_y, end_y)?;
-        let (stride, rows) = if storage_origin_y == self.storage_origin_y {
-            (self.stride, self.storage_rows)
-        } else {
-            (self.width, self.secondary.len().checked_div(self.width)?)
-        };
-        Some(PackedPlane {
-            width: self.width,
-            height: self.height,
-            stride,
-            origin_y: storage_origin_y,
-            rows,
-            samples,
-        })
-    }
-
-    pub(crate) fn whole_packed(self) -> Option<PackedPlane<'a, T>> {
-        self.secondary.is_empty().then_some(PackedPlane {
+    pub(crate) const fn whole_packed(self) -> PackedPlane<'a, T> {
+        PackedPlane {
             width: self.width,
             height: self.height,
             stride: self.stride,
             origin_y: self.storage_origin_y,
             rows: self.storage_rows,
             samples: self.samples,
-        })
+        }
     }
 
-    fn u16_row_spans(self, origin_y: usize, end_y: usize) -> Option<(&'a [u16], &'a [u16])> {
+    fn u16_rows(self, origin_y: usize, end_y: usize) -> Option<&'a [u16]> {
         let expected = end_y.checked_sub(origin_y)?.checked_mul(self.width)?;
-        if let Some(source) = self.contiguous_rows(origin_y, end_y).and_then(T::u16_slice) {
-            return (source.len() == expected).then_some((source, &[]));
-        }
-        if self.secondary.is_empty() {
-            return None;
-        }
-        let upper_end = end_y.min(self.storage_origin_y);
-        let upper_rows = upper_end.saturating_sub(origin_y);
-        let upper = if upper_rows == 0 {
-            &[]
-        } else {
-            let start = origin_y
-                .checked_sub(self.origin_y)?
-                .checked_mul(self.width)?;
-            let end = (upper_end - self.origin_y).checked_mul(self.width)?;
-            T::u16_slice(self.secondary.get(start..end)?)?
-        };
-        let lower_start = origin_y.max(self.storage_origin_y);
-        let lower = if lower_start < end_y {
-            self.contiguous_rows(lower_start, end_y)
-                .and_then(T::u16_slice)?
-        } else {
-            &[]
-        };
-        (upper.len().checked_add(lower.len())? == expected).then_some((upper, lower))
+        let source = self
+            .contiguous_rows(origin_y, end_y)
+            .and_then(T::u16_slice)?;
+        (source.len() == expected).then_some(source)
     }
 
     fn copy_u16_rows(self, origin_y: usize, end_y: usize, destination: &mut [u16]) -> Option<()> {
-        let (upper, lower) = self.u16_row_spans(origin_y, end_y)?;
-        if destination.len() != upper.len().checked_add(lower.len())? {
+        let source = self.u16_rows(origin_y, end_y)?;
+        if destination.len() != source.len() {
             return None;
         }
-        let (upper_destination, lower_destination) = destination.split_at_mut(upper.len());
-        upper_destination.copy_from_slice(upper);
-        lower_destination.copy_from_slice(lower);
+        destination.copy_from_slice(source);
         Some(())
     }
 
@@ -647,9 +559,7 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
         end_y: usize,
         destination: &mut Vec<u16>,
     ) -> Option<()> {
-        let (upper, lower) = self.u16_row_spans(origin_y, end_y)?;
-        destination.extend_from_slice(upper);
-        destination.extend_from_slice(lower);
+        destination.extend_from_slice(self.u16_rows(origin_y, end_y)?);
         Some(())
     }
 
@@ -660,23 +570,7 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
             let start = row.checked_mul(self.stride)?;
             return self.samples.get(start..start.checked_add(self.width)?);
         }
-        if self.secondary.is_empty() {
-            return None;
-        }
-        let row = y.checked_sub(self.origin_y)?;
-        let start = row.checked_mul(self.width)?;
-        self.secondary.get(start..start.checked_add(self.width)?)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn get(self, x: isize, y: isize) -> Option<i32> {
-        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        self.row(y)
-            .and_then(|row| row.get(x))
-            .map(|value| i32::from(value.to_u16()))
+        None
     }
 }
 
@@ -714,7 +608,6 @@ impl<'a, T: ReconSample> PackedPlane<'a, T> {
         self.samples.get(start..start.checked_add(self.width)?)
     }
 
-    #[cfg(test)]
     pub(crate) fn get(self, x: isize, y: isize) -> Option<i32> {
         let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
         if x >= self.width || y >= self.height {
@@ -755,475 +648,6 @@ impl<'a, T: ReconSample> DeblockedPlanes<'a, T> {
     }
 }
 
-/// Fewest deblocked-window buffers retained, and the floor the pool-width bound
-/// never drops below.
-const MIN_RETAINED_WINDOW_BUFFERS: usize = 64;
-/// Window buffers retained per worker: one window per plane per filter chain in
-/// flight, and a wide pool runs that many more chains at once.
-const RETAINED_WINDOW_BUFFERS_PER_WORKER: usize = 8;
-
-/// Retains one worker's share per worker, with [`MIN_RETAINED_WINDOW_BUFFERS`]
-/// as the floor.
-/// Scales per worker only on a pool thread; off-pool callers get the floor.
-fn max_retained_window_buffers() -> usize {
-    splot_parallel::current_pool_width()
-        .saturating_mul(RETAINED_WINDOW_BUFFERS_PER_WORKER)
-        .max(MIN_RETAINED_WINDOW_BUFFERS)
-}
-static WINDOW_SAMPLE_BUFFERS: Mutex<Vec<Box<dyn Any + Send>>> = Mutex::new(Vec::new());
-
-fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, StripeCopyError> {
-    let mut buffer = {
-        let mut buffers = WINDOW_SAMPLE_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pool_is_full = buffers.len() >= max_retained_window_buffers();
-        let index = select_buffer_index(
-            buffers.iter().enumerate().filter_map(|(index, buffer)| {
-                buffer
-                    .downcast_ref::<Vec<T>>()
-                    .map(|buffer| (index, buffer.capacity()))
-            }),
-            sample_count,
-            pool_is_full,
-        );
-        index
-            .map(|index| buffers.swap_remove(index))
-            .and_then(|buffer| buffer.downcast::<Vec<T>>().ok())
-            .map_or_else(Vec::new, |buffer| *buffer)
-    };
-    buffer.clear();
-    buffer
-        .try_reserve_exact(sample_count)
-        .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
-    Ok(buffer)
-}
-
-fn recycle_window_buffer<T: ReconSample>(mut buffer: Vec<T>) {
-    if buffer.capacity() == 0 {
-        return;
-    }
-    buffer.clear();
-    let mut buffers = WINDOW_SAMPLE_BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if buffers.len() < max_retained_window_buffers() && buffers.try_reserve(1).is_ok() {
-        buffers.push(Box::new(buffer));
-    } else {
-        drop(buffer);
-    }
-}
-
-/// One owned copy of the deblocked rows a run of filter stripes reads.
-///
-/// The stripe chain runs while the deblock is still filtering rows further down
-/// the frame, so it cannot borrow the frame the deblock is writing. It owns its
-/// rows instead, which is what lets the two overlap without either waiting for
-/// the other.
-pub(crate) struct DeblockedWindow<T: ReconSample> {
-    planes: [Option<WindowPlane<T>>; 3],
-}
-
-struct WindowPlane<T: ReconSample> {
-    parts: [Option<WindowPart<T>>; 2],
-    width: usize,
-    height: usize,
-    origin_y: usize,
-    rows: usize,
-}
-
-#[derive(Clone)]
-struct WindowPart<T: ReconSample> {
-    storage: Arc<WindowRows<T>>,
-    origin_y: usize,
-    rows: usize,
-}
-
-struct WindowRows<T: ReconSample> {
-    samples: Vec<T>,
-    width: usize,
-    origin_y: usize,
-    rows: usize,
-}
-
-pub(crate) struct DeblockedWindowSequence<T: ReconSample> {
-    next_stripe: usize,
-    boundaries: [Option<WindowPart<T>>; 3],
-    #[cfg(test)]
-    copied_samples: usize,
-}
-
-impl<T: ReconSample> Default for DeblockedWindowSequence<T> {
-    fn default() -> Self {
-        Self {
-            next_stripe: 0,
-            boundaries: std::array::from_fn(|_| None),
-            #[cfg(test)]
-            copied_samples: 0,
-        }
-    }
-}
-
-impl<T: ReconSample> DeblockedWindow<T> {
-    /// Copies the deblocked rows `luma_start..luma_end`, widened by `margin`
-    /// rows of each plane on both sides, out of the frame being deblocked.
-    #[cfg(test)]
-    pub(crate) fn extract(
-        workspace: &CurrentFrameWorkspace<T>,
-        luma_start: usize,
-        luma_end: usize,
-        margin: usize,
-    ) -> Result<Self, StripeCopyError> {
-        let format = workspace.info().pixel_format();
-        let subsampling_y = usize::from(format.subsampling_y());
-        let has_chroma = !format.is_monochrome();
-        let mut planes = [None, None, None];
-        for (index, plane) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().enumerate() {
-            if index > 0 && !has_chroma {
-                break;
-            }
-            let source = FramePlane::new(workspace, plane).ok_or(StripeCopyError::Geometry)?;
-            let shift = if index == 0 { 0 } else { subsampling_y };
-            let start = (luma_start >> shift).saturating_sub(margin);
-            let end = (luma_end.div_ceil(1 << shift) + margin).min(source.frame_height());
-            let storage = Arc::new(
-                WindowRows::copy(source, start, end).map_err(|error| error.for_plane(plane))?,
-            );
-            let part = WindowPart::new(storage, start, end).ok_or(StripeCopyError::Geometry)?;
-            planes[index] = Some(WindowPlane::single(
-                part,
-                source.width(),
-                source.frame_height(),
-                start,
-                end,
-            )?);
-        }
-        Ok(Self { planes })
-    }
-
-    /// Borrows the window as the deblocked planes a stripe reads.
-    pub(crate) fn planes(&self) -> Option<DeblockedPlanes<'_, T>> {
-        Some(DeblockedPlanes {
-            y: self.planes[PlaneId::Y.index()].as_ref()?.plane()?,
-            u: self.planes[PlaneId::U.index()]
-                .as_ref()
-                .and_then(WindowPlane::plane),
-            v: self.planes[PlaneId::V.index()]
-                .as_ref()
-                .and_then(WindowPlane::plane),
-        })
-    }
-}
-
-impl<T: ReconSample> WindowPlane<T> {
-    #[cfg(test)]
-    fn single(
-        part: WindowPart<T>,
-        width: usize,
-        height: usize,
-        start: usize,
-        end: usize,
-    ) -> Result<Self, StripeCopyError> {
-        Ok(Self {
-            parts: [Some(part), None],
-            width,
-            height,
-            origin_y: start,
-            rows: end.checked_sub(start).ok_or(StripeCopyError::Geometry)?,
-        })
-    }
-
-    fn plane(&self) -> Option<FramePlane<'_, T>> {
-        let primary = self.parts[0].as_ref()?;
-        let secondary = self.parts[1].as_ref();
-        if primary.storage.width != self.width
-            || secondary.is_some_and(|part| {
-                part.storage.width != self.width
-                    || part.origin_y != self.origin_y
-                    || part.end_y() < primary.origin_y
-            })
-        {
-            return None;
-        }
-        (self.width != 0 && self.origin_y.checked_add(self.rows)? <= self.height).then_some(
-            FramePlane {
-                width: self.width,
-                height: self.height,
-                stride: self.width,
-                origin_y: self.origin_y,
-                storage_origin_y: primary.origin_y,
-                storage_rows: primary.rows,
-                samples: primary.samples(),
-                secondary: secondary.map_or(&[], WindowPart::samples),
-            },
-        )
-    }
-}
-
-impl<T: ReconSample> WindowPart<T> {
-    fn new(storage: Arc<WindowRows<T>>, start: usize, end: usize) -> Option<Self> {
-        if start < storage.origin_y
-            || end < start
-            || end > storage.origin_y.checked_add(storage.rows)?
-        {
-            return None;
-        }
-        Some(Self {
-            storage,
-            origin_y: start,
-            rows: end - start,
-        })
-    }
-
-    fn end_y(&self) -> usize {
-        self.origin_y + self.rows
-    }
-
-    fn samples(&self) -> &[T] {
-        let start = (self.origin_y - self.storage.origin_y) * self.storage.width;
-        let end = start + self.rows * self.storage.width;
-        &self.storage.samples[start..end]
-    }
-}
-
-impl<T: ReconSample> WindowRows<T> {
-    #[cfg(test)]
-    fn copy(source: FramePlane<'_, T>, start: usize, end: usize) -> Result<Self, StripeCopyError> {
-        let geometry = StripeCopyError::Geometry;
-        let rows = end.checked_sub(start).ok_or(geometry)?;
-        let mut samples =
-            take_window_buffer::<T>(rows.checked_mul(source.width()).ok_or(geometry)?)?;
-        if let Some(source) = source.contiguous_rows(start, end) {
-            samples.extend_from_slice(source);
-        } else {
-            for y in start..end {
-                samples.extend_from_slice(source.row(y).ok_or(geometry)?);
-            }
-        }
-        Ok(Self {
-            samples,
-            width: source.width(),
-            origin_y: start,
-            rows,
-        })
-    }
-
-    fn copy_bands(
-        frame: &OwnedFrameBands<T>,
-        plane: PlaneId,
-        start: usize,
-        end: usize,
-    ) -> Result<Self, StripeCopyError> {
-        let geometry = StripeCopyError::Geometry;
-        let bands = frame.plane_bands(plane).map_err(|_| geometry)?;
-        let first = bands.first().ok_or(geometry)?;
-        let storage = first.storage_size();
-        if start > end || end > storage.height() {
-            return Err(geometry);
-        }
-        let rows = end - start;
-        let width = storage.width();
-        let mut samples = take_window_buffer::<T>(rows.checked_mul(width).ok_or(geometry)?)?;
-        let mut band_index = 0;
-        for y in start..end {
-            while bands
-                .get(band_index)
-                .is_some_and(|band| band.rect().y() + band.rect().height() <= y)
-            {
-                band_index += 1;
-            }
-            let band = bands.get(band_index).ok_or(geometry)?;
-            let rect = band.rect();
-            let local_y = y.checked_sub(rect.y()).ok_or(geometry)?;
-            if local_y >= rect.height() || rect.width() != width {
-                return Err(geometry);
-            }
-            let row_start = local_y.checked_mul(width).ok_or(geometry)?;
-            samples.extend_from_slice(
-                band.samples()
-                    .get(row_start..row_start.checked_add(width).ok_or(geometry)?)
-                    .ok_or(geometry)?,
-            );
-        }
-        Ok(Self {
-            samples,
-            width,
-            origin_y: start,
-            rows,
-        })
-    }
-}
-
-impl<T: ReconSample> Drop for WindowRows<T> {
-    fn drop(&mut self) {
-        recycle_window_buffer(core::mem::take(&mut self.samples));
-    }
-}
-
-impl<T: ReconSample> DeblockedWindowSequence<T> {
-    #[cfg(test)]
-    pub(crate) fn extract(
-        &mut self,
-        workspace: &CurrentFrameWorkspace<T>,
-        ranges: &[(usize, usize)],
-        stripe: usize,
-        margin: usize,
-    ) -> Result<DeblockedWindow<T>, StripeCopyError> {
-        let format = workspace.info().pixel_format();
-        self.extract_with(
-            ranges,
-            stripe,
-            margin,
-            format,
-            |plane| {
-                let source = FramePlane::new(workspace, plane)?;
-                Some((source.width(), source.frame_height()))
-            },
-            |plane, start, end| {
-                let source = FramePlane::new(workspace, plane).ok_or(StripeCopyError::Geometry)?;
-                WindowRows::copy(source, start, end)
-            },
-        )
-    }
-
-    pub(crate) fn extract_bands(
-        &mut self,
-        frame: &OwnedFrameBands<T>,
-        ranges: &[(usize, usize)],
-        stripe: usize,
-        margin: usize,
-    ) -> Result<DeblockedWindow<T>, StripeCopyError> {
-        let format = frame.info().pixel_format();
-        self.extract_with(
-            ranges,
-            stripe,
-            margin,
-            format,
-            |plane| {
-                let size = frame.plane_bands(plane).ok()?.first()?.storage_size();
-                Some((size.width(), size.height()))
-            },
-            |plane, start, end| WindowRows::copy_bands(frame, plane, start, end),
-        )
-    }
-
-    fn extract_with(
-        &mut self,
-        ranges: &[(usize, usize)],
-        stripe: usize,
-        margin: usize,
-        format: splot_recon::PixelFormat,
-        mut dimensions: impl FnMut(PlaneId) -> Option<(usize, usize)>,
-        mut copy: impl FnMut(PlaneId, usize, usize) -> Result<WindowRows<T>, StripeCopyError>,
-    ) -> Result<DeblockedWindow<T>, StripeCopyError> {
-        if stripe != self.next_stripe {
-            return Err(StripeCopyError::Geometry);
-        }
-        let range = ranges
-            .get(stripe)
-            .copied()
-            .ok_or(StripeCopyError::Geometry)?;
-        if range.0 >= range.1
-            || stripe
-                .checked_sub(1)
-                .and_then(|previous| ranges.get(previous))
-                .is_some_and(|previous| previous.1 != range.0)
-            || ranges.get(stripe + 1).is_some_and(|next| next.0 != range.1)
-        {
-            return Err(StripeCopyError::Geometry);
-        }
-        let subsampling_y = usize::from(format.subsampling_y());
-        let has_chroma = !format.is_monochrome();
-        let mut planes = std::array::from_fn(|_| None);
-        let mut next_boundaries = std::array::from_fn(|_| None);
-        #[cfg(test)]
-        let mut copied_samples = 0usize;
-        for (index, plane) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().enumerate() {
-            if index > 0 && !has_chroma {
-                break;
-            }
-            let (width, height) = dimensions(plane).ok_or(StripeCopyError::Geometry)?;
-            let shift = if index == 0 { 0 } else { subsampling_y };
-            let current = window_bounds(range, shift, margin, height)?;
-            let top_bounds = stripe
-                .checked_sub(1)
-                .and_then(|previous| ranges.get(previous).copied())
-                .map(|previous| window_bounds(previous, shift, margin, height))
-                .transpose()?
-                .and_then(|previous| intersect_rows(previous, current));
-            let bottom_bounds = ranges
-                .get(stripe + 1)
-                .copied()
-                .map(|next| window_bounds(next, shift, margin, height))
-                .transpose()?
-                .and_then(|next| intersect_rows(current, next));
-            let top = match (top_bounds, self.boundaries[index].as_ref()) {
-                (None, None) => None,
-                (Some((start, end)), Some(part))
-                    if part.origin_y == start && part.end_y() == end =>
-                {
-                    Some(part.clone())
-                }
-                _ => return Err(StripeCopyError::Geometry),
-            };
-            let top_end = top_bounds.map_or(current.0, |(_, end)| end);
-            let reuse_top = top.is_some()
-                && bottom_bounds.is_none_or(|(bottom_start, _)| bottom_start >= top_end);
-            let top = reuse_top.then_some(top).flatten();
-            let fresh_start = top.as_ref().map_or(current.0, WindowPart::end_y);
-            let fresh = if fresh_start < current.1 {
-                let rows = Arc::new(
-                    copy(plane, fresh_start, current.1).map_err(|error| error.for_plane(plane))?,
-                );
-                #[cfg(test)]
-                {
-                    copied_samples += rows.samples.len();
-                }
-                Some(
-                    WindowPart::new(Arc::clone(&rows), fresh_start, current.1)
-                        .ok_or(StripeCopyError::Geometry)?,
-                )
-            } else {
-                None
-            };
-            let bottom = bottom_bounds
-                .map(|(start, end)| {
-                    let storage = fresh
-                        .as_ref()
-                        .map(|part| Arc::clone(&part.storage))
-                        .ok_or(StripeCopyError::Geometry)?;
-                    WindowPart::new(storage, start, end).ok_or(StripeCopyError::Geometry)
-                })
-                .transpose()?;
-            next_boundaries[index] = bottom;
-            let (primary, secondary) = match (fresh, top) {
-                (Some(fresh), top) => (fresh, top),
-                (None, Some(top)) => (top, None),
-                (None, None) => return Err(StripeCopyError::Geometry),
-            };
-            planes[index] = Some(WindowPlane {
-                parts: [Some(primary), secondary],
-                width,
-                height,
-                origin_y: current.0,
-                rows: current.1 - current.0,
-            });
-        }
-        self.boundaries = next_boundaries;
-        self.next_stripe += 1;
-        #[cfg(test)]
-        {
-            self.copied_samples += copied_samples;
-        }
-        Ok(DeblockedWindow { planes })
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn copied_samples(&self) -> usize {
-        self.copied_samples
-    }
-}
-
 fn window_bounds(
     range: (usize, usize),
     shift: usize,
@@ -1243,12 +667,6 @@ fn window_bounds(
     (start < end && end <= height)
         .then_some((start, end))
         .ok_or(StripeCopyError::Geometry)
-}
-
-fn intersect_rows(left: (usize, usize), right: (usize, usize)) -> Option<(usize, usize)> {
-    let start = left.0.max(right.0);
-    let end = left.1.min(right.1);
-    (start < end).then_some((start, end))
 }
 
 enum StripeOwner {
@@ -1312,20 +730,8 @@ impl StripeSamples {
                 .spare_capacity_mut()
                 .get_mut(..sample_count)
                 .ok_or(StripeCopyError::Geometry)?;
-            if let Some((upper, lower)) = source.u16_row_spans(origin_y, end_y) {
-                let split = upper.len();
-                write_uninit_u16(
-                    destination
-                        .get_mut(..split)
-                        .ok_or(StripeCopyError::Geometry)?,
-                    upper,
-                )?;
-                write_uninit_u16(
-                    destination
-                        .get_mut(split..)
-                        .ok_or(StripeCopyError::Geometry)?,
-                    lower,
-                )?;
+            if let Some(source) = source.u16_rows(origin_y, end_y) {
+                write_uninit_u16(destination, source)?;
                 return Ok(());
             }
             let mut written = 0usize;

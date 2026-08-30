@@ -175,7 +175,6 @@ pub(crate) fn parse_inter_shared_tail(
         };
         return Ok(());
     };
-    trace_tail_position(reader, "start");
     core.tile_info = match parse_tile_info(reader, &seq.tile, frame_size, false, false, false) {
         Ok(tile_info) => Some(tile_info),
         Err(Error::Unimplemented { feature }) => {
@@ -186,10 +185,7 @@ pub(crate) fn parse_inter_shared_tail(
         }
         Err(error) => return Err(error),
     };
-    trace_tail_position(reader, "after_tile_info");
-
     let quantization = parse_quantization_params(reader, &seq.quant, tip_frame_as_output)?;
-    trace_tail_position(reader, "after_quant");
 
     if mfh.missing {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
@@ -212,13 +208,8 @@ pub(crate) fn parse_inter_shared_tail(
         };
         return Ok(());
     };
-    trace_tail_position(reader, "after_segmentation");
-
     let qm = parse_setup_qm_params(reader, &seq.quant, segmentation.segmentation_enabled)?;
-    trace_tail_position(reader, "after_qm");
-
     let delta_q = parse_delta_q_params(reader, quantization.base_q_idx)?;
-    trace_tail_position(reader, "after_delta_q");
 
     let lossless = parse_lossless_info(
         reader,
@@ -240,8 +231,6 @@ pub(crate) fn parse_inter_shared_tail(
         read_allow_df_sub_pu,
         mfh.deblocking,
     )?);
-    trace_tail_position(reader, "after_deblock");
-
     let gdf = {
         let Some(tile_info) = core.tile_info.as_ref() else {
             core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
@@ -261,7 +250,6 @@ pub(crate) fn parse_inter_shared_tail(
         parse_gdf_params(reader, coded_lossless, &seq.filter, geometry)?
     };
     core.gdf_params = Some(gdf);
-    trace_tail_position(reader, "after_gdf");
 
     core.cdef_params = Some(parse_cdef_params(
         reader,
@@ -269,7 +257,6 @@ pub(crate) fn parse_inter_shared_tail(
         seq.quant.num_planes,
         &seq.filter,
     )?);
-    trace_tail_position(reader, "after_cdef");
 
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(false), seq.chroma_format_idc);
     let lr_num_total_refs = if frame_type == FrameType::Switch {
@@ -311,7 +298,6 @@ pub(crate) fn parse_inter_shared_tail(
         Err(error) => return Err(error),
     };
     core.lr_params = Some(lr_params);
-    trace_tail_position(reader, "after_lr");
 
     core.ccso_params = Some(if frame_type == FrameType::Switch {
         parse_ccso_params(reader, coded_lossless, seq.quant.num_planes, &seq.ccso)?
@@ -324,7 +310,6 @@ pub(crate) fn parse_inter_shared_tail(
             num_total_refs,
         )?
     });
-    trace_tail_position(reader, "after_ccso");
 
     store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
 
@@ -561,17 +546,6 @@ fn parse_inter_tail_arms(
     });
     core.status = FrameHeaderParseStatus::InterHeaderComplete;
     Ok(())
-}
-
-fn trace_tail_position(reader: &BitReader<'_>, label: &str) {
-    if std::env::var_os("SPLOT_TRACE_INTER_HEADER_BITS").is_some() {
-        eprintln!(
-            "inter header bits {label} byte={} bit={} consumed={}",
-            reader.byte_offset().get(),
-            reader.bit_offset().get(),
-            reader.consumed_bits()
-        );
-    }
 }
 
 /// Stores the parsed shared-structure-cluster facts on `core`. Deferred until the borrows

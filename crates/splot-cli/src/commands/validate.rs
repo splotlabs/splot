@@ -14,24 +14,24 @@ use splot_validate::{RenderOptions, Validator};
 
 /// Arguments for `splot validate`.
 #[derive(Args, Debug)]
-pub struct ValidateArgs {
+pub(crate) struct ValidateArgs {
     /// Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream, or `-`
     /// for standard input.
-    pub input: PathBuf,
+    input: PathBuf,
     /// Emit the validation report as JSON.
     #[arg(long)]
-    pub json: bool,
+    json: bool,
     /// Treat warnings as conformance failures.
     #[arg(long)]
-    pub strict: bool,
+    strict: bool,
     /// Show at most N diagnostics, with a truncation notice for the rest. Does not
     /// change which diagnostics are computed, the summary counts, or the exit code.
     #[arg(long, value_name = "N")]
-    pub max_diagnostics: Option<usize>,
+    max_diagnostics: Option<usize>,
     /// Print only the summary counts and the conformance line (no per-diagnostic
     /// lines). Exit code is unchanged. Distinct from the global `--quiet` (logging).
     #[arg(long)]
-    pub summary_only: bool,
+    summary_only: bool,
 }
 
 /// Runs `splot validate`.
@@ -48,7 +48,7 @@ pub struct ValidateArgs {
 /// # Errors
 /// Returns an error if the input cannot be opened or read (including a temporal
 /// unit exceeding the reader's per-unit cap) or the report cannot be serialized.
-pub fn run(args: &ValidateArgs) -> Result<ExitCode> {
+pub(crate) fn run(args: &ValidateArgs) -> Result<ExitCode> {
     let validator = Validator::new(args.strict);
     let report = if args.input.as_os_str() == "-" {
         validator

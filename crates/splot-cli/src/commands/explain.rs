@@ -16,17 +16,17 @@ use splot_validate::explain;
 
 /// Arguments for `splot explain`.
 #[derive(Args, Debug)]
-pub struct ExplainArgs {
+pub(crate) struct ExplainArgs {
     /// The diagnostic rule id to describe (e.g. `obu-header/global-xlayer-required`).
     /// Omit it with `--list` to enumerate every rule id instead.
     #[arg(value_name = "RULE_ID")]
-    pub rule_id: Option<String>,
+    rule_id: Option<String>,
     /// List every known rule id instead of describing one.
     #[arg(long)]
-    pub list: bool,
+    list: bool,
     /// Emit the output as JSON.
     #[arg(long)]
-    pub json: bool,
+    json: bool,
 }
 
 /// Runs `splot explain`.
@@ -37,7 +37,7 @@ pub struct ExplainArgs {
 /// # Errors
 /// Returns an error for an unknown rule id, a missing rule id without `--list`, or
 /// a JSON serialization failure.
-pub fn run(args: &ExplainArgs) -> Result<ExitCode> {
+pub(crate) fn run(args: &ExplainArgs) -> Result<ExitCode> {
     if args.list {
         list(args.json)?;
         return Ok(ExitCode::SUCCESS);

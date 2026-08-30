@@ -57,7 +57,7 @@ sha2 = "0.11"
 # media-buffer ownership model or AV2 bit-level/entropy parsing. See docs/ARCHITECTURE.md.
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = "0.3"
 toml = "1"
 proptest = "1"
 # Dev-only: golden snapshot tests of the `splot inspect` JSON output (CONF-INSPECT-SNAPSHOTS).

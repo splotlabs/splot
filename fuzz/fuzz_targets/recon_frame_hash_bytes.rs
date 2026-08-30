@@ -134,8 +134,6 @@ struct FrameModel {
     output_index: u64,
     failing_writer: bool,
     failing_writer_budget: usize,
-    luma_storage: PlaneSize,
-    luma_visible: PlaneRect,
     y: PlaneModel,
     u: Option<PlaneModel>,
     v: Option<PlaneModel>,
@@ -214,8 +212,6 @@ impl FrameModel {
             output_index: u64::from(header.output_index),
             failing_writer: header.failing_writer,
             failing_writer_budget,
-            luma_storage,
-            luma_visible,
             y,
             u,
             v,
@@ -236,8 +232,8 @@ impl FrameModel {
             OutputIndex::new(self.output_index.wrapping_add(u64::from(padding_variant))),
             self.bit_depth,
             self.pixel_format,
-            self.luma_storage,
-            self.luma_visible,
+            self.y.storage,
+            self.y.visible,
         )
         .ok()?;
         DecodedFrame::try_new(info, FramePlanes::new(y, u, v)).ok()

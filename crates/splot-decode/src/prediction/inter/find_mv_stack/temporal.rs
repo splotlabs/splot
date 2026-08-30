@@ -1053,7 +1053,6 @@ impl TemporalMvContext {
         ref_order_hint: &[u32],
         ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
     ) -> crate::Result<()> {
-        let reset_started = crate::timing::start();
         let (mi_rows, mi_cols) = mi_dimensions;
         self.field.reset(mi_rows, mi_cols)?;
         self.ref_order_hints.clear();
@@ -1066,8 +1065,6 @@ impl TemporalMvContext {
                     .and_then(|_| ref_order_hint.get(slot as usize).copied())
                     .filter(|&hint| hint != u32::MAX)
             }));
-        crate::timing::report("inter_temporal_reset", reset_started);
-        let queue_started = crate::timing::start();
         let ref_motion_metadata = ref_motion_fields
             .iter()
             .map(|field| field.as_ref().map(|field| field.metadata()))
@@ -1085,8 +1082,6 @@ impl TemporalMvContext {
             &ref_motion_metadata,
             &ref_motion_layouts,
         );
-        crate::timing::report("inter_temporal_queue", queue_started);
-        let trajectory_reset_started = crate::timing::start();
         let mut trajectories = if config.enable_trajectory {
             let mut trajectories = match self
                 .trajectories
@@ -1115,8 +1110,6 @@ impl TemporalMvContext {
             self.trajectory_scratch = self.trajectories.take();
             None
         };
-        crate::timing::report("inter_temporal_trajectory_reset", trajectory_reset_started);
-        let projection_started = crate::timing::start();
         let mut prepared = Vec::with_capacity(projections.len());
         for projection in projections {
             let slot = *ref_frame_idx
@@ -1149,12 +1142,9 @@ impl TemporalMvContext {
             });
         }
         run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field);
-        crate::timing::report("inter_temporal_projection", projection_started);
-        let gap_started = crate::timing::start();
         if let Some(trajectories) = trajectories.as_mut() {
             trajectories.fill_gaps();
         }
-        crate::timing::report("inter_temporal_trajectory_gaps", gap_started);
         self.current_order_hint = current_order_hint;
         self.trajectories = trajectories;
         self.tip = None;

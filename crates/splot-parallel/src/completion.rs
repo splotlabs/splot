@@ -371,9 +371,6 @@ mod tests {
             .unwrap()
         });
         assert_eq!(observed, 23, "the only worker must run the task it awaits");
-        let metrics = pool.wait_metrics();
-        assert_eq!(metrics.assisted_jobs, 1);
-        assert_eq!(metrics.idle_parks, 0, "the producer task never blocks");
     }
 
     #[test]
@@ -393,7 +390,7 @@ mod tests {
             let value = driver_pool.install(|| *driver_cell.wait_with_pool_assist());
             driver_result.store(value, Ordering::Release);
         });
-        while pool.wait_metrics().idle_parks == 0 {
+        while pool.parked_waiters() == 0 {
             std::thread::yield_now();
         }
 
@@ -416,7 +413,6 @@ mod tests {
         driver.join().unwrap();
 
         assert_eq!(observed, 31);
-        assert!(pool.wait_metrics().assisted_jobs >= 1);
     }
 
     #[test]
@@ -429,7 +425,7 @@ mod tests {
         let publisher_pool = pool.clone();
         let publisher_cell = Arc::clone(&cell);
         let publisher = std::thread::spawn(move || {
-            while publisher_pool.wait_metrics().idle_parks == 0 {
+            while publisher_pool.parked_waiters() == 0 {
                 std::thread::yield_now();
             }
             assert_eq!(publisher_cell.set(Err::<(), _>("failed")), Ok(()));
@@ -438,10 +434,6 @@ mod tests {
         publisher.join().unwrap();
 
         assert_eq!(outcome, Err("failed"));
-        let metrics = pool.wait_metrics();
-        assert_eq!(metrics.idle_parks, 1);
-        assert_eq!(metrics.progress_wakes, 1);
-        assert_eq!(metrics.timeout_wakes, 0);
     }
 
     /// A waiter that records how often it was satisfied.

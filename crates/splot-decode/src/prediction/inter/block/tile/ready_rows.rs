@@ -45,7 +45,6 @@ struct ReadyRowCoordinator<Parser, Ready, Done, Commit, E> {
     settled: bool,
     done: Vec<Option<Done>>,
     done_limit: usize,
-    committed: usize,
     next_commit: usize,
     commit: Option<Commit>,
     commit_error: Option<E>,
@@ -56,11 +55,7 @@ struct ReadyRowCoordinator<Parser, Ready, Done, Commit, E> {
     active_tasks: usize,
     active_limit: usize,
     max_pending: usize,
-    max_deferred: usize,
     max_active: usize,
-    parse_timer: Option<std::time::Instant>,
-    drain_timer: Option<std::time::Instant>,
-    flip_timer: Option<std::time::Instant>,
 }
 
 fn lock_ready_rows<Parser, Ready, Done, Commit, E>(
@@ -98,9 +93,6 @@ fn release_ready_rows<Parser, Ready, Done, Commit, E>(
         state.ready.push_back(row);
         state.max_pending = state.max_pending.max(state.ready.len());
         released = true;
-        if state.flip_timer.is_some() {
-            crate::timing::report("walk_refs_flip", state.flip_timer.take());
-        }
     }
     released
 }
@@ -178,7 +170,6 @@ fn schedule_ready_rows<'scope, Parser, Work, Gate, Ready, Done, Commit, E>(
                     let mut state = lock_ready_rows(coordinator);
                     match result {
                         Ok(()) => {
-                            state.committed = state.committed.saturating_add(1);
                             state.next_commit = state.next_commit.saturating_add(1);
                         }
                         Err(error) => state.commit_error = Some(error),
@@ -211,10 +202,6 @@ fn schedule_ready_rows<'scope, Parser, Work, Gate, Ready, Done, Commit, E>(
                 };
                 let (overflow, exhausted) = {
                     let mut state = lock_ready_rows(coordinator);
-                    if last {
-                        crate::timing::report("walk_parse", state.parse_timer.take());
-                        state.drain_timer = crate::timing::start();
-                    }
                     state.parser_done |= last;
                     let overflow = admit_parsed_row(&mut state, row);
                     let exhausted = last
@@ -278,7 +265,6 @@ fn admit_parsed_row<Parser, Ready, Done, Commit, E>(
         return Some(row);
     }
     state.deferred.push_back(row);
-    state.max_deferred = state.max_deferred.max(state.deferred.len());
     None
 }
 
@@ -299,13 +285,9 @@ fn take_ready_row<Parser, Ready, Done, Commit, E>(
 }
 
 pub(super) struct ReadyPipelineStats {
-    pub(super) committed: usize,
     pub(super) ready_limit: usize,
     pub(super) max_pending: usize,
-    pub(super) max_deferred: usize,
     pub(super) max_active: usize,
-    /// Whether the drain had to fall back to settling whole reference frames.
-    pub(super) settled: bool,
 }
 
 /// Runs one tile's parse-ahead prepass, holding each parsed row back until
@@ -370,7 +352,6 @@ where
         settled: false,
         done,
         done_limit,
-        committed: 0,
         next_commit: 0,
         commit: Some(commit),
         commit_error: None,
@@ -381,11 +362,7 @@ where
         active_tasks: 0,
         active_limit,
         max_pending: 0,
-        max_deferred: 0,
         max_active: 0,
-        parse_timer: crate::timing::start(),
-        drain_timer: None,
-        flip_timer: crate::timing::start(),
     });
     let run_scope = || {
         splot_parallel::ready_task_scope(|scope| {
@@ -394,7 +371,6 @@ where
         .map_err(ReadyRowPipelineError::Parallel)
     };
     run_scope()?;
-    let drain_timer = crate::timing::start();
     loop {
         let progress = splot_parallel::pool_progress_snapshot();
         if !ready_rows_await_references(&coordinator) {
@@ -412,20 +388,17 @@ where
             splot_parallel::assist_pool_or_park(&progress);
         }
     }
-    crate::timing::report("walk_refs_drain", drain_timer);
     if ready_rows_await_references(&coordinator) {
         settle().map_err(ReadyRowPipelineError::Codec)?;
         {
             let mut state = lock_ready_rows(&coordinator);
             state.settled = true;
-            crate::timing::report("walk_refs_flip", state.flip_timer.take());
         }
         run_scope()?;
     }
     let state = coordinator
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    crate::timing::report("walk_commit_drain", state.drain_timer);
     if let Some(error) = state.commit_error {
         return Err(ReadyRowPipelineError::Codec(error));
     }
@@ -441,12 +414,9 @@ where
         return Err(ReadyRowPipelineError::Capacity);
     }
     Ok(ReadyPipelineStats {
-        committed: state.committed,
         ready_limit: state.ready_limit,
         max_pending: state.max_pending,
-        max_deferred: state.max_deferred,
         max_active: state.max_active,
-        settled: state.settled,
     })
 }
 

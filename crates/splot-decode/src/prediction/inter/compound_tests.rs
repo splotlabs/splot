@@ -98,8 +98,8 @@ fn compound_average_syntax_roundtrips_through_symbol_encoder() {
         TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
     ] {
         assert_eq!(
-            enc_tile.row(selector).unwrap(),
-            dec_tile.row(selector).unwrap()
+            enc_tile.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+            dec_tile.with_row_mut(selector, |row| row.to_vec()).unwrap()
         );
     }
 }
@@ -207,8 +207,8 @@ fn compound_average_reads_is_joint_context_zero() {
         TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
     ] {
         assert_eq!(
-            enc_tile.row(selector).unwrap(),
-            dec_tile.row(selector).unwrap()
+            enc_tile.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+            dec_tile.with_row_mut(selector, |row| row.to_vec()).unwrap()
         );
     }
 }
@@ -267,8 +267,8 @@ fn compound_average_reads_same_ref_compound_ref_symbols() {
         },
     ] {
         assert_eq!(
-            enc_tile.row(selector).unwrap(),
-            dec_tile.row(selector).unwrap()
+            enc_tile.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+            dec_tile.with_row_mut(selector, |row| row.to_vec()).unwrap()
         );
     }
 }
@@ -313,8 +313,8 @@ fn compound_reference_pair_roundtrips_three_ranked_refs() {
     symbols.exit_symbol().unwrap();
     for (selector, _) in selectors {
         assert_eq!(
-            enc_tile.row(selector).unwrap(),
-            dec_tile.row(selector).unwrap()
+            enc_tile.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+            dec_tile.with_row_mut(selector, |row| row.to_vec()).unwrap()
         );
     }
 }
@@ -383,10 +383,12 @@ fn compound_average_reads_same_reference_mode_symbol() {
     symbols.exit_symbol().unwrap();
     assert_eq!(
         enc_tile
-            .row(TileCdfSelector::CompoundModeSameRefs { ctx: 0 })
+            .with_row_mut(TileCdfSelector::CompoundModeSameRefs { ctx: 0 }, |row| row
+                .to_vec())
             .unwrap(),
         dec_tile
-            .row(TileCdfSelector::CompoundModeSameRefs { ctx: 0 })
+            .with_row_mut(TileCdfSelector::CompoundModeSameRefs { ctx: 0 }, |row| row
+                .to_vec())
             .unwrap()
     );
 }
@@ -431,10 +433,12 @@ fn same_reference_compound_mode_mapping_is_complete() {
         symbols.exit_symbol().unwrap();
         assert_eq!(
             enc_tile
-                .row(TileCdfSelector::CompoundModeSameRefs { ctx: 0 })
+                .with_row_mut(TileCdfSelector::CompoundModeSameRefs { ctx: 0 }, |row| row
+                    .to_vec())
                 .unwrap(),
             dec_tile
-                .row(TileCdfSelector::CompoundModeSameRefs { ctx: 0 })
+                .with_row_mut(TileCdfSelector::CompoundModeSameRefs { ctx: 0 }, |row| row
+                    .to_vec())
                 .unwrap()
         );
     }

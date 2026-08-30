@@ -94,7 +94,7 @@ fn single_tile_payload_yields_deterministic_work_unit() {
         plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited())).unwrap();
 
     assert_eq!(plan.work_units().len(), 1);
-    let unit = &plan.work_units()[0];
+    let unit = &mut plan.work_units_mut()[0];
     assert_eq!(unit.tile_num(), 0);
     assert_eq!(unit.tile_row(), 0);
     assert_eq!(unit.tile_col(), 0);
@@ -110,18 +110,25 @@ fn single_tile_payload_yields_deterministic_work_unit() {
     assert_eq!(unit.symbol().symbol_max_bits(), 1);
     assert_eq!(unit.symbol().cdf_update_mode(), CdfUpdateMode::Enabled);
     assert_eq!(unit.cdf().update_mode(), CdfUpdateMode::Enabled);
-    assert!(unit.cdf().save_policy().copy_cdf());
-    assert!(!unit.cdf().save_policy().avg_cdf());
+    assert!(unit.cdf().save_policy().copy_cdf);
+    assert!(!unit.cdf().save_policy().avg_cdf);
     let selector = TileCdfSelector::DoSplit {
         plane_start: 0,
         ctx: 0,
     };
     assert_eq!(
-        unit.cdf().tile_cdfs().row(selector).unwrap(),
+        unit.cdf_mut()
+            .tile_cdfs_mut()
+            .with_row_mut(selector, |row| row.to_vec())
+            .unwrap(),
         splot_core::tables::cdf::DEFAULT_DO_SPLIT_CDF[0][0].as_slice()
     );
 
-    let cdf_before = unit.cdf().tile_cdfs().row(selector).unwrap().to_vec();
+    let cdf_before = unit
+        .cdf_mut()
+        .tile_cdfs_mut()
+        .with_row_mut(selector, |row| row.to_vec())
+        .unwrap();
     let mut symbol = SymbolDecoder::with_base_and_config(
         &payload,
         ByteOffset::new(256),
@@ -134,10 +141,10 @@ fn single_tile_payload_yields_deterministic_work_unit() {
         .read_partition_entry_symbol(selector, &mut symbol)
         .unwrap();
     assert_ne!(
-        plan.work_units()[0]
-            .cdf()
-            .tile_cdfs()
-            .row(selector)
+        plan.work_units_mut()[0]
+            .cdf_mut()
+            .tile_cdfs_mut()
+            .with_row_mut(selector, |row| row.to_vec())
             .unwrap(),
         cdf_before.as_slice()
     );
@@ -174,9 +181,9 @@ fn cdf_policy_tile_dimensions_are_derived_from_planned_grid() {
     let plan = plan_tile_payload_boundary(&input).unwrap();
     let save_policy = plan.work_units()[0].cdf().save_policy();
 
-    assert_eq!(save_policy.num_log2(), 0);
-    assert!(save_policy.avg_cdf());
-    assert!(!save_policy.copy_cdf());
+    assert_eq!(save_policy.num_log2, 0);
+    assert!(save_policy.avg_cdf);
+    assert!(!save_policy.copy_cdf);
 }
 
 #[test]
@@ -223,7 +230,7 @@ fn multiple_tiles_are_retained_as_work_units() {
         first.tile_byte_span(),
         ByteSpan::new(ByteOffset::new(257), 1)
     );
-    assert!(first.cdf().save_policy().copy_cdf());
+    assert!(first.cdf().save_policy().copy_cdf);
     let second = &plan.work_units()[1];
     assert_eq!(second.tile_num(), 1);
     assert_eq!(second.tile_row(), 0);
@@ -235,7 +242,7 @@ fn multiple_tiles_are_retained_as_work_units() {
         second.tile_byte_span(),
         ByteSpan::new(ByteOffset::new(258), 1)
     );
-    assert!(!second.cdf().save_policy().copy_cdf());
+    assert!(!second.cdf().save_policy().copy_cdf);
 }
 
 #[test]

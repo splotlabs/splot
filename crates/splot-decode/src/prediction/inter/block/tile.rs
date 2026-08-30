@@ -385,7 +385,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         granularity: ParserGranularity,
         buffers: Option<ReconRowBuffers>,
     ) -> ParserStep<ReconRow> {
-        let _row_phase = crate::timing::PhaseScope::new(crate::timing::Phase::Row);
         let tile_offset = self.tile.tile_byte_span().start;
         let tile_cols = self.tile.mi_col_range();
         let row_superblocks = (tile_cols.end as usize)
@@ -701,13 +700,6 @@ impl ReconRowEntry {
                 Some(LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)) | None,
             )
             | ReconEntryState::Command(None) => None,
-        }
-    }
-
-    pub(super) fn resolve_record(&self) -> Option<&LeafResolveRecord> {
-        match self.state.as_ref()? {
-            ReconEntryState::Resolve(Some(resolve)) => Some(resolve),
-            ReconEntryState::Resolve(None) | ReconEntryState::Command(_) => None,
         }
     }
 
@@ -1403,7 +1395,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             }
         }
         motion.fold_unit(row.ordinal, &row.temporal);
-        motion.unit_landed_for(row.ordinal, true);
+        motion.unit_landed_for(row.ordinal);
     }
     row
 }
@@ -1478,14 +1470,9 @@ where
     let prepass_block_decoded = &*prepass_block_decoded;
     let sinks_motion = sinks.motion;
     let parse_ready = || admit_ready_row(next_unit(), &mut surfaces, row_gate);
-    let timer = crate::timing::start();
-    let tally = crate::timing::WorkerTally::new();
-    let first_commit_ns = std::sync::atomic::AtomicU64::new(0);
-    let first_commit_ns = &first_commit_ns;
     let prepared = run_ready_row_prepass_with_commit(
         parse_ready,
         |ready| {
-            tally.note_worker();
             workers.with_scratch(|scratch| {
                 precompute_recon_row(
                     ready,
@@ -1511,17 +1498,7 @@ where
         |ready| {
             let mut ready = ready;
             ready.row.return_terminal_error()?;
-            let _commit_scope = crate::timing::PhaseScope::new(crate::timing::Phase::Commit);
-            if first_commit_ns.load(std::sync::atomic::Ordering::Relaxed) == 0
-                && let Some(started) = timer
-            {
-                first_commit_ns.store(
-                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
             if let Some(surface) = ready.surface.as_ref() {
-                let _scope = crate::timing::PhaseScope::new(crate::timing::Phase::CommitPublish);
                 surface.publish_into(sinks.workspace)?;
             }
             let buffers = pixel_commit::replay_recon_row(
@@ -1553,28 +1530,9 @@ where
         done_limit,
         |ready: &ReadyReconRow<'_, T>| row_gate.admits(&ready.bounds),
         || row_gate.is_ready(),
-        || row_gate.wait("arm=rows"),
+        || row_gate.wait(),
     )
     .map_err(inter_ready_row_pipeline_error)?;
-    if timer.is_some() {
-        crate::timing::report_detail(
-            "inter_row_prepass",
-            timer,
-            &format!(
-                "units={} committed={} c_first_ms={:.3} threads={} workers_used={} max_pending={} max_deferred={} max_active={} settled_arm={} {}",
-                prepared.committed,
-                prepared.committed,
-                first_commit_ns.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1.0e6,
-                splot_parallel::current_pool_width(),
-                tally.workers_used(),
-                prepared.max_pending,
-                prepared.max_deferred,
-                prepared.max_active,
-                u8::from(prepared.settled),
-                row_gate.fallback_summary(),
-            ),
-        );
-    }
     let active_limit = splot_parallel::current_pool_width()
         .saturating_sub(1)
         .max(1);
@@ -1845,7 +1803,6 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
     )?;
     parser.mv_grid.log_flags();
-    let started = crate::timing::start();
     loop {
         let step = parser.next_unit(
             context,
@@ -1863,7 +1820,6 @@ pub(super) fn parse_tile_units<T: ReconSample>(
             break;
         }
     }
-    crate::timing::report("pass1_parse", started);
     Ok(ParsedTile {
         mi_rows,
         mi_cols,
@@ -2153,7 +2109,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         && !super::intrabc::global_intrabc_enabled(core.intrabc);
     let parse_ahead = splot_parallel::current_pool_width() >= PARSE_AHEAD_POOL_WIDTH;
     if parallel_tiles {
-        row_gate.wait("arm=tiles")?;
+        row_gate.wait()?;
         let mut luma_rects = Vec::new();
         luma_rects
             .try_reserve_exact(work_units.len())
@@ -2163,8 +2119,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
         }
         let surfaces = workspace.rect_surfaces(&luma_rects)?;
         let quantizer = FrameQuantizerSnapshot::capture();
-        let timer = crate::timing::start();
-        let tally = crate::timing::WorkerTally::new();
         let mut prepared_results = Vec::new();
         prepared_results
             .try_reserve_exact(work_units.len())
@@ -2176,7 +2130,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 .zip(surfaces)
                 .zip(&mut prepared_results)
             {
-                let tally = &tally;
                 let context = &context;
                 let motion = &motion;
                 let cdef_state = &cdef_state;
@@ -2185,7 +2138,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 let workers = &*workers;
                 let quantizer = quantizer.clone();
                 scope.spawn(move |_| {
-                    tally.note_worker();
                     *result = Some(prepare_tile(
                         tile,
                         surface,
@@ -2201,18 +2153,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 });
             }
         })?;
-        if timer.is_some() {
-            crate::timing::report_detail(
-                "inter_tile_prepare",
-                timer,
-                &format!(
-                    "units={} threads={} workers_used={}",
-                    prepared_results.len(),
-                    splot_parallel::current_pool_width(),
-                    tally.workers_used()
-                ),
-            );
-        }
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(prepared_results.len())
@@ -2280,7 +2220,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         });
     }
     if !parse_ahead {
-        row_gate.wait("arm=serial")?;
+        row_gate.wait()?;
     }
     for tile in work_units.iter_mut() {
         let tile_offset = tile.tile_byte_span().start;

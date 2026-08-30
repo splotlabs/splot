@@ -171,7 +171,7 @@ struct Decl {
 }
 
 /// Entry point for `cargo xtask gen-tables [--check]`.
-pub fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
+pub(crate) fn run_gen_tables(root: &Path, check: bool) -> Result<()> {
     let outputs = generate(root)?;
 
     if check {

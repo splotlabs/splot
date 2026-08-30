@@ -125,11 +125,9 @@ pub(super) struct IntrabcReconCommand {
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-    tile_offset: ByteOffset,
 }
 
 impl IntrabcReconCommand {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         prediction: IntrabcReconPrediction,
         residual: Option<InterResidual>,
@@ -138,7 +136,6 @@ impl IntrabcReconCommand {
         luma_use_tcq: bool,
         residual_use_ddt: bool,
         bit_depth: BitDepth,
-        tile_offset: ByteOffset,
     ) -> Self {
         Self {
             prediction,
@@ -148,7 +145,6 @@ impl IntrabcReconCommand {
             luma_use_tcq,
             residual_use_ddt,
             bit_depth,
-            tile_offset,
         }
     }
 
@@ -216,7 +212,6 @@ impl IntrabcReconCommand {
                 self.residual_use_ddt,
                 true,
                 self.bit_depth,
-                self.tile_offset,
             )?;
         }
         Ok(())

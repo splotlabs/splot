@@ -258,10 +258,6 @@ pub(super) struct RapReplayTracker {
     /// dangling object reports once per random access point even across several
     /// referencing frames in or after it (proposal dedup requirement).
     pub(super) emitted: BTreeSet<(RapHlsKey, u64)>,
-    /// A permanently-empty random-access-point history, returned by [`Self::governing_rap_tus`]
-    /// for a layer with no recorded random access point. Held as a field (rather than a
-    /// per-call temporary) so the returned `range(..)` iterator can borrow it.
-    pub(super) empty_rap_history: BTreeMap<u64, bool>,
 }
 
 impl RapReplayTracker {
@@ -333,14 +329,14 @@ impl RapReplayTracker {
         governing_xlayer: ExtendedLayerId,
         ref_tu: u64,
     ) -> impl Iterator<Item = u64> + '_ {
-        let history: &BTreeMap<u64, bool> = if governing_xlayer.is_global() {
-            &self.rap_history_any
+        let history = if governing_xlayer.is_global() {
+            Some(&self.rap_history_any)
         } else {
-            self.rap_history
-                .get(&governing_xlayer)
-                .unwrap_or(&self.empty_rap_history)
+            self.rap_history.get(&governing_xlayer)
         };
-        history.range(..=ref_tu).map(|(&tu, _)| tu)
+        history
+            .into_iter()
+            .flat_map(move |history| history.range(..=ref_tu).map(|(&tu, _)| tu))
     }
 
     /// § 7.4.6 sender-decodability — clause (c) of the visibility predicate. `true` when a

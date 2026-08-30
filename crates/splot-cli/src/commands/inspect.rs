@@ -62,15 +62,15 @@ use crate::commands::read_input;
 
 /// Arguments for `splot inspect`.
 #[derive(Args, Debug)]
-pub struct InspectArgs {
+pub(crate) struct InspectArgs {
     /// Path to a raw AV2 Annex B bitstream or IVF-wrapped Annex B stream.
-    pub input: PathBuf,
+    input: PathBuf,
     /// Emit the inspection as JSON.
     #[arg(long)]
-    pub json: bool,
+    json: bool,
     /// Print only OBU headers (omit payload sizes in text output).
     #[arg(long)]
-    pub headers: bool,
+    headers: bool,
 }
 
 /// A serializable summary of one OBU for `--json` output.
@@ -1806,7 +1806,7 @@ impl InspectPayloadStatus {
 /// # Errors
 /// Returns an error if the input file cannot be read or the output cannot be
 /// serialized.
-pub fn run(args: &InspectArgs) -> Result<ExitCode> {
+pub(crate) fn run(args: &InspectArgs) -> Result<ExitCode> {
     let data = read_input(&args.input)?;
     let parsed = parse_bitstream_partial(&data);
 

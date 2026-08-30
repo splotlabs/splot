@@ -32,7 +32,7 @@ pub(crate) fn run_decoder_conformance_coverage(
 ) -> Result<()> {
     let checked = checked_rows(root)?;
     let rendered = match format {
-        DecoderConformanceCoverageFormat::Markdown => render_markdown(&checked),
+        DecoderConformanceCoverageFormat::Markdown => render_markdown(checked),
     };
     if let Some(path) = output {
         std::fs::write(&path, &rendered)
@@ -62,7 +62,7 @@ pub(crate) fn run_check_decoder_conformance_coverage(root: &Path) -> Result<()> 
         return Ok(());
     }
 
-    let expected = render_markdown(&checked);
+    let expected = render_markdown(checked);
     let actual = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {COVERAGE_DOC_PATH}"))?;
     if actual.trim_end() != expected.trim_end() {
@@ -90,11 +90,6 @@ struct CoverageRow {
     local_reference_evidence: &'static [&'static str],
     diagnostics: &'static [&'static str],
     notes: &'static str,
-}
-
-#[derive(Debug)]
-struct CheckedCoverageRow<'a> {
-    row: &'a CoverageRow,
 }
 
 const COVERAGE_ROWS: &[CoverageRow] = &[
@@ -820,8 +815,6 @@ struct SupportRow {
     #[serde(default)]
     self_contained_tests: Vec<String>,
     #[serde(default)]
-    tests: Vec<String>,
-    #[serde(default)]
     fixtures: Vec<String>,
 }
 
@@ -836,14 +829,11 @@ struct ImplementationFeature {
     id: Option<String>,
 }
 
-fn checked_rows(root: &Path) -> Result<Vec<CheckedCoverageRow<'static>>> {
+fn checked_rows(root: &Path) -> Result<&'static [CoverageRow]> {
     validate_rows(root, COVERAGE_ROWS)
 }
 
-fn validate_rows(
-    root: &Path,
-    rows: &'static [CoverageRow],
-) -> Result<Vec<CheckedCoverageRow<'static>>> {
+fn validate_rows(root: &Path, rows: &'static [CoverageRow]) -> Result<&'static [CoverageRow]> {
     let known_sections = load_spec_sections(root)?;
     let support_rows = load_support_rows(root)?;
     let feature_ids = load_feature_ids(root)?;
@@ -859,7 +849,6 @@ fn validate_rows(
 
     let mut problems = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut checked = Vec::new();
     for row in rows {
         let label = format!("coverage row `{}`", row.id);
         if !seen.insert(row.id) {
@@ -958,11 +947,10 @@ fn validate_rows(
         {
             problems.push(format!("{label}: {problem}"));
         }
-        checked.push(CheckedCoverageRow { row });
     }
 
     if problems.is_empty() {
-        Ok(checked)
+        Ok(rows)
     } else {
         bail!(
             "decoder conformance coverage problem(s):\n- {}",
@@ -995,17 +983,12 @@ fn load_support_rows(root: &Path) -> Result<BTreeMap<String, CheckedSupportRow>>
         let Some(id) = row.id else {
             continue;
         };
-        let tests = if row.self_contained_tests.is_empty() {
-            row.tests
-        } else {
-            row.self_contained_tests
-        };
         rows.insert(
             id,
             CheckedSupportRow {
                 feature_id: row.feature_id.unwrap_or_default(),
                 status: row.status.unwrap_or_default(),
-                tests,
+                tests: row.self_contained_tests,
                 fixtures: row.fixtures,
             },
         );
@@ -1091,7 +1074,7 @@ fn parse_decoder_diagnostic_ids(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
-fn render_markdown(rows: &[CheckedCoverageRow<'_>]) -> String {
+fn render_markdown(rows: &[CoverageRow]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# Decoder Spec Coverage");
     let _ = writeln!(out);
@@ -1125,8 +1108,7 @@ fn render_markdown(rows: &[CheckedCoverageRow<'_>]) -> String {
         "| ID | Sections | Title | Normative | Owner | Support Rows | Feature IDs | Status | Tests | Fuzz | Evidence | Diagnostics | Notes |"
     );
     let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|---|");
-    for checked in rows {
-        let row = checked.row;
+    for row in rows {
         let _ = writeln!(
             out,
             "| `{}` | {} | {} | `{}` | {} | {} | {} | `{}` | {} | {} | {} | {} | {} |",
@@ -1148,10 +1130,10 @@ fn render_markdown(rows: &[CheckedCoverageRow<'_>]) -> String {
     out
 }
 
-fn counts_by_status(rows: &[CheckedCoverageRow<'_>]) -> BTreeMap<&'static str, usize> {
+fn counts_by_status(rows: &[CoverageRow]) -> BTreeMap<&'static str, usize> {
     let mut counts = BTreeMap::new();
-    for checked in rows {
-        *counts.entry(checked.row.status).or_insert(0) += 1;
+    for row in rows {
+        *counts.entry(row.status).or_insert(0) += 1;
     }
     counts
 }
@@ -1209,9 +1191,7 @@ mod tests {
 
     #[test]
     fn renderer_has_warning_and_status_counts() {
-        let rendered = render_markdown(&[CheckedCoverageRow {
-            row: &COVERAGE_ROWS[0],
-        }]);
+        let rendered = render_markdown(&[COVERAGE_ROWS[0]]);
         assert!(rendered.contains("not a full decoder conformance certificate"));
         assert!(rendered.contains("| `partial` | 1 |"));
         assert!(rendered.contains("symbols-and-conventions"));
@@ -1219,9 +1199,7 @@ mod tests {
 
     #[test]
     fn unsupported_rows_remain_visible() {
-        let rendered = render_markdown(&[CheckedCoverageRow {
-            row: &COVERAGE_ROWS[5],
-        }]);
+        let rendered = render_markdown(&[COVERAGE_ROWS[5]]);
         assert!(rendered.contains("| `unsupported` | 1 |"));
         assert!(rendered.contains("decode-orchestration-and-random-access"));
     }
@@ -1318,7 +1296,7 @@ mod tests {
     fn check_detects_drift() -> Result<()> {
         let root = temp_root("decoder-conformance-drift")?;
         write_minimal_repo_files(&root);
-        let expected = render_markdown(&validate_rows(&root, COVERAGE_ROWS)?);
+        let expected = render_markdown(validate_rows(&root, COVERAGE_ROWS)?);
         let docs = root.join("docs");
         std::fs::write(docs.join("DECODER-SPEC-COVERAGE.md"), expected)?;
         run_check_decoder_conformance_coverage(&root)?;

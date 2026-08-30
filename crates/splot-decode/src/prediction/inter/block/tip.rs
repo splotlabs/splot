@@ -740,7 +740,6 @@ fn build_units<T: ReconSample>(
         .units
         .try_reserve_exact(if first_only { 1 } else { plan.unit_count })
         .map_err(|_| inter_allocation!("TIP prediction units"))?;
-    let units_timer = crate::timing::start();
     for local_y in (0..plan.block_h).step_by(plan.unit_size) {
         for local_x in (0..plan.block_w).step_by(plan.unit_size) {
             if first_only && !scratch.units.is_empty() {
@@ -786,7 +785,6 @@ fn build_units<T: ReconSample>(
             });
         }
     }
-    crate::timing::accumulate(crate::timing::Phase::TipUnits, units_timer);
     Ok(())
 }
 
@@ -1098,7 +1096,6 @@ pub(super) fn predict<T: ReconSample>(
                 })?;
         resize_output_samples(&mut scratch.output_samples, arena_len)?;
     }
-    let prediction_timer = crate::timing::start();
     let mut grid = grid;
     let batch_metadata = if batched_output {
         let held = plan.hold(reference)?;
@@ -1126,8 +1123,6 @@ pub(super) fn predict<T: ReconSample>(
             tile_offset,
         )?;
     }
-    crate::timing::accumulate(crate::timing::Phase::TipPrediction, prediction_timer);
-    let publish_timer = crate::timing::start();
     if let Some(metadata) = batch_metadata.as_ref() {
         metadata.publish(&scratch.output_samples, sink)?;
     } else {
@@ -1142,7 +1137,6 @@ pub(super) fn predict<T: ReconSample>(
         )?;
     }
     scratch.units.clear();
-    crate::timing::accumulate(crate::timing::Phase::TipPublish, publish_timer);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
             residual_scratch,
@@ -1154,7 +1148,6 @@ pub(super) fn predict<T: ReconSample>(
             residual_use_ddt,
             false,
             bit_depth,
-            tile_offset,
         )?;
     }
     Ok(())

@@ -18,7 +18,6 @@ use super::warp::inter_mv_read_config;
 use super::{
     DecodeBlockFrontier, INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE,
     INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET, TileCdfSelector, TileCdfSubset, symbol_read_error,
-    symbol_read_internal_error,
 };
 use crate::Result;
 
@@ -258,7 +257,7 @@ pub(super) fn read_block_mv_precision_syntax(
         .max(frame_precision - 2)
         .checked_sub(pb_mv_precision.get())
         .filter(|&adjusted| adjusted > 0)
-        .ok_or_else(|| symbol_read_internal_error(tile_offset))?;
+        .ok_or(crate::DecodeHeaderStateError::InvalidInterBlockModeState)?;
     let mv_precision = if adjusted <= MV_PRECISION_TWO_PEL {
         adjusted - 1
     } else {

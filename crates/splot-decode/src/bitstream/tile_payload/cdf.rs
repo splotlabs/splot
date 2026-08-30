@@ -249,28 +249,11 @@ impl TileCdfPolicyInput {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCdfSavePolicy {
-    num_log2: u8,
-    copy_cdf: bool,
-    avg_cdf: bool,
+    pub(super) num_log2: u8,
+    pub(super) copy_cdf: bool,
+    pub(super) avg_cdf: bool,
 }
 
-impl TileCdfSavePolicy {
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) const fn num_log2(self) -> u8 {
-        self.num_log2
-    }
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) const fn copy_cdf(self) -> bool {
-        self.copy_cdf
-    }
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) const fn avg_cdf(self) -> bool {
-        self.avg_cdf
-    }
-}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCdfSubset {
     rows: Box<TileCdfRows>,
@@ -315,11 +298,6 @@ pub(crate) struct TileCdfSubset {
 }
 
 impl TileCdfSubset {
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
-        self.rows.row(selector)
-    }
     #[inline]
     pub(crate) fn with_row_mut<R>(
         &mut self,
@@ -1328,15 +1306,6 @@ macro_rules! tile_cdf_row {
     };
 }
 
-#[cfg(test)]
-fn tx_partition_rows(rows: &TileCdfRows, reduced: bool) -> &TxPartitionTypeCdfRows {
-    if reduced {
-        &rows.tx_partition_type_reduced
-    } else {
-        &rows.tx_partition_type
-    }
-}
-
 fn tx_partition_rows_mut(rows: &mut TileCdfRows, reduced: bool) -> &mut TxPartitionTypeCdfRows {
     if reduced {
         &mut rows.tx_partition_type_reduced
@@ -1383,19 +1352,6 @@ impl TileCdfRows {
             region_type: DEFAULT_REGION_TYPE_CDF,
             block: BlockCdfRows::from_defaults(),
         }
-    }
-
-    #[cfg(test)]
-    fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
-        tile_cdf_row!(
-            self,
-            selector,
-            get,
-            as_slice,
-            row,
-            tx_partition_rows,
-            cdef_index_minus1_row
-        )
     }
 
     #[inline]
@@ -1469,11 +1425,6 @@ macro_rules! select_cdef_index_minus1_row {
             }),
         }
     };
-}
-
-#[cfg(test)]
-fn cdef_index_minus1_row(rows: &TileCdfRows, strengths: usize) -> Result<&[u16], TileCdfError> {
-    select_cdef_index_minus1_row!(rows, strengths, as_slice)
 }
 
 fn cdef_index_minus1_row_mut(

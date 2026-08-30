@@ -8,7 +8,7 @@
 use std::path::Path;
 
 /// Returns the sorted file names directly under `path`.
-pub fn read_dir_names(path: &Path) -> Vec<String> {
+pub(crate) fn read_dir_names(path: &Path) -> Vec<String> {
     let mut entries = std::fs::read_dir(path)
         .expect("read temporary directory")
         .map(|entry| {
@@ -24,7 +24,7 @@ pub fn read_dir_names(path: &Path) -> Vec<String> {
 }
 
 /// Returns the header-only IVF emitted by AVM when no input frames are encoded.
-pub fn empty_avmenc_ivf() -> Vec<u8> {
+pub(crate) fn empty_avmenc_ivf() -> Vec<u8> {
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-empty-avmenc-64x64.ivf")
         .to_vec()
 }

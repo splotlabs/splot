@@ -120,14 +120,19 @@ enum LrUnitSymbolRow {
     FlexRestorationType { tool: usize, plane: usize },
 }
 
-fn lr_unit_symbol_row(work_unit: &DecodeTileWorkUnit<'_>, row: LrUnitSymbolRow) -> [u16; 3] {
-    match row {
-        LrUnitSymbolRow::WienerNs => *work_unit.cdf().tile_cdfs().rows().use_wiener_ns(),
-        LrUnitSymbolRow::PcWiener => *work_unit.cdf().tile_cdfs().rows().use_pc_wiener(),
+fn lr_unit_symbol_row(work_unit: &mut DecodeTileWorkUnit<'_>, row: LrUnitSymbolRow) -> [u16; 3] {
+    let selector = match row {
+        LrUnitSymbolRow::WienerNs => TileCdfSelector::UseWienerNs,
+        LrUnitSymbolRow::PcWiener => TileCdfSelector::UsePcWiener,
         LrUnitSymbolRow::FlexRestorationType { tool, plane } => {
-            work_unit.cdf().tile_cdfs().rows().flex_restoration_type()[tool][plane]
+            TileCdfSelector::FlexRestorationType { tool, plane }
         }
-    }
+    };
+    work_unit
+        .cdf_mut()
+        .tile_cdfs_mut()
+        .with_row_mut(selector, |cdf| [cdf[0], cdf[1], cdf[2]])
+        .unwrap()
 }
 
 pub(crate) fn make_work_unit(payload: &[u8], update_mode: CdfUpdateMode) -> DecodeTileWorkUnit<'_> {
@@ -799,7 +804,7 @@ fn assert_frame_level_lr_symbol_precedes_partition_read(
     cdf_update_message: &'static str,
 ) {
     let mut work_unit = make_work_unit(&[0x00, 0x00, 0x80], CdfUpdateMode::Enabled);
-    let before = lr_unit_symbol_row(&work_unit, row);
+    let before = lr_unit_symbol_row(&mut work_unit, row);
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = loop_restoration;
 
@@ -812,7 +817,7 @@ fn assert_frame_level_lr_symbol_precedes_partition_read(
     assert_eq!(captured.symbol_checkpoint.symbol_count, 2);
     assert_eq!(captured.symbol_checkpoint, output.symbols.checkpoint());
     assert_ne!(
-        lr_unit_symbol_row(&work_unit, row),
+        lr_unit_symbol_row(&mut work_unit, row),
         before,
         "{cdf_update_message}"
     );
@@ -896,11 +901,11 @@ fn switchable_luma_selection_controls_current_source_output() {
         let payload = encode_symbol_sequence(&sequence);
         let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
         let first_before = lr_unit_symbol_row(
-            &work_unit,
+            &mut work_unit,
             LrUnitSymbolRow::FlexRestorationType { tool: 0, plane: 0 },
         );
         let second_before = lr_unit_symbol_row(
-            &work_unit,
+            &mut work_unit,
             LrUnitSymbolRow::FlexRestorationType { tool: 1, plane: 0 },
         );
         let mut facts = frame(BLOCK_32X32);
@@ -924,14 +929,14 @@ fn switchable_luma_selection_controls_current_source_output() {
         );
         assert_ne!(
             lr_unit_symbol_row(
-                &work_unit,
+                &mut work_unit,
                 LrUnitSymbolRow::FlexRestorationType { tool: 0, plane: 0 }
             ),
             first_before
         );
         assert_eq!(
             lr_unit_symbol_row(
-                &work_unit,
+                &mut work_unit,
                 LrUnitSymbolRow::FlexRestorationType { tool: 1, plane: 0 }
             ) != second_before,
             reads_second_selector

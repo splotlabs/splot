@@ -1214,7 +1214,6 @@ impl StripeChain<'_> {
             let padded_source =
                 PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
                     .map_err(lr_window_error)?;
-            let timer = crate::timing::start();
             if let Some(output) = T::from_u16_slice_mut(output) {
                 pc_wiener_filter_block_padded(output, &params, &padded_source)
                     .map_err(lr_window_error)?;
@@ -1222,7 +1221,6 @@ impl StripeChain<'_> {
                 pc_wiener_filter_block_padded_u16_into(output, &params, &padded_source)
                     .map_err(lr_window_error)?;
             }
-            crate::timing::accumulate(crate::timing::Phase::PcWienerFilter, timer);
             self.preserve_lossless_lr_samples(
                 PlaneId::Y,
                 &block,
@@ -1484,7 +1482,6 @@ impl StripeChain<'_> {
             let padded_source =
                 WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
                     .map_err(lr_window_error)?;
-            let timer = crate::timing::start();
             with_wiener_ns_luma_scratch(sample_count, |scratch| match &mut output {
                 LrDestination::U16(output) => {
                     if let Some(output) = T::from_u16_slice_mut(output) {
@@ -1541,7 +1538,6 @@ impl StripeChain<'_> {
                 }
             })
             .map_err(lr_window_error)?;
-            crate::timing::accumulate(crate::timing::Phase::WienerNsLuma, timer);
             Ok(())
         })?;
         match output {
@@ -1629,7 +1625,6 @@ impl StripeChain<'_> {
         sample_count: usize,
         cell_subclasses: &'a mut Vec<usize>,
     ) -> Result<&'a [usize]> {
-        let timer = crate::timing::start();
         if sample_count
             != block
                 .width
@@ -1752,7 +1747,6 @@ impl StripeChain<'_> {
             group_start = group_end;
         }
 
-        crate::timing::accumulate(crate::timing::Phase::PcWienerClassify, timer);
         Ok(cell_subclasses)
     }
 }

@@ -10403,15 +10403,15 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::fsc_idtx_block_reconstructs_without_tcq_dequant_shift",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
+    "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::general_intra_residual --locked",
     "cargo test -p splot-decode filters::wienerns_lr::tx_records --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
 ]
 fixtures = [
     "tests/conformance/vectors/valid/syn-2frame-lr-switchable-768x256-8bit.ivf",
@@ -10422,6 +10422,8 @@ fixtures = [
     "crates/splot-decode/src/filters/wienerns_lr/diagnostics.rs",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "tests/conformance/vectors/valid/syn-fsc-intra-128x128.ivf",
+    "tests/conformance/vectors/valid/syn-lossless-fsc-d135-intra-32x32-10bit.ivf",
 ]
 diagnostics = []
 
@@ -10458,11 +10460,9 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
 ]
 commands = [
     "cargo test -p splot-decode prediction::inter --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output -- --ignored",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
 ]
@@ -10506,10 +10506,8 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
 ]
 commands = [
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output -- --ignored",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
     "cargo test -p splot-decode prediction::chroma --locked",
@@ -10593,7 +10591,7 @@ change_id = "decode-wienerns-bank-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical fail-closed support row for parsing and preserving the AV2 §5.20.10.6 fixed-coded frame-level Wiener NS bank reached from §5.18.7.11 `lr_params()`. At that milestone the parser stored each signalled plane's `WienerNsFrameFilterBank` on `LrPlaneParams::frame_filter_bank`, including class matches, merge flags, subsets, chroma symmetry, and tap coefficients; fixed-coded luma PC-Wiener match translation used the generated table. `DECODE-LR-UNIT-SYNTAX-FRONTIER` superseded the parser-only milestone by consuming LR-unit syntax, and the former aggregate-activity and standalone-selection stages were superseded by the current tile traversal. `DECODE-LR-SOURCE-READ-FRONTIER` is also historical and superseded: the generic `WienerNsLrReconSink::into_filtered_frame` / `into_filtered_frame_from_deblocked` path now consumes retained filter records, materializes bounded current-frame or CDEF-frame source windows in `final_filters::LrSourceWindow`, and publishes each filtered block through its exact output rectangle. The writer still rejects serialized models carrying a frame-filter bank; this row claims the historical parser milestone, while current reconstruction, filtering, bit-depth, and output support is documented by active decoder rows."
+notes = "Historical fail-closed support row for parsing and preserving the AV2 §5.20.10.6 fixed-coded frame-level Wiener NS bank reached from §5.18.7.11 `lr_params()`. At that milestone the parser stored each signalled plane's `WienerNsFrameFilterBank` on `LrPlaneParams::frame_filter_bank`, including class matches, merge flags, subsets, chroma symmetry, and tap coefficients; fixed-coded luma PC-Wiener match translation used the generated table. `DECODE-LR-UNIT-SYNTAX-FRONTIER` superseded the parser-only milestone by consuming LR-unit syntax, and the former aggregate-activity and standalone-selection stages were superseded by the current tile traversal. `DECODE-LR-SOURCE-READ-FRONTIER` is also historical and superseded: the generic `WienerNsLrReconSink::into_filtered_frame` path now consumes retained filter records, materializes bounded current-frame or CDEF-frame source windows in `final_filters::LrSourceWindow`, and publishes each filtered block through its exact output rectangle. The writer still rejects serialized models carrying a frame-filter bank; this row claims the historical parser milestone, while current reconstruction, filtering, bit-depth, and output support is documented by active decoder rows."
 
 [feature.status]
 mapped = "done"
@@ -10614,12 +10612,10 @@ tests = [
     "crates/splot-core/src/headers/frame/restoration/wienerns.rs::tests::eof_inside_frame_bank_is_structured_error",
     "crates/splot-core/src/headers/frame/restoration.rs::tests::lr_frame_filters_on_parses_wienerns_bank",
     "crates/splot-core/src/headers/frame/info.rs::tests::frame_header_core_frame_filters_on_parses_wienerns_bank",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
 ]
 commands = [
     "cargo test -p splot-core wiener --locked",
     "cargo test -p splot-decode wienerns --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output -- --ignored",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
 ]
@@ -10679,14 +10675,12 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/tile_frontier_tests.rs::switchable_luma_without_frame_filter_keeps_lr_unit_syntax_enabled",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::keeps_switchable_restoration_types_in_separate_runs",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::switchable_luma_dispatches_mixed_units_from_one_snapshot",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",
     "cargo test -p splot-decode partition_traversal --locked",
     "cargo test -p splot-decode wienerns --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output -- --ignored",
     "cargo test -p splot-cli --test decoder_oracle --locked",
     "cargo xtask decoder-fixtures verify",
     "cargo xtask check-reference-evidence",
@@ -10795,12 +10789,10 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::inactive_frame_level_wiener_ns_advances_current_cursor_without_source_output",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::current_cursor_retains_active_frame_level_wiener_ns_source_blocks",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::current_cursor_advances_every_covered_inactive_wiener_ns_unit",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
 ]
 commands = [
     "cargo test -p splot-decode partition_traversal --locked",
     "cargo test -p splot-decode wienerns --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output -- --ignored",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
 ]
@@ -11112,12 +11104,10 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::owned_setup_derives_lossless_grid_before_deblock_records_move",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously",
 ]
 commands = [
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
     "cargo test -p splot-decode owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously --locked",
@@ -11198,11 +11188,9 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::selectable_tx_records_populate_live_tx_skip_grid",
 ]
 commands = [
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
     "cargo test -p splot-decode selectable_tx_records_populate_live_tx_skip_grid --locked",
@@ -11309,7 +11297,6 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::fsc_mode_luma_transform_handoff_derives_idtx_without_luma_context",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::non_fsc_luma_transform_handoff_still_requires_luma_context",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop_tests.rs::nonzero_eob_covers_direct_refined_and_max_values",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::selectable_tx_records_populate_live_tx_skip_grid",
     "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_nonzero_intra_frame_decodes_to_oracle",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
@@ -11319,7 +11306,6 @@ commands = [
     "cargo test -p splot-decode intrabc_records --locked",
     "cargo test -p splot-decode --tests active_fsc_mode_metadata_is_retained --locked",
     "cargo test -p splot-decode --tests luma_transform_handoff --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "cargo test -p splot-decode filters::wienerns_lr::recon::final_filters::tests --locked",
     "cargo test -p splot-decode intra_joint_modes --locked",
@@ -11379,12 +11365,10 @@ tests = [
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::selectable_tx_grid_records_observed_luma_only_block_8x32_region",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::selectable_tx_grid_records_luma_only_block_4x32_region",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::selectable_tx_grid_rejects_empty_transform_dimensions",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::records_for_region_is_complete_for_clamped_edge_region",
 ]
 commands = [
     "cargo test -p splot-decode filters::wienerns_lr::tx_records --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
@@ -11606,13 +11590,11 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal/tree_walk.rs::row_cursor_tests::failed_sdp_luma_leaf_neither_publishes_mode_nor_reaches_chroma",
     "crates/splot-decode/src/prediction/inter/block_tests.rs::partition_walk_failures_keep_typed_boundaries",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
 ]
 commands = [
     "cargo test -p splot-decode sdp_cfl_allowed_state --locked",
     "cargo test -p splot-decode bitstream::tile_payload::partition_traversal::tree_walk::row_cursor_tests --locked",
     "cargo test -p splot-decode tile_payload::general_intra_block::tests::sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
@@ -11664,10 +11646,8 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs::tests::cdef_index0_context_uses_zero_strength_neighbours_in_same_superblock",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs::tests::cdef_fill_units_uses_cdef_aligned_origin_and_block_extent",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
 ]
 commands = [
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
@@ -11727,14 +11707,12 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::directional_luma_mrl_zero_is_consumed_when_mrls_are_enabled",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::active_mrl_metadata_is_retained_after_mrl_sec_index_is_consumed",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::mrl_symbols_use_retained_neighbour_contexts",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",
     "cargo test -p splot-decode intra_joint_modes --locked",
     "cargo test -p splot-decode tile_payload::general_intra_block --locked",
     "cargo test -p splot-decode filters::wienerns_lr::tx_records --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
 ]
 fixtures = [
@@ -11792,13 +11770,13 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::tx_partition_rows_load_defaults_and_report_selector_errors",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_read.rs::tests::reads_supported_block_symbol_rows",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
+    "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",
     "cargo test -p splot-decode tile_payload::general_intra_residual --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
 ]
 fixtures = [
     "local decoder mission fixture",
@@ -11814,6 +11792,7 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
+    "tests/conformance/vectors/valid/syn-2frame-inter-residual-64x64.ivf",
 ]
 diagnostics = []
 
@@ -11910,12 +11889,12 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::dctonly_residual_lr_handoff_admits_active_intra_ist_metadata",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
+    "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::general_intra_residual --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
 ]
 fixtures = [
     "local decoder mission fixture",
@@ -11923,6 +11902,8 @@ fixtures = [
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
     "crates/splot-decode/src/bitstream/tile_payload.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
+    "tests/conformance/vectors/valid/syn-ist-intra-128x128.ivf",
+    "tests/conformance/vectors/valid/syn-ist-largest-intra-128x128.ivf",
 ]
 diagnostics = []
 
@@ -11945,7 +11926,7 @@ change_id = "decode-chroma-cctx-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical CCTX syntax-handoff milestone now integrated with chroma reconstruction. The tile CDF subset lifecycle-manages `TileCctxTypeCdf`; the residual path reads active U-plane §5.20.7.27 `cctx_type`, derives the chroma transform type, and retains paired U/V coefficient blocks. `reconstruct_general_intra_chroma_cctx_pair_into` dequantizes both blocks, applies the cross-chroma matrix, runs the inverse transforms, and adds both residuals to their predictions. Tx-skip derivation reuses the same block facts. Derived geometry and table escapes are reconstruction-state invariants. Focused syntax and reconstruction tests plus the committed `syn-cctx-444-intra-128x128` fixture protect successful output."
+notes = "Historical CCTX syntax-handoff milestone now integrated with chroma reconstruction. The tile CDF subset lifecycle-manages `TileCctxTypeCdf`; the residual path reads active U-plane §5.20.7.27 `cctx_type`, derives the chroma transform type, and retains paired U/V coefficient blocks. `reconstruct_general_intra_chroma_cctx_pair_into` dequantizes both blocks, applies the cross-chroma matrix, runs the inverse transforms, and adds both residuals to their predictions. Tx-skip derivation reuses the same block facts. Derived geometry and table escapes are reconstruction-state invariants. Focused unit tests prove a nonzero `cctx_type` symbol reaches the handoff, the -30-degree matrix rotates the saved U/V dequant pair, and paired chroma reconstruction runs the inverse-transform and residual-add path. The committed `syn-cctx-444-intra-128x128` fixture exercises the 4:4:4 >=32x32 geometry exclusion, not an active nonzero CCTX transform; no active nonzero-CCTX AVM fixture is committed, so AVM differential proof remains pending."
 
 [feature.status]
 mapped = "done"
@@ -11956,37 +11937,23 @@ write = "not-applicable"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
-avm_diff = "done"
+avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::frame_cdf_subset_copies_generated_defaults_without_aliasing",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_read.rs::tests::reads_supported_block_symbol_rows",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_read.rs::tests::update_mode_controls_only_selected_block_symbol_rows",
-    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::dctonly_residual_lr_handoff_admits_chroma_non_dct_tx_set",
-    "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::dctonly_residual_lr_handoff_reads_cctx_metadata",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::cctx_minus30_rotates_saved_chroma_dequant_pair",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::cctx_pair_uses_u_transform_type_for_all_zero_v_block",
 ]
 commands = [
-    "cargo test -p splot-decode tile_payload::cdf --locked",
-    "cargo test -p splot-decode tile_payload::general_intra_residual --locked",
-    "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
-    "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "cargo test -p splot-decode dctonly_residual_lr_handoff_reads_cctx_metadata --locked",
+    "cargo test -p splot-decode cctx_minus30_rotates_saved_chroma_dequant_pair --locked",
+    "cargo test -p splot-decode cctx_pair_uses_u_transform_type_for_all_zero_v_block --locked",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
 ]
-fixtures = [
-    "local decoder mission fixture",
-    "crates/splot-cli/tests/decode_cli.rs",
-    "crates/splot-decode/src/filters/wienerns_lr.rs",
-    "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
-    "crates/splot-decode/src/bitstream/tile_payload.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_read.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/block_rows.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
-]
+fixtures = []
 diagnostics = []
 
 [[feature]]
@@ -19826,7 +19793,7 @@ change_id = "optimize-decode-filter-hot-paths"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Bit-exact first-frame latency work on the in-loop filter stage. The §7.20.2 source-sample selector is resolved once per restoration block into an LrSourceWindow (two x-extreme probes per row, since clipped x depends only on x and clipped y/source only on y), and the §7.20.3 luma filter, §7.20.4 PC-Wiener classification, chroma filter, and luma companion reads all consume the window directly; splot-recon gains a padded-source luma filter entry point (wiener_ns_filter_luma_block_padded, identical math, cross-checked bit-exact against the callback entry point) plus tap-table-tied read-reach constants WIENER_NS_LUMA_TAP_RADIUS / WIENER_NS_CHROMA_TAP_RADIUS / PC_WIENER_CLASSIFY_READ_RADIUS. CDEF captures plane snapshots by row slice, reduces the §7.18 CdefInside check to one precomputed plane rectangle, precomputes per-block signed tap offsets, hoists the per-strength constrain damping adjustment (constrain_with_adj proven equal to cdef_constrain by sweep test), and publishes each block with one validated write_rect; CCSO takes the same snapshot/batch shape. Block-independent filter stages (CDEF, CCSO, Wiener NS restoration blocks) run as data-parallel maps on the context's owned WorkerPool behind the new splot_parallel::on_multiworker_pool() guard with serial in-order publication, keeping output identical across --threads policies; direct callers (tests) take the serial path so Rayon's global pool is unreachable. An env-gated SPLOT_DECODE_TIMING stderr trace reports decode phase times. Motivating 1080p10 first-frame decode drops from 1240 ms to ~401 ms median (raw sha256 unchanged, full conformance-vector hash sweep unchanged)."
+notes = "Bit-exact first-frame latency work on the in-loop filter stage. The §7.20.2 source-sample selector is resolved once per restoration block into an LrSourceWindow (two x-extreme probes per row, since clipped x depends only on x and clipped y/source only on y), and the §7.20.3 luma filter, §7.20.4 PC-Wiener classification, chroma filter, and luma companion reads all consume the window directly; splot-recon gains a padded-source luma filter entry point (wiener_ns_filter_luma_block_padded, identical math, cross-checked bit-exact against the callback entry point) plus tap-table-tied read-reach constants WIENER_NS_LUMA_TAP_RADIUS / WIENER_NS_CHROMA_TAP_RADIUS / PC_WIENER_CLASSIFY_READ_RADIUS. CDEF captures plane snapshots by row slice, reduces the §7.18 CdefInside check to one precomputed plane rectangle, precomputes per-block signed tap offsets, hoists the per-strength constrain damping adjustment (constrain_with_adj proven equal to cdef_constrain by sweep test), and publishes each block with one validated write_rect; CCSO takes the same snapshot/batch shape. Block-independent filter stages (CDEF, CCSO, Wiener NS restoration blocks) run as data-parallel maps on the context's owned WorkerPool behind the new splot_parallel::on_multiworker_pool() guard with serial in-order publication, keeping output identical across --threads policies; direct callers (tests) take the serial path so Rayon's global pool is unreachable. Motivating 1080p10 first-frame decode drops from 1240 ms to ~401 ms median (raw sha256 unchanged, full conformance-vector hash sweep unchanged)."
 
 [feature.status]
 mapped = "done"
@@ -19865,12 +19832,12 @@ sources = [
     "docs/spec/av2/1.0.0/07-decoding-process.md",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/timing.rs"
+module = "crates/splot-decode/src/filters/wienerns_lr/recon.rs"
 change_id = "optimize-decode-serial-hot-paths"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Bit-exact first-frame latency work on the serial decode spine, following INFRA-DECODE-FILTER-HOT-PATHS. The old diagnostic SPLOT_TRACE_* gates were later retired; SPLOT_DECODE_TIMING remains the supported timing surface, and the shared \u00a74.8 Round2/Clip3 helpers are #[inline]. The selectable-tx grid is a per-thread scratch reset from its own records instead of a ~2MB None-fill per coding block; active LR unit membership is derived from two per-axis matching scans with tile-constant geometry hoisted; LR source blocks coalesce while they are recorded into row runs, so runtime does not allocate thousands of 4x4 records only to sort and merge them before filtering; the Wiener NS luma kernel validates its padded window once then filters row slices; the chroma filter memoizes the luma downsample per coordinate; filter-stage plane snapshots are taken only for stages that run. CDEF gains a per-block interior kernel with hoisted tap constants over u16 snapshots; deblock gathers/scatters stack-array lines over direct plane slices with a per-pass adaptive-strength memo; CCSO precomputes a per-plane offset LUT over a borrowed source. The coefficient path drops the per-TU TransformCoeffBlockState clone, DC-context-line clones, preflight re-walks, and quant-buffer copies, and reuses per-thread residual scratch; the inverse transform selects its 1-D kernel once per pass, skips zero coefficients and all-zero rows (bit-exact: adding zero), and rounds via i64 shift algebra with a proven bound. The \u00a77.13.2.18 intra edge filter retains the two original look-behind samples while walking forward instead of allocating a full edge snapshot per call. Motion compensation borrows reference planes through a strided generic ReferencePlaneView instead of flattening each plane per block, and the \u00a77.13.3.18 convolution takes an unscaled-step contiguous-row fast path with the general path as fallback. Raw \u00a76.16.13 serialization and frame-hash digests batch per row. Both \u00a77.17 deblock passes band onto the owned pool behind the documented on_multiworker_pool() callee-side guard (pass 0 in disjoint 4-row bands, pass 1 in disjoint 4-column bands over row-slice contexts; MI-coverage guards fall back to the serial path), with a parallel-vs-serial equality test. Motivating 1080p10 first-frame decode drops from ~380 ms to ~170 ms median (raw sha256 unchanged); rewritten kernels carry old-vs-new equivalence tests. A later 13-pair record-time coalescing remeasurement on current main reduces decode-only median from 283.4 to 267.8 ms at one thread and from 122.0 to 110.3 ms at ten threads, with the decoded SHA-256 unchanged across 1/2/4/8/10 threads. Frame-level GDF computes independent four-row bands from immutable source snapshots on the owned pool, collects them in stable raster order, and publishes only after every band succeeds; the 30-frame 1080p10 hash stays bit-exact across 1/2/4/8/10 threads. Fully covered terminal 8-bit chroma Wiener NS planes write the shared rounded and clipped kernel result directly into the final u8 stripe target; other active planes may retain u16 staging, but every completed stripe publishes through its exact direct target. The former frame-global copy-publication fallback was removed after an instrumented long benchmark and the decoder fixture corpus observed zero copy publications and zero recoverable bytes. On a 120-frame 256x128 4:4:4 Wiener stream the direct-u8 slice removes 7,864,320 narrowing operations and 15,728,640 u16 staging bytes, improves the one-thread paired median by 0.424% against a 0.055% A/A control, and is neutral at eight threads. Fully covered terminal 8-bit luma Wiener NS stripes now use the same canonical direct-u8 destination only after an exact clipped-rectangle coverage proof and a checked inactive-GDF decision; PC-Wiener, mixed or partial LR, active GDF, u16 targets, and unsupported geometry retain u16 staging. The strict 8-bit fixture census found 28 active luma stripe records (A=3, B=13, C=0, D=12); the class-A frame removes 32,768 narrowing stores and 65,536 staging bytes, while CDEF/CCSO remain source stages and lossless samples are restored from the current frame. Exact-base paired long-workload medians were neutral: 0.9984 at 1T and 0.9994 at 10T, against A/A medians 1.0002 and 0.9986; the 10-bit regression arm was also neutral at 1.0021/1.0005 against A/A 0.9980/1.0027. The release binary shrank 6,112 bytes and __TEXT was unchanged."
+notes = "Bit-exact first-frame latency work on the serial decode spine, following INFRA-DECODE-FILTER-HOT-PATHS. The old diagnostic SPLOT_TRACE_* gates were later retired, and the shared \u00a74.8 Round2/Clip3 helpers are #[inline]. The selectable-tx grid is a per-thread scratch reset from its own records instead of a ~2MB None-fill per coding block; active LR unit membership is derived from two per-axis matching scans with tile-constant geometry hoisted; LR source blocks coalesce while they are recorded into row runs, so runtime does not allocate thousands of 4x4 records only to sort and merge them before filtering; the Wiener NS luma kernel validates its padded window once then filters row slices; the chroma filter memoizes the luma downsample per coordinate; filter-stage plane snapshots are taken only for stages that run. CDEF gains a per-block interior kernel with hoisted tap constants over u16 snapshots; deblock gathers/scatters stack-array lines over direct plane slices with a per-pass adaptive-strength memo; CCSO precomputes a per-plane offset LUT over a borrowed source. The coefficient path drops the per-TU TransformCoeffBlockState clone, DC-context-line clones, preflight re-walks, and quant-buffer copies, and reuses per-thread residual scratch; the inverse transform selects its 1-D kernel once per pass, skips zero coefficients and all-zero rows (bit-exact: adding zero), and rounds via i64 shift algebra with a proven bound. The \u00a77.13.2.18 intra edge filter retains the two original look-behind samples while walking forward instead of allocating a full edge snapshot per call. Motion compensation borrows reference planes through a strided generic ReferencePlaneView instead of flattening each plane per block, and the \u00a77.13.3.18 convolution takes an unscaled-step contiguous-row fast path with the general path as fallback. Raw \u00a76.16.13 serialization and frame-hash digests batch per row. The \u00a77.17 vertical deblock pass bands disjoint mode-info row ranges across active planes on the owned pool behind the documented on_multiworker_pool() callee-side guard; the horizontal pass remains serial because consecutive horizontal edges overlap. The contiguous-source parallel-vs-serial equality test explicitly primes that vertical pass at one and four workers before advancing through the live publication and lease path. Motivating 1080p10 first-frame decode drops from ~380 ms to ~170 ms median (raw sha256 unchanged); rewritten kernels carry old-vs-new equivalence tests. A later 13-pair record-time coalescing remeasurement on current main reduces decode-only median from 283.4 to 267.8 ms at one thread and from 122.0 to 110.3 ms at ten threads, with the decoded SHA-256 unchanged across 1/2/4/8/10 threads. Frame-level GDF computes independent four-row bands from immutable source snapshots on the owned pool, collects them in stable raster order, and publishes only after every band succeeds; the 30-frame 1080p10 hash stays bit-exact across 1/2/4/8/10 threads. Fully covered terminal 8-bit chroma Wiener NS planes write the shared rounded and clipped kernel result directly into the final u8 stripe target; other active planes may retain u16 staging, but every completed stripe publishes through its exact direct target. The former frame-global copy-publication fallback was removed after an instrumented long benchmark and the decoder fixture corpus observed zero copy publications and zero recoverable bytes. On a 120-frame 256x128 4:4:4 Wiener stream the direct-u8 slice removes 7,864,320 narrowing operations and 15,728,640 u16 staging bytes, improves the one-thread paired median by 0.424% against a 0.055% A/A control, and is neutral at eight threads. Fully covered terminal 8-bit luma Wiener NS stripes now use the same canonical direct-u8 destination only after an exact clipped-rectangle coverage proof and a checked inactive-GDF decision; PC-Wiener, mixed or partial LR, active GDF, u16 targets, and unsupported geometry retain u16 staging. The strict 8-bit fixture census found 28 active luma stripe records (A=3, B=13, C=0, D=12); the class-A frame removes 32,768 narrowing stores and 65,536 staging bytes, while CDEF/CCSO remain source stages and lossless samples are restored from the current frame. Exact-base paired long-workload medians were neutral: 0.9984 at 1T and 0.9994 at 10T, against A/A medians 1.0002 and 0.9986; the 10-bit regression arm was also neutral at 1.0021/1.0005 against A/A 0.9980/1.0027. The release binary shrank 6,112 bytes and __TEXT was unchanged."
 
 [feature.status]
 mapped = "done"
@@ -19897,7 +19864,7 @@ tests = [
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::merges_compatible_adjacent_rows_into_rectangles",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::does_not_merge_rows_across_source_boundaries",
     "crates/splot-recon/src/pc_wiener.rs::tests::grid_classification_matches_scalar_cells_and_reuses_features",
-    "crates/splot-decode/src/filters/deblock.rs::tests::banded_parallel_pass_matches_serial_output",
+    "crates/splot-decode/src/filters/deblock.rs::tests::contiguous_source_plane_parallel_pass_matches_serial_output",
     "crates/splot-decode/src/pipeline/frame_engine/intra_tests.rs::frame_gdf_is_bit_exact_across_worker_counts",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::coalesces_all_planes_in_place_and_returns_ordered_partitions",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::predeblocked_filter_tail_matches_the_combined_path",
@@ -19938,7 +19905,7 @@ change_id = "optimize-decode-first-frame-latency"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Measured follow-up to INFRA-DECODE-SERIAL-HOT-PATHS for the 1080p10 first-frame decode frontier. Warmed baseline on the motivating IVF was 147.319 ms raw/default, 300.236 ms raw --threads 1, 135.324 ms hash/default, and 289.633 ms hash --threads 1; SPLOT_DECODE_TIMING attributed about 132 ms to runtime decode while input read, context construction, planning, and raw serialization were sub-2 ms each. This slice removes the luma Wiener NS in-range row segment Vec collection and adds hot PC-Wiener/Luma Wiener inline hints while preserving bit-exact output, fail-atomic helper behavior, owned-pool determinism, and no AV2 semantics changes. Final warmed medians were 144.664 ms raw/default, 284.383 ms raw --threads 1, 134.578 ms hash/default, and 276.009 ms hash --threads 1, so perf remains partial and the remaining hotspot is runtime reconstruction/final filtering rather than input/planning."
+notes = "Measured follow-up to INFRA-DECODE-SERIAL-HOT-PATHS for the 1080p10 first-frame decode frontier. Warmed baseline on the motivating IVF was 147.319 ms raw/default, 300.236 ms raw --threads 1, 135.324 ms hash/default, and 289.633 ms hash --threads 1; the measurements attributed about 132 ms to runtime decode while input read, context construction, planning, and raw serialization were sub-2 ms each. This slice removes the luma Wiener NS in-range row segment Vec collection and adds hot PC-Wiener/Luma Wiener inline hints while preserving bit-exact output, fail-atomic helper behavior, owned-pool determinism, and no AV2 semantics changes. Final warmed medians were 144.664 ms raw/default, 284.383 ms raw --threads 1, 134.578 ms hash/default, and 276.009 ms hash --threads 1, so perf remains partial and the remaining hotspot is runtime reconstruction/final filtering rather than input/planning."
 
 [feature.status]
 mapped = "done"
@@ -19961,8 +19928,8 @@ tests = [
 commands = [
     "cargo test -p splot-recon wiener --locked",
     "cargo build --release --locked",
-    "SPLOT_DECODE_TIMING=1 ./target/release/splot decode --quiet --output-format raw --limit=1 -o /tmp/splot-timing-1.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
-    "SPLOT_DECODE_TIMING=1 ./target/release/splot decode --quiet --output-format hash --limit=1 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --quiet --output-format raw --limit=1 -o /tmp/splot-first-frame-1.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --quiet --output-format hash --limit=1 $SPLOT_LOCAL_DECODER_MISSION_IVF",
 ]
 fixtures = []
 diagnostics = []
@@ -20004,7 +19971,7 @@ tests = [
     "crates/splot-decode/src/filters/gdf.rs::tests::stripe_tasks_follow_restoration_boundaries_and_clip_to_tiles",
     "crates/splot-decode/src/filters/gdf.rs::tests::stripe_source_matches_per_block_windows_at_halo_boundaries",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters.rs::tests::inactive_filter_planes_reuse_cdef_storage",
-    "crates/splot-decode/src/filters/deblock.rs::tests::banded_parallel_pass_matches_serial_output",
+    "crates/splot-decode/src/filters/deblock.rs::tests::contiguous_source_plane_parallel_pass_matches_serial_output",
     "crates/splot-decode/src/prediction/inter/block/tile.rs::ready_row_tests::mixed_superblock_prepass_selects_every_independent_entry",
     "crates/splot-decode/src/prediction/inter/block/tile.rs::ready_row_tests::ordered_commit_frontier_publishes_every_job_canonically",
     "crates/splot-decode/src/prediction/inter/block/tile_state_tests.rs::superblock_surfaces_follow_raster_order_and_clip_the_frame_edge",
@@ -20021,7 +19988,7 @@ commands = [
     "cargo test -p splot-decode --locked",
     "cargo test -p splot-cli --test decoder_oracle sequence_sb256_intra --locked",
     "cargo build --release --locked",
-    "SPLOT_DECODE_TIMING=1 ./target/release/splot decode --quiet --threads 10 --output-format raw --limit=1 -o /tmp/splot-t10.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --quiet --threads 10 --output-format raw --limit=1 -o /tmp/splot-t10.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "./target/release/splot decode --threads 1 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "./target/release/splot decode --threads 10 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
 ]

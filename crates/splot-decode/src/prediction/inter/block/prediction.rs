@@ -189,7 +189,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             residual_use_ddt,
             false,
             bit_depth,
-            tile_offset,
         )?;
     }
     Ok(())
@@ -232,7 +231,6 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
             residual_use_ddt,
             false,
             bit_depth,
-            tile_offset,
         )?;
     }
     Ok(())

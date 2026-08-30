@@ -271,10 +271,8 @@ impl StoreCase {
                 (slot, replacement.into_previous().map(Payload::into_meta))
             })
             .collect();
-        let expected_replacements: Vec<(usize, Option<PayloadMeta>)> = selected
-            .iter()
-            .map(|slot| (*slot, before[*slot]))
-            .collect();
+        let expected_replacements: Vec<(usize, Option<PayloadMeta>)> =
+            selected.iter().map(|slot| (*slot, before[*slot])).collect();
         assert_eq!(replacements, expected_replacements);
 
         for slot in selected {

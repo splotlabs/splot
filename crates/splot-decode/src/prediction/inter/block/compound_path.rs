@@ -651,7 +651,6 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
             n4w,
             n4h,
             super::block_chroma_subsampling(sequence.general.chroma_format_idc),
-            tile_offset,
         )?;
         None
     };
@@ -673,7 +672,6 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         sub_pu_size,
         block_qindex,
         current_residual_lossless(work_unit),
-        tile_offset,
     )?;
     let placed_geometry = placed_inter_geometry(
         frontier,

@@ -95,7 +95,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     if frame_envelope.header.obu_type == ObuType::BridgeFrame {
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
-            .wait("arm=bridge")?;
+            .wait()?;
         return decode_bridge_frame(
             candidate,
             frame_envelope,
@@ -115,7 +115,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     if frame_envelope.header.obu_type.is_tip_frame() {
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
-            .wait("arm=tip")?;
+            .wait()?;
         return decode_tip_output_frame(
             scratch,
             candidate,
@@ -883,7 +883,6 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     enable_inter_ddt: bool,
     use_intrabc: bool,
     bit_depth: BitDepth,
-    _offset: ByteOffset,
 ) -> Result<()> {
     let use_ddt = enable_inter_ddt && !use_intrabc;
     let blocks = residual
@@ -1386,12 +1385,10 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
     ///
     /// Returns an internal diagnostic when a referenced frame's filter phase
     /// failed; the driver replaces it with that frame's own recorded failure.
-    pub(crate) fn wait(&self, arm: &str) -> Result<()> {
-        let started = crate::timing::start();
+    pub(crate) fn wait(&self) -> Result<()> {
         for slot in self.slots.iter().flatten() {
             slot.wait_settled()?;
         }
-        crate::timing::report_detail("pipeline_gate_wait", started, arm);
         Ok(())
     }
 }
@@ -1589,7 +1586,7 @@ fn validate_and_resolve_inter_frame_core(
     }
     validate_ras_reference_ids(core, reference, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset, frame_index)?;
-    validate_inter_frame_core(core, sequence, offset)?;
+    validate_inter_frame_core(core, sequence)?;
     if core.inter.as_ref().is_some_and(|inter| {
         matches!(
             inter.tip_frame_mode,
@@ -1994,11 +1991,7 @@ fn validate_frame_header_parse_status(
     }
 }
 
-fn validate_inter_frame_core(
-    core: &FrameHeaderCore,
-    sequence: &SequenceHeader,
-    _offset: ByteOffset,
-) -> Result<()> {
+fn validate_inter_frame_core(core: &FrameHeaderCore, sequence: &SequenceHeader) -> Result<()> {
     if core.obu_type == ObuType::BridgeFrame {
         return validate_bridge_frame_core(core);
     }

@@ -59,29 +59,14 @@ pub(crate) enum InterResidualLumaTxSizeMode {
 
 impl InterLumaTxTypeMap {
     #[cfg(test)]
-    fn new(
-        row: usize,
-        col: usize,
-        rows: usize,
-        cols: usize,
-        tile_offset: ByteOffset,
-    ) -> Result<Self> {
+    fn new(row: usize, col: usize, rows: usize, cols: usize) -> Result<Self> {
         let mut map = Self::default();
-        map.reset(row, col, rows, cols, tile_offset)?;
+        map.reset(row, col, rows, cols)?;
         Ok(map)
     }
 
-    fn reset(
-        &mut self,
-        row: usize,
-        col: usize,
-        rows: usize,
-        cols: usize,
-        tile_offset: ByteOffset,
-    ) -> Result<()> {
-        let len = rows
-            .checked_mul(cols)
-            .ok_or_else(|| residual_geometry_error(tile_offset))?;
+    fn reset(&mut self, row: usize, col: usize, rows: usize, cols: usize) -> Result<()> {
+        let len = rows.checked_mul(cols).ok_or_else(residual_geometry_error)?;
         self.values
             .try_reserve(len.saturating_sub(self.values.len()))
             .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
@@ -94,24 +79,13 @@ impl InterLumaTxTypeMap {
         Ok(())
     }
 
-    fn update(
-        &mut self,
-        row: usize,
-        col: usize,
-        tx_size: usize,
-        tx_type: usize,
-        tile_offset: ByteOffset,
-    ) -> Result<()> {
-        let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-        let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
+    fn update(&mut self, row: usize, col: usize, tx_size: usize, tx_type: usize) -> Result<()> {
+        let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
+        let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
         for dy in (0..tx_h4).step_by(TX_TYPE_MAP_UNIT_4X4) {
             for dx in (0..tx_w4).step_by(TX_TYPE_MAP_UNIT_4X4) {
-                let map_row = row
-                    .checked_add(dy)
-                    .ok_or_else(|| residual_geometry_error(tile_offset))?;
-                let map_col = col
-                    .checked_add(dx)
-                    .ok_or_else(|| residual_geometry_error(tile_offset))?;
+                let map_row = row.checked_add(dy).ok_or_else(residual_geometry_error)?;
+                let map_col = col.checked_add(dx).ok_or_else(residual_geometry_error)?;
                 if let Some(index) = self.index(map_row, map_col) {
                     self.values[index] = tx_type;
                 }
@@ -166,7 +140,6 @@ pub(crate) fn read_inter_residual(
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
-    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::Coeff);
     let block_start = blocks.len();
     let result = (|| -> Result<()> {
         let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
@@ -174,7 +147,7 @@ pub(crate) fn read_inter_residual(
         let height_chunks = (n4h >> 4).max(1);
         let multi_chunk = width_chunks > 1 || height_chunks > 1;
         let mi_size_chunk = if multi_chunk {
-            BlockSize::new(BLOCK_64X64).map_err(|_| residual_geometry_error(tile_offset))?
+            BlockSize::new(BLOCK_64X64).map_err(|_| residual_geometry_error())?
         } else {
             frontier.b_size
         };
@@ -205,7 +178,7 @@ pub(crate) fn read_inter_residual(
         let luma_tx_records = selectable_luma_tx.then_some(scratch.luma_tx_records.as_slice());
         scratch
             .luma_tx_types
-            .reset(frontier.r, frontier.c, n4h, n4w, tile_offset)?;
+            .reset(frontier.r, frontier.c, n4h, n4w)?;
 
         for start_chunk_y in (0..height_chunks).step_by(2) {
             for start_chunk_x in (0..width_chunks).step_by(2) {
@@ -371,8 +344,8 @@ fn read_inter_residual_luma_chunk(
             tile_offset,
         );
     }
-    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
+    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
+    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
     let mut y4 = luma_chunk_y4;
     while y4 < chunk_end_y4 {
         let mut x4 = luma_chunk_x4;
@@ -393,23 +366,11 @@ fn read_inter_residual_luma_chunk(
                 residual_tool_policy,
                 tile_offset,
             )?;
-            luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type, tile_offset)?;
-            push_inter_residual_block(
-                blocks,
-                ReconPlaneId::Y,
-                x4,
-                y4,
-                tx_size,
-                coeffs,
-                tile_offset,
-            )?;
-            x4 = x4
-                .checked_add(tx_w4)
-                .ok_or_else(|| residual_geometry_error(tile_offset))?;
+            luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type)?;
+            push_inter_residual_block(blocks, ReconPlaneId::Y, x4, y4, tx_size, coeffs)?;
+            x4 = x4.checked_add(tx_w4).ok_or_else(residual_geometry_error)?;
         }
-        y4 = y4
-            .checked_add(tx_h4)
-            .ok_or_else(|| residual_geometry_error(tile_offset))?;
+        y4 = y4.checked_add(tx_h4).ok_or_else(residual_geometry_error)?;
     }
     Ok(())
 }
@@ -455,13 +416,7 @@ fn read_inter_residual_luma_records_for_chunk(
             residual_tool_policy,
             tile_offset,
         )?;
-        luma_tx_types.update(
-            record.row,
-            record.col,
-            record.tx_size,
-            coeffs.plane_tx_type,
-            tile_offset,
-        )?;
+        luma_tx_types.update(record.row, record.col, record.tx_size, coeffs.plane_tx_type)?;
         push_inter_residual_block(
             blocks,
             ReconPlaneId::Y,
@@ -469,13 +424,12 @@ fn read_inter_residual_luma_records_for_chunk(
             record.row,
             record.tx_size,
             coeffs,
-            tile_offset,
         )?;
     }
     if decoded_any {
         Ok(())
     } else {
-        Err(residual_geometry_error(tile_offset))
+        Err(residual_geometry_error())
     }
 }
 
@@ -501,19 +455,19 @@ fn read_inter_residual_chroma_group(
     let chroma_ref = frontier.chroma_ref_geometry();
     let chroma_mi_size = chroma_ref.size();
     let chroma_ref_size = get_plane_residual_size(chroma_mi_size, 1, subsampling_x, subsampling_y)
-        .map_err(|_| residual_geometry_error(tile_offset))?
+        .map_err(|_| residual_geometry_error())?
         .valid()
-        .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    let tx_size = fixed_inter_residual_tx_size(chroma_ref_size.index(), lossless, tile_offset)?;
+        .ok_or_else(residual_geometry_error)?;
+    let tx_size = fixed_inter_residual_tx_size(chroma_ref_size.index(), lossless)?;
     let cctx_allowed = is_cctx_geometry_allowed(
         subsampling_x && subsampling_y,
         chroma_ref_size
             .num_4x4_wide()
-            .map_err(|_| residual_geometry_error(tile_offset))?
+            .map_err(|_| residual_geometry_error())?
             * MI_SIZE,
         chroma_ref_size
             .num_4x4_high()
-            .map_err(|_| residual_geometry_error(tile_offset))?
+            .map_err(|_| residual_geometry_error())?
             * MI_SIZE,
     );
     let plane_source_size = if chroma_mi_size != frontier.b_size {
@@ -522,35 +476,35 @@ fn read_inter_residual_chroma_group(
         mi_size_chunk
     };
     let plane_size = get_plane_residual_size(plane_source_size, 1, subsampling_x, subsampling_y)
-        .map_err(|_| residual_geometry_error(tile_offset))?
+        .map_err(|_| residual_geometry_error())?
         .valid()
-        .ok_or_else(|| residual_geometry_error(tile_offset))?;
+        .ok_or_else(residual_geometry_error)?;
     let block_width_chunks = (frontier
         .b_size
         .num_4x4_wide()
-        .map_err(|_| residual_geometry_error(tile_offset))?
+        .map_err(|_| residual_geometry_error())?
         >> 4)
         .max(1);
     let block_height_chunks = (frontier
         .b_size
         .num_4x4_high()
-        .map_err(|_| residual_geometry_error(tile_offset))?
+        .map_err(|_| residual_geometry_error())?
         >> 4)
         .max(1);
     let mut num4x4_w = plane_size
         .num_4x4_wide()
-        .map_err(|_| residual_geometry_error(tile_offset))?;
+        .map_err(|_| residual_geometry_error())?;
     let mut num4x4_h = plane_size
         .num_4x4_high()
-        .map_err(|_| residual_geometry_error(tile_offset))?;
+        .map_err(|_| residual_geometry_error())?;
     if subsampling_x && chunk_x + 1 < block_width_chunks && !lossless {
         num4x4_w <<= 1;
     }
     if subsampling_y && chunk_y + 1 < block_height_chunks && !lossless {
         num4x4_h <<= 1;
     }
-    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
+    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
+    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
     let x_offset4 = (chunk_x << 4) >> usize::from(subsampling_x);
     let y_offset4 = (chunk_y << 4) >> usize::from(subsampling_y);
     let base_x4 = chroma_ref.col() >> usize::from(subsampling_x);
@@ -600,19 +554,14 @@ fn read_inter_residual_chroma_group(
                 base_y4 + y4,
                 tx_size,
                 u,
-                tile_offset,
             )?;
             chroma_reads
                 .try_reserve(1)
                 .map_err(|_| inter_allocation!("inter residual chroma read list"))?;
             chroma_reads.push(InterChromaURead { unit, block_index });
-            x4 = x4
-                .checked_add(tx_w4)
-                .ok_or_else(|| residual_geometry_error(tile_offset))?;
+            x4 = x4.checked_add(tx_w4).ok_or_else(residual_geometry_error)?;
         }
-        y4 = y4
-            .checked_add(tx_h4)
-            .ok_or_else(|| residual_geometry_error(tile_offset))?;
+        y4 = y4.checked_add(tx_h4).ok_or_else(residual_geometry_error)?;
     }
 
     for read in chroma_reads.iter().copied() {
@@ -620,7 +569,7 @@ fn read_inter_residual_chroma_group(
         let start_y = (base_y4 + read.unit.y4) * MI_SIZE;
         let u = blocks
             .get(read.block_index)
-            .ok_or_else(|| residual_geometry_error(tile_offset))?;
+            .ok_or_else(residual_geometry_error)?;
         let u_nonzero = u.coeffs.eob != 0;
         let uses_cctx = u.coeffs.cctx_type.unwrap_or(0) != 0;
         let v = read_inter_residual_plane(
@@ -645,10 +594,9 @@ fn read_inter_residual_chroma_group(
             base_y4 + read.unit.y4,
             tx_size,
             v,
-            tile_offset,
         )?;
         if uses_cctx {
-            record_inter_residual_chroma_pair(blocks, read.block_index, v_index, tile_offset)?;
+            record_inter_residual_chroma_pair(blocks, read.block_index, v_index)?;
         }
     }
     Ok(())
@@ -658,16 +606,15 @@ fn record_inter_residual_chroma_pair(
     blocks: &mut [InterResidualBlock],
     u_index: usize,
     v_index: usize,
-    tile_offset: ByteOffset,
 ) -> Result<()> {
     let delta = v_index
         .checked_sub(u_index)
         .and_then(|delta| i16::try_from(delta).ok())
         .filter(|&delta| delta > 0)
-        .ok_or_else(|| residual_geometry_error(tile_offset))?;
+        .ok_or_else(residual_geometry_error)?;
     let [u, v] = blocks
         .get_disjoint_mut([u_index, v_index])
-        .map_err(|_| residual_geometry_error(tile_offset))?;
+        .map_err(|_| residual_geometry_error())?;
     u.cctx_pair_delta = delta;
     v.cctx_pair_delta = -delta;
     Ok(())
@@ -680,13 +627,11 @@ fn push_inter_residual_block(
     y4: usize,
     tx_size: usize,
     coeffs: LumaCoeffBlock,
-    tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let log2_width = tx_size_dimension(&TX_WIDTH_LOG2, tx_size, tile_offset)?;
-    let log2_height = tx_size_dimension(&TX_HEIGHT_LOG2, tx_size, tile_offset)?;
-    let log2_width = u8::try_from(log2_width).map_err(|_| residual_geometry_error(tile_offset))?;
-    let log2_height =
-        u8::try_from(log2_height).map_err(|_| residual_geometry_error(tile_offset))?;
+    let log2_width = tx_size_dimension(&TX_WIDTH_LOG2, tx_size)?;
+    let log2_height = tx_size_dimension(&TX_HEIGHT_LOG2, tx_size)?;
+    let log2_width = u8::try_from(log2_width).map_err(|_| residual_geometry_error())?;
+    let log2_height = u8::try_from(log2_height).map_err(|_| residual_geometry_error())?;
     blocks
         .try_reserve(1)
         .map_err(|_| residual_allocation_error())?;
@@ -746,8 +691,8 @@ fn read_inter_residual_plane(
     .map_err(|error| residual_plane_read_error(&error, tile_offset))
 }
 
-pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
-    table_value_usize(&MAX_TX_SIZE_RECT, block_size, tile_offset)
+pub(crate) fn max_tx_size(block_size: usize) -> Result<usize> {
+    table_value_usize(&MAX_TX_SIZE_RECT, block_size)
 }
 
 fn inter_residual_tx_size(
@@ -759,7 +704,7 @@ fn inter_residual_tx_size(
     tile_offset: ByteOffset,
 ) -> Result<usize> {
     if !lossless {
-        return max_tx_size(block_size.index(), tile_offset);
+        return max_tx_size(block_size.index());
     }
     match mode {
         InterResidualLumaTxSizeMode::Inter | InterResidualLumaTxSizeMode::Intrabc => {
@@ -769,35 +714,27 @@ fn inter_residual_tx_size(
     }
 }
 
-fn fixed_inter_residual_tx_size(
-    block_size: usize,
-    lossless: bool,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
+fn fixed_inter_residual_tx_size(block_size: usize, lossless: bool) -> Result<usize> {
     if lossless {
         Ok(TX_4X4)
     } else {
-        max_tx_size(block_size, tile_offset)
+        max_tx_size(block_size)
     }
 }
 
-pub(crate) fn tx_size_dimension(
-    values: &[i32],
-    tx_size: usize,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    table_value_usize(values, tx_size, tile_offset)
+pub(crate) fn tx_size_dimension(values: &[i32], tx_size: usize) -> Result<usize> {
+    table_value_usize(values, tx_size)
 }
 
-fn table_value_usize(values: &[i32], index: usize, tile_offset: ByteOffset) -> Result<usize> {
+fn table_value_usize(values: &[i32], index: usize) -> Result<usize> {
     let value = values
         .get(index)
         .copied()
-        .ok_or_else(|| residual_geometry_error(tile_offset))?;
-    usize::try_from(value).map_err(|_| residual_geometry_error(tile_offset))
+        .ok_or_else(residual_geometry_error)?;
+    usize::try_from(value).map_err(|_| residual_geometry_error())
 }
 
-pub(super) fn residual_geometry_error(_tile_offset: ByteOffset) -> crate::error::DecodeError {
+pub(super) fn residual_geometry_error() -> crate::error::DecodeError {
     DecodeHeaderStateError::InvalidInterResidualCoefficientState.into()
 }
 
@@ -814,18 +751,17 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
     n4w: usize,
     n4h: usize,
     subsampling: (u32, u32),
-    tile_offset: ByteOffset,
 ) -> Result<()> {
     let plane_count = 1 + usize::from(frontier.has_chroma) * (COEFF_CONTEXT_PLANES.len() - 1);
     let chroma_ref = frontier.chroma_ref_geometry();
     let chroma_n4w = chroma_ref
         .size()
         .num_4x4_wide()
-        .map_err(|_| residual_geometry_error(tile_offset))?;
+        .map_err(|_| residual_geometry_error())?;
     let chroma_n4h = chroma_ref
         .size()
         .num_4x4_high()
-        .map_err(|_| residual_geometry_error(tile_offset))?;
+        .map_err(|_| residual_geometry_error())?;
     let (sub_x, sub_y) = subsampling;
     for &plane in COEFF_CONTEXT_PLANES.iter().take(plane_count) {
         let (r, c, w4, h4) = if plane == 0 {
@@ -843,7 +779,7 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
                 sub_x: if plane == 0 { 0 } else { sub_x },
                 sub_y: if plane == 0 { 0 } else { sub_y },
             })
-            .map_err(|_| residual_geometry_error(tile_offset))?;
+            .map_err(|_| residual_geometry_error())?;
     }
     Ok(())
 }

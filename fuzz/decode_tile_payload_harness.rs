@@ -30,15 +30,13 @@ const GOOD_TILE_PAYLOAD: [u8; 2] = [0x12, 0xFB];
 pub struct TilePayloadFuzzOutcome {
     /// Boundary outcome when the tile-payload boundary accepted the input.
     pub boundary: Option<TilePayloadBoundaryFuzzOutcome>,
-    /// Stage that returned a typed error, if any.
-    pub typed_error_stage: Option<TilePayloadFuzzStage>,
+    /// Whether the harness reached a typed error.
+    pub typed_error: bool,
 }
 
 /// Compact outcome from a successful tile-payload boundary plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TilePayloadBoundaryFuzzOutcome {
-    /// Number of planned work units.
-    pub work_units_len: usize,
     /// Planned tile number.
     pub tile_num: u32,
     /// Planned tile row.
@@ -59,29 +57,20 @@ pub struct TilePayloadBoundaryFuzzOutcome {
     pub cdf_update_enabled: bool,
 }
 
-/// Typed-error stage reached by the fuzzing harness.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TilePayloadFuzzStage {
-    /// Input was too short for the fuzz grammar header.
-    InputHeader,
-    /// Tile-payload boundary planning returned a typed error.
-    Boundary,
-}
-
 /// Runs one bounded tile-payload fuzzing case.
 #[must_use]
 pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome {
     let Some((&flags, rest)) = data.split_first() else {
-        return typed_error(TilePayloadFuzzStage::InputHeader);
+        return typed_error();
     };
     let Some((&payload_len_seed, rest)) = rest.split_first() else {
-        return typed_error(TilePayloadFuzzStage::InputHeader);
+        return typed_error();
     };
     let Some((&limit_seed, rest)) = rest.split_first() else {
-        return typed_error(TilePayloadFuzzStage::InputHeader);
+        return typed_error();
     };
     let Some((&detail_seed, rest)) = rest.split_first() else {
-        return typed_error(TilePayloadFuzzStage::InputHeader);
+        return typed_error();
     };
 
     let payload_storage;
@@ -120,20 +109,20 @@ pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome 
         Ok(plan) => plan,
         Err(error) => {
             let _ = error.to_string();
-            return typed_error(TilePayloadFuzzStage::Boundary);
+            return typed_error();
         }
     };
     let boundary = boundary_outcome(&plan);
     TilePayloadFuzzOutcome {
         boundary,
-        typed_error_stage: None,
+        typed_error: false,
     }
 }
 
-fn typed_error(stage: TilePayloadFuzzStage) -> TilePayloadFuzzOutcome {
+fn typed_error() -> TilePayloadFuzzOutcome {
     TilePayloadFuzzOutcome {
         boundary: None,
-        typed_error_stage: Some(stage),
+        typed_error: true,
     }
 }
 
@@ -182,7 +171,6 @@ fn boundary_outcome(
         return None;
     };
     Some(TilePayloadBoundaryFuzzOutcome {
-        work_units_len: plan.work_units().len(),
         tile_num: unit.tile_num(),
         tile_row: unit.tile_row(),
         tile_col: unit.tile_col(),

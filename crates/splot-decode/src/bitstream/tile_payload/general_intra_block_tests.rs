@@ -565,7 +565,9 @@ fn active_palette_y_mode_accepts_every_size_symbol() {
         let palette_size = usize::from(size_symbol) + 2;
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         assert_eq!(
-            tile.row(TileCdfSelector::PaletteYSize).unwrap().len(),
+            tile.with_row_mut(TileCdfSelector::PaletteYSize, |row| row.to_vec())
+                .unwrap()
+                .len(),
             PALETTE_MAX_SIZE
         );
         let mut encoder = SymbolEncoder::with_config(

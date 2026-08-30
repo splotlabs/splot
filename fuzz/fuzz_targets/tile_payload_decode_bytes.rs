@@ -9,7 +9,6 @@ fuzz_target!(|data: &[u8]| {
     let outcome = run_tile_payload_decode_fuzz_case(data);
 
     if let Some(boundary) = outcome.boundary {
-        assert_eq!(boundary.work_units_len, 1);
         assert_eq!(boundary.tile_num, 0);
         assert_eq!(boundary.tile_row, 0);
         assert_eq!(boundary.tile_col, 0);
@@ -24,6 +23,6 @@ fuzz_target!(|data: &[u8]| {
             boundary.cdf_update_enabled
         );
     } else {
-        assert!(outcome.typed_error_stage.is_some());
+        assert!(outcome.typed_error);
     }
 });

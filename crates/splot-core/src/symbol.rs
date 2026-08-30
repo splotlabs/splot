@@ -97,15 +97,6 @@ macro_rules! read_symbol_from_cdf {
             update_cdf(cdf, shape, symbol);
         }
 
-        if decoder.trace_enabled {
-            trace::emit(
-                "read_symbol",
-                symbol as u32,
-                decoder.consumed_bits().get(),
-                decoder.symbol_max_bits,
-            );
-        }
-
         Ok(Symbol::new(symbol as u8))
     }};
 }
@@ -269,7 +260,6 @@ pub struct SymbolDecoder<'a> {
     symbol_max_bits: i64,
     frame_symbol_count: u64,
     config: SymbolDecoderConfig,
-    trace_enabled: bool,
 }
 
 impl<'a> SymbolDecoder<'a> {
@@ -319,7 +309,6 @@ impl<'a> SymbolDecoder<'a> {
             symbol_max_bits,
             frame_symbol_count: 0,
             config,
-            trace_enabled: trace::enabled(),
         })
     }
 
@@ -390,18 +379,8 @@ impl<'a> SymbolDecoder<'a> {
     /// # Errors
     /// Returns [`Error::UnexpectedEof`] if the bounded tile payload unexpectedly
     /// cannot supply a required coded bit.
-    #[track_caller]
     pub fn read_bool(&mut self) -> Result<bool> {
-        let symbol = self.read_bypass_bits(1)? != 0;
-        if self.trace_enabled {
-            trace::emit(
-                "read_bool",
-                u32::from(symbol),
-                self.consumed_bits().get(),
-                self.symbol_max_bits,
-            );
-        }
-        Ok(symbol)
+        Ok(self.read_bypass_bits(1)? != 0)
     }
 
     /// Decodes an AV2 § 8.2.5 `read_literal(n)` value, returned MSB-first.
@@ -409,7 +388,6 @@ impl<'a> SymbolDecoder<'a> {
     /// # Errors
     /// Returns [`Error::InvalidSymbolDecoderState`] if `n > 32`, or propagates
     /// [`Error::UnexpectedEof`] from the bounded bit reader.
-    #[track_caller]
     pub fn read_literal(&mut self, n: u32) -> Result<u32> {
         if n > MAX_LITERAL_BITS {
             return Err(
@@ -428,14 +406,6 @@ impl<'a> SymbolDecoder<'a> {
             value = (value << chunk_bits) | self.read_bypass_bits(chunk_bits)?;
             remaining -= chunk_bits;
         }
-        if self.trace_enabled {
-            trace::emit(
-                "read_literal",
-                value,
-                self.consumed_bits().get(),
-                self.symbol_max_bits,
-            );
-        }
         Ok(value)
     }
 
@@ -449,7 +419,6 @@ impl<'a> SymbolDecoder<'a> {
     /// # Errors
     /// Returns [`Error::InvalidSymbolDecoderState`] if `max_bits > 32`, or
     /// propagates [`Error::UnexpectedEof`] from the bounded bit reader.
-    #[track_caller]
     pub fn read_unary(&mut self, max_bits: u32) -> Result<u32> {
         if max_bits > MAX_LITERAL_BITS {
             return Err(
@@ -460,14 +429,6 @@ impl<'a> SymbolDecoder<'a> {
             );
         }
         if max_bits == 0 {
-            if self.trace_enabled {
-                trace::emit(
-                    "read_unary",
-                    0,
-                    self.consumed_bits().get(),
-                    self.symbol_max_bits,
-                );
-            }
             return Ok(0);
         }
 
@@ -493,14 +454,6 @@ impl<'a> SymbolDecoder<'a> {
         self.advance_bypass(consumed, symbol_value);
         self.frame_symbol_count = self.frame_symbol_count.saturating_add(u64::from(consumed));
 
-        if self.trace_enabled {
-            trace::emit(
-                "read_unary",
-                value,
-                self.consumed_bits().get(),
-                self.symbol_max_bits,
-            );
-        }
         Ok(value)
     }
 
@@ -515,7 +468,6 @@ impl<'a> SymbolDecoder<'a> {
     /// [`Error::InvalidSymbolDecoderState`] for impossible arithmetic state, or
     /// [`Error::UnexpectedEof`] if the bounded tile payload unexpectedly cannot
     /// supply a required coded bit.
-    #[track_caller]
     pub fn read_symbol(&mut self, cdf: &mut [i32]) -> Result<Symbol> {
         read_symbol_from_cdf!(self, cdf)
     }
@@ -526,7 +478,6 @@ impl<'a> SymbolDecoder<'a> {
     ///
     /// # Errors
     /// Returns the same errors as [`Self::read_symbol`].
-    #[track_caller]
     pub fn read_symbol_u16(&mut self, cdf: &mut [u16]) -> Result<Symbol> {
         read_symbol_from_cdf!(self, cdf)
     }
@@ -845,99 +796,6 @@ pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: 
     let count = cdf[shape.n].to_i32();
     if count < MAX_CDF_COUNT {
         cdf[shape.n] = T::from_i32(count + 1);
-    }
-}
-
-/// Env-gated per-symbol decoder trace for entropy-coder desync diagnosis.
-///
-/// Set `SPLOT_SYMBOL_TRACE=<path>` to append one line per decoded symbol/bool to
-/// `<path>` as `seq tag file:line value consumed_bits symbol_max_bits`. The
-/// `tag` is the syntax-element call site captured via `#[track_caller]`, which
-/// maps 1:1 to AVM's accounting `symbolsFileMap`. This module is inert (no I/O,
-/// no allocation) when the variable is unset, so it never affects production
-/// decode behaviour.
-mod trace {
-    use std::cell::RefCell;
-    use std::fs::{File, OpenOptions};
-    use std::io::{BufWriter, Write};
-    use std::panic::Location;
-    use std::sync::OnceLock;
-
-    thread_local! {
-        static SINK: RefCell<Option<TraceSink>> = const { RefCell::new(None) };
-        static INIT: RefCell<bool> = const { RefCell::new(false) };
-    }
-
-    pub(super) fn enabled() -> bool {
-        static ENABLED: OnceLock<bool> = OnceLock::new();
-        *ENABLED.get_or_init(|| std::env::var_os("SPLOT_SYMBOL_TRACE").is_some())
-    }
-
-    struct TraceSink {
-        writer: BufWriter<File>,
-        seq: u64,
-    }
-
-    fn open_sink() -> Option<TraceSink> {
-        let path = std::env::var_os("SPLOT_SYMBOL_TRACE")?;
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .ok()?;
-        Some(TraceSink {
-            writer: BufWriter::new(file),
-            seq: 0,
-        })
-    }
-
-    /// Records one decoded symbol or bool to the trace sink if it is enabled.
-    #[inline]
-    #[track_caller]
-    pub(super) fn emit(kind: &str, value: u32, consumed_bits: u64, symbol_max_bits: i64) {
-        if !enabled() {
-            return;
-        }
-        emit_at(
-            Location::caller(),
-            kind,
-            value,
-            consumed_bits,
-            symbol_max_bits,
-        );
-    }
-
-    #[cold]
-    fn emit_at(
-        location: &'static Location<'static>,
-        kind: &str,
-        value: u32,
-        consumed_bits: u64,
-        symbol_max_bits: i64,
-    ) {
-        SINK.with(|cell| {
-            let mut borrow = cell.borrow_mut();
-            let initialized = INIT.with(|flag| {
-                let mut f = flag.borrow_mut();
-                let was = *f;
-                *f = true;
-                was
-            });
-            if !initialized {
-                *borrow = open_sink();
-            }
-            if let Some(sink) = borrow.as_mut() {
-                sink.seq += 1;
-                let _ = writeln!(
-                    sink.writer,
-                    "{seq} {kind} {file}:{line} {value} {consumed_bits} {symbol_max_bits}",
-                    seq = sink.seq,
-                    file = location.file(),
-                    line = location.line(),
-                );
-                let _ = sink.writer.flush();
-            }
-        });
     }
 }
 

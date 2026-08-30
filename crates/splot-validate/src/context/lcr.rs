@@ -13,12 +13,9 @@ use super::*;
 /// the full record of whichever global LCR the chain resolved as *activated*.
 #[derive(Debug, Clone)]
 pub(super) struct GlobalLcrRecord {
-    /// `LcrMaxNumXLayerCount` = the set-bit count of `lcr_xlayer_map` (AV2 § 5.8.1,
-    /// mirror `06-syntax-structures-semantics.md` lines 382-384): the § 6.8.2 constraint-1
-    /// stream count and the Table A.3 extended-layer count under an activated global LCR.
-    pub(super) max_num_xlayer_count: u32,
     /// `LcrXLayerID[]` = the set-bit indices of `lcr_xlayer_map`, ascending (AV2 § 5.8.1):
-    /// the § 6.8.2 constraint-2 membership set.
+    /// the § 6.8.2 constraint-2 membership set. Its length is `LcrMaxNumXLayerCount`, the
+    /// § 6.8.2 constraint-1 stream count and the Table A.3 extended-layer count.
     pub(super) xlayer_ids: BTreeSet<u8>,
     /// `lcr_aggregate_info()` when `lcr_aggregate_info_present_flag == 1` (§ 6.8.2
     /// constraint 3, lines 1657-1664).
@@ -432,7 +429,6 @@ impl ValidatorContext {
                 self.global_lcr_records.insert(
                     info.global_config_record_id,
                     GlobalLcrRecord {
-                        max_num_xlayer_count: info.xlayer_map.count_ones(),
                         xlayer_ids,
                         aggregate_info: info.aggregate_info,
                         seq_ptl_by_xlayer,

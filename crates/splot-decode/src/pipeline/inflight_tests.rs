@@ -145,7 +145,7 @@ fn ring_admission_harvests_the_oldest_entry_first() {
     second.complete(SharedFrame::new(decoded_frame(4, 4)));
     third.complete(SharedFrame::new(decoded_frame(4, 4)));
     drop((first_report, second_report, third_report));
-    assert_eq!(ring.max_in_flight(), 3);
+    assert_eq!(ring.entries.len(), 3);
 
     ring.reserve(&mut eight, &mut ten);
 
@@ -176,7 +176,7 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     let (second, second_report) = pending_entry(&mut ring, 1);
     second.complete(SharedFrame::new(decoded_frame(4, 4)));
     drop(second_report);
-    assert_eq!(ring.max_in_flight(), 2);
+    assert_eq!(ring.entries.len(), 2);
 
     ring.reserve(&mut eight, &mut ten);
 
@@ -197,7 +197,7 @@ fn a_depth_of_one_never_keeps_a_frame_in_flight() {
 
     ring.reserve(&mut eight, &mut ten);
 
-    assert_eq!(ring.max_in_flight(), 0);
+    assert!(ring.entries.is_empty());
     assert!(ring.take_failure().is_none());
 }
 

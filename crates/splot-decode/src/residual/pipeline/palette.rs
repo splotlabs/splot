@@ -355,16 +355,19 @@ mod tests {
 
     #[test]
     fn palette_cdf_alphabets_and_color_order_stay_inside_palette_size() {
-        let tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let palette_size_row = tile
-            .row(TileCdfSelector::PaletteYSize)
+            .with_row_mut(TileCdfSelector::PaletteYSize, |row| row.to_vec())
             .expect("palette-size selector");
         assert_eq!(palette_size_row.len() - 1, PALETTE_MAX_SIZE - 1);
 
         for palette_size in 2..=PALETTE_MAX_SIZE {
             for ctx in 0..PALETTE_COLOR_CONTEXTS {
                 let row = tile
-                    .row(TileCdfSelector::PaletteYColorIndex { palette_size, ctx })
+                    .with_row_mut(
+                        TileCdfSelector::PaletteYColorIndex { palette_size, ctx },
+                        |row| row.to_vec(),
+                    )
                     .expect("palette color-index selector");
                 assert_eq!(row.len() - 1, palette_size);
             }

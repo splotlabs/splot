@@ -8,8 +8,8 @@ use libfuzzer_sys::fuzz_target;
 use splot_decode::{
     DECODE_HASH_REPORT_BYTE_STREAM_ID, DECODE_HASH_REPORT_CONTRACT_ID,
     DECODE_HASH_REPORT_CONTRACT_VERSION, DECODE_HASH_REPORT_HASH_ALGORITHM_ID,
-    DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN, DecodeContext, DecodeHashPixelFormat,
-    DecodeOptions, DecodeOutputVariant, DecodeRuntimeConfig,
+    DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN, DecodeContext, DecodeHashPixelFormat, DecodeOptions,
+    DecodeOutputVariant, DecodeRuntimeConfig,
 };
 use splot_parallel::ThreadCount;
 

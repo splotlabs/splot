@@ -457,7 +457,6 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let quantizer = FrameQuantizerSnapshot::capture();
-    let started = crate::timing::start();
     let tile_count = tile_plan.work_units().len();
     let [tile] = tile_plan.work_units_mut() else {
         return Err(DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into());
@@ -514,13 +513,6 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
             return Err(error);
         }
     };
-    if started.is_some() {
-        crate::timing::report_detail(
-            "pass1_parse",
-            started,
-            &format!("units={}", parse.unit_count()),
-        );
-    }
     Ok(DeferredInterWalk {
         parse,
         parse_progress: Arc::clone(parse_progress),

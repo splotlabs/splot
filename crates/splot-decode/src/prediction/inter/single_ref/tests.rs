@@ -75,7 +75,7 @@ fn single_ref_selection_roundtrips_through_symbol_encoder_for_every_value() {
     let contexts = distinct_contexts(decisions);
 
     for selection in 0..num_total_refs {
-        let (enc_tile, bytes) = encode_selection(num_total_refs, &contexts, selection);
+        let (mut enc_tile, bytes) = encode_selection(num_total_refs, &contexts, selection);
 
         let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&bytes);
@@ -94,8 +94,8 @@ fn single_ref_selection_roundtrips_through_symbol_encoder_for_every_value() {
         for (ref_idx, &ctx) in contexts.iter().enumerate().take(reads_read) {
             let sel = TileCdfSelector::SingleRef { ctx, ref_idx };
             assert_eq!(
-                enc_tile.row(sel).unwrap(),
-                dec_tile.row(sel).unwrap(),
+                enc_tile.with_row_mut(sel, |row| row.to_vec()).unwrap(),
+                dec_tile.with_row_mut(sel, |row| row.to_vec()).unwrap(),
                 "single_ref CDF row [{ctx}][{ref_idx}] desynced for selection {selection}"
             );
         }

@@ -49,7 +49,7 @@
 //! rather than re-deriving, so the two layers agree by construction (e.g. on
 //! `TIP, BRT, TIP` the BRT head splits the two TIPs into two units).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::span::ByteOffset;
@@ -248,10 +248,6 @@ struct LayerState {
 #[derive(Debug, Default)]
 pub(crate) struct FrameUnitSegmenter {
     layers: BTreeMap<(ExtendedLayerId, EmbeddedLayerId, TemporalLayerId), LayerState>,
-    /// The `(xlayer, mlayer)` embedded layers whose first coded frame of the
-    /// temporal unit has been observed — i.e. whose first coded frame unit has
-    /// begun (§ 7.3.8.10 first-coded-frame-unit CI rule).
-    first_coded_unit_started: BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
     /// Number of distinct coded frames opened for each `(xlayer, mlayer)` embedded layer in
     /// the current temporal unit, counted at each coded frame's first OBU. Each coded frame is
     /// its own unit (§ 7.3.3 / § 7.3.4), so completed units is this minus the open one (see
@@ -269,7 +265,6 @@ impl FrameUnitSegmenter {
     pub(crate) fn reset_temporal_unit(&mut self, report: &mut ValidationReport) {
         self.flush_open_units(FlushKind::TemporalUnitBoundary, report);
         self.layers.clear();
-        self.first_coded_unit_started.clear();
         self.coded_frames_opened_for_embedded_layer.clear();
     }
 
@@ -413,7 +408,6 @@ impl FrameUnitSegmenter {
             obu.header.temporal_layer_id,
         );
         let embedded_key = (obu.header.extended_layer_id, obu.header.embedded_layer_id);
-        let first_coded_unit_started = &mut self.first_coded_unit_started;
         let coded_frames_opened_for_embedded_layer =
             &mut self.coded_frames_opened_for_embedded_layer;
         let state = self.layers.entry(key).or_insert_with(|| LayerState {
@@ -423,7 +417,6 @@ impl FrameUnitSegmenter {
         Self::observe_in_layer(
             state,
             embedded_key,
-            first_coded_unit_started,
             coded_frames_opened_for_embedded_layer,
             obu,
             role,
@@ -436,7 +429,6 @@ impl FrameUnitSegmenter {
     fn observe_in_layer(
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
-        first_coded_unit_started: &mut BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
         coded_frames_opened_for_embedded_layer: &mut BTreeMap<
             (ExtendedLayerId, EmbeddedLayerId),
             u32,
@@ -469,7 +461,6 @@ impl FrameUnitSegmenter {
                 Self::observe_ci(
                     state,
                     embedded_key,
-                    first_coded_unit_started,
                     coded_frames_opened_for_embedded_layer,
                     obu,
                     report,
@@ -500,7 +491,6 @@ impl FrameUnitSegmenter {
             } => Some(Self::observe_tile_frame(
                 state,
                 embedded_key,
-                first_coded_unit_started,
                 coded_frames_opened_for_embedded_layer,
                 is_first_tile_group,
                 output_class(output),
@@ -510,7 +500,6 @@ impl FrameUnitSegmenter {
             SegRole::SefFrame => Some(Self::observe_frame(
                 state,
                 embedded_key,
-                first_coded_unit_started,
                 coded_frames_opened_for_embedded_layer,
                 None,
                 output_class(type_decided_output(obu.header.obu_type)),
@@ -524,7 +513,6 @@ impl FrameUnitSegmenter {
             SegRole::TipFrame { output } => Some(Self::observe_frame(
                 state,
                 embedded_key,
-                first_coded_unit_started,
                 coded_frames_opened_for_embedded_layer,
                 None,
                 output_class(output),
@@ -538,7 +526,6 @@ impl FrameUnitSegmenter {
             SegRole::BridgeFrame { output } => Some(Self::observe_frame(
                 state,
                 embedded_key,
-                first_coded_unit_started,
                 coded_frames_opened_for_embedded_layer,
                 None,
                 output_class(output),
@@ -612,7 +599,6 @@ impl FrameUnitSegmenter {
     fn observe_ci(
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
-        first_coded_unit_started: &BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
         coded_frames_opened_for_embedded_layer: &BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
@@ -624,7 +610,8 @@ impl FrameUnitSegmenter {
             .unwrap_or(0)
             .saturating_sub(1);
         let in_later_unit = completed > 0
-            || (unit.coded_frame.is_none() && first_coded_unit_started.contains(&embedded_key));
+            || (unit.coded_frame.is_none()
+                && coded_frames_opened_for_embedded_layer.contains_key(&embedded_key));
         if in_later_unit {
             report.push(frame_unit_error(
                 "frame-unit/ci-not-in-first-frame-unit",
@@ -740,7 +727,6 @@ impl FrameUnitSegmenter {
     fn observe_tile_frame(
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
-        first_coded_unit_started: &mut BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
         coded_frames_opened_for_embedded_layer: &mut BTreeMap<
             (ExtendedLayerId, EmbeddedLayerId),
             u32,
@@ -756,7 +742,6 @@ impl FrameUnitSegmenter {
         let boundary = Self::observe_frame(
             state,
             embedded_key,
-            first_coded_unit_started,
             coded_frames_opened_for_embedded_layer,
             Some(obu_type),
             class,
@@ -800,7 +785,6 @@ impl FrameUnitSegmenter {
     fn observe_frame(
         state: &mut LayerState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
-        first_coded_unit_started: &mut BTreeSet<(ExtendedLayerId, EmbeddedLayerId)>,
         coded_frames_opened_for_embedded_layer: &mut BTreeMap<
             (ExtendedLayerId, EmbeddedLayerId),
             u32,
@@ -825,7 +809,6 @@ impl FrameUnitSegmenter {
                 if !state.unit.region_blind {
                     state.unit.region = Region::CodedFrame;
                 }
-                first_coded_unit_started.insert(embedded_key);
                 let opened = coded_frames_opened_for_embedded_layer
                     .entry(embedded_key)
                     .or_insert(0);

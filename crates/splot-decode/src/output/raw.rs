@@ -28,7 +28,6 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     frame_delay: NonZeroUsize,
     writer: W,
 ) -> Result<()> {
-    let decode_started = crate::timing::start();
     let writer = Mutex::new(writer);
     let output_error = Mutex::new(None);
     let decode_result = splot_parallel::ready_task_scope(|scope| {
@@ -60,8 +59,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
                 scope.spawn(move |_| {
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         let mut writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
-                        let serialize_started = crate::timing::start();
-                        let result = match &frame {
+                        match &frame {
                             PipelineDecodedFrame::Eight(frame) => {
                                 let display = film_grain::frame_for_output(
                                     frame.get(),
@@ -76,9 +74,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
                                 )?;
                                 write_raw_frame(display.as_ref(), &mut *writer)
                             }
-                        };
-                        crate::timing::report("raw_serialize", serialize_started);
-                        result
+                        }
                     }))
                     .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")));
                     if let Err(error) = result {
@@ -105,7 +101,6 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
         return Err(error);
     }
     decode_result?;
-    crate::timing::report("runtime_decode", decode_started);
     Ok(())
 }
 
@@ -116,7 +111,6 @@ pub(crate) fn discard_raw_stream_from_plan(
     plan: &DecodeStreamPlan,
     frame_delay: NonZeroUsize,
 ) -> Result<()> {
-    let decode_started = crate::timing::start();
     crate::pipeline::emit_materialized_frames_from_prepared(
         bitstream,
         parsed,
@@ -137,7 +131,6 @@ pub(crate) fn discard_raw_stream_from_plan(
             Ok(())
         },
     )?;
-    crate::timing::report("runtime_decode", decode_started);
     Ok(())
 }
 

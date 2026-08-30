@@ -29,29 +29,17 @@ struct ScheduledCommit<T: ReconSample> {
 
 /// The § 7.17 frontier's own storage, advanced by one ordered chain per frame.
 ///
-/// The chain runs beside the commit spine, so it owns the pixels it filters:
-/// either the sealed copy the spine hands it one superblock row at a time, or
-/// the canonical row bands a banded frame reconstructs directly into. A frame
-/// with no active deblock plan has nothing for the chain to advance, so sealing
-/// would only add a copy; it receives the spine's whole workspace once
-/// reconstruction is complete.
+/// The chain runs beside the commit spine, so it owns the sealed copy the spine
+/// hands it one superblock row at a time. A frame with no active deblock plan
+/// has nothing for the chain to advance, so sealing would only add a copy; it
+/// receives the spine's whole workspace once reconstruction is complete.
 struct ScheduledFrontier<T: ReconSample> {
     sealed: Option<crate::filters::source::DeblockedSource<T>>,
     sealed_rows: usize,
     terminal_workspace: Option<crate::filters::source::DeblockedSource<T>>,
-    bands: Option<splot_recon::OwnedFrameBands<T>>,
     deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
     filter: Option<Arc<crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>>>,
     next_filter_stripe: usize,
-}
-
-#[allow(clippy::large_enum_variant)]
-enum PreparedBatch<T: ReconSample> {
-    Legacy(Vec<ReadyReconRow<'static, T>>),
-    Banded {
-        rows: Vec<ReconRow>,
-        band: splot_recon::OwnedFrameRowBand<T>,
-    },
 }
 
 struct ScheduledResolve {
@@ -142,11 +130,10 @@ pub(in crate::prediction::inter::block) struct ScheduledTileOutput<T: ReconSampl
 /// Owned state shared by one admission job per parsed reconstruction unit.
 pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample> {
     rows: Mutex<Vec<ScheduledRowState<T>>>,
-    prepared: Mutex<Vec<Option<PreparedBatch<T>>>>,
+    prepared: Mutex<Vec<Option<Vec<ReadyReconRow<'static, T>>>>>,
     unit_count: usize,
     units_per_row: usize,
     batches: Vec<core::ops::Range<usize>>,
-    owned_bands: bool,
     filter_count: usize,
     frontier_rows: usize,
     commit: Mutex<Option<ScheduledCommit<T>>>,
@@ -341,7 +328,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .transpose()?
             .flatten();
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
-        frontier.sealed = seals_filter_copy(self.owned_bands, deblock.is_some(), self.whole_frame)
+        frontier.sealed = seals_filter_copy(deblock.is_some(), self.whole_frame)
             .then(|| {
                 CurrentFrameWorkspace::new_recycled(self.info)
                     .map(crate::filters::source::DeblockedSource::new)
@@ -371,7 +358,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             let Some(row) = self.parse_progress.take_row(rows.len()) else {
                 break;
             };
-            let surface = if self.owned_bands || row.superblocks.is_empty() {
+            let surface = if row.superblocks.is_empty() {
                 None
             } else {
                 surfaces.next()
@@ -460,76 +447,25 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             }
             ready
         };
-        let batch = self
-            .workers
-            .with_scratch(|scratch| -> Result<PreparedBatch<T>> {
-                let _quantizer_scopes = self.quantizer.install_frame();
-                let ready = ready;
-                let shared = deferred_recon::ReconShared {
-                    reference: &self.reference,
-                    ref_frame_idx: self.ref_frame_idx.as_slice(),
-                    temporal_context: &self.temporal,
-                    sequence: &self.sequence,
-                    core: &self.core,
-                    luma_use_tcq: self.params.luma_use_tcq,
-                    residual_use_ddt: self.params.residual_use_ddt,
-                    bit_depth: self.params.bit_depth,
-                    mi_rows: self.params.mi_rows,
-                    mi_cols: self.params.mi_cols,
-                    current_order_hint: self.params.current_order_hint,
-                };
-                if self.owned_bands {
-                    let rows8 = self.temporal_plan.rows8(index);
-                    let coded_height = self.info.coded_luma_size().height();
-                    let start = rows8.start.saturating_mul(8).min(coded_height);
-                    let end = rows8.end.saturating_mul(8).min(coded_height);
-                    let mut band =
-                        splot_recon::OwnedFrameRowBand::new(self.info, start..end, T::default())?;
-                    let mut surface = band.surface_mut();
-                    let mut rows = Vec::with_capacity(ready.len());
-                    for mut ready in ready {
-                        let mut row = scratch.with_installed(|scratch| {
-                            if !ready.row.has_terminal_error() && !ready.row.motion_derived {
-                                mvres::derive_unit_motion_on_surface(
-                                    &mut ready.row,
-                                    &surface,
-                                    scratch,
-                                    &self.motion,
-                                    &shared,
-                                );
-                            }
-                            precompute_recon_row_on_surface(
-                                ready.row,
-                                &mut surface,
-                                scratch,
-                                &self.prepass_block_decoded,
-                                &self.motion,
-                                &self.quantizer,
-                                &self.temporal,
-                                &self.reference,
-                                self.ref_frame_idx.as_slice(),
-                                &self.sequence,
-                                &self.core,
-                                self.params.sb_h4,
-                                self.params.mi_rows,
-                                self.params.mi_cols,
-                                self.params.current_order_hint,
-                                self.params.luma_use_tcq,
-                                self.params.residual_use_ddt,
-                                self.params.bit_depth,
-                            )
-                        });
-                        let first_remaining = row
-                            .entries
-                            .iter()
-                            .position(|entry| entry.command().is_some());
-                        record_banded_command_error(&mut row.failure, first_remaining);
-                        rows.push(row);
-                    }
-                    return Ok(PreparedBatch::Banded { rows, band });
-                }
-                Ok(PreparedBatch::Legacy(
-                    ready
+        let batch =
+            self.workers
+                .with_scratch(|scratch| -> Result<Vec<ReadyReconRow<'static, T>>> {
+                    let _quantizer_scopes = self.quantizer.install_frame();
+                    let ready = ready;
+                    let shared = deferred_recon::ReconShared {
+                        reference: &self.reference,
+                        ref_frame_idx: self.ref_frame_idx.as_slice(),
+                        temporal_context: &self.temporal,
+                        sequence: &self.sequence,
+                        core: &self.core,
+                        luma_use_tcq: self.params.luma_use_tcq,
+                        residual_use_ddt: self.params.residual_use_ddt,
+                        bit_depth: self.params.bit_depth,
+                        mi_rows: self.params.mi_rows,
+                        mi_cols: self.params.mi_cols,
+                        current_order_hint: self.params.current_order_hint,
+                    };
+                    Ok(ready
                         .into_iter()
                         .map(|mut ready| {
                             scratch.with_installed(|scratch| {
@@ -563,9 +499,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                                 )
                             })
                         })
-                        .collect::<Vec<_>>(),
-                ))
-            })?;
+                        .collect())
+                })?;
         let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(slot) = prepared.get_mut(index) else {
             self.finished.store(true, Ordering::Release);
@@ -630,7 +565,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             sealed,
             sealed_rows,
             terminal_workspace,
-            bands,
             deblock,
             filter,
             next_filter_stripe,
@@ -660,34 +594,22 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 }),
                 "the frontier read a row the spine had not sealed"
             );
-            match (sealed.as_mut(), bands.as_mut(), filtered) {
-                (Some(source), _, _) => {
-                    deblock.advance_source(source, safe_mi_end.get(), self.params.bit_depth)
-                }
-                (None, Some(bands), _) => {
-                    deblock.advance_bands(bands, safe_mi_end.get(), self.params.bit_depth)
-                }
-                (None, None, Some(filtered)) => {
-                    deblock.advance_source(filtered, safe_mi_end.get(), self.params.bit_depth)
-                }
-                (None, None, None) => Err(crate::filters::deblock::DeblockError::Workspace),
-            }
-            .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))?;
+            let source = sealed.as_mut().or(filtered).ok_or_else(|| {
+                crate::filters::wienerns_lr::recon::deblock_prepare_error(
+                    &crate::filters::deblock::DeblockError::Workspace,
+                )
+            })?;
+            deblock
+                .advance_source(source, safe_mi_end.get(), self.params.bit_depth)
+                .map_err(|error| {
+                    crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
+                })?;
             while *next_filter_stripe < filter.stripe_ranges().len() {
                 let stripe = *next_filter_stripe;
-                let source = match (sealed.as_ref(), bands.as_ref(), terminal_workspace.as_ref()) {
-                    (Some(source), _, _) => filter
-                        .lease_ready_rows(stripe, deblock, source)?
-                        .map(crate::filters::source::DeblockedStripe::Lease),
-                    (None, Some(bands), _) => filter
-                        .extract_ready_band_window(stripe, deblock, bands)?
-                        .map(crate::filters::source::DeblockedStripe::Window),
-                    (None, None, Some(filtered)) => filter
-                        .lease_ready_rows(stripe, deblock, filtered)?
-                        .map(crate::filters::source::DeblockedStripe::Lease),
-                    (None, None, None) => None,
+                let Some(source) = sealed.as_ref().or(terminal_workspace.as_ref()) else {
+                    break;
                 };
-                let Some(source) = source else {
+                let Some(source) = filter.lease_ready_rows(stripe, deblock, source)? else {
                     break;
                 };
                 filters
@@ -723,24 +645,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
         while frontier.next_filter_stripe < filter.stripe_ranges().len() {
             let stripe = frontier.next_filter_stripe;
-            let source = match (
-                frontier.sealed.as_ref(),
-                frontier.bands.as_ref(),
-                frontier.terminal_workspace.as_ref(),
-            ) {
-                (Some(source), _, _) => crate::filters::source::DeblockedStripe::Lease(
-                    filter.lease_terminal_rows(stripe, source)?,
-                ),
-                (None, Some(bands), _) => crate::filters::source::DeblockedStripe::Window(
-                    filter.extract_terminal_band_window(stripe, bands)?,
-                ),
-                (None, None, Some(filtered)) => crate::filters::source::DeblockedStripe::Lease(
-                    filter.lease_terminal_rows(stripe, filtered)?,
-                ),
-                (None, None, None) => {
-                    return Err(crate::filters::wienerns_lr::recon::lr_pipeline_state_error());
-                }
-            };
+            let source = frontier
+                .sealed
+                .as_ref()
+                .or(frontier.terminal_workspace.as_ref())
+                .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
+            let source = filter.lease_terminal_rows(stripe, source)?;
             filters
                 .try_reserve(1)
                 .map_err(|_| inter_allocation!("inter admission filter jobs"))?;
@@ -791,20 +701,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 .take()
                 .ok_or_else(invalid_inter_tile_scheduling_state)?
         };
-        let (ready, completed_band) = match batch {
-            PreparedBatch::Legacy(ready) => (ready, None),
-            PreparedBatch::Banded { rows, band } => (
-                rows.into_iter()
-                    .map(|row| ReadyReconRow {
-                        row,
-                        surface: None,
-                        bounds: row_gate::RowReferenceBounds::default(),
-                    })
-                    .collect(),
-                Some(band),
-            ),
-        };
-        for mut ready in ready {
+        for mut ready in batch {
             validate_commit_ordinal(ready.row.ordinal, commit.next)?;
             if let Some(surface) = ready.surface.take() {
                 surface.publish_into(&mut commit.workspace)?;
@@ -839,14 +736,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             })?;
             recycle_retained_recon_row_buffers(buffers);
         }
-        if let Some(band) = completed_band {
-            let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
-            frontier
-                .bands
-                .as_mut()
-                .ok_or_else(invalid_inter_tile_scheduling_state)?
-                .push(band)?;
-        }
         let terminal = commit.next == self.unit_count;
         let closed_rows = closed_frontier_rows(
             commit.next,
@@ -877,7 +766,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         *self.scratch.lock().unwrap_or_else(PoisonError::into_inner) = Some(scratch);
         {
             let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
-            if frontier.sealed.is_some() || frontier.bands.is_some() {
+            if frontier.sealed.is_some() {
                 commit.workspace.recycle_planes();
             } else {
                 let mut source = crate::filters::source::DeblockedSource::new(commit.workspace);
@@ -937,11 +826,10 @@ const RECON_READ_LEAD_MI_ROWS: usize = 6;
 
 /// Returns the § 7.17 deblock frontier after `completed_rows` canonical rows.
 ///
-/// The frontier deblocks the sealed copy or the frame's own canonical bands, so
-/// its only bound is the sealed rows it may read. Current-frame readers —
-/// ordinary intra, and local or global IntraBC — keep reading the spine's raw
-/// workspace, which no deblock pass writes, so an IntraBC source's liveness
-/// places no constraint here.
+/// The frontier deblocks the sealed copy, so its only bound is the sealed rows
+/// it may read. Current-frame readers — ordinary intra, and local or global
+/// IntraBC — keep reading the spine's raw workspace, which no deblock pass
+/// writes, so an IntraBC source's liveness places no constraint here.
 fn safe_deblock_mi_end(
     completed_units: usize,
     units_per_row: usize,
@@ -969,14 +857,13 @@ fn safe_deblock_mi_end(
 /// the copy, so every current-frame reader — ordinary intra, and local or
 /// global IntraBC, whose source region is neither row-shaped nor bounded above
 /// — still reads raw reconstructed samples however far the frontier has run. A
-/// banded frame already owns its canonical rows, and a frame with no active
-/// deblock plan has nothing to advance, so neither seals.
-const fn seals_filter_copy(owned_bands: bool, has_deblock: bool, whole_frame: bool) -> bool {
-    !owned_bands && has_deblock && whole_frame
+/// frame with no active deblock plan has nothing to advance, so it does not
+/// seal.
+const fn seals_filter_copy(has_deblock: bool, whole_frame: bool) -> bool {
+    has_deblock && whole_frame
 }
 
-/// Whether one parsed tile owns every mode-info position in the frame, which
-/// is what makes superblock row `r` the frame's own row band `r`.
+/// Whether one parsed tile owns every mode-info position in the frame.
 fn covers_whole_frame(geometry: &TileGeometry, params: &TileWalkParams) -> bool {
     geometry.mi_rows.start == 0
         && geometry.mi_rows.end.min(params.mi_rows) == params.mi_rows
@@ -984,192 +871,8 @@ fn covers_whole_frame(geometry: &TileGeometry, params: &TileWalkParams) -> bool 
         && geometry.mi_cols.end.min(params.mi_cols) == params.mi_cols
 }
 
-/// Whether canonical row bands may replace the copying storage path.
-///
-/// They may not, on measurement. Bands remove the per-superblock rect and the
-/// sealed filter copy, but `band_batches` issues one precompute batch per
-/// superblock row where `superblock_row_batches` issues four, and a band
-/// collection is not contiguous across band boundaries, so the § 7.17 frontier
-/// drops off `filter_contiguous_edge` onto the per-sample `apply_edge_samples`
-/// path. Both cost more than the copies save: admitting no frame to band
-/// storage measured **8T -0.75% wall over 11 of 11 rotated pairs**, byte-exact,
-/// with occupancy 6.940 to 7.015.
-///
-/// [`supports_owned_bands`] is kept as the exact statement of when a frame
-/// *could* be banded: it is the control for any future design that removes one
-/// of the two costs, and a stream whose band-eligible fraction is well above
-/// this one's 25% could flip the call.
-const BAND_STORAGE_ADMITTED: bool = false;
-
-/// Why a frame reconstructs into copying storage instead of canonical bands.
-///
-/// Each constant is one proof that failed, so the set is the exact statement of
-/// what a future banded design would have to admit. SCALE-094's census counts
-/// them: on the mission stream `GeneralIntra` is 92.4% of blocking leaves and
-/// `UnboundedResolveRecord` the remaining 7.6%, while `Intrabc`,
-/// `CurrentFrameInter`, `UnboundedInter` and `PartialTile` never occur.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct LegacyReason(&'static str);
-
-impl LegacyReason {
-    /// Band storage is disabled outright; see [`BAND_STORAGE_ADMITTED`].
-    const NOT_ADMITTED: Self = Self("band_storage_not_admitted");
-    /// `SPLOT_DECODE_SKIP_FILTERS` removed the frontier bands would feed.
-    const FILTERS_DISABLED: Self = Self("filters_disabled");
-    /// The tile does not cover the frame, so its rows are not frame bands.
-    const PARTIAL_TILE: Self = Self("partial_tile");
-    /// The unit's precompute batch count does not match the temporal plan.
-    const BAND_COUNT: Self = Self("band_count");
-    /// The row already failed, so its writes are not proved.
-    const TERMINAL: Self = Self("terminal");
-    /// The superblock entry range is not addressable.
-    const ENTRY_RANGE: Self = Self("entry_range");
-    /// A § 7.10.3 IntraBC block reads raw samples a band cannot bound.
-    const INTRABC: Self = Self("intrabc");
-    /// The superblock reads current-frame samples.
-    const CURRENT_FRAME: Self = Self("current_frame");
-    /// An inter command reads current-frame samples after resolution.
-    const CURRENT_FRAME_INTER: Self = Self("current_frame_inter");
-    /// An inter command's write footprint is not proved contained.
-    const UNBOUNDED_INTER: Self = Self("unbounded_inter");
-    /// A § 7.11 general-intra block reads its own frame's neighbours.
-    const GENERAL_INTRA: Self = Self("general_intra");
-    /// An unresolved leaf's write footprint is not proved contained.
-    const UNBOUNDED_RESOLVE_RECORD: Self = Self("unbounded_resolve_record");
-
-    /// The stable token this reason reports in timing diagnostics.
-    const fn token(self) -> &'static str {
-        self.0
-    }
-}
-
-/// Which canonical storage one admitted frame reconstructs into.
-///
-/// This replaces a bare `owned_bands: bool` so the fallback carries its own
-/// proof obligation rather than becoming another boolean exception.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum CanonicalStoragePlan {
-    /// Direct full-width canonical row bands.
-    RowBands,
-    /// The copying path, retained for every case bands cannot prove.
-    Legacy(LegacyReason),
-}
-
-impl CanonicalStoragePlan {
-    /// Whether this plan reconstructs directly into canonical row bands.
-    const fn owned_bands(self) -> bool {
-        matches!(self, Self::RowBands)
-    }
-
-    /// The stable token this plan reports in timing diagnostics.
-    const fn token(self) -> &'static str {
-        match self {
-            Self::RowBands => "mode=owned_bands",
-            Self::Legacy(reason) => reason.token(),
-        }
-    }
-}
-
-/// Decides the storage plan when band storage is admitted, which is the one
-/// case that has to read every parsed unit before the plan is known.
-fn band_storage_plan(
-    geometry: &TileGeometry,
-    parse_progress: &super::ParseProgress,
-    params: &TileWalkParams,
-    info: splot_recon::DecodedFrameInfo,
-    units_per_row: usize,
-    temporal_bands: usize,
-    unit_count: usize,
-) -> Result<(CanonicalStoragePlan, Vec<ReconRow>)> {
-    let rows = (0..unit_count)
-        .map(|index| {
-            parse_progress
-                .take_row(index)
-                .ok_or_else(invalid_inter_tile_scheduling_state)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let candidate_batch_count = rows
-        .iter()
-        .filter(|row| !row.superblocks.is_empty())
-        .count()
-        .div_ceil(units_per_row.max(1));
-    if candidate_batch_count != temporal_bands {
-        return Ok((CanonicalStoragePlan::Legacy(LegacyReason::BAND_COUNT), rows));
-    }
-    let plan = match supports_owned_bands(geometry, &rows, params, info) {
-        Ok(()) => CanonicalStoragePlan::RowBands,
-        Err(reason) => CanonicalStoragePlan::Legacy(reason),
-    };
-    Ok((plan, rows))
-}
-
-fn supports_owned_bands(
-    geometry: &TileGeometry,
-    rows: &[ReconRow],
-    params: &TileWalkParams,
-    info: splot_recon::DecodedFrameInfo,
-) -> core::result::Result<(), LegacyReason> {
-    if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
-        return Err(LegacyReason::FILTERS_DISABLED);
-    }
-    if !covers_whole_frame(geometry, params) {
-        return Err(LegacyReason::PARTIAL_TILE);
-    }
-    for row in rows {
-        if row.has_terminal_error() {
-            return Err(LegacyReason::TERMINAL);
-        }
-        for superblock in &row.superblocks {
-            if superblock.dependency == ReconDependency::GlobalIntrabcFence {
-                return Err(LegacyReason::INTRABC);
-            }
-            if superblock.dependency == ReconDependency::CurrentFrame {
-                return Err(LegacyReason::CURRENT_FRAME);
-            }
-            let entries = row
-                .entries
-                .get(superblock.entries.clone())
-                .ok_or(LegacyReason::ENTRY_RANGE)?;
-            for entry in entries {
-                match entry.command() {
-                    Some(ReconCommand::Inter(command))
-                        if !command.reads_current_frame()
-                            && command.prepass_write_is_contained(
-                                superblock.origin,
-                                params.sb_h4,
-                                info,
-                                &row.residual_blocks,
-                            ) => {}
-                    Some(ReconCommand::Inter(command)) if command.reads_current_frame() => {
-                        return Err(LegacyReason::CURRENT_FRAME_INTER);
-                    }
-                    Some(ReconCommand::Inter(_)) => return Err(LegacyReason::UNBOUNDED_INTER),
-                    Some(ReconCommand::GeneralIntra(_)) => return Err(LegacyReason::GENERAL_INTRA),
-                    Some(ReconCommand::Intrabc(_)) => return Err(LegacyReason::INTRABC),
-                    None if entry.resolve_record().is_some_and(|record| {
-                        record.prepass_write_is_contained(
-                            superblock.origin,
-                            params.sb_h4,
-                            info,
-                            &row.residual_blocks,
-                        )
-                    }) => {}
-                    None => return Err(LegacyReason::UNBOUNDED_RESOLVE_RECORD),
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Reconstruction units one legacy precompute batch prepares.
 const LEGACY_BATCH_UNITS: usize = 4;
-
-fn record_banded_command_error(failure: &mut ReconRowFailure, first_remaining: Option<usize>) {
-    if let Some(index) = first_remaining {
-        failure.record_precompute(index, invalid_inter_tile_scheduling_state());
-    }
-}
 
 /// Splits the units into precompute batches that never cross a superblock row.
 ///
@@ -1201,28 +904,6 @@ fn superblock_row_batches(
     batches
 }
 
-/// Splits the units into one batch per owned canonical row band.
-///
-/// The banded path's batch index is its superblock row, and the last batch
-/// absorbs any trailing rows the temporal plan does not name.
-fn band_batches(
-    unit_count: usize,
-    units_per_row: usize,
-    band_count: usize,
-) -> Vec<core::ops::Range<usize>> {
-    (0..band_count)
-        .map(|index| {
-            let start = index.saturating_mul(units_per_row).min(unit_count);
-            let end = if index.saturating_add(1) == band_count {
-                unit_count
-            } else {
-                start.saturating_add(units_per_row).min(unit_count)
-            };
-            start..end
-        })
-        .collect()
-}
-
 fn prepare_scheduled_motion(
     mi_rows: core::ops::Range<usize>,
     mi_cols: core::ops::Range<usize>,
@@ -1230,12 +911,10 @@ fn prepare_scheduled_motion(
     units: usize,
     units_per_row: usize,
     motion_handle: MotionFieldHandle,
-    started: Option<std::time::Instant>,
 ) -> Result<(NeighbourMvGrid, MotionFieldUnits)> {
     let grid = NeighbourMvGrid::new_for_tile(mi_rows, mi_cols)
         .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
-    let motion =
-        MotionFieldUnits::publishing(motion_field, units, units_per_row, motion_handle, started);
+    let motion = MotionFieldUnits::publishing(motion_field, units, units_per_row, motion_handle);
     Ok((grid, motion))
 }
 
@@ -1274,32 +953,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .min(params.mi_cols)
         .saturating_sub(geometry.mi_cols.start)
         .div_ceil(params.sb_h4);
-    let (storage_plan, banded_rows) = if BAND_STORAGE_ADMITTED {
-        let (plan, rows) = band_storage_plan(
-            &geometry,
-            &parse_progress,
-            &params,
-            info,
-            units_per_row,
-            temporal_plan.len(),
-            unit_count,
-        )?;
-        (plan, Some(rows))
-    } else {
-        (
-            CanonicalStoragePlan::Legacy(LegacyReason::NOT_ADMITTED),
-            None,
-        )
-    };
-    let owned_bands = storage_plan.owned_bands();
-    let storage_started = crate::timing::start();
-    if storage_started.is_some() {
-        crate::timing::report_detail(
-            "inter_admission_storage",
-            storage_started,
-            storage_plan.token(),
-        );
-    }
     let (resolve_grid, motion) = prepare_scheduled_motion(
         geometry.mi_rows.clone(),
         geometry.mi_cols.clone(),
@@ -1307,51 +960,31 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         unit_count.saturating_sub(1),
         units_per_row,
         motion_handle,
-        crate::timing::start(),
     )?;
-    let surfaces = if owned_bands {
-        Vec::new()
-    } else {
-        let rects = superblock_luma_rects(
-            &geometry.mi_rows,
-            &geometry.mi_cols,
-            &workspace,
-            params.sb_h4,
-        )?;
-        scratch
-            .surfaces
-            .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
-        rects
-            .into_iter()
-            .map(|rect| {
-                scratch
-                    .take_surface(info, rect)
-                    .map(ReadyReconSurface::Owned)
-            })
-            .collect::<splot_recon::Result<Vec<_>>>()?
-    };
-    let mut surface_cursor = surfaces.into_iter();
+    let rects = superblock_luma_rects(
+        &geometry.mi_rows,
+        &geometry.mi_cols,
+        &workspace,
+        params.sb_h4,
+    )?;
+    scratch
+        .surfaces
+        .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
+    let surfaces = rects
+        .into_iter()
+        .map(|rect| {
+            scratch
+                .take_surface(info, rect)
+                .map(ReadyReconSurface::Owned)
+        })
+        .collect::<splot_recon::Result<Vec<_>>>()?;
+    let surface_cursor = surfaces.into_iter();
     if unit_count == 0 {
         return Err(invalid_inter_tile_scheduling_state());
     }
-    let mut rows = Vec::new();
-    rows.try_reserve_exact(unit_count)
-        .map_err(|_| inter_allocation!("inter scheduled rows"))?;
-    for row in banded_rows.unwrap_or_default() {
-        let surface = if owned_bands || row.superblocks.is_empty() {
-            None
-        } else {
-            surface_cursor.next()
-        };
-        rows.push(ScheduledRowState::Unresolved { row, surface });
-    }
     let prepass_block_decoded = geometry.block_decoded.clone();
     let block_decoded = geometry.block_decoded.clone();
-    let batches = if owned_bands {
-        band_batches(unit_count, units_per_row.max(1), temporal_plan.len())
-    } else {
-        superblock_row_batches(unit_count, units_per_row.max(1), LEGACY_BATCH_UNITS)
-    };
+    let batches = superblock_row_batches(unit_count, units_per_row.max(1), LEGACY_BATCH_UNITS);
     let batch_count = batches.len();
     let mut prepared = Vec::new();
     prepared
@@ -1365,12 +998,11 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         surfaces,
     } = scratch;
     let tile = ScheduledTileRecon {
-        rows: Mutex::new(rows),
+        rows: Mutex::new(Vec::new()),
         prepared: Mutex::new(prepared),
         unit_count,
         units_per_row,
         batches,
-        owned_bands,
         filter_count,
         frontier_rows: unit_count.div_ceil(units_per_row.max(1)).max(1),
         commit: Mutex::new(Some(ScheduledCommit {
@@ -1388,7 +1020,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             sealed: None,
             sealed_rows: 0,
             terminal_workspace: None,
-            bands: owned_bands.then(|| splot_recon::OwnedFrameBands::new(info)),
             deblock: None,
             filter: None,
             next_filter_stripe: 0,
@@ -1422,10 +1053,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
 
 #[cfg(test)]
 mod tests {
-    use super::super::ReconRowFailure;
     use super::{
-        project_temporal_band, record_banded_command_error, restore_active_commit,
-        safe_deblock_mi_end, take_active_commit, validate_commit_ordinal,
+        project_temporal_band, restore_active_commit, safe_deblock_mi_end, take_active_commit,
+        validate_commit_ordinal,
     };
     use crate::prediction::inter::MotionFieldLayout;
     use std::sync::Mutex;
@@ -1481,68 +1111,6 @@ mod tests {
             fields: vec![Some(handle)],
             source,
         })
-    }
-
-    #[test]
-    fn banded_command_error_preserves_the_first_precompute_failure() {
-        let mut failure = ReconRowFailure::Precompute {
-            index: 3,
-            error: splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: splot_recon::PlaneId::Y,
-                context: "original banded precompute",
-            }
-            .into(),
-        };
-
-        record_banded_command_error(&mut failure, Some(7));
-
-        assert!(matches!(
-            failure,
-            ReconRowFailure::Precompute {
-                index: 3,
-                error: crate::DecodeError::Reconstruction {
-                    source: splot_recon::ReconError::WorkspaceAllocationFailed {
-                        plane: splot_recon::PlaneId::Y,
-                        context: "original banded precompute"
-                    }
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn banded_command_error_records_the_first_remaining_command() {
-        let mut failure = ReconRowFailure::None;
-
-        record_banded_command_error(&mut failure, Some(5));
-
-        assert!(matches!(
-            &failure,
-            ReconRowFailure::Precompute {
-                index: 5,
-                error: crate::DecodeError::HeaderState {
-                    source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
-                }
-            }
-        ));
-        assert!(
-            match &failure {
-                ReconRowFailure::Precompute { error, .. } => {
-                    crate::DecodeDiagnosticReport::from_decode_error(error)
-                }
-                ReconRowFailure::None | ReconRowFailure::Terminal(_) => None,
-            }
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn banded_command_error_leaves_complete_rows_clean() {
-        let mut failure = ReconRowFailure::None;
-
-        record_banded_command_error(&mut failure, None);
-
-        assert!(matches!(failure, ReconRowFailure::None));
     }
 
     #[test]
@@ -1696,7 +1264,7 @@ mod tests {
         handle.publish_metadata(field.metadata());
         let observer = handle.clone();
 
-        let result = super::prepare_scheduled_motion(1..1, 0..1, field, 0, 1, handle, None);
+        let result = super::prepare_scheduled_motion(1..1, 0..1, field, 0, 1, handle);
 
         assert!(matches!(
             result,
@@ -1717,7 +1285,7 @@ mod tests {
         handle.publish_metadata(field.metadata());
         let observer = handle.clone();
 
-        let _state = super::prepare_scheduled_motion(0..8, 0..8, field, 0, 1, handle, None)
+        let _state = super::prepare_scheduled_motion(0..8, 0..8, field, 0, 1, handle)
             .map_err(|_| "valid scheduled motion")?;
 
         assert!(observer.band(0).is_some());
@@ -1772,10 +1340,9 @@ mod tests {
 
     #[test]
     fn every_whole_frame_deblock_plan_seals_its_own_filter_copy() {
-        assert!(super::seals_filter_copy(false, true, true));
-        assert!(!super::seals_filter_copy(true, true, true));
-        assert!(!super::seals_filter_copy(false, false, true));
-        assert!(!super::seals_filter_copy(false, true, false));
+        assert!(super::seals_filter_copy(true, true));
+        assert!(!super::seals_filter_copy(false, true));
+        assert!(!super::seals_filter_copy(true, false));
     }
 
     #[test]
@@ -1843,62 +1410,5 @@ mod tests {
     fn a_trailing_empty_unit_closes_the_last_frontier_link_once() {
         assert_eq!(super::closed_frontier_rows(135, 136, 15, 10), 9);
         assert_eq!(super::closed_frontier_rows(136, 136, 15, 10), 10);
-    }
-
-    #[test]
-    fn band_batches_keep_one_batch_per_superblock_row() {
-        assert_eq!(super::band_batches(9, 3, 3), vec![0..3, 3..6, 6..9]);
-        assert_eq!(super::band_batches(11, 3, 3), vec![0..3, 3..6, 6..11]);
-    }
-
-    #[test]
-    fn band_batches_partition_every_unit_once() {
-        for units_per_row in 1..8 {
-            for unit_count in 1..32usize {
-                let band_count = unit_count.div_ceil(units_per_row);
-                let batches = super::band_batches(unit_count, units_per_row, band_count);
-                let mut next = 0;
-                for batch in batches {
-                    assert_eq!(batch.start, next);
-                    assert!(batch.end > batch.start);
-                    assert!(batch.end <= unit_count);
-                    next = batch.end;
-                }
-                assert_eq!(next, unit_count);
-            }
-        }
-    }
-
-    /// Every fallback reason reports a distinct token, and only `RowBands`
-    /// claims band storage. Diagnostics and the SCALE-094 census both key on
-    /// these tokens, so a collision would silently merge two proof failures.
-    #[test]
-    fn every_storage_plan_reports_a_distinct_token() {
-        use super::{CanonicalStoragePlan, LegacyReason};
-        let reasons = [
-            LegacyReason::NOT_ADMITTED,
-            LegacyReason::FILTERS_DISABLED,
-            LegacyReason::PARTIAL_TILE,
-            LegacyReason::BAND_COUNT,
-            LegacyReason::TERMINAL,
-            LegacyReason::ENTRY_RANGE,
-            LegacyReason::INTRABC,
-            LegacyReason::CURRENT_FRAME,
-            LegacyReason::CURRENT_FRAME_INTER,
-            LegacyReason::UNBOUNDED_INTER,
-            LegacyReason::GENERAL_INTRA,
-            LegacyReason::UNBOUNDED_RESOLVE_RECORD,
-        ];
-        let mut tokens: Vec<&'static str> = reasons
-            .iter()
-            .map(|reason| CanonicalStoragePlan::Legacy(*reason).token())
-            .collect();
-        tokens.push(CanonicalStoragePlan::RowBands.token());
-        let unique: std::collections::BTreeSet<_> = tokens.iter().copied().collect();
-        assert_eq!(unique.len(), tokens.len());
-        assert!(CanonicalStoragePlan::RowBands.owned_bands());
-        for reason in reasons {
-            assert!(!CanonicalStoragePlan::Legacy(reason).owned_bands());
-        }
     }
 }

@@ -49,7 +49,6 @@ mod support;
 #[path = "test_support_tests.rs"]
 mod test_support;
 mod tile;
-mod timing;
 
 pub use bitstream::stream_plan;
 pub use context::DecodeContext;

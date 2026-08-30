@@ -90,21 +90,7 @@ impl DecodeContext {
         bytes: &'a [u8],
         options: &DecodeOptions,
     ) -> Result<PreparedByteStream<'a>> {
-        let plan_started = crate::timing::start();
-        let prepared = self.pool.install(|| prepare_byte_stream(bytes, options))?;
-        crate::timing::report("plan", plan_started);
-        Ok(prepared)
-    }
-
-    fn install_decode<F, R>(&self, decode: F) -> R
-    where
-        F: FnOnce() -> R + Send,
-        R: Send,
-    {
-        let wait_metrics = self.pool.wait_metrics();
-        let result = self.pool.install(decode);
-        crate::timing::report_pool_wait(self.pool.wait_metrics().since(wait_metrics));
-        result
+        self.pool.install(|| prepare_byte_stream(bytes, options))
     }
 
     fn decode_raw_with<'a>(
@@ -120,7 +106,8 @@ impl DecodeContext {
         + Send,
     ) -> Result<()> {
         let prepared = self.prepare_bytes(bytes, &options)?;
-        self.install_decode(|| decode(bytes, &prepared, &options, self.frame_delay))
+        self.pool
+            .install(|| decode(bytes, &prepared, &options, self.frame_delay))
     }
 
     /// Decodes the supported envelope and returns a deterministic hash report.
@@ -140,8 +127,7 @@ impl DecodeContext {
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
         let prepared = self.prepare_bytes(bytes, &options)?;
-        let runtime_started = crate::timing::start();
-        let report = self.install_decode(|| {
+        self.pool.install(|| {
             crate::output::hash::decode_hash_report_from_plan(
                 bytes,
                 prepared.parsed(),
@@ -150,9 +136,7 @@ impl DecodeContext {
                 self.threads(),
                 self.frame_delay,
             )
-        });
-        crate::timing::report("runtime_decode", runtime_started);
-        report
+        })
     }
 
     /// Decodes the supported envelope and discards each displayed frame.
@@ -167,8 +151,7 @@ impl DecodeContext {
     /// failures, or reconstruction model errors.
     pub fn decode_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
         let prepared = self.prepare_bytes(bytes, &options)?;
-        let runtime_started = crate::timing::start();
-        let decoded = self.install_decode(|| {
+        self.pool.install(|| {
             crate::pipeline::emit_frames_from_prepared(
                 bytes,
                 prepared.parsed(),
@@ -177,9 +160,7 @@ impl DecodeContext {
                 self.frame_delay,
                 |_| Ok(()),
             )
-        });
-        crate::timing::report("runtime_decode", runtime_started);
-        decoded
+        })
     }
 
     /// Decodes the supported envelope and streams raw sample bytes.
@@ -256,7 +237,7 @@ impl DecodeContext {
         writer: W,
     ) -> Result<()> {
         let prepared = self.prepare_bytes(bytes, &options)?;
-        self.install_decode(|| {
+        self.pool.install(|| {
             crate::output::y4m::write_y4m_stream_to_writer(
                 bytes,
                 prepared.parsed(),

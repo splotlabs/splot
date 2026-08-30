@@ -22,7 +22,6 @@
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 pub mod admission;
-mod admission_metrics;
 pub mod completion;
 pub mod error;
 pub mod frame_delay;
@@ -33,15 +32,13 @@ pub mod thread_count;
 pub mod watermark;
 
 pub use admission::{AdmissionScheduler, AdmissionWaiter, Admit, CompletionSource, Condition, Job};
-pub use admission_metrics::AdmissionMetrics;
 pub use completion::CompletionCell;
 pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;
 pub use pool::{
     PoolProgressSnapshot, TaskScope, WorkerPool, assist_pool_once, assist_pool_or_park,
-    current_pool_width, current_worker_index, on_multiworker_pool, on_worker_pool,
-    pool_progress_snapshot, ready_task_scope,
+    current_pool_width, on_multiworker_pool, on_worker_pool, pool_progress_snapshot,
+    ready_task_scope,
 };
-pub use progress::PoolWaitMetrics;
 pub use thread_count::ThreadCount;
 pub use watermark::WatermarkCell;

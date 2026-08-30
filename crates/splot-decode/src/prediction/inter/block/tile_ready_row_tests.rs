@@ -219,27 +219,25 @@ fn ready_row_pipeline_calls_a_terminal_parser_exactly_once() {
     ))
     .expect("worker pool");
 
-    let stats = pool
-        .install(|| {
-            run_ready_row_prepass_with_commit(
-                move || {
-                    parsed_by_callback.fetch_add(1, Ordering::SeqCst);
-                    ParserStep::Last(0usize)
-                },
-                |row| row,
-                move |_| {
-                    committed_by_callback.fetch_add(1, Ordering::SeqCst);
-                    Ok::<_, ()>(())
-                },
-                1,
-                |_: &usize| true,
-                || true,
-                || Ok(()),
-            )
-        })
-        .expect("terminal row commits");
+    pool.install(|| {
+        run_ready_row_prepass_with_commit(
+            move || {
+                parsed_by_callback.fetch_add(1, Ordering::SeqCst);
+                ParserStep::Last(0usize)
+            },
+            |row| row,
+            move |_| {
+                committed_by_callback.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, ()>(())
+            },
+            1,
+            |_: &usize| true,
+            || true,
+            || Ok(()),
+        )
+    })
+    .expect("terminal row commits");
 
-    assert_eq!(stats.committed, 1);
     assert_eq!(parsed.load(Ordering::SeqCst), 1);
     assert_eq!(committed.load(Ordering::SeqCst), 1);
 }
@@ -415,7 +413,6 @@ fn ready_rows_respect_capacity_and_active_bounds() {
 
     assert!(prepared.max_pending <= prepared.ready_limit);
     assert_eq!(prepared.max_active, 3);
-    assert_eq!(prepared.committed, 6);
     assert_eq!(*committed.lock().expect("commit log"), [0, 1, 2, 3, 4, 5]);
 }
 
@@ -536,24 +533,22 @@ fn ordered_commit_frontier_publishes_every_job_canonically() {
     ))
     .expect("worker pool");
 
-    let prepared = pool
-        .install(|| {
-            run_ready_row_prepass_with_commit(
-                parser,
-                |row| row,
-                move |row| {
-                    committed_for_frontier.lock().expect("commit log").push(row);
-                    Ok::<_, ()>(())
-                },
-                6,
-                |_: &usize| true,
-                || true,
-                || Ok(()),
-            )
-        })
-        .expect("ordered pipeline");
+    pool.install(|| {
+        run_ready_row_prepass_with_commit(
+            parser,
+            |row| row,
+            move |row| {
+                committed_for_frontier.lock().expect("commit log").push(row);
+                Ok::<_, ()>(())
+            },
+            6,
+            |_: &usize| true,
+            || true,
+            || Ok(()),
+        )
+    })
+    .expect("ordered pipeline");
 
-    assert_eq!(prepared.committed, 6);
     assert_eq!(*committed.lock().expect("commit log"), [0, 1, 2, 3, 4, 5]);
 }
 
@@ -576,25 +571,22 @@ fn a_shut_reference_gate_defers_rows_and_commits_them_in_parse_order() {
     ))
     .expect("worker pool");
 
-    let prepared = pool
-        .install(|| {
-            run_ready_row_prepass_with_commit(
-                parser,
-                |row| row,
-                move |row| {
-                    committed_for_frontier.lock().expect("commit log").push(row);
-                    Ok::<_, ()>(())
-                },
-                6,
-                |_: &usize| parsed.load(Ordering::SeqCst) >= 3,
-                || false,
-                || Ok(()),
-            )
-        })
-        .expect("gated pipeline");
+    pool.install(|| {
+        run_ready_row_prepass_with_commit(
+            parser,
+            |row| row,
+            move |row| {
+                committed_for_frontier.lock().expect("commit log").push(row);
+                Ok::<_, ()>(())
+            },
+            6,
+            |_: &usize| parsed.load(Ordering::SeqCst) >= 3,
+            || false,
+            || Ok(()),
+        )
+    })
+    .expect("gated pipeline");
 
-    assert!(prepared.max_deferred >= 3, "rows must queue while gated");
-    assert_eq!(prepared.committed, 6);
     assert_eq!(*committed.lock().expect("commit log"), [0, 1, 2, 3, 4, 5]);
 }
 
@@ -614,37 +606,32 @@ fn a_row_waiting_for_its_references_does_not_hold_back_the_rows_behind_it() {
     let committed_for_frontier = Arc::clone(&committed);
     let admitted = Arc::new(AtomicUsize::new(0));
     let admitted_for_gate = Arc::clone(&admitted);
+    let admitted_for_settle = Arc::clone(&admitted);
     let pool = WorkerPool::new(ThreadCount::Fixed(
         NonZeroUsize::new(4).expect("four workers"),
     ))
     .expect("worker pool");
 
-    let prepared = pool
-        .install(|| {
-            run_ready_row_prepass_with_commit(
-                parser,
-                |row| row,
-                move |row: usize| {
-                    committed_for_frontier.lock().expect("commit log").push(row);
-                    Ok::<_, ()>(())
-                },
-                6,
-                move |row: &usize| *row != 2 || admitted_for_gate.load(Ordering::SeqCst) == 1,
-                || true,
-                move || {
-                    admitted.store(1, Ordering::SeqCst);
-                    Ok(())
-                },
-            )
-        })
-        .expect("out-of-order pipeline");
+    pool.install(|| {
+        run_ready_row_prepass_with_commit(
+            parser,
+            |row| row,
+            move |row: usize| {
+                committed_for_frontier.lock().expect("commit log").push(row);
+                Ok::<_, ()>(())
+            },
+            6,
+            move |row: &usize| *row != 2 || admitted_for_gate.load(Ordering::SeqCst) == 1,
+            || true,
+            move || {
+                admitted_for_settle.store(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+    })
+    .expect("out-of-order pipeline");
 
-    assert_eq!(prepared.committed, 6);
-    assert!(
-        prepared.settled,
-        "row 2 stays inadmissible until the settle fallback opens it, so rows \
-         3..5 reconstruct past it and still commit behind it"
-    );
+    assert_eq!(admitted.load(Ordering::SeqCst), 1);
     assert_eq!(*committed.lock().expect("commit log"), [0, 1, 2, 3, 4, 5]);
 }
 
@@ -669,29 +656,26 @@ fn a_gate_that_outlives_parsing_settles_once_and_then_drains() {
     ))
     .expect("worker pool");
 
-    let prepared = pool
-        .install(|| {
-            run_ready_row_prepass_with_commit(
-                parser,
-                |row| row,
-                move |row| {
-                    committed_for_frontier.lock().expect("commit log").push(row);
-                    Ok::<_, ()>(())
-                },
-                6,
-                |_: &usize| false,
-                || true,
-                move || {
-                    settled_for_wait.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                },
-            )
-        })
-        .expect("settled pipeline");
+    pool.install(|| {
+        run_ready_row_prepass_with_commit(
+            parser,
+            |row| row,
+            move |row| {
+                committed_for_frontier.lock().expect("commit log").push(row);
+                Ok::<_, ()>(())
+            },
+            6,
+            |_: &usize| false,
+            || true,
+            move || {
+                settled_for_wait.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+    })
+    .expect("settled pipeline");
 
     assert_eq!(settled.load(Ordering::SeqCst), 1);
-    assert_eq!(prepared.max_deferred, 6);
-    assert_eq!(prepared.committed, 6);
     assert_eq!(*committed.lock().expect("commit log"), [0, 1, 2, 3, 4, 5]);
 }
 

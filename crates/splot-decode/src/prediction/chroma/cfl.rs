@@ -400,7 +400,6 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
     bit_depth: BitDepth,
     samples_q3: &mut Vec<i32>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let timer = crate::timing::start();
     if cfl_filter_index(cfl_ds_filter_index).is_none() {
         return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "CfL filter",
@@ -440,7 +439,6 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
             samples_q3,
         )
     {
-        crate::timing::accumulate(crate::timing::Phase::CflLumaAc, timer);
         return Ok(());
     }
     samples_q3.clear();
@@ -465,7 +463,6 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
             );
         }
     }
-    crate::timing::accumulate(crate::timing::Phase::CflLumaAc, timer);
     Ok(())
 }
 

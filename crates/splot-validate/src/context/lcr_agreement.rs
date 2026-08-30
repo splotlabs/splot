@@ -191,7 +191,7 @@ impl ValidatorContext {
         msdo_offset: ByteOffset,
         report: &mut ValidationReport,
     ) {
-        if msdo.num_streams != global.max_num_xlayer_count {
+        if msdo.sub_streams.len() != global.xlayer_ids.len() {
             self.push_lcr_agreement(
                 "lcr/msdo-stream-count-mismatch",
                 global_id,
@@ -203,7 +203,8 @@ impl ValidatorContext {
                     "§ 6.8.2: the OBU_MSDO declares num_streams_minus_2 + 2 = {} but the activated \
                      global layer configuration record {global_id} has LcrMaxNumXLayerCount = {} \
                      (the set-bit count of lcr_xlayer_map); they must be equal",
-                    msdo.num_streams, global.max_num_xlayer_count,
+                    msdo.sub_streams.len(),
+                    global.xlayer_ids.len(),
                 ),
                 report,
             );

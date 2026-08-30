@@ -284,7 +284,6 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
         frame,
         temporal: &temporal,
         tip: Some(references),
-        fallbacks: RowGateFallbacks::default(),
     };
     let mut block = placed(384, 128, 0);
     block.luma_w = 128;

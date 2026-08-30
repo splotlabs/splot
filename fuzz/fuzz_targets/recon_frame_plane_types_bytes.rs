@@ -273,8 +273,8 @@ fn assert_frame_matches<T: ReconSample>(frame: &DecodedFrame<T>, model: &FrameMo
     assert_eq!(frame.output_index(), model.info.output_index());
     assert_eq!(frame.bit_depth(), model.bit_depth);
     assert_eq!(frame.pixel_format(), model.pixel_format);
-    assert_eq!(frame.coded_luma_size(), model.luma_storage);
-    assert_eq!(frame.visible_luma_rect(), model.luma_visible);
+    assert_eq!(frame.coded_luma_size(), model.info.coded_luma_size());
+    assert_eq!(frame.visible_luma_rect(), model.info.visible_luma_rect());
     assert_plane_matches(frame.y(), &model.y);
     assert_eq!(
         frame.plane(PlaneId::Y).map(Plane::visible_size),
@@ -362,8 +362,6 @@ where
 struct FrameModel {
     bit_depth: BitDepth,
     pixel_format: PixelFormat,
-    luma_storage: PlaneSize,
-    luma_visible: PlaneRect,
     info: DecodedFrameInfo,
     y: PlaneModel,
     u: Option<PlaneModel>,
@@ -433,8 +431,6 @@ impl FrameModel {
         Some(Self {
             bit_depth,
             pixel_format,
-            luma_storage,
-            luma_visible,
             info,
             y,
             u,

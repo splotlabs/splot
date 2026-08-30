@@ -121,8 +121,7 @@ fn decode_hash_frames_pipelined(
 /// hands the frame to the report; frame pipelining may finish frames out of
 /// order, but it never reorders emission.
 fn hash_pipeline_frame(frame: &PipelineDecodedFrame, emitted: u64) -> DecodeHashFrame {
-    let timer = crate::timing::start();
-    let output = match frame {
+    match frame {
         PipelineDecodedFrame::Eight(frame) => {
             let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
             hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted)
@@ -131,9 +130,7 @@ fn hash_pipeline_frame(frame: &PipelineDecodedFrame, emitted: u64) -> DecodeHash
             let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
             hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted)
         }
-    };
-    crate::timing::report("output_hash", timer);
-    output
+    }
 }
 
 fn hash_frame_from_decoded<T: ReconSample>(

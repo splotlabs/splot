@@ -5,10 +5,10 @@ use splot_decode::{DecodeLimitThreshold, DecodeLimits};
 
 const MAX_FIXTURE_MUTATIONS: usize = 8;
 
-pub const MINIMAL_FIXTURE: &[u8] =
+pub(crate) const MINIMAL_FIXTURE: &[u8] =
     include_bytes!("../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
 
-pub fn mutated_minimal_fixture(mutations: &[u8]) -> Vec<u8> {
+pub(crate) fn mutated_minimal_fixture(mutations: &[u8]) -> Vec<u8> {
     let mut bytes = MINIMAL_FIXTURE.to_vec();
     let (count, mutation_bytes) = match mutations.split_first() {
         Some((count, mutation_bytes)) => (usize::from(*count), mutation_bytes),
@@ -25,7 +25,7 @@ pub fn mutated_minimal_fixture(mutations: &[u8]) -> Vec<u8> {
     bytes
 }
 
-pub fn limits(flags: u8, input_len: usize) -> DecodeLimits {
+pub(crate) fn limits(flags: u8, input_len: usize) -> DecodeLimits {
     let raw_input_limit = input_len.max(MINIMAL_FIXTURE.len()).max(1) as u64;
     let scale = 1 + u64::from(flags & 0b0000_1111);
     let max = DecodeLimitThreshold::Max;

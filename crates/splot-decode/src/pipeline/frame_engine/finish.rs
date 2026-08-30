@@ -275,21 +275,6 @@ pub(crate) fn finish_walked_frame<T: ReconSample, R>(
     })
 }
 
-/// Runs any owed filter phase inline and returns the frozen frame.
-///
-/// # Errors
-///
-/// Returns the filter chain's own diagnostic when a filter stage fails.
-#[cfg(test)]
-pub(crate) fn finish_walk_inline<T: ReconSample>(stage: WalkStage<T>) -> Result<SharedFrame<T>> {
-    Ok(match stage {
-        WalkStage::Complete(frame) => SharedFrame::new(*frame),
-        WalkStage::Pending(walked) => {
-            finish_walked_frame(*walked, None, None, core::convert::identity)?.frame
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::WalkedFrame;

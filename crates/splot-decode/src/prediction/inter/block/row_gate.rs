@@ -42,8 +42,6 @@
 //! still fails closed on every read, so an under-tight bound here is a
 //! diagnostic and never a wrong sample.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{DecodedFrameInfo, PlaneId, ReconSample, ReferenceSlot};
 
@@ -70,46 +68,6 @@ const TIP_FIELD_CELL: usize = 8;
 /// Largest § 7.13.5 prediction unit, the luma rows one field cell's motion
 /// vector can predict.
 const TIP_MAX_UNIT: usize = 16;
-
-/// Why one block's reference reads cannot be bounded from resolved data.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SettleReason {
-    /// § 7.13.3.20 extended warp resamples a scaled reference, which the
-    /// § 7.13.3.23 corner projection does not bound.
-    Warp,
-    /// § 7.13.5 TIP synthesis has no reference pair or motion field to project.
-    Tip,
-    /// The block's reference list does not resolve to a known slot.
-    Slot,
-}
-
-/// Why rows had to wait for whole reference frames instead of published rows.
-#[derive(Default)]
-struct RowGateFallbacks {
-    warp: AtomicUsize,
-    tip: AtomicUsize,
-    slot: AtomicUsize,
-}
-
-impl RowGateFallbacks {
-    fn note(&self, reason: SettleReason) {
-        let counter = match reason {
-            SettleReason::Warp => &self.warp,
-            SettleReason::Tip => &self.tip,
-            SettleReason::Slot => &self.slot,
-        };
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn summary(&self) -> String {
-        format!(
-            "settle_warp={} settle_tip={} settle_slot={}",
-            self.warp.load(Ordering::Relaxed),
-            self.tip.load(Ordering::Relaxed),
-            self.slot.load(Ordering::Relaxed),
-        )
-    }
-}
 
 /// How far past its plane rectangle one list's reads reach.
 #[derive(Clone, Copy, Default)]
@@ -149,7 +107,6 @@ pub(super) struct RowReferenceGate<'a, T: ReconSample> {
     frame: DecodedFrameInfo,
     temporal: &'a TemporalMvContext,
     tip: Option<TipReferencePair>,
-    fallbacks: RowGateFallbacks,
 }
 
 impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
@@ -174,7 +131,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             frame,
             temporal,
             tip: temporal.tip_references(),
-            fallbacks: RowGateFallbacks::default(),
         }
     }
 
@@ -216,8 +172,8 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
     /// # Errors
     ///
     /// Returns the referenced frame's own filter-phase diagnostic.
-    pub(super) fn wait(&self, arm: &str) -> Result<()> {
-        self.settle.wait(arm)
+    pub(super) fn wait(&self) -> Result<()> {
+        self.settle.wait()
     }
 
     /// The per-list reference-row requirement of one parsed row.
@@ -236,11 +192,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             }
         }
         bounds
-    }
-
-    /// Reports how many blocks fell back to whole-frame settling, by reason.
-    pub(super) fn fallback_summary(&self) -> String {
-        self.fallbacks.summary()
     }
 
     fn note_block(&self, command: &InterReconCommand, bounds: &mut RowReferenceBounds) {
@@ -298,7 +249,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
     /// which only delays admission.
     fn note_tip(&self, placed: &PlacedInterBlock, bounds: &mut RowReferenceBounds) {
         let Some(references) = self.tip else {
-            self.fallbacks.note(SettleReason::Tip);
             bounds.settle = true;
             return;
         };
@@ -308,7 +258,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             placed.luma_x / TIP_FIELD_CELL,
             base,
         ) else {
-            self.fallbacks.note(SettleReason::Tip);
             bounds.settle = true;
             return;
         };
@@ -339,7 +288,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
                     luma_x / TIP_FIELD_CELL,
                     base,
                 ) else {
-                    self.fallbacks.note(SettleReason::Tip);
                     bounds.settle = true;
                     return;
                 };
@@ -374,7 +322,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         let list = usize::try_from(ref_frame).ok();
         let slot = list.and_then(|list| self.lists.get(list).copied().flatten());
         let Some((list, slot)) = list.zip(slot) else {
-            self.fallbacks.note(SettleReason::Slot);
             bounds.settle = true;
             return;
         };
@@ -384,7 +331,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         let Some(rows) =
             block_published_rows(self.frame, slot.info(), rect, predict_chroma, mv, reach)
         else {
-            self.fallbacks.note(SettleReason::Warp);
             bounds.settle = true;
             return;
         };

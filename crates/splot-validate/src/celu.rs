@@ -205,18 +205,6 @@ struct CeluState {
     /// CELU and fires `celu/missing-output-frame-unit` (§ 7.3.6 line 536, anchored at its
     /// first constituent OBU).
     saw_frame_bearing_obu: bool,
-    /// `true` once at least one coded output frame unit has been seen anywhere in the CELU
-    /// (the § 7.3.6 "at least one coded output frame unit" presence rule).
-    saw_any_output_unit: bool,
-    /// `true` once a unit with an Unknown output class was seen — the
-    /// output-unit-presence rule is then dropped (the CELU might contain an output unit
-    /// the validator could not classify).
-    any_output_class_unknown: bool,
-    /// `true` once an [`FrameBoundary::Ambiguous`] OBU here could itself be a coded output
-    /// frame unit (`facts.output != Some(false)`), dropping the CELU-scoped
-    /// `celu/missing-output-frame-unit` rule (mirror line 536). An ambiguous bridge does not
-    /// set this.
-    missing_output_poisoned: bool,
     /// The shared `OrderHint` (an `order_hint` LSB proxy — see [`FrameFacts::order_hint`]) of
     /// the output units seen so far, the first output unit's `OrderHintBits` (for the
     /// cross-CELU §7.3.7 gate), and the first output unit's offset; `None` until the first
@@ -267,9 +255,6 @@ impl CeluState {
             embedded: BTreeMap::new(),
             max_embedded_seen: None,
             saw_frame_bearing_obu: false,
-            saw_any_output_unit: false,
-            any_output_class_unknown: false,
-            missing_output_poisoned: false,
             output_order_hint: None,
             order_hint_undecidable: false,
             order_hint_mismatch: None,
@@ -573,7 +558,6 @@ impl CodedExtendedLayerTracker {
                 if facts.output != Some(false) {
                     let layer = celu.embedded.entry(embedded).or_default();
                     layer.output_presence_poisoned = true;
-                    celu.missing_output_poisoned = true;
                 }
                 return;
             }
@@ -610,14 +594,10 @@ impl CodedExtendedLayerTracker {
         match facts.output {
             Some(true) => {
                 layer.saw_output_unit = true;
-                celu.saw_any_output_unit = true;
                 layer.output_slot_consumed = true;
             }
             Some(false) => layer.saw_nonoutput_unit = true,
-            None => {
-                layer.output_class_unknown = true;
-                celu.any_output_class_unknown = true;
-            }
+            None => layer.output_class_unknown = true,
         }
 
         let is_first_unit_of_layer = unit_index == 0;
@@ -683,9 +663,9 @@ impl CodedExtendedLayerTracker {
             .any(|l| l.saw_output_unit || l.saw_nonoutput_unit);
         let header_only = !celu.saw_frame_bearing_obu;
         let frame_bearing_without_output = has_decided_unit
-            && !celu.saw_any_output_unit
-            && !celu.any_output_class_unknown
-            && !celu.missing_output_poisoned;
+            && celu.embedded.values().all(|l| {
+                !l.saw_output_unit && !l.output_class_unknown && !l.output_presence_poisoned
+            });
         if header_only || frame_bearing_without_output {
             report.push(
                 Diagnostic::error(

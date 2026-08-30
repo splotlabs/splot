@@ -32,6 +32,7 @@ use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, Result};
+use crate::pipeline::frame_engine::finish::finish_walked_frame;
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame, decode_frames_from_plan};
 use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
@@ -348,7 +349,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         None,
     )?;
     mutate(&mut core);
-    super::validate_inter_frame_core(&core, &sequence, inter_envelope.offset)?;
+    super::validate_inter_frame_core(&core, &sequence)?;
     let walk = crate::pipeline::frame_engine::walk_frame(
         &mut super::InterDecodeScratch::default(),
         &plan,
@@ -361,7 +362,10 @@ fn decode_inter_frame_after_core_mutation_inner(
         &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
         BitDepth::Eight,
     )?;
-    crate::pipeline::frame_engine::finish::finish_walk_inline(walk.stage)
+    let crate::pipeline::frame_engine::finish::WalkStage::Pending(walked) = walk.stage else {
+        panic!("inter fixture unexpectedly completed without its filter phase");
+    };
+    finish_walked_frame(*walked, None, None, core::convert::identity).map(|done| done.frame)
 }
 
 pub(super) fn parse_inter_core_for_validation(
@@ -559,7 +563,6 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         true,
         false,
         BitDepth::Eight,
-        ByteOffset::new(0),
     )
     .unwrap();
 
@@ -627,7 +630,6 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         true,
         true,
         BitDepth::Ten,
-        ByteOffset::new(0),
     )
     .unwrap();
 
@@ -650,7 +652,7 @@ fn inter_frame_validation_admits_lossless_header_tools() {
     context
         .pool()
         .install(|| -> Result<()> {
-            let (mut sequence, mut core, offset) =
+            let (mut sequence, mut core, _) =
                 parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
             sequence
                 .inter
@@ -677,7 +679,7 @@ fn inter_frame_validation_admits_lossless_header_tools() {
             lossless.allow_tcq = false;
             lossless.allow_parity_hiding = false;
 
-            super::validate_inter_frame_core(&core, &sequence, offset)
+            super::validate_inter_frame_core(&core, &sequence)
         })
         .expect("lossless inter headers should reach block-specific gates");
 }
@@ -688,8 +690,7 @@ fn inter_frame_validation_admits_active_gdf_header_tool() {
     context
         .pool()
         .install(|| -> Result<()> {
-            let (sequence, mut core, offset) =
-                parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
+            let (sequence, mut core, _) = parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
             let gdf = core
                 .gdf_params
                 .as_mut()
@@ -699,7 +700,7 @@ fn inter_frame_validation_admits_active_gdf_header_tool() {
             gdf.gdf_pic_qc_idx = Some(0);
             gdf.gdf_pic_scale_idx = Some(0);
 
-            super::validate_inter_frame_core(&core, &sequence, offset)
+            super::validate_inter_frame_core(&core, &sequence)
         })
         .expect("active inter GDF headers should reach block-specific gates");
 }
@@ -710,8 +711,7 @@ fn inter_frame_validation_admits_delta_q_and_rejects_missing_params() {
     context
         .pool()
         .install(|| -> Result<()> {
-            let (sequence, mut core, offset) =
-                parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
+            let (sequence, mut core, _) = parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
             let delta_q = core
                 .delta_q_params
                 .as_mut()
@@ -719,11 +719,11 @@ fn inter_frame_validation_admits_delta_q_and_rejects_missing_params() {
             delta_q.delta_q_present = true;
             delta_q.delta_q_res = 2;
 
-            super::validate_inter_frame_core(&core, &sequence, offset)
+            super::validate_inter_frame_core(&core, &sequence)
                 .expect("active delta-Q is handled by the inter block walk");
 
             core.delta_q_params = None;
-            let error = super::validate_inter_frame_core(&core, &sequence, offset)
+            let error = super::validate_inter_frame_core(&core, &sequence)
                 .expect_err("missing delta-Q params must stay fail-closed");
             assert!(matches!(
                 error,

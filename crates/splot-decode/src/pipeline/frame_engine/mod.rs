@@ -55,8 +55,7 @@ pub(crate) fn walk_frame<T: ReconSample>(
     setup: &FrameSetup<'_, T>,
     bit_depth: BitDepth,
 ) -> Result<FrameWalk<T>> {
-    let started = crate::timing::start();
-    let walk = match *setup {
+    match *setup {
         FrameSetup::Inter(reference) => inter::walk_inter_frame(
             scratch,
             plan,
@@ -80,7 +79,5 @@ pub(crate) fn walk_frame<T: ReconSample>(
             options,
             bit_depth,
         ),
-    };
-    crate::timing::report("walk", started);
-    walk
+    }
 }

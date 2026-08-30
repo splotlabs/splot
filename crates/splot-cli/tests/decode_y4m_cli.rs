@@ -454,17 +454,18 @@ fn decode_y4m_skips_temp_name_that_matches_requested_output() {
     let dir = temp_dir("temp-name-collision");
     let selected_name_path = dir.join("selected-output-name.txt");
     let script = r#"out=".splot-decode-y4m-$$-0-0.tmp"
-printf "%s" "$out" > "$SPLOT_SELECTED"
-exec "$SPLOT_BIN" decode --output-format y4m "$SPLOT_INPUT" -o "$out"
+printf "%s" "$out" > "$3"
+exec "$1" decode --output-format y4m "$2" -o "$out"
 "#;
 
     let out = std::process::Command::new("sh")
         .arg("-c")
         .arg(script)
+        .arg("splot-y4m-test")
+        .arg(env!("CARGO_BIN_EXE_splot"))
+        .arg(input)
+        .arg(&selected_name_path)
         .current_dir(&dir)
-        .env("SPLOT_BIN", env!("CARGO_BIN_EXE_splot"))
-        .env("SPLOT_INPUT", input)
-        .env("SPLOT_SELECTED", &selected_name_path)
         .output()
         .expect("failed to run shell-wrapped splot command");
 

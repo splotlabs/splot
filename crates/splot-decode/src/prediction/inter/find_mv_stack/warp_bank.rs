@@ -38,7 +38,6 @@ impl WarpParamBank {
         mi_col: usize,
         sb_size4: usize,
     ) {
-        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvBank);
         let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
         if self.current_sb == Some(sb) {
             return;
@@ -60,7 +59,6 @@ impl WarpParamBank {
     }
 
     pub(crate) fn update(&mut self, ref_frame0: i8, params: [i32; 6]) {
-        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvBank);
         if self.sb_hits >= MAX_WARP_SB_HITS {
             return;
         }

@@ -5,47 +5,6 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError, Weak};
-use std::time::Instant;
-
-/// Instrumentation for assisted pipeline-driver waits in one worker pool.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PoolWaitMetrics {
-    /// Calls that checked the pool for one runnable job.
-    pub assist_calls: u64,
-    /// Jobs executed on the driver by an assist call.
-    pub assisted_jobs: u64,
-    /// Idle waits that reached the condition variable.
-    pub idle_parks: u64,
-    /// Total duration spent in idle waits, in nanoseconds.
-    pub park_nanos: u64,
-    /// Timeout returns. Event-driven waits never increment this counter.
-    pub timeout_wakes: u64,
-    /// Progress notifications published by this pool.
-    pub notifications: u64,
-    /// Idle waits that returned after a progress notification.
-    pub progress_wakes: u64,
-    /// Total notification-to-wake duration, in nanoseconds.
-    pub wake_to_progress_nanos: u64,
-}
-
-impl PoolWaitMetrics {
-    /// Returns the counters added after `earlier` was captured.
-    #[must_use]
-    pub fn since(self, earlier: Self) -> Self {
-        Self {
-            assist_calls: self.assist_calls.saturating_sub(earlier.assist_calls),
-            assisted_jobs: self.assisted_jobs.saturating_sub(earlier.assisted_jobs),
-            idle_parks: self.idle_parks.saturating_sub(earlier.idle_parks),
-            park_nanos: self.park_nanos.saturating_sub(earlier.park_nanos),
-            timeout_wakes: self.timeout_wakes.saturating_sub(earlier.timeout_wakes),
-            notifications: self.notifications.saturating_sub(earlier.notifications),
-            progress_wakes: self.progress_wakes.saturating_sub(earlier.progress_wakes),
-            wake_to_progress_nanos: self
-                .wake_to_progress_nanos
-                .saturating_sub(earlier.wake_to_progress_nanos),
-        }
-    }
-}
 
 /// One decoder pool's generation and condition variable.
 ///
@@ -61,19 +20,10 @@ impl PoolWaitMetrics {
 pub(crate) struct PoolProgressEvent {
     generation: AtomicU64,
     pending_installs: AtomicUsize,
-    state: Mutex<ProgressState>,
+    state: Mutex<()>,
     cond: Condvar,
-    assist_calls: AtomicU64,
-    assisted_jobs: AtomicU64,
-    idle_parks: AtomicU64,
-    park_nanos: AtomicU64,
-    progress_wakes: AtomicU64,
-    wake_to_progress_nanos: AtomicU64,
-}
-
-#[derive(Debug, Default)]
-struct ProgressState {
-    last_notification: Option<Instant>,
+    #[cfg(test)]
+    parked_waiters: AtomicUsize,
 }
 
 impl PoolProgressEvent {
@@ -81,14 +31,10 @@ impl PoolProgressEvent {
         Self {
             generation: AtomicU64::new(0),
             pending_installs: AtomicUsize::new(0),
-            state: Mutex::new(ProgressState::default()),
+            state: Mutex::new(()),
             cond: Condvar::new(),
-            assist_calls: AtomicU64::new(0),
-            assisted_jobs: AtomicU64::new(0),
-            idle_parks: AtomicU64::new(0),
-            park_nanos: AtomicU64::new(0),
-            progress_wakes: AtomicU64::new(0),
-            wake_to_progress_nanos: AtomicU64::new(0),
+            #[cfg(test)]
+            parked_waiters: AtomicUsize::new(0),
         }
     }
 
@@ -98,8 +44,7 @@ impl PoolProgressEvent {
 
     pub(crate) fn notify(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.last_notification = Some(Instant::now());
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         self.cond.notify_all();
         drop(state);
     }
@@ -118,20 +63,12 @@ impl PoolProgressEvent {
         self.pending_installs.load(Ordering::Acquire) != 0
     }
 
-    pub(crate) fn note_assist(&self) {
-        self.assist_calls.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn note_assisted_job(&self) {
-        self.assisted_jobs.fetch_add(1, Ordering::Relaxed);
-    }
-
     pub(crate) fn wait_if_unchanged(&self, observed: u64) {
         self.wait_if_unchanged_inner(observed, || {});
     }
 
     fn wait_if_unchanged_inner(&self, observed: u64, setup: impl FnOnce()) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if self.generation() != observed {
             return;
         }
@@ -139,36 +76,20 @@ impl PoolProgressEvent {
         if self.generation() != observed {
             return;
         }
-        self.idle_parks.fetch_add(1, Ordering::Relaxed);
-        let started = Instant::now();
-        state = self
+        #[cfg(test)]
+        self.parked_waiters.fetch_add(1, Ordering::Release);
+        let state = self
             .cond
             .wait(state)
             .unwrap_or_else(PoisonError::into_inner);
-        let parked = nanos(started.elapsed().as_nanos());
-        self.park_nanos.fetch_add(parked, Ordering::Relaxed);
-        if self.generation() != observed
-            && let Some(notified) = state.last_notification
-        {
-            let latency = nanos(notified.elapsed().as_nanos());
-            self.progress_wakes.fetch_add(1, Ordering::Relaxed);
-            self.wake_to_progress_nanos
-                .fetch_add(latency, Ordering::Relaxed);
-        }
+        #[cfg(test)]
+        self.parked_waiters.fetch_sub(1, Ordering::Release);
         drop(state);
     }
 
-    pub(crate) fn metrics(&self) -> PoolWaitMetrics {
-        PoolWaitMetrics {
-            assist_calls: self.assist_calls.load(Ordering::Relaxed),
-            assisted_jobs: self.assisted_jobs.load(Ordering::Relaxed),
-            idle_parks: self.idle_parks.load(Ordering::Relaxed),
-            park_nanos: self.park_nanos.load(Ordering::Relaxed),
-            timeout_wakes: 0,
-            notifications: self.generation(),
-            progress_wakes: self.progress_wakes.load(Ordering::Relaxed),
-            wake_to_progress_nanos: self.wake_to_progress_nanos.load(Ordering::Relaxed),
-        }
+    #[cfg(test)]
+    pub(crate) fn parked_waiters(&self) -> usize {
+        self.parked_waiters.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -247,10 +168,6 @@ impl Default for PoolProgressBindings {
     }
 }
 
-fn nanos(value: u128) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -261,8 +178,8 @@ mod tests {
 
     use super::*;
 
-    fn wait_until_park_count(event: &PoolProgressEvent, count: u64) {
-        while event.idle_parks.load(Ordering::Acquire) < count {
+    fn wait_until_parked(event: &PoolProgressEvent, count: usize) {
+        while event.parked_waiters() < count {
             thread::yield_now();
         }
     }
@@ -273,9 +190,8 @@ mod tests {
         let observed = event.generation();
         event.notify();
         event.wait_if_unchanged(observed);
-        let metrics = event.metrics();
-        assert_eq!(metrics.idle_parks, 0);
-        assert_eq!(metrics.notifications, 1);
+        assert_eq!(event.parked_waiters(), 0);
+        assert_eq!(event.generation(), 1);
     }
 
     #[test]
@@ -298,7 +214,8 @@ mod tests {
             }
         });
         publisher.join().expect("publisher");
-        assert_eq!(event.metrics().idle_parks, 0);
+        assert_eq!(event.parked_waiters(), 0);
+        assert_eq!(event.generation(), 1);
     }
 
     #[test]
@@ -309,12 +226,11 @@ mod tests {
             let observed = waiter_event.generation();
             waiter_event.wait_if_unchanged(observed);
         });
-        wait_until_park_count(&event, 1);
+        wait_until_parked(&event, 1);
         event.notify();
         waiter.join().expect("waiter");
-        let metrics = event.metrics();
-        assert_eq!(metrics.idle_parks, 1);
-        assert_eq!(metrics.progress_wakes, 1);
+        assert_eq!(event.parked_waiters(), 0);
+        assert_eq!(event.generation(), 1);
     }
 
     #[test]
@@ -328,11 +244,11 @@ mod tests {
             waiter_event.wait_if_unchanged(observed);
             waiter_returned.store(true, Ordering::Release);
         });
-        wait_until_park_count(&event, 1);
+        wait_until_parked(&event, 1);
         event.spurious_notify();
         waiter.join().expect("waiter");
         assert!(returned.load(Ordering::Acquire));
-        assert_eq!(event.metrics().progress_wakes, 0);
+        assert_eq!(event.generation(), 0);
     }
 
     #[test]
@@ -353,14 +269,12 @@ mod tests {
             while completed.load(Ordering::Acquire) != cycle {
                 thread::yield_now();
             }
-            wait_until_park_count(&event, (cycle + 1) as u64);
+            wait_until_parked(&event, 1);
             event.notify();
         }
         waiter.join().expect("waiter");
         assert_eq!(completed.load(Ordering::Acquire), CYCLES);
-        let metrics = event.metrics();
-        assert_eq!(metrics.notifications, CYCLES as u64);
-        assert!(metrics.idle_parks <= CYCLES as u64);
+        assert_eq!(event.generation(), CYCLES as u64);
     }
 
     #[test]
@@ -387,12 +301,12 @@ mod tests {
             })
         };
         barrier.wait();
-        wait_until_park_count(&first, 1);
-        wait_until_park_count(&second, 1);
+        wait_until_parked(&first, 1);
+        wait_until_parked(&second, 1);
         first.notify();
         first_waiter.join().expect("first waiter");
-        assert_eq!(second.metrics().notifications, 0);
-        assert_eq!(second.metrics().idle_parks, 1);
+        assert_eq!(second.generation(), 0);
+        assert_eq!(second.parked_waiters(), 1);
         second.notify();
         second_waiter.join().expect("second waiter");
     }
@@ -409,7 +323,7 @@ mod tests {
         bindings.bind(&Arc::downgrade(&second));
         assert!(bindings.additional.get().is_some());
         bindings.notify();
-        assert_eq!(second.metrics().notifications, 1);
+        assert_eq!(second.generation(), 1);
     }
 
     #[test]
@@ -422,8 +336,8 @@ mod tests {
         bindings.bind(&Arc::downgrade(&second));
         assert!(bindings.additional.get().is_some());
         bindings.notify();
-        assert_eq!(first.metrics().notifications, 1);
-        assert_eq!(second.metrics().notifications, 1);
+        assert_eq!(first.generation(), 1);
+        assert_eq!(second.generation(), 1);
     }
 
     #[test]
@@ -446,7 +360,7 @@ mod tests {
             event.notify();
         }
         waiter.join().expect("waiter");
-        assert_eq!(event.metrics().notifications, NOTIFICATIONS as u64);
+        assert_eq!(event.generation(), NOTIFICATIONS as u64);
         assert_eq!(published.load(Ordering::Acquire), NOTIFICATIONS);
     }
 }

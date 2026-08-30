@@ -329,7 +329,7 @@ pub struct OwnedFrameBands<T: ReconSample> {
 }
 
 /// Disjoint mutable rows for the luma plane and any present chroma planes.
-pub type OwnedFrameRowsMut<'a, T> = (
+type OwnedFrameRowsMut<'a, T> = (
     Vec<&'a mut [T]>,
     Option<Vec<&'a mut [T]>>,
     Option<Vec<&'a mut [T]>>,

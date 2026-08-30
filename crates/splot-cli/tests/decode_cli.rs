@@ -324,41 +324,6 @@ fn decode_hash_output_format_json_emits_same_diagnostic() {
 }
 
 #[test]
-#[ignore = "requires local mission fixture; set SPLOT_LOCAL_DECODER_MISSION_IVF or place it at $HOME/Documents/SplotLabs/local-decoder-mission.ivf"]
-fn local_decoder_mission_advances_past_removed_frame_tools_gate() {
-    let input = local_decoder_mission_path();
-    assert!(
-        input.is_file(),
-        "local decoder mission fixture not found at {}; set {LOCAL_DECODER_MISSION_ENV}",
-        input.display()
-    );
-
-    let out = splot(&[
-        "decode",
-        "--json",
-        "--output-format",
-        "hash",
-        input.to_str().unwrap(),
-    ]);
-
-    assert!(out.stderr.is_empty(), "stderr was not empty");
-    if out.status.success() {
-        return;
-    }
-
-    assert_eq!(out.status.code(), Some(1));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["detail_kind"], "unsupported_feature");
-    assert!(
-        json["byte_offset"]
-            .as_u64()
-            .is_some_and(|offset| offset > 12431),
-        "the decoder must either finish the local mission or reach a later fail-closed gate"
-    );
-}
-
-#[test]
 fn decode_hash_json_success_for_minimal_fixture() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
 
