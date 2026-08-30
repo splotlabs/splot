@@ -207,10 +207,10 @@ fn widened_zone1_one_sided_idif_interpolates_with_nonzero_shift() {
     let above_idif = [10, 10, 25, 33, 48, 60, 77, 90, 110, 130, 130, 130];
     let mut output = [0u8; 16];
 
-    predict_intra_directional_angle_rect_one_sided_idif_from_p_angle_into(
+    predict_intra_directional_angle_rect_one_sided_idif_into(
         BitDepth::Eight,
         rect_size(2, 2),
-        81,
+        IntraDirectionalAngle::try_from_p_angle(81).unwrap(),
         IntraDirectionalAngleIdifEdges::above(&above_idif),
         &mut output,
         4,
@@ -330,28 +330,6 @@ fn directional_angle_prediction_accepts_10_bit_u16_samples() {
 
     assert_eq!(output[0], 24);
     assert_eq!(output[15], 288);
-}
-
-#[test]
-fn directional_angle_prediction_rejects_unsupported_pangles_without_mutation() {
-    let above = [10, 20, 30, 40, 50, 60, 70, 80];
-    let mut output = [9u8; 16];
-
-    let err = predict_intra_directional_angle_rect_from_p_angle_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        90,
-        IntraDirectionalAngleEdges::above(&above),
-        &mut output,
-        4,
-    )
-    .unwrap_err();
-
-    assert_eq!(
-        err,
-        ReconError::UnsupportedIntraDirectionalAngle { p_angle: 90 }
-    );
-    assert_eq!(output, [9u8; 16]);
 }
 
 #[test]
@@ -691,29 +669,6 @@ fn idif_middle_prediction_accepts_10_bit_u16_samples_and_clips_to_bit_depth() {
 }
 
 #[test]
-fn idif_middle_prediction_rejects_unsupported_pangles_without_mutation() {
-    let above_idif = [100u8; 8];
-    let left_idif = [110u8; 8];
-    let mut output = [9u8; 16];
-
-    let err = predict_intra_middle_directional_angle_rect_idif_from_p_angle_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        45,
-        IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-        &mut output,
-        4,
-    )
-    .unwrap_err();
-
-    assert_eq!(
-        err,
-        ReconError::UnsupportedIntraMiddleDirectionalAngle { p_angle: 45 }
-    );
-    assert_eq!(output, [9u8; 16]);
-}
-
-#[test]
 fn idif_middle_prediction_validates_idif_edge_lengths() {
     let above_short = [100u8, 10, 20, 30, 40];
     let left_idif = [110u8; 8];
@@ -770,33 +725,13 @@ fn middle_directional_angle_prediction_accepts_asymmetric_block_bounds() {
 }
 
 #[test]
-fn middle_directional_angle_prediction_rejects_unsupported_pangles_without_mutation() {
-    let above = [100, 10, 20, 30, 40];
-    let left = [110, 50, 60, 70, 80];
-    let mut output = [9u8; 16];
-
+fn middle_directional_angle_rejects_unsupported_pangles() {
     for p_angle in [0, 45, 67, 90, 180, 203, 270] {
         assert_eq!(
             IntraMiddleDirectionalAngle::try_from_p_angle(p_angle),
             Err(ReconError::UnsupportedIntraMiddleDirectionalAngle { p_angle })
         );
     }
-
-    let err = predict_intra_middle_directional_angle_rect_from_p_angle_into(
-        BitDepth::Eight,
-        rect_size(2, 2),
-        45,
-        IntraMiddleDirectionalAngleEdges::both(&left, &above),
-        &mut output,
-        4,
-    )
-    .unwrap_err();
-
-    assert_eq!(
-        err,
-        ReconError::UnsupportedIntraMiddleDirectionalAngle { p_angle: 45 }
-    );
-    assert_eq!(output, [9u8; 16]);
 }
 
 #[test]
