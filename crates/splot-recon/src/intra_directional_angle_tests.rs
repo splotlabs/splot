@@ -333,11 +333,17 @@ fn directional_angle_prediction_accepts_10_bit_u16_samples() {
 }
 
 #[test]
-fn directional_angle_prediction_rejects_all_excluded_pangles() {
+fn directional_angle_types_reject_out_of_zone_pangles() {
     for p_angle in [0, 90, 113, 135, 157, 180, 270] {
         assert_eq!(
             IntraDirectionalAngle::try_from_p_angle(p_angle),
             Err(ReconError::UnsupportedIntraDirectionalAngle { p_angle })
+        );
+    }
+    for p_angle in [0, 45, 67, 90, 180, 203, 270] {
+        assert_eq!(
+            IntraMiddleDirectionalAngle::try_from_p_angle(p_angle),
+            Err(ReconError::UnsupportedIntraMiddleDirectionalAngle { p_angle })
         );
     }
 }
@@ -722,16 +728,6 @@ fn middle_directional_angle_prediction_accepts_asymmetric_block_bounds() {
         4,
     )
     .unwrap();
-}
-
-#[test]
-fn middle_directional_angle_rejects_unsupported_pangles() {
-    for p_angle in [0, 45, 67, 90, 180, 203, 270] {
-        assert_eq!(
-            IntraMiddleDirectionalAngle::try_from_p_angle(p_angle),
-            Err(ReconError::UnsupportedIntraMiddleDirectionalAngle { p_angle })
-        );
-    }
 }
 
 #[test]
