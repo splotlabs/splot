@@ -91,13 +91,13 @@ fn two_axis_lanes<const LANES: usize, T: ReconSample>(
         } else {
             (copy_first - first_x) as usize
         };
+        let mut window = [0u16; 8 + NUM_TAPS - 1];
         for row in 0..params[reference].h + NUM_TAPS - 1 {
             let source_row = ((params[reference].start_y >> SCALE_SUBPEL_BITS) + row as i32 - 3)
                 .clamp(params[reference].first_y, params[reference].last_y)
                 as usize;
             let row_start =
                 source_row.min(references[reference].height - 1) * references[reference].stride;
-            let mut window = [0u16; 8 + NUM_TAPS - 1];
             if copy_len == 0 {
                 let source_column = first_x.clamp(bounded_first, bounded_last) as usize;
                 window[..window_len].fill(sources[reference][row_start + source_column]);

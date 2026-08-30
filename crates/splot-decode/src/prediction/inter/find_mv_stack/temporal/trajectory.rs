@@ -4,7 +4,7 @@
 use splot_recon::math::round2_signed_i32;
 
 use super::{
-    Mv, REFMVS_LIMIT, allocate_temporal_grid, project_mv, project_no_constraint,
+    Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint, project_tmvp_mv,
     temporal_grid_index,
 };
 
@@ -620,38 +620,35 @@ impl TrajectoryBand<'_> {
         {
             return None;
         }
-        let mut source_mask = self
+        let source_slots = self
             .positions_at(source, (y8, x8))
-            .map_or(0, |slots| slots.mask);
-        if source_mask != 0 {
-            let phases = self
-                .positions_at(source, (y8, x8))
-                .map_or(TrajectoryPositions::EMPTY.phases, |slots| slots.phases);
-            while source_mask != 0 {
-                let phase = source_mask.trailing_zeros() as usize;
-                source_mask &= source_mask - 1;
-                let Some(&packed) = phases.get(phase) else {
-                    break;
-                };
-                let trajectory = (packed.y as usize, packed.x as usize);
-                let bounds = self.position_bounds(trajectory);
-                let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
-                    continue;
-                };
-                if self.trajectory_mv(end, traj_index) != INVALID_TRAJECTORY_MV {
-                    continue;
-                }
-                let source_mv = self.trajectory_mv(source, traj_index);
-                if source_mv == INVALID_TRAJECTORY_MV {
-                    continue;
-                }
-                let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
-                if let Some(position) = self
-                    .sampled_position(trajectory.0, trajectory.1, end_mv)
-                    .filter(|&position| Self::position_allowed(position, bounds))
-                {
-                    self.set_position(end, position, phase, trajectory);
-                }
+            .copied()
+            .unwrap_or(TrajectoryPositions::EMPTY);
+        let mut source_mask = source_slots.mask;
+        while source_mask != 0 {
+            let phase = source_mask.trailing_zeros() as usize;
+            source_mask &= source_mask - 1;
+            let Some(&packed) = source_slots.phases.get(phase) else {
+                break;
+            };
+            let trajectory = (packed.y as usize, packed.x as usize);
+            let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
+                continue;
+            };
+            if self.trajectory_mv(end, traj_index) != INVALID_TRAJECTORY_MV {
+                continue;
+            }
+            let source_mv = self.trajectory_mv(source, traj_index);
+            if source_mv == INVALID_TRAJECTORY_MV {
+                continue;
+            }
+            let bounds = self.position_bounds(trajectory);
+            let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
+            if let Some(position) = self
+                .sampled_position(trajectory.0, trajectory.1, end_mv)
+                .filter(|&position| Self::position_allowed(position, bounds))
+            {
+                self.set_position(end, position, phase, trajectory);
             }
         }
 
@@ -659,19 +656,15 @@ impl TrajectoryBand<'_> {
         if self.unit_base(end_position.0) != self.unit_base(y8) {
             return Some(end_position);
         }
-        let mut end_mask = self
+        let end_slots = self
             .positions_at(end, end_position)
-            .map_or(0, |slots| slots.mask);
-        if end_mask == 0 {
-            return Some(end_position);
-        }
-        let phases = self
-            .positions_at(end, end_position)
-            .map_or(TrajectoryPositions::EMPTY.phases, |slots| slots.phases);
+            .copied()
+            .unwrap_or(TrajectoryPositions::EMPTY);
+        let mut end_mask = end_slots.mask;
         while end_mask != 0 {
             let phase = end_mask.trailing_zeros() as usize;
             end_mask &= end_mask - 1;
-            let Some(&packed) = phases.get(phase) else {
+            let Some(&packed) = end_slots.phases.get(phase) else {
                 break;
             };
             let trajectory = (packed.y as usize, packed.x as usize);
@@ -723,7 +716,7 @@ impl TrajectoryBand<'_> {
         } else {
             source_to_current
         };
-        let projected = project_mv(mv, numerator, reference_offset);
+        let projected = project_tmvp_mv(mv, numerator, reference_offset);
         let Some(position) = self.sampled_position(y8, x8, projected) else {
             return;
         };
@@ -767,10 +760,10 @@ impl TrajectoryBand<'_> {
         if y8 >= self.height8 || x8 >= self.width8 {
             return;
         }
-        let Some(recorded_offset) = self
-            .band_index(position.0, position.1)
-            .and_then(|index| self.projection_offsets.get_mut(index))
-        else {
+        let Some(index) = self.band_index(position.0, position.1) else {
+            return;
+        };
+        let Some(recorded_offset) = self.projection_offsets.get_mut(index) else {
             return;
         };
         let replace = *recorded_offset == INVALID_PROJECTION_OFFSET
@@ -780,9 +773,6 @@ impl TrajectoryBand<'_> {
         }
         *recorded_offset = reference_offset;
         let phase = self.phase(position.1);
-        let Some(index) = self.band_index(position.0, position.1) else {
-            return;
-        };
         self.set_position(source, (y8, x8), phase, position);
         self.set_field_at(
             source,
@@ -800,12 +790,13 @@ impl TrajectoryBand<'_> {
         } else {
             source_to_current
         };
-        let end_mv = project_mv(mv, reference_offset - numerator, reference_offset);
+        let end_mv = project_tmvp_mv(mv, reference_offset - numerator, reference_offset);
         self.set_field_at(end, index, end_mv);
+        let Some(target_position) = target_position else {
+            return;
+        };
         let bounds = self.position_bounds(position);
-        if let Some(target_position) = target_position
-            .filter(|&target_position| Self::position_allowed(target_position, bounds))
-        {
+        if Self::position_allowed(target_position, bounds) {
             self.set_position(end, target_position, phase, position);
         }
     }

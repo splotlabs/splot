@@ -457,6 +457,24 @@ fn lr_restoration_writes_complete_rectangle(
     }
 }
 
+fn lr_blocks_near_rows(
+    blocks: &[WienerNsLrSourceBlock],
+    start_y: usize,
+    end_y: usize,
+) -> &[WienerNsLrSourceBlock] {
+    let relevant_end = blocks.partition_point(|block| block.y < end_y);
+    let relevant_start = blocks[..relevant_end]
+        .iter()
+        .position(|block| {
+            block
+                .y
+                .checked_add(block.height)
+                .is_some_and(|block_end| block_end > start_y)
+        })
+        .unwrap_or(relevant_end);
+    &blocks[relevant_start..relevant_end]
+}
+
 pub(crate) fn lr_plane_fully_overwritten(
     blocks: &[WienerNsLrSourceBlock],
     plane: PlaneId,
@@ -469,26 +487,24 @@ pub(crate) fn lr_plane_fully_overwritten(
     if width == 0 || start_y >= end_y || end_y > frame_height {
         return false;
     }
-    let relevant_end = blocks.partition_point(|block| block.y < end_y);
-    let Some(relevant_start) = blocks[..relevant_end].iter().position(|block| {
-        block
-            .y
-            .checked_add(block.height)
-            .is_some_and(|block_end| block_end > start_y)
-    }) else {
-        return false;
-    };
-    let blocks = &blocks[relevant_start..relevant_end];
-    for y in start_y..end_y {
+    let blocks = lr_blocks_near_rows(blocks, start_y, end_y);
+    let mut y = start_y;
+    while y < end_y {
         let mut x = 0usize;
+        let mut next_y = end_y;
         for block in blocks {
             let Some(block_end_y) = block.y.checked_add(block.height) else {
                 return false;
             };
             let block_end_y = block_end_y.min(frame_height);
-            if block.y > y || block_end_y <= y {
+            if block.y > y {
+                next_y = next_y.min(block.y);
                 continue;
             }
+            if block_end_y <= y {
+                continue;
+            }
+            next_y = next_y.min(block_end_y);
             let Some(block_end_x) = block.x.checked_add(block.width) else {
                 return false;
             };
@@ -504,6 +520,7 @@ pub(crate) fn lr_plane_fully_overwritten(
         if x != width {
             return false;
         }
+        y = next_y;
     }
     true
 }
@@ -543,14 +560,29 @@ pub(crate) fn terminal_luma_wiener_direct_u8(
             )
         })
         && target.end_y().is_some_and(|end_y| {
-            terminal_luma_wiener_covers(
-                blocks,
-                target.width(),
-                target.frame_height(),
-                target.origin_y(),
-                end_y,
-            )
+            luma_stripe_units_all_wiener_nonsep(blocks, target.origin_y(), end_y)
+                && terminal_luma_wiener_covers(
+                    blocks,
+                    target.width(),
+                    target.frame_height(),
+                    target.origin_y(),
+                    end_y,
+                )
         })
+}
+
+/// The direct-`u8` luma sink has no `u16` post-LR stripe, so a PC-Wiener unit
+/// dispatched into it would fail. Reject the whole stripe unless every unit the
+/// LR walk will visit is Wiener-NS.
+fn luma_stripe_units_all_wiener_nonsep(
+    blocks: &[WienerNsLrSourceBlock],
+    start_y: usize,
+    end_y: usize,
+) -> bool {
+    lr_blocks_near_rows(blocks, start_y, end_y)
+        .iter()
+        .filter(|block| lr_block_in_rows(block, start_y, end_y).is_some())
+        .all(|block| block.restoration_type == LrUnitRestorationType::WienerNonsep)
 }
 
 pub(crate) fn lr_initializations(

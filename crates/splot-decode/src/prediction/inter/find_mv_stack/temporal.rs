@@ -169,7 +169,7 @@ impl TemporalMotionBand {
         let row_base8 = self.row_base8;
         let row_end8 = self.row_end8();
         let width8 = self.layout.width8;
-        let ref_order_hints = &self.metadata.ref_order_hints;
+        let resolved = resolve_block_refs(block.ref_order_hints, &self.metadata.ref_order_hints);
         visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
             let Some(row) = y8.checked_sub(row_base8) else {
                 return;
@@ -183,7 +183,7 @@ impl TemporalMotionBand {
             if y8 >= row_base8
                 && let Some(target) = self.cells.get_mut(index)
             {
-                *target = resolve_temporal_refs(cell, hints, ref_order_hints);
+                *target = resolve_temporal_refs(cell, hints, &resolved);
             }
         });
     }
@@ -341,9 +341,9 @@ impl TemporalMotionField {
     pub(crate) fn record_block(&mut self, block: TemporalMotionBlock) {
         let width8 = self.width8;
         let height8 = self.height8;
-        let ref_order_hints = &self.ref_order_hints;
+        let resolved = resolve_block_refs(block.ref_order_hints, &self.ref_order_hints);
         visit_temporal_block_cells(block, width8, height8, |y8, x8, cell, hints| {
-            let cell = resolve_temporal_refs(cell, hints, ref_order_hints);
+            let cell = resolve_temporal_refs(cell, hints, &resolved);
             let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
                 return;
             };
@@ -396,77 +396,102 @@ fn visit_temporal_block_cells(
     let col8_start = block.mi_col >> 1;
     let row8_end = row_end.div_ceil(2).min(height8);
     let col8_end = col_end.div_ceil(2).min(width8);
+    let swap_lists = temporal_lists_swap(block);
+    let derive = |y8: usize, x8: usize| {
+        let mut hints = [None; 2];
+        let mut mvs = [CompressedTemporalMv::ZERO; 2];
+        for list in 0..2 {
+            let Some(order_hint) = block.ref_order_hints[list] else {
+                continue;
+            };
+            let mv = block
+                .motion
+                .mv_at(list, block.mi_row, block.mi_col, y8 * 2, x8 * 2);
+            if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
+                continue;
+            }
+            hints[list] = Some(order_hint);
+            mvs[list] = compress_tmvp_mv(mv);
+        }
+        if hints[0].is_some() && hints[1].is_none() {
+            hints[1] = hints[0];
+            mvs[1] = mvs[0];
+        } else if hints[1].is_some() && hints[0].is_none() {
+            hints[0] = hints[1];
+            mvs[0] = mvs[1];
+        } else if swap_lists && hints[0].is_some() && hints[1].is_some() {
+            hints.swap(0, 1);
+            mvs.swap(0, 1);
+        }
+        (
+            TemporalMotionCell {
+                mvs,
+                ..TemporalMotionCell::default()
+            },
+            hints,
+        )
+    };
+    let uniform =
+        matches!(block.motion, TemporalBlockMotion::Mvs(_)).then(|| derive(row8_start, col8_start));
     for y8 in row8_start..row8_end {
         for x8 in col8_start..col8_end {
-            let mut hints = [None; 2];
-            let mut mvs = [CompressedTemporalMv::ZERO; 2];
-            for list in 0..2 {
-                let Some(order_hint) = block.ref_order_hints[list] else {
-                    continue;
-                };
-                let mv = block
-                    .motion
-                    .mv_at(list, block.mi_row, block.mi_col, y8 * 2, x8 * 2);
-                if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
-                    continue;
-                }
-                hints[list] = Some(order_hint);
-                mvs[list] = compress_tmvp_mv(mv);
-            }
-            if hints[0].is_some() && hints[1].is_none() {
-                hints[1] = hints[0];
-                mvs[1] = mvs[0];
-            } else if hints[1].is_some() && hints[0].is_none() {
-                hints[0] = hints[1];
-                mvs[0] = mvs[1];
-            } else if let [Some(ref0), Some(ref1)] = hints {
-                let ref0 = i32::try_from(ref0).unwrap_or(i32::MAX);
-                let ref1 = i32::try_from(ref1).unwrap_or(i32::MAX);
-                let current = i32::try_from(block.current_order_hint).unwrap_or(i32::MAX);
-                let ref0_to_current = super::super::get_relative_dist(ref0, current);
-                let ref1_to_current = super::super::get_relative_dist(ref1, current);
-                let same_side = (ref0_to_current < 0 && ref1_to_current < 0)
-                    || (ref0_to_current > 0 && ref1_to_current > 0);
-                let should_swap = if same_side {
-                    super::super::get_relative_dist(ref0, ref1) < 0
-                } else {
-                    ref0_to_current > 0 && ref1_to_current < 0
-                };
-                if should_swap {
-                    hints.swap(0, 1);
-                    mvs.swap(0, 1);
-                }
-            }
-            visit(
-                y8,
-                x8,
-                TemporalMotionCell {
-                    mvs,
-                    ..TemporalMotionCell::default()
-                },
-                hints,
-            );
+            let (cell, hints) = uniform.unwrap_or_else(|| derive(y8, x8));
+            visit(y8, x8, cell, hints);
         }
     }
 }
 
-fn resolve_temporal_refs(
-    mut cell: TemporalMotionCell,
-    hints: [Option<u32>; 2],
+/// AV2 § 7.9 list ordering for a block whose two references both survive.
+fn temporal_lists_swap(block: TemporalMotionBlock) -> bool {
+    let [Some(ref0), Some(ref1)] = block.ref_order_hints else {
+        return false;
+    };
+    let ref0 = i32::try_from(ref0).unwrap_or(i32::MAX);
+    let ref1 = i32::try_from(ref1).unwrap_or(i32::MAX);
+    let current = i32::try_from(block.current_order_hint).unwrap_or(i32::MAX);
+    let ref0_to_current = super::super::get_relative_dist(ref0, current);
+    let ref1_to_current = super::super::get_relative_dist(ref1, current);
+    let same_side = (ref0_to_current < 0 && ref1_to_current < 0)
+        || (ref0_to_current > 0 && ref1_to_current > 0);
+    if same_side {
+        super::super::get_relative_dist(ref0, ref1) < 0
+    } else {
+        ref0_to_current > 0 && ref1_to_current < 0
+    }
+}
+
+fn resolve_block_refs(
+    block_hints: [Option<u32>; 2],
     ref_order_hints: &[Option<u32>],
-) -> TemporalMotionCell {
-    for (list, hint) in hints.into_iter().enumerate() {
-        let Some(ref_index) = hint
+) -> [(Option<u32>, u8); 2] {
+    block_hints.map(|hint| {
+        let index = hint
             .and_then(|hint| {
                 ref_order_hints
                     .iter()
                     .position(|&candidate| candidate == Some(hint))
             })
             .and_then(|index| u8::try_from(index).ok())
-        else {
+            .unwrap_or(INVALID_TEMPORAL_REF);
+        (hint, index)
+    })
+}
+
+fn resolve_temporal_refs(
+    mut cell: TemporalMotionCell,
+    hints: [Option<u32>; 2],
+    resolved: &[(Option<u32>, u8); 2],
+) -> TemporalMotionCell {
+    for (list, hint) in hints.into_iter().enumerate() {
+        if hint.is_none() {
             continue;
-        };
-        cell.ref_indices[list] = ref_index;
+        }
+        for &(candidate, ref_index) in resolved {
+            if candidate == hint {
+                cell.ref_indices[list] = ref_index;
+                break;
+            }
+        }
     }
     cell
 }
@@ -1132,8 +1157,12 @@ impl TemporalMvContext {
                 .get(slot as usize)
                 .and_then(Option::as_deref)
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+            let source_metadata = ref_motion_metadata
+                .get(slot as usize)
+                .and_then(Option::as_ref)
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
             let source = TemporalProjectionSource::new(
-                &source_field.metadata(),
+                source_metadata,
                 source_field.layout(),
                 source_order_hint,
                 current_order_hint,
@@ -1571,7 +1600,7 @@ fn prepare_tip_field(
             let index = row_start + x8;
             let source = source.cells[index];
             let projected = source.valid.then(|| {
-                let mv = project_mv(source.mv, references.ref_offset, source.ref_offset);
+                let mv = project_tmvp_mv(source.mv, references.ref_offset, source.ref_offset);
                 Mv {
                     row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                     col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
@@ -2289,7 +2318,6 @@ fn project_tmvp_mv_with_factor(mv: Mv, numerator: i32, denominator: i32, factor:
     }
 }
 
-#[cfg(test)]
 fn project_tmvp_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
     let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE);
     let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);

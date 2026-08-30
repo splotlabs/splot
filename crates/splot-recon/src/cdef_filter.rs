@@ -110,12 +110,18 @@ pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
     finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
 }
 
-/// AV2 § 7.18.2 CDEF direction process over the interior padded block layout.
+/// AV2 § 7.18.2 CDEF direction process over a strided `u16` sample window.
 ///
-/// The 8x8 luma block begins at row 2, column 2 of `pad`; `coeff_shift` is
-/// `BitDepth - 8`. The result matches [`cdef_direction`] without materializing
-/// the intermediate shifted 8x8 array.
-pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) -> (usize, i32) {
+/// The 8x8 luma block's first sample is `pad[center]` and consecutive block rows
+/// are `stride` samples apart; `coeff_shift` is `BitDepth - 8`. The result
+/// matches [`cdef_direction`] without materializing the intermediate shifted 8x8
+/// array. Returns `None` when the window does not cover the block.
+pub fn cdef_direction_padded(
+    pad: &[u16],
+    center: usize,
+    stride: usize,
+    coeff_shift: u32,
+) -> Option<(usize, i32)> {
     let mut partial_hv = [[0i16; 8]; 2];
     let mut vertical = Simd::<i16, 8>::splat(0);
     let mut diag_low = [Simd::<i16, 8>::splat(0); 2];
@@ -124,9 +130,8 @@ pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) ->
     let mut alt_high = [Simd::<i16, 8>::splat(0); 4];
     macro_rules! accumulate_row {
         ($row:literal, $alt2:literal, $alt3:literal) => {{
-            let start = ($row + 2) * CDEF_PADDED_SIDE + 2;
-            let samples = (Simd::<u16, 8>::from_slice(&pad[start..]) >> coeff_shift as u16)
-                .cast::<i16>()
+            let row = *cdef_padded_row::<8>(pad, center + $row * stride)?;
+            let samples = (Simd::<u16, 8>::from_array(row) >> coeff_shift as u16).cast::<i16>()
                 - Simd::splat(128);
             partial_hv[0][$row] = samples.reduce_sum();
             vertical += samples;
@@ -156,7 +161,11 @@ pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) ->
         combine_cdef_diagonal(diag_low[1], diag_high[1]),
     ];
     let partial_alt = core::array::from_fn(|i| combine_cdef_alt(alt_low[i], alt_high[i]));
-    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+    Some(finish_cdef_direction(
+        &partial_hv,
+        &partial_diag,
+        &partial_alt,
+    ))
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
@@ -447,118 +456,61 @@ pub struct CdefBlockFilter {
     pub coeff_shift: u32,
 }
 
-type CdefPrimaryStarts = [[usize; 2]; 2];
-type CdefSecondaryStarts = [[[usize; 2]; 2]; 2];
 type CdefPrimaryOffsets = [[isize; 2]; 2];
 type CdefSecondaryOffsets = [[[isize; 2]; 2]; 2];
-type CdefRowStarts = [(CdefPrimaryStarts, CdefSecondaryStarts); 8];
+type CdefTapOffsets = (CdefPrimaryOffsets, CdefSecondaryOffsets);
 
-const fn cdef_relative_offset(direction: usize, tap: usize, sign: i32) -> isize {
+const fn cdef_relative_offset(direction: usize, tap: usize, sign: i32, stride: isize) -> isize {
     let [dy, dx] = CDEF_DIRECTIONS[direction & 7][tap];
-    (sign * dy) as isize * CDEF_PADDED_SIDE as isize + (sign * dx) as isize
+    (sign * dy) as isize * stride + (sign * dx) as isize
 }
 
-const CDEF_RELATIVE_OFFSETS: [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8] = {
+/// The `(dy, dx)` tap displacements of `direction`, as flat element offsets for
+/// a source whose rows are `stride` samples apart and whose column displacement
+/// covers `columns` samples (two for the interleaved chroma-pair layout, one
+/// otherwise).
+const fn cdef_direction_offsets(direction: usize, stride: isize, columns: isize) -> CdefTapOffsets {
+    let mut primary = [[0isize; 2]; 2];
+    let mut secondary = [[[0isize; 2]; 2]; 2];
+    let mut tap = 0;
+    while tap < 2 {
+        let mut sign_index = 0;
+        while sign_index < 2 {
+            let sign = if sign_index == 0 { -1 } else { 1 };
+            primary[tap][sign_index] = cdef_relative_offset(direction, tap, sign, stride) * columns;
+            secondary[tap][sign_index][0] =
+                cdef_relative_offset(direction + 6, tap, sign, stride) * columns;
+            secondary[tap][sign_index][1] =
+                cdef_relative_offset(direction + 2, tap, sign, stride) * columns;
+            sign_index += 1;
+        }
+        tap += 1;
+    }
+    (primary, secondary)
+}
+
+const fn cdef_offset_table(stride: isize, columns: isize) -> [CdefTapOffsets; 8] {
     let mut offsets = [([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8];
     let mut dir = 0;
     while dir < 8 {
-        let mut tap = 0;
-        while tap < 2 {
-            let mut sign_index = 0;
-            while sign_index < 2 {
-                let sign = if sign_index == 0 { -1 } else { 1 };
-                offsets[dir].0[tap][sign_index] = cdef_relative_offset(dir, tap, sign);
-                offsets[dir].1[tap][sign_index][0] = cdef_relative_offset(dir + 6, tap, sign);
-                offsets[dir].1[tap][sign_index][1] = cdef_relative_offset(dir + 2, tap, sign);
-                sign_index += 1;
-            }
-            tap += 1;
-        }
+        offsets[dir] = cdef_direction_offsets(dir, stride, columns);
         dir += 1;
     }
     offsets
-};
-
-const CDEF_ROW_STARTS: [CdefRowStarts; 8] = {
-    let mut starts = [[([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8]; 8];
-    let mut dir = 0;
-    while dir < 8 {
-        let mut row = 0;
-        while row < 8 {
-            let center = (row + 2) * CDEF_PADDED_SIDE + 2;
-            let mut tap = 0;
-            while tap < 2 {
-                let mut sign = 0;
-                while sign < 2 {
-                    starts[dir][row].0[tap][sign] =
-                        (center as isize + CDEF_RELATIVE_OFFSETS[dir].0[tap][sign]) as usize;
-                    let mut secondary = 0;
-                    while secondary < 2 {
-                        starts[dir][row].1[tap][sign][secondary] = (center as isize
-                            + CDEF_RELATIVE_OFFSETS[dir].1[tap][sign][secondary])
-                            as usize;
-                        secondary += 1;
-                    }
-                    sign += 1;
-                }
-                tap += 1;
-            }
-            row += 1;
-        }
-        dir += 1;
-    }
-    starts
-};
-
-/// [`CDEF_ROW_STARTS`] for the interleaved chroma-pair layout: rows are
-/// `CDEF_PAIR_STRIDE` lanes apart, the block starts at lane 4, and a column
-/// displacement moves two lanes because the two planes alternate.
-const CDEF_PAIR_ROW_STARTS: [CdefRowStarts; 8] = {
-    let mut starts = [[([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8]; 8];
-    let mut dir = 0;
-    while dir < 8 {
-        let mut row = 0;
-        while row < 8 {
-            let center = (row + 2) * CDEF_PAIR_STRIDE + 4;
-            let mut tap = 0;
-            while tap < 2 {
-                let mut sign = 0;
-                while sign < 2 {
-                    let signed = if sign == 0 { -1 } else { 1 };
-                    starts[dir][row].0[tap][sign] =
-                        (center as isize + cdef_pair_offset(dir, tap, signed)) as usize;
-                    let mut secondary = 0;
-                    while secondary < 2 {
-                        let rotation = if secondary == 0 { 6 } else { 2 };
-                        starts[dir][row].1[tap][sign][secondary] = (center as isize
-                            + cdef_pair_offset(dir + rotation, tap, signed))
-                            as usize;
-                        secondary += 1;
-                    }
-                    sign += 1;
-                }
-                tap += 1;
-            }
-            row += 1;
-        }
-        dir += 1;
-    }
-    starts
-};
-
-const fn cdef_pair_offset(direction: usize, tap: usize, sign: i32) -> isize {
-    let [dy, dx] = CDEF_DIRECTIONS[direction & 7][tap];
-    (sign * dy) as isize * CDEF_PAIR_STRIDE as isize + (sign * dx) as isize * 2
 }
+
+const CDEF_RELATIVE_OFFSETS: [CdefTapOffsets; 8] = cdef_offset_table(CDEF_PADDED_SIDE as isize, 1);
+
+/// [`CDEF_RELATIVE_OFFSETS`] for the interleaved chroma-pair layout: rows are
+/// `CDEF_PAIR_STRIDE` lanes apart and a column displacement moves two lanes
+/// because the two planes alternate.
+const CDEF_PAIR_RELATIVE_OFFSETS: [CdefTapOffsets; 8] =
+    cdef_offset_table(CDEF_PAIR_STRIDE as isize / 2, 2);
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn cdef_padded_row<const W: usize>(
-    pad: &[u16; CDEF_PADDED_AREA],
-    start: usize,
-) -> Option<&[u16; W]> {
-    let end = start.checked_add(W)?;
-    pad.get(start..end)?.try_into().ok()
+fn cdef_padded_row<const W: usize>(pad: &[u16], start: usize) -> Option<&[u16; W]> {
+    pad.get(start..)?.first_chunk()
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
@@ -574,18 +526,18 @@ fn cdef_output_row<const W: usize>(
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_primary_rows<'a, const W: usize>(
-    pad: &'a [u16; CDEF_PADDED_AREA],
-    row_offset: usize,
-    starts: &CdefPrimaryStarts,
+    pad: &'a [u16],
+    base: usize,
+    offsets: &CdefPrimaryOffsets,
 ) -> Option<[[&'a [u16; W]; 2]; 2]> {
     Some([
         [
-            cdef_padded_row(pad, starts[0][0] + row_offset)?,
-            cdef_padded_row(pad, starts[0][1] + row_offset)?,
+            cdef_padded_row(pad, base.wrapping_add_signed(offsets[0][0]))?,
+            cdef_padded_row(pad, base.wrapping_add_signed(offsets[0][1]))?,
         ],
         [
-            cdef_padded_row(pad, starts[1][0] + row_offset)?,
-            cdef_padded_row(pad, starts[1][1] + row_offset)?,
+            cdef_padded_row(pad, base.wrapping_add_signed(offsets[1][0]))?,
+            cdef_padded_row(pad, base.wrapping_add_signed(offsets[1][1]))?,
         ],
     ])
 }
@@ -593,29 +545,29 @@ fn cdef_primary_rows<'a, const W: usize>(
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_secondary_rows<'a, const W: usize>(
-    pad: &'a [u16; CDEF_PADDED_AREA],
-    row_offset: usize,
-    starts: &CdefSecondaryStarts,
+    pad: &'a [u16],
+    base: usize,
+    offsets: &CdefSecondaryOffsets,
 ) -> Option<[[[&'a [u16; W]; 2]; 2]; 2]> {
     Some([
         [
             [
-                cdef_padded_row(pad, starts[0][0][0] + row_offset)?,
-                cdef_padded_row(pad, starts[0][0][1] + row_offset)?,
+                cdef_padded_row(pad, base.wrapping_add_signed(offsets[0][0][0]))?,
+                cdef_padded_row(pad, base.wrapping_add_signed(offsets[0][0][1]))?,
             ],
             [
-                cdef_padded_row(pad, starts[0][1][0] + row_offset)?,
-                cdef_padded_row(pad, starts[0][1][1] + row_offset)?,
+                cdef_padded_row(pad, base.wrapping_add_signed(offsets[0][1][0]))?,
+                cdef_padded_row(pad, base.wrapping_add_signed(offsets[0][1][1]))?,
             ],
         ],
         [
             [
-                cdef_padded_row(pad, starts[1][0][0] + row_offset)?,
-                cdef_padded_row(pad, starts[1][0][1] + row_offset)?,
+                cdef_padded_row(pad, base.wrapping_add_signed(offsets[1][0][0]))?,
+                cdef_padded_row(pad, base.wrapping_add_signed(offsets[1][0][1]))?,
             ],
             [
-                cdef_padded_row(pad, starts[1][1][0] + row_offset)?,
-                cdef_padded_row(pad, starts[1][1][1] + row_offset)?,
+                cdef_padded_row(pad, base.wrapping_add_signed(offsets[1][1][0]))?,
+                cdef_padded_row(pad, base.wrapping_add_signed(offsets[1][1][1]))?,
             ],
         ],
     ])
@@ -792,17 +744,18 @@ fn cdef_filter_full_rows_paired<const W: usize, const V: usize, const HAS_UNAVAI
     rounded.simd_max(min).simd_min(max).cast::<u16>().to_array()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cdef_filter_block_interior_rows_paired<
     const W: usize,
     const V: usize,
     const HAS_UNAVAILABLE: bool,
-    const PAD_STRIDE: usize,
-    const PAD_CENTER: usize,
 >(
-    pad: &[u16; CDEF_PADDED_AREA],
+    pad: &[u16],
+    center_start: usize,
+    pad_stride: usize,
     h: usize,
     filter: &CdefBlockFilter,
-    row_starts: &CdefRowStarts,
+    offsets: &CdefTapOffsets,
     out: &mut [u16],
     out_stride: usize,
 ) -> Option<()> {
@@ -811,22 +764,25 @@ fn cdef_filter_block_interior_rows_paired<
     let sec_taps = CDEF_SEC_TAPS[tap_row];
     let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
     let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
-    let center_start = 2 * PAD_STRIDE + PAD_CENTER;
     for row in (0..h).step_by(2) {
         let next_row = (row + 1).min(h - 1);
+        let bases = [
+            center_start + row * pad_stride,
+            center_start + next_row * pad_stride,
+        ];
         let center_rows = [
-            cdef_padded_row::<W>(pad, center_start + row * PAD_STRIDE)?,
-            cdef_padded_row::<W>(pad, center_start + next_row * PAD_STRIDE)?,
+            cdef_padded_row::<W>(pad, bases[0])?,
+            cdef_padded_row::<W>(pad, bases[1])?,
         ];
         let center = cdef_pair::<W, V>(center_rows[0], center_rows[1]);
         let filtered = if filter.pri_str != 0 && filter.sec_str != 0 {
             let pri_rows = [
-                cdef_primary_rows::<W>(pad, 0, &row_starts[row].0)?,
-                cdef_primary_rows::<W>(pad, 0, &row_starts[next_row].0)?,
+                cdef_primary_rows::<W>(pad, bases[0], &offsets.0)?,
+                cdef_primary_rows::<W>(pad, bases[1], &offsets.0)?,
             ];
             let sec_rows = [
-                cdef_secondary_rows::<W>(pad, 0, &row_starts[row].1)?,
-                cdef_secondary_rows::<W>(pad, 0, &row_starts[next_row].1)?,
+                cdef_secondary_rows::<W>(pad, bases[0], &offsets.1)?,
+                cdef_secondary_rows::<W>(pad, bases[1], &offsets.1)?,
             ];
             cdef_filter_full_rows_paired::<W, V, HAS_UNAVAILABLE>(
                 &center,
@@ -841,8 +797,8 @@ fn cdef_filter_block_interior_rows_paired<
             )
         } else if filter.pri_str != 0 {
             let pri_rows = [
-                cdef_primary_rows::<W>(pad, 0, &row_starts[row].0)?,
-                cdef_primary_rows::<W>(pad, 0, &row_starts[next_row].0)?,
+                cdef_primary_rows::<W>(pad, bases[0], &offsets.0)?,
+                cdef_primary_rows::<W>(pad, bases[1], &offsets.0)?,
             ];
             let pri_data: [[[u16; V]; 2]; 2] = core::array::from_fn(|tap| {
                 core::array::from_fn(|sign| {
@@ -854,8 +810,8 @@ fn cdef_filter_block_interior_rows_paired<
             cdef_filter_primary_row_simd(&center, &pri_refs, pri_taps, filter.pri_str, pri_adj)
         } else if filter.sec_str != 0 {
             let sec_rows = [
-                cdef_secondary_rows::<W>(pad, 0, &row_starts[row].1)?,
-                cdef_secondary_rows::<W>(pad, 0, &row_starts[next_row].1)?,
+                cdef_secondary_rows::<W>(pad, bases[0], &offsets.1)?,
+                cdef_secondary_rows::<W>(pad, bases[1], &offsets.1)?,
             ];
             let sec_data: [[[[u16; V]; 2]; 2]; 2] = core::array::from_fn(|tap| {
                 core::array::from_fn(|sign| {
@@ -899,20 +855,48 @@ pub fn cdef_filter_block_interior_to(
     if out_stride < w {
         return false;
     }
-    cdef_filter_block_interior_to_valid_stride(pad, w, h, filter, out, out_stride)
+    cdef_filter_block_interior_to_valid_stride(
+        pad,
+        CDEF_PADDED_CENTER,
+        CDEF_PADDED_SIDE,
+        w,
+        h,
+        filter,
+        out,
+        out_stride,
+    )
 }
 
-/// Variant of [`cdef_filter_block_interior_to`] for an already-validated output view.
+/// Index of the block's first sample in the padded scratch layout.
+const CDEF_PADDED_CENTER: usize = 2 * CDEF_PADDED_SIDE + 2;
+
+/// Variant of [`cdef_filter_block_interior_to`] over an arbitrary strided `u16`
+/// source, for an already-validated output view.
+///
+/// The block's first sample is `pad[center]` and consecutive block rows are
+/// `pad_stride` samples apart, so a fully-interior block can be filtered
+/// directly out of the plane it lives in. Every tap position must be inside
+/// `pad`; a position outside it makes the call return `false` without writing.
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub fn cdef_filter_block_interior_to_valid_stride(
-    pad: &[u16; CDEF_PADDED_AREA],
+    pad: &[u16],
+    center: usize,
+    pad_stride: usize,
     w: usize,
     h: usize,
     filter: &CdefBlockFilter,
     out: &mut [u16],
     out_stride: usize,
 ) -> bool {
-    cdef_filter_block_padded_to_valid_stride::<false>(pad, w, h, filter, out, out_stride)
+    let offsets = if pad_stride == CDEF_PADDED_SIDE {
+        CDEF_RELATIVE_OFFSETS[filter.dir & 7]
+    } else {
+        cdef_direction_offsets(filter.dir & 7, pad_stride as isize, 1)
+    };
+    cdef_filter_block_padded_to_valid_stride::<false>(
+        pad, center, pad_stride, w, h, filter, &offsets, out, out_stride,
+    )
 }
 
 /// SIMD CDEF filtering for a padded boundary block.
@@ -928,32 +912,49 @@ pub fn cdef_filter_block_boundary_to_valid_stride(
     out: &mut [u16],
     out_stride: usize,
 ) -> bool {
-    cdef_filter_block_padded_to_valid_stride::<true>(pad, w, h, filter, out, out_stride)
+    cdef_filter_block_padded_to_valid_stride::<true>(
+        pad,
+        CDEF_PADDED_CENTER,
+        CDEF_PADDED_SIDE,
+        w,
+        h,
+        filter,
+        &CDEF_RELATIVE_OFFSETS[filter.dir & 7],
+        out,
+        out_stride,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
-    pad: &[u16; CDEF_PADDED_AREA],
+    pad: &[u16],
+    center: usize,
+    pad_stride: usize,
     w: usize,
     h: usize,
     filter: &CdefBlockFilter,
+    offsets: &CdefTapOffsets,
     out: &mut [u16],
     out_stride: usize,
 ) -> bool {
-    let row_starts = &CDEF_ROW_STARTS[filter.dir & 7];
     match w.min(8) {
-        8 => cdef_filter_block_interior_rows_paired::<8, 16, HAS_UNAVAILABLE, CDEF_PADDED_SIDE, 2>(
+        8 => cdef_filter_block_interior_rows_paired::<8, 16, HAS_UNAVAILABLE>(
             pad,
+            center,
+            pad_stride,
             h.min(8),
             filter,
-            row_starts,
+            offsets,
             out,
             out_stride,
         ),
-        4 => cdef_filter_block_interior_rows_paired::<4, 8, HAS_UNAVAILABLE, CDEF_PADDED_SIDE, 2>(
+        4 => cdef_filter_block_interior_rows_paired::<4, 8, HAS_UNAVAILABLE>(
             pad,
+            center,
+            pad_stride,
             h.min(8),
             filter,
-            row_starts,
+            offsets,
             out,
             out_stride,
         ),
@@ -992,11 +993,13 @@ pub fn cdef_filter_block_chroma_pair(
     if h > 4 {
         return false;
     }
-    cdef_filter_block_interior_rows_paired::<8, 16, false, CDEF_PAIR_STRIDE, 4>(
+    cdef_filter_block_interior_rows_paired::<8, 16, false>(
         pad,
+        2 * CDEF_PAIR_STRIDE + 4,
+        CDEF_PAIR_STRIDE,
         h,
         filter,
-        &CDEF_PAIR_ROW_STARTS[filter.dir & 7],
+        &CDEF_PAIR_RELATIVE_OFFSETS[filter.dir & 7],
         out,
         8,
     )
@@ -1030,7 +1033,17 @@ pub fn cdef_filter_block_interior(
     let h = h.min(8);
 
     let (pri_rel, sec_rel) = cdef_relative_offsets(filter.dir);
-    if cdef_filter_block_padded_to_valid_stride::<false>(pad, w, h, filter, out, w) {
+    if cdef_filter_block_padded_to_valid_stride::<false>(
+        pad,
+        CDEF_PADDED_CENTER,
+        CDEF_PADDED_SIDE,
+        w,
+        h,
+        filter,
+        &CDEF_RELATIVE_OFFSETS[filter.dir & 7],
+        out,
+        w,
+    ) {
         return;
     }
 
@@ -1187,8 +1200,8 @@ mod tests {
                 }
             }
             assert_eq!(
-                cdef_direction_padded(&pad, coeff_shift),
-                cdef_direction(&block),
+                cdef_direction_padded(&pad, CDEF_PADDED_CENTER, CDEF_PADDED_SIDE, coeff_shift),
+                Some(cdef_direction(&block)),
                 "coeff_shift={coeff_shift}"
             );
         }
@@ -1469,6 +1482,8 @@ mod tests {
                     let mut expected = [0u16; 64];
                     assert!(cdef_filter_block_interior_to_valid_stride(
                         single,
+                        CDEF_PADDED_CENTER,
+                        CDEF_PADDED_SIDE,
                         4,
                         4,
                         &filter,
