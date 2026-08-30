@@ -72,10 +72,15 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
                 exact_slice(source.samples, base + tap, 8).ok_or_else(source_error)?,
             )
             .cast::<i16>();
-            let above = ((negative - centers[row_offset]) << shift as i16).simd_clamp(low, alpha);
-            let below = ((positive - centers[row_offset]) << shift as i16).simd_clamp(low, alpha);
+            let above = ((negative - centers[row_offset]) << shift as i16)
+                .simd_max(low)
+                .simd_min(alpha);
+            let below = ((positive - centers[row_offset]) << shift as i16)
+                .simd_max(low)
+                .simd_min(alpha);
             let comb = (above + below)
-                .simd_clamp(Simd::splat(-512), Simd::splat(511))
+                .simd_max(Simd::splat(-512))
+                .simd_min(Simd::splat(511))
                 .cast::<i32>();
             for (index, weights) in gdf_indices[row_offset].iter_mut().zip(weight_table) {
                 *index += comb
@@ -165,11 +170,15 @@ pub(super) fn gdf_width4_rows<const ROWS: usize>(
                 exact_slice(source.samples, base + tap, MI_SIZE).ok_or_else(source_error)?,
             )
             .cast::<i32>();
-            let above =
-                ((negative - centers[row_offset]) << shift as i32).simd_clamp(-alpha, alpha);
-            let below =
-                ((positive - centers[row_offset]) << shift as i32).simd_clamp(-alpha, alpha);
-            let comb = (above + below).simd_clamp(Simd::splat(-512), Simd::splat(511));
+            let above = ((negative - centers[row_offset]) << shift as i32)
+                .simd_max(-alpha)
+                .simd_min(alpha);
+            let below = ((positive - centers[row_offset]) << shift as i32)
+                .simd_max(-alpha)
+                .simd_min(alpha);
+            let comb = (above + below)
+                .simd_max(Simd::splat(-512))
+                .simd_min(Simd::splat(511));
             for (index, weight) in gdf_indices[row_offset].iter_mut().zip(weights) {
                 *index += comb * weight;
             }
@@ -214,7 +223,8 @@ pub(super) fn finish_gdf_width_simd<
         let biased = (value + Simd::splat(GDF_BIAS[block.ref_dst_idx][block.qp_idx][idx]))
             * Simd::splat(SCALE);
         let digit = round2_signed_simd(biased, 15)
-            .simd_clamp(Simd::splat(-SCALE), Simd::splat(SCALE - 1))
+            .simd_max(Simd::splat(-SCALE))
+            .simd_min(Simd::splat(SCALE - 1))
             + Simd::splat(SCALE);
         pos = pos * Simd::splat((SCALE * 2) as u16) + digit.cast::<u16>();
     }
@@ -222,7 +232,8 @@ pub(super) fn finish_gdf_width_simd<
         Simd::gather_or_default(error, pos.cast::<usize>()) * Simd::splat(block.pix_scale);
     let residual = round2_signed_simd(scaled_error, 12 - u32::from(block.bit_depth.bits()));
     (base + residual)
-        .simd_clamp(Simd::splat(0), Simd::splat(block.max_sample))
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(block.max_sample))
         .cast::<u16>()
 }
 

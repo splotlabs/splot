@@ -1425,10 +1425,15 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const ROWS: usize>(
                 exact_slice(source.samples, base + tap, WIDTH).ok_or_else(source_error)?,
             )
             .cast::<i16>();
-            let above = ((negative - centers[row_offset]) << shift as i16).simd_clamp(low, high);
-            let below = ((positive - centers[row_offset]) << shift as i16).simd_clamp(low, high);
+            let above = ((negative - centers[row_offset]) << shift as i16)
+                .simd_max(low)
+                .simd_min(high);
+            let below = ((positive - centers[row_offset]) << shift as i16)
+                .simd_max(low)
+                .simd_min(high);
             let comb = (above + below)
-                .simd_clamp(Simd::splat(-512), Simd::splat(511))
+                .simd_max(Simd::splat(-512))
+                .simd_min(Simd::splat(511))
                 .cast::<i32>();
             for (idx, weights) in gdf_indices[row_offset].iter_mut().zip(&params.weights) {
                 let weight = weights[k];
