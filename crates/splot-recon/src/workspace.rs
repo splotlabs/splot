@@ -2146,7 +2146,8 @@ fn copy_rect_rows<T, S>(
 /// power-of-two pieces that fold into inline vector loads and stores; any copy
 /// loop here would be recognized by LLVM and re-lowered to a library call.
 /// Rows at or above 512 bytes keep the tuned library memcpy, where it wins.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured no-LTO row-copy hot path")]
+#[inline(always)]
 fn copy_row_samples<T: ReconSample>(dst: &mut [T], src: &[T]) {
     debug_assert_eq!(dst.len(), src.len(), "rect row copy length mismatch");
     let len = dst.len();
