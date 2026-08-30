@@ -591,6 +591,8 @@ struct ProjectedCenter {
     sy4: i32,
 }
 
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
 fn project_section_center(params: &WarpPredictBlockParams) -> Result<ProjectedCenter> {
     let src_x = checked_shift_left(
         params

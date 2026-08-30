@@ -1902,6 +1902,8 @@ fn subpel_predict_block_internal<T: ReconSample, O: Clone + Default>(
     Ok(output)
 }
 
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
 fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
     let SubpelPredictParams {
         w,
