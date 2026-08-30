@@ -392,7 +392,6 @@ fn assert_cdef_block_matches_per_sample_reference(
         }
     }
     let snap = FramePlane::new(&ws, PlaneId::Y).unwrap();
-    let packed = snap.whole_packed();
     let (x0, y0) = (c * MI_SIZE, r * MI_SIZE);
     for dir in 0..8usize {
         for (pri_str, sec_str) in [(0, 3), (5, 0), (5, 3), (12, 4)] {
@@ -415,13 +414,13 @@ fn assert_cdef_block_matches_per_sample_reference(
             };
             let mut pad = [0u16; CDEF_PADDED_AREA];
             let mut filtered = StripePlane::copy_from(snap, 0, 64).unwrap();
-            compute_cdef_filter_plane::<u8>(packed, &ctx, &mut pad, &mut filtered).unwrap();
+            compute_cdef_filter_plane::<u8>(snap, &ctx, &mut pad, &mut filtered).unwrap();
             let offsets = CdefTapOffsets::for_direction(ctx.dir);
             for i in 0..8 {
                 for j in 0..8 {
                     let (x, y) = (x0 + j, y0 + i);
-                    let center = packed.get(x as isize, y as isize).unwrap();
-                    let taps = gather_taps(packed, &offsets, x, y, 0, 0, 64, 64, center);
+                    let center = snap.get(x as isize, y as isize).unwrap();
+                    let taps = gather_taps(snap, &offsets, x, y, 0, 0, 64, 64, center);
                     let expected = cdef_filter_sample(
                         &taps,
                         ctx.pri_str,
@@ -481,12 +480,11 @@ fn zero_strengths_elide_all_writes() {
 fn snapshot_get_bounds() {
     let ws = workspace_8bit(16, 16, 50);
     let snap = FramePlane::new(&ws, PlaneId::Y).unwrap();
-    let packed = snap.whole_packed();
-    assert_eq!(packed.get(0, 0), Some(50));
-    assert_eq!(packed.get(15, 15), Some(50));
-    assert_eq!(packed.get(-1, 0), None, "negative x off-frame");
-    assert_eq!(packed.get(16, 0), None, "x past width off-frame");
-    assert_eq!(packed.get(0, 16), None, "y past height off-frame");
+    assert_eq!(snap.get(0, 0), Some(50));
+    assert_eq!(snap.get(15, 15), Some(50));
+    assert_eq!(snap.get(-1, 0), None, "negative x off-frame");
+    assert_eq!(snap.get(16, 0), None, "x past width off-frame");
+    assert_eq!(snap.get(0, 16), None, "y past height off-frame");
 }
 
 #[test]

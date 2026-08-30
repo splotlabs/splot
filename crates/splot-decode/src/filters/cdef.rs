@@ -12,7 +12,7 @@ use splot_recon::{
     cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 
-use super::source::{DeblockedPlanes, FramePlane, PackedPlane, StripeInitialization, StripePlane};
+use super::source::{DeblockedPlanes, FramePlane, StripeInitialization, StripePlane};
 
 const MI_SIZE: usize = 4;
 const MI_SIZE_LOG2: u32 = 2;
@@ -593,9 +593,9 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         let mut r = luma_start / MI_SIZE;
         let r_end = luma_end.div_ceil(MI_SIZE).min(mi_rows);
         let mut pad = [0u16; CDEF_PADDED_AREA];
-        let whole_y = frame.deblocked_y.whole_packed();
-        let whole_u = frame.deblocked_u.map(FramePlane::whole_packed);
-        let whole_v = frame.deblocked_v.map(FramePlane::whole_packed);
+        let whole_y = frame.deblocked_y;
+        let whole_u = frame.deblocked_u;
+        let whole_v = frame.deblocked_v;
         while r < r_end {
             let mut c = 0;
             while c < mi_cols {
@@ -668,9 +668,9 @@ impl CdefBlockCtx {
 fn compute_cdef_block<S: ReconSample>(
     ctx: &CdefBlockCtx,
     pad: &mut [u16; CDEF_PADDED_AREA],
-    luma_snap: PackedPlane<'_, S>,
-    u_snap: Option<PackedPlane<'_, S>>,
-    v_snap: Option<PackedPlane<'_, S>>,
+    luma_snap: FramePlane<'_, S>,
+    u_snap: Option<FramePlane<'_, S>>,
+    v_snap: Option<FramePlane<'_, S>>,
     filtered_y: &mut StripePlane,
     filtered_u: Option<&mut StripePlane>,
     filtered_v: Option<&mut StripePlane>,
@@ -770,8 +770,8 @@ fn compute_cdef_block<S: ReconSample>(
 /// is not the interior `4x4` case the interleaved scratch covers, which leaves
 /// the caller on the per-plane path.
 fn compute_cdef_chroma_pair<S: ReconSample>(
-    u_snap: PackedPlane<'_, S>,
-    v_snap: PackedPlane<'_, S>,
+    u_snap: FramePlane<'_, S>,
+    v_snap: FramePlane<'_, S>,
     ctx: &CdefFilterCtx,
     pad: &mut [u16; CDEF_PADDED_AREA],
     filtered_u: &mut StripePlane,
@@ -874,7 +874,7 @@ struct CdefFilterCtx {
 }
 
 fn compute_cdef_filter_plane<S: ReconSample>(
-    snap: PackedPlane<'_, S>,
+    snap: FramePlane<'_, S>,
     ctx: &CdefFilterCtx,
     pad: &mut [u16; CDEF_PADDED_AREA],
     filtered: &mut StripePlane,
@@ -948,7 +948,7 @@ fn compute_cdef_filter_plane<S: ReconSample>(
 /// guarantees the bordered region is inside the filter region (interior block), so the
 /// gather covers exactly the samples the kernel reads and `pad` needs no re-zeroing.
 fn gather_interior_pad<S: ReconSample>(
-    snap: PackedPlane<'_, S>,
+    snap: FramePlane<'_, S>,
     pad: &mut [u16; CDEF_PADDED_AREA],
     x0: usize,
     y0: usize,
@@ -1023,7 +1023,7 @@ fn gather_interior_rows<const SPAN: usize>(
 
 #[allow(clippy::too_many_arguments)]
 fn gather_boundary_pad<S: ReconSample>(
-    snap: PackedPlane<'_, S>,
+    snap: FramePlane<'_, S>,
     pad: &mut [u16; CDEF_PADDED_AREA],
     x0: usize,
     y0: usize,
@@ -1129,7 +1129,7 @@ impl CdefTapOffsets {
 
 #[allow(clippy::too_many_arguments)]
 fn gather_taps<T: ReconSample>(
-    snap: PackedPlane<'_, T>,
+    snap: FramePlane<'_, T>,
     offsets: &CdefTapOffsets,
     x: usize,
     y: usize,

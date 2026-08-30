@@ -435,16 +435,6 @@ pub(crate) struct FramePlane<'a, T> {
     samples: &'a [T],
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct PackedPlane<'a, T> {
-    width: usize,
-    height: usize,
-    stride: usize,
-    origin_y: usize,
-    rows: usize,
-    samples: &'a [T],
-}
-
 impl<'a, T: ReconSample> FramePlane<'a, T> {
     #[cfg(test)]
     pub(crate) fn new(workspace: &'a CurrentFrameWorkspace<T>, plane: PlaneId) -> Option<Self> {
@@ -525,17 +515,6 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
         None
     }
 
-    pub(crate) const fn whole_packed(self) -> PackedPlane<'a, T> {
-        PackedPlane {
-            width: self.width,
-            height: self.height,
-            stride: self.stride,
-            origin_y: self.storage_origin_y,
-            rows: self.storage_rows,
-            samples: self.samples,
-        }
-    }
-
     fn u16_rows(self, origin_y: usize, end_y: usize) -> Option<&'a [u16]> {
         let expected = end_y.checked_sub(origin_y)?.checked_mul(self.width)?;
         let source = self
@@ -572,40 +551,9 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
         }
         None
     }
-}
-
-impl<'a, T: ReconSample> PackedPlane<'a, T> {
-    pub(crate) const fn width(self) -> usize {
-        self.width
-    }
-
-    pub(crate) const fn frame_height(self) -> usize {
-        self.height
-    }
-
-    pub(crate) const fn stride(self) -> usize {
-        self.stride
-    }
-
-    pub(crate) const fn origin_y(self) -> usize {
-        self.origin_y
-    }
-
-    pub(crate) const fn end_y(self) -> usize {
-        self.origin_y + self.rows
-    }
 
     pub(crate) const fn samples(self) -> &'a [T] {
         self.samples
-    }
-
-    pub(crate) fn row(self, y: usize) -> Option<&'a [T]> {
-        let row = y.checked_sub(self.origin_y)?;
-        if row >= self.rows {
-            return None;
-        }
-        let start = row.checked_mul(self.stride)?;
-        self.samples.get(start..start.checked_add(self.width)?)
     }
 
     pub(crate) fn get(self, x: isize, y: isize) -> Option<i32> {
