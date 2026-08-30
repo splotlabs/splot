@@ -675,10 +675,28 @@ fn bilinear_u16<const LANES: usize>(
         >> SUBPEL_BITS as u16
 }
 
-fn subpel_bilinear_horizontal_into<T: ReconSample>(
+/// Reads `LANES` consecutive reference samples as `u16` lanes for either
+/// storage width, so the bilinear kernels keep their vector shape on the
+/// eight-bit plane the § 7.13.3.18 `u8` entry point serves.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn reference_lanes<const LANES: usize, T: ReconSample>(
+    source: &[T],
+    start: usize,
+) -> Simd<u16, LANES> {
+    if let Some(source) = T::u16_slice(source) {
+        return Simd::from_slice(&source[start..]);
+    }
+    if let Some(source) = T::u8_slice(source) {
+        return Simd::<u8, LANES>::from_slice(&source[start..]).cast();
+    }
+    Simd::from_array(core::array::from_fn(|lane| source[start + lane].to_u16()))
+}
+
+fn subpel_bilinear_horizontal_into<T: ReconSample, O: BilinearOutput>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    output: &mut [u16],
+    output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {
     let output_len = subpel_output_len(params, output_stride)?;
@@ -710,13 +728,11 @@ fn subpel_bilinear_horizontal_into<T: ReconSample>(
                 Simd::<u16, 8>::from_slice(&source[first..]),
                 Simd::<u16, 8>::from_slice(&source[first + 1..]),
                 phase,
-            )
-            .to_array();
-            destination[1..9].copy_from_slice(&low); // splot-copy-ok: publish fixed-window horizontal TIP lanes
-            let high = tip_overlap::overlap_bilinear_u16x8(source, source, second, None, phase, 0)
-                .to_array();
-            destination[8..].copy_from_slice(&high); // splot-copy-ok: publish fixed-window horizontal TIP lanes
-            destination[0] = source[first];
+            );
+            O::store(low, &mut destination[1..9]);
+            let high = tip_overlap::overlap_bilinear_u16x8(source, source, second, None, phase, 0);
+            O::store(high, &mut destination[8..]);
+            destination[0] = O::from_sample(source[first]);
         }
         return Ok(());
     }
@@ -742,49 +758,42 @@ fn subpel_bilinear_horizontal_into<T: ReconSample>(
         let source = reference.row(row);
         let destination = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
-            if let Some(source) = T::u16_slice(source) {
-                let vector_width8 = params.w - params.w % 8;
-                for c in (0..vector_width8).step_by(8) {
-                    let left = Simd::<u16, 8>::from_slice(&source[x + c..]);
-                    let right = Simd::<u16, 8>::from_slice(&source[x + c + 1..]);
-                    destination[c..c + 8]
-                        .copy_from_slice(&bilinear_u16(left, right, phase).to_array()); // splot-copy-ok: publish eight bilinear SIMD results into caller output
-                }
-                let vector_width4 = params.w - params.w % 4;
-                for c in (vector_width8..vector_width4).step_by(4) {
-                    let left = Simd::<u16, 4>::from_slice(&source[x + c..]);
-                    let right = Simd::<u16, 4>::from_slice(&source[x + c + 1..]);
-                    destination[c..c + 4]
-                        .copy_from_slice(&bilinear_u16(left, right, phase).to_array()); // splot-copy-ok: publish four bilinear SIMD results into caller output
-                }
-                for c in vector_width4..params.w {
-                    destination[c] = bilinear_sample(source[x + c], source[x + c + 1], phase);
-                }
-                continue;
+            let vector_width8 = params.w - params.w % 8;
+            for c in (0..vector_width8).step_by(8) {
+                let left = reference_lanes::<8, T>(source, x + c);
+                let right = reference_lanes::<8, T>(source, x + c + 1);
+                O::store(bilinear_u16(left, right, phase), &mut destination[c..]);
             }
-            for (out, pair) in destination
-                .iter_mut()
-                .zip(source[x..=x + params.w].windows(2))
-            {
-                *out = bilinear_sample(pair[0].to_u16(), pair[1].to_u16(), phase);
+            let vector_width4 = params.w - params.w % 4;
+            for c in (vector_width8..vector_width4).step_by(4) {
+                let left = reference_lanes::<4, T>(source, x + c);
+                let right = reference_lanes::<4, T>(source, x + c + 1);
+                O::store(bilinear_u16(left, right, phase), &mut destination[c..]);
+            }
+            for c in vector_width4..params.w {
+                destination[c] = O::from_sample(bilinear_sample(
+                    source[x + c].to_u16(),
+                    source[x + c + 1].to_u16(),
+                    phase,
+                ));
             }
         } else {
             for (c, out) in destination.iter_mut().enumerate() {
-                *out = bilinear_sample(
+                *out = O::from_sample(bilinear_sample(
                     source[clipped_x[c]].to_u16(),
                     source[clipped_x[c + 1]].to_u16(),
                     phase,
-                );
+                ));
             }
         }
     }
     Ok(())
 }
 
-fn subpel_bilinear_vertical_into<T: ReconSample>(
+fn subpel_bilinear_vertical_into<T: ReconSample, O: BilinearOutput>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    output: &mut [u16],
+    output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {
     let output_len = subpel_output_len(params, output_stride)?;
@@ -818,17 +827,15 @@ fn subpel_bilinear_vertical_into<T: ReconSample>(
                 Simd::<u16, 8>::from_slice(&top[first..]),
                 Simd::<u16, 8>::from_slice(&bottom[first..]),
                 phase,
-            )
-            .to_array();
-            destination[1..9].copy_from_slice(&low); // splot-copy-ok: publish fixed-window vertical TIP lanes
+            );
+            O::store(low, &mut destination[1..9]);
             let high = bilinear_u16(
                 Simd::<u16, 8>::from_slice(&top[second..]),
                 Simd::<u16, 8>::from_slice(&bottom[second..]),
                 phase,
-            )
-            .to_array();
-            destination[8..].copy_from_slice(&high); // splot-copy-ok: publish fixed-window vertical TIP lanes
-            destination[0] = bilinear_sample(top[first], bottom[first], phase);
+            );
+            O::store(high, &mut destination[8..]);
+            destination[0] = O::from_sample(bilinear_sample(top[first], bottom[first], phase));
         }
         return Ok(());
     }
@@ -844,48 +851,45 @@ fn subpel_bilinear_vertical_into<T: ReconSample>(
         let bottom = reference.row(bottom);
         let destination = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
-            if let (Some(top), Some(bottom)) = (T::u16_slice(top), T::u16_slice(bottom)) {
-                let vector_width8 = params.w - params.w % 8;
-                for c in (0..vector_width8).step_by(8) {
-                    let top = Simd::<u16, 8>::from_slice(&top[x + c..]);
-                    let bottom = Simd::<u16, 8>::from_slice(&bottom[x + c..]);
-                    destination[c..c + 8]
-                        .copy_from_slice(&bilinear_u16(top, bottom, phase).to_array()); // splot-copy-ok: publish eight bilinear SIMD results into caller output
-                }
-                let vector_width4 = params.w - params.w % 4;
-                for c in (vector_width8..vector_width4).step_by(4) {
-                    let top = Simd::<u16, 4>::from_slice(&top[x + c..]);
-                    let bottom = Simd::<u16, 4>::from_slice(&bottom[x + c..]);
-                    destination[c..c + 4]
-                        .copy_from_slice(&bilinear_u16(top, bottom, phase).to_array()); // splot-copy-ok: publish four bilinear SIMD results into caller output
-                }
-                for c in vector_width4..params.w {
-                    destination[c] = bilinear_sample(top[x + c], bottom[x + c], phase);
-                }
-                continue;
+            let vector_width8 = params.w - params.w % 8;
+            for c in (0..vector_width8).step_by(8) {
+                let top = reference_lanes::<8, T>(top, x + c);
+                let bottom = reference_lanes::<8, T>(bottom, x + c);
+                O::store(bilinear_u16(top, bottom, phase), &mut destination[c..]);
             }
-            for (out, (&top, &bottom)) in destination
-                .iter_mut()
-                .zip(top[x..x + params.w].iter().zip(&bottom[x..x + params.w]))
-            {
-                *out = bilinear_sample(top.to_u16(), bottom.to_u16(), phase);
+            let vector_width4 = params.w - params.w % 4;
+            for c in (vector_width8..vector_width4).step_by(4) {
+                let top = reference_lanes::<4, T>(top, x + c);
+                let bottom = reference_lanes::<4, T>(bottom, x + c);
+                O::store(bilinear_u16(top, bottom, phase), &mut destination[c..]);
+            }
+            for c in vector_width4..params.w {
+                destination[c] = O::from_sample(bilinear_sample(
+                    top[x + c].to_u16(),
+                    bottom[x + c].to_u16(),
+                    phase,
+                ));
             }
         } else {
             for (c, out) in destination.iter_mut().enumerate() {
                 let col = (x0 + c as i32)
                     .clamp(params.first_x, params.last_x)
                     .clamp(0, reference.width as i32 - 1) as usize;
-                *out = bilinear_sample(top[col].to_u16(), bottom[col].to_u16(), phase);
+                *out = O::from_sample(bilinear_sample(
+                    top[col].to_u16(),
+                    bottom[col].to_u16(),
+                    phase,
+                ));
             }
         }
     }
     Ok(())
 }
 
-fn subpel_bilinear_2d_into<T: ReconSample>(
+fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    output: &mut [u16],
+    output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {
     let output_len = subpel_output_len(params, output_stride)?;
@@ -934,9 +938,8 @@ fn subpel_bilinear_2d_into<T: ReconSample>(
                 h_phase as i32,
                 v_phase as i32,
             )
-            .simd_min(Simd::splat(max_sample))
-            .to_array();
-            destination[1..9].copy_from_slice(&low); // splot-copy-ok: publish fixed-window TIP bilinear lanes
+            .simd_min(Simd::splat(max_sample));
+            O::store(low, &mut destination[1..9]);
             let high = tip_overlap::overlap_bilinear_u16x8(
                 top,
                 bottom,
@@ -945,11 +948,11 @@ fn subpel_bilinear_2d_into<T: ReconSample>(
                 h_phase as i32,
                 v_phase as i32,
             )
-            .simd_min(Simd::splat(max_sample))
-            .to_array();
-            destination[8..].copy_from_slice(&high); // splot-copy-ok: publish fixed-window TIP bilinear lanes
-            destination[0] =
-                bilinear_sample(top[first], bottom[first], v_phase as i32).min(max_sample);
+            .simd_min(Simd::splat(max_sample));
+            O::store(high, &mut destination[8..]);
+            destination[0] = O::from_sample(
+                bilinear_sample(top[first], bottom[first], v_phase as i32).min(max_sample),
+            );
         }
         return Ok(());
     }
@@ -983,18 +986,20 @@ fn subpel_bilinear_2d_into<T: ReconSample>(
                     v_phase as i32,
                 )
                 .simd_min(Simd::splat(max_sample));
-                destination[c..c + 8].copy_from_slice(&filtered.to_array()); // splot-copy-ok: publish eight bilinear SIMD results
+                O::store(filtered, &mut destination[c..]);
             }
             for c in vector_width..params.w {
                 let top_value = (16 - h_phase as i32) * i32::from(top[x + c])
                     + h_phase as i32 * i32::from(top[x + c + 1]);
                 let bottom_value = (16 - h_phase as i32) * i32::from(bottom[x + c])
                     + h_phase as i32 * i32::from(bottom[x + c + 1]);
-                destination[c] = (round2_i32(
-                    (16 - v_phase as i32) * top_value + v_phase as i32 * bottom_value,
-                    8,
-                ) as u16)
-                    .min(max_sample);
+                destination[c] = O::from_sample(
+                    (round2_i32(
+                        (16 - v_phase as i32) * top_value + v_phase as i32 * bottom_value,
+                        8,
+                    ) as u16)
+                        .min(max_sample),
+                );
             }
         }
         return Ok(());
@@ -1050,8 +1055,10 @@ fn subpel_bilinear_2d_into<T: ReconSample>(
             .iter_mut()
             .zip(top.iter().zip(bottom.iter()))
         {
-            *out = round2_i32(v0 * top + v1 * bottom, INTER_ROUND1_NON_COMPOUND)
-                .clamp(0, max_sample) as u16;
+            *out = O::from_sample(
+                round2_i32(v0 * top + v1 * bottom, INTER_ROUND1_NON_COMPOUND).clamp(0, max_sample)
+                    as u16,
+            );
         }
         top_is_first = !top_is_first;
     }
@@ -1217,6 +1224,7 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
     output: &mut [u8],
     output_stride: usize,
 ) -> Result<()> {
+    crate::intra_dc_math::validate_sample_type::<u8>(params.bit_depth)?;
     let intermediate_height = validate_subpel_params(params)?;
     let sample_count = params
         .w
@@ -1424,6 +1432,10 @@ fn validate_compound_output<O>(
 }
 
 /// Internal fast dispatch for caller-constructed, already validated parameters.
+///
+/// # Errors
+/// Returns [`ReconError::StrideTooSmall`] or [`ReconError::BufferLengthMismatch`]
+/// when the output rectangle does not fit the supplied storage.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
@@ -1437,7 +1449,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<T: Reco
     scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
-) -> bool {
+) -> Result<bool> {
     debug_assert!(validate_subpel_params(params0).is_ok());
     debug_assert!(validate_subpel_params(params1).is_ok());
     debug_assert_eq!(
@@ -1447,7 +1459,8 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<T: Reco
     debug_assert!([params0, params1].iter().all(|params| {
         params.step_x == 1 << SCALE_SUBPEL_BITS && params.step_y == 1 << SCALE_SUBPEL_BITS
     }));
-    subpel_predict_block_compound_average_fast_dispatch(
+    validate_compound_output(params0, output, output_stride)?;
+    Ok(subpel_predict_block_compound_average_fast_dispatch(
         reference0,
         params0,
         reference1,
@@ -1456,7 +1469,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<T: Reco
         scratch,
         output,
         output_stride,
-    )
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

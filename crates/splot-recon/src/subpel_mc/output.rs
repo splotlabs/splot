@@ -2,7 +2,46 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::{compound_inter_post_round, round2_i32};
-use std::simd::{Simd, cmp::SimdOrd, num::SimdInt};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
+
+/// Storage a bilinear sub-pel kernel can publish into.
+///
+/// The `u8` implementation clamps the same way the rest of the eight-bit
+/// sub-pel path does, so an out-of-range reference sample cannot wrap.
+pub(super) trait BilinearOutput: Copy {
+    fn from_sample(value: u16) -> Self;
+
+    fn store<const LANES: usize>(lanes: Simd<u16, LANES>, output: &mut [Self]);
+}
+
+impl BilinearOutput for u16 {
+    #[allow(clippy::inline_always, reason = "measured bilinear subpel hot path")]
+    #[inline(always)]
+    fn from_sample(value: u16) -> Self {
+        value
+    }
+
+    #[allow(clippy::inline_always, reason = "measured bilinear subpel hot path")]
+    #[inline(always)]
+    fn store<const LANES: usize>(lanes: Simd<u16, LANES>, output: &mut [Self]) {
+        output[..LANES].copy_from_slice(&lanes.to_array()); // splot-copy-ok: publish bilinear SIMD lanes
+    }
+}
+
+impl BilinearOutput for u8 {
+    #[allow(clippy::inline_always, reason = "measured bilinear subpel hot path")]
+    #[inline(always)]
+    fn from_sample(value: u16) -> Self {
+        value.min(u16::from(u8::MAX)) as u8
+    }
+
+    #[allow(clippy::inline_always, reason = "measured bilinear subpel hot path")]
+    #[inline(always)]
+    fn store<const LANES: usize>(lanes: Simd<u16, LANES>, output: &mut [Self]) {
+        let clamped = lanes.simd_min(Simd::splat(u16::from(u8::MAX))).cast::<u8>();
+        output[..LANES].copy_from_slice(&clamped.to_array()); // splot-copy-ok: publish bilinear SIMD lanes
+    }
+}
 
 pub(super) trait SubpelOutput<O> {
     fn one(&mut self, value: i32) -> O;

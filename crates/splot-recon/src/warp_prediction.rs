@@ -139,6 +139,12 @@ impl PreparedWarpPrediction {
 const EXT_WARP_TAPS: usize = 6;
 /// AV2 § 3 `EXT_WARP_ROUND_BITS` = `WARPEDMODEL_PREC_BITS - EXT_WARP_PHASES_LOG2`.
 const EXT_WARP_ROUND_BITS: u32 = 10;
+/// Horizontal-pass rows the scaled extended warp can need.
+///
+/// § 7.11.3 admits at most a 2x reference-to-current scale, which spans
+/// `3 * 2 + 1 + EXT_WARP_TAPS = 13` rows; the bound leaves room well past that
+/// and turns anything beyond it into a typed error instead of an allocation.
+const MAX_EXT_WARP_INTERMEDIATE_ROWS: usize = 64;
 
 /// Reports whether the § 7.13.3.21 setup-shear process accepts a warp model,
 /// deciding the § 7.13.3.15 `skipPred` fallback to the extended block warp.
@@ -292,30 +298,33 @@ fn ext_warp_predict_scaled<T: ReconSample>(
             .and_then(|offs| EXT_WARPED_FILTERS.get(offs))
             .ok_or(ReconError::WarpFilterOffsetOutOfRange { offset })
     };
-    let fetch = |row: i64, col: i64| -> i64 {
+    let fetch = |row: i64, col: i64| -> i32 {
         let rr = row.clamp(i64::from(params.first_y), i64::from(params.last_y));
         let cc = col.clamp(i64::from(params.first_x), i64::from(params.last_x));
-        i64::from(reference.sample(rr as usize, cc as usize))
+        reference.sample(rr as usize, cc as usize)
     };
     let iy4 = y4 >> WARPEDMODEL_PREC_BITS;
     let intermediate_height =
         ((y4 + step_y * 3) >> WARPEDMODEL_PREC_BITS) - iy4 + EXT_WARP_TAPS as i64;
-    let intermediate_height =
-        usize::try_from(intermediate_height).map_err(|_| ReconError::ArithmeticOverflow {
+    let intermediate_height = usize::try_from(intermediate_height)
+        .ok()
+        .filter(|&rows| rows <= MAX_EXT_WARP_INTERMEDIATE_ROWS)
+        .ok_or(ReconError::ArithmeticOverflow {
             context: "scaled extended-warp intermediate height",
         })?;
-    let mut intermediate = vec![0i64; intermediate_height.saturating_mul(4)];
+    let mut storage = [0i32; MAX_EXT_WARP_INTERMEDIATE_ROWS * 4];
+    let intermediate = &mut storage[..intermediate_height * 4];
     for k in 0..intermediate_height {
         for l in 0..4 {
             let sample_x = x4 + step_x * l as i64;
             let int_x = sample_x >> WARPEDMODEL_PREC_BITS;
             let taps_x = phase(sample_x & ((1 << WARPEDMODEL_PREC_BITS) - 1))?;
             let int_y = iy4 + k as i64 - 2;
-            let mut sum = 0i64;
+            let mut sum = 0i32;
             for (m, &tap) in taps_x.iter().enumerate() {
-                sum += i64::from(tap) * fetch(int_y, int_x - 2 + m as i64);
+                sum += tap * fetch(int_y, int_x - 2 + m as i64);
             }
-            intermediate[k * 4 + l] = round2(sum, INTER_ROUND0);
+            intermediate[k * 4 + l] = round2_i32(sum, INTER_ROUND0);
         }
     }
     let mut out = [0i32; 16];
@@ -328,7 +337,7 @@ fn ext_warp_predict_scaled<T: ReconSample>(
                 }
             })?;
             let taps_y = phase(sample_y & ((1 << WARPEDMODEL_PREC_BITS) - 1))?;
-            let mut sum = 0i64;
+            let mut sum = 0i32;
             for (m, &tap) in taps_y.iter().enumerate() {
                 let value =
                     intermediate
@@ -336,9 +345,9 @@ fn ext_warp_predict_scaled<T: ReconSample>(
                         .ok_or(ReconError::ArithmeticOverflow {
                             context: "scaled extended-warp intermediate access",
                         })?;
-                sum += i64::from(tap) * value;
+                sum += tap * value;
             }
-            out[k * 4 + l] = round2(sum, round1) as i32;
+            out[k * 4 + l] = round2_i32(sum, round1);
         }
     }
     Ok(out)
@@ -684,10 +693,10 @@ fn build_intermediate<T: ReconSample>(
     } else {
         (copy_first - first_col) as usize
     };
+    let mut window = [0u16; SOURCE_WINDOW];
     for i1 in -7i32..8 {
         let ref_row = (projected.y4_int + i1).clamp(params.first_y, params.last_y) as usize;
         let source = reference.row(ref_row);
-        let mut window = [0u16; SOURCE_WINDOW];
         if copy_len == 0 {
             let source_col = first_col.clamp(bounded_first, bounded_last) as usize;
             window.fill(source[source_col].to_u16());
@@ -799,20 +808,19 @@ fn build_output(
     }
     for row in 0..WARPED_BLOCK_SIZE {
         let i1 = row as i32 - 4;
-        let mut taps_by_tap = [[0i16; WARPED_BLOCK_SIZE]; WARP_FILTER_TAPS];
-        for col in 0..WARPED_BLOCK_SIZE {
-            let i2 = col as i32 - 4;
-            let sy = projected.sy4 + shear.gamma * i2 + shear.delta * i1;
-            let taps = warped_filter_row(sy);
-            for (tap, &value) in taps.iter().enumerate() {
-                taps_by_tap[tap][col] = i16::from(value);
-            }
-        }
+        let columns: [&'static [i8; WARP_FILTER_TAPS]; WARPED_BLOCK_SIZE] =
+            core::array::from_fn(|col| {
+                let i2 = col as i32 - 4;
+                warped_filter_row(projected.sy4 + shear.gamma * i2 + shear.delta * i1)
+            });
         let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-        for (tap, taps) in taps_by_tap.into_iter().enumerate() {
+        for tap in 0..WARP_FILTER_TAPS {
+            let taps = Simd::<i16, WARPED_BLOCK_SIZE>::from_array(core::array::from_fn(|col| {
+                i16::from(columns[col][tap])
+            }));
             let samples =
                 Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]).cast::<i32>();
-            sum += Simd::from_array(taps).cast::<i32>() * samples;
+            sum += taps.cast::<i32>() * samples;
         }
         let rounded = (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32;
         output[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]

@@ -1442,9 +1442,30 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
     }
 }
 
+/// § 9.8 `Pc_Wiener_Filters` with each class narrowed to the `i16` lane factors
+/// the SIMD row kernel multiplies by, and the center tap pre-folded with the
+/// § 3 `PC_WIENER_PREC_BITS` unit scale.
+static PC_WIENER_FILTERS_I16: std::sync::LazyLock<Vec<[[i16; 13]; PC_WIENER_FULL_CLASSES]>> =
+    std::sync::LazyLock::new(|| {
+        PC_WIENER_FILTERS
+            .iter()
+            .map(|set| {
+                set.map(|coeffs| {
+                    let mut packed = [0i16; 13];
+                    for (slot, &coeff) in packed.iter_mut().zip(&coeffs) {
+                        *slot = coeff as i16;
+                    }
+                    packed[12] = ((1 << PC_WIENER_PREC_BITS) + coeffs[12]) as i16;
+                    packed
+                })
+            })
+            .collect()
+    });
+
 struct PcWienerPaddedFilterSetup {
     sample_count: usize,
     filters: &'static [[i32; 13]; PC_WIENER_FULL_CLASSES],
+    filters16: &'static [[i16; 13]; PC_WIENER_FULL_CLASSES],
     stride: usize,
     center_offset: usize,
     pos_offsets: [usize; PC_WIENER_CONFIG.len()],
@@ -1460,6 +1481,11 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
 ) -> Result<PcWienerPaddedFilterSetup> {
     validate_sample_type::<T>(params.bit_depth)?;
     let (sample_count, filters) = validate_pc_wiener_filter(output_len, params)?;
+    let filters16 = PC_WIENER_FILTERS_I16.get(params.filter_set_index).ok_or(
+        ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener filter set index",
+        },
+    )?;
     PcWienerPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
 
     let stride = source.stride;
@@ -1474,15 +1500,18 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
     let max_sample = params.bit_depth.max_sample();
     let padded_width = params.width + 2 * PC_WIENER_FILTER_TAP_RADIUS;
     let padded_rows = params.height + 2 * PC_WIENER_FILTER_TAP_RADIUS;
-    let source_is_valid = (0..padded_rows).all(|row| {
-        let start = row * stride;
-        source.samples[start..start + padded_width]
-            .iter()
-            .all(|sample| sample.to_u16() <= max_sample)
-    });
+    let source_is_valid = T::MAX_VALUE <= max_sample
+        || (0..padded_rows).all(|row| {
+            let start = row * stride;
+            !crate::workspace::samples_exceed(
+                &source.samples[start..start + padded_width],
+                max_sample,
+            )
+        });
     Ok(PcWienerPaddedFilterSetup {
         sample_count,
         filters,
+        filters16,
         stride,
         center_offset,
         pos_offsets,
@@ -1682,11 +1711,7 @@ fn filter_pc_wiener_padded_u16<T: PcWienerPaddedSample>(
             }
             let c1 = (subclass_end * params.subclass_block_size).min(params.width);
             let coeffs = &setup.filters[subclass];
-            let mut coeffs16 = [0i16; 13];
-            for (slot, &coeff) in coeffs16.iter_mut().zip(coeffs) {
-                *slot = coeff as i16;
-            }
-            coeffs16[12] = ((1 << PC_WIENER_PREC_BITS) + coeffs[12]) as i16;
+            let coeffs16 = &setup.filters16[subclass];
             let mut col = c0;
             macro_rules! filter_chunks {
                 ($lanes:literal) => {

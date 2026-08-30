@@ -34,6 +34,26 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     {
         return subpel_copy_block_u8_into(reference, params, output, output_stride);
     }
+    if params.interp == InterpolationFilter::Bilinear
+        && params.step_x == 1 << SCALE_SUBPEL_BITS
+        && params.step_y == 1 << SCALE_SUBPEL_BITS
+    {
+        match (
+            (params.start_x >> 6) & SUBPEL_MASK == 0,
+            (params.start_y >> 6) & SUBPEL_MASK == 0,
+        ) {
+            (false, true) => {
+                return subpel_bilinear_horizontal_into(reference, params, output, output_stride);
+            }
+            (true, false) => {
+                return subpel_bilinear_vertical_into(reference, params, output, output_stride);
+            }
+            (false, false) => {
+                return subpel_bilinear_2d_into(reference, params, output, output_stride);
+            }
+            (true, true) => {}
+        }
+    }
     subpel_predict_block_internal_into_validated(
         reference,
         params,
@@ -128,6 +148,7 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSam
     output: &mut [u8],
     output_stride: usize,
 ) -> Result<bool> {
+    crate::intra_dc_math::validate_sample_type::<u8>(params0.bit_depth)?;
     if !subpel_params_are_valid_fullpel(params0) || !subpel_params_are_valid_fullpel(params1) {
         validate_subpel_params(params0)?;
         validate_subpel_params(params1)?;

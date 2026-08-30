@@ -554,14 +554,26 @@ fn prepare_luma_padded<T: ReconSample>(
                 pair_count,
             }
         }));
-    for row_index in 0..padded_rows {
-        let row = padded_row(source.samples, stride, row_index, padded_width)?;
-        scratch
-            .clean_rows
-            .push(T::u16_slice(row).is_none_or(|samples| !u16_samples_exceed(samples, max_sample)));
+    // Scanning the stride gaps too only ever falls back to the per-row scan.
+    let region_clean = (padded_rows - 1)
+        .checked_mul(stride)
+        .and_then(|prefix| prefix.checked_add(padded_width))
+        .and_then(|span| source.samples.get(..span))
+        .is_some_and(|region| {
+            T::u16_slice(region).is_none_or(|samples| !u16_samples_exceed(samples, max_sample))
+        });
+    if region_clean {
+        scratch.clean_rows.resize(padded_rows, true);
+    } else {
+        for row_index in 0..padded_rows {
+            let row = padded_row(source.samples, stride, row_index, padded_width)?;
+            scratch.clean_rows.push(
+                T::u16_slice(row).is_none_or(|samples| !u16_samples_exceed(samples, max_sample)),
+            );
+        }
     }
 
-    let direct = scratch.clean_rows.iter().all(|&clean| clean);
+    let direct = region_clean || scratch.clean_rows.iter().all(|&clean| clean);
     if !direct {
         scratch
             .filtered

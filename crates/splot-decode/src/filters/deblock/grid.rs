@@ -226,12 +226,15 @@ pub(super) fn build_mi_grid(
 
     for (block_index, block) in blocks.iter().enumerate() {
         let block_index = mi_block_index(block_index)?;
-        for rr in block.r..block.r + block.n4h {
-            for cc in block.c..block.c + block.n4w {
-                if rr < mi_rows && cc < mi_cols {
-                    let index = rr * mi_cols + cc;
-                    cells[index].base = block_index;
-                    candidates[index] |= COVERED_CANDIDATE;
+        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
+            if let Some(cells) = cells.get_mut(start..end) {
+                for cell in cells {
+                    cell.base = block_index;
+                }
+            }
+            if let Some(candidates) = candidates.get_mut(start..end) {
+                for candidate in candidates {
+                    *candidate |= COVERED_CANDIDATE;
                 }
             }
         }
@@ -283,12 +286,15 @@ pub(super) fn overlay_mi_grid(
         .filter(|(_, block)| !block.chroma_transform_only)
     {
         let block_index = mi_block_index(block_index)?;
-        for rr in block.r..block.r + block.n4h {
-            for cc in block.c..block.c + block.n4w {
-                if rr < mi_rows && cc < mi_cols {
-                    let index = rr * mi_cols + cc;
-                    grid.cells[index].overlay = block_index;
-                    grid.candidates[index] |= COVERED_CANDIDATE;
+        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
+            if let Some(cells) = grid.cells.get_mut(start..end) {
+                for cell in cells {
+                    cell.overlay = block_index;
+                }
+            }
+            if let Some(candidates) = grid.candidates.get_mut(start..end) {
+                for candidate in candidates {
+                    *candidate |= COVERED_CANDIDATE;
                 }
             }
         }
@@ -299,10 +305,10 @@ pub(super) fn overlay_mi_grid(
         .filter(|(_, block)| block.chroma_transform_only)
     {
         let block_index = mi_block_index(block_index)?;
-        for rr in block.r..block.r + block.n4h {
-            for cc in block.c..block.c + block.n4w {
-                if rr < mi_rows && cc < mi_cols {
-                    grid.cells[rr * mi_cols + cc].chroma_transform = block_index;
+        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
+            if let Some(cells) = grid.cells.get_mut(start..end) {
+                for cell in cells {
+                    cell.chroma_transform = block_index;
                 }
             }
         }
@@ -315,6 +321,20 @@ pub(super) fn overlay_mi_grid(
             .all(|candidate| candidate & COVERED_CANDIDATE != 0);
     }
     Ok(grid)
+}
+
+fn block_row_spans(
+    block: &DeblockBlock,
+    mi_rows: usize,
+    mi_cols: usize,
+) -> impl Iterator<Item = (usize, usize)> {
+    let row_end = block.r.saturating_add(block.n4h).min(mi_rows);
+    let col_end = block.c.saturating_add(block.n4w).min(mi_cols);
+    let col_start = block.c.min(col_end);
+    (block.r..row_end).map(move |row| {
+        let base = row * mi_cols;
+        (base + col_start, base + col_end)
+    })
 }
 
 fn mi_block_index(index: usize) -> Result<u32, DeblockError> {
