@@ -74,9 +74,7 @@ impl EmissionQueue {
             if !wait && !frame.frame.is_settled() {
                 break;
             }
-            let settle_started = crate::timing::start();
             frame.wait_settled()?;
-            crate::timing::report("output_settle_wait", settle_started);
             emit(frame)?;
             self.pending.pop_front();
         }

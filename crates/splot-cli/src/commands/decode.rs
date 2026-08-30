@@ -23,26 +23,10 @@ use splot_parallel::{FrameDelay, ThreadCount};
 
 static OUTPUT_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Starts an env-gated (`SPLOT_DECODE_TIMING`) phase timer.
-fn timing_start() -> Option<std::time::Instant> {
-    std::env::var_os("SPLOT_DECODE_TIMING").map(|_| std::time::Instant::now())
-}
-
-/// Emits one `splot.decode_timing` stderr line for a phase started via
-/// [`timing_start`].
-fn timing_report(phase: &str, started: Option<std::time::Instant>) {
-    if let Some(started) = started {
-        eprintln!(
-            "splot.decode_timing {phase}_ms={:.3}",
-            started.elapsed().as_secs_f64() * 1000.0
-        );
-    }
-}
-
 /// Output artifact selected for `splot decode`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
-pub enum DecodeOutputFormat {
+enum DecodeOutputFormat {
     /// Runtime Y4M decoded-video output.
     Y4m,
     /// Headerless raw decoded sample output.
@@ -66,10 +50,10 @@ impl DecodeOutputFormat {
 
 /// Arguments for `splot decode`.
 #[derive(Args, Debug)]
-pub struct DecodeArgs {
+pub(crate) struct DecodeArgs {
     /// Emit the unsupported decode diagnostic as JSON.
     #[arg(long)]
-    pub json: bool,
+    json: bool,
     /// Select the decoded output mode.
     #[arg(
         long = "output-format",
@@ -77,26 +61,26 @@ pub struct DecodeArgs {
         requires_if("y4m", "output"),
         requires_if("raw", "output")
     )]
-    pub output_format: Option<DecodeOutputFormat>,
+    output_format: Option<DecodeOutputFormat>,
     /// Input AV2 bitstream.
-    pub input: PathBuf,
+    input: PathBuf,
     /// Output path for the selected artifact.
     #[arg(short = 'o', long, required_unless_present = "output_format")]
-    pub output: Option<PathBuf>,
+    output: Option<PathBuf>,
     /// Override the Y4M frame rate as `NUM:DEN`; required for raw Annex B Y4M output.
     #[arg(long, value_name = "NUM:DEN", value_parser = parse_y4m_frame_rate)]
-    pub frame_rate: Option<Y4mFrameRate>,
+    frame_rate: Option<Y4mFrameRate>,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
-    pub threads: ThreadCount,
+    threads: ThreadCount,
     /// Frame-pipelining depth: `auto` (default) is the resolved `--threads` count, or 3 frames
     /// when that count is 2, and a positive integer is honored as given. `1` decodes frames
     /// strictly serially; `0` is an alias for auto.
     #[arg(long, default_value_t = FrameDelay::Auto)]
-    pub frame_delay: FrameDelay,
+    frame_delay: FrameDelay,
     /// Stop after emitting this many output frames.
     #[arg(long)]
-    pub limit: Option<NonZeroU64>,
+    limit: Option<NonZeroU64>,
 }
 
 fn parse_y4m_frame_rate(value: &str) -> core::result::Result<Y4mFrameRate, String> {
@@ -144,14 +128,6 @@ impl DecodeArgs {
             (DecodeOutputFormat::Null, _) => Some(DecodeOutputTarget::Null),
         }
     }
-}
-
-fn decode_profile_repeats() -> usize {
-    std::env::var("SPLOT_DECODE_PROFILE_REPEATS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1)
 }
 
 #[derive(Debug)]
@@ -470,7 +446,7 @@ fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
 /// # Errors
 /// Returns an error if input cannot be read, the decode context cannot be
 /// constructed, the worker pool fails, or JSON serialization fails.
-pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
+pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let target = args
         .output_target()
         .context("decode output target was not resolved")?;
@@ -479,45 +455,24 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
         anyhow::bail!("--frame-rate is only valid with Y4M output");
     }
 
-    let total_started = timing_start();
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
         .with_y4m_frame_rate_override(args.frame_rate);
-    let input_read_started = timing_start();
     let input = read_decode_input(&args.input, &options)?;
-    timing_report("input_read", input_read_started);
     let report = match input {
         DecodeInputRead::Bytes(bytes) => {
-            let context_started = timing_start();
             let context = DecodeContext::new(
                 DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
             )?;
-            timing_report("context_new", context_started);
             match target {
-                DecodeOutputTarget::Null => {
-                    let repeats = decode_profile_repeats();
-                    let mut decoded = context.decode_discard_bytes(&bytes, options);
-                    for _ in 1..repeats {
-                        decoded = context.decode_discard_bytes(&bytes, options);
-                    }
-                    match decoded {
-                        Ok(()) => {
-                            timing_report("total", total_started);
-                            return Ok(ExitCode::SUCCESS);
-                        }
-                        Err(error) => decode_report_from_error(&error)?,
-                    }
-                }
+                DecodeOutputTarget::Null => match context.decode_discard_bytes(&bytes, options) {
+                    Ok(()) => return Ok(ExitCode::SUCCESS),
+                    Err(error) => decode_report_from_error(&error)?,
+                },
                 DecodeOutputTarget::Hash => {
-                    let repeats = decode_profile_repeats();
-                    let mut decoded = context.decode_hash_report_bytes(&bytes, options);
-                    for _ in 1..repeats {
-                        decoded = context.decode_hash_report_bytes(&bytes, options);
-                    }
-                    match decoded {
+                    match context.decode_hash_report_bytes(&bytes, options) {
                         Ok(report) => {
                             render_hash_report(&report, args.json)?;
-                            timing_report("total", total_started);
                             return Ok(ExitCode::SUCCESS);
                         }
                         Err(error) => decode_report_from_error(&error)?,
@@ -525,19 +480,13 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
                 }
                 DecodeOutputTarget::Y4m { path } => {
                     match decode_y4m_to_file(&context, &bytes, &options, path) {
-                        Ok(()) => {
-                            timing_report("total", total_started);
-                            return Ok(ExitCode::SUCCESS);
-                        }
+                        Ok(()) => return Ok(ExitCode::SUCCESS),
                         Err(error) => decode_report_from_error(&error)?,
                     }
                 }
                 DecodeOutputTarget::Raw { path } => {
                     match decode_raw_to_file(&context, &bytes, &options, path) {
-                        Ok(()) => {
-                            timing_report("total", total_started);
-                            return Ok(ExitCode::SUCCESS);
-                        }
+                        Ok(()) => return Ok(ExitCode::SUCCESS),
                         Err(error) => decode_report_from_error(&error)?,
                     }
                 }

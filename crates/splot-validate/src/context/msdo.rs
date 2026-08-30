@@ -43,9 +43,6 @@ pub(super) struct MsdoSubstreamMax {
 /// most-restrictive per-layer view § 6.6 uses.
 #[derive(Debug, Clone)]
 pub(super) struct MsdoAggregate {
-    /// `num_streams_minus_2 + 2` (AV2 § 5.6); the § 6.8.2 constraint-1 stream count and
-    /// the Table A.3 extended-layer count (mirror lines 148-149).
-    pub(super) num_streams: u32,
     /// `multistream_profile_idc` (AV2 § 5.6); the § 6.8.2 constraint-3 aggregate-profile
     /// value and the Table A.4 interoperability-point source (mirror lines 1659-1662).
     pub(super) profile_idc: u8,
@@ -340,7 +337,6 @@ impl ValidatorContext {
                 .or_insert(declared);
         }
         let aggregate = MsdoAggregate {
-            num_streams: msdo.num_streams(),
             profile_idc: msdo.multistream_profile_idc.get(),
             level_idx: msdo.multistream_level_idx,
             tier: msdo.multistream_tier,

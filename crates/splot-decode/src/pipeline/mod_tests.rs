@@ -419,12 +419,14 @@ fn leading_frame_unit_allows_film_grain_before_key_and_inter() {
 
     assert_eq!(td.header.obu_type, ObuType::TemporalDelimiter);
     assert_eq!(sequence.header.obu_type, ObuType::SequenceHeader);
-    let film_grain_result = leading_film_grain_obus(&obus);
-    assert!(film_grain_result.is_ok());
-    let Ok(film_grain_obus) = film_grain_result else {
+    let leading_prefix_result = leading_prefix_obus(&obus);
+    assert!(leading_prefix_result.is_ok());
+    let Ok(leading_prefix) = leading_prefix_result else {
         return;
     };
-    assert_eq!(film_grain_obus.len(), 1);
+    assert_eq!(leading_prefix.len(), 4);
+    assert_eq!(leading_prefix[2].offset, sequence.offset);
+    assert_eq!(leading_prefix[3].header.obu_type, ObuType::FilmGrain);
     assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
     assert_eq!(frame_unit_len, 5);
     assert_eq!(leading_record_inter_frame_unit_start(0, 6, &obus), Some(5));

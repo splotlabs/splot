@@ -72,23 +72,6 @@ pub(super) enum LeafResolveRecord {
     Intrabc(PendingIntrabcBlock),
 }
 
-impl LeafResolveRecord {
-    pub(super) fn prepass_write_is_contained(
-        &self,
-        superblock_origin: [usize; 2],
-        sb_h4: usize,
-        info: splot_recon::DecodedFrameInfo,
-        residual_blocks: &[InterResidualBlock],
-    ) -> bool {
-        match self {
-            Self::Inter(pending) => {
-                pending.prepass_write_is_contained(superblock_origin, sb_h4, info, residual_blocks)
-            }
-            Self::Reseed(_) | Self::NonInter { .. } | Self::Intrabc(_) => false,
-        }
-    }
-}
-
 /// One inter leaf's parse output, held until the resolve pass reaches it.
 pub(super) struct PendingInterBlock {
     syntax: InterBlockSyntax,
@@ -128,41 +111,6 @@ pub(super) fn pending_intrabc_leaf(
     }
 }
 
-impl PendingInterBlock {
-    pub(super) fn prepass_write_is_contained(
-        &self,
-        superblock_origin: [usize; 2],
-        sb_h4: usize,
-        info: splot_recon::DecodedFrameInfo,
-        residual_blocks: &[InterResidualBlock],
-    ) -> bool {
-        deferred_recon::prepass_write_is_contained(
-            [
-                self.geometry.luma_x,
-                self.geometry.luma_y,
-                self.geometry.luma_w,
-                self.geometry.luma_h,
-            ],
-            [
-                self.geometry.chroma_luma_x,
-                self.geometry.chroma_luma_y,
-                self.geometry.chroma_luma_w,
-                self.geometry.chroma_luma_h,
-            ],
-            self.geometry.predict_chroma,
-            deferred_recon::reads_current_frame(
-                self.syntax.bawp.enabled,
-                self.syntax.interintra.is_some(),
-            ),
-            self.syntax.residual.as_ref(),
-            superblock_origin,
-            sb_h4,
-            info,
-            residual_blocks,
-        )
-    }
-}
-
 /// Queues one parsed inter leaf for the resolve pass, deriving the
 /// reconstruction dependency its recon-entry needs right away.
 pub(super) fn pending_inter_leaf(
@@ -198,7 +146,6 @@ pub(super) fn resolve_parsed_leaves(
     state: &mut MvResolutionState<'_>,
     sb_h4: usize,
 ) -> Result<()> {
-    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ResolveRow);
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, state.core.frame_is_intra == Some(true));
     for entry in entries {
         let Some(resolve) = entry.take_resolve() else {
@@ -336,7 +283,6 @@ fn resolve_pending_intrabc(
         luma_use_tcq,
         residual_use_ddt,
         bit_depth,
-        state.tile_offset,
     );
     state.grid.record_motion(
         frontier.r,

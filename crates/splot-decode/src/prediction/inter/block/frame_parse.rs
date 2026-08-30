@@ -193,12 +193,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
 }
 
 impl InterFrameParse {
-    /// How many parsed unit buffers the frame is holding, which bounds the
-    /// split path's per-frame memory.
-    pub(crate) fn unit_count(&self) -> usize {
-        self.parsed.unit_count()
-    }
-
     /// Hands the frontier the filter state the § 8.2 pass settles last.
     ///
     /// Reconstruction is already admitted by the time this runs; only the
@@ -235,10 +229,7 @@ impl InterFrameParse {
         let has_active_deblock = core
             .deblocking_filter_params
             .as_ref()
-            .is_some_and(|filter| {
-                std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_none()
-                    && filter.apply_deblocking_filter != [false; 4]
-            });
+            .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4]);
         let (mut filter_setup, deblock_quant_deltas) = filter_sink_setup.deferred_filter_setup(
             info,
             plane_sizes,

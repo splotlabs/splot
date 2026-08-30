@@ -45,28 +45,7 @@ pub(super) fn derive_unit_motion<T: ReconSample>(
     row.motion_derived = true;
     row.motion_folded = true;
     motion.fold_unit(row.ordinal, &row.temporal);
-    motion.unit_landed_for(row.ordinal, true);
-}
-
-pub(super) fn derive_unit_motion_on_surface<T: ReconSample>(
-    row: &mut ReconRow,
-    surface: &mc::WorkspaceSink<'_, '_, T>,
-    scratch: &mut deferred_recon::InterReconScratch<T>,
-    motion: &MotionFieldUnits,
-    shared: &deferred_recon::ReconShared<'_, T>,
-) {
-    if row.superblocks.is_empty() {
-        row.motion_derived = true;
-        row.motion_folded = true;
-        return;
-    }
-    if !derive_row_motion(row, scratch, surface, shared) {
-        return;
-    }
-    row.motion_derived = true;
-    row.motion_folded = true;
-    motion.fold_unit(row.ordinal, &row.temporal);
-    motion.unit_landed_for(row.ordinal, true);
+    motion.unit_landed_for(row.ordinal);
 }
 
 /// Derives every inter entry's grid and records, reporting whether all landed.

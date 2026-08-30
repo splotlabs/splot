@@ -702,14 +702,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         if self.failed.swap(true, Ordering::AcqRel) {
             return;
         }
-        let failure_started = crate::timing::start();
-        if failure_started.is_some() {
-            crate::timing::report_detail(
-                "inter_admission_failure",
-                failure_started,
-                &format!("error={error}"),
-            );
-        }
         self.walk.fail_temporal();
         self.motion.fail();
         let _ = self.scratch_done.set(Mutex::new(None));

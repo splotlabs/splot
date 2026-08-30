@@ -356,7 +356,7 @@ impl Y4mFrameHeader {
 #[derive(Debug)]
 pub struct Y4mWriter<W: Write> {
     writer: W,
-    stream_header: Y4mStreamHeader,
+    frame_format: Y4mFrameFormat,
     frames_written: u64,
 }
 
@@ -370,7 +370,7 @@ impl<W: Write> Y4mWriter<W> {
         stream_header.write_to(&mut writer)?;
         Ok(Self {
             writer,
-            stream_header,
+            frame_format: stream_header.frame_format(),
             frames_written: 0,
         })
     }
@@ -420,7 +420,7 @@ impl<W: Write> Y4mWriter<W> {
     /// caller-provided writer fails.
     pub fn write_frame<T: ReconSample>(&mut self, frame: &DecodedFrame<T>) -> Y4mResult<()> {
         let actual = Y4mFrameFormat::from_frame(frame)?;
-        let expected = self.stream_header.frame_format();
+        let expected = self.frame_format;
         if actual != expected {
             return Err(Y4mError::StreamParameterMismatch { expected, actual });
         }

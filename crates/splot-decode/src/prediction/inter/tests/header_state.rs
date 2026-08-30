@@ -71,13 +71,13 @@ fn inter_frame_validation_requires_compound_tool_facts() {
     context
         .pool()
         .install(|| -> Result<()> {
-            let (mut sequence, mut core, offset) =
+            let (mut sequence, mut core, _) =
                 parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
             core.inter
                 .as_mut()
                 .expect("fixture inter core has control region")
                 .opfl_refine_type = None;
-            let error = super::super::validate_inter_frame_core(&core, &sequence, offset)
+            let error = super::super::validate_inter_frame_core(&core, &sequence)
                 .expect_err("missing optical-flow refinement type must stay fail-closed");
             assert!(matches!(
                 error,
@@ -91,7 +91,7 @@ fn inter_frame_validation_requires_compound_tool_facts() {
                 .expect("fixture inter core has control region")
                 .opfl_refine_type = Some(0);
             sequence.inter = None;
-            let error = super::super::validate_inter_frame_core(&core, &sequence, offset)
+            let error = super::super::validate_inter_frame_core(&core, &sequence)
                 .expect_err("missing sequence inter tools must stay fail-closed");
             assert!(matches!(
                 error,
@@ -165,7 +165,6 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
         false,
         false,
         BitDepth::Eight,
-        ByteOffset::new(0),
     )
     .expect_err("mismatched CCTX pair");
     assert!(matches!(
@@ -200,7 +199,6 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
             false,
             false,
             BitDepth::Eight,
-            ByteOffset::new(47),
         )
         .unwrap_err();
 
@@ -245,7 +243,6 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
         false,
         false,
         BitDepth::Eight,
-        ByteOffset::new(47),
     )
     .expect_err("invalid stored transform size");
 
@@ -303,7 +300,6 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
         false,
         false,
         BitDepth::Eight,
-        ByteOffset::new(47),
     )
     .expect_err("invalid stored CCTX transform size");
 

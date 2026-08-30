@@ -105,8 +105,6 @@ pub(super) struct MotionFieldUnits {
     bands: Vec<MotionBandUnits>,
     units_per_row: usize,
     handle: Option<MotionFieldHandle>,
-    started: Option<std::time::Instant>,
-    prepass_units: AtomicUsize,
 }
 
 struct MotionBandUnits {
@@ -124,21 +122,16 @@ impl MotionFieldUnits {
             bands: Vec::new(),
             units_per_row: 0,
             handle: None,
-            started: None,
-            prepass_units: AtomicUsize::new(0),
         }
     }
 
     /// Collects `units` units and publishes the field once the last one lands.
     ///
-    /// `started` anchors the publication-lag trace to the reconstruction phase
-    /// the units belong to.
     pub(super) fn publishing(
         field: TemporalMotionField,
         units: usize,
         units_per_row: usize,
         handle: MotionFieldHandle,
-        started: Option<std::time::Instant>,
     ) -> Self {
         let bands = field
             .into_bands()
@@ -160,8 +153,6 @@ impl MotionFieldUnits {
             bands,
             units_per_row,
             handle: Some(handle),
-            started,
-            prepass_units: AtomicUsize::new(0),
         };
         this.publish_empty_bands();
         this
@@ -200,36 +191,24 @@ impl MotionFieldUnits {
         }
     }
 
-    /// Reports that every record of one unit has been folded in, `prepass` when
-    /// the unit derived them all before its pixels reached the ordered commit.
-    pub(super) fn unit_landed(&self, prepass: bool) {
+    /// Reports that every record of one unit has been folded in.
+    pub(super) fn unit_landed(&self) {
         let Some(handle) = self.handle.as_ref() else {
             return;
         };
-        if prepass {
-            self.prepass_units.fetch_add(1, Ordering::Relaxed);
-        }
         if self.owed.fetch_sub(1, Ordering::AcqRel) != 1 {
             return;
         }
         if let Some(field) = self.locked().take() {
             handle.publish(field);
-            crate::timing::report_detail(
-                "motion_publish",
-                self.started,
-                &format!(
-                    "prepass_units={}",
-                    self.prepass_units.load(Ordering::Relaxed)
-                ),
-            );
         }
     }
 
     /// Settles one unit and publishes its source superblock-row band when the
     /// last horizontal unit in that row lands.
-    pub(super) fn unit_landed_for(&self, ordinal: usize, prepass: bool) {
+    pub(super) fn unit_landed_for(&self, ordinal: usize) {
         if self.bands.is_empty() {
-            self.unit_landed(prepass);
+            self.unit_landed();
             return;
         }
         if ordinal >= self.units {
@@ -241,9 +220,6 @@ impl MotionFieldUnits {
         let Some(handle) = self.handle.as_ref() else {
             return;
         };
-        if prepass {
-            self.prepass_units.fetch_add(1, Ordering::Relaxed);
-        }
         if self.units_per_row == 0 {
             handle.fail();
             return;
@@ -266,14 +242,6 @@ impl MotionFieldUnits {
             return;
         }
         handle.publish_whole_from_bands();
-        crate::timing::report_detail(
-            "motion_publish",
-            self.started,
-            &format!(
-                "prepass_units={}",
-                self.prepass_units.load(Ordering::Relaxed)
-            ),
-        );
     }
 
     /// Takes the field, or an empty one once it has been published.
@@ -381,9 +349,9 @@ mod tests {
         let mut field = TemporalMotionField::new(2, 2).expect("motion field");
         field.set_reference_metadata(true, (8, 8), &[Some(1)]);
         let handle = MotionFieldHandle::pending_with_layout(field.layout());
-        let units = MotionFieldUnits::publishing(field, 1, 1, handle.clone(), None);
+        let units = MotionFieldUnits::publishing(field, 1, 1, handle.clone());
 
-        units.unit_landed_for(1, false);
+        units.unit_landed_for(1);
 
         assert!(handle.field().is_none());
         assert!(handle.band_publication(0).is_some_and(Option::is_none));

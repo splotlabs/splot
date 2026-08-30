@@ -604,7 +604,7 @@ fn parse_one_general_intra_chroma_part_block(
     let chroma_plan =
         chroma_plan_for_parts(chroma, y_mode, angle_delta_y, cfl_ds_filter_index, sb_mib);
     let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
-        .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
+        .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
         residual_plan,
         work_unit,
@@ -661,7 +661,7 @@ fn parse_one_general_intra_rect_block(
         luma_lossless_tx_size,
         lossless,
     )
-    .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
+    .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
         residual_plan,
         work_unit,
@@ -1058,7 +1058,7 @@ fn parse_general_intra_residual_plan(
     })
 }
 
-fn general_intra_residual_plan_error(error: ResidualPlanError, _offset: ByteOffset) -> DecodeError {
+fn general_intra_residual_plan_error(error: ResidualPlanError) -> DecodeError {
     match error {
         ResidualPlanError::InvalidGeometry => {
             crate::DecodeHeaderStateError::InvalidBlockGeometry.into()

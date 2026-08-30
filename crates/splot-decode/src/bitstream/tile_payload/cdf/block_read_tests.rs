@@ -102,8 +102,12 @@ fn reads_supported_block_symbol_rows() {
         assert_eq!(actual, expected);
         assert_eq!(helper.consumed_bits(), direct.consumed_bits());
         assert_eq!(
-            helper_tile.row(selector).unwrap(),
-            direct_tile.row(selector).unwrap()
+            helper_tile
+                .with_row_mut(selector, |row| row.to_vec())
+                .unwrap(),
+            direct_tile
+                .with_row_mut(selector, |row| row.to_vec())
+                .unwrap()
         );
     }
 }
@@ -114,7 +118,7 @@ fn invalid_block_symbol_selector_fails_before_symbol_read() {
     let valid = TileCdfSelector::YModeSet;
     let invalid = TileCdfSelector::YModeIndex { ctx: 3 };
     let mut tile = frame.tile_copy();
-    let before = tile.row(valid).unwrap().to_vec();
+    let before = tile.with_row_mut(valid, |row| row.to_vec()).unwrap();
     let mut symbol = decoder(CdfUpdateMode::Enabled);
     let consumed_before = symbol.consumed_bits();
 
@@ -132,7 +136,10 @@ fn invalid_block_symbol_selector_fails_before_symbol_read() {
         })
     ));
     assert_eq!(symbol.consumed_bits(), consumed_before);
-    assert_eq!(tile.row(valid).unwrap(), before.as_slice());
+    assert_eq!(
+        tile.with_row_mut(valid, |row| row.to_vec()).unwrap(),
+        before.as_slice()
+    );
 }
 
 #[test]
@@ -145,21 +152,30 @@ fn update_mode_controls_only_selected_block_symbol_rows() {
 
     for &selector in SUPPORTED_BLOCK_SYMBOL_SELECTORS {
         let mut enabled = frame.tile_copy();
-        let selected_before = enabled.row(selector).unwrap().to_vec();
-        let untouched_before = enabled.row(untouched).unwrap().to_vec();
+        let selected_before = enabled.with_row_mut(selector, |row| row.to_vec()).unwrap();
+        let untouched_before = enabled.with_row_mut(untouched, |row| row.to_vec()).unwrap();
         let mut symbol = decoder(CdfUpdateMode::Enabled);
         let _ = enabled
             .read_block_symbol_trace(selector, &mut symbol)
             .unwrap();
-        assert_ne!(enabled.row(selector).unwrap(), selected_before.as_slice());
-        assert_eq!(enabled.row(untouched).unwrap(), untouched_before.as_slice());
+        assert_ne!(
+            enabled.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+            selected_before.as_slice()
+        );
+        assert_eq!(
+            enabled.with_row_mut(untouched, |row| row.to_vec()).unwrap(),
+            untouched_before.as_slice()
+        );
 
         let mut disabled = frame.tile_copy();
-        let selected_before = disabled.row(selector).unwrap().to_vec();
+        let selected_before = disabled.with_row_mut(selector, |row| row.to_vec()).unwrap();
         let mut symbol = decoder(CdfUpdateMode::Disabled);
         let _ = disabled
             .read_block_symbol_trace(selector, &mut symbol)
             .unwrap();
-        assert_eq!(disabled.row(selector).unwrap(), selected_before.as_slice());
+        assert_eq!(
+            disabled.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+            selected_before.as_slice()
+        );
     }
 }

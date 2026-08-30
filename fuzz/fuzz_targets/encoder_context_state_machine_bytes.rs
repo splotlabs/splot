@@ -3,12 +3,12 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use splot_parallel::ThreadCount;
 use splot_encode::{
     Context, EncoderConfig, EncoderOperation, EncoderRuntimeConfig, EncoderState, Error,
     FlushStatus, Frame, FrameId, FrameInfo, FramePlaneInput, FramePlanesInput, PlaneRect,
     PlaneSize, ReceivePacketStatus, SendFrameStatus,
 };
+use splot_parallel::ThreadCount;
 
 const MAX_COMMANDS: usize = 64;
 

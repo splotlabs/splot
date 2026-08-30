@@ -10,7 +10,7 @@ use std::sync::{Arc, Weak};
 use rayon::{ThreadPool, Yield};
 
 use crate::error::ParallelError;
-use crate::progress::{PoolProgressBindings, PoolProgressEvent, PoolWaitMetrics};
+use crate::progress::{PoolProgressBindings, PoolProgressEvent};
 use crate::thread_count::ThreadCount;
 
 const WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
@@ -92,10 +92,9 @@ impl WorkerPool {
         self.requested
     }
 
-    /// Returns a cumulative snapshot of this pool's assisted-wait metrics.
-    #[must_use]
-    pub fn wait_metrics(&self) -> PoolWaitMetrics {
-        self.progress.metrics()
+    #[cfg(test)]
+    pub(crate) fn parked_waiters(&self) -> usize {
+        self.progress.parked_waiters()
     }
 
     /// Runs `f` inside this local pool, so any nested Rayon work uses these
@@ -207,16 +206,8 @@ pub(crate) fn assist_installed_pool() -> PoolAssist {
 }
 
 pub(crate) fn assist_installed_pool_or_wait(snapshot: &PoolProgressSnapshot) -> PoolAssist {
-    if let Some(progress) = snapshot.progress.as_deref() {
-        progress.note_assist();
-    }
     let assisted = assist_installed_pool();
     match assisted {
-        PoolAssist::Executed => {
-            if let Some(progress) = snapshot.progress.as_deref() {
-                progress.note_assisted_job();
-            }
-        }
         PoolAssist::Idle => {
             if let Some(progress) = snapshot.progress.as_deref() {
                 if progress.has_pending_install() {
@@ -226,7 +217,7 @@ pub(crate) fn assist_installed_pool_or_wait(snapshot: &PoolProgressSnapshot) -> 
                 }
             }
         }
-        PoolAssist::OffPool => {}
+        PoolAssist::Executed | PoolAssist::OffPool => {}
     }
     assisted
 }
@@ -289,16 +280,6 @@ pub fn assist_pool_once() -> bool {
 #[must_use]
 pub fn on_multiworker_pool() -> bool {
     on_worker_pool() && rayon::current_num_threads() > 1
-}
-
-/// Returns the calling worker's index within the installed pool, or `None`
-/// when the caller is not a pool worker.
-///
-/// Intended for low-overhead diagnostics (for example per-stage worker
-/// utilization attribution), not for scheduling decisions.
-#[must_use]
-pub fn current_worker_index() -> Option<usize> {
-    rayon::current_thread_index()
 }
 
 /// The worker count of the installed pool the caller runs on (`1` when the
@@ -475,17 +456,5 @@ mod tests {
             ready_task_scope(|_| ()),
             Err(ParallelError::NotOnWorkerPool)
         ));
-    }
-
-    #[test]
-    fn independent_decoder_pools_keep_progress_events_separate() {
-        let first = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
-        let second = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
-        first.install(|| {
-            ready_task_scope(|_| notify_installed_pool_progress()).unwrap();
-        });
-
-        assert!(first.wait_metrics().notifications >= 1);
-        assert_eq!(second.wait_metrics().notifications, 0);
     }
 }

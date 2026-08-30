@@ -750,7 +750,6 @@ fn frame_temporal_context<'a, T: ReconSample>(
     reference: &InterReferenceState<T>,
     expected_tip_pair: Option<TipReferencePair>,
 ) -> Result<&'a mut TemporalMvContext> {
-    let temporal_timer = crate::timing::start();
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
     temporal_context.refresh_from_references(
         dimensions,
@@ -761,10 +760,7 @@ fn frame_temporal_context<'a, T: ReconSample>(
         &reference.ref_order_hint,
         &ref_motion_fields,
     )?;
-    crate::timing::report("inter_temporal_refresh", temporal_timer);
-    let tip_prepare_timer = crate::timing::start();
     tip::prepare_motion_field(temporal_context, core, sb_h4, expected_tip_pair)?;
-    crate::timing::report("inter_tip_prepare", tip_prepare_timer);
     Ok(temporal_context)
 }
 /// AV2 § 7.12.2 TIP reference pair as the entropy pass sees it.
@@ -1116,7 +1112,6 @@ fn decode_block<T: ReconSample>(
     current_order_hint: u32,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
-    let _block_phase = crate::timing::PhaseScope::new(crate::timing::Phase::Block);
     let (avail_up, avail_left) = tile_neighbour_availability(
         frontier.r,
         frontier.c,
@@ -1333,7 +1328,6 @@ fn decode_block<T: ReconSample>(
                     n4w,
                     n4h,
                     block_chroma_subsampling(sequence.general.chroma_format_idc),
-                    tile_offset,
                 )?;
                 None
             } else {
@@ -1369,7 +1363,6 @@ fn decode_block<T: ReconSample>(
                 None,
                 block_qindex,
                 lossless,
-                tile_offset,
             )?;
             let precision = frame_mv_precision(core)?;
             mv_grid.record_flags(
@@ -1424,7 +1417,6 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
-        let _intra_phase = crate::timing::PhaseScope::new(crate::timing::Phase::IntraLeaf);
         let (leaf, command) = crate::pipeline::general_intra::decode_one_general_intra_block(
             work_unit,
             symbols,
@@ -1765,7 +1757,6 @@ fn decode_block<T: ReconSample>(
                 n4w,
                 n4h,
                 block_chroma_subsampling(sequence.general.chroma_format_idc),
-                tile_offset,
             )?;
             None
         };
@@ -1781,7 +1772,6 @@ fn decode_block<T: ReconSample>(
             None,
             block_qindex,
             current_residual_lossless(work_unit),
-            tile_offset,
         )?;
         intrabc_state.record_block(
             frontier.r,
@@ -2021,7 +2011,6 @@ fn decode_block<T: ReconSample>(
             n4w,
             n4h,
             block_chroma_subsampling(sequence.general.chroma_format_idc),
-            tile_offset,
         )?;
         None
     };
@@ -2048,7 +2037,6 @@ fn decode_block<T: ReconSample>(
         )),
         block_qindex,
         current_residual_lossless(work_unit),
-        tile_offset,
     )?;
     intrabc_state.record_block(
         frontier.r,
@@ -2351,9 +2339,9 @@ fn symbol_read_error(
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
     match error {
-        BlockSymbolTraceReadError::Cdf(_) => symbol_read_internal_error(tile_offset),
-        BlockSymbolTraceReadError::Symbol(splot_core::Error::InvalidSymbolCdf { .. }) => {
-            symbol_read_internal_error(tile_offset)
+        BlockSymbolTraceReadError::Cdf(_)
+        | BlockSymbolTraceReadError::Symbol(splot_core::Error::InvalidSymbolCdf { .. }) => {
+            crate::DecodeHeaderStateError::InvalidInterBlockModeState.into()
         }
         BlockSymbolTraceReadError::Symbol(error) => {
             crate::pipeline::malformed_tile_payload(tile_offset, SPEC_MODE_INFO, error)
@@ -2380,10 +2368,6 @@ fn single_ref_read_error(
             ..
         } => crate::pipeline::malformed_tile_payload(tile_offset, "5.20.7.12", error),
     }
-}
-
-fn symbol_read_internal_error(_tile_offset: ByteOffset) -> crate::error::DecodeError {
-    crate::DecodeHeaderStateError::InvalidInterBlockModeState.into()
 }
 
 fn map_inter_multiblock_error(

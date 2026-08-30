@@ -405,7 +405,7 @@ mod tests {
         let publisher_cell = Arc::clone(&cell);
         let publisher_pool = pool.clone();
         let publisher = thread::spawn(move || {
-            while publisher_pool.wait_metrics().idle_parks == 0 {
+            while publisher_pool.parked_waiters() == 0 {
                 thread::yield_now();
             }
             publisher_cell.publish(WatermarkCell::FAILED);
@@ -420,11 +420,6 @@ mod tests {
             }
         });
         publisher.join().unwrap();
-
-        let metrics = pool.wait_metrics();
-        assert_eq!(metrics.idle_parks, 1);
-        assert_eq!(metrics.progress_wakes, 1);
-        assert_eq!(metrics.timeout_wakes, 0);
     }
 
     #[test]

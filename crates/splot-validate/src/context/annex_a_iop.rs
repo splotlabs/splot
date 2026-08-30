@@ -50,9 +50,6 @@ pub(super) struct TuIopFacts {
     pub(super) msdo_profile_idc: Option<u8>,
     /// A local layer configuration record OBU was present in this temporal unit.
     pub(super) local_lcr_present: bool,
-    /// A global layer configuration record OBU was present in this temporal unit (raw
-    /// presence; activation is resolved separately at flush).
-    pub(super) global_lcr_present: bool,
     /// This temporal unit contains an `OBU_CLOSED_LOOP_KEY` for at least one extended layer
     /// (§ 7.3.6: begins a new coded video sequence for that layer).
     pub(super) has_clk: bool,
@@ -99,8 +96,6 @@ pub(super) struct AnnexAIopWindow {
     /// point source when an MSDO is present (mirror lines 1659-1662). `None` when no MSDO is
     /// in the window.
     pub(super) msdo_profile_idc: Option<u8>,
-    /// `true` if an `OBU_MSDO` occurred in the window.
-    pub(super) msdo_present: bool,
     /// `true` if a local `OBU_LAYER_CONFIGURATION_RECORD` was present in the window.
     pub(super) local_lcr_present: bool,
     /// `LcrMaxNumXLayerCount` of an *activated* global LCR resolved in the window, when one
@@ -130,7 +125,6 @@ impl Default for AnnexAIopWindow {
             distinct_xlayers: BTreeSet::new(),
             msdo_num_streams: None,
             msdo_profile_idc: None,
-            msdo_present: false,
             local_lcr_present: false,
             activated_global_count: None,
             iop: None,
@@ -161,9 +155,8 @@ impl AnnexAIopTracker {
         self.pending.msdo_profile_idc = Some(profile_idc);
     }
 
-    /// Records that a global LCR OBU was present in the current temporal unit.
+    /// Records a global LCR OBU as the latest diagnostic anchor in the temporal unit.
     pub(super) fn note_global_lcr(&mut self, offset: ByteOffset) {
-        self.pending.global_lcr_present = true;
         self.pending.anchor_offset = Some(offset);
     }
 
@@ -236,7 +229,6 @@ impl AnnexAIopTracker {
             .distinct_xlayers
             .extend(pending.distinct_xlayers.iter().copied());
         if let Some((num_streams, offset)) = pending.msdo {
-            window.msdo_present = true;
             window.msdo_num_streams = Some(window.msdo_num_streams.unwrap_or(0).max(num_streams));
             window.anchor_offset = offset;
         }
@@ -347,7 +339,7 @@ impl ValidatorContext {
             .get(&(xlayer, seq_header_id))
             .filter(|a| a.lcr_is_global)
             .and_then(|a| a.global_record.as_ref())
-            .map(|record| record.max_num_xlayer_count);
+            .map(|record| record.xlayer_ids.len() as u32);
         self.annex_a_iop.note_activation(
             general.seq_profile_idc.get(),
             u32::from(general.seq_max_mlayer_count.get()),
@@ -552,7 +544,7 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         if e {
-            if !window.msdo_present {
+            if window.msdo_num_streams.is_none() {
                 report.push(annex_a_iop_error(
                     "annex-a/msdo-required-for-iop",
                     offset,
@@ -583,7 +575,7 @@ impl ValidatorContext {
         match (e, m) {
             (false, false) => Self::emit_msdo_prohibited(window, offset, report),
             (true, false) => {
-                if !window.msdo_present && !global_lcr {
+                if window.msdo_num_streams.is_none() && !global_lcr {
                     report.push(annex_a_iop_error(
                         "annex-a/msdo-required-for-iop",
                         offset,
@@ -611,7 +603,8 @@ impl ValidatorContext {
                 }
             }
             (true, true) => {
-                let satisfied = (window.msdo_present && window.local_lcr_present) || global_lcr;
+                let satisfied =
+                    (window.msdo_num_streams.is_some() && window.local_lcr_present) || global_lcr;
                 if !satisfied {
                     report.push(annex_a_iop_error(
                         "annex-a/lcr-required-for-iop",
@@ -634,9 +627,9 @@ impl ValidatorContext {
     /// This is the documented *defensive* arm. Under the Table A.3 "Number of Extended
     /// Layers" definition ([`annex_a_extended_layers`], declared precedence), a present
     /// OBU_MSDO declares `num_streams_minus_2 + 2 >= 2`, so `E = extended_layers > 1` is
-    /// always true when `msdo_present` is true. Every Table A.4 "MSDO Prohibited" row
+    /// always true when `msdo_num_streams` is `Some`. Every Table A.4 "MSDO Prohibited" row
     /// requires `E` to be false (`E == 1`), so a caller reaching this method with `!E`
-    /// already has `!msdo_present`, and this body never fires in-band today. The genuine
+    /// already has no MSDO, and this body never fires in-band today. The genuine
     /// violation the prohibition rows would catch — an MSDO declaring substreams that never
     /// materialize as distinct extended layers — is the declared-vs-observed reconciliation
     /// owned by the § 6.6 sub-stream change, not this presence window. The id stays emitted
@@ -646,7 +639,7 @@ impl ValidatorContext {
         offset: ByteOffset,
         report: &mut ValidationReport,
     ) {
-        if window.msdo_present {
+        if window.msdo_num_streams.is_some() {
             report.push(annex_a_iop_error(
                 "annex-a/msdo-prohibited-for-iop",
                 offset,

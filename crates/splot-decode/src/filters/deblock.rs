@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#[cfg(test)]
-use crate::filters::source::DeblockedWindow;
 use splot_core::headers::frame::{
     DeblockingFilterParams, FrameHeaderCore, QuantizationParams, TileInfo,
 };
@@ -11,8 +9,8 @@ use splot_core::tables::conversion::{
 };
 use splot_parallel::prelude::*;
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, OwnedFrameBands,
-    PixelFormat, PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice,
+    BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PixelFormat,
+    PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice,
     deblock_filter_choice_and_sample_strided_4_fast_validated, deblock_filter_choice_strided,
     deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
     deblock_sample_filter_strided_4, deblock_side_threshold_index, max_quantizer_index,
@@ -209,43 +207,6 @@ impl EdgeBlock<'_> {
     }
 }
 
-/// Deblocks a whole frame in one call.
-///
-/// The decode path drives [`FrameDeblock`] section by section so the stripe
-/// chain can start on the rows already final; this whole-frame form is what the
-/// deblock's own tests compare against.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    blocks: &[DeblockBlock],
-    mi_rows: usize,
-    mi_cols: usize,
-    filter: DeblockingFilterParams,
-    tile_info: Option<&TileInfo>,
-    disable_loopfilters_across_tiles: bool,
-    quant_deltas: DeblockQuantDeltas,
-    bit_depth: BitDepth,
-) -> Result<(), DeblockError> {
-    let chroma_records = ChromaDeblockRecords::new();
-    let Some(mut sections) = FrameDeblock::prepare(
-        blocks,
-        &chroma_records,
-        mi_rows,
-        mi_cols,
-        filter,
-        tile_info,
-        disable_loopfilters_across_tiles,
-        quant_deltas,
-    )?
-    else {
-        return Ok(());
-    };
-    let result = sections.advance(workspace, mi_rows, bit_depth);
-    sections.finish();
-    result
-}
-
 /// One frame's deblock, prepared once and applied over ascending mode-info row
 /// sections.
 ///
@@ -382,15 +343,12 @@ impl<'a> FrameDeblock<'a> {
         if filter.apply_deblocking_filter == [false; 4] {
             return Ok(None);
         }
-        let grid_timer = crate::timing::start();
         let grid = build_mi_grid(blocks, mi_rows, mi_cols)?;
-        crate::timing::report("deblock_grid", grid_timer);
         let mut chroma = [None, None];
         for (plane, slot) in chroma.iter_mut().enumerate() {
             if !filter.apply_deblocking_filter[plane + 2] {
                 continue;
             }
-            let overlay_timer = crate::timing::start();
             *slot = Some(overlay_mi_grid(
                 &grid,
                 chroma_blocks,
@@ -398,7 +356,6 @@ impl<'a> FrameDeblock<'a> {
                 mi_rows,
                 mi_cols,
             )?);
-            crate::timing::report("deblock_overlay", overlay_timer);
         }
         Ok(Some(Self {
             records: DeblockRecords::Borrowed {
@@ -466,7 +423,7 @@ impl<'a> FrameDeblock<'a> {
     /// bands filter exactly the samples one ascending walk does, and running
     /// them all up front leaves only the horizontal pass — which no row band can
     /// split, since consecutive horizontal edges overlap — pacing how early
-    /// [`Self::advance`] can call a stripe's rows final.
+    /// [`Self::advance_source`] can call a stripe's rows final.
     pub(crate) fn prime_vertical_pass<T: ReconSample>(
         &mut self,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -526,7 +483,7 @@ impl<'a> FrameDeblock<'a> {
                 jobs.push(PlaneJob {
                     band: PlaneBand {
                         row_count: samples.len() / stride,
-                        storage: PlaneRows::Contiguous { samples, stride },
+                        storage: PlaneRows { samples, stride },
                         stride,
                         width,
                         height,
@@ -553,19 +510,6 @@ impl<'a> FrameDeblock<'a> {
         Ok(())
     }
 
-    /// Deblocks every mode-info row before `mi_row_end` that is still owed.
-    #[cfg(test)]
-    pub(crate) fn advance<T: ReconSample>(
-        &mut self,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        mi_row_end: usize,
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        self.advance_with(mi_row_end, bit_depth, |this, ranges, depth| {
-            this.run_ranges(workspace, ranges, depth)
-        })
-    }
-
     /// Deblocks only the mutable rows below a contiguous source's immutable
     /// filter prefix, then releases the newly final prefix for read leases.
     pub(crate) fn advance_source<T: ReconSample>(
@@ -582,19 +526,6 @@ impl<'a> FrameDeblock<'a> {
             return Err(DeblockError::Workspace);
         }
         Ok(())
-    }
-
-    /// Deblocks every mode-info row before `mi_row_end` in movable canonical
-    /// row-band storage.
-    pub(crate) fn advance_bands<T: ReconSample>(
-        &mut self,
-        frame: &mut OwnedFrameBands<T>,
-        mi_row_end: usize,
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        self.advance_with(mi_row_end, bit_depth, |this, ranges, depth| {
-            this.run_ranges_bands(frame, ranges, depth)
-        })
     }
 
     fn advance_with(
@@ -628,170 +559,6 @@ impl<'a> FrameDeblock<'a> {
     fn record_frontiers(&mut self, pass_0_end: usize, pass_1_end: usize) {
         self.next_pass_0_mi_row = pass_0_end;
         self.next_pass_1_mi_row = pass_1_end;
-    }
-
-    /// Copies a final deblocked row window for an independently owned filter
-    /// continuation.
-    #[cfg(test)]
-    pub(crate) fn extract_window<T: ReconSample>(
-        &self,
-        workspace: &CurrentFrameWorkspace<T>,
-        luma_start: usize,
-        luma_end: usize,
-        margin: usize,
-    ) -> Result<DeblockedWindow<T>, DeblockError> {
-        self.validate_window(workspace.info(), luma_start, luma_end, margin)?;
-        DeblockedWindow::extract(workspace, luma_start, luma_end, margin)
-            .map_err(DeblockError::from)
-    }
-
-    #[cfg(test)]
-    fn validate_window(
-        &self,
-        info: splot_recon::DecodedFrameInfo,
-        luma_start: usize,
-        luma_end: usize,
-        margin: usize,
-    ) -> Result<(), DeblockError> {
-        let luma_height = info.coded_luma_size().height();
-        if luma_start > luma_end || luma_end > luma_height {
-            return Err(DeblockError::Workspace);
-        }
-        let subsampling_y = usize::from(info.pixel_format().subsampling_y());
-        let chroma_margin = margin
-            .checked_shl(u32::try_from(subsampling_y).map_err(|_| DeblockError::Workspace)?)
-            .ok_or(DeblockError::Workspace)?;
-        let needed = luma_end
-            .checked_add(chroma_margin)
-            .ok_or(DeblockError::Workspace)?
-            .min(luma_height);
-        if self.final_luma_rows(subsampling_y).min(luma_height) < needed {
-            return Err(DeblockError::Workspace);
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn run_ranges<T: ReconSample>(
-        &self,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        ranges: &[core::ops::Range<usize>; 2],
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        if ranges.iter().all(|range| range.start >= range.end) {
-            return Ok(());
-        }
-        let pixel_format = workspace.info().pixel_format();
-        let mut dimensions = [None; 3];
-        for (plane, slot) in dimensions.iter_mut().enumerate() {
-            let plane_id = plane_index_to_id(plane);
-            if workspace.plane(plane_id).is_ok() {
-                *slot = Some(coded_plane_dimensions(workspace, plane_id)?);
-            }
-        }
-        let (y, u, v) = workspace.as_frame_mut().into_planes();
-        let mut jobs = Vec::new();
-        for (plane, samples) in [Some(y), u, v].into_iter().enumerate() {
-            let (Some(samples), Some((width, height))) = (samples, dimensions[plane]) else {
-                continue;
-            };
-            if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
-                continue;
-            }
-            let passes = [0usize, 1].map(|pass| {
-                (!ranges[pass].is_empty())
-                    .then(|| {
-                        PlanePass::active(
-                            plane,
-                            pass,
-                            self.filter,
-                            self.quant_deltas,
-                            bit_depth,
-                            pixel_format,
-                            &ranges[pass],
-                        )
-                    })
-                    .flatten()
-            });
-            if passes.iter().all(Option::is_none) {
-                continue;
-            }
-            let stride = samples.stride_samples();
-            jobs.push(PlaneJob {
-                band: PlaneBand::plane(samples.into_samples(), stride, width, height),
-                grid: self.plane_grid(plane),
-                passes,
-            });
-        }
-        let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
-        if jobs.len() > 1 && self.plane_parallel && splot_parallel::on_multiworker_pool() {
-            jobs.into_par_iter().try_for_each(run)?;
-        } else {
-            jobs.into_iter().try_for_each(run)?;
-        }
-        Ok(())
-    }
-
-    fn run_ranges_bands<T: ReconSample>(
-        &self,
-        frame: &mut OwnedFrameBands<T>,
-        ranges: &[core::ops::Range<usize>; 2],
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        if ranges.iter().all(|range| range.start >= range.end) {
-            return Ok(());
-        }
-        let info = frame.info();
-        let pixel_format = info.pixel_format();
-        let luma = info.coded_luma_size();
-        let chroma = pixel_format
-            .chroma_size(luma)
-            .map_err(|_| DeblockError::Workspace)?;
-        let dimensions = [
-            Some((luma.width(), luma.height())),
-            chroma.map(|size| (size.width(), size.height())),
-            chroma.map(|size| (size.width(), size.height())),
-        ];
-        let (y, u, v) = frame.plane_rows_mut();
-        let mut jobs = Vec::new();
-        for (plane, rows) in [Some(y), u, v].into_iter().enumerate() {
-            let (Some(rows), Some((width, height))) = (rows, dimensions[plane]) else {
-                continue;
-            };
-            if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
-                continue;
-            }
-            let passes = [0usize, 1].map(|pass| {
-                (!ranges[pass].is_empty())
-                    .then(|| {
-                        PlanePass::active(
-                            plane,
-                            pass,
-                            self.filter,
-                            self.quant_deltas,
-                            bit_depth,
-                            pixel_format,
-                            &ranges[pass],
-                        )
-                    })
-                    .flatten()
-            });
-            if passes.iter().all(Option::is_none) {
-                continue;
-            }
-            jobs.push(PlaneJob {
-                band: PlaneBand::segmented(rows, width, height),
-                grid: self.plane_grid(plane),
-                passes,
-            });
-        }
-        let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
-        if jobs.len() > 1 && self.plane_parallel && splot_parallel::on_multiworker_pool() {
-            jobs.into_par_iter().try_for_each(run)?;
-        } else {
-            jobs.into_iter().try_for_each(run)?;
-        }
-        Ok(())
     }
 
     fn run_ranges_source<T: ReconSample>(
@@ -840,7 +607,7 @@ impl<'a> FrameDeblock<'a> {
                     |samples, stride, width, height, y_origin| {
                         self.run_plane_job(PlaneJob {
                             band: PlaneBand {
-                                storage: PlaneRows::Contiguous { samples, stride },
+                                storage: PlaneRows { samples, stride },
                                 stride,
                                 width,
                                 height,
@@ -869,7 +636,6 @@ impl<'a> FrameDeblock<'a> {
             passes,
         } = job;
         for plane_pass in passes.into_iter().flatten() {
-            let pass_timer = crate::timing::start();
             deblock_plane_pass_serial(
                 &mut band,
                 &grid,
@@ -879,7 +645,6 @@ impl<'a> FrameDeblock<'a> {
                 pass_tile_starts(self.tile_info.get(), plane_pass.pass),
                 self.disable_loopfilters_across_tiles,
             )?;
-            crate::timing::accumulate(crate::timing::Phase::DeblockPlanePass, pass_timer);
         }
         Ok(())
     }
@@ -899,7 +664,7 @@ impl<'a> FrameDeblock<'a> {
     }
 
     /// The luma rows whose deblocked samples are final now, given how far
-    /// [`Self::advance`] has got.
+    /// [`Self::advance_source`] has got.
     ///
     /// Every remaining horizontal edge sits at or below the frontier and
     /// reaches at most [`DEBLOCK_PASS_1_REACH`] plane rows back, which is twice
@@ -913,7 +678,7 @@ impl<'a> FrameDeblock<'a> {
         frontier.saturating_sub(DEBLOCK_PASS_1_REACH << subsampling_y)
     }
 
-    /// The luma rows one [`Self::advance`] to `mi_row_end` can touch.
+    /// The luma rows one [`Self::advance_source`] to `mi_row_end` can touch.
     ///
     /// The vertical pass runs [`PASS_0_LEAD_MI_ROWS`] mode-info rows ahead of
     /// the horizontal one and every edge it filters stays inside its own
@@ -1234,53 +999,30 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
     Ok(())
 }
 
-enum PlaneRows<'samples, T> {
-    Contiguous {
-        samples: &'samples mut [T],
-        stride: usize,
-    },
-    Segmented(Vec<&'samples mut [T]>),
+struct PlaneRows<'samples, T> {
+    samples: &'samples mut [T],
+    stride: usize,
 }
 
 impl<T> PlaneRows<'_, T> {
     fn row(&self, index: usize) -> Option<&[T]> {
-        match self {
-            Self::Contiguous { samples, stride } => {
-                let start = index.checked_mul(*stride)?;
-                let end = start.checked_add(*stride)?;
-                samples.get(start..end)
-            }
-            Self::Segmented(rows) => rows.get(index).map(|row| &**row),
-        }
+        let start = index.checked_mul(self.stride)?;
+        let end = start.checked_add(self.stride)?;
+        self.samples.get(start..end)
     }
 
     fn row_mut(&mut self, index: usize) -> Option<&mut [T]> {
-        match self {
-            Self::Contiguous { samples, stride } => {
-                let start = index.checked_mul(*stride)?;
-                let end = start.checked_add(*stride)?;
-                samples.get_mut(start..end)
-            }
-            Self::Segmented(rows) => rows.get_mut(index).map(|row| &mut **row),
-        }
+        let start = index.checked_mul(self.stride)?;
+        let end = start.checked_add(self.stride)?;
+        self.samples.get_mut(start..end)
     }
 
-    const fn is_contiguous(&self) -> bool {
-        matches!(self, Self::Contiguous { .. })
+    fn contiguous(&self) -> (&[T], usize) {
+        (self.samples, self.stride)
     }
 
-    fn contiguous(&self) -> Option<(&[T], usize)> {
-        match self {
-            Self::Contiguous { samples, stride } => Some((&**samples, *stride)),
-            Self::Segmented(_) => None,
-        }
-    }
-
-    fn contiguous_mut(&mut self) -> Option<(&mut [T], usize)> {
-        match self {
-            Self::Contiguous { samples, stride } => Some((&mut **samples, *stride)),
-            Self::Segmented(_) => None,
-        }
+    fn contiguous_mut(&mut self) -> (&mut [T], usize) {
+        (self.samples, self.stride)
     }
 }
 
@@ -1310,24 +1052,12 @@ struct PlaneBand<'a, T> {
 impl<'a, T> PlaneBand<'a, T> {
     const fn plane(samples: &'a mut [T], stride: usize, width: usize, height: usize) -> Self {
         Self {
-            storage: PlaneRows::Contiguous { samples, stride },
+            storage: PlaneRows { samples, stride },
             stride,
             width,
             height,
             y_origin: 0,
             row_count: height,
-        }
-    }
-
-    fn segmented(rows: Vec<&'a mut [T]>, width: usize, height: usize) -> Self {
-        let row_count = rows.len();
-        Self {
-            storage: PlaneRows::Segmented(rows),
-            stride: width,
-            width,
-            height,
-            y_origin: 0,
-            row_count,
         }
     }
 }
@@ -1343,17 +1073,15 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
         if width > stride || stride == 0 || y_origin.checked_add(rows) > Some(height) {
             return Err(DeblockError::Workspace);
         }
-        match &mut band.storage {
-            PlaneRows::Contiguous { samples, stride } => {
-                let required = stride.checked_mul(rows).ok_or(DeblockError::Workspace)?;
-                samples.get_mut(..required).ok_or(DeblockError::Workspace)?;
-            }
-            PlaneRows::Segmented(segment_rows) => {
-                if segment_rows.len() != rows || segment_rows.iter().any(|row| row.len() < width) {
-                    return Err(DeblockError::Workspace);
-                }
-            }
-        }
+        let required = band
+            .storage
+            .stride
+            .checked_mul(rows)
+            .ok_or(DeblockError::Workspace)?;
+        band.storage
+            .samples
+            .get_mut(..required)
+            .ok_or(DeblockError::Workspace)?;
         Ok(Self {
             rows: &mut band.storage,
             width,
@@ -1781,13 +1509,10 @@ fn deblock_filter_edge_specialized<T: ReconSample, const PLANE: usize, const PAS
         && x_p
             .checked_add(MI_SIZE)
             .is_some_and(|end| end <= plane_ctx.width);
-    if (horizontal || vertical) && plane_ctx.rows.is_contiguous() {
+    if horizontal || vertical {
         let x_origin = plane_ctx.x_origin;
         let y_origin = plane_ctx.y_origin;
-        let (samples, stride) = plane_ctx
-            .rows
-            .contiguous_mut()
-            .ok_or(DeblockError::Workspace)?;
+        let (samples, stride) = plane_ctx.rows.contiguous_mut();
         let boundary = (y_p - y_origin) * stride + x_p - x_origin;
         let (perpendicular, lane) = if horizontal { (1, stride) } else { (stride, 1) };
         return filter_contiguous_edge(
@@ -1915,8 +1640,8 @@ fn choose_filter_width<T: ReconSample>(
         && x_p
             .checked_add(MI_SIZE)
             .is_some_and(|end| end <= plane_ctx.width);
-    if (horizontal || vertical) && plane_ctx.rows.is_contiguous() {
-        let (samples, stride) = plane_ctx.rows.contiguous().ok_or(DeblockError::Workspace)?;
+    if horizontal || vertical {
+        let (samples, stride) = plane_ctx.rows.contiguous();
         let first_boundary = (y_p - plane_ctx.y_origin) * stride + x_p - plane_ctx.x_origin;
         let perpendicular_stride = if horizontal { 1 } else { stride };
         let lane_stride = if horizontal { stride } else { 1 };
@@ -2020,17 +1745,10 @@ fn apply_edge_samples<T: ReconSample>(
         && x >= plane_ctx.x_origin
         && x.checked_add(lanes)
             .is_some_and(|end| end <= plane_ctx.width);
-    if lanes <= MI_SIZE
-        && params.boundary == GATHER_HALF
-        && (horizontal || vertical)
-        && plane_ctx.rows.is_contiguous()
-    {
+    if lanes <= MI_SIZE && params.boundary == GATHER_HALF && (horizontal || vertical) {
         let x_origin = plane_ctx.x_origin;
         let y_origin = plane_ctx.y_origin;
-        let (samples, stride) = plane_ctx
-            .rows
-            .contiguous_mut()
-            .ok_or(DeblockError::Workspace)?;
+        let (samples, stride) = plane_ctx.rows.contiguous_mut();
         let boundary = (y - y_origin) * stride + x - x_origin;
         let perpendicular_stride = if horizontal { 1 } else { stride };
         let lane_stride = if horizontal { stride } else { 1 };

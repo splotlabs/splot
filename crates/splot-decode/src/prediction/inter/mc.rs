@@ -649,10 +649,7 @@ pub(super) fn tip_batch_motion_grid<T: ReconSample>(
     unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
     offset: ByteOffset,
 ) -> Result<CompoundMotionGrid> {
-    let motion_timer = crate::timing::start();
-    let motion = optflow::tip_motion_grid(sink, block, 8, columns, unit_count, unit_at, offset)?;
-    crate::timing::accumulate(crate::timing::Phase::TipMotionGrid, motion_timer);
-    Ok(motion)
+    optflow::tip_motion_grid(sink, block, 8, columns, unit_count, unit_at, offset)
 }
 
 pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
@@ -670,10 +667,7 @@ pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
     block.optflow_distances = None;
     block.use_refinemv = false;
     block.search_refinemv = false;
-    let predict_timer = crate::timing::start();
-    let metadata = predict_compound_from_grid(sink, block, Some(motion), offset, samples)?;
-    crate::timing::accumulate(crate::timing::Phase::TipBatchPredict, predict_timer);
-    Ok(metadata)
+    predict_compound_from_grid(sink, block, Some(motion), offset, samples)
 }
 
 fn compound_output_samples<'a, T: ReconSample>(

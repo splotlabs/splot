@@ -64,8 +64,12 @@ fn reads_supported_partition_entry_symbols() {
         assert_eq!(actual, expected);
         assert_eq!(helper.consumed_bits(), direct.consumed_bits());
         assert_eq!(
-            helper_tile.row(selector).unwrap(),
-            direct_tile.row(selector).unwrap()
+            helper_tile
+                .with_row_mut(selector, |row| row.to_vec())
+                .unwrap(),
+            direct_tile
+                .with_row_mut(selector, |row| row.to_vec())
+                .unwrap()
         );
     }
 }
@@ -82,16 +86,22 @@ fn enabled_updates_only_selected_partition_entry_row() {
         ctx: 4,
     };
     let mut tile = frame.tile_copy();
-    let selected_before = tile.row(selector).unwrap().to_vec();
-    let untouched_before = tile.row(untouched).unwrap().to_vec();
+    let selected_before = tile.with_row_mut(selector, |row| row.to_vec()).unwrap();
+    let untouched_before = tile.with_row_mut(untouched, |row| row.to_vec()).unwrap();
     let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
 
     let _ = tile
         .read_partition_entry_symbol(selector, &mut symbol)
         .unwrap();
 
-    assert_ne!(tile.row(selector).unwrap(), selected_before.as_slice());
-    assert_eq!(tile.row(untouched).unwrap(), untouched_before.as_slice());
+    assert_ne!(
+        tile.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+        selected_before.as_slice()
+    );
+    assert_eq!(
+        tile.with_row_mut(untouched, |row| row.to_vec()).unwrap(),
+        untouched_before.as_slice()
+    );
 }
 
 #[test]
@@ -102,14 +112,17 @@ fn disabled_update_mode_leaves_selected_row_unchanged() {
         ctx: 0,
     };
     let mut tile = frame.tile_copy();
-    let before = tile.row(selector).unwrap().to_vec();
+    let before = tile.with_row_mut(selector, |row| row.to_vec()).unwrap();
     let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Disabled);
 
     let _ = tile
         .read_partition_entry_symbol(selector, &mut symbol)
         .unwrap();
 
-    assert_eq!(tile.row(selector).unwrap(), before.as_slice());
+    assert_eq!(
+        tile.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+        before.as_slice()
+    );
 }
 
 fn assert_selector_error_is_inert(
@@ -119,7 +132,7 @@ fn assert_selector_error_is_inert(
 ) {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
-    let before = tile.row(valid).unwrap().to_vec();
+    let before = tile.with_row_mut(valid, |row| row.to_vec()).unwrap();
     let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
     let consumed_before = symbol.consumed_bits();
 
@@ -129,7 +142,10 @@ fn assert_selector_error_is_inert(
 
     assert!(expected(&err), "unexpected error: {err:?}");
     assert_eq!(symbol.consumed_bits(), consumed_before);
-    assert_eq!(tile.row(valid).unwrap(), before.as_slice());
+    assert_eq!(
+        tile.with_row_mut(valid, |row| row.to_vec()).unwrap(),
+        before.as_slice()
+    );
 }
 
 #[test]
@@ -190,8 +206,8 @@ fn symbol_cdf_error_preserves_core_error_and_row() {
         ctx: 0,
     };
     let mut tile = frame.tile_copy();
-    tile.rows_mut().do_split[0][0] = [0, 0, 0];
-    let before = tile.row(selector).unwrap().to_vec();
+    tile.rows.do_split[0][0] = [0, 0, 0];
+    let before = tile.with_row_mut(selector, |row| row.to_vec()).unwrap();
     let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
 
     let err = tile
@@ -205,7 +221,10 @@ fn symbol_cdf_error_preserves_core_error_and_row() {
             ..
         })
     ));
-    assert_eq!(tile.row(selector).unwrap(), before.as_slice());
+    assert_eq!(
+        tile.with_row_mut(selector, |row| row.to_vec()).unwrap(),
+        before.as_slice()
+    );
 }
 
 #[test]
@@ -231,7 +250,11 @@ fn zero_length_payload_read_matches_direct_symbol_handoff() {
     assert_eq!(actual, expected);
     assert_eq!(helper.consumed_bits(), direct.consumed_bits());
     assert_eq!(
-        helper_tile.row(selector).unwrap(),
-        direct_tile.row(selector).unwrap()
+        helper_tile
+            .with_row_mut(selector, |row| row.to_vec())
+            .unwrap(),
+        direct_tile
+            .with_row_mut(selector, |row| row.to_vec())
+            .unwrap()
     );
 }

@@ -604,14 +604,6 @@ pub(super) fn leading_prefix_obus<'a>(
     Ok(&obus[..indices.frame])
 }
 
-#[cfg(test)]
-pub(super) fn leading_film_grain_obus<'a>(
-    obus: &'a [ObuEnvelope<'a>],
-) -> Result<&'a [ObuEnvelope<'a>]> {
-    let indices = minimal_frame_unit_indices(obus)?;
-    Ok(&obus[indices.sequence + 1..indices.frame])
-}
-
 fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUnitIndices> {
     if obus.is_empty() {
         return Err(unsupported(

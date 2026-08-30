@@ -9,9 +9,9 @@
 //! resolves to one of two storages holding the same bytes: the settled
 //! [`DecodedFrame`] a reference slot publishes, or the filtered workspace a
 //! still-pipelined frame is publishing stripe by stripe.
-//! [`CurrentFrameWorkspace::freeze`] moves that workspace's plane storage into
-//! the frozen planes unchanged, so a row a stripe has already published reads
-//! identically through either storage.
+//! [`splot_recon::CurrentFrameWorkspace::freeze`] moves that workspace's plane
+//! storage into the frozen planes unchanged, so a row a stripe has already
+//! published reads identically through either storage.
 //!
 //! A partially published frame keeps its true geometry: every clamp and step in
 //! § 7.13.3.18 uses the whole frame's dimensions, so a banded read produces the
@@ -23,8 +23,6 @@
 //! block plane, against the last row that block's prediction can reach.
 
 use splot_core::span::ByteOffset;
-#[cfg(test)]
-use splot_recon::CurrentFrameWorkspace;
 use splot_recon::{
     DecodedFrame, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample, ReferencePlaneView,
     SubpelPredictParams,
@@ -68,9 +66,6 @@ struct PublishedRows {
 enum SampleSource<'a, T: ReconSample> {
     /// The frame has settled into its slot.
     Frozen(&'a DecodedFrame<T>),
-    /// The frame's filter phase still owns its output workspace.
-    #[cfg(test)]
-    Filtering(&'a CurrentFrameWorkspace<T>),
     Publishing(PublishedStorage<'a, T>),
 }
 
@@ -94,20 +89,6 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         }
     }
 
-    /// Reads the published prefix of a frame whose filter phase is still
-    /// running, leaving the frame's true geometry intact.
-    #[cfg(test)]
-    pub(crate) const fn filtering(
-        workspace: &'a CurrentFrameWorkspace<T>,
-        luma: usize,
-        chroma: usize,
-    ) -> Self {
-        Self {
-            source: SampleSource::Filtering(workspace),
-            published: Some(PublishedRows { luma, chroma }),
-        }
-    }
-
     pub(crate) fn publishing(published: &'a PublishedFrame<'_, T>) -> Result<Self> {
         Ok(Self {
             source: SampleSource::Publishing(published.storage()?),
@@ -122,8 +103,6 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     pub(crate) fn info(self) -> DecodedFrameInfo {
         match self.source {
             SampleSource::Frozen(frame) => frame.info(),
-            #[cfg(test)]
-            SampleSource::Filtering(workspace) => workspace.info(),
             SampleSource::Publishing(storage) => storage.info(),
         }
     }
@@ -215,15 +194,6 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     fn plane_storage(self, plane: PlaneId) -> Option<(&'a [T], usize, PlaneRect, Option<usize>)> {
         match self.source {
             SampleSource::Frozen(frame) => frame.plane(plane).map(|plane| {
-                (
-                    plane.samples(),
-                    plane.stride_samples(),
-                    plane.visible_rect(),
-                    None,
-                )
-            }),
-            #[cfg(test)]
-            SampleSource::Filtering(workspace) => workspace.plane(plane).ok().map(|plane| {
                 (
                     plane.samples(),
                     plane.stride_samples(),

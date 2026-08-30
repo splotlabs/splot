@@ -91,7 +91,7 @@ enum JsonSeverity {
 /// Runs the committed conformance corpus against its manifest and prints a
 /// per-vector pass/fail summary. Builds the `splot` binary once, then validates
 /// every committed vector with `splot validate --json`. NO AVM is invoked.
-pub fn run_conformance(root: &Path) -> Result<()> {
+pub(crate) fn run_conformance(root: &Path) -> Result<()> {
     let conformance_root = root.join("tests").join("conformance");
     let manifest_path = conformance_root.join("manifest.toml");
     let manifest_text = std::fs::read_to_string(&manifest_path)

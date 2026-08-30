@@ -720,9 +720,16 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             tile.tile_data_offset,
             tile.tile_size,
         )?;
-        let absolute_tile_offset =
-            checked_tile_byte_offset(input.payload_base, tile.tile_data_offset)?;
-        let tile_byte_span = checked_tile_byte_span(absolute_tile_offset, tile.tile_size)?;
+        let absolute_tile_offset = checked_byte_offset(
+            input.payload_base,
+            tile.tile_data_offset,
+            DecodeLimitName::MaxTilePayloadBytes,
+        )?;
+        let tile_byte_span = checked_byte_span(
+            absolute_tile_offset,
+            tile.tile_size,
+            DecodeLimitName::MaxTilePayloadBytes,
+        )?;
         let config = SymbolDecoderConfig::new()
             .with_cdf_update_mode(cdf_update_mode)
             .with_cdf_validation_mode(CdfValidationMode::Trusted);
@@ -848,14 +855,6 @@ fn unsupported_boundary_without_tile(
         byte_offset,
         message,
     ))
-}
-
-fn checked_tile_byte_offset(base: ByteOffset, delta: u64) -> Result<ByteOffset, DecodeLimitError> {
-    checked_byte_offset(base, delta, DecodeLimitName::MaxTilePayloadBytes)
-}
-
-fn checked_tile_byte_span(start: ByteOffset, len: u64) -> Result<ByteSpan, DecodeLimitError> {
-    checked_byte_span(start, len, DecodeLimitName::MaxTilePayloadBytes)
 }
 
 fn checked_byte_offset(

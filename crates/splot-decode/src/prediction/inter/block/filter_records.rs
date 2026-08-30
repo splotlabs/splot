@@ -22,9 +22,7 @@ pub(crate) fn record_inter_deblock_geometry(
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
     qindex: u32,
     lossless: bool,
-    tile_offset: ByteOffset,
 ) -> Result<()> {
-    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::Records);
     let (n4w, n4h) = block_size4;
     let (sub_x, sub_y) = chroma_subsampling(chroma_format);
     let chroma_subsampling = (u32::from(sub_x), u32::from(sub_y));
@@ -32,12 +30,12 @@ pub(crate) fn record_inter_deblock_geometry(
     let luma_prediction = crate::filters::deblock::DeblockPredictionUnit {
         base_r: frontier.r,
         base_c: frontier.c,
-        default_sub_pu_tx: super::residual::max_tx_size(frontier.b_size.index(), tile_offset)?,
+        default_sub_pu_tx: super::residual::max_tx_size(frontier.b_size.index())?,
     };
     let chroma_prediction = crate::filters::deblock::DeblockPredictionUnit {
         base_r: chroma_ref.row(),
         base_c: chroma_ref.col(),
-        default_sub_pu_tx: super::residual::max_tx_size(chroma_ref.size().index(), tile_offset)?,
+        default_sub_pu_tx: super::residual::max_tx_size(chroma_ref.size().index())?,
     };
     let inherited_chroma = chroma_ref.row() != frontier.r
         || chroma_ref.col() != frontier.c
@@ -45,18 +43,18 @@ pub(crate) fn record_inter_deblock_geometry(
     let inherited_chroma_metadata = frontier.has_chroma && inherited_chroma;
     if inherited_chroma_metadata {
         let chroma_plane_size = get_plane_residual_size(chroma_ref.size(), 1, sub_x, sub_y)
-            .map_err(|_| super::residual::residual_geometry_error(tile_offset))?
+            .map_err(|_| super::residual::residual_geometry_error())?
             .valid()
-            .ok_or_else(|| super::residual::residual_geometry_error(tile_offset))?;
-        let chroma_tx = super::residual::max_tx_size(chroma_plane_size.index(), tile_offset)?;
+            .ok_or_else(super::residual::residual_geometry_error)?;
+        let chroma_tx = super::residual::max_tx_size(chroma_plane_size.index())?;
         let chroma_n4w = chroma_ref
             .size()
             .num_4x4_wide()
-            .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
+            .map_err(|_| super::residual::residual_geometry_error())?;
         let chroma_n4h = chroma_ref
             .size()
             .num_4x4_high()
-            .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
+            .map_err(|_| super::residual::residual_geometry_error())?;
         let block = crate::filters::deblock::DeblockBlock {
             r: chroma_ref.row(),
             c: chroma_ref.col(),
@@ -77,9 +75,9 @@ pub(crate) fn record_inter_deblock_geometry(
         chroma_deblock_blocks.push_both(block);
     }
     let Some(residual) = residual else {
-        let tx_size = super::residual::max_tx_size(frontier.b_size.index(), tile_offset)?;
-        let tx_w4 = super::residual::tx_size_dimension(&TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-        let tx_h4 = super::residual::tx_size_dimension(&TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
+        let tx_size = super::residual::max_tx_size(frontier.b_size.index())?;
+        let tx_w4 = super::residual::tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
+        let tx_h4 = super::residual::tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
         for row4 in (0..n4h).step_by(tx_h4.max(1)) {
             for col4 in (0..n4w).step_by(tx_w4.max(1)) {
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
@@ -124,7 +122,6 @@ pub(crate) fn record_inter_deblock_geometry(
                 inherited_chroma_metadata,
                 qindex,
                 lossless,
-                tile_offset,
             )?;
         }
         return Ok(());
@@ -134,7 +131,7 @@ pub(crate) fn record_inter_deblock_geometry(
         .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
     for block in blocks {
         let (log2_width, log2_height) = super::super::inter_residual_log2(block)
-            .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
+            .map_err(|_| super::residual::residual_geometry_error())?;
         match block.plane {
             ReconPlaneId::Y => {
                 let tx_w4 = (1usize << log2_width) / MI_SIZE;
@@ -211,22 +208,21 @@ fn record_skipped_chroma_deblock_geometry(
     inherited_chroma_metadata: bool,
     qindex: u32,
     lossless: bool,
-    tile_offset: ByteOffset,
 ) -> Result<()> {
     let (sub_x, sub_y) = chroma_subsampling;
     let plane_size = get_plane_residual_size(chroma_ref_size, 1, sub_x, sub_y)
-        .map_err(|_| super::residual::residual_geometry_error(tile_offset))?
+        .map_err(|_| super::residual::residual_geometry_error())?
         .valid()
-        .ok_or_else(|| super::residual::residual_geometry_error(tile_offset))?;
-    let chroma_tx = super::residual::max_tx_size(plane_size.index(), tile_offset)?;
+        .ok_or_else(super::residual::residual_geometry_error)?;
+    let chroma_tx = super::residual::max_tx_size(plane_size.index())?;
     let width = plane_size
         .width_samples()
-        .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
+        .map_err(|_| super::residual::residual_geometry_error())?;
     let height = plane_size
         .height_samples()
-        .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
-    let tx_width = super::residual::tx_size_dimension(&TX_WIDTH, chroma_tx, tile_offset)?;
-    let tx_height = super::residual::tx_size_dimension(&TX_HEIGHT, chroma_tx, tile_offset)?;
+        .map_err(|_| super::residual::residual_geometry_error())?;
+    let tx_width = super::residual::tx_size_dimension(&TX_WIDTH, chroma_tx)?;
+    let tx_height = super::residual::tx_size_dimension(&TX_HEIGHT, chroma_tx)?;
     let base_x = (chroma_ref_col >> usize::from(sub_x)) * MI_SIZE;
     let base_y = (chroma_ref_row >> usize::from(sub_y)) * MI_SIZE;
     let subsampling = (u32::from(sub_x), u32::from(sub_y));
@@ -340,7 +336,6 @@ mod tests {
             false,
             200,
             false,
-            ByteOffset::new(0),
         )
         .unwrap();
 

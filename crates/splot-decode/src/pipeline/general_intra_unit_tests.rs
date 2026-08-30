@@ -349,8 +349,7 @@ fn palette_color_index_escape_is_typed_internal_state() {
 
 #[test]
 fn residual_plan_failures_keep_internal_and_resource_taxonomy() {
-    let geometry =
-        general_intra_residual_plan_error(ResidualPlanError::InvalidGeometry, ByteOffset::new(42));
+    let geometry = general_intra_residual_plan_error(ResidualPlanError::InvalidGeometry);
     assert!(matches!(
         geometry,
         DecodeError::HeaderState {
@@ -359,10 +358,8 @@ fn residual_plan_failures_keep_internal_and_resource_taxonomy() {
     ));
     assert!(DecodeDiagnosticReport::from_decode_error(&geometry).is_none());
 
-    let allocation = general_intra_residual_plan_error(
-        ResidualPlanError::Allocation { plane: PlaneId::U },
-        ByteOffset::new(42),
-    );
+    let allocation =
+        general_intra_residual_plan_error(ResidualPlanError::Allocation { plane: PlaneId::U });
     assert!(matches!(
         allocation,
         DecodeError::Reconstruction {

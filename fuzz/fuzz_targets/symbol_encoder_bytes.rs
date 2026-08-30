@@ -146,7 +146,10 @@ fuzz_target!(|data: &[u8]| {
 #[derive(Debug)]
 enum Op {
     Bool(bool),
-    Literal { value: u32, bits: u32 },
+    Literal {
+        value: u32,
+        bits: u32,
+    },
     Symbol {
         symbol: u8,
         cdf_before: Vec<i32>,

@@ -181,74 +181,6 @@ impl MvCdfRows {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn row(&self, selector: MvCdfSelector) -> Result<&[u16], TileCdfError> {
-        match selector {
-            MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row(
-                &self.joint_shell_set,
-                mv_ctx,
-                "mv_ctx",
-                TileCdfArray::JointShell6Class,
-            ),
-            MvCdfSelector::JointShellClass {
-                precision,
-                shell_set,
-                mv_ctx,
-            } => self.joint_shell_class_row(precision, shell_set, mv_ctx),
-            MvCdfSelector::JointShellLastTwo { mv_ctx } => checked_cdf_row(
-                &self.joint_shell_last_two,
-                mv_ctx,
-                "mv_ctx",
-                TileCdfArray::JointShell6Class,
-            ),
-            MvCdfSelector::ShellOffsetLowClass {
-                mv_ctx,
-                shell_class,
-            } => checked_cdf_bank_row(
-                &self.shell_offset_low_class,
-                mv_ctx,
-                "mv_ctx",
-                shell_class,
-                "shell_class",
-                TileCdfArray::ShellOffsetLowClass,
-            ),
-            MvCdfSelector::ShellOffsetClass2 { mv_ctx } => checked_cdf_row(
-                &self.shell_offset_class2,
-                mv_ctx,
-                "mv_ctx",
-                TileCdfArray::ShellOffsetLowClass,
-            ),
-            MvCdfSelector::ShellOffsetOtherClass { mv_ctx, i } => checked_cdf_bank_row(
-                &self.shell_offset_other_class,
-                mv_ctx,
-                "mv_ctx",
-                i,
-                "i",
-                TileCdfArray::ShellOffsetOtherClass,
-            ),
-            MvCdfSelector::ColMvGreater { mv_ctx, i } => checked_cdf_bank_row(
-                &self.col_mv_greater,
-                mv_ctx,
-                "mv_ctx",
-                i,
-                "i",
-                TileCdfArray::ColMvGreater,
-            ),
-            MvCdfSelector::ColMvIndex { mv_ctx, ctx } => checked_cdf_bank_row(
-                &self.col_mv_index,
-                mv_ctx,
-                "mv_ctx",
-                ctx,
-                "ctx",
-                TileCdfArray::ColMvIndex,
-            ),
-            MvCdfSelector::AmvdJoint => Ok(self.amvd_joint[0].as_slice()),
-            MvCdfSelector::AmvdIndex { comp } => {
-                checked_cdf_row(&self.amvd_index, comp, "comp", TileCdfArray::AmvdIndex)
-            }
-        }
-    }
-
     pub(crate) fn row_mut(&mut self, selector: MvCdfSelector) -> Result<&mut [u16], TileCdfError> {
         match selector {
             MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row_mut(
@@ -354,17 +286,6 @@ impl MvCdfRows {
         visit_mv_cdf_rows!(scale_rows);
     }
 
-    #[cfg(test)]
-    fn joint_shell_class_row(
-        &self,
-        precision: usize,
-        shell_set: usize,
-        mv_ctx: usize,
-    ) -> Result<&[u16], TileCdfError> {
-        checked_shell_class_axes(precision, shell_set, mv_ctx)?;
-        joint_shell_class_row_match!(self, precision, shell_set, mv_ctx, as_slice)
-    }
-
     fn joint_shell_class_row_mut(
         &mut self,
         precision: usize,
@@ -402,44 +323,6 @@ fn checked_shell_class_axes(
     } else {
         Err(precision_error(precision))
     }
-}
-
-#[cfg(test)]
-fn checked_row<'a, T, const N: usize>(
-    rows: &'a [T; N],
-    index: usize,
-    index_name: &'static str,
-    array: TileCdfArray,
-) -> Result<&'a T, TileCdfError> {
-    rows.get(index).ok_or(TileCdfError::SelectorOutOfRange {
-        array,
-        index_name,
-        actual: index,
-        max_exclusive: N,
-    })
-}
-
-#[cfg(test)]
-fn checked_cdf_row<'a, const ROW_LEN: usize, const N: usize>(
-    rows: &'a [[u16; ROW_LEN]; N],
-    index: usize,
-    index_name: &'static str,
-    array: TileCdfArray,
-) -> Result<&'a [u16], TileCdfError> {
-    Ok(checked_row(rows, index, index_name, array)?.as_slice())
-}
-
-#[cfg(test)]
-fn checked_cdf_bank_row<'a, const ROW_LEN: usize, const OUTER: usize, const INNER: usize>(
-    rows: &'a [[[u16; ROW_LEN]; INNER]; OUTER],
-    outer: usize,
-    outer_name: &'static str,
-    inner: usize,
-    inner_name: &'static str,
-    array: TileCdfArray,
-) -> Result<&'a [u16], TileCdfError> {
-    let bank = checked_row(rows, outer, outer_name, array)?;
-    checked_cdf_row(bank, inner, inner_name, array)
 }
 
 fn checked_row_mut<'a, T, const N: usize>(

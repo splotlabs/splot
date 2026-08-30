@@ -56,45 +56,22 @@ struct ScanScore {
     deletable_lines: u64,
 }
 
-/// Current duplicate-code budget position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DuplicationBudgetReport {
-    /// Lines deletable if every duplicate cluster kept a single copy.
-    pub(crate) deletable_lines: u64,
-    /// Committed maximum deletable-line count.
-    pub(crate) max_deletable_lines: u64,
-}
-
 /// Runs the duplicate-code budget gate. Skips (returning `Ok`) when `dupehound`
 /// is not installed; CI installs it, so CI always enforces the ceiling.
 pub(crate) fn check_duplication(root: &Path) -> Result<()> {
-    let Some(report) = duplication_budget_report(root)? else {
+    if !tool_available("dupehound") {
         eprintln!(
             "ci: `dupehound` not installed; skipping `dupehound scan` budget gate.\n     \
              install: `cargo install dupehound` (https://github.com/Rafaelpta/dupehound)"
         );
         return Ok(());
-    };
-
-    let message = enforce_budget(report.deletable_lines, report.max_deletable_lines)?;
-    eprintln!("{message}");
-    Ok(())
-}
-
-/// Returns the current duplicate-code budget position, or `None` when
-/// `dupehound` is not installed.
-pub(crate) fn duplication_budget_report(root: &Path) -> Result<Option<DuplicationBudgetReport>> {
-    if !tool_available("dupehound") {
-        return Ok(None);
     }
 
     let budget = read_budget(root)?;
     let report = scan(root)?;
-
-    Ok(Some(DuplicationBudgetReport {
-        deletable_lines: report.score.deletable_lines,
-        max_deletable_lines: budget.max_deletable_lines,
-    }))
+    let message = enforce_budget(report.score.deletable_lines, budget.max_deletable_lines)?;
+    eprintln!("{message}");
+    Ok(())
 }
 
 fn read_budget(root: &Path) -> Result<Budget> {

@@ -31,8 +31,7 @@ fn residual_block_allocation_failure_is_operational() {
 
 #[test]
 fn residual_table_bounds_failure_is_typed_coefficient_state() {
-    let offset = ByteOffset::new(17);
-    let error = tx_size_dimension(&[], 0, offset).unwrap_err();
+    let error = tx_size_dimension(&[], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -240,9 +239,8 @@ fn tx_size_for(width: usize, height: usize) -> usize {
 
 #[test]
 fn luma_tx_type_map_scales_chroma_coordinates_with_mi_floor() {
-    let offset = ByteOffset::new(0);
-    let mut map = InterLumaTxTypeMap::new(9, 4, 8, 8, offset).unwrap();
-    map.update(9, 4, tx_size_for(8, 4), V_DCT, offset).unwrap();
+    let mut map = InterLumaTxTypeMap::new(9, 4, 8, 8).unwrap();
+    map.update(9, 4, tx_size_for(8, 4), V_DCT).unwrap();
 
     assert_eq!(
         map.chroma_inter_tx_type(9, 4, 4, 2, (true, true), false),
@@ -256,9 +254,8 @@ fn luma_tx_type_map_scales_chroma_coordinates_with_mi_floor() {
 
 #[test]
 fn lossless_non_base_chroma_uses_current_luma_tx_type() {
-    let offset = ByteOffset::new(0);
-    let mut map = InterLumaTxTypeMap::new(9, 4, 8, 8, offset).unwrap();
-    map.update(9, 4, tx_size_for(8, 4), V_DCT, offset).unwrap();
+    let mut map = InterLumaTxTypeMap::new(9, 4, 8, 8).unwrap();
+    map.update(9, 4, tx_size_for(8, 4), V_DCT).unwrap();
 
     assert_eq!(
         map.chroma_inter_tx_type(9, 4, 5, 3, (true, true), true),
@@ -268,10 +265,8 @@ fn lossless_non_base_chroma_uses_current_luma_tx_type() {
 
 #[test]
 fn luma_tx_type_map_updates_on_16x16_units() {
-    let offset = ByteOffset::new(0);
-    let mut map = InterLumaTxTypeMap::new(0, 0, 8, 8, offset).unwrap();
-    map.update(0, 0, tx_size_for(32, 16), V_DCT, offset)
-        .unwrap();
+    let mut map = InterLumaTxTypeMap::new(0, 0, 8, 8).unwrap();
+    map.update(0, 0, tx_size_for(32, 16), V_DCT).unwrap();
 
     assert_eq!(map.values[map.index(0, 0).unwrap()], V_DCT);
     assert_eq!(map.values[map.index(0, 4).unwrap()], V_DCT);
@@ -335,9 +330,8 @@ fn selectable_inter_luma_tx_records_skip_lossless_blocks() {
 
 #[test]
 fn inter_residual_parse_scratch_reuses_tile_local_storage() {
-    let offset = ByteOffset::new(0);
     let mut scratch = InterResidualParseScratch::default();
-    scratch.luma_tx_types.reset(0, 0, 8, 8, offset).unwrap();
+    scratch.luma_tx_types.reset(0, 0, 8, 8).unwrap();
     scratch.luma_tx_types.values[0] = V_DCT;
     scratch.chroma_reads.reserve(4);
     scratch.chroma_reads.push(InterChromaURead {
@@ -354,7 +348,7 @@ fn inter_residual_parse_scratch_reuses_tile_local_storage() {
     let chroma_capacity = scratch.chroma_reads.capacity();
     let chroma_pointer = scratch.chroma_reads.as_ptr();
 
-    scratch.luma_tx_types.reset(4, 8, 4, 4, offset).unwrap();
+    scratch.luma_tx_types.reset(4, 8, 4, 4).unwrap();
     scratch.chroma_reads.clear();
 
     assert_eq!(scratch.luma_tx_types.values, vec![DCT_DCT; 16]);

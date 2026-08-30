@@ -58,12 +58,6 @@ impl NeighbourMvGrid {
     }
 }
 
-impl MvStack {
-    fn num_mv_found(&self) -> usize {
-        self.stack.len()
-    }
-}
-
 fn block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
     MvBlockContext {
         mi_row,
@@ -746,7 +740,7 @@ fn temporal_sample_scans_reject_positions_beyond_the_tile_end() {
         Some(context.order_hint_mv_context()),
         false,
     );
-    assert!((0..stack.num_mv_found()).all(|idx| stack.candidate(idx) != rejected));
+    assert!((0..stack.stack.len()).all(|idx| stack.candidate(idx) != rejected));
 
     let mut block = block;
     block.ref_frame1 = Some(1);
@@ -1074,7 +1068,7 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
         DrlReorder::Disabled,
         false,
     );
-    assert_eq!(stack.num_mv_found(), 1, "only the zero global-MV fallback");
+    assert_eq!(stack.stack.len(), 1, "only the zero global-MV fallback");
     assert_eq!(stack.candidate(0), Mv::ZERO, "fallback candidate is zero");
 }
 
@@ -1267,7 +1261,7 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
         DrlReorder::Disabled,
         false,
     );
-    assert!(stack.num_mv_found() >= 1, "at least one candidate");
+    assert!(!stack.stack.is_empty(), "at least one candidate");
     assert_eq!(
         stack.candidate(0),
         BLOCK0_MV,
@@ -1382,7 +1376,7 @@ fn intra_neighbour_does_not_contribute() {
         DrlReorder::Disabled,
         false,
     );
-    assert_eq!(stack.num_mv_found(), 1, "intra neighbour not a candidate");
+    assert_eq!(stack.stack.len(), 1, "intra neighbour not a candidate");
     assert_eq!(
         stack.candidate(0),
         Mv::ZERO,
@@ -1410,7 +1404,7 @@ fn mismatched_reference_neighbour_does_not_contribute() {
         false,
     );
     assert_eq!(
-        stack.num_mv_found(),
+        stack.stack.len(),
         1,
         "ref-mismatch neighbour not a candidate"
     );
@@ -1482,11 +1476,7 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
         DrlReorder::Disabled,
         false,
     );
-    assert_eq!(
-        stack.num_mv_found(),
-        2,
-        "deduped neighbour MV + zero fallback"
-    );
+    assert_eq!(stack.stack.len(), 2, "deduped neighbour MV + zero fallback");
     assert_eq!(stack.candidate(0), BLOCK0_MV);
     assert_eq!(stack.candidate(1), Mv::ZERO);
 }
@@ -1530,7 +1520,7 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
         "slot 3 = the zero global fallback"
     );
     assert_eq!(
-        stack.num_mv_found(),
+        stack.stack.len(),
         4,
         "three distinct neighbour MVs + the zero global fallback"
     );
@@ -1652,7 +1642,7 @@ fn undecoded_later_sb_column_yields_no_candidate() {
         false,
     );
     assert_eq!(
-        stack.num_mv_found(),
+        stack.stack.len(),
         1,
         "undecoded neighbours contribute no candidate"
     );
@@ -2097,7 +2087,7 @@ fn constraint_reorder_promotes_max_weight_nearest_unless_temporal_first() {
         false,
     );
     assert_eq!(
-        sorted.num_mv_found(),
+        sorted.stack.len(),
         5,
         "four distinct nearest candidates plus the zero global fallback"
     );
@@ -2299,7 +2289,7 @@ fn scan_col_adds_far_left_candidate_when_column_starts_new_block() {
         far_mv,
         "7.12.2.5 scan col reaches the block starting at deltaCol -3"
     );
-    assert_eq!(stack.num_mv_found(), 3, "left + scan-col + zero fallback");
+    assert_eq!(stack.stack.len(), 3, "left + scan-col + zero fallback");
 }
 
 #[test]
@@ -2319,7 +2309,7 @@ fn scan_col_skips_undecoded_far_column() {
         false,
     );
     assert_eq!(
-        stack.num_mv_found(),
+        stack.stack.len(),
         2,
         "an unwritten deltaCol -3 column contributes nothing"
     );

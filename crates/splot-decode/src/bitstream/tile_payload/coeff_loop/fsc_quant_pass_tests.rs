@@ -185,7 +185,7 @@ fn encode_start_only() -> Vec<u8> {
 
 #[test]
 fn staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits() {
-    let (payload, expected_tile) = encode_fsc_two_coefficients();
+    let (payload, mut expected_tile) = encode_fsc_two_coefficients();
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
     let start = read_start(&mut tile, &mut symbols, 1, 1);
@@ -237,8 +237,8 @@ fn staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits() {
         }),
     ] {
         assert_eq!(
-            tile.row(selector),
-            expected_tile.row(selector),
+            tile.with_row_mut(selector, |row| row.to_vec()),
+            expected_tile.with_row_mut(selector, |row| row.to_vec()),
             "{selector:?}"
         );
     }

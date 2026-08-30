@@ -131,22 +131,18 @@ struct Row {
     spec_sections: Option<Vec<String>>,
     parser_source: Option<String>,
     decode_module: Option<String>,
-    decode_recon_module: Option<String>,
     tier: Option<String>,
     status: Option<String>,
     self_contained_tests: Option<Vec<String>>,
-    tests: Option<Vec<String>>,
     #[serde(default)]
     fixtures: Vec<String>,
     diagnostics: Option<Vec<String>>,
     local_reference_evidence: Option<Vec<String>>,
-    reference_evidence: Option<Vec<String>>,
     notes: Option<String>,
 }
 
 #[derive(Debug)]
 struct CheckedMatrix {
-    matrix_version: u32,
     last_reviewed: Option<String>,
     rows: Vec<CheckedRow>,
 }
@@ -180,19 +176,17 @@ fn parse_matrix(text: &str) -> Result<Matrix> {
 fn validate_matrix(matrix: Matrix) -> Result<CheckedMatrix> {
     let mut problems = Vec::new();
 
-    let version = match matrix.version {
-        Some(SUPPORTED_MATRIX_VERSION) => SUPPORTED_MATRIX_VERSION,
+    match matrix.version {
+        Some(SUPPORTED_MATRIX_VERSION) => {}
         Some(other) => {
             problems.push(format!(
                 "unsupported matrix_version {other} (this tool supports {SUPPORTED_MATRIX_VERSION})"
             ));
-            other
         }
         None => {
             problems.push("missing required field `matrix_version`".to_owned());
-            SUPPORTED_MATRIX_VERSION
         }
-    };
+    }
 
     if matrix.row.is_empty() {
         problems.push("matrix has no [[row]] entries".to_owned());
@@ -242,12 +236,8 @@ fn validate_matrix(matrix: Matrix) -> Result<CheckedMatrix> {
             required_string_list(&mut problems, &label, "spec_sections", row.spec_sections);
         let parser_source =
             required_string(&mut problems, &label, "parser_source", row.parser_source);
-        let decode_module = required_string(
-            &mut problems,
-            &label,
-            "decode_module",
-            row.decode_module.or(row.decode_recon_module),
-        );
+        let decode_module =
+            required_string(&mut problems, &label, "decode_module", row.decode_module);
         let tier = required_string(&mut problems, &label, "tier", row.tier);
         let status = required_string(&mut problems, &label, "status", row.status);
         if let Some(status) = status.as_deref()
@@ -263,7 +253,7 @@ fn validate_matrix(matrix: Matrix) -> Result<CheckedMatrix> {
             &mut problems,
             &label,
             "self_contained_tests",
-            row.self_contained_tests.or(row.tests),
+            row.self_contained_tests,
         );
         let fixtures = validate_string_list(&mut problems, &label, "fixtures", row.fixtures);
         let diagnostics =
@@ -272,7 +262,7 @@ fn validate_matrix(matrix: Matrix) -> Result<CheckedMatrix> {
             &mut problems,
             &label,
             "local_reference_evidence",
-            row.local_reference_evidence.or(row.reference_evidence),
+            row.local_reference_evidence,
         );
         let notes = required_string(&mut problems, &label, "notes", row.notes);
 
@@ -385,7 +375,6 @@ fn validate_matrix(matrix: Matrix) -> Result<CheckedMatrix> {
 
     if problems.is_empty() {
         Ok(CheckedMatrix {
-            matrix_version: version,
             last_reviewed: matrix.last_reviewed,
             rows: checked,
         })
@@ -553,7 +542,7 @@ fn render_markdown(matrix: &CheckedMatrix) -> String {
     let _ = writeln!(
         out,
         "Matrix version {}. Last reviewed {}. {} row(s).",
-        matrix.matrix_version,
+        SUPPORTED_MATRIX_VERSION,
         reviewed,
         matrix.rows.len()
     );

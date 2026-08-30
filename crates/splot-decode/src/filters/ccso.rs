@@ -334,7 +334,6 @@ fn ccso_apply<L: ReconSample>(
         return Err(CcsoError::Geometry);
     }
 
-    let timer = crate::timing::start();
     let plane_id = plane_id(plane);
     let first_unit_y = destination.origin_y() / config.blk_h * config.blk_h;
     let frame_max_luma_x = curr_luma.width() - 1;
@@ -434,7 +433,6 @@ fn ccso_apply<L: ReconSample>(
             }
         }
     }
-    crate::timing::accumulate(crate::timing::Phase::CcsoUnits, timer);
     Ok(())
 }
 

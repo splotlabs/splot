@@ -716,7 +716,7 @@ pub fn parse_ccso_params(
 /// `sb_reuse_ccso` flags. If `reuse_ccso` is set, the direct per-plane coefficients are not
 /// present; the returned plane keeps those direct fields as `None`, matching the existing
 /// "not locally available" representation used by runtime/frontier checks.
-pub fn parse_ccso_params_for_inter(
+pub(super) fn parse_ccso_params_for_inter(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
     num_planes: u8,

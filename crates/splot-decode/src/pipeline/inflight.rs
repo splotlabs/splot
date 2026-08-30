@@ -392,7 +392,6 @@ pub(crate) struct InflightRing {
     capacity: usize,
     entries: VecDeque<InflightEntry>,
     failure: Option<(usize, DecodeError)>,
-    max_in_flight: usize,
 }
 
 impl InflightRing {
@@ -402,14 +401,7 @@ impl InflightRing {
             capacity: depth.get(),
             entries: VecDeque::new(),
             failure: None,
-            max_in_flight: 0,
         }
-    }
-
-    /// The high-water mark of frames whose filter phase the driver had handed
-    /// out but not yet collected, which bounds how many ran at once.
-    pub(crate) const fn max_in_flight(&self) -> usize {
-        self.max_in_flight
     }
 
     /// Resolved frame-admission depth used to bound pending frame slots.
@@ -451,7 +443,6 @@ impl InflightRing {
 
     fn push(&mut self, entry: InflightEntry) {
         self.entries.push_back(entry);
-        self.max_in_flight = self.max_in_flight.max(self.entries.len());
     }
 
     fn harvest_oldest(
@@ -462,10 +453,8 @@ impl InflightRing {
         let Some(entry) = self.entries.pop_front() else {
             return false;
         };
-        let started = crate::timing::start();
         let _ = entry.slot.wait_settled();
         let report = entry.report.wait_with_pool_assist();
-        crate::timing::report("pipeline_harvest_wait", started);
         let mut outcome = report.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(records) = outcome.records.take() {
             match entry.slot {
@@ -623,7 +612,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
             progress,
             mut report,
         } = self;
-        let started = crate::timing::start();
         match finish_walked_frame(walked, progress, admit, |frame| {
             writer.complete(frame);
         }) {
@@ -634,7 +622,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
                 report.outcome.error = Some(error);
             }
         }
-        crate::timing::report("finish_task", started);
     }
 
     /// Freezes one scheduler-owned setup after every stripe job has settled.
@@ -647,7 +634,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
             progress: _,
             mut report,
         } = self;
-        let started = crate::timing::start();
         match filter.finish(|frame| writer.complete(SharedFrame::new(frame))) {
             Ok(((), records)) => {
                 report.outcome.records = Some(records);
@@ -656,7 +642,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
                 report.outcome.error = Some(error);
             }
         }
-        crate::timing::report("finish_task", started);
     }
 
     /// Settles the reserved slot as failed and records the reconstruction

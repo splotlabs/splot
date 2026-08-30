@@ -42,13 +42,12 @@ pub(crate) fn run_check_reference_evidence(root: &Path) -> Result<()> {
 
 #[derive(Debug)]
 pub(crate) struct ReferenceEvidenceIndex {
-    evidence_count: usize,
     rows_by_evidence: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ReferenceEvidenceIndex {
-    pub(crate) const fn evidence_count(&self) -> usize {
-        self.evidence_count
+    pub(crate) fn evidence_count(&self) -> usize {
+        self.rows_by_evidence.len()
     }
 
     pub(crate) fn rows_for(&self, evidence_id: &str) -> Option<&BTreeSet<String>> {
@@ -77,10 +76,7 @@ impl ReferenceEvidenceIndex {
                 Some((id.clone(), rows.iter().cloned().collect()))
             })
             .collect();
-        Self {
-            evidence_count: manifest.evidence.len(),
-            rows_by_evidence,
-        }
+        Self { rows_by_evidence }
     }
 }
 

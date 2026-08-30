@@ -8,28 +8,26 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-pub mod decode;
-pub mod explain;
-pub mod inspect;
-pub mod validate;
+pub(crate) mod decode;
+pub(crate) mod explain;
+pub(crate) mod inspect;
+pub(crate) mod validate;
 
 /// Initializes `tracing` from verbosity flags. Logs are written to stderr so that
 /// stdout stays clean for machine-readable output (`--json`).
-pub fn init_tracing(verbose: u8, quiet: bool) {
-    let level = if quiet {
-        "error"
+pub(crate) fn init_tracing(verbose: u8, quiet: bool) {
+    let max_level = if quiet {
+        tracing::Level::ERROR
     } else {
         match verbose {
-            0 => "warn",
-            1 => "info",
-            2 => "debug",
-            _ => "trace",
+            0 => tracing::Level::WARN,
+            1 => tracing::Level::INFO,
+            2 => tracing::Level::DEBUG,
+            _ => tracing::Level::TRACE,
         }
     };
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+        .with_max_level(max_level)
         .with_writer(std::io::stderr)
         .try_init();
 }
@@ -38,6 +36,6 @@ pub fn init_tracing(verbose: u8, quiet: bool) {
 ///
 /// # Errors
 /// Returns an error if the file cannot be read.
-pub fn read_input(path: &Path) -> Result<Vec<u8>> {
+fn read_input(path: &Path) -> Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("failed to read input file: {}", path.display()))
 }

@@ -40,13 +40,21 @@ fuzz_target!(|data: &[u8]| {
         2 => ChromaSubsampling::Yuv422,
         _ => ChromaSubsampling::Yuv444,
     };
-    let info = FrameInfo::new(FrameId::new(u64::from(input.byte())), luma_size, bit_depth, chroma)
-        .with_timestamp(FrameTimestamp::new(i64::from(input.byte())));
+    let info = FrameInfo::new(
+        FrameId::new(u64::from(input.byte())),
+        luma_size,
+        bit_depth,
+        chroma,
+    )
+    .with_timestamp(FrameTimestamp::new(i64::from(input.byte())));
 
     let flags = input.byte();
     let y_stride = stride(width, flags & 0b0000_0001 != 0, &mut input);
     let uv_stride = stride(chroma_size.width(), flags & 0b0000_0010 != 0, &mut input);
-    let y_len = maybe_truncated_len(required_len(width, height, y_stride), flags & 0b0000_0100 != 0);
+    let y_len = maybe_truncated_len(
+        required_len(width, height, y_stride),
+        flags & 0b0000_0100 != 0,
+    );
     let u_len = maybe_truncated_len(
         required_len(chroma_size.width(), chroma_size.height(), uv_stride),
         flags & 0b0000_1000 != 0,
@@ -61,10 +69,16 @@ fuzz_target!(|data: &[u8]| {
     let v = vec![input.byte(); v_len];
 
     let y_input = FramePlaneInput::new(&y, y_stride, rect(0, 0, width, height));
-    let u_input =
-        FramePlaneInput::new(&u, uv_stride, rect(0, 0, chroma_size.width(), chroma_size.height()));
-    let v_input =
-        FramePlaneInput::new(&v, uv_stride, rect(0, 0, chroma_size.width(), chroma_size.height()));
+    let u_input = FramePlaneInput::new(
+        &u,
+        uv_stride,
+        rect(0, 0, chroma_size.width(), chroma_size.height()),
+    );
+    let v_input = FramePlaneInput::new(
+        &v,
+        uv_stride,
+        rect(0, 0, chroma_size.width(), chroma_size.height()),
+    );
 
     let u_present = flags & 0b0010_0000 == 0;
     let v_present = flags & 0b0100_0000 == 0;
@@ -92,9 +106,11 @@ fn exercise_fixed_cases() {
 
     let decoded = decoded_yuv420_frame(3, 5);
     let shared = SharedFrame::new(decoded);
-    let retained =
-        RetainedFrame::from_shared_frame(FrameInfo::yuv420_8bit(FrameId::new(9), size(3, 5)), shared)
-            .unwrap_or_else(|err| panic!("valid retained frame should be accepted: {err:?}"));
+    let retained = RetainedFrame::from_shared_frame(
+        FrameInfo::yuv420_8bit(FrameId::new(9), size(3, 5)),
+        shared,
+    )
+    .unwrap_or_else(|err| panic!("valid retained frame should be accepted: {err:?}"));
     let retained_again = retained.share();
     assert_eq!(retained.handle_count(), 2);
     assert_eq!(retained_again.handle_count(), 2);
@@ -183,8 +199,13 @@ fn decoded_yuv420_frame(width: usize, height: usize) -> DecodedFrame<u8> {
         rect(0, 0, width, height),
     )
     .unwrap_or_else(|err| panic!("fixed frame info should be valid: {err:?}"));
-    let y = Plane::from_vec(luma_size, width, rect(0, 0, width, height), vec![0_u8; width * height])
-        .unwrap_or_else(|err| panic!("fixed luma plane should be valid: {err:?}"));
+    let y = Plane::from_vec(
+        luma_size,
+        width,
+        rect(0, 0, width, height),
+        vec![0_u8; width * height],
+    )
+    .unwrap_or_else(|err| panic!("fixed luma plane should be valid: {err:?}"));
     let u = Plane::from_vec(
         chroma_size,
         chroma_size.width(),
@@ -213,8 +234,13 @@ fn decoded_monochrome_frame(width: usize, height: usize) -> DecodedFrame<u8> {
         rect(0, 0, width, height),
     )
     .unwrap_or_else(|err| panic!("fixed monochrome info should be valid: {err:?}"));
-    let y = Plane::from_vec(luma_size, width, rect(0, 0, width, height), vec![0_u8; width * height])
-        .unwrap_or_else(|err| panic!("fixed luma plane should be valid: {err:?}"));
+    let y = Plane::from_vec(
+        luma_size,
+        width,
+        rect(0, 0, width, height),
+        vec![0_u8; width * height],
+    )
+    .unwrap_or_else(|err| panic!("fixed luma plane should be valid: {err:?}"));
     DecodedFrame::try_new(info, FramePlanes::new(y, None, None))
         .unwrap_or_else(|err| panic!("fixed monochrome frame should be valid: {err:?}"))
 }

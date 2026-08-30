@@ -257,8 +257,8 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
 
 #[test]
 fn staged_ordinary_live_path_applies_evolving_tcq_state() {
-    let default_tile = FrameCdfSubset::from_defaults().tile_copy();
-    let (payload, expected_tile) = encode_evolving_tcq_levels();
+    let mut default_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let (payload, mut expected_tile) = encode_evolving_tcq_levels();
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
     let start = read_start(&mut tile, &mut symbols);
@@ -296,16 +296,16 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
         tcq_ctx: 0,
     });
     assert_ne!(
-        tile.row(evolved_tcq_selector),
-        default_tile.row(evolved_tcq_selector)
+        tile.with_row_mut(evolved_tcq_selector, |row| row.to_vec()),
+        default_tile.with_row_mut(evolved_tcq_selector, |row| row.to_vec())
     );
     assert_eq!(
-        tile.row(evolved_tcq_selector),
-        expected_tile.row(evolved_tcq_selector)
+        tile.with_row_mut(evolved_tcq_selector, |row| row.to_vec()),
+        expected_tile.with_row_mut(evolved_tcq_selector, |row| row.to_vec())
     );
     assert_eq!(
-        tile.row(initial_tcq_selector),
-        default_tile.row(initial_tcq_selector)
+        tile.with_row_mut(initial_tcq_selector, |row| row.to_vec()),
+        default_tile.with_row_mut(initial_tcq_selector, |row| row.to_vec())
     );
     assert_eq!(symbols.symbol_count(), 8);
     assert_eq!(tile, expected_tile);

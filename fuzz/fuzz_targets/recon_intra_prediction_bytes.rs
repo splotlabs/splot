@@ -4,14 +4,13 @@
 
 use libfuzzer_sys::fuzz_target;
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection,
-    IntraDcEdges, IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle,
+    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraCardinalDirection, IntraDcEdges,
+    IntraDirectionalAngle, IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle,
     IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges,
-    IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
-    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_into,
-    predict_intra_dc_rect_value, predict_intra_dc_square, predict_intra_dc_square_into,
-    predict_intra_dc_square_value,
+    IntraSmoothMode, IntraSquareBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
+    ReconSample, apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_into, predict_intra_dc_rect_value, predict_intra_dc_square,
+    predict_intra_dc_square_into, predict_intra_dc_square_value,
     predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
     predict_intra_directional_angle_rect_into, predict_intra_middle_directional_angle_rect_into,
     predict_intra_paeth_rect_into, predict_intra_smooth_rect_into,
@@ -403,8 +402,13 @@ fn run_random_workspace_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_dept
     let _ = workspace.predict_intra_ibp_dc_rect(plane, x, y, size);
     let _ = workspace.predict_intra_paeth_rect(plane, x, y, size);
     let _ = workspace.predict_intra_smooth_rect(plane, x, y, size, smooth_mode(input.byte()));
-    let _ =
-        workspace.predict_intra_cardinal_directional_rect(plane, x, y, size, cardinal_direction(input.byte()));
+    let _ = workspace.predict_intra_cardinal_directional_rect(
+        plane,
+        x,
+        y,
+        size,
+        cardinal_direction(input.byte()),
+    );
     let _ = workspace.predict_intra_directional_angle_rect(
         plane,
         x,

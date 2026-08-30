@@ -415,23 +415,26 @@ fn derived_selectors_index_generated_default_rows() {
     let above1 = [above_partition_context(BLOCK_256X256); 8];
     let mi_sizes = mi_grid(&[BLOCK_256X256, BLOCK_4X4, BLOCK_4X4, BLOCK_256X256]);
     let frame = FrameCdfSubset::from_defaults();
-    let tile = frame.tile_copy();
+    let mut tile = frame.tile_copy();
 
     let input =
         PartitionContextInput::new(BLOCK_16X16, 0, 0, 0, [&left0, &left1], [&above0, &above1])
             .unwrap();
     assert_eq!(
-        tile.row(input.do_split_selector().unwrap()).unwrap(),
+        tile.with_row_mut(input.do_split_selector().unwrap(), |row| row.to_vec())
+            .unwrap(),
         DEFAULT_DO_SPLIT_CDF[0][7].as_slice()
     );
     assert_eq!(
-        tile.row(input.rect_type_selector().unwrap()).unwrap(),
+        tile.with_row_mut(input.rect_type_selector().unwrap(), |row| row.to_vec())
+            .unwrap(),
         DEFAULT_RECT_TYPE_CDF[0][3].as_slice()
     );
     let square_input =
         SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, true, &mi_sizes, 2).unwrap();
     assert_eq!(
-        tile.row(square_input.do_square_split_selector().unwrap())
+        tile.with_row_mut(square_input.do_square_split_selector().unwrap(), |row| row
+            .to_vec())
             .unwrap(),
         DEFAULT_DO_SQUARE_SPLIT_CDF[0][3].as_slice()
     );
@@ -440,19 +443,21 @@ fn derived_selectors_index_generated_default_rows() {
         PartitionContextInput::new(BLOCK_32X32, 0, 0, 0, [&left0, &left1], [&above0, &above1])
             .unwrap();
     assert_eq!(
-        tile.row(
+        tile.with_row_mut(
             input
                 .do_ext_partition_selector(RectPartitionType::Horz)
-                .unwrap()
+                .unwrap(),
+            |row| row.to_vec()
         )
         .unwrap(),
         DEFAULT_DO_EXT_PARTITION_CDF[0][11].as_slice()
     );
     assert_eq!(
-        tile.row(
+        tile.with_row_mut(
             input
                 .do_uneven_4way_partition_selector(RectPartitionType::Horz)
-                .unwrap()
+                .unwrap(),
+            |row| row.to_vec()
         )
         .unwrap(),
         DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF[0][11].as_slice()

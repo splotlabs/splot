@@ -130,8 +130,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             if let Some(command) = entry.take_command() {
                 match command {
                     ReconCommand::GeneralIntra(command) => {
-                        let _scope =
-                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitIntra);
                         command.reconstruct(
                             scratch.general_intra_mut(),
                             workspace,
@@ -139,13 +137,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         )?;
                     }
                     ReconCommand::Intrabc(command) => {
-                        let _scope =
-                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitIntrabc);
                         scratch.reconstruct_intrabc(command, &residual_blocks, workspace)?;
                     }
                     ReconCommand::Inter(command) => {
-                        let _scope =
-                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitInter);
                         if motion_derived {
                             scratch.reconstruct_from_motion(
                                 &command,
@@ -191,7 +185,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     }
                 }
             } else {
-                let _scope = crate::timing::PhaseScope::new(crate::timing::Phase::CommitReplay);
                 let records = temporal
                     .get(entry.temporal.clone())
                     .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
@@ -206,7 +199,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         }
     }
     if motion_owed {
-        motion.unit_landed_for(ordinal, false);
+        motion.unit_landed_for(ordinal);
     }
     append_row_filter_records(filter_records, &mut row_filter_records);
     *decoded_any |= row_has_entries;

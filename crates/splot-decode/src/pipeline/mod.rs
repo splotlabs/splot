@@ -95,9 +95,7 @@ pub(crate) fn decode_frames_from_plan(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
-    let runtime_parse_timer = crate::timing::start();
     let mut parsed = parse_bounded_bitstream(bytes, options.limits())?;
-    crate::timing::report("runtime_reparse", runtime_parse_timer);
     parsed.discard_runtime_noops();
     decode_frames_from_plan_impl(
         &parsed,
@@ -553,11 +551,8 @@ fn decode_frames_from_plan_impl<'job>(
             None,
         );
     }
-    let admission: splot_parallel::AdmissionScheduler<'job> = if crate::timing::enabled() {
-        splot_parallel::AdmissionScheduler::with_metrics()
-    } else {
-        splot_parallel::AdmissionScheduler::new()
-    };
+    let admission: splot_parallel::AdmissionScheduler<'job> =
+        splot_parallel::AdmissionScheduler::new();
     let decoded = splot_parallel::ready_task_scope(|scope| {
         drive_frames(
             parsed,
@@ -572,15 +567,13 @@ fn decode_frames_from_plan_impl<'job>(
             Some(&admission),
         )
     })?;
-    let result = match decoded {
+    match decoded {
         Err(error) => Err(error),
         Ok(frames) => {
             admission.finish()?;
             Ok(frames)
         }
-    };
-    crate::timing::report_admission(admission.metrics());
-    result
+    }
 }
 
 /// Owns the decode scratch and the in-flight ring for one decode, and resolves
@@ -605,8 +598,6 @@ fn drive_frames<'job, 'scope>(
 where
     'job: 'scope,
 {
-    let inflight_timer = crate::timing::start();
-    let phases_before = crate::timing::phase_totals();
     let mut decode_scratch_eight = inter::InterDecodeScratch::default();
     let mut decode_scratch_ten = inter::InterDecodeScratch::default();
     let mut ring = inflight::InflightRing::new(frame_delay);
@@ -625,14 +616,6 @@ where
         &mut decode_scratch_ten,
     );
     ring.harvest_all(&mut decode_scratch_eight, &mut decode_scratch_ten);
-    if inflight_timer.is_some() {
-        crate::timing::report_detail(
-            "pipeline_inflight",
-            inflight_timer,
-            &format!("max_in_flight={}", ring.max_in_flight()),
-        );
-    }
-    crate::timing::report_phases(&phases_before);
     match ring.take_failure() {
         Some(failure) => Err(failure),
         None => decoded,
@@ -1285,7 +1268,6 @@ where
                         }
                     }
                 }
-                let inter_frame_timer = crate::timing::start();
                 let frame_index = frames.len();
                 let decoded = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
@@ -1775,7 +1757,6 @@ where
                 };
                 let (inter_slot, inter_core, frame_cdfs, ccso_grid, segment_ids, motion_field) =
                     decoded;
-                crate::timing::report("inter_frame_decode", inter_frame_timer);
                 let inter_display_grain =
                     film_grain_slots.active_for_core(&inter_core, inter_envelope.offset)?;
                 output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
@@ -2044,7 +2025,6 @@ where
                     &sequence,
                     key_envelope.offset,
                 )?;
-                let key_frame_timer = crate::timing::start();
                 let frame_index = frames.len();
                 let key_frame = decode_key_frame_with_effects(
                     decode_scratch_eight,
@@ -2065,7 +2045,6 @@ where
                     key_output_effects,
                     admission.map(|scheduler| (scheduler, &mut recon_lane)),
                 )?;
-                crate::timing::report("key_frame_decode", key_frame_timer);
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
                     retained_frame_bytes,

@@ -222,7 +222,10 @@ impl ResidualPlanePlan {
             plane_id,
             block_ctx,
             coeff_plane: coeff_plane(plane_id),
-            tx_size: tx_size_override.unwrap_or(tx_size_for_plan(tx)?),
+            tx_size: tx_size_override.unwrap_or(
+                tx_size_index(tx.width_log2(), tx.height_log2())
+                    .map_err(|_| ResidualPlanError::InvalidGeometry)?,
+            ),
             x: block.x(),
             y: block.y(),
             tx,
@@ -424,8 +427,4 @@ pub(super) const fn coeff_plane(plane_id: PlaneId) -> usize {
         PlaneId::U => 1,
         PlaneId::V => 2,
     }
-}
-
-fn tx_size_for_plan(tx: TxShape) -> core::result::Result<usize, ResidualPlanError> {
-    tx_size_index(tx.width_log2(), tx.height_log2()).map_err(|_| ResidualPlanError::InvalidGeometry)
 }

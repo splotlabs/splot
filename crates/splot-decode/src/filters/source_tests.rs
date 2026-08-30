@@ -6,16 +6,14 @@
 #![allow(clippy::expect_used)]
 
 use super::{
-    DeblockedSource, DeblockedWindow, DeblockedWindowSequence, FramePlane, StripeOutputPlane,
-    StripePlane, intersect_rows, lock_stripe_sample_buffers, recycle_stripe_sample_buffer,
-    recycle_stripe_sample_buffer_into_pool, select_buffer_index, take_stripe_sample_buffer,
-    take_stripe_sample_buffer_from_pool, window_bounds,
+    DeblockedSource, FramePlane, StripeOutputPlane, StripePlane, lock_stripe_sample_buffers,
+    recycle_stripe_sample_buffer, recycle_stripe_sample_buffer_into_pool, select_buffer_index,
+    take_stripe_sample_buffer, take_stripe_sample_buffer_from_pool, window_bounds,
 };
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
     PlaneRect, PlaneSize,
 };
-use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(miri))]
@@ -270,27 +268,6 @@ fn deblocked_source_keeps_read_leases_disjoint_from_later_writes() {
 }
 
 #[test]
-fn window_cache_selection_matches_type_and_capacity() {
-    let buffers: Vec<Box<dyn Any + Send>> = vec![
-        Box::new(Vec::<u8>::with_capacity(96)),
-        Box::new(Vec::<u16>::with_capacity(32)),
-        Box::new(Vec::<u16>::with_capacity(128)),
-        Box::new(Vec::<u16>::with_capacity(256)),
-    ];
-    let capacities = || {
-        buffers.iter().enumerate().filter_map(|(index, buffer)| {
-            buffer
-                .downcast_ref::<Vec<u16>>()
-                .map(|buffer| (index, buffer.capacity()))
-        })
-    };
-
-    assert_eq!(select_buffer_index(capacities(), 96, false), Some(2));
-    assert_eq!(select_buffer_index(capacities(), 512, false), None);
-    assert_eq!(select_buffer_index(capacities(), 512, true), Some(3));
-}
-
-#[test]
 fn stripe_cache_selection_uses_fresh_storage_until_full() {
     let capacities = [(0, 32), (1, 128), (2, 256)];
 
@@ -383,11 +360,9 @@ fn u8_direct_stripe_initializes_strided_u8_rows() {
         width: 4,
         height: 2,
         stride: 6,
-        origin_y: 0,
         storage_origin_y: 0,
         storage_rows: 2,
         samples: &source_samples,
-        secondary: &[],
     };
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
@@ -427,11 +402,9 @@ fn partial_u8_source_failure_recycles_length_zero_staging() {
         width,
         height,
         stride: width,
-        origin_y: 0,
         storage_origin_y: 0,
         storage_rows: height,
         samples: &source_samples,
-        secondary: &[],
     };
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
@@ -593,115 +566,4 @@ fn invalid_direct_u8_geometry_drops_without_publication_and_releases_lease() {
     drop((target, lease));
     assert_eq!(progress.published_luma_rows(), 0);
     assert!(progress.direct_stripe(0).is_some(), "the lease is reusable");
-}
-
-#[test]
-fn adjacent_windows_reuse_their_immutable_boundary_rows() {
-    let workspace = workspace(16, 184);
-    let ranges = [(0, 56), (56, 120), (120, 184)];
-    let margin = 10;
-    let mut sequence = DeblockedWindowSequence::default();
-    let windows: Vec<_> = (0..ranges.len())
-        .map(|stripe| {
-            sequence
-                .extract(&workspace, &ranges, stripe, margin)
-                .expect("shared window")
-        })
-        .collect();
-
-    for (stripe, window) in windows.iter().enumerate() {
-        let independent =
-            DeblockedWindow::extract(&workspace, ranges[stripe].0, ranges[stripe].1, margin)
-                .expect("independent window");
-        let actual = window.planes().expect("shared planes");
-        let expected = independent.planes().expect("independent planes");
-        for (actual, expected) in [
-            (Some(actual.y), Some(expected.y)),
-            (actual.u, expected.u),
-            (actual.v, expected.v),
-        ] {
-            let (Some(actual), Some(expected)) = (actual, expected) else {
-                continue;
-            };
-            for y in expected.origin_y()..expected.end_y() {
-                assert_eq!(actual.row(y), expected.row(y), "stripe {stripe}, row {y}");
-            }
-        }
-    }
-
-    let middle_luma = windows[1].planes().expect("middle planes").y;
-    assert!(middle_luma.contiguous_rows(66, 80).is_some());
-    assert!(middle_luma.contiguous_rows(62, 70).is_none());
-    assert!(middle_luma.row(62).is_some());
-    assert!(middle_luma.packed_plane(54, 66).is_some());
-    assert!(middle_luma.packed_plane(62, 74).is_none());
-    let copied = StripePlane::copy_from(middle_luma, ranges[1].0, ranges[1].1)
-        .expect("two-span stripe copy");
-    for (offset, row) in copied.samples().chunks_exact(copied.width()).enumerate() {
-        assert_eq!(row, middle_luma.row(ranges[1].0 + offset).expect("row"));
-    }
-
-    let plane_geometry = [(16, 184, 0), (8, 92, 1), (8, 92, 1)];
-    let independent_samples: usize = plane_geometry
-        .iter()
-        .map(|&(width, height, shift)| {
-            ranges
-                .iter()
-                .map(|&range| {
-                    let bounds = window_bounds(range, shift, margin, height).expect("bounds");
-                    (bounds.1 - bounds.0) * width
-                })
-                .sum::<usize>()
-        })
-        .sum();
-    let repeated_samples: usize = plane_geometry
-        .iter()
-        .map(|&(width, height, shift)| {
-            ranges
-                .windows(2)
-                .map(|pair| {
-                    let left = window_bounds(pair[0], shift, margin, height).expect("left");
-                    let right = window_bounds(pair[1], shift, margin, height).expect("right");
-                    let overlap = intersect_rows(left, right).expect("overlap");
-                    (overlap.1 - overlap.0) * width
-                })
-                .sum::<usize>()
-        })
-        .sum();
-    assert_eq!(
-        sequence.copied_samples(),
-        independent_samples - repeated_samples
-    );
-}
-
-#[test]
-fn overlapping_top_and_bottom_boundaries_fall_back_to_one_contiguous_copy() {
-    let workspace = workspace(16, 24);
-    let ranges = [(0, 8), (8, 16), (16, 24)];
-    let margin = 10;
-    let mut sequence = DeblockedWindowSequence::default();
-
-    for stripe in 0..ranges.len() {
-        let window = sequence
-            .extract(&workspace, &ranges, stripe, margin)
-            .expect("shared window");
-        let independent =
-            DeblockedWindow::extract(&workspace, ranges[stripe].0, ranges[stripe].1, margin)
-                .expect("independent window");
-        let actual = window.planes().expect("shared planes").y;
-        let expected = independent.planes().expect("independent planes").y;
-        assert_eq!(
-            actual.contiguous_rows(actual.origin_y(), actual.end_y()),
-            expected.contiguous_rows(expected.origin_y(), expected.end_y())
-        );
-    }
-}
-
-#[test]
-fn window_sequence_rejects_out_of_order_extraction() {
-    let workspace = workspace(16, 32);
-    let ranges = [(0, 16), (16, 32)];
-    let mut sequence = DeblockedWindowSequence::default();
-
-    assert!(sequence.extract(&workspace, &ranges, 1, 10).is_err());
 }

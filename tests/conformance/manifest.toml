@@ -612,7 +612,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-ist-largest-intra-128x128.ivf"
-description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with intra secondary transform (enable_ist); validates clean, and the general-intra decoder reconstructs it byte-exact to the avmdec oracle (rectangular SMOOTH luma over § 7.13.2.1 edge fallbacks)."
+description = "8-bit 4:2:0 AVM intra key-frame fixture (IVF, 128x128, tx_mode=Largest) recorded for transform.secondary_ist. It validates clean, and splot's strict decoder oracle reproduces the complete avmdec raw I420 output at one and eight threads (SHA-256 ab4739ab410a85cae6ef4eb149fd1b715e93f62b56324930d3cc57ab74be54a3)."
 expect = "clean"
 
 [[vector]]
@@ -1509,7 +1509,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-ist-intra-128x128.ivf"
-description = "Tiny AVM transform.secondary_ist fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
+description = "Tiny AVM transform.secondary_ist fixture. It validates clean, and splot's strict decoder oracle reproduces the complete avmdec raw I420 output at one and eight threads (SHA-256 e5b64143d281e5c3e78c3029670c43d32cd073f75339b866829d74ca0d2306e6)."
 expect = "clean"
 
 [[vector]]
