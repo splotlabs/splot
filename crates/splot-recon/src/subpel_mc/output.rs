@@ -39,26 +39,37 @@ pub(super) struct ClippedU16SubpelOutput {
 }
 
 impl ClippedU16SubpelOutput {
+    #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
+    #[inline(always)]
     fn clip<const LANES: usize>(&self, values: Simd<i32, LANES>) -> Simd<u16, LANES> {
         values
-            .simd_clamp(Simd::splat(0), Simd::splat(self.max_sample))
+            .simd_max(Simd::splat(0))
+            .simd_min(Simd::splat(self.max_sample))
             .cast()
     }
 }
 
 impl SubpelOutput<u16> for ClippedU16SubpelOutput {
+    #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
+    #[inline(always)]
     fn one(&mut self, value: i32) -> u16 {
         value.clamp(0, self.max_sample) as u16
     }
 
+    #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
+    #[inline(always)]
     fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [u16]) {
         output.copy_from_slice(&self.clip(values).to_array()); // splot-copy-ok: publish sixteen clipped SIMD prediction lanes
     }
 
+    #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
+    #[inline(always)]
     fn eight(&mut self, values: Simd<i32, 8>, output: &mut [u16]) {
         output.copy_from_slice(&self.clip(values).to_array()); // splot-copy-ok: publish eight clipped SIMD prediction lanes
     }
 
+    #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
+    #[inline(always)]
     fn four(&mut self, values: Simd<i32, 4>, output: &mut [u16]) {
         output.copy_from_slice(&self.clip(values).to_array()); // splot-copy-ok: publish four clipped SIMD prediction lanes
     }
