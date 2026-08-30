@@ -68,15 +68,17 @@ impl CompoundAverageOutput for u16 {
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<bool> {
-        subpel_predict_block_compound_average_fast_validated_strided_into(
-            reference0,
-            params0,
-            reference1,
-            params1,
-            cwp_weight,
-            scratch,
-            output,
-            output_stride,
+        Ok(
+            subpel_predict_block_compound_average_fast_validated_strided_into(
+                reference0,
+                params0,
+                reference1,
+                params1,
+                cwp_weight,
+                scratch,
+                output,
+                output_stride,
+            ),
         )
     }
 }

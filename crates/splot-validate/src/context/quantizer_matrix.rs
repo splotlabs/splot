@@ -6,9 +6,8 @@
 use super::*;
 
 /// Per-level quantizer-matrix availability, recorded when a QM OBU specifies a level
-/// (AV2 § 6.12 / § 7.3.8 foundation). Kept for future frame-reference checks; this
-/// phase reads it only to cite the conflicting definition in a duplicate-level
-/// diagnostic.
+/// (AV2 § 6.12 / § 7.3.8 foundation). Frame-reference checks use the stored layer
+/// identity and data shape; duplicate-level diagnostics cite the conflicting definition.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct QmLevelRecord {
     /// `QmMLayerId[level]` (`None` models the spec's `-1` for a reset).

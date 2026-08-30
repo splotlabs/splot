@@ -497,24 +497,6 @@ pub fn predict_intra_directional_angle_rect_into<T: ReconSample>(
     write_prediction(size, angle, context.edge, output, stride_samples)
 }
 
-/// Writes a supported one-sided directional prediction from a raw AV2 pAngle.
-///
-/// # Errors
-/// In addition to [`predict_intra_directional_angle_rect_into`] errors, returns
-/// [`ReconError::UnsupportedIntraDirectionalAngle`] before output mutation when
-/// `p_angle` is not `45`, `67`, or `203`.
-pub fn predict_intra_directional_angle_rect_from_p_angle_into<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    p_angle: u16,
-    edges: IntraDirectionalAngleEdges<'_, T>,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
-    predict_intra_directional_angle_rect_into(bit_depth, size, angle, edges, output, stride_samples)
-}
-
 /// Writes a supported middle AV2 §7.13.2.8 directional prediction into caller storage.
 ///
 /// This primitive intentionally covers only chroma/no-IDIF/no-MRL middle
@@ -544,31 +526,6 @@ pub fn predict_intra_middle_directional_angle_rect_into<T: ReconSample>(
         angle,
         context.left,
         context.above,
-        output,
-        stride_samples,
-    )
-}
-
-/// Writes a supported middle directional prediction from a raw AV2 pAngle.
-///
-/// # Errors
-/// In addition to [`predict_intra_middle_directional_angle_rect_into`] errors,
-/// returns [`ReconError::UnsupportedIntraMiddleDirectionalAngle`] before output
-/// mutation when `p_angle` is not `113`, `135`, or `157`.
-pub fn predict_intra_middle_directional_angle_rect_from_p_angle_into<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    p_angle: u16,
-    edges: IntraMiddleDirectionalAngleEdges<'_, T>,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
-    predict_intra_middle_directional_angle_rect_into(
-        bit_depth,
-        size,
-        angle,
-        edges,
         output,
         stride_samples,
     )
@@ -663,32 +620,6 @@ pub fn predict_intra_middle_directional_angle_rect_idif_mrl_into<T: ReconSample>
             stride_samples,
         },
         output,
-    )
-}
-
-/// Writes a supported luma IDIF middle directional prediction from a raw AV2
-/// pAngle.
-///
-/// # Errors
-/// In addition to [`predict_intra_middle_directional_angle_rect_idif_into`]
-/// errors, returns [`ReconError::UnsupportedIntraMiddleDirectionalAngle`] before
-/// output mutation when `p_angle` is not `113`, `135`, or `157`.
-pub fn predict_intra_middle_directional_angle_rect_idif_from_p_angle_into<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    p_angle: u16,
-    edges: IntraMiddleDirectionalAngleIdifEdges<'_, T>,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
-    predict_intra_middle_directional_angle_rect_idif_into(
-        bit_depth,
-        size,
-        angle,
-        edges,
-        output,
-        stride_samples,
     )
 }
 
@@ -788,32 +719,6 @@ pub fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into<T: ReconSamp
         angle,
         edge,
         mrl_index,
-        output,
-        stride_samples,
-    )
-}
-
-/// Writes a supported luma IDIF zone-1 one-sided directional prediction from a
-/// raw AV2 pAngle.
-///
-/// # Errors
-/// In addition to [`predict_intra_directional_angle_rect_one_sided_idif_into`]
-/// errors, returns [`ReconError::UnsupportedIntraDirectionalAngle`] before
-/// output mutation when `p_angle` is not a supported zone-1 above angle.
-pub fn predict_intra_directional_angle_rect_one_sided_idif_from_p_angle_into<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    p_angle: u16,
-    edges: IntraDirectionalAngleIdifEdges<'_, T>,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
-    predict_intra_directional_angle_rect_one_sided_idif_into(
-        bit_depth,
-        size,
-        angle,
-        edges,
         output,
         stride_samples,
     )

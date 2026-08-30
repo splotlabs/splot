@@ -10,8 +10,8 @@ use super::*;
 pub(super) const MAX_FILM_GRAIN_SCALING_POINTS: u8 = 14;
 
 /// Per-slot film-grain availability, recorded when a film-grain OBU updates a slot
-/// (AV2 § 6.13 / § 7.3.8 foundation). Kept for future frame-reference checks; this
-/// phase reads it only to cite the conflicting update in a duplicate-slot diagnostic.
+/// (AV2 § 6.13 / § 7.3.8 foundation). Frame-reference checks use the stored layer and
+/// chroma identity; duplicate-slot diagnostics cite the conflicting update.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct FgmSlotRecord {
     /// `FgmChromaIdc[slot]` (the defining film-grain OBU's `fgm_chroma_idc`, sharing the
@@ -35,7 +35,7 @@ pub(super) struct FilmGrainState {
     /// Slots (`fgm_update_flags` bits) updated by a film-grain OBU since the last
     /// coded frame unit.
     pub(super) updated_slots_since_coded_frame: u8,
-    /// Monotonic per-slot availability for future frame-reference validation.
+    /// Monotonic per-slot availability for frame-reference validation.
     pub(super) available: [Option<FgmSlotRecord>; MAX_FILM_GRAIN],
 }
 

@@ -214,8 +214,6 @@ enum Task {
         #[arg(long)]
         check: bool,
     },
-    /// (stub) Fetch AV2/AOMedia conformance vectors.
-    FetchVectors,
     /// Validate the committed conformance corpus against its manifest (no AVM).
     Conformance,
     /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
@@ -349,10 +347,6 @@ fn main() -> Result<()> {
         }
         Task::GenTables { check } => gen_tables::run_gen_tables(&workspace_root()?, check),
         Task::GenExplain { check } => explain_registry::run_gen_explain(&workspace_root()?, check),
-        Task::FetchVectors => {
-            fetch_vectors_stub();
-            Ok(())
-        }
         Task::Conformance => conformance::run_conformance(&workspace_root()?),
         Task::Coverage => run_coverage(),
         Task::Perf { bless } => perf::run_perf(&workspace_root()?, bless),
@@ -1285,11 +1279,6 @@ pub(crate) fn resolved_dep_name(
         return real.clone();
     }
     key.to_owned()
-}
-
-fn fetch_vectors_stub() {
-    eprintln!("xtask fetch-vectors: not yet implemented.");
-    eprintln!("Planned: fetch AV2/AOMedia conformance vectors into a gitignored tests/vectors/.");
 }
 
 #[cfg(test)]

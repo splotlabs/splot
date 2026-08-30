@@ -14,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
             continue;
         };
         match roundtrip_obu(&env.header, env.payload, &model) {
-            RoundtripOutcome::RoundTripped | RoundtripOutcome::Unwritable { .. } => {}
+            RoundtripOutcome::RoundTripped => {}
             RoundtripOutcome::Failed { reason } => panic!(
                 "writer round-trip failed for a parsed OBU (obu_type {:?}): {reason}",
                 env.header.obu_type
