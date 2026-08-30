@@ -113,30 +113,6 @@ pub use tail::{
 };
 pub use tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
 
-/// How much of `frame_header()` the prefix parser consumed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum FrameHeaderPrefixStatus {
-    /// The parser reached the activation/reference fields of `frame_header_info()`
-    /// and intentionally stopped; the rest of § 5.18 was **not** consumed. A
-    /// full-payload trailing-bits check must not be inferred from this prefix.
-    ActivationFieldsOnly,
-    /// Reserved for a future, fully-consumed special-case frame-header path. The
-    /// current prefix parser never produces it.
-    CompleteForSpecialCase,
-}
-
-impl FrameHeaderPrefixStatus {
-    /// Returns a stable snake-case label for tools and JSON output.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::ActivationFieldsOnly => "activation_fields_only",
-            Self::CompleteForSpecialCase => "complete_for_special_case",
-        }
-    }
-}
-
 /// A prefix-only parse of the AV2 frame header (AV2 v1.0.0 § 5.18.1 / § 5.18.2).
 ///
 /// Only the activation/reference fields are modeled. The `is_*` flags are derived
@@ -176,8 +152,6 @@ pub struct FrameHeaderPrefix {
     pub referenced_sequence_header_id: Option<SequenceHeaderId>,
     /// Bits consumed by this prefix parse (not the whole frame header).
     pub consumed_bits: u64,
-    /// How much of § 5.18 was consumed (always [`FrameHeaderPrefixStatus::ActivationFieldsOnly`]).
-    pub status: FrameHeaderPrefixStatus,
 }
 
 /// Returns `true` if `obu_type` is `keyFrame` per AV2 § 5.18.2.
@@ -258,7 +232,6 @@ pub fn parse_frame_header_prefix(
         seq_header_id_in_frame_header,
         referenced_sequence_header_id,
         consumed_bits: reader.consumed_bits().saturating_sub(start_bits),
-        status: FrameHeaderPrefixStatus::ActivationFieldsOnly,
     })
 }
 
@@ -290,7 +263,6 @@ mod tests {
             prefix.referenced_sequence_header_id,
             SequenceHeaderId::try_new(1)
         );
-        assert_eq!(prefix.status, FrameHeaderPrefixStatus::ActivationFieldsOnly);
     }
 
     #[test]

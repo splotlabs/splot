@@ -791,7 +791,7 @@ fn write_intra_header_into(
 fn reconstruct_prefix(
     core: &FrameHeaderCore,
 ) -> WriteResult<crate::headers::frame::FrameHeaderPrefix> {
-    use crate::headers::frame::{FrameHeaderPrefix, FrameHeaderPrefixStatus};
+    use crate::headers::frame::FrameHeaderPrefix;
 
     let mut probe = BitWriter::new();
     if !core.is_bridge {
@@ -831,7 +831,6 @@ fn reconstruct_prefix(
         seq_header_id_in_frame_header: core.seq_header_id_in_frame_header,
         referenced_sequence_header_id: core.referenced_sequence_header_id,
         consumed_bits,
-        status: FrameHeaderPrefixStatus::ActivationFieldsOnly,
     })
 }
 

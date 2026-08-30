@@ -1308,20 +1308,6 @@ pub const fn pc_wiener_filter_set_index(base_q_idx: u32) -> usize {
     }
 }
 
-/// Maps a § 7.20.4 full PC-Wiener class to a caller-requested subclass count.
-/// # Errors
-/// Returns [`ReconError`] for an unsupported class count or an index outside
-/// the generated § 9.8 table domain.
-#[inline]
-pub fn pc_wiener_subclass(
-    num_classes: usize,
-    filter_set_index: usize,
-    full_class: u8,
-) -> Result<usize> {
-    let table = pc_wiener_subclass_table(num_classes, filter_set_index)?;
-    Ok(usize::from(table[usize::from(full_class)]))
-}
-
 /// Returns the full-class to filter-subclass map for one filter configuration.
 ///
 /// # Errors

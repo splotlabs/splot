@@ -424,8 +424,6 @@ pub enum DecodeOutputOperation {
     SerializeY4m,
     /// Writing the complete Y4M stream bytes to the caller-provided writer failed.
     WriteY4mStream,
-    /// Serializing a runtime raw sample byte stream failed.
-    SerializeRaw,
     /// Writing the complete raw sample bytes to the caller-provided writer failed.
     WriteRawStream,
     /// Resolving the requested Y4M output path failed before publication.
@@ -477,7 +475,6 @@ impl DecodeOutputOperation {
         match self {
             Self::SerializeY4m => "serialize_y4m",
             Self::WriteY4mStream => "write_y4m_stream",
-            Self::SerializeRaw => "serialize_raw",
             Self::WriteRawStream => "write_raw_stream",
             Self::ResolveY4mOutputPath => "resolve_y4m_output_path",
             Self::ResolveRawOutputPath => "resolve_raw_output_path",

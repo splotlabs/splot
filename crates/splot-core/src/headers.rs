@@ -30,8 +30,8 @@ pub use film_grain::{
 };
 pub use frame::{
     FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameHeaderPrefix, FrameHeaderPrefixStatus, FrameReferenceStateView, FrameSize, FrameType,
-    parse_frame_header_core, parse_frame_header_prefix,
+    FrameHeaderPrefix, FrameReferenceStateView, FrameSize, FrameType, parse_frame_header_core,
+    parse_frame_header_prefix,
 };
 pub use layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
 pub use metadata::{
@@ -53,12 +53,3 @@ pub use quantizer_matrix::{
 };
 pub use sequence::{SequenceHeader, SequenceHeaderGeneral};
 pub use tile_group::{TileGroupHeaderPrefix, parse_tile_group_prefix};
-
-/// Reserved full AV2 `frame_header()` model.
-///
-/// Current parsed state is exposed through [`FrameHeaderPrefix`] and
-/// [`FrameHeaderCore`]; this empty type does not claim a complete § 5.18 model.
-// TODO(spec: AV2-5.18-FRAME-HEADER): model the full frame header syntax (AV2 v1.0.0 § 5.18).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct FrameHeader {}

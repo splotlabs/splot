@@ -55,12 +55,6 @@ pub enum RoundtripOutcome {
     /// The OBU was written via [`crate::write::write_complete_obu`] and reparsed to a model equal to
     /// the input — a clean round-trip.
     RoundTripped,
-    /// The OBU type has no body writer yet (the dispatch returned [`WriteError::Unimplemented`]); the
-    /// harness skips it, like a parser fuzz target skips an unparsed payload.
-    Unwritable {
-        /// The matrix Feature ID of the missing body writer.
-        feature: &'static str,
-    },
     /// A round-trip defect for a *parser-produced* model: a writer reject, an unrecoverable
     /// passthrough, a reparse failure, or a header / model mismatch. `reason` names the class.
     Failed {
@@ -132,8 +126,7 @@ fn zero_fill_recover(payload: &[u8], len: usize) -> WriteResult<Vec<u8>> {
 /// [`crate::annexb::ObuEnvelope`]); `parsed` is `payload`'s parsed model
 /// ([`crate::annexb::ObuEnvelope::payload_status`] returning [`PayloadStatus::Parsed`]). Never
 /// panics (splot-core library policy); a caller (a test or fuzz target) decides what is a finding.
-/// For a parser-produced `parsed`, a clean writer returns [`RoundtripOutcome::RoundTripped`] for a
-/// written type and [`RoundtripOutcome::Unwritable`] for an unwritten one; any
+/// For a parser-produced `parsed`, a clean writer returns [`RoundtripOutcome::RoundTripped`]; any
 /// [`RoundtripOutcome::Failed`] is a defect.
 #[must_use]
 pub fn roundtrip_obu(header: &ObuHeader, payload: &[u8], parsed: &ParsedObu) -> RoundtripOutcome {
@@ -144,16 +137,10 @@ pub fn roundtrip_obu(header: &ObuHeader, payload: &[u8], parsed: &ParsedObu) -> 
     };
 
     let mut complete_writer = BitWriter::new();
-    match write_complete_obu(&mut complete_writer, header, parsed, &passthrough) {
-        Ok(()) => {}
-        Err(WriteError::Unimplemented { feature }) => {
-            return RoundtripOutcome::Unwritable { feature };
-        }
-        Err(_) => {
-            return RoundtripOutcome::Failed {
-                reason: "write_rejected",
-            };
-        }
+    if write_complete_obu(&mut complete_writer, header, parsed, &passthrough).is_err() {
+        return RoundtripOutcome::Failed {
+            reason: "write_rejected",
+        };
     }
     let complete = complete_writer.into_bytes();
 

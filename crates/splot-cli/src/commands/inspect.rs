@@ -793,7 +793,7 @@ impl FrameHeaderPrefixView {
     fn new(prefix: &FrameHeaderPrefix) -> Self {
         Self {
             payload_kind: "frame_header_prefix",
-            prefix_status: prefix.status.label(),
+            prefix_status: "activation_fields_only",
             cur_mfh_id: prefix.cur_mfh_id.get(),
             seq_header_id_in_frame_header: prefix.seq_header_id_in_frame_header,
             referenced_sequence_header_id: prefix

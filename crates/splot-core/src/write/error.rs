@@ -497,15 +497,6 @@ pub enum WriteError {
     #[error("symbol encoder could not construct a valid finalized payload")]
     SymbolFinalizationFailed,
 
-    /// A writer for this OBU payload type does not exist yet — an honest stub returned by the
-    /// complete-OBU dispatch for the `ParsedObu` variants whose body writer has not landed. Distinct
-    /// from a non-canonical reject: the model is fine, the writer is simply not implemented.
-    #[error("no writer implemented for {feature}")]
-    Unimplemented {
-        /// The matrix Feature ID of the unimplemented OBU type (e.g. `"AV2-5.15-CONTENT-INTERPRETATION"`).
-        feature: &'static str,
-    },
-
     /// An [`ObuHeader`](crate::obu::ObuHeader)'s `obu_type` does not select the
     /// [`ParsedObu`](crate::obu::ParsedObu) payload variant it was paired with in the complete-OBU
     /// writer (e.g. a `SequenceHeader` header with a `Padding` payload). The § 5.2.1 OBU dispatch

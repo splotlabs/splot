@@ -148,7 +148,7 @@ pub use pc_wiener::{
     pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_into,
     pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_block_padded_u16_into,
-    pc_wiener_filter_set_index, pc_wiener_subclass, pc_wiener_subclass_table,
+    pc_wiener_filter_set_index, pc_wiener_subclass_table,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
@@ -169,7 +169,6 @@ pub use subpel_mc::{
     blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample, subpel_predict_16x16_bilinear_horizontal_overlap_into,
     subpel_predict_block, subpel_predict_block_compound_average_2d_strided_into,
-    subpel_predict_block_compound_average_fast_strided_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_fullpel_strided_into,
     subpel_predict_block_compound_average_fullpel_strided_into_u8,

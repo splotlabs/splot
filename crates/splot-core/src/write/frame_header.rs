@@ -21,9 +21,7 @@
 //! it round-trips every prefix the parser produces (bridge, `cur_mfh_id == 0`, and
 //! `cur_mfh_id > 0`).
 
-use crate::headers::frame::{
-    FrameHeaderPrefix, FrameHeaderPrefixStatus, derive_is_regular, derive_key_frame,
-};
+use crate::headers::frame::{FrameHeaderPrefix, derive_is_regular, derive_key_frame};
 use crate::headers::sequence::SequenceHeaderId;
 use crate::types::ObuType;
 use crate::write::bit_writer::BitWriter;
@@ -44,10 +42,6 @@ pub(crate) fn check_frame_header_prefix_encodable(prefix: &FrameHeaderPrefix) ->
     if !prefix.is_first {
         return reject("is_first");
     }
-    if prefix.status != FrameHeaderPrefixStatus::ActivationFieldsOnly {
-        return reject("status");
-    }
-
     if prefix.is_key_frame != derive_key_frame(prefix.obu_type) {
         return reject("is_key_frame");
     }
@@ -345,13 +339,6 @@ mod tests {
         let mut prefix = base_prefix();
         prefix.referenced_sequence_header_id = SequenceHeaderId::try_new(2);
         assert_rejected(&prefix, "referenced_sequence_header_id");
-    }
-
-    #[test]
-    fn reject_non_activation_status() {
-        let mut prefix = base_prefix();
-        prefix.status = FrameHeaderPrefixStatus::CompleteForSpecialCase;
-        assert_rejected(&prefix, "status");
     }
 
     #[test]

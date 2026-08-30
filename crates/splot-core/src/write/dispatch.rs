@@ -41,8 +41,8 @@
 //! [`ParsedObu::OperatingPointSet`], [`ParsedObu::ContentInterpretation`],
 //! [`ParsedObu::FilmGrain`], [`ParsedObu::AtlasSegment`], [`ParsedObu::MultiFrameHeader`],
 //! [`ParsedObu::LayerConfigurationRecord`], [`ParsedObu::QuantizationMatrix`]) — the dispatch no
-//! longer returns [`WriteError::Unimplemented`] for any variant (the typed stub remains a valid
-//! [`WriteError`] for any future unmodeled type, but is unreachable from this dispatch).
+//! longer has an unwritable fallback. Adding a future [`ParsedObu`] variant requires extending the
+//! exhaustive dispatch.
 
 use crate::headers::padding::PaddingObu;
 use crate::obu::{ObuHeader, ParsedObu};
@@ -82,8 +82,8 @@ use crate::write::seq_tile::write_sequence_header;
 ///   variant (a pair the § 5.2.1 OBU dispatch could never have produced).
 /// - Any [`write_obu_header`] reject (inconsistent header, non-inferable layer ids,
 ///   non-canonical `obu_type`, oversize field).
-/// - Any [`write_obu_payload`] reject (a delegated body-writer `NonCanonical*`, a
-///   `passthrough` mismatch, or [`WriteError::Unimplemented`] for an unwritten type).
+/// - Any [`write_obu_payload`] reject (a delegated body-writer `NonCanonical*` or a
+///   `passthrough` mismatch).
 ///
 /// All checks run before any bit is written, so a rejected OBU leaves `writer` unchanged.
 pub fn write_complete_obu(
@@ -133,8 +133,6 @@ pub fn write_complete_obu(
 ///
 /// # Errors
 /// - [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary.
-/// - [`WriteError::Unimplemented`] for the two `ParsedObu` variants without a body writer
-///   (the Feature ID is [`ParsedObu::feature_id`]).
 /// - A non-empty `passthrough` for the temporal delimiter (`temporal_delimiter_passthrough`),
 ///   or a `padding_len` that disagrees with `passthrough.len()`
 ///   (`padding_passthrough_len`).

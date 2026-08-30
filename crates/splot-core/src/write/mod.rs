@@ -58,7 +58,7 @@
 //! § 6.2.1 OBU tail (`obu_extension_flag = 0` + `trailing_bits()` for an extensible non-empty body;
 //! nothing for the temporal delimiter; padding owns its own tail), and
 //! [`dispatch::write_complete_obu`] prepends the § 5.2.2 header. All fourteen OBU payload types now
-//! have a body writer ([`error::WriteError::Unimplemented`] is no longer reachable from the dispatch).
+//! have a body writer, and the dispatch is exhaustive.
 //! [`layer_config_record`] writes the § 5.8 `layer_config_record_obu()`
 //! ([`layer_config_record::write_layer_config_record`], the inverse of
 //! [`crate::headers::layer_config_record::parse_layer_config_record`]): it branches on the

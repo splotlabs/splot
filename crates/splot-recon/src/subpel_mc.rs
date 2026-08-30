@@ -1465,39 +1465,6 @@ fn validate_compound_output<O>(
     Ok(())
 }
 
-/// Dispatches directly to the matching unscaled fused compound kernel.
-///
-/// Full-pel, horizontal-only, and small two-axis phases are mutually
-/// exclusive, so this avoids probing and validating earlier kernels before
-/// reaching the applicable one. Returns `Ok(false)` when the parameters do not
-/// match a fused subset.
-///
-/// # Errors
-///
-/// Returns validation and output-layout errors from the selected kernel.
-#[allow(clippy::too_many_arguments)]
-pub fn subpel_predict_block_compound_average_fast_strided_into<T: ReconSample>(
-    reference0: &ReferencePlaneView<'_, T>,
-    params0: &SubpelPredictParams,
-    reference1: &ReferencePlaneView<'_, T>,
-    params1: &SubpelPredictParams,
-    cwp_weight: i16,
-    scratch: &mut [i16],
-    output: &mut [u16],
-    output_stride: usize,
-) -> Result<bool> {
-    subpel_predict_block_compound_average_fast_dispatch::<true, T>(
-        reference0,
-        params0,
-        reference1,
-        params1,
-        cwp_weight,
-        scratch,
-        output,
-        output_stride,
-    )
-}
-
 /// Internal fast dispatch for caller-constructed, already validated parameters.
 ///
 /// # Errors
@@ -1525,7 +1492,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<T: Reco
     debug_assert!([params0, params1].iter().all(|params| {
         params.step_x == 1 << SCALE_SUBPEL_BITS && params.step_y == 1 << SCALE_SUBPEL_BITS
     }));
-    subpel_predict_block_compound_average_fast_dispatch::<false, T>(
+    subpel_predict_block_compound_average_fast_dispatch(
         reference0,
         params0,
         reference1,
@@ -1540,7 +1507,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<T: Reco
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
 #[inline(always)]
-fn subpel_predict_block_compound_average_fast_dispatch<const VALIDATE: bool, T: ReconSample>(
+fn subpel_predict_block_compound_average_fast_dispatch<T: ReconSample>(
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
     reference1: &ReferencePlaneView<'_, T>,
@@ -1550,17 +1517,6 @@ fn subpel_predict_block_compound_average_fast_dispatch<const VALIDATE: bool, T: 
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<bool> {
-    if VALIDATE
-        && (params0.w != params1.w
-            || params0.h != params1.h
-            || params0.bit_depth != params1.bit_depth
-            || params0.step_x != 1 << SCALE_SUBPEL_BITS
-            || params0.step_y != 1 << SCALE_SUBPEL_BITS
-            || params1.step_x != 1 << SCALE_SUBPEL_BITS
-            || params1.step_y != 1 << SCALE_SUBPEL_BITS)
-    {
-        return Ok(false);
-    }
     let phases = [params0, params1].map(|params| {
         (
             (params.start_x >> 6) & SUBPEL_MASK,
@@ -1568,27 +1524,17 @@ fn subpel_predict_block_compound_average_fast_dispatch<const VALIDATE: bool, T: 
         )
     });
     match phases {
-        [(0, 0), (0, 0)] => {
-            if VALIDATE {
-                validate_subpel_params(params0)?;
-                validate_subpel_params(params1)?;
-            }
-            subpel_predict_block_compound_average_fullpel_validated::<VALIDATE, T>(
-                reference0,
-                params0,
-                reference1,
-                params1,
-                cwp_weight,
-                output,
-                output_stride,
-            )
-        }
+        [(0, 0), (0, 0)] => subpel_predict_block_compound_average_fullpel_validated::<false, T>(
+            reference0,
+            params0,
+            reference1,
+            params1,
+            cwp_weight,
+            output,
+            output_stride,
+        ),
         [(x0, 0), (x1, 0)] if x0 != 0 && x1 != 0 => {
-            if VALIDATE {
-                validate_subpel_params(params0)?;
-                validate_subpel_params(params1)?;
-            }
-            subpel_predict_block_compound_average_horizontal_validated::<VALIDATE, T>(
+            subpel_predict_block_compound_average_horizontal_validated::<false, T>(
                 reference0,
                 params0,
                 reference1,
@@ -1606,11 +1552,7 @@ fn subpel_predict_block_compound_average_fast_dispatch<const VALIDATE: bool, T: 
                 && matches!(params0.w, 4 | 8)
                 && params0.h <= 8 =>
         {
-            if VALIDATE {
-                validate_subpel_params(params0)?;
-                validate_subpel_params(params1)?;
-            }
-            subpel_predict_block_compound_average_2d_validated::<VALIDATE, T>(
+            subpel_predict_block_compound_average_2d_validated::<false, T>(
                 reference0,
                 params0,
                 reference1,
