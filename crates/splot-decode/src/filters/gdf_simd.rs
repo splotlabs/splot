@@ -62,6 +62,11 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
             alpha_table[k][class_indices[lane >> 1]] as i16
         }));
         let low = -alpha;
+        let weights: [Simd<i32, 8>; 3] = core::array::from_fn(|index| {
+            Simd::from_array(core::array::from_fn(|lane| {
+                i32::from(weight_table[index][k][class_indices[lane >> 1]])
+            }))
+        });
         for row_offset in 0..ROWS {
             let base = bases[row_offset];
             let negative = Simd::<u16, 8>::from_slice(
@@ -82,11 +87,8 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
                 .simd_max(Simd::splat(-512))
                 .simd_min(Simd::splat(511))
                 .cast::<i32>();
-            for (index, weights) in gdf_indices[row_offset].iter_mut().zip(weight_table) {
-                *index += comb
-                    * Simd::from_array(core::array::from_fn(|lane| {
-                        i32::from(weights[k][class_indices[lane >> 1]])
-                    }));
+            for (index, weight) in gdf_indices[row_offset].iter_mut().zip(weights) {
+                *index += comb * weight;
             }
         }
     }

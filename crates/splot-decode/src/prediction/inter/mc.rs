@@ -4,7 +4,7 @@
 #[cfg(test)]
 use splot_recon::BitDepth;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OptflowScratch, PixelFormat,
+    CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OptflowScratch, PixelFormat,
     PlaneId, PlaneRect, PreparedWarpPrediction, ReconError, ReconSample, ReferencePlaneView,
     SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
     blend_compound_average_weighted_sample, ext_warp_predict_unit,
@@ -2434,34 +2434,6 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
     scaling: super::mv_scaling::PlaneScaling,
 ) -> Result<()> {
     let storage = workspace.plane(plane)?.storage_size();
-    let full = PlaneRect::new(0, 0, storage.width(), storage.height())?;
-    let sample_count =
-        storage
-            .width()
-            .checked_mul(storage.height())
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "IntrABC source plane sample count",
-            })?;
-    let mut samples = RecycledMcSamples::take();
-    samples.clear();
-    samples.resize(sample_count, T::default());
-    let mut start = 0usize;
-    for row in workspace.rect_rows(plane, full)? {
-        let end = start
-            .checked_add(row.len())
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "IntrABC source plane row range",
-            })?;
-        let output = samples
-            .get_mut(start..end)
-            .ok_or(ReconError::BufferLengthMismatch {
-                expected: end,
-                actual: sample_count,
-            })?;
-        output.copy_from_slice(row);
-        start = end;
-    }
-    let view = ReferencePlaneView::new(&samples, storage.width(), storage.height())?;
     let params = crate::filters::wienerns_lr::recon::full_recon::intrabc_bilinear_params(
         scaling,
         target.width(),
@@ -2479,12 +2451,20 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
         let mut predicted = slot.take().unwrap_or_default();
         predicted.resize(prediction_len, 0);
         let result: Result<()> = (|| {
-            subpel_predict_block_into(&view, &params, &mut predicted)?;
-            let mut packed = RecycledMcSamples::take();
-            packed.clear();
-            packed.resize(prediction_len, T::default());
-            copy_u16_samples(&predicted[..prediction_len], &mut packed)?;
-            workspace.write_rect(plane, target, &packed, target.width())?;
+            {
+                let view = ReferencePlaneView::new(
+                    workspace.samples(plane)?,
+                    storage.width(),
+                    storage.height(),
+                )?;
+                subpel_predict_block_into(&view, &params, &mut predicted)?;
+            }
+            CurrentFrameSurface::Frame(workspace).write_u16_rect(
+                plane,
+                target,
+                &predicted[..prediction_len],
+                target.width(),
+            )?;
             Ok(())
         })();
         slot.set(Some(predicted));
