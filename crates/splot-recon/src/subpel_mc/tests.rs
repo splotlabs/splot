@@ -1679,18 +1679,15 @@ fn fullpel_compound_average_matches_materialized_predictors() {
             blend_compound_average_weighted(&pred0, &pred1, params0.bit_depth, cwp_weight).unwrap();
         let stride = params0.w + 3;
         let mut actual = vec![u16::MAX; stride * params0.h];
-        assert!(
-            subpel_predict_block_compound_average_fullpel_strided_into(
-                &view0,
-                &params0,
-                &view1,
-                &params1,
-                cwp_weight,
-                &mut actual,
-                stride,
-            )
-            .unwrap()
-        );
+        assert!(subpel_predict_block_compound_average_fullpel_validated(
+            &view0,
+            &params0,
+            &view1,
+            &params1,
+            cwp_weight,
+            &mut actual,
+            stride,
+        ));
         for row in 0..params0.h {
             assert_eq!(
                 &actual[row * stride..row * stride + params0.w],
@@ -1835,18 +1832,15 @@ fn clipped_horizontal_compound_matches_materialized_predictors() {
             blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
         let stride = params0.w + 3;
         let mut output = vec![u16::MAX; stride * params0.h];
-        assert!(
-            subpel_predict_block_compound_average_horizontal_strided_into(
-                &view0,
-                &params0,
-                &view1,
-                &params1,
-                weight,
-                &mut output,
-                stride,
-            )
-            .unwrap()
-        );
+        assert!(subpel_predict_block_compound_average_horizontal_validated(
+            &view0,
+            &params0,
+            &view1,
+            &params1,
+            weight,
+            &mut output,
+            stride,
+        ));
         for row in 0..params0.h {
             assert_eq!(
                 &output[row * stride..row * stride + params0.w],
@@ -1915,18 +1909,15 @@ fn clipped_horizontal_compound_rows_match_materialized_predictors() {
     let expected = blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, 12).unwrap();
     let mut actual = vec![u16::MAX; params0.w * params0.h];
 
-    assert!(
-        subpel_predict_block_compound_average_horizontal_strided_into(
-            &view0,
-            &params0,
-            &view1,
-            &params1,
-            12,
-            &mut actual,
-            params0.w,
-        )
-        .unwrap()
-    );
+    assert!(subpel_predict_block_compound_average_horizontal_validated(
+        &view0,
+        &params0,
+        &view1,
+        &params1,
+        12,
+        &mut actual,
+        params0.w,
+    ));
     assert_eq!(actual, expected);
 }
 
@@ -1979,19 +1970,16 @@ fn fused_two_axis_compound_matches_materialized_predictors() {
             let stride = width + 3;
             let mut output = vec![u16::MAX; stride * params0.h];
             let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
-            assert!(
-                subpel_predict_block_compound_average_2d_strided_into(
-                    &view0,
-                    &params0,
-                    &view1,
-                    &params1,
-                    weight,
-                    &mut scratch,
-                    &mut output,
-                    stride,
-                )
-                .unwrap()
-            );
+            assert!(subpel_predict_block_compound_average_2d_validated(
+                &view0,
+                &params0,
+                &view1,
+                &params1,
+                weight,
+                &mut scratch,
+                &mut output,
+                stride,
+            ));
             for row in 0..params0.h {
                 assert_eq!(
                     &output[row * stride..row * stride + width],
@@ -2056,19 +2044,16 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
                 let stride = width + 3;
                 let mut output = vec![u16::MAX; stride * params0.h];
                 let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
-                assert!(
-                    subpel_predict_block_compound_average_2d_strided_into(
-                        &view0,
-                        &params0,
-                        &view1,
-                        &params1,
-                        weight,
-                        &mut scratch,
-                        &mut output,
-                        stride,
-                    )
-                    .unwrap()
-                );
+                assert!(subpel_predict_block_compound_average_2d_validated(
+                    &view0,
+                    &params0,
+                    &view1,
+                    &params1,
+                    weight,
+                    &mut scratch,
+                    &mut output,
+                    stride,
+                ));
                 for row in 0..params0.h {
                     assert_eq!(
                         &output[row * stride..row * stride + width],
@@ -2083,68 +2068,6 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
             }
         }
     }
-}
-
-#[test]
-fn fullpel_compound_average_preserves_validation_and_fallback() {
-    let samples = vec![0u16; 16 * 16];
-    let view = ReferencePlaneView::new(&samples, 16, 16).unwrap();
-    let valid = full_pel_params(InterpolationFilter::EightTap, 4, 4, 2, 2, 16, 16);
-    let mut output = [u16::MAX; 16];
-
-    let fractional = SubpelPredictParams {
-        start_x: valid.start_x + (1 << 6),
-        ..valid
-    };
-    assert!(
-        !subpel_predict_block_compound_average_fullpel_strided_into(
-            &view,
-            &fractional,
-            &view,
-            &valid,
-            8,
-            &mut output,
-            4,
-        )
-        .unwrap()
-    );
-    assert_eq!(output, [u16::MAX; 16]);
-
-    let zero_width = SubpelPredictParams { w: 0, ..valid };
-    assert!(matches!(
-        subpel_predict_block_compound_average_fullpel_strided_into(
-            &view,
-            &zero_width,
-            &view,
-            &valid,
-            8,
-            &mut output,
-            4,
-        ),
-        Err(ReconError::ZeroDimension {
-            field: "subpel block width"
-        })
-    ));
-
-    let negative_step = SubpelPredictParams {
-        step_x: -1,
-        ..valid
-    };
-    assert!(matches!(
-        subpel_predict_block_compound_average_fullpel_strided_into(
-            &view,
-            &negative_step,
-            &view,
-            &valid,
-            8,
-            &mut output,
-            4,
-        ),
-        Err(ReconError::SubpelNegativeStep {
-            step_x: -1,
-            step_y: 1024
-        })
-    ));
 }
 
 #[test]

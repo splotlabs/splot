@@ -1248,14 +1248,7 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
     )
 }
 
-/// Directly blends two zero-phase unscaled predictors, returning `Ok(false)`
-/// outside that subset. Validation and layout errors match
-/// [`subpel_predict_block_compound_average_strided_into`].
-///
-/// # Errors
-///
-/// Returns validation and output-layout errors.
-pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample>(
+fn subpel_predict_block_compound_average_fullpel_validated<T: ReconSample>(
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
     reference1: &ReferencePlaneView<'_, T>,
@@ -1263,42 +1256,7 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample
     cwp_weight: i16,
     output: &mut [u16],
     output_stride: usize,
-) -> Result<bool> {
-    if !subpel_params_are_valid_fullpel(params0) || !subpel_params_are_valid_fullpel(params1) {
-        validate_subpel_params(params0)?;
-        validate_subpel_params(params1)?;
-        return Ok(false);
-    }
-    if params0.w != params1.w || params0.h != params1.h || params0.bit_depth != params1.bit_depth {
-        return Ok(false);
-    }
-    subpel_predict_block_compound_average_fullpel_validated::<true, T>(
-        reference0,
-        params0,
-        reference1,
-        params1,
-        cwp_weight,
-        output,
-        output_stride,
-    )
-}
-
-fn subpel_predict_block_compound_average_fullpel_validated<
-    const VALIDATE_OUTPUT: bool,
-    T: ReconSample,
->(
-    reference0: &ReferencePlaneView<'_, T>,
-    params0: &SubpelPredictParams,
-    reference1: &ReferencePlaneView<'_, T>,
-    params1: &SubpelPredictParams,
-    cwp_weight: i16,
-    output: &mut [u16],
-    output_stride: usize,
-) -> Result<bool> {
-    if VALIDATE_OUTPUT {
-        validate_compound_output(params0, output, output_stride)?;
-    }
-
+) -> bool {
     let x0 = [
         params0.start_x >> SCALE_SUBPEL_BITS,
         params1.start_x >> SCALE_SUBPEL_BITS,
@@ -1360,7 +1318,7 @@ fn subpel_predict_block_compound_average_fullpel_validated<
             }
         }
     }
-    Ok(true)
+    true
 }
 
 #[inline(always)]
@@ -1466,9 +1424,6 @@ fn validate_compound_output<O>(
 }
 
 /// Internal fast dispatch for caller-constructed, already validated parameters.
-///
-/// # Errors
-/// Returns output-layout errors from the selected fused kernel.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
@@ -1482,7 +1437,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<T: Reco
     scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
-) -> Result<bool> {
+) -> bool {
     debug_assert!(validate_subpel_params(params0).is_ok());
     debug_assert!(validate_subpel_params(params1).is_ok());
     debug_assert_eq!(
@@ -1516,7 +1471,7 @@ fn subpel_predict_block_compound_average_fast_dispatch<T: ReconSample>(
     scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
-) -> Result<bool> {
+) -> bool {
     let phases = [params0, params1].map(|params| {
         (
             (params.start_x >> 6) & SUBPEL_MASK,
@@ -1524,7 +1479,7 @@ fn subpel_predict_block_compound_average_fast_dispatch<T: ReconSample>(
         )
     });
     match phases {
-        [(0, 0), (0, 0)] => subpel_predict_block_compound_average_fullpel_validated::<false, T>(
+        [(0, 0), (0, 0)] => subpel_predict_block_compound_average_fullpel_validated(
             reference0,
             params0,
             reference1,
@@ -1534,7 +1489,7 @@ fn subpel_predict_block_compound_average_fast_dispatch<T: ReconSample>(
             output_stride,
         ),
         [(x0, 0), (x1, 0)] if x0 != 0 && x1 != 0 => {
-            subpel_predict_block_compound_average_horizontal_validated::<false, T>(
+            subpel_predict_block_compound_average_horizontal_validated(
                 reference0,
                 params0,
                 reference1,
@@ -1552,7 +1507,7 @@ fn subpel_predict_block_compound_average_fast_dispatch<T: ReconSample>(
                 && matches!(params0.w, 4 | 8)
                 && params0.h <= 8 =>
         {
-            subpel_predict_block_compound_average_2d_validated::<false, T>(
+            subpel_predict_block_compound_average_2d_validated(
                 reference0,
                 params0,
                 reference1,
@@ -1563,18 +1518,11 @@ fn subpel_predict_block_compound_average_fast_dispatch<T: ReconSample>(
                 output_stride,
             )
         }
-        _ => Ok(false),
+        _ => false,
     }
 }
 
-/// Directly filters and blends two unscaled horizontal-only predictors.
-/// Validation and layout errors match
-/// [`subpel_predict_block_compound_average_strided_into`].
-///
-/// # Errors
-///
-/// Returns validation and output-layout errors.
-pub fn subpel_predict_block_compound_average_horizontal_strided_into<T: ReconSample>(
+fn subpel_predict_block_compound_average_horizontal_validated<T: ReconSample>(
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
     reference1: &ReferencePlaneView<'_, T>,
@@ -1582,57 +1530,15 @@ pub fn subpel_predict_block_compound_average_horizontal_strided_into<T: ReconSam
     cwp_weight: i16,
     output: &mut [u16],
     output_stride: usize,
-) -> Result<bool> {
-    validate_subpel_params(params0)?;
-    validate_subpel_params(params1)?;
-    if params0.w != params1.w
-        || params0.h != params1.h
-        || params0.bit_depth != params1.bit_depth
-        || params0.step_x != 1 << SCALE_SUBPEL_BITS
-        || params0.step_y != 1 << SCALE_SUBPEL_BITS
-        || params1.step_x != 1 << SCALE_SUBPEL_BITS
-        || params1.step_y != 1 << SCALE_SUBPEL_BITS
-        || (params0.start_x >> 6) & SUBPEL_MASK == 0
-        || (params1.start_x >> 6) & SUBPEL_MASK == 0
-        || (params0.start_y >> 6) & SUBPEL_MASK != 0
-        || (params1.start_y >> 6) & SUBPEL_MASK != 0
-    {
-        return Ok(false);
-    }
-    subpel_predict_block_compound_average_horizontal_validated::<true, T>(
-        reference0,
-        params0,
-        reference1,
-        params1,
-        cwp_weight,
-        output,
-        output_stride,
-    )
-}
-
-fn subpel_predict_block_compound_average_horizontal_validated<
-    const VALIDATE_OUTPUT: bool,
-    T: ReconSample,
->(
-    reference0: &ReferencePlaneView<'_, T>,
-    params0: &SubpelPredictParams,
-    reference1: &ReferencePlaneView<'_, T>,
-    params1: &SubpelPredictParams,
-    cwp_weight: i16,
-    output: &mut [u16],
-    output_stride: usize,
-) -> Result<bool> {
+) -> bool {
     let window_x0 = subpel_horizontal_window_x(reference0, params0);
     let window_x1 = subpel_horizontal_window_x(reference1, params1);
     let Some(source0) = T::u16_slice(reference0.samples) else {
-        return Ok(false);
+        return false;
     };
     let Some(source1) = T::u16_slice(reference1.samples) else {
-        return Ok(false);
+        return false;
     };
-    if VALIDATE_OUTPUT {
-        validate_compound_output(params0, output, output_stride)?;
-    }
     let (Some(window_x0), Some(window_x1)) = (window_x0, window_x1) else {
         clipped_compound::horizontal(
             [reference0, reference1],
@@ -1642,7 +1548,7 @@ fn subpel_predict_block_compound_average_horizontal_validated<
             output,
             output_stride,
         );
-        return Ok(true);
+        return true;
     };
 
     let filters = [params0, params1].map(|params| {
@@ -1761,18 +1667,11 @@ fn subpel_predict_block_compound_average_horizontal_validated<
             .clamp(0, max_sample) as u16;
         }
     }
-    Ok(true)
+    true
 }
 
-/// Directly filters and blends two unscaled 4- or 8-wide two-axis predictors.
-/// Validation and layout errors match
-/// [`subpel_predict_block_compound_average_strided_into`].
-///
-/// # Errors
-///
-/// Returns validation and output-layout errors.
 #[allow(clippy::too_many_arguments)]
-pub fn subpel_predict_block_compound_average_2d_strided_into<T: ReconSample>(
+fn subpel_predict_block_compound_average_2d_validated<T: ReconSample>(
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
     reference1: &ReferencePlaneView<'_, T>,
@@ -1781,67 +1680,21 @@ pub fn subpel_predict_block_compound_average_2d_strided_into<T: ReconSample>(
     scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
-) -> Result<bool> {
-    validate_subpel_params(params0)?;
-    validate_subpel_params(params1)?;
-    let params = [params0, params1];
-    if params0.w != params1.w
-        || params0.h != params1.h
-        || params0.bit_depth != params1.bit_depth
-        || !matches!(params0.w, 4 | 8)
-        || params0.h > 8
-        || params.iter().any(|params| {
-            params.step_x != 1 << SCALE_SUBPEL_BITS
-                || params.step_y != 1 << SCALE_SUBPEL_BITS
-                || (params.start_x >> 6) & SUBPEL_MASK == 0
-                || (params.start_y >> 6) & SUBPEL_MASK == 0
-        })
-    {
-        return Ok(false);
-    }
-    subpel_predict_block_compound_average_2d_validated::<true, T>(
-        reference0,
-        params0,
-        reference1,
-        params1,
-        cwp_weight,
-        scratch,
-        output,
-        output_stride,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn subpel_predict_block_compound_average_2d_validated<
-    const VALIDATE_OUTPUT: bool,
-    T: ReconSample,
->(
-    reference0: &ReferencePlaneView<'_, T>,
-    params0: &SubpelPredictParams,
-    reference1: &ReferencePlaneView<'_, T>,
-    params1: &SubpelPredictParams,
-    cwp_weight: i16,
-    scratch: &mut [i16],
-    output: &mut [u16],
-    output_stride: usize,
-) -> Result<bool> {
+) -> bool {
     const SCRATCH_LEN: usize = 2 * (8 + NUM_TAPS - 1) * 8;
     let params = [params0, params1];
     let window_x0 = subpel_horizontal_window_x(reference0, params0);
     let window_x1 = subpel_horizontal_window_x(reference1, params1);
     let Some(source0) = T::u16_slice(reference0.samples) else {
-        return Ok(false);
+        return false;
     };
     let Some(source1) = T::u16_slice(reference1.samples) else {
-        return Ok(false);
+        return false;
     };
-    if VALIDATE_OUTPUT {
-        validate_compound_output(params0, output, output_stride)?;
-    }
     let references = [reference0, reference1];
     let sources = [source0, source1];
     let Some(scratch) = scratch.get_mut(..SCRATCH_LEN) else {
-        return Ok(false);
+        return false;
     };
     let (Some(window_x0), Some(window_x1)) = (window_x0, window_x1) else {
         clipped_compound::two_axis(
@@ -1853,7 +1706,7 @@ fn subpel_predict_block_compound_average_2d_validated<
             output,
             output_stride,
         );
-        return Ok(true);
+        return true;
     };
     let windows = [window_x0, window_x1];
     match params0.w {
@@ -1877,9 +1730,9 @@ fn subpel_predict_block_compound_average_2d_validated<
             output,
             output_stride,
         ),
-        _ => return Ok(false),
+        _ => return false,
     }
-    Ok(true)
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
