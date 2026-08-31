@@ -625,12 +625,6 @@ where
     }
 }
 
-/// Whether one frame's walk runs split, with its reconstruction deferred past
-/// the next frame's entropy pass.
-fn split_walk(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
-    inter::splittable_inter_frame(obu_type, core)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn decode_frames_in_order<'job, 'scope>(
     parsed: &'job FlatParsedBitstream<'job>,
@@ -1306,7 +1300,7 @@ where
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        if split_walk(next_candidate.obu_type(), &inter_core) {
+                        if inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core) {
                             frame_pipeline::prepare_entropy_submission(
                                 &mut pending_entropy,
                                 ring.capacity(),
@@ -1532,7 +1526,7 @@ where
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        if split_walk(next_candidate.obu_type(), &inter_core) {
+                        if inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core) {
                             frame_pipeline::prepare_entropy_submission(
                                 &mut pending_entropy,
                                 ring.capacity(),

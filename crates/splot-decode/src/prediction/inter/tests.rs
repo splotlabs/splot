@@ -917,14 +917,8 @@ fn simple_path_interintra_fixture_decodes_avm_bit_exact() {
 #[test]
 fn fractional_quarter_pel_intrabc_fixture_decodes_avm_bit_exact() {
     let (_, key_core) = fixture_sequence_and_key_core(FRACTIONAL_INTRABC_FIXTURE);
-    assert_eq!(
-        key_core
-            .intrabc
-            .expect("fixture key frame parses IntrABC parameters")
-            .allow_global_intrabc,
-        Some(true),
-        "fixture must exercise the global IntrABC scheduling dependency"
-    );
+    let intrabc = key_core.intrabc.expect("fixture parses IntrABC parameters");
+    assert_eq!(intrabc.allow_global_intrabc, Some(true));
 
     for threads in [1, 2, 3, 4, 8, 10] {
         let frames = decode_fixture_on_threads(FRACTIONAL_INTRABC_FIXTURE, threads);
@@ -1239,33 +1233,27 @@ fn multi_sb_fixture_per_frame_hash_is_stable() {
 
 #[test]
 fn multi_tile_inter_fixture_decodes_bit_exact() {
+    let expected = [
+        "2dc3b82d7f75dd5f400474fbf370a9acc2e631f65e2cc1263d0ec0684b14da15",
+        "dc9b4c4aef4e6dc1afa43ed16a93c17dd2fab9c1e61b5ab97dbae863d62a7ebd",
+    ];
     for threads in [1usize, 2, 3, 4, 8, 10] {
         let frames = decode_fixture_on_threads(MULTI_TILE_INTER_FIXTURE, threads);
         assert_yuv420_8bit_frames(&frames, 128, 64);
-        assert_eq!(
-            frame_hashes(&frames),
-            [
-                "2dc3b82d7f75dd5f400474fbf370a9acc2e631f65e2cc1263d0ec0684b14da15",
-                "dc9b4c4aef4e6dc1afa43ed16a93c17dd2fab9c1e61b5ab97dbae863d62a7ebd"
-            ],
-            "two-tile output must match the pinned avmdec frames"
-        );
+        assert_eq!(frame_hashes(&frames), expected);
     }
 }
 
 #[test]
 fn multi_tile_lr_fixture_decodes_bit_exact() {
+    let expected = [
+        "40567c0d82f8c0c50e4ce59fd4630ec6dd1049e4405321992e7c40f9047630b2",
+        "5bdc64e0d79ebbfea730882ad0c6f678307c764d91e20fa1902fb8cc8738bffe",
+    ];
     for threads in [1usize, 2, 3, 4, 8, 10] {
         let frames = decode_fixture_on_threads(MULTI_TILE_LR_FIXTURE, threads);
         assert_yuv420_8bit_frames(&frames, 768, 256);
-        assert_eq!(
-            frame_hashes(&frames),
-            [
-                "40567c0d82f8c0c50e4ce59fd4630ec6dd1049e4405321992e7c40f9047630b2",
-                "5bdc64e0d79ebbfea730882ad0c6f678307c764d91e20fa1902fb8cc8738bffe"
-            ],
-            "multi-tile LR output must match the pinned avmdec frames"
-        );
+        assert_eq!(frame_hashes(&frames), expected);
     }
 }
 
