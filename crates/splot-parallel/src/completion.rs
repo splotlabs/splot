@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 
-use crate::admission::AdmissionWaiter;
+use crate::admission::Waiter;
 use crate::pool::{
     PoolAssist, assist_installed_pool_or_wait, bind_installed_pool_progress,
     notify_bound_pool_progress, pool_progress_snapshot,
@@ -25,7 +25,7 @@ const SET: u8 = 2;
 pub struct CompletionCell<V> {
     value: OnceLock<V>,
     progress: PoolProgressBindings,
-    first_waiter: OnceLock<Weak<dyn AdmissionWaiter>>,
+    first_waiter: OnceLock<Weak<Waiter>>,
     admission_state: AtomicU8,
     wait: OnceLock<CompletionWait>,
 }
@@ -39,7 +39,7 @@ struct CompletionWait {
 #[derive(Debug)]
 struct WaitState {
     parked: usize,
-    additional_waiters: Vec<Weak<dyn AdmissionWaiter>>,
+    additional_waiters: Vec<Weak<Waiter>>,
 }
 
 impl<V> CompletionCell<V> {
@@ -65,12 +65,6 @@ impl<V> CompletionCell<V> {
             admission_state: AtomicU8::new(SET),
             wait: OnceLock::new(),
         }
-    }
-
-    /// Consumes the cell and returns its value, if set.
-    #[must_use]
-    pub fn into_inner(self) -> Option<V> {
-        self.value.into_inner()
     }
 
     /// Publishes a value and wakes every observer.
@@ -106,7 +100,7 @@ impl<V> CompletionCell<V> {
         Ok(())
     }
 
-    pub(crate) fn register_waiter(&self, waiter: Arc<dyn AdmissionWaiter>) -> bool {
+    pub(crate) fn register_waiter(&self, waiter: Arc<Waiter>) -> bool {
         bind_installed_pool_progress(&self.progress);
         if self.is_set() {
             return false;
@@ -143,26 +137,6 @@ impl<V> CompletionCell<V> {
         self.value.get().is_some()
     }
 
-    /// Blocks the calling pipeline driver until the value arrives.
-    #[must_use]
-    pub fn wait(&self) -> &V {
-        loop {
-            if let Some(value) = self.value.get() {
-                return value;
-            }
-            let wait = self.wait_state();
-            let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
-            while self.value.get().is_none() {
-                state.parked += 1;
-                state = wait
-                    .cond
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
-                state.parked -= 1;
-            }
-        }
-    }
-
     /// Runs pool jobs while the pipeline driver waits for the value.
     #[must_use]
     pub fn wait_with_pool_assist(&self) -> &V {
@@ -174,7 +148,18 @@ impl<V> CompletionCell<V> {
             }
             match assist_installed_pool_or_wait(&progress) {
                 PoolAssist::Executed | PoolAssist::Idle => {}
-                PoolAssist::OffPool => return self.wait(),
+                PoolAssist::OffPool => {
+                    let wait = self.wait_state();
+                    let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    while self.value.get().is_none() {
+                        state.parked += 1;
+                        state = wait
+                            .cond
+                            .wait(state)
+                            .unwrap_or_else(PoisonError::into_inner);
+                        state.parked -= 1;
+                    }
+                }
             }
         }
     }
@@ -201,18 +186,10 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use crate::admission::{AdmissionScheduler, Condition};
     use crate::pool::{WorkerPool, ready_task_scope};
     use crate::thread_count::ThreadCount;
     use std::sync::atomic::AtomicUsize;
-
-    #[derive(Debug, Default)]
-    struct Count(AtomicUsize);
-
-    impl AdmissionWaiter for Count {
-        fn satisfy(&self) {
-            self.0.fetch_add(1, Ordering::AcqRel);
-        }
-    }
 
     #[test]
     fn cell_is_write_once() {
@@ -220,30 +197,49 @@ mod tests {
         assert!(!cell.is_set());
         assert_eq!(cell.set(7), Ok(()));
         assert_eq!(cell.get(), Some(&7));
-        assert_eq!(cell.wait(), &7);
         assert_eq!(cell.set(8), Err(8));
-        assert_eq!(cell.into_inner(), Some(7));
     }
 
     #[test]
     fn set_wakes_multiple_admission_and_blocking_waiters() {
         let cell = Arc::new(CompletionCell::new());
-        let first = Arc::new(Count::default());
-        let second = Arc::new(Count::default());
-        assert!(cell.register_waiter(first.clone()));
-        assert!(cell.register_waiter(second.clone()));
+        let visits: Vec<_> = (0..2).map(|_| AtomicUsize::new(0)).collect();
+        let scheduler = AdmissionScheduler::new();
+        let pool = WorkerPool::new(ThreadCount::Fixed(2.try_into().unwrap())).unwrap();
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                for visit in &visits {
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[Condition::completion(cell.as_ref())],
+                        Box::new(move |_| {
+                            visit.fetch_add(1, Ordering::Relaxed);
+                        }),
+                    );
+                }
+            })
+            .unwrap();
+        });
         let blocked: Vec<_> = (0..2)
             .map(|_| {
                 let cell = Arc::clone(&cell);
-                std::thread::spawn(move || *cell.wait())
+                std::thread::spawn(move || *cell.wait_with_pool_assist())
             })
             .collect();
         cell.set(11).unwrap();
-        assert_eq!(first.0.load(Ordering::Acquire), 1);
-        assert_eq!(second.0.load(Ordering::Acquire), 1);
+        pool.install(|| {
+            ready_task_scope(|scope| scheduler.admit_ready(scope)).unwrap();
+        });
+        assert!(
+            visits
+                .iter()
+                .all(|visit| visit.load(Ordering::Acquire) == 1)
+        );
         for waiter in blocked {
             assert_eq!(waiter.join().unwrap(), 11);
         }
+        scheduler.finish().unwrap();
     }
 
     #[test]
@@ -264,14 +260,30 @@ mod tests {
 
     #[test]
     fn registration_racing_set_is_rejected_or_fired_once() {
+        let pool = WorkerPool::new(ThreadCount::Fixed(2.try_into().unwrap())).unwrap();
         for _ in 0..128 {
             let cell = Arc::new(CompletionCell::new());
-            let waiter = Arc::new(Count::default());
+            let ran = AtomicUsize::new(0);
+            let scheduler = AdmissionScheduler::new();
             let setting = Arc::clone(&cell);
             let setter = std::thread::spawn(move || setting.set(()).unwrap());
-            let registered = cell.register_waiter(waiter.clone());
-            setter.join().unwrap();
-            assert_eq!(waiter.0.load(Ordering::Acquire), usize::from(registered));
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[Condition::completion(cell.as_ref())],
+                        Box::new(|_| {
+                            ran.fetch_add(1, Ordering::Relaxed);
+                        }),
+                    );
+                    setter.join().unwrap();
+                    scheduler.admit_ready(scope);
+                })
+                .unwrap();
+            });
+            assert_eq!(ran.load(Ordering::Acquire), 1);
+            scheduler.finish().unwrap();
         }
     }
 }

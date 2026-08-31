@@ -90,7 +90,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
         let progress = Arc::new(FrameProgress::new(info)?);
         let writer = FrameSlotWriter {
             cell: Arc::clone(&cell),
-            progress: Some(Arc::clone(&progress)),
+            progress: Arc::clone(&progress),
             info,
         };
         let slot = Self {
@@ -216,7 +216,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
 /// way the phase ended instead of waiting for a row that will never land.
 pub(crate) struct FrameSlotWriter<T: ReconSample> {
     cell: Arc<CompletionCell<SlotValue<T>>>,
-    progress: Option<Arc<FrameProgress<T>>>,
+    progress: Arc<FrameProgress<T>>,
     info: DecodedFrameInfo,
 }
 
@@ -229,9 +229,7 @@ impl<T: ReconSample> FrameSlotWriter<T> {
     pub(crate) fn complete(self, frame: SharedFrame<T>) {
         debug_assert_eq!(frame.get().info(), self.info);
         let _ = self.cell.set(SlotValue::Ready(frame));
-        if let Some(progress) = self.progress.as_deref() {
-            progress.publish_terminal(true);
-        }
+        self.progress.publish_terminal(true);
     }
 }
 
@@ -239,8 +237,8 @@ impl<T: ReconSample> Drop for FrameSlotWriter<T> {
     fn drop(&mut self) {
         let settled = self.cell.is_set();
         let _ = self.cell.set(SlotValue::Failed);
-        if !settled && let Some(progress) = self.progress.as_deref() {
-            progress.publish_terminal(false);
+        if !settled {
+            self.progress.publish_terminal(false);
         }
     }
 }
@@ -536,7 +534,7 @@ where
 /// reconstruction never ran stops the driver blocking on it.
 pub(crate) struct PendingFinish<T: ReconSample> {
     writer: FrameSlotWriter<T>,
-    progress: Option<Arc<FrameProgress<T>>>,
+    progress: Arc<FrameProgress<T>>,
     report: FinishReportWriter,
 }
 
@@ -553,7 +551,7 @@ pub(crate) fn reserve_pending_slot<T: ReconSample>(
     frame_index: usize,
 ) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
     let (slot, writer) = RefFrameSlot::pending(info)?;
-    let progress = slot.progress.clone();
+    let progress = Arc::clone(&writer.progress);
     let report = Arc::new(CompletionCell::new());
     ring.push(InflightEntry {
         frame_index,
@@ -575,8 +573,8 @@ pub(crate) fn reserve_pending_slot<T: ReconSample>(
 
 impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     /// Shares the progressive output owner with scheduled filter-stripe tasks.
-    pub(crate) fn progress_handle(&self) -> Option<Arc<FrameProgress<T>>> {
-        self.progress.clone()
+    pub(crate) fn progress_handle(&self) -> Arc<FrameProgress<T>> {
+        Arc::clone(&self.progress)
     }
 
     /// Publishes a frame whose reconstruction is already terminal and has no
@@ -602,7 +600,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
             progress,
             mut report,
         } = self;
-        match finish_walked_frame(walked, progress, admit, |frame| {
+        match finish_walked_frame(walked, Some(progress), admit, |frame| {
             writer.complete(frame);
         }) {
             Ok(finished) => {

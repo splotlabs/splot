@@ -28,7 +28,6 @@ std::thread_local! {
 pub struct WorkerPool {
     inner: Arc<ThreadPool>,
     progress: Arc<PoolProgressEvent>,
-    requested: ThreadCount,
     threads: NonZeroUsize,
 }
 
@@ -75,7 +74,6 @@ impl WorkerPool {
         Ok(Self {
             inner,
             progress,
-            requested: thread_count,
             threads,
         })
     }
@@ -84,12 +82,6 @@ impl WorkerPool {
     #[must_use]
     pub fn threads(&self) -> NonZeroUsize {
         self.threads
-    }
-
-    /// The originally requested (unresolved) [`ThreadCount`].
-    #[must_use]
-    pub fn requested(&self) -> ThreadCount {
-        self.requested
     }
 
     /// Runs `f` inside this local pool, so any nested Rayon work uses these
@@ -316,15 +308,6 @@ mod tests {
     fn auto_pool_has_at_least_one_thread() {
         let pool = WorkerPool::new(ThreadCount::Auto).unwrap();
         assert!(pool.threads().get() >= 1);
-    }
-
-    #[test]
-    fn requested_round_trips() {
-        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
-        assert_eq!(pool.requested(), ThreadCount::Fixed(nz(2)));
-
-        let auto = WorkerPool::new(ThreadCount::Auto).unwrap();
-        assert_eq!(auto.requested(), ThreadCount::Auto);
     }
 
     #[test]

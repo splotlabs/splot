@@ -244,10 +244,6 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
 }
 
 impl<T: ReconSample> TileRecon<T> {
-    const fn len(&self) -> usize {
-        self.batches.len()
-    }
-
     fn batch_range(&self, index: usize) -> Option<core::ops::Range<usize>> {
         self.batches.get(index).cloned()
     }
@@ -389,14 +385,6 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn take_scratch(&self) -> Result<TileDecodeScratch<T>> {
-        self.scratch
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or_else(invalid_inter_tile_scheduling_state)
-    }
-
     fn commit_batch(&self, index: usize) -> Result<CommittedBatch<T>> {
         let mut commit = take_active_commit(&self.commit)?;
         let batch = {
@@ -440,10 +428,6 @@ impl<T: ReconSample> TileRecon<T> {
             frontier_rows,
             terminal,
         })
-    }
-
-    fn restore_commit(&self, commit: TileCommit<T>) -> Result<()> {
-        restore_active_commit(&self.commit, commit)
     }
 
     fn finish_commit(&self, mut commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
@@ -685,7 +669,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
 impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Number of independently admitted reconstruction units.
     pub(crate) const fn len(&self) -> usize {
-        self.recon.len()
+        self.recon.batches.len()
     }
 
     /// Number of final-filter stripes this frame owes.
@@ -1056,7 +1040,11 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     pub(crate) fn take_scheduled_scratch(&self) -> Result<super::super::InterDecodeScratch<T>> {
         self.recon
-            .take_scratch()
+            .scratch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(invalid_inter_tile_scheduling_state)
             .map(super::super::InterDecodeScratch::from_scheduled_tile_scratch)
     }
 
@@ -1064,16 +1052,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     ///
     /// The one caller that commits the final unit receives the completed tile.
     pub(crate) fn commit(&self, index: usize) -> Result<ScheduledCommitProgress> {
-        self.commit_active(index)
-    }
-
-    fn commit_active(&self, index: usize) -> Result<ScheduledCommitProgress> {
         let committed = self.recon.commit_batch(index)?;
         if !committed.frontier_rows.is_empty() {
             self.seal_committed_rows(&committed.state, committed.frontier_rows.end)?;
         }
         if !committed.terminal {
-            self.recon.restore_commit(committed.state)?;
+            restore_active_commit(&self.recon.commit, committed.state)?;
             return Ok(ScheduledCommitProgress {
                 frontier_rows: committed.frontier_rows,
                 recon_complete: false,

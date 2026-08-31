@@ -7,14 +7,14 @@ use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::admission::AdmissionWaiter;
+use crate::admission::Waiter;
 use crate::pool::{bind_installed_pool_progress, notify_bound_pool_progress};
 use crate::progress::PoolProgressBindings;
 
 #[derive(Debug)]
 struct ThresholdWaiter {
     threshold: usize,
-    waiter: Arc<dyn AdmissionWaiter>,
+    waiter: Arc<Waiter>,
 }
 
 impl PartialEq for ThresholdWaiter {
@@ -97,7 +97,7 @@ impl WatermarkCell {
         self.current()
     }
 
-    pub(crate) fn register(&self, threshold: usize, waiter: Arc<dyn AdmissionWaiter>) -> bool {
+    pub(crate) fn register(&self, threshold: usize, waiter: Arc<Waiter>) -> bool {
         bind_installed_pool_progress(&self.progress);
         let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
         if self.value.load(Ordering::Acquire) >= threshold {
@@ -113,58 +113,78 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use crate::{ThreadCount, WorkerPool, ready_task_scope};
+    use crate::{AdmissionScheduler, Condition, ThreadCount, WorkerPool, ready_task_scope};
     use std::sync::Barrier;
-    use std::sync::Weak;
-
-    #[derive(Debug, Default)]
-    struct Count(AtomicUsize);
-
-    impl AdmissionWaiter for Count {
-        fn satisfy(&self) {
-            self.0.fetch_add(1, Ordering::AcqRel);
-        }
-    }
-
-    #[derive(Debug)]
-    struct Reentrant {
-        cell: Weak<WatermarkCell>,
-        nested: Arc<Count>,
-    }
-
-    impl AdmissionWaiter for Reentrant {
-        fn satisfy(&self) {
-            if let Some(cell) = self.cell.upgrade() {
-                assert!(cell.register(2, self.nested.clone()));
-            }
-        }
-    }
 
     #[test]
     fn publication_is_monotonic_and_thresholds_use_equality() {
         let cell = WatermarkCell::new();
-        let at_three = Arc::new(Count::default());
-        assert!(cell.register(3, at_three.clone()));
-        assert_eq!(cell.publish(2), 2);
-        assert_eq!(cell.publish(1), 2);
-        assert_eq!(at_three.0.load(Ordering::Acquire), 0);
-        assert_eq!(cell.publish(3), 3);
-        assert_eq!(cell.publish(3), 3);
-        assert_eq!(at_three.0.load(Ordering::Acquire), 1);
-        let settled = Arc::new(Count::default());
-        assert!(!cell.register(3, settled));
+        let visits: Vec<_> = (0..2).map(|_| AtomicUsize::new(0)).collect();
+        let scheduler = AdmissionScheduler::new();
+        WorkerPool::new(ThreadCount::from(2usize))
+            .unwrap()
+            .install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[Condition::watermark(&cell, 3)],
+                        Box::new(|_| {
+                            visits[0].fetch_add(1, Ordering::Relaxed);
+                        }),
+                    );
+                    assert_eq!(cell.publish(2), 2);
+                    assert_eq!(cell.publish(1), 2);
+                    scheduler.admit_ready(scope);
+                    assert_eq!(visits[0].load(Ordering::Acquire), 0);
+                    assert_eq!(cell.publish(3), 3);
+                    assert_eq!(cell.publish(3), 3);
+                    scheduler.admit_ready(scope);
+                    scheduler.submit(
+                        scope,
+                        1,
+                        &[Condition::watermark(&cell, 3)],
+                        Box::new(|_| {
+                            visits[1].fetch_add(1, Ordering::Relaxed);
+                        }),
+                    );
+                })
+                .unwrap();
+            });
+        assert!(
+            visits
+                .iter()
+                .all(|visit| visit.load(Ordering::Acquire) == 1)
+        );
+        scheduler.finish().unwrap();
     }
 
     #[test]
     fn registration_racing_publication_is_rejected_or_fired_once() {
+        let pool = WorkerPool::new(ThreadCount::from(2usize)).unwrap();
         for _ in 0..128 {
             let cell = Arc::new(WatermarkCell::new());
-            let waiter = Arc::new(Count::default());
+            let ran = AtomicUsize::new(0);
+            let scheduler = AdmissionScheduler::new();
             let publishing = Arc::clone(&cell);
             let publisher = std::thread::spawn(move || publishing.publish(1));
-            let registered = cell.register(1, waiter.clone());
-            publisher.join().unwrap();
-            assert_eq!(waiter.0.load(Ordering::Acquire), usize::from(registered));
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[Condition::watermark(cell.as_ref(), 1)],
+                        Box::new(|_| {
+                            ran.fetch_add(1, Ordering::Relaxed);
+                        }),
+                    );
+                    publisher.join().unwrap();
+                    scheduler.admit_ready(scope);
+                })
+                .unwrap();
+            });
+            assert_eq!(ran.load(Ordering::Acquire), 1);
+            scheduler.finish().unwrap();
         }
     }
 
@@ -172,23 +192,33 @@ mod tests {
     fn concurrent_pool_publishers_reach_max_and_fire_each_threshold_once() {
         const MAX: usize = 32;
         let cell = WatermarkCell::new();
-        let waiters: Vec<_> = (1..=MAX).map(|_| Arc::new(Count::default())).collect();
-        for (threshold, waiter) in (1..=MAX).zip(&waiters) {
-            assert!(cell.register(threshold, waiter.clone()));
-        }
+        let visits: Vec<_> = (1..=MAX).map(|_| AtomicUsize::new(0)).collect();
+        let scheduler = AdmissionScheduler::new();
         let start = Barrier::new(4);
         WorkerPool::new(ThreadCount::from(4usize))
             .unwrap()
             .install(|| {
                 ready_task_scope(|scope| {
+                    for (threshold, visit) in (1..=MAX).zip(&visits) {
+                        scheduler.submit(
+                            scope,
+                            threshold as u64,
+                            &[Condition::watermark(&cell, threshold)],
+                            Box::new(move |_| {
+                                visit.fetch_add(1, Ordering::Relaxed);
+                            }),
+                        );
+                    }
                     for lane in 0..4 {
                         let cell = &cell;
                         let start = &start;
-                        scope.spawn(move |_| {
+                        let scheduler = &scheduler;
+                        scope.spawn(move |scope| {
                             start.wait();
                             for value in (lane + 1..=MAX).step_by(4) {
                                 cell.publish(value);
                             }
+                            scheduler.admit_ready(scope);
                         });
                     }
                 })
@@ -196,44 +226,43 @@ mod tests {
             });
         assert_eq!(cell.current(), MAX);
         assert!(
-            waiters
+            visits
                 .iter()
-                .all(|waiter| waiter.0.load(Ordering::Acquire) == 1)
+                .all(|visit| visit.load(Ordering::Acquire) == 1)
         );
-    }
-
-    #[test]
-    fn callbacks_run_outside_the_waiter_lock() {
-        let cell = Arc::new(WatermarkCell::new());
-        let nested = Arc::new(Count::default());
-        assert!(cell.register(
-            1,
-            Arc::new(Reentrant {
-                cell: Arc::downgrade(&cell),
-                nested: Arc::clone(&nested),
-            }),
-        ));
-        cell.publish(1);
-        cell.publish(2);
-        assert_eq!(nested.0.load(Ordering::Acquire), 1);
+        scheduler.finish().unwrap();
     }
 
     #[test]
     fn failed_admits_every_waiter() {
         let cell = WatermarkCell::new();
-        let waiters: Vec<_> = [1, 9, WatermarkCell::FAILED]
-            .into_iter()
-            .map(|threshold| {
-                let waiter = Arc::new(Count::default());
-                assert!(cell.register(threshold, waiter.clone()));
-                waiter
-            })
-            .collect();
-        cell.publish(WatermarkCell::FAILED);
+        let visits: Vec<_> = (0..3).map(|_| AtomicUsize::new(0)).collect();
+        let scheduler = AdmissionScheduler::new();
+        WorkerPool::new(ThreadCount::from(2usize))
+            .unwrap()
+            .install(|| {
+                ready_task_scope(|scope| {
+                    for (threshold, visit) in [1, 9, WatermarkCell::FAILED].into_iter().zip(&visits)
+                    {
+                        scheduler.submit(
+                            scope,
+                            threshold as u64,
+                            &[Condition::watermark(&cell, threshold)],
+                            Box::new(move |_| {
+                                visit.fetch_add(1, Ordering::Relaxed);
+                            }),
+                        );
+                    }
+                    cell.publish(WatermarkCell::FAILED);
+                    scheduler.admit_ready(scope);
+                })
+                .unwrap();
+            });
         assert!(
-            waiters
+            visits
                 .iter()
-                .all(|waiter| waiter.0.load(Ordering::Acquire) == 1)
+                .all(|visit| visit.load(Ordering::Acquire) == 1)
         );
+        scheduler.finish().unwrap();
     }
 }

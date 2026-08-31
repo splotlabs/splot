@@ -5,10 +5,13 @@
 //!
 //! Pool jobs must not wait for other pool jobs: work stealing can otherwise
 //! place a consumer above its producer and deadlock the pool. A submitted job
-//! is stored until all of its [`Condition`]s hold, then spawned by a scheduler
-//! drain. The outstanding count starts at `conditions + 1`; the final unit is
-//! cleared after registration, so publication cannot admit a partially
-//! registered job. Reused slots carry generations to reject stale notices.
+//! is stored until all of its [`Condition`]s hold. Final publication queues the
+//! job as ready; a scheduler drain spawns it. Jobs running inside a drain keep
+//! draining automatically, while an external publisher must call
+//! [`AdmissionScheduler::admit_ready`] after publishing. The outstanding count
+//! starts at `conditions + 1`; the final unit is cleared after registration, so
+//! publication cannot admit a partially registered job. Reused slots carry
+//! generations to reject stale notices.
 //!
 //! # Example
 //!
@@ -53,16 +56,12 @@ use crate::error::ParallelError;
 use crate::pool::{TaskScope, notify_installed_pool_progress};
 use crate::watermark::WatermarkCell;
 
-pub(crate) trait AdmissionWaiter: std::fmt::Debug + Send + Sync {
-    fn satisfy(&self);
-}
-
 trait CompletionSource {
-    fn register(&self, waiter: Arc<dyn AdmissionWaiter>) -> bool;
+    fn register(&self, waiter: Arc<Waiter>) -> bool;
 }
 
 impl<V> CompletionSource for CompletionCell<V> {
-    fn register(&self, waiter: Arc<dyn AdmissionWaiter>) -> bool {
+    fn register(&self, waiter: Arc<Waiter>) -> bool {
         self.register_waiter(waiter)
     }
 }
@@ -90,7 +89,7 @@ impl<'a> Condition<'a> {
         Self(ConditionSource::Completion(cell))
     }
 
-    fn register(self, waiter: Arc<dyn AdmissionWaiter>) -> bool {
+    fn register(self, waiter: Arc<Waiter>) -> bool {
         match self.0 {
             ConditionSource::Watermark(cell, threshold) => cell.register(threshold, waiter),
             ConditionSource::Completion(cell) => cell.register(waiter),
@@ -168,14 +167,14 @@ impl ReadyQueue {
 }
 
 #[derive(Debug)]
-struct Waiter {
+pub(crate) struct Waiter {
     pending: AtomicUsize,
     entry: ReadyEntry,
     ready: Arc<ReadyQueue>,
 }
 
 impl Waiter {
-    fn satisfy_reporting(&self) -> bool {
+    pub(crate) fn satisfy(&self) -> bool {
         let mut pending = self.pending.load(Ordering::Acquire);
         while pending != 0 {
             match self.pending.compare_exchange_weak(
@@ -193,12 +192,6 @@ impl Waiter {
             }
         }
         false
-    }
-}
-
-impl AdmissionWaiter for Waiter {
-    fn satisfy(&self) {
-        self.satisfy_reporting();
     }
 }
 
@@ -304,6 +297,12 @@ impl<'job> AdmissionScheduler<'job> {
     }
 
     /// Stores `job` until every condition holds.
+    ///
+    /// If every condition holds by the end of registration, the job is admitted
+    /// immediately; this includes a racing publication absorbed during
+    /// registration. Publication after registration only queues the job, so an
+    /// external publisher must call [`Self::admit_ready`] with the same live
+    /// task scope.
     pub fn submit<'scope>(
         &'scope self,
         scope: &TaskScope<'_, 'scope>,
@@ -319,16 +318,19 @@ impl<'job> AdmissionScheduler<'job> {
             .unwrap_or_else(PoisonError::into_inner)
             .store(conditions.len() + 1, order_key, job, &self.ready);
         for condition in conditions {
-            if !condition.register(Arc::clone(&waiter) as Arc<dyn AdmissionWaiter>) {
+            if !condition.register(Arc::clone(&waiter)) {
                 waiter.satisfy();
             }
         }
-        if waiter.satisfy_reporting() {
+        if waiter.satisfy() {
             self.admit_ready(scope);
         }
     }
 
     /// Spawns all jobs that are admissible now.
+    ///
+    /// Running scheduler jobs call this automatically after their work. Drivers
+    /// and other external publishers must call it after publishing a condition.
     pub fn admit_ready<'scope>(&'scope self, scope: &TaskScope<'_, 'scope>) -> usize
     where
         'job: 'scope,
@@ -376,7 +378,8 @@ impl<'job> AdmissionScheduler<'job> {
         }
     }
 
-    /// Reports and releases jobs whose conditions never all held.
+    /// Reports and releases jobs that remain stored, including ready jobs that
+    /// an external publisher queued without a subsequent drain.
     ///
     /// # Errors
     /// Returns [`ParallelError::JobsNeverAdmitted`] when a job remains.
@@ -467,30 +470,6 @@ mod tests {
         WorkerPool::new(ThreadCount::Fixed(threads.try_into().unwrap())).unwrap()
     }
 
-    #[derive(Debug, Default)]
-    struct Gate(Mutex<Option<Arc<dyn AdmissionWaiter>>>);
-
-    impl CompletionSource for Gate {
-        fn register(&self, waiter: Arc<dyn AdmissionWaiter>) -> bool {
-            *self.0.lock().unwrap() = Some(waiter);
-            true
-        }
-    }
-
-    impl Gate {
-        fn condition(&self) -> Condition<'_> {
-            Condition(ConditionSource::Completion(self))
-        }
-
-        fn waiter(&self) -> Arc<dyn AdmissionWaiter> {
-            self.0.lock().unwrap().as_ref().unwrap().clone()
-        }
-
-        fn fire(&self) {
-            self.waiter().satisfy();
-        }
-    }
-
     #[test]
     fn publication_racing_registration_admits_exactly_once() {
         for _ in 0..32 {
@@ -559,35 +538,22 @@ mod tests {
     }
 
     #[test]
-    fn stale_waiter_cannot_admit_a_reused_slot() {
-        let first = Gate::default();
-        let second = Gate::default();
-        let ran = AtomicUsize::new(0);
-        let scheduler = AdmissionScheduler::new();
-        pool(1).install(|| {
-            ready_task_scope(|scope| {
-                scheduler.submit(scope, 0, &[first.condition()], Box::new(|_| {}));
-                let stale = first.waiter();
-                first.fire();
-                scheduler.admit_ready(scope);
-                scheduler.submit(
-                    scope,
-                    1,
-                    &[second.condition()],
-                    Box::new(|_| {
-                        ran.fetch_add(1, Ordering::Relaxed);
-                    }),
-                );
-                stale.satisfy();
-                scheduler.admit_ready(scope);
-                assert_eq!(ran.load(Ordering::Relaxed), 0);
-                second.fire();
-                scheduler.admit_ready(scope);
-            })
-            .unwrap();
-        });
-        assert_eq!(ran.load(Ordering::Relaxed), 1);
-        scheduler.finish().unwrap();
+    fn stale_generation_cannot_take_a_reused_slot() {
+        let ready = Arc::new(ReadyQueue::default());
+        let mut slots = Slots::default();
+        let first = slots.store(1, 0, Box::new(|_| {}), &ready);
+        let stale = first.entry;
+        first.satisfy();
+        assert!(slots.take_job(ready.pop().unwrap()).is_some());
+
+        let second = slots.store(1, 1, Box::new(|_| {}), &ready);
+        assert_eq!(second.entry.index, stale.index);
+        assert_ne!(second.entry.generation, stale.generation);
+        ready.push(stale);
+        assert!(slots.take_job(ready.pop().unwrap()).is_none());
+
+        second.satisfy();
+        assert!(slots.take_job(ready.pop().unwrap()).is_some());
     }
 
     #[test]
@@ -624,12 +590,12 @@ mod tests {
 
     #[test]
     fn finish_reports_and_releases_stranded_jobs() {
-        let gate = Gate::default();
+        let gate = CompletionCell::<()>::new();
         let scheduler = AdmissionScheduler::new();
         pool(1).install(|| {
             ready_task_scope(|scope| {
-                scheduler.submit(scope, 9, &[gate.condition()], Box::new(|_| {}));
-                scheduler.submit(scope, 4, &[gate.condition()], Box::new(|_| {}));
+                scheduler.submit(scope, 9, &[Condition::completion(&gate)], Box::new(|_| {}));
+                scheduler.submit(scope, 4, &[Condition::completion(&gate)], Box::new(|_| {}));
             })
             .unwrap();
         });

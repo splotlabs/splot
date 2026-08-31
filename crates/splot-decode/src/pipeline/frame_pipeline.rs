@@ -72,10 +72,6 @@ impl PendingEntropyQueue {
     pub(super) fn push(&mut self, pending: PendingEntropy) {
         self.entries.push_back(pending);
     }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -340,7 +336,6 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
     reconstruction: inter::ScheduledTileRecon<T>,
     finish: Mutex<Option<PendingFinish<T>>>,
     motion: inter::MotionFieldHandle,
-    recon_done: Arc<CompletionCell<()>>,
     scratch_done: ReconScratchSlot,
     filter_gate: Option<Arc<CompletionCell<()>>>,
     filter_done: Arc<CompletionCell<()>>,
@@ -524,7 +519,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                     let _ = self
                         .scratch_done
                         .set(Mutex::new(Some(T::wrap_scheduled_scratch(scratch))));
-                    let _ = self.recon_done.set(());
                 }
                 for row in progress.frontier_rows {
                     self.submit_frontier(index, row, admit);
@@ -616,7 +610,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         self.reconstruction.fail_temporal();
         self.motion.fail();
         let _ = self.scratch_done.set(Mutex::new(None));
-        let _ = self.recon_done.set(());
         let _ = self.filter_done.set(());
         for completion in self
             .prepared
@@ -655,7 +648,6 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
     let motion = early.motion.clone();
     let dependencies = early.motion_dependencies();
     let (scratch_source, scratch_done) = lane.reserve_recon();
-    let recon_done = Arc::new(CompletionCell::new());
     let (filter_gate, filter_done) = lane.reserve_filter();
     let (temporal_gate, temporal_done) = lane.reserve_temporal();
     let mut conditions = dependencies
@@ -700,21 +692,10 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 let _ = temporal_done.set(Mutex::new(Some(inter::TemporalMvScratch::default())));
                 let _ = scratch_done_for_job.set(Mutex::new(None));
                 motion.fail();
-                let _ = recon_done.set(());
                 let _ = filter_done_for_job.set(());
                 finish.fail(error);
             };
-            let Some(progress) = finish.progress_handle() else {
-                settle_prepare_failure(
-                    finish,
-                    unsupported(
-                        "inter_admission_filter_progress",
-                        None,
-                        "scheduled filter progress handle is missing",
-                    ),
-                );
-                return;
-            };
+            let progress = finish.progress_handle();
             let filters_ready = Arc::new(CompletionCell::new());
             let (scheduled, pending_filters) =
                 match early.prepare_scheduled(decode_scratch, temporal_scratch, progress) {
@@ -743,7 +724,6 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 reconstruction: scheduled,
                 finish: Mutex::new(Some(finish)),
                 motion,
-                recon_done,
                 scratch_done: scratch_done_for_job,
                 filter_gate,
                 filter_done: filter_done_for_job,
@@ -951,11 +931,11 @@ pub(super) fn drain_entropy_before_barrier<'scope, 'job>(
 where
     'job: 'scope,
 {
-    if entropy.is_empty() {
+    if entropy.entries.is_empty() {
         return Ok(());
     }
     let scheduler = admission.ok_or_else(frame_task_scope)?;
-    while !entropy.is_empty() {
+    while !entropy.entries.is_empty() {
         promote_front(entropy, spawner, scheduler, lane)?;
     }
     Ok(())

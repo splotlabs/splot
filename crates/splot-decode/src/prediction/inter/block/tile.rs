@@ -1349,15 +1349,6 @@ impl ParsedTile {
         self.unit_count
     }
 
-    /// Moves reconstruction-derived filter geometry into the frame owner
-    /// before the scheduled filter setup is built.
-    pub(super) fn detach_filter_records(
-        records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
-        parse_progress: &ParseProgress,
-    ) {
-        records.append(&mut parse_progress.take_records());
-    }
-
     /// Folds the tile's walk-parsed filter grids and loop-restoration records
     /// into the frame-level state, which the entropy pass alone settles.
     ///
