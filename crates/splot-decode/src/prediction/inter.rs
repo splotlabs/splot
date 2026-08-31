@@ -136,7 +136,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     }
     let frame_walk::InterWalkPrologue {
         tile_plan,
-        mut workspace,
+        workspace,
         setup,
         facts,
         ref_frame_idx,
@@ -154,7 +154,12 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         geometry,
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
-    let (frame_cdfs, filter_inputs, segment_ids) = decode_inter_blocks(
+    let InterBlockDecodeOutput {
+        workspace,
+        frame_cdfs,
+        filter_inputs,
+        segment_ids,
+    } = decode_inter_blocks(
         scratch,
         tile_plan,
         sequence,
@@ -163,7 +168,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         facts,
         ref_frame_idx.as_slice(),
         reference,
-        &mut workspace,
+        workspace,
     )?;
     let core = Arc::new(core);
     Ok(setup.frame_walk(
@@ -2174,8 +2179,8 @@ pub(crate) mod reference;
 mod single_ref;
 
 pub(crate) use block::{
-    InterBlockFacts, InterDecodeScratch, InterFilterInputs, InterFrameParse,
-    ScheduledFrameProgress, decode_inter_blocks, parse_inter_frame_blocks,
+    InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
+    InterFrameParse, ScheduledFrameProgress, decode_inter_blocks, parse_inter_frame_blocks,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{

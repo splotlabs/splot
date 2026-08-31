@@ -2057,7 +2057,7 @@ fn inter_ready_row_pipeline_error(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_tiles<T: ReconSample>(
-    scratch: &mut TileDecodeScratch<T>,
+    mut scratch: TileDecodeScratch<T>,
     frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     work_units: &mut [DecodeTileWorkUnit<'_>],
     params: &TileWalkParams,
@@ -2066,12 +2066,16 @@ pub(super) fn decode_tiles<T: ReconSample>(
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
-    workspace: &mut CurrentFrameWorkspace<T>,
+    mut workspace: CurrentFrameWorkspace<T>,
     mut cdef_state: CdefState,
     mut gdf_state: GdfState,
     mut ccso_state: CcsoState,
     motion_field: TemporalMotionField,
-) -> Result<TileDecodeOutput> {
+) -> Result<(
+    TileDecodeScratch<T>,
+    CurrentFrameWorkspace<T>,
+    TileDecodeOutput,
+)> {
     scratch.workers.ensure_workers(
         splot_parallel::current_pool_width()
             .saturating_sub(1)
@@ -2079,7 +2083,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
     );
     let TileDecodeScratch {
         ordered, workers, ..
-    } = scratch;
+    } = &mut scratch;
     let context = params.context(sequence, core, reference, ref_frame_idx);
     let &TileWalkParams {
         mi_rows,
@@ -2115,7 +2119,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .try_reserve_exact(work_units.len())
             .map_err(|_| inter_allocation!("inter tile surfaces"))?;
         for tile in work_units.iter() {
-            luma_rects.push(tile_luma_rect(tile, workspace)?);
+            luma_rects.push(tile_luma_rect(tile, &workspace)?);
         }
         let surfaces = workspace.rect_surfaces(&luma_rects)?;
         let quantizer = FrameQuantizerSnapshot::capture();
@@ -2189,7 +2193,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     &mut decoded_any,
                     &tile.quantizer,
                     ordered,
-                    workspace,
+                    &mut workspace,
                     &mut tile.block_decoded,
                     &mut current_block_decoded_superblock,
                     &motion,
@@ -2211,13 +2215,17 @@ pub(super) fn decode_tiles<T: ReconSample>(
         if !decoded_any {
             return Err(no_decoded_block_error());
         }
-        return Ok(TileDecodeOutput {
-            cdef_state,
-            gdf_state,
-            ccso_state,
-            segment_ids,
-            motion_field: motion.into_field(),
-        });
+        return Ok((
+            scratch,
+            workspace,
+            TileDecodeOutput {
+                cdef_state,
+                gdf_state,
+                ccso_state,
+                segment_ids,
+                motion_field: motion.into_field(),
+            },
+        ));
     }
     if !parse_ahead {
         row_gate.wait()?;
@@ -2232,7 +2240,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .then(|| {
                 let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
                 let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-                superblock_luma_rects(&rows, &cols, workspace, sb_h4)
+                superblock_luma_rects(&rows, &cols, &workspace, sb_h4)
             })
             .transpose()?;
         let tile_mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
@@ -2294,7 +2302,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 &mut cursor,
                 &mut PrepassSinks {
                     ordered,
-                    workspace,
+                    workspace: &mut workspace,
                     block_decoded: &mut block_decoded,
                     motion: &motion,
                     frame_filter_records,
@@ -2324,7 +2332,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     &mut decoded_any,
                     &quantizer,
                     ordered,
-                    workspace,
+                    &mut workspace,
                     &mut block_decoded,
                     &mut current_block_decoded_superblock,
                     &motion,
@@ -2367,13 +2375,17 @@ pub(super) fn decode_tiles<T: ReconSample>(
         return Err(no_decoded_block_error());
     }
 
-    Ok(TileDecodeOutput {
-        cdef_state,
-        gdf_state,
-        ccso_state,
-        segment_ids,
-        motion_field: motion.into_field(),
-    })
+    Ok((
+        scratch,
+        workspace,
+        TileDecodeOutput {
+            cdef_state,
+            gdf_state,
+            ccso_state,
+            segment_ids,
+            motion_field: motion.into_field(),
+        },
+    ))
 }
 
 #[cfg(test)]

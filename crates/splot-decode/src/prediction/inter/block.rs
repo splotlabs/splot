@@ -164,6 +164,13 @@ pub(crate) struct InterFilterInputs {
     motion_field: TemporalMotionField,
 }
 
+pub(crate) struct InterBlockDecodeOutput<T: ReconSample> {
+    pub(crate) workspace: CurrentFrameWorkspace<T>,
+    pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
+    pub(crate) filter_inputs: InterFilterInputs,
+    pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
+}
+
 impl InterFilterInputs {
     /// Takes the walk-derived temporal motion field, leaving an empty one.
     pub(crate) fn take_motion_field(&mut self) -> TemporalMotionField {
@@ -507,12 +514,8 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-) -> Result<(
-    Arc<FrameCdfSubset>,
-    InterFilterInputs,
-    Arc<FrameSegmentIdMap>,
-)> {
+    workspace: CurrentFrameWorkspace<T>,
+) -> Result<InterBlockDecodeOutput<T>> {
     let work_units = tile_plan.work_units_mut();
     let setup = derive_inter_block_setup(
         work_units,
@@ -534,18 +537,16 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         qindex,
     } = setup;
     let mut records = core::mem::take(&mut scratch.frame_filter_records);
-    let InterDecodeScratch {
-        tile: tile_scratch,
-        temporal_context: temporal_slot,
-        ..
-    } = scratch;
     let temporal_context = prelude.run(
-        temporal_slot.get_or_insert_with(TemporalMvContext::empty),
+        scratch
+            .temporal_context
+            .get_or_insert_with(TemporalMvContext::empty),
         core,
         ref_frame_idx,
         reference,
     )?;
-    let walked = tile::decode_tiles(
+    let tile_scratch = core::mem::take(&mut scratch.tile);
+    let (tile_scratch, workspace, walked) = tile::decode_tiles(
         tile_scratch,
         &mut records,
         work_units,
@@ -561,6 +562,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     )?;
+    scratch.tile = tile_scratch;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
     let ccso_grid = walked.ccso_state.into_grid()?;
     let filter_inputs = InterFilterInputs {
@@ -577,7 +579,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         params.mi_cols,
         walked.segment_ids,
     );
-    Ok((frame_cdfs, filter_inputs, segment_ids))
+    Ok(InterBlockDecodeOutput {
+        workspace,
+        frame_cdfs,
+        filter_inputs,
+        segment_ids,
+    })
 }
 
 fn final_segment_ids<T: ReconSample>(
