@@ -743,6 +743,27 @@ fn long_hash_decode_keeps_reference_storage_bounded() {
 }
 
 #[test]
+fn hash_backlog_is_capped_by_effective_pipeline_depth() {
+    for (threads, frame_delay, expected) in [
+        (1, 1, 0),
+        (1, 5, 0),
+        (2, 5, 1),
+        (4, 5, 3),
+        (8, 5, 4),
+        (10, 10, 4),
+    ] {
+        assert_eq!(
+            hash_backlog_capacity(
+                NonZeroUsize::new(threads).unwrap(),
+                NonZeroUsize::new(frame_delay).unwrap(),
+            ),
+            expected,
+            "threads {threads}, frame delay {frame_delay}",
+        );
+    }
+}
+
+#[test]
 fn long_hash_decode_rejects_live_store_cap_below_peak() {
     let options = DecodeOptions::new(
         DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(110_591)),

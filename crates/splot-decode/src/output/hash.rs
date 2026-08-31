@@ -28,7 +28,8 @@ pub(crate) fn decode_hash_report_from_plan(
     resolved_threads: NonZeroUsize,
     frame_delay: NonZeroUsize,
 ) -> Result<DecodeHashReport> {
-    let report_frames = decode_hash_frames_pipelined(bytes, parsed, options, plan, frame_delay)?;
+    let report_frames =
+        decode_hash_frames_pipelined(bytes, parsed, options, plan, resolved_threads, frame_delay)?;
 
     Ok(DecodeHashReport::raw_intermediate_output(
         resolved_threads.to_string(),
@@ -45,9 +46,14 @@ pub(crate) fn decode_hash_report_from_plan(
 /// set by how far the pool trails the driver rather than by the decoder, which
 /// makes a documented memory limit fail or hold by scheduling luck. Four keeps
 /// the handoff off the driver's critical path at larger pipeline depths; the
-/// active capacity is also capped at one less than the frame delay so hashing
-/// cannot extend the live-frame peak when the pipeline depth is one.
+/// active capacity is also capped at one less than the effective pipeline
+/// depth so hashing cannot extend the live-frame peak when the pipeline depth
+/// is one.
 const MAX_OUTSTANDING_HASH_FRAMES: usize = 4;
+
+fn hash_backlog_capacity(resolved_threads: NonZeroUsize, frame_delay: NonZeroUsize) -> usize {
+    MAX_OUTSTANDING_HASH_FRAMES.min(frame_delay.min(resolved_threads).get().saturating_sub(1))
+}
 
 /// Hashes decoded frames on short worker tasks while the driver decodes.
 fn decode_hash_frames_pipelined(
@@ -55,10 +61,11 @@ fn decode_hash_frames_pipelined(
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
+    resolved_threads: NonZeroUsize,
     frame_delay: NonZeroUsize,
 ) -> Result<Vec<DecodeHashFrame>> {
     let completed = Mutex::new(Vec::new());
-    let outstanding_capacity = MAX_OUTSTANDING_HASH_FRAMES.min(frame_delay.get().saturating_sub(1));
+    let outstanding_capacity = hash_backlog_capacity(resolved_threads, frame_delay);
     splot_parallel::ready_task_scope(|scope| {
         let mut emitted = 0u64;
         let mut outstanding: VecDeque<Arc<CompletionCell<()>>> = VecDeque::new();
