@@ -116,11 +116,6 @@ impl<T: ReconSample> RefFrameSlot<T> {
         self.progress.as_deref()
     }
 
-    #[cfg(test)]
-    pub(crate) fn progress_handle(&self) -> Option<Arc<FrameProgress<T>>> {
-        self.progress.clone()
-    }
-
     /// Returns the scheduler condition for this slot settling.
     pub(crate) fn settled_condition(&self) -> Condition<'_> {
         Condition::Completion(self.cell.as_ref())
@@ -200,10 +195,14 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     /// Blocks the driver thread until the slot settles.
     pub(crate) fn wait_settled(&self) -> Result<()> {
-        match self.cell.wait_with_pool_assist() {
+        let result = match self.cell.wait_with_pool_assist() {
             SlotValue::Ready(_) => Ok(()),
             SlotValue::Failed => Err(failed_slot()),
+        };
+        if let Some(progress) = self.progress() {
+            progress.wait_terminal();
         }
+        result
     }
 }
 

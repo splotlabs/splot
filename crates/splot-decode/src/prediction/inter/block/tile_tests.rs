@@ -47,44 +47,57 @@ fn reconstruction_pools_reuse_owned_storage() {
 const ORDERHINT_WRAP_FIXTURE: &[u8] = include_bytes!(
     "../../../../../../tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf"
 );
+const LARGE_INTER_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../../tests/conformance/vectors/valid/syn-2frame-lr-switchable-768x256-8bit.ivf"
+);
+
+fn decode_hashes(bytes: &[u8], threads: usize) -> Vec<String> {
+    let options = crate::DecodeOptions::default();
+    let context =
+        crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(threads)))
+            .expect("context");
+    let plan = context.plan_bytes(bytes, options).expect("plan");
+    context
+        .pool()
+        .install(|| crate::pipeline::decode_frames_from_plan(bytes, &options, &plan))
+        .expect("decode")
+        .iter()
+        .map(|output| match output.ready_frame().expect("ready") {
+            crate::pipeline::PipelineDecodedFrame::Eight(frame) => {
+                splot_recon::DecodedFrameHashInput::new(&frame)
+                    .compute_hash()
+                    .to_hex()
+            }
+            crate::pipeline::PipelineDecodedFrame::Ten(frame) => {
+                splot_recon::DecodedFrameHashInput::new(&frame)
+                    .compute_hash()
+                    .to_hex()
+            }
+        })
+        .collect()
+}
 
 #[test]
 fn orderhint_wrap_fixture_decodes_identically_across_thread_counts() {
-    let decode_hashes = |threads: usize| -> Vec<String> {
-        let options = crate::DecodeOptions::default();
-        let context =
-            crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(threads)))
-                .expect("context");
-        let plan = context
-            .plan_bytes(ORDERHINT_WRAP_FIXTURE, options)
-            .expect("plan");
-        context
-            .pool()
-            .install(|| {
-                crate::pipeline::decode_frames_from_plan(ORDERHINT_WRAP_FIXTURE, &options, &plan)
-            })
-            .expect("decode")
-            .iter()
-            .map(|output| match output.ready_frame().expect("ready") {
-                crate::pipeline::PipelineDecodedFrame::Eight(frame) => {
-                    splot_recon::DecodedFrameHashInput::new(&frame)
-                        .compute_hash()
-                        .to_hex()
-                }
-                crate::pipeline::PipelineDecodedFrame::Ten(frame) => {
-                    splot_recon::DecodedFrameHashInput::new(&frame)
-                        .compute_hash()
-                        .to_hex()
-                }
-            })
-            .collect()
-    };
-    let single = decode_hashes(1);
+    let single = decode_hashes(ORDERHINT_WRAP_FIXTURE, 1);
     assert_eq!(single.len(), 121, "fixture decodes 121 output frames");
     for threads in [4, 8, 10] {
         assert_eq!(
             single,
-            decode_hashes(threads),
+            decode_hashes(ORDERHINT_WRAP_FIXTURE, threads),
+            "mismatch at {threads} threads"
+        );
+    }
+}
+
+#[test]
+fn bounded_admission_fixture_decodes_identically_across_thread_counts() {
+    let single = decode_hashes(LARGE_INTER_FIXTURE, 1);
+    assert_eq!(single.len(), 2, "fixture decodes two output frames");
+    for threads in [2, 4] {
+        assert_eq!(
+            single,
+            decode_hashes(LARGE_INTER_FIXTURE, threads),
             "mismatch at {threads} threads"
         );
     }

@@ -7,6 +7,10 @@
 
 use super::*;
 
+use splot_parallel::{ThreadCount, WorkerPool, ready_task_scope};
+use splot_recon::{ReferenceFrameStore, ReferenceSlot};
+
+use crate::prediction::inter::InterReferenceState;
 use crate::test_support::decoded_frame;
 
 fn nz(value: usize) -> NonZeroUsize {
@@ -51,6 +55,96 @@ fn pending_slot_publishes_samples_to_try_frozen_and_wait_ready() {
     assert_eq!(slot.try_frozen().map(DecodedFrame::info), Some(info));
     assert_eq!(slot.wait_ready().unwrap().get().info(), info);
     assert!(slot.wait_settled().is_ok());
+}
+
+#[test]
+fn settled_samples_do_not_finish_the_wait_before_terminal_publication() {
+    let frame = decoded_frame(8, 4);
+    let (slot, writer) = RefFrameSlot::pending(frame.info()).expect("pending slot");
+    let progress = slot.progress().expect("pending progress");
+    let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).expect("one-worker pool");
+
+    assert!(
+        slot.cell
+            .set(SlotValue::Ready(SharedFrame::new(frame)))
+            .is_ok()
+    );
+    assert!(slot.is_settled());
+
+    pool.install(|| {
+        ready_task_scope(|scope| {
+            scope.spawn(move |_| progress.publish_terminal(true));
+            assert!(slot.wait_settled().is_ok());
+            assert_eq!(progress.published_luma_rows(), 4);
+        })
+        .expect("ready task scope");
+    });
+
+    drop(writer);
+}
+
+#[test]
+fn settled_failure_does_not_finish_the_wait_before_terminal_publication() {
+    let (slot, writer) =
+        RefFrameSlot::<u8>::pending(decoded_frame(8, 4).info()).expect("pending slot");
+    let progress = slot.progress().expect("pending progress");
+    let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).expect("one-worker pool");
+
+    assert!(progress.begin(&[(0, 2), (2, 4)]));
+    progress.publish(0);
+    assert_eq!(progress.published_luma_rows(), 2);
+
+    assert!(slot.cell.set(SlotValue::Failed).is_ok());
+    assert!(slot.is_settled());
+
+    pool.install(|| {
+        ready_task_scope(|scope| {
+            scope.spawn(move |_| progress.publish_terminal(false));
+            assert!(slot.wait_settled().is_err());
+            assert_eq!(progress.published_luma_rows(), 0);
+        })
+        .expect("ready task scope");
+    });
+
+    drop(writer);
+}
+
+#[test]
+fn pixel_reference_wait_drains_later_slots_after_the_first_failure() {
+    let frame = decoded_frame(8, 4);
+    let info = frame.info();
+    let (failed, failed_writer) = RefFrameSlot::<u8>::pending(info).expect("failed slot");
+    let (late, late_writer) = RefFrameSlot::<u8>::pending(info).expect("late slot");
+    drop(failed_writer);
+    assert!(
+        late.cell
+            .set(SlotValue::Ready(SharedFrame::new(frame)))
+            .is_ok()
+    );
+    let mut references = InterReferenceState::<u8>::empty().expect("reference state");
+    references.store = ReferenceFrameStore::with_capacity(2).expect("reference store");
+    references
+        .store
+        .put(ReferenceSlot::new(0).expect("first slot"), failed)
+        .expect("store failed slot");
+    references
+        .store
+        .put(ReferenceSlot::new(1).expect("second slot"), late.share())
+        .expect("store late slot");
+    let gate = references.pixel_reference_gate([0, 1]);
+    let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).expect("one-worker pool");
+
+    pool.install(|| {
+        ready_task_scope(|scope| {
+            let late_progress = late.progress().expect("late progress");
+            scope.spawn(move |_| late_progress.publish_terminal(true));
+            assert!(gate.wait().is_err());
+            assert_eq!(late_progress.published_luma_rows(), 4);
+        })
+        .expect("ready task scope");
+    });
+
+    drop(late_writer);
 }
 
 #[test]

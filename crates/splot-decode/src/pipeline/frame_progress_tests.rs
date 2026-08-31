@@ -327,8 +327,10 @@ fn a_failed_phase_publishes_no_readable_row() {
     assert!(progress.begin(&[(0, 64), (64, 128)]));
     progress.publish(0);
     assert_eq!(progress.published_luma_rows(), 64);
+    assert!(!progress.terminal_published.is_set());
 
     progress.publish_terminal(false);
+    assert!(progress.terminal_published.is_set());
     assert_eq!(
         progress.published_luma_rows(),
         0,
@@ -344,8 +346,10 @@ fn a_failed_phase_publishes_no_readable_row() {
 fn a_finished_phase_publishes_the_whole_frame() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
     assert!(progress.begin(&[(0, 64), (64, 128)]));
+    assert!(!progress.terminal_published.is_set());
 
     progress.publish_terminal(true);
+    assert!(progress.terminal_published.is_set());
     assert_eq!(progress.published_luma_rows(), 128);
     assert_eq!(
         progress.read().expect("a published frame").luma_rows(),

@@ -1391,8 +1391,16 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
     /// Returns an internal diagnostic when a referenced frame's filter phase
     /// failed; the driver replaces it with that frame's own recorded failure.
     pub(crate) fn wait(&self) -> Result<()> {
+        let mut first_error = None;
         for slot in self.slots.iter().flatten() {
-            slot.wait_settled()?;
+            if let Err(error) = slot.wait_settled()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         Ok(())
     }

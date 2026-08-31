@@ -507,6 +507,11 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let commit = Mutex::new(Some(commit));
     let error = Mutex::new(None);
     let scheduler = AdmissionScheduler::new();
+    let admission_window = splot_parallel::current_pool_width()
+        .saturating_sub(1)
+        .max(1)
+        .saturating_mul(3);
+    let mut references_settled = false;
     let mut submitted = 0usize;
     let mut reached_last = false;
     let parse_result = splot_parallel::ready_task_scope(|scope| {
@@ -614,6 +619,30 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             submitted = index.saturating_add(1);
             if last {
                 reached_last = true;
+            }
+            if let Some(target) = index.checked_sub(admission_window) {
+                while !committed[target].is_set() {
+                    let progress = splot_parallel::pool_progress_snapshot();
+                    if !references_settled && row_gate.is_ready() {
+                        references_settled = true;
+                        if let Err(value) = row_gate.wait() {
+                            record_first_error(&error, value);
+                        }
+                    }
+                    scheduler.admit_ready(scope);
+                    if committed[target].is_set() {
+                        break;
+                    }
+                    if !references_settled {
+                        if row_gate.is_ready() {
+                            continue;
+                        }
+                        break;
+                    }
+                    splot_parallel::assist_pool_or_park(&progress);
+                }
+            }
+            if last {
                 break;
             }
         }
@@ -628,9 +657,11 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         .and_then(|last| committed.get(last));
     while terminal.is_some_and(|done| !done.is_set()) {
         let progress = splot_parallel::pool_progress_snapshot();
-        let references_settled = row_gate.is_ready();
-        if references_settled && let Err(value) = row_gate.wait() {
-            record_first_error(&error, value);
+        if !references_settled && row_gate.is_ready() {
+            references_settled = true;
+            if let Err(value) = row_gate.wait() {
+                record_first_error(&error, value);
+            }
         }
         splot_parallel::ready_task_scope(|scope| {
             scheduler.admit_ready(scope);
@@ -639,9 +670,6 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             break;
         }
         if !references_settled && row_gate.is_ready() {
-            if let Err(value) = row_gate.wait() {
-                record_first_error(&error, value);
-            }
             continue;
         }
         if references_settled {
@@ -1283,9 +1311,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         &workspace,
         params.sb_h4,
     )?;
-    scratch
-        .surfaces
-        .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
+    scratch.clear_incompatible_surface_layout(info, &rects);
     let surfaces = rects
         .into_iter()
         .map(|rect| scratch.take_surface(info, rect))

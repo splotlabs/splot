@@ -1092,16 +1092,24 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             poison_reused_surface(&mut surface);
             return Ok(surface);
         }
-        if let Some(index) = self
-            .surfaces
-            .iter()
-            .position(|surface| surface.info() == info && surface.luma_rect() == rect)
-        {
-            let mut surface = self.surfaces.swap_remove(index);
-            poison_reused_surface(&mut surface);
-            return Ok(surface);
-        }
         splot_recon::OwnedFrameRect::new(info, rect, T::default())
+    }
+
+    fn clear_incompatible_surface_layout(
+        &mut self,
+        info: splot_recon::DecodedFrameInfo,
+        rects: &[splot_recon::PlaneRect],
+    ) {
+        let complete_layout = self.surfaces.len() == rects.len()
+            && self
+                .surfaces
+                .iter()
+                .rev()
+                .zip(rects)
+                .all(|(surface, rect)| surface.info() == info && surface.luma_rect() == *rect);
+        if !complete_layout {
+            self.surfaces.clear();
+        }
     }
 }
 
@@ -2037,6 +2045,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             };
             let surfaces = if parallel_prepass {
                 let info = workspace.info();
+                tile_scratch.clear_incompatible_surface_layout(info, &rects);
                 rects
                     .iter()
                     .copied()
@@ -2080,6 +2089,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
             workspace = next_workspace;
             decoded_any = next_decoded;
             recycled_surfaces = next_surfaces;
+            if parallel_prepass {
+                recycled_surfaces.reverse();
+            }
             *frame_filter_records = next_records;
             workers = tile_workers;
         } else {
