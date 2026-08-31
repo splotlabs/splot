@@ -16,9 +16,8 @@ use super::*;
 mod admission;
 mod mvres;
 
-pub(crate) use admission::ScheduledCommitProgress;
 pub(crate) use admission::ScheduledFrameProgress;
-pub(in crate::prediction::inter) use admission::ScheduledTileRecon;
+pub(crate) use admission::ScheduledTileRecon;
 use admission::TileCommit;
 pub(super) use admission::prepare_scheduled_tile;
 

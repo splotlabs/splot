@@ -6,7 +6,6 @@
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`,
 //! `INFRA-DECODE-FRAME-PIPELINING`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use splot_core::headers::frame::RefIdxBuf;
@@ -232,7 +231,7 @@ struct TileRecon<T: ReconSample> {
 }
 
 /// Owned state shared by one admission job per parsed reconstruction unit.
-pub(in crate::prediction::inter) struct ScheduledTileRecon<T: ReconSample> {
+pub(crate) struct ScheduledTileRecon<T: ReconSample> {
     recon: TileRecon<T>,
     filter_count: usize,
     frontier: Mutex<ScheduledFrontier<T>>,
@@ -240,10 +239,8 @@ pub(in crate::prediction::inter) struct ScheduledTileRecon<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
     temporal_plan: TemporalBandPlan,
     tile_offset: ByteOffset,
-    whole_frame: bool,
     parse_progress: Arc<super::ParseProgress>,
     pending_surfaces: Mutex<std::vec::IntoIter<splot_recon::OwnedFrameRect<T>>>,
-    finished: AtomicBool,
 }
 
 impl<T: ReconSample> TileRecon<T> {
@@ -687,23 +684,20 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
 
 impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Number of independently admitted reconstruction units.
-    pub(in crate::prediction::inter) const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.recon.len()
     }
 
     /// Number of final-filter stripes this frame owes.
-    pub(in crate::prediction::inter) const fn filter_count(&self) -> usize {
+    pub(crate) const fn filter_count(&self) -> usize {
         self.filter_count
     }
 
-    pub(in crate::prediction::inter) fn resolve_len(&self) -> usize {
+    pub(crate) fn resolve_len(&self) -> usize {
         self.temporal_plan.len()
     }
 
-    pub(in crate::prediction::inter) fn resolve_conditions(
-        &self,
-        index: usize,
-    ) -> Vec<Condition<'_>> {
+    pub(crate) fn resolve_conditions(&self, index: usize) -> Vec<Condition<'_>> {
         self.temporal_plan
             .requirements(index)
             .into_iter()
@@ -727,14 +721,11 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// The § 8.2 watermark a stalled resolve step waits on.
-    pub(in crate::prediction::inter) fn parse_watermark(&self) -> &splot_parallel::WatermarkCell {
+    pub(crate) fn parse_watermark(&self) -> &splot_parallel::WatermarkCell {
         self.parse_progress.cell()
     }
 
-    pub(in crate::prediction::inter) fn resolve(
-        &self,
-        index: usize,
-    ) -> Result<(core::ops::Range<usize>, Option<usize>)> {
+    pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
         project_temporal_band(
             &self.temporal_plan,
             &self.recon.temporal,
@@ -827,7 +818,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         Ok((ready, awaiting))
     }
 
-    pub(in crate::prediction::inter) fn fail_temporal(&self) {
+    pub(crate) fn fail_temporal(&self) {
         TemporalBandPlan::fail(&self.recon.temporal);
     }
 
@@ -862,7 +853,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .transpose()?
             .flatten();
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
-        frontier.sealed = seals_filter_copy(deblock.is_some(), self.whole_frame)
+        frontier.sealed = deblock
+            .is_some()
             .then(|| {
                 CurrentFrameWorkspace::new_recycled(self.info)
                     .map(crate::filters::source::DeblockedSource::new)
@@ -905,7 +897,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
     }
 
-    pub(in crate::prediction::inter) fn conditions(&self, index: usize) -> Vec<Condition<'_>> {
+    pub(crate) fn conditions(&self, index: usize) -> Vec<Condition<'_>> {
         let mut conditions = match self.recon.batch_range(index) {
             Some(range) => vec![Condition::watermark(self.parse_progress.cell(), range.end)],
             None => Vec::new(),
@@ -918,15 +910,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// Precomputes one admitted unit without entering the ordered commit spine.
-    pub(in crate::prediction::inter) fn precompute(&self, index: usize) -> Result<()> {
-        if self.finished.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        if let Err(error) = self.recon.precompute(index) {
-            self.finished.store(true, Ordering::Release);
-            return Err(error);
-        }
-        Ok(())
+    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
+        self.recon.precompute(index)
     }
 
     fn seal_committed_rows(&self, commit: &TileCommit<T>, rows: usize) -> Result<()> {
@@ -950,7 +935,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// Number of ordered links in this frame's § 7.17 frontier chain.
-    pub(in crate::prediction::inter) const fn frontier_len(&self) -> usize {
+    pub(crate) const fn frontier_len(&self) -> usize {
         self.recon.frontier_rows
     }
 
@@ -958,10 +943,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// row `row` and takes the filter stripes that frontier releases.
     ///
     /// The one caller that runs the final link receives the completed tile.
-    pub(in crate::prediction::inter) fn frontier(
-        &self,
-        row: usize,
-    ) -> Result<ScheduledFrameProgress<T>> {
+    pub(crate) fn frontier(&self, row: usize) -> Result<ScheduledFrameProgress<T>> {
         let terminal = row.saturating_add(1) >= self.recon.frontier_rows;
         let committed_units = row
             .saturating_add(1)
@@ -1072,27 +1054,17 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         })
     }
 
-    pub(in crate::prediction::inter) fn take_scheduled_scratch(
-        &self,
-    ) -> Result<TileDecodeScratch<T>> {
-        self.recon.take_scratch()
+    pub(crate) fn take_scheduled_scratch(&self) -> Result<super::super::InterDecodeScratch<T>> {
+        self.recon
+            .take_scratch()
+            .map(super::super::InterDecodeScratch::from_scheduled_tile_scratch)
     }
 
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
-    pub(in crate::prediction::inter) fn commit(
-        &self,
-        index: usize,
-    ) -> Result<ScheduledCommitProgress> {
-        let result = self.commit_active(index);
-        if match &result {
-            Ok(progress) => progress.recon_complete,
-            Err(_) => true,
-        } {
-            self.finished.store(true, Ordering::Release);
-        }
-        result
+    pub(crate) fn commit(&self, index: usize) -> Result<ScheduledCommitProgress> {
+        self.commit_active(index)
     }
 
     fn commit_active(&self, index: usize) -> Result<ScheduledCommitProgress> {
@@ -1193,26 +1165,6 @@ fn safe_deblock_mi_end(
             .min(mi_rows)
             .saturating_sub(RECON_READ_LEAD_MI_ROWS),
     )
-}
-
-/// Whether the frontier chain filters its own sealed copy of the frame.
-///
-/// Sealing is what decouples § 7.17 from the commit spine: deblock writes only
-/// the copy, so every current-frame reader — ordinary intra, and local or
-/// global IntraBC, whose source region is neither row-shaped nor bounded above
-/// — still reads raw reconstructed samples however far the frontier has run. A
-/// frame with no active deblock plan has nothing to advance, so it does not
-/// seal.
-const fn seals_filter_copy(has_deblock: bool, whole_frame: bool) -> bool {
-    has_deblock && whole_frame
-}
-
-/// Whether one parsed tile owns every mode-info position in the frame.
-fn covers_whole_frame(geometry: &TileGeometry, params: &TileWalkParams) -> bool {
-    geometry.mi_rows.start == 0
-        && geometry.mi_rows.end.min(params.mi_rows) == params.mi_rows
-        && geometry.mi_cols.start == 0
-        && geometry.mi_cols.end.min(params.mi_cols) == params.mi_cols
 }
 
 /// Reconstruction units one scheduled precompute batch prepares.
@@ -1329,7 +1281,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
     prepared.resize_with(batch_count, || None);
-    let whole_frame = covers_whole_frame(&geometry, &params);
     let TileDecodeScratch {
         ordered,
         workers,
@@ -1385,10 +1336,8 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         info,
         temporal_plan,
         tile_offset,
-        whole_frame,
         parse_progress,
         pending_surfaces: Mutex::new(surface_cursor),
-        finished: AtomicBool::new(false),
     };
     Ok(tile)
 }
@@ -1618,13 +1567,6 @@ mod tests {
     fn short_superblock_rows_keep_a_zero_frontier() {
         assert_eq!(frontier(1, 1, 4, 64, false), None);
         assert_eq!(frontier(2, 1, 4, 64, false), Some(2));
-    }
-
-    #[test]
-    fn every_whole_frame_deblock_plan_seals_its_own_filter_copy() {
-        assert!(super::seals_filter_copy(true, true));
-        assert!(!super::seals_filter_copy(false, true));
-        assert!(!super::seals_filter_copy(true, false));
     }
 
     #[test]

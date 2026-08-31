@@ -2188,7 +2188,8 @@ mod single_ref;
 
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
-    InterFrameParse, ScheduledFrameProgress, decode_inter_blocks, parse_inter_frame_blocks,
+    InterFrameParse, ScheduledFrameProgress, ScheduledTileRecon, decode_inter_blocks,
+    parse_inter_frame_blocks,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
@@ -2196,7 +2197,7 @@ pub(crate) use find_mv_stack::{
 };
 pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
 pub(crate) use frame_walk::{
-    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, ScheduledInterWalk, parse_inter_frame,
+    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, parse_inter_frame,
     splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;
