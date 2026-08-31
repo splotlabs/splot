@@ -1802,16 +1802,6 @@ fn prepare_tile<T: ReconSample>(
     })
 }
 
-/// Pool width at which one tile's entropy pass runs ahead of its ordered
-/// commit.
-///
-/// One spare worker is the whole requirement: the commit still runs every unit
-/// in parse order, so parse-ahead is independent of the shadow-surface
-/// precompute, which needs a wider pool and cannot run at all under
-/// frame-level intra block copy. A one-worker pool keeps the fused serial
-/// parse-then-reconstruct loop.
-const PARSE_AHEAD_POOL_WIDTH: usize = 2;
-
 fn no_decoded_block_error() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into()
 }
@@ -1873,13 +1863,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
         workspace.info(),
         temporal_context,
     );
-    let parallel_tiles = work_units.len() > 1
-        && splot_parallel::current_pool_width() > 1
-        && !super::intrabc::global_intrabc_enabled(core.intrabc);
-    let parallel_prepass = splot_parallel::current_pool_width() >= 4
-        && !super::intrabc::global_intrabc_enabled(core.intrabc);
-    let parse_ahead = splot_parallel::current_pool_width() >= PARSE_AHEAD_POOL_WIDTH;
-    if parallel_tiles {
+    let global_intrabc = super::intrabc::global_intrabc_enabled(core.intrabc);
+    let independent_tiles = work_units.len() > 1 && !global_intrabc;
+    if independent_tiles {
         row_gate.wait()?;
         let mut luma_rects = Vec::new();
         luma_rects
@@ -1998,20 +1984,13 @@ pub(super) fn decode_tiles<T: ReconSample>(
             },
         ));
     }
-    if !parse_ahead {
-        row_gate.wait()?;
-    }
     for tile in work_units.iter_mut() {
         let tile_offset = tile.tile_byte_span().start;
         let block_decoded = tile_block_decoded(tile, &context)?;
         let quantizer = FrameQuantizerSnapshot::capture();
-        let superblock_rects = parse_ahead
-            .then(|| {
-                let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
-                let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-                superblock_luma_rects(&rows, &cols, &workspace, sb_h4)
-            })
-            .transpose()?;
+        let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+        let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+        let superblock_rects = superblock_luma_rects(&rows, &cols, &workspace, sb_h4)?;
         let tile_mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
         let tile_mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
         let mut parser = TileParser::new(
@@ -2022,124 +2001,67 @@ pub(super) fn decode_tiles<T: ReconSample>(
             ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
-        if let Some(rects) = superblock_rects {
-            let row_buffers = ReconRowBufferPool::new(
-                splot_parallel::current_pool_width()
-                    .saturating_mul(3)
-                    .max(1),
-            );
-            let mut tile_scratch = TileDecodeScratch {
-                ordered,
-                workers,
-                surfaces: recycled_surfaces,
-            };
-            let surfaces = if parallel_prepass {
-                let info = workspace.info();
-                tile_scratch.clear_incompatible_surface_layout(info, &rects);
-                rects
-                    .iter()
-                    .copied()
-                    .map(|rect| tile_scratch.take_surface(info, rect))
-                    .collect::<splot_recon::Result<Vec<_>>>()?
-            } else {
-                Vec::new()
-            };
-            let TileDecodeScratch {
-                ordered: tile_ordered,
-                workers: tile_workers,
-                surfaces: tile_surfaces,
-            } = tile_scratch;
-            let commit = TileCommit::direct(
-                tile_ordered,
-                workspace,
-                block_decoded.clone(),
-                decoded_any,
-                tile_surfaces,
-                core::mem::take(frame_filter_records),
-            );
-            let commit = admission::run_ordinary_tile(
-                &mut parser,
-                &mut resolve_state,
-                tile_offset,
-                surfaces.into_iter(),
-                rects.len().saturating_add(1),
-                &context,
-                temporal_context,
-                &quantizer,
-                &row_gate,
-                &row_buffers,
-                &tile_workers,
-                &block_decoded,
-                &motion,
-                commit,
-            )?;
-            let (next_ordered, next_workspace, next_decoded, next_surfaces, next_records) =
-                commit.finish_direct();
-            ordered = next_ordered;
-            workspace = next_workspace;
-            decoded_any = next_decoded;
-            recycled_surfaces = next_surfaces;
-            if parallel_prepass {
-                recycled_surfaces.reverse();
-            }
-            *frame_filter_records = next_records;
-            workers = tile_workers;
+        let row_buffers = ReconRowBufferPool::new(
+            splot_parallel::current_pool_width()
+                .saturating_mul(3)
+                .max(1),
+        );
+        let mut tile_scratch = TileDecodeScratch {
+            ordered,
+            workers,
+            surfaces: recycled_surfaces,
+        };
+        let surfaces = if global_intrabc {
+            Vec::new()
         } else {
-            let row_buffers = ReconRowBufferPool::new(1);
-            let mut commit = TileCommit::direct(
-                ordered,
-                workspace,
-                block_decoded,
-                decoded_any,
-                recycled_surfaces,
-                core::mem::take(frame_filter_records),
-            );
-            loop {
-                let step = {
-                    let _quantizer_scopes = quantizer.install_frame();
-                    let step = parser.next_unit(
-                        &context,
-                        ParserGranularity::Row,
-                        Some(row_buffers.take()),
-                    );
-                    resolve_parser_step(step, |row| {
-                        resolve_state.resolve_unit(
-                            &mut parser.mv_grid,
-                            &context,
-                            temporal_context,
-                            row,
-                            tile_offset,
-                        )
-                    })
-                };
-                let (row, last) = match step {
-                    ParserStep::More(row) => (row, false),
-                    ParserStep::Last(row) => (row, true),
-                };
-                let buffers = commit.replay(
-                    ReadyReconRow {
-                        row,
-                        surface: None,
-                        bounds: row_gate::RowReferenceBounds::default(),
-                    },
-                    &quantizer,
-                    &motion,
-                    temporal_context,
-                    &context,
-                )?;
-                row_buffers.recycle(buffers);
-                if last {
-                    break;
-                }
-            }
-            let (next_ordered, next_workspace, next_decoded, next_surfaces, next_records) =
-                commit.finish_direct();
-            ordered = next_ordered;
-            workspace = next_workspace;
-            decoded_any = next_decoded;
-            recycled_surfaces = next_surfaces;
-            *frame_filter_records = next_records;
+            let info = workspace.info();
+            tile_scratch.clear_incompatible_surface_layout(info, &superblock_rects);
+            superblock_rects
+                .iter()
+                .copied()
+                .map(|rect| tile_scratch.take_surface(info, rect))
+                .collect::<splot_recon::Result<Vec<_>>>()?
+        };
+        let TileDecodeScratch {
+            ordered: tile_ordered,
+            workers: tile_workers,
+            surfaces: tile_surfaces,
+        } = tile_scratch;
+        let commit = TileCommit::direct(
+            tile_ordered,
+            workspace,
+            block_decoded.clone(),
+            decoded_any,
+            tile_surfaces,
+            core::mem::take(frame_filter_records),
+        );
+        let commit = admission::run_ordinary_tile(
+            &mut parser,
+            &mut resolve_state,
+            tile_offset,
+            surfaces.into_iter(),
+            superblock_rects.len().saturating_add(1),
+            &context,
+            temporal_context,
+            &quantizer,
+            &row_gate,
+            &row_buffers,
+            &tile_workers,
+            &block_decoded,
+            &motion,
+            commit,
+        )?;
+        let (next_ordered, next_workspace, next_decoded, next_surfaces, next_records) =
+            commit.finish_direct();
+        ordered = next_ordered;
+        workspace = next_workspace;
+        decoded_any = next_decoded;
+        recycled_surfaces = next_surfaces;
+        if !global_intrabc {
+            recycled_surfaces.reverse();
         }
+        *frame_filter_records = next_records;
+        workers = tile_workers;
         let output = parser.into_output();
         merge_tile_filter_state(
             &mut cdef_state,
