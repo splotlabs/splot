@@ -229,18 +229,24 @@ mod tests {
     }
 
     #[test]
-    fn global_intrabc_capability_is_independent_of_the_local_flag() {
+    fn global_intrabc_enabled_follows_only_the_global_flag() {
         let params = |global, local| IntrabcParams {
             allow_intrabc: true,
-            allow_global_intrabc: Some(global),
+            allow_global_intrabc: global,
             allow_local_intrabc: local,
             change_bvp_drl: None,
             max_bvp_drl_bits_minus_1: None,
         };
 
         assert!(!global_intrabc_enabled(None));
-        assert!(!global_intrabc_enabled(Some(params(false, None))));
-        assert!(global_intrabc_enabled(Some(params(true, Some(false)))));
-        assert!(global_intrabc_enabled(Some(params(true, Some(true)))));
+        for global in [None, Some(false), Some(true)] {
+            for local in [None, Some(false), Some(true)] {
+                assert_eq!(
+                    global_intrabc_enabled(Some(params(global, local))),
+                    global == Some(true),
+                    "global={global:?}, local={local:?}"
+                );
+            }
+        }
     }
 }
