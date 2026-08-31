@@ -354,6 +354,89 @@ fn final_filter_sink_8bit<T: splot_recon::ReconSample>() -> WienerNsLrReconSink<
 }
 
 #[test]
+fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
+    use splot_parallel::{ThreadCount, WorkerPool};
+
+    let mut core = switchable_core();
+    core.deblocking_filter_params = None;
+    assert_eq!(
+        crate::filters::gdf::stripe_ranges(&core, 128)
+            .unwrap()
+            .len(),
+        3,
+        "fixture must exercise the stripe task path"
+    );
+    let core = Arc::new(core);
+    let (expected, _) = final_filter_sink_10bit()
+        .into_filtered_frame(
+            Arc::clone(&core),
+            false,
+            crate::filters::deblock::DeblockQuantDeltas::ZERO,
+            None,
+            None,
+            core::convert::identity,
+        )
+        .unwrap();
+    let expected = splot_recon::DecodedFrameHashInput::new(&expected).compute_hash();
+
+    for threads in [1, 4] {
+        let pool = WorkerPool::new(ThreadCount::Fixed(threads.try_into().unwrap())).unwrap();
+        let publishes = AtomicUsize::new(0);
+        let (actual, _) = pool
+            .install(|| {
+                assert!(splot_parallel::on_worker_pool());
+                final_filter_sink_10bit().into_filtered_frame(
+                    Arc::clone(&core),
+                    false,
+                    crate::filters::deblock::DeblockQuantDeltas::ZERO,
+                    None,
+                    None,
+                    |frame| {
+                        publishes.fetch_add(1, Ordering::SeqCst);
+                        frame
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(publishes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
+            expected,
+            "{threads}-worker stripe task path must match direct filtering"
+        );
+    }
+}
+
+#[test]
+fn one_worker_multi_stripe_task_failure_returns_without_publishing() {
+    use splot_parallel::{ThreadCount, WorkerPool};
+
+    let mut core = switchable_core();
+    core.deblocking_filter_params = None;
+    let mut sink = final_filter_sink_10bit();
+    sink.plane_sizes[PlaneId::Y.index()] = None;
+    let publishes = AtomicUsize::new(0);
+    let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
+    let result = pool.install(|| {
+        assert!(splot_parallel::on_worker_pool());
+        sink.into_filtered_frame(
+            Arc::new(core),
+            false,
+            crate::filters::deblock::DeblockQuantDeltas::ZERO,
+            None,
+            None,
+            |frame| {
+                publishes.fetch_add(1, Ordering::SeqCst);
+                frame
+            },
+        )
+    });
+
+    assert!(result.is_err());
+    assert_eq!(publishes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
     let mut core = switchable_core();
     core.deblocking_filter_params = None;

@@ -501,7 +501,7 @@ impl<'a> FrameDeblock<'a> {
             }
         }
         let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
-        if jobs.len() > 1 && self.plane_parallel && splot_parallel::on_multiworker_pool() {
+        if jobs.len() > 1 && self.plane_parallel && splot_parallel::on_worker_pool() {
             jobs.into_par_iter().try_for_each(run)?;
         } else {
             jobs.into_iter().try_for_each(run)?;

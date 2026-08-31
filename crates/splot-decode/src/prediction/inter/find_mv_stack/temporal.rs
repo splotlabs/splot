@@ -1827,22 +1827,15 @@ fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usi
 ///
 /// Bands partition the writes, and each band replays the queue in its original
 /// order, so the result matches the whole-field scan whatever order the bands
-/// run in. Splitting only pays for itself when there are workers to spread the
-/// bands over, so an uninstalled or single-worker pool keeps the whole field as
-/// one band and walks it in place.
+/// run in. An installed pool runs the same band tasks at every worker count;
+/// direct callers outside the owned pool replay those bands in place.
 fn run_band_projections(
     prepared: &[PreparedTemporalProjection<'_>],
     config: TemporalProjectionConfig,
     trajectories: Option<&mut TrajectoryState>,
     field: &mut ProjectedTemporalMotionField,
 ) {
-    let unit_rows = projection_band_rows(field.height8, config);
-    let fan_out = field.height8 > unit_rows && splot_parallel::on_multiworker_pool();
-    let band_rows = if fan_out {
-        unit_rows
-    } else {
-        field.height8.max(1)
-    };
+    let band_rows = projection_band_rows(field.height8, config);
     let run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
         let rows8 = band.row_base..band.row_base + band_rows;
         for prepared in prepared {
@@ -1859,17 +1852,6 @@ fn run_band_projections(
     };
     let mut trajectory_bands = trajectories.and_then(|state| state.bands(band_rows));
     let mut field_bands = field.bands(band_rows);
-    if !fan_out {
-        for (index, band) in field_bands.iter_mut().enumerate() {
-            run(
-                band,
-                trajectory_bands
-                    .as_mut()
-                    .and_then(|bands| bands.get_mut(index)),
-            );
-        }
-        return;
-    }
     let mut trajectory_slots = trajectory_bands
         .as_deref_mut()
         .map_or_else(Vec::new, |bands| bands.iter_mut().map(Some).collect());

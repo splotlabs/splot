@@ -981,8 +981,8 @@ fn publish_unit_outputs<T: ReconSample>(
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    if published_band_count(scratch) > 1
-        && splot_parallel::on_multiworker_pool()
+    if splot_parallel::on_worker_pool()
+        && published_band_count(scratch) > 1
         && let mc::WorkspaceSink::Frame(workspace) = sink
     {
         return publish_units_by_band(scratch, workspace, output_stride);
@@ -1372,6 +1372,7 @@ mod tests {
     };
     use crate::prediction::inter::reference::{HeldFrameSamples, ReferenceSamples};
     use crate::prediction::inter::{Mv, mc};
+    use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
     use splot_core::headers::frame::{
         FrameSize, FrameType, InterControl, InterpolationFilter as FrameInterpolationFilter,
         TipFrameMode,
@@ -1382,6 +1383,28 @@ mod tests {
         BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OutputIndex,
         PixelFormat, PlaneId, PlaneRect, PlaneSize,
     };
+
+    const TIP_FAMILIES_FIXTURE: &[u8] = include_bytes!(
+        "../../../../../../tests/conformance/vectors/valid/syn-frame-tip-families-64x64.ivf"
+    );
+
+    #[test]
+    fn tip_publication_is_byte_exact_at_one_and_four_workers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let decode = |threads| -> Result<Vec<u8>, crate::DecodeError> {
+            let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))?;
+            let mut output = Vec::new();
+            context.decode_raw_bytes(
+                TIP_FAMILIES_FIXTURE,
+                DecodeOptions::default(),
+                &mut output,
+            )?;
+            Ok(output)
+        };
+
+        assert_eq!(decode(1)?, decode(4)?);
+        Ok(())
+    }
 
     #[test]
     fn tip_reference_unit_size_follows_refinement_and_large_block_gates() {

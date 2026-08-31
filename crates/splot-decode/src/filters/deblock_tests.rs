@@ -1759,7 +1759,7 @@ fn chroma_pass_uses_4x4_tx_for_sub8_luma_records() {
 }
 
 #[test]
-fn contiguous_source_plane_parallel_pass_matches_serial_output() {
+fn contiguous_source_plane_pool_path_matches_serial_output_at_one_and_four_workers() {
     use splot_parallel::{ThreadCount, WorkerPool};
 
     let (mi_rows, mi_cols) = (16usize, 32usize);
@@ -1817,7 +1817,6 @@ fn contiguous_source_plane_parallel_pass_matches_serial_output() {
         let pool = WorkerPool::new(ThreadCount::Fixed(threads.try_into().unwrap())).unwrap();
         let parallel_primed = pool.install(|| {
             assert!(splot_parallel::on_worker_pool());
-            assert_eq!(splot_parallel::on_multiworker_pool(), threads > 1);
             run(&mut parallel)
         });
 

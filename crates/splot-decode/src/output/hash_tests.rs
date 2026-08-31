@@ -722,15 +722,24 @@ fn long_hash_decode_keeps_reference_storage_bounded() {
     let options = DecodeOptions::new(
         DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(110_592)),
     );
-    let report = context(ThreadCount::from(1usize))
+    for frame_delay in [
+        FrameDelay::Fixed(NonZeroUsize::MIN),
+        FrameDelay::from(4usize),
+        FrameDelay::Auto,
+    ] {
+        let report = DecodeContext::new(
+            DecodeRuntimeConfig::new(ThreadCount::from(1usize)).with_frame_delay(frame_delay),
+        )
+        .unwrap()
         .decode_hash_report_bytes(ORDER_HINT_WRAP_FIXTURE, options)
         .unwrap();
 
-    assert_eq!(report.frames.len(), 121);
-    assert_eq!(
-        report.frames[119].hashes[0].digest_hex,
-        "c6e91fa41a421a666ea3846bef406127d88c253b3d800a89bacabfd7ab0e4437"
-    );
+        assert_eq!(report.frames.len(), 121);
+        assert_eq!(
+            report.frames[119].hashes[0].digest_hex,
+            "c6e91fa41a421a666ea3846bef406127d88c253b3d800a89bacabfd7ab0e4437"
+        );
+    }
 }
 
 #[test]
@@ -807,9 +816,9 @@ fn hash_report_numbers_frames_in_emission_order() {
     }
 }
 
-/// Pins every pipelining depth and worker width to the one-worker decode.
+/// Pins every frame delay and worker width to the canonical one-worker decode.
 #[test]
-fn pipelined_hash_decode_matches_the_serial_digests_at_every_depth() {
+fn hash_decode_matches_the_canonical_one_worker_digests_at_every_depth() {
     let digests = |threads: usize, frame_delay: FrameDelay| {
         DecodeContext::new(
             DecodeRuntimeConfig::new(ThreadCount::from(threads)).with_frame_delay(frame_delay),
@@ -822,14 +831,14 @@ fn pipelined_hash_decode_matches_the_serial_digests_at_every_depth() {
         .map(|frame| frame.hashes[0].digest_hex.clone())
         .collect::<Vec<_>>()
     };
-    let serial = FrameDelay::Fixed(NonZeroUsize::MIN);
+    let depth_one = FrameDelay::Fixed(NonZeroUsize::MIN);
 
-    let single_threaded = digests(1, serial);
+    let single_threaded = digests(1, depth_one);
     assert_eq!(single_threaded.len(), 121);
 
-    for threads in [2usize, 3, 4, 8, 10] {
+    for threads in [1usize, 2, 3, 4, 8, 10] {
         for frame_delay in [
-            serial,
+            depth_one,
             FrameDelay::from(2usize),
             FrameDelay::from(4usize),
             FrameDelay::Auto,
