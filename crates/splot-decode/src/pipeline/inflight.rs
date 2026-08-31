@@ -121,15 +121,6 @@ impl<T: ReconSample> RefFrameSlot<T> {
         self.progress.clone()
     }
 
-    /// How many luma rows from the frame top this slot has published.
-    ///
-    /// A slot with no filter phase to watch publishes nothing row by row; its
-    /// consumers gate on [`Self::is_settled`] instead.
-    pub(crate) fn published_luma_rows(&self) -> usize {
-        self.progress()
-            .map_or(0, FrameProgress::published_luma_rows)
-    }
-
     /// Returns the scheduler condition for this slot settling.
     pub(crate) fn settled_condition(&self) -> Condition<'_> {
         Condition::Completion(self.cell.as_ref())

@@ -33,30 +33,6 @@ use super::warp::{
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-/// One leaf's parse output: the reconstruction command the parse pass could
-/// already build, and the § 7.12 work the parse unit's resolve pass still owes
-/// it.
-pub(super) struct ParsedLeaf {
-    pub(super) dependency: ReconDependency,
-    pub(super) resolve: LeafResolveRecord,
-}
-
-impl ParsedLeaf {
-    pub(super) fn reseed(command: ReconCommand) -> Self {
-        Self {
-            dependency: command.dependency(),
-            resolve: LeafResolveRecord::Reseed(command),
-        }
-    }
-
-    pub(super) fn non_inter(command: ReconCommand, n4w: usize, n4h: usize) -> Self {
-        Self {
-            dependency: command.dependency(),
-            resolve: LeafResolveRecord::NonInter { command, n4w, n4h },
-        }
-    }
-}
-
 /// The § 7.12 work owned by one reconstruction entry.
 pub(super) enum LeafResolveRecord {
     /// Nothing: chroma-part leaves publish no neighbour record.
@@ -101,40 +77,25 @@ pub(super) struct PendingIntrabcBlock {
     pub(super) avail_left: bool,
 }
 
-pub(super) fn pending_intrabc_leaf(
-    pending: PendingIntrabcBlock,
-    dependency: ReconDependency,
-) -> ParsedLeaf {
-    ParsedLeaf {
-        dependency,
-        resolve: LeafResolveRecord::Intrabc(pending),
-    }
+pub(super) fn pending_intrabc_leaf(pending: PendingIntrabcBlock) -> LeafResolveRecord {
+    LeafResolveRecord::Intrabc(pending)
 }
 
-/// Queues one parsed inter leaf for the resolve pass, deriving the
-/// reconstruction dependency its recon-entry needs right away.
+/// Packages one parsed inter leaf for the resolve pass that completes its
+/// reconstruction command.
 pub(super) fn pending_inter_leaf(
     syntax: InterBlockSyntax,
     geometry: PlacedInterGeometry,
     qindex: u32,
     frame_precision: u8,
-) -> ParsedLeaf {
-    let dependency =
-        if deferred_recon::reads_current_frame(syntax.bawp.enabled, syntax.interintra.is_some()) {
-            ReconDependency::CurrentFrame
-        } else {
-            ReconDependency::ReferenceOnly
-        };
-    ParsedLeaf {
-        dependency,
-        resolve: LeafResolveRecord::Inter(PendingInterBlock {
-            syntax,
-            geometry,
-            segment_id: current_frame_qm_segment_id(),
-            qindex,
-            frame_precision,
-        }),
-    }
+) -> LeafResolveRecord {
+    LeafResolveRecord::Inter(PendingInterBlock {
+        syntax,
+        geometry,
+        segment_id: current_frame_qm_segment_id(),
+        qindex,
+        frame_precision,
+    })
 }
 
 /// Replays one parse unit's queued § 7.12 work in leaf order.

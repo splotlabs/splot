@@ -74,7 +74,7 @@ fn a_failed_writer_closes_the_published_prefix_instead_of_lending_it() {
     let progress = slot.progress().expect("a pending slot publishes stripes");
     assert!(progress.begin(&[(0, 4), (4, 8)]));
     progress.publish(0);
-    assert_eq!(slot.published_luma_rows(), 4);
+    assert_eq!(progress.published_luma_rows(), 4);
     assert!(
         slot.hold_samples().is_some(),
         "a live filter phase lends the prefix it published"
@@ -84,7 +84,7 @@ fn a_failed_writer_closes_the_published_prefix_instead_of_lending_it() {
 
     assert!(slot.is_settled());
     assert_eq!(
-        slot.published_luma_rows(),
+        progress.published_luma_rows(),
         0,
         "a failed phase publishes no readable row"
     );

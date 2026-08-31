@@ -473,7 +473,7 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::<u16>::pending(info).unwrap();
     let progress = slot.progress_handle().unwrap();
     let (setup, workspace) = sink
-        .into_owned_filter_setup(Arc::clone(&core), false, Some(progress), None)
+        .into_owned_filter_setup(Arc::clone(&core), false, Some(Arc::clone(&progress)), None)
         .unwrap();
     let mut source = DeblockedSource::new(workspace.unwrap());
     assert!(source.publish_final_rows(128));
@@ -521,7 +521,7 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
     assert_eq!(freezes.load(Ordering::SeqCst), 0);
     drop(writer);
     assert!(slot.is_settled());
-    assert_eq!(slot.published_luma_rows(), 0);
+    assert_eq!(progress.published_luma_rows(), 0);
     assert!(slot.ready().is_err());
 }
 

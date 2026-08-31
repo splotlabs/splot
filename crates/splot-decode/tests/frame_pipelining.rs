@@ -193,20 +193,11 @@ fn a_corrupt_stream_fails_with_the_serial_diagnostic_at_every_depth() {
     assert!(checked > 0, "no mutated byte produced a decode failure");
 }
 
-/// A long stream whose output already differs between one worker and many, from
-/// a divergence in the thread-parallel stages the filter-phase pipeline does not
-/// touch. Holding the thread count fixed isolates the frame-delay depth as the
-/// only variable, which is what this stage owns.
 #[test]
-fn frame_delay_does_not_change_output_at_a_fixed_thread_count() {
-    let expected = collect_raw(
-        &context(8, FrameDelay::from(1usize)),
-        ORDER_HINT_WRAP,
-        DecodeOptions::default(),
-    )
-    .unwrap();
+fn pipelined_orderhint_output_matches_the_serial_decode_at_every_depth() {
+    let expected = collect_raw(&serial(), ORDER_HINT_WRAP, DecodeOptions::default()).unwrap();
 
-    for depth in [2usize, 4, 8, 64] {
+    for depth in [1usize, 2, 4, 8, 64] {
         let actual = collect_raw(
             &context(8, FrameDelay::from(depth)),
             ORDER_HINT_WRAP,

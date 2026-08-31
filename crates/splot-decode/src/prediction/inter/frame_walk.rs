@@ -328,7 +328,7 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
 
 /// One deferred frame whose reconstruction units are scheduler-owned.
 pub(crate) struct ScheduledInterWalk<T: ReconSample> {
-    reconstruction: block::ScheduledInterReconstruction<T>,
+    reconstruction: block::ScheduledTileRecon<T>,
 }
 
 impl<T: ReconSample> ScheduledInterWalk<T> {
@@ -393,7 +393,9 @@ impl<T: ReconSample> ScheduledInterWalk<T> {
     }
 
     pub(crate) fn take_scheduled_scratch(&self) -> Result<InterDecodeScratch<T>> {
-        self.reconstruction.take_scheduled_scratch()
+        self.reconstruction
+            .take_scheduled_scratch()
+            .map(InterDecodeScratch::from_scheduled_tile_scratch)
     }
 
     /// Number of ordered links in this frame's § 7.17 frontier chain.

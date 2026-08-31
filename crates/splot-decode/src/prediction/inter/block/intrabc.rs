@@ -22,7 +22,6 @@ pub(super) struct IntrabcReconPrediction {
     morph_mv: Option<Mv>,
     /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
     morph_avail: (bool, bool),
-    global_fence: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -63,7 +62,6 @@ impl IntrabcReconPrediction {
             chroma,
             morph_mv,
             morph_avail,
-            global_fence: global_intrabc_enabled(core.intrabc),
         })
     }
 
@@ -146,10 +144,6 @@ impl IntrabcReconCommand {
             residual_use_ddt,
             bit_depth,
         }
-    }
-
-    pub(super) const fn requires_global_fence(&self) -> bool {
-        self.prediction.global_fence
     }
 
     pub(super) fn reconstruct<T: ReconSample>(
@@ -235,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn global_intrabc_capability_requires_a_fence_even_when_local_is_enabled() {
+    fn global_intrabc_capability_is_independent_of_the_local_flag() {
         let params = |global, local| IntrabcParams {
             allow_intrabc: true,
             allow_global_intrabc: Some(global),

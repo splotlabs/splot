@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Per-row reference admission for the walk's ready-row engine.
+//! Per-row reference admission for reconstruction work.
 //!
 //! Feature tracking: `INFRA-DECODE-FRAME-PIPELINING`.
 //!
@@ -132,14 +132,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             temporal,
             tip: temporal.tip_references(),
         }
-    }
-
-    /// Whether every reference row `bounds` requires has been published.
-    pub(super) fn admits(&self, bounds: &RowReferenceBounds) -> bool {
-        if bounds.settle {
-            return self.settle.is_ready();
-        }
-        lists_published(&self.lists, bounds)
     }
 
     /// Returns the scheduler conditions that replace waiting for `bounds`.
@@ -410,19 +402,6 @@ fn block_published_rows(
         );
     }
     Some(rows)
-}
-
-/// Whether every list the row reads has published the rows it needs.
-fn lists_published<T: ReconSample>(
-    lists: &[Option<&RefFrameSlot<T>>; MAX_LISTS],
-    bounds: &RowReferenceBounds,
-) -> bool {
-    lists.iter().zip(bounds.needs).all(|(slot, need)| {
-        need == 0
-            || slot.is_some_and(|slot| {
-                slot.is_settled() || slot.published_luma_rows() >= need as usize
-            })
-    })
 }
 
 #[cfg(test)]

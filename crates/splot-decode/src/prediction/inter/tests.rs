@@ -167,15 +167,20 @@ fn plan_fixture(bytes: &[u8], options: &DecodeOptions) -> DecodeStreamPlan {
 }
 
 pub(super) fn decode_fixture(bytes: &[u8]) -> Vec<PipelineFrame> {
+    decode_fixture_on_threads(bytes, 1)
+}
+
+fn decode_fixture_on_threads(bytes: &[u8], threads: usize) -> Vec<PipelineFrame> {
     let options = DecodeOptions::default();
-    decode_fixture_with_options(bytes, &options).expect("decode")
+    decode_fixture_with_options(bytes, &options, threads).expect("decode")
 }
 
 fn decode_fixture_with_options(
     bytes: &[u8],
     options: &DecodeOptions,
+    threads: usize,
 ) -> Result<Vec<PipelineFrame>> {
-    let context = decode_context();
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))?;
     let plan = context.plan_bytes(bytes, *options).expect("plan");
     context
         .pool()
@@ -778,7 +783,7 @@ fn multi_tile_inter_fixture_enforces_tile_count_limit() {
     let options = DecodeOptions::new(
         DecodeLimits::default().with_max_tile_count(DecodeLimitThreshold::Max(1)),
     );
-    let Err(error) = decode_fixture_with_options(MULTI_TILE_LR_FIXTURE, &options) else {
+    let Err(error) = decode_fixture_with_options(MULTI_TILE_LR_FIXTURE, &options, 1) else {
         panic!("two tile columns must exceed a one-tile resource limit");
     };
     let DecodeError::Limit { source } = error else {
@@ -900,13 +905,15 @@ fn simple_path_interintra_fixture_decodes_avm_bit_exact() {
 
 #[test]
 fn fractional_quarter_pel_intrabc_fixture_decodes_avm_bit_exact() {
-    let frames = decode_fixture(FRACTIONAL_INTRABC_FIXTURE);
-    assert_eq!(frames.len(), 1, "one closed-loop key frame");
-    assert_eq!(
-        frame_hashes(&frames),
-        ["5e6a9eac61011e29f965e53a7fb8f2e8278bae53c1370772ea96344cf8e56dea"],
-        "AVM-pinned output proves the quarter-pel IntrABC BILINEAR path"
-    );
+    for threads in [1, 2, 4, 8, 10] {
+        let frames = decode_fixture_on_threads(FRACTIONAL_INTRABC_FIXTURE, threads);
+        assert_eq!(frames.len(), 1, "one closed-loop key frame");
+        assert_eq!(
+            frame_hashes(&frames),
+            ["5e6a9eac61011e29f965e53a7fb8f2e8278bae53c1370772ea96344cf8e56dea"],
+            "AVM-pinned output mismatch at {threads} threads"
+        );
+    }
 }
 
 #[test]
@@ -1212,16 +1219,7 @@ fn multi_sb_fixture_per_frame_hash_is_stable() {
 #[test]
 fn multi_tile_inter_fixture_decodes_bit_exact() {
     for threads in [1usize, 4] {
-        let options = DecodeOptions::default();
-        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))
-            .expect("context");
-        let plan = context
-            .plan_bytes(MULTI_TILE_INTER_FIXTURE, options)
-            .expect("plan");
-        let frames = context
-            .pool()
-            .install(|| decode_frames_from_plan(MULTI_TILE_INTER_FIXTURE, &options, &plan))
-            .expect("decode");
+        let frames = decode_fixture_on_threads(MULTI_TILE_INTER_FIXTURE, threads);
         assert_yuv420_8bit_frames(&frames, 128, 64);
         assert_eq!(
             frame_hashes(&frames),
@@ -1237,16 +1235,7 @@ fn multi_tile_inter_fixture_decodes_bit_exact() {
 #[test]
 fn multi_tile_lr_fixture_decodes_bit_exact() {
     for threads in [1usize, 4] {
-        let options = DecodeOptions::default();
-        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))
-            .expect("context");
-        let plan = context
-            .plan_bytes(MULTI_TILE_LR_FIXTURE, options)
-            .expect("plan");
-        let frames = context
-            .pool()
-            .install(|| decode_frames_from_plan(MULTI_TILE_LR_FIXTURE, &options, &plan))
-            .expect("decode");
+        let frames = decode_fixture_on_threads(MULTI_TILE_LR_FIXTURE, threads);
         assert_yuv420_8bit_frames(&frames, 768, 256);
         assert_eq!(
             frame_hashes(&frames),
@@ -1686,7 +1675,7 @@ fn multiref_runtime_enforces_cumulative_output_frame_limit() {
             .limits()
             .with_max_output_frames(DecodeLimitThreshold::Max(2)),
     );
-    let Err(error) = decode_fixture_with_options(MULTIREF_FIXTURE, &options) else {
+    let Err(error) = decode_fixture_with_options(MULTIREF_FIXTURE, &options, 1) else {
         panic!("three-frame multiref fixture must exceed max_output_frames=2");
     };
     let DecodeError::Limit { source } = error else {
@@ -1705,7 +1694,7 @@ fn multiref_runtime_enforces_cumulative_reference_store_byte_limit() {
             .limits()
             .with_max_reference_store_bytes(DecodeLimitThreshold::Max(12_288)),
     );
-    let Err(error) = decode_fixture_with_options(MULTIREF_FIXTURE, &options) else {
+    let Err(error) = decode_fixture_with_options(MULTIREF_FIXTURE, &options, 1) else {
         panic!("three-frame multiref fixture must exceed two retained frame byte budget");
     };
     let DecodeError::Limit { source } = error else {

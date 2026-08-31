@@ -9,7 +9,7 @@
 //! end and keeps every unit, along with the frame's CDF subset and filter
 //! grids, which are entropy-pass products too. What is still owed is the § 7.9
 //! temporal prelude, the § 7.12 resolve pass and reconstruction.
-//! [`InterFrameParse::prepare_scheduled`] converts that work into the row graph
+//! [`prepare_scheduled_recon`] converts that work into the row graph
 //! once the frame becomes admissible.
 
 use super::super::MotionFieldHandle;
@@ -32,102 +32,6 @@ pub(crate) struct InterFrameParse {
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
     gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
-}
-
-/// One parsed frame whose reconstruction units are ready for admission.
-pub(crate) struct ScheduledInterReconstruction<T: ReconSample> {
-    tile: tile::ScheduledTileRecon<T>,
-}
-
-/// Filter work made ready by one canonical reconstruction commit.
-pub(crate) struct ScheduledFrameProgress<T: ReconSample> {
-    pub(crate) filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
-    pub(crate) output: Option<crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>>,
-}
-
-impl<T: ReconSample> From<tile::ScheduledTileProgress<T>> for ScheduledFrameProgress<T> {
-    fn from(progress: tile::ScheduledTileProgress<T>) -> Self {
-        Self {
-            filters: progress.filters,
-            output: progress.output.map(|output| output.filter),
-        }
-    }
-}
-
-impl<T: ReconSample> ScheduledInterReconstruction<T> {
-    /// Hands the scheduled tile's frontier its filter state.
-    pub(crate) fn attach_filters(
-        &self,
-        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
-        deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,
-        deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
-    ) -> Result<()> {
-        self.tile
-            .attach_filters(filter_setup, deblock_records, deblock_quant_deltas)
-    }
-
-    /// Number of independently admitted reconstruction units.
-    pub(crate) const fn len(&self) -> usize {
-        self.tile.len()
-    }
-
-    /// Number of independently scheduled final-filter stripes.
-    pub(crate) const fn filter_count(&self) -> usize {
-        self.tile.filter_count()
-    }
-
-    pub(crate) fn resolve_len(&self) -> usize {
-        self.tile.resolve_len()
-    }
-
-    pub(crate) fn resolve_conditions(&self, index: usize) -> Vec<splot_parallel::Condition<'_>> {
-        self.tile.resolve_conditions(index)
-    }
-
-    pub(crate) fn parse_watermark(&self) -> &splot_parallel::WatermarkCell {
-        self.tile.parse_watermark()
-    }
-
-    pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
-        self.tile.resolve(index)
-    }
-
-    pub(crate) fn fail_temporal(&self) {
-        self.tile.fail_temporal();
-    }
-
-    /// Cross-frame conditions for one reconstruction unit.
-    pub(crate) fn conditions(&self, index: usize) -> Vec<splot_parallel::Condition<'_>> {
-        self.tile.conditions(index)
-    }
-
-    /// Precomputes one admitted reconstruction unit.
-    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
-        self.tile.precompute(index)
-    }
-
-    /// Commits one precomputed unit and returns the frontier links its
-    /// canonical rows released.
-    pub(crate) fn commit(&self, index: usize) -> Result<tile::ScheduledCommitProgress> {
-        self.tile.commit(index)
-    }
-
-    pub(crate) fn take_scheduled_scratch(&self) -> Result<InterDecodeScratch<T>> {
-        self.tile
-            .take_scheduled_scratch()
-            .map(InterDecodeScratch::from_scheduled_tile_scratch)
-    }
-
-    /// Number of ordered links in this frame's § 7.17 frontier chain.
-    pub(crate) const fn frontier_len(&self) -> usize {
-        self.tile.frontier_len()
-    }
-
-    /// Advances the § 7.17 frontier over one sealed superblock row and returns
-    /// the completed frame products after the final link.
-    pub(crate) fn frontier(&self, row: usize) -> Result<ScheduledFrameProgress<T>> {
-        Ok(self.tile.frontier(row)?.into())
-    }
 }
 
 /// Runs one inter frame's entropy pass to the end.
@@ -197,10 +101,10 @@ impl InterFrameParse {
     ///
     /// Reconstruction is already admitted by the time this runs; only the
     /// § 7.17 frontier chain waits on it.
-    pub(crate) fn attach_filters<T: ReconSample>(
+    pub(in crate::prediction::inter) fn attach_filters<T: ReconSample>(
         self,
         pending: PendingFilterAttach<T>,
-        tile: &ScheduledInterReconstruction<T>,
+        tile: &tile::ScheduledTileRecon<T>,
         parse_progress: &Arc<super::tile::ParseProgress>,
     ) -> Result<()> {
         let Self {
@@ -261,7 +165,7 @@ pub(crate) struct PendingFilterAttach<T: ReconSample> {
 /// Runs the temporal prelude and builds the admission scheduler from the half
 /// of the walk that is settled before the entropy pass reads a unit.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_scheduled_recon<T: ReconSample>(
+pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
     scratch: InterDecodeScratch<T>,
     filter_sink_setup: crate::pipeline::frame_engine::finish::FilterSinkSetup,
     progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
@@ -276,7 +180,7 @@ pub(crate) fn prepare_scheduled_recon<T: ReconSample>(
     prelude: TemporalPrelude,
     motion_field: TemporalMotionField,
 ) -> Result<(
-    ScheduledInterReconstruction<T>,
+    tile::ScheduledTileRecon<T>,
     super::super::find_mv_stack::TemporalMvScratch,
     PendingFilterAttach<T>,
 )> {
@@ -310,7 +214,7 @@ pub(crate) fn prepare_scheduled_recon<T: ReconSample>(
         Arc::clone(parse_progress),
     )?;
     Ok((
-        ScheduledInterReconstruction { tile },
+        tile,
         temporal_scratch,
         PendingFilterAttach {
             info,

@@ -807,14 +807,7 @@ fn hash_report_numbers_frames_in_emission_order() {
     }
 }
 
-/// Pins every pipelining depth to the depth-one decode of the same stream.
-///
-/// Pools of four workers and up are compared against their own serial depth
-/// rather than the single-threaded run: this fixture already decodes its last
-/// sixteen emitted frames differently once the pool is wide enough to arm the
-/// parallel inter row prepass (`current_pool_width() >= 4`), on `main` and with
-/// no pipelining involved, which is a separate defect. Comparing at a fixed
-/// width isolates the frame-delay dimension this test is about.
+/// Pins every pipelining depth and worker width to the one-worker decode.
 #[test]
 fn pipelined_hash_decode_matches_the_serial_digests_at_every_depth() {
     let digests = |threads: usize, frame_delay: FrameDelay| {
@@ -834,20 +827,16 @@ fn pipelined_hash_decode_matches_the_serial_digests_at_every_depth() {
     let single_threaded = digests(1, serial);
     assert_eq!(single_threaded.len(), 121);
 
-    for threads in [2usize, 3, 4, 8] {
-        let reference = if threads < 4 {
-            single_threaded.clone()
-        } else {
-            digests(threads, serial)
-        };
+    for threads in [2usize, 3, 4, 8, 10] {
         for frame_delay in [
+            serial,
             FrameDelay::from(2usize),
             FrameDelay::from(4usize),
             FrameDelay::Auto,
         ] {
             assert_eq!(
                 digests(threads, frame_delay),
-                reference,
+                single_threaded,
                 "threads {threads}, frame delay {frame_delay}",
             );
         }

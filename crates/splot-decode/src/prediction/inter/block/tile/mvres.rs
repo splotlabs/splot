@@ -26,7 +26,7 @@ use super::*;
 /// — no grid, no record, unlanded — so the reconstruction pass derives its own.
 pub(super) fn derive_unit_motion<T: ReconSample>(
     row: &mut ReconRow,
-    surface: Option<&mut ReadyReconSurface<'_, T>>,
+    surface: Option<&mut splot_recon::OwnedFrameRect<T>>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     motion: &MotionFieldUnits,
     shared: &deferred_recon::ReconShared<'_, T>,
@@ -37,7 +37,7 @@ pub(super) fn derive_unit_motion<T: ReconSample>(
         return;
     }
     if let Some(surface) = surface {
-        let sink = surface.sink();
+        let sink = mc::WorkspaceSink::OwnedRect(surface);
         if !derive_row_motion(row, scratch, &sink, shared) {
             return;
         }
