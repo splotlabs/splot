@@ -342,7 +342,7 @@ where
     let (scratch_source, scratch_done) = lane.reserve_recon();
     let mut conditions = dependencies.to_vec();
     if let Some(gate) = scratch_source.as_deref() {
-        conditions.push(Condition::Completion(gate));
+        conditions.push(Condition::completion(gate));
     }
     let scratch_for_job = scratch_source.clone();
     let order_key = u64::try_from(frame_index)
@@ -476,8 +476,8 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             admit.submit(
                 self.batch_key(0, 2),
                 &[
-                    Condition::Completion(&self.prepared[0]),
-                    Condition::Completion(self.filters_ready.as_ref()),
+                    Condition::completion(&self.prepared[0]),
+                    Condition::completion(self.filters_ready.as_ref()),
                 ],
                 Box::new(move |admit| commit.commit(0, admit)),
             );
@@ -494,7 +494,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         } else {
             admit.submit(
                 self.batch_key(index, 2),
-                &[Condition::Completion(&self.prepared[index])],
+                &[Condition::completion(&self.prepared[index])],
                 job,
             );
         }
@@ -522,7 +522,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         let conditions = row
             .checked_sub(1)
             .and_then(|previous| self.frontier_done.get(previous))
-            .map(|previous| vec![Condition::Completion(previous)])
+            .map(|previous| vec![Condition::completion(previous)])
             .unwrap_or_default();
         let frame = Arc::clone(self);
         admit.submit(
@@ -574,7 +574,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             let index_key = u64::try_from(index).unwrap_or(u64::MAX / 2);
             admit.submit(
                 self.order_base.saturating_add(index_key),
-                &[Condition::Watermark(self.walk.parse_watermark(), units)],
+                &[Condition::watermark(self.walk.parse_watermark(), units)],
                 Box::new(move |admit| resume.resolve(index, admit)),
             );
             return;
@@ -673,9 +673,9 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             let mut conditions = self
                 .filter_gate
                 .as_deref()
-                .map(|gate| vec![Condition::Completion(gate)])
+                .map(|gate| vec![Condition::completion(gate)])
                 .unwrap_or_default();
-            conditions.extend(self.filtered.iter().map(|done| Condition::Completion(done)));
+            conditions.extend(self.filtered.iter().map(Condition::completion));
             let filter_done = Arc::clone(&self.filter_done);
             let frame = Arc::clone(self);
             admit.submit(
@@ -752,10 +752,10 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
         .map(inter::MotionFieldHandle::metadata_condition)
         .collect::<Vec<_>>();
     if let Some(gate) = scratch_source.as_deref() {
-        conditions.push(Condition::Completion(gate));
+        conditions.push(Condition::completion(gate));
     }
     if let Some(gate) = temporal_gate.as_deref() {
-        conditions.push(Condition::Completion(gate));
+        conditions.push(Condition::completion(gate));
     }
     let temporal_source = temporal_gate.clone();
     let scheduled_scratch_source = scratch_source.clone();
@@ -845,7 +845,7 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 let attach_ready = Arc::clone(&filters_ready);
                 admit.submit(
                     order_base.saturating_add(1 << 19),
-                    &[Condition::Completion(tail.as_ref())],
+                    &[Condition::completion(tail.as_ref())],
                     Box::new(move |admit| {
                         let parsed = attach_tail.get().and_then(|slot| {
                             slot.lock().unwrap_or_else(PoisonError::into_inner).take()
@@ -902,7 +902,7 @@ where
     let (gate, done) = lane.reserve_filter();
     let conditions = gate
         .as_deref()
-        .map(|gate| vec![Condition::Completion(gate)])
+        .map(|gate| vec![Condition::completion(gate)])
         .unwrap_or_default();
     let order_base = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)

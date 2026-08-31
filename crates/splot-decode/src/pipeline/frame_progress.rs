@@ -560,7 +560,7 @@ impl<T: ReconSample> FrameProgress<T> {
     /// Returns the scheduler condition that admits a reader once `rows` final
     /// luma rows have been published.
     pub(crate) fn row_condition(&self, rows: usize) -> Condition<'_> {
-        Condition::Watermark(&self.published_luma_rows, rows)
+        Condition::watermark(&self.published_luma_rows, rows)
     }
 
     /// Borrows the published prefix of the frame's filtered samples.

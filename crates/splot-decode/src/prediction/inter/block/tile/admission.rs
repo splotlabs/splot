@@ -581,9 +581,9 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             let completed = &committed[index];
             let commit = &commit;
             let commit_error = &error;
-            let mut conditions = vec![Condition::Completion(&precomputed[index])];
+            let mut conditions = vec![Condition::completion(&precomputed[index])];
             if let Some(previous) = index.checked_sub(1) {
-                conditions.push(Condition::Completion(&committed[previous]));
+                conditions.push(Condition::completion(&committed[previous]));
             }
             scheduler.submit(
                 scope,
@@ -907,7 +907,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     pub(in crate::prediction::inter) fn conditions(&self, index: usize) -> Vec<Condition<'_>> {
         let mut conditions = match self.recon.batch_range(index) {
-            Some(range) => vec![Condition::Watermark(self.parse_progress.cell(), range.end)],
+            Some(range) => vec![Condition::watermark(self.parse_progress.cell(), range.end)],
             None => Vec::new(),
         };
         if let Some(range) = self.recon.batch_range(index) {

@@ -31,7 +31,7 @@ mod progress;
 pub mod thread_count;
 pub mod watermark;
 
-pub use admission::{AdmissionScheduler, AdmissionWaiter, Admit, CompletionSource, Condition, Job};
+pub use admission::{AdmissionScheduler, Admit, Condition, Job};
 pub use completion::CompletionCell;
 pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;

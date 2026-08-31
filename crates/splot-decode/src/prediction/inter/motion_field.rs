@@ -153,17 +153,14 @@ impl MotionFieldHandle {
     }
 
     pub(crate) fn metadata_condition(&self) -> Condition<'_> {
-        Condition::Completion(&self.0.metadata)
+        Condition::completion(&self.0.metadata)
     }
 
     pub(crate) fn field_condition(&self) -> Condition<'_> {
-        Condition::Completion(&self.0.field)
+        Condition::completion(&self.0.field)
     }
 
     pub(crate) fn band_condition(&self, index: usize) -> Option<Condition<'_>> {
-        self.0
-            .bands
-            .get(index)
-            .map(|band| Condition::Completion(band))
+        self.0.bands.get(index).map(Condition::completion)
     }
 }

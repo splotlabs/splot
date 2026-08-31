@@ -118,7 +118,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     /// Returns the scheduler condition for this slot settling.
     pub(crate) fn settled_condition(&self) -> Condition<'_> {
-        Condition::Completion(self.cell.as_ref())
+        Condition::completion(self.cell.as_ref())
     }
 
     /// Returns the scheduler condition for a readable luma-row prefix, or for

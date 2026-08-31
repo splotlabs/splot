@@ -92,11 +92,6 @@ impl WorkerPool {
         self.requested
     }
 
-    #[cfg(test)]
-    pub(crate) fn parked_waiters(&self) -> usize {
-        self.progress.parked_waiters()
-    }
-
     /// Runs `f` inside this local pool, so any nested Rayon work uses these
     /// workers (never the global pool). Nested parallel iterators are fine;
     /// nested *pools* are not.

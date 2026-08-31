@@ -1425,7 +1425,7 @@ fn tile_unit_capacity(
 ///
 /// Units are emitted in order, so a consumer can gate on the prefix it needs
 /// instead of on the whole tile. The cell is the scheduler's own watermark, so
-/// a batch waits through `Condition::Watermark` rather than through a poll.
+/// a batch waits through `Condition::watermark` rather than through a poll.
 /// The tile geometry the § 8.2 parser settles before it reads its first
 /// unit, which is everything the admission scheduler needs to lay out
 /// batches and surfaces.
