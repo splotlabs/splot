@@ -5,8 +5,8 @@
 //!
 //! Decodes each committed fixture in-process through `splot_decode` and asserts
 //! `tests/conformance/decoder-oracle.toml`: output SHA-256 equals the recorded
-//! AVM oracle hash at every pool width in [`THREAD_LEGS`], so serial and parallel
-//! decode arms are both differentially gated. CI gate, no AVM, no network.
+//! AVM oracle hash at every pool width in [`THREAD_LEGS`], ensuring output is
+//! independent of worker count. CI gate, no AVM, no network.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -18,8 +18,7 @@ use sha2::{Digest, Sha256};
 use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 use splot_parallel::ThreadCount;
 
-/// Serial arm plus a pool wide enough to select every parallel decode arm
-/// (the widest gate today is `current_pool_width() >= 4`).
+/// Representative one-worker and multiworker pool widths.
 const THREAD_LEGS: [usize; 2] = [1, 8];
 
 const SB256_INTRA_FIXTURE: &[u8] =

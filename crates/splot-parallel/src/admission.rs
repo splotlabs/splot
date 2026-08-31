@@ -5,13 +5,13 @@
 //!
 //! Pool jobs must not wait for other pool jobs: work stealing can otherwise
 //! place a consumer above its producer and deadlock the pool. A submitted job
-//! is stored until all of its [`Condition`]s hold. Final publication queues the
-//! job as ready; a scheduler drain spawns it. Jobs running inside a drain keep
-//! draining automatically, while an external publisher must call
-//! [`AdmissionScheduler::admit_ready`] after publishing. The outstanding count
-//! starts at `conditions + 1`; the final unit is cleared after registration, so
-//! publication cannot admit a partially registered job. Reused slots carry
-//! generations to reject stale notices.
+//! is stored until all of its [`Condition`]s hold. A publication satisfying the
+//! last unmet condition queues the job as ready; a scheduler drain spawns it.
+//! Each scheduler job drains newly ready work after its body returns, while an
+//! external publisher must call [`AdmissionScheduler::admit_ready`] after
+//! publishing. The outstanding count starts at `conditions + 1`; the final unit
+//! is cleared after registration, so publication cannot admit a partially
+//! registered job. Reused slots carry generations to reject stale notices.
 //!
 //! # Example
 //!
@@ -300,9 +300,9 @@ impl<'job> AdmissionScheduler<'job> {
     ///
     /// If every condition holds by the end of registration, the job is admitted
     /// immediately; this includes a racing publication absorbed during
-    /// registration. Publication after registration only queues the job, so an
-    /// external publisher must call [`Self::admit_ready`] with the same live
-    /// task scope.
+    /// registration. A publication satisfying the last unmet condition after
+    /// registration only queues the job, so an external publisher must call
+    /// [`Self::admit_ready`] with the same live task scope.
     pub fn submit<'scope>(
         &'scope self,
         scope: &TaskScope<'_, 'scope>,

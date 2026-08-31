@@ -10,9 +10,8 @@
 //! through a [`CompletionCell`], so the handle can be stored in a reference
 //! store and size-accounted independently of when the pixels land.
 //!
-//! When the driver runs pipelined, each frame's § 7.2 filter phase is handed to
-//! a worker task through a [`FinishSpawner`] and the frame's handle starts
-//! [pending](RefFrameSlot::pending); the task publishes the samples through a
+//! Each frame's § 7.2 filter phase is handed to the admission scheduler and its
+//! handle starts [pending](RefFrameSlot::pending); the task publishes samples through a
 //! single-use [`FrameSlotWriter`]. The driver tracks the frames whose filter
 //! phase it has not collected in an [`InflightRing`] bounded by the resolved
 //! frame-delay depth, and is the only thread that ever blocks on a slot: it
@@ -327,14 +326,6 @@ impl PipelineFrameSlot {
     }
 }
 
-/// Where one frame's § 7.2 filter phase runs.
-pub(crate) enum FinishSpawner<'a, 'scope> {
-    /// On the driver thread, before the driver walks the next frame.
-    Inline,
-    /// On a worker task in the driver's scope, while the driver walks ahead.
-    Deferred(&'a TaskScope<'a, 'scope>),
-}
-
 /// What a deferred filter phase reports back to the driver.
 #[derive(Default)]
 struct FinishOutcome {
@@ -364,18 +355,16 @@ struct InflightEntry {
 
 /// The bounded set of frames whose filter phase runs on the pool.
 ///
-/// A resolved frame-delay depth of `D` overlaps `D` frames: the frame the driver
-/// walks plus the `D - 1` filter phases it has not collected. The ring therefore
-/// keeps up to `D - 1` entries across an admission, and reaches `D` only between
-/// a frame's own push and the next admission, which harvests back down. A depth
-/// of one keeps nothing in flight, which is the serial path.
+/// An effective capacity of `D` overlaps `D` frames: the frame the driver walks
+/// plus the `D - 1` filter phases it has not collected. The ring therefore keeps
+/// up to `D - 1` entries across an admission, and reaches `D` only between a
+/// frame's own push and the next admission, which harvests back down. The
+/// pipeline derives `D` as the smaller of the resolved requested frame delay and
+/// the pool width. Capacity one still uses the same scheduler and task graph.
 ///
-/// `D` may exceed the pool width, and the pipeline cannot strand when it does:
-/// filter tasks never block on a slot, and every driver wait runs pool jobs
-/// ([`CompletionCell::wait_with_pool_assist`]) instead of parking, so the driver
-/// itself executes a task the pool has no free worker for. Depth beyond the
-/// worker count buys admission lead at the cost of retained frame storage, which
-/// the decoder's reference-store limit bounds.
+/// Filter tasks never block on a slot, and every driver wait runs pool jobs
+/// ([`CompletionCell::wait_with_pool_assist`]) instead of parking, so a
+/// one-worker driver can execute the task it is waiting for.
 pub(crate) struct InflightRing {
     capacity: usize,
     entries: VecDeque<InflightEntry>,
@@ -472,12 +461,10 @@ impl InflightRing {
 /// Settles one frame's walk into a decoded-frame handle.
 ///
 /// A frame that left the walk final settles immediately. Otherwise the filter
-/// phase runs inline on the driver, or is handed to a worker task and the
-/// frame's handle is returned pending and recorded on the in-flight ring.
+/// phase is handed to the admission scheduler and the frame's handle is
+/// returned pending and recorded on the in-flight ring.
 ///
 /// # Errors
-///
-/// Returns the filter chain's own diagnostic when an inline filter phase fails.
 ///
 /// A deferred phase hands its single-use writer to the freeze, so the slot
 /// settles before the frame's published row prefix closes; a freeze the phase
@@ -485,14 +472,11 @@ impl InflightRing {
 pub(super) fn settle_walk_stage<'job, 'scope, T: ReconSample + Send + 'static>(
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
-    spawner: &FinishSpawner<'_, 'scope>,
-    admission: Option<(
-        &'scope splot_parallel::AdmissionScheduler<'job>,
-        &mut super::frame_pipeline::ReconAdmissionLane,
-    )>,
+    scope: &TaskScope<'_, 'scope>,
+    scheduler: &'scope splot_parallel::AdmissionScheduler<'job>,
+    lane: &mut super::frame_pipeline::ReconAdmissionLane,
     ring: &mut InflightRing,
     frame_index: usize,
-    scratch: &mut InterDecodeScratch<T>,
 ) -> Result<PipelineFrameSlot>
 where
     'job: 'scope,
@@ -503,24 +487,8 @@ where
         }
         WalkStage::Pending(walked) => walked,
     };
-    let FinishSpawner::Deferred(scope) = spawner else {
-        let finished = finish_walked_frame(*walked, None, None, core::convert::identity)?;
-        scratch.recycle_frame_filter_records(finished.filter_records);
-        return Ok(erase(RefFrameSlot::completed(finished.frame)));
-    };
     let (slot, pending) = reserve_pending_slot(walked.info(), erase, ring, frame_index)?;
-    if let Some((scheduler, lane)) = admission {
-        super::frame_pipeline::schedule_finish(
-            pending,
-            *walked,
-            frame_index,
-            spawner,
-            scheduler,
-            lane,
-        )?;
-    } else {
-        pending.spawn_finish(*walked, scope);
-    }
+    super::frame_pipeline::schedule_finish(pending, *walked, frame_index, scope, scheduler, lane);
     Ok(slot)
 }
 
@@ -603,8 +571,8 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         match finish_walked_frame(walked, Some(progress), admit, |frame| {
             writer.complete(frame);
         }) {
-            Ok(finished) => {
-                report.outcome.records = Some(finished.filter_records);
+            Ok(filter_records) => {
+                report.outcome.records = Some(filter_records);
             }
             Err(error) => {
                 report.outcome.error = Some(error);
@@ -636,16 +604,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     /// diagnostic for the in-flight ring.
     pub(crate) fn fail(mut self, error: DecodeError) {
         self.report.outcome.error = Some(error);
-    }
-
-    /// Hands one walked frame's § 7.2 filter phase to a worker task.
-    ///
-    /// The task carries the single-use writer into the freeze, so the slot
-    /// settles before the frame's published row prefix closes; a freeze the
-    /// phase never reaches drops the writer instead, settling the slot as
-    /// failed.
-    pub(crate) fn spawn_finish(self, walked: WalkedFrame<T>, scope: &TaskScope<'_, '_>) {
-        scope.spawn(move |_| self.run_finish(walked, None));
     }
 }
 

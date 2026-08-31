@@ -6,9 +6,9 @@
 //! The driver walks frames strictly in decode order and runs every sequential
 //! state machine (output effects, film-grain slots, reference buffer, output
 //! scheduler) at the same program point relative to each frame's walk. Only the
-//! § 7.2 filter phase moves: at a resolved frame-delay depth above one it is
-//! handed to the worker pool through [`inflight::FinishSpawner`], and the driver
-//! is the only thread that blocks on a frame's samples.
+//! § 7.2 filter phase moves: it is handed to the worker pool through the frame
+//! admission scheduler, and the driver is the only thread that blocks on a
+//! frame's samples. The resolved frame delay bounds capacity, not the algorithm.
 
 use core::num::NonZeroUsize;
 use std::sync::Arc;
@@ -390,35 +390,54 @@ pub(crate) fn decode_key_frame(
     display_grain: Option<ActiveFilmGrain>,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
-    let mut scratch_eight = inter::InterDecodeScratch::default();
-    let mut scratch_ten = inter::InterDecodeScratch::default();
-    let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN);
-    decode_key_frame_with_effects(
-        &mut scratch_eight,
-        &mut scratch_ten,
-        &inflight::FinishSpawner::Inline,
-        &mut ring,
-        0,
-        bytes,
-        options,
-        plan,
-        candidate,
-        frame_envelope,
-        core,
-        sequence,
-        frame_rate,
-        display_grain,
-        None,
-        FrameOutputEffects::empty(),
-        None,
-    )
+    let admission = splot_parallel::AdmissionScheduler::new();
+    let decoded = splot_parallel::ready_task_scope(|scope| {
+        let mut scratch_eight = inter::InterDecodeScratch::default();
+        let mut scratch_ten = inter::InterDecodeScratch::default();
+        let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN);
+        let mut lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity());
+        let decoded = decode_key_frame_with_effects(
+            &mut scratch_eight,
+            &mut scratch_ten,
+            scope,
+            &admission,
+            &mut lane,
+            &mut ring,
+            0,
+            bytes,
+            options,
+            plan,
+            candidate,
+            frame_envelope,
+            core,
+            sequence,
+            frame_rate,
+            display_grain,
+            None,
+            FrameOutputEffects::empty(),
+        );
+        ring.harvest_all(&mut scratch_eight, &mut scratch_ten);
+        match ring.take_failure() {
+            Some(failure) => Err(failure),
+            None => decoded,
+        }
+    })?;
+    match decoded {
+        Err(error) => Err(error),
+        Ok(frame) => {
+            admission.finish()?;
+            Ok(frame)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn decode_key_frame_with_effects<'job, 'scope>(
     scratch_eight: &mut inter::InterDecodeScratch<u8>,
     scratch_ten: &mut inter::InterDecodeScratch<u16>,
-    spawner: &inflight::FinishSpawner<'_, 'scope>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
+    scheduler: &'scope splot_parallel::AdmissionScheduler<'job>,
+    lane: &mut frame_pipeline::ReconAdmissionLane,
     ring: &mut inflight::InflightRing,
     frame_index: usize,
     bytes: &[u8],
@@ -432,10 +451,6 @@ fn decode_key_frame_with_effects<'job, 'scope>(
     display_grain: Option<ActiveFilmGrain>,
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
-    admission: Option<(
-        &'scope splot_parallel::AdmissionScheduler<'job>,
-        &mut frame_pipeline::ReconAdmissionLane,
-    )>,
 ) -> Result<PipelineFrame>
 where
     'job: 'scope,
@@ -461,11 +476,11 @@ where
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     inflight::PipelineFrameSlot::Eight,
-                    spawner,
-                    admission,
+                    scope,
+                    scheduler,
+                    lane,
                     ring,
                     frame_index,
-                    scratch_eight,
                 )?;
                 (
                     frame,
@@ -493,11 +508,11 @@ where
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     inflight::PipelineFrameSlot::Ten,
-                    spawner,
-                    admission,
+                    scope,
+                    scheduler,
+                    lane,
                     ring,
                     frame_index,
-                    scratch_ten,
                 )?;
                 (
                     frame,
@@ -524,8 +539,8 @@ where
     })
 }
 
-/// Runs the frame loop, pipelined when the resolved frame-delay depth is above
-/// one and the caller is inside a multi-worker pool, and serially otherwise.
+/// Runs the frame loop through the admission scheduler. The resolved frame
+/// delay bounds in-flight storage at every worker count.
 #[allow(clippy::too_many_arguments)]
 fn decode_frames_from_plan_impl<'job>(
     parsed: &'job FlatParsedBitstream<'job>,
@@ -537,20 +552,8 @@ fn decode_frames_from_plan_impl<'job>(
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
 ) -> Result<Vec<PipelineFrame>> {
-    if frame_delay.get() == 1 || !splot_parallel::on_multiworker_pool() {
-        return drive_frames(
-            parsed,
-            bytes,
-            options,
-            plan,
-            NonZeroUsize::MIN,
-            preflight,
-            retain_decoded_frames,
-            emit,
-            &inflight::FinishSpawner::Inline,
-            None,
-        );
-    }
+    let pipeline_capacity = frame_delay
+        .min(NonZeroUsize::new(splot_parallel::current_pool_width()).unwrap_or(NonZeroUsize::MIN));
     let admission: splot_parallel::AdmissionScheduler<'job> =
         splot_parallel::AdmissionScheduler::new();
     let decoded = splot_parallel::ready_task_scope(|scope| {
@@ -559,12 +562,12 @@ fn decode_frames_from_plan_impl<'job>(
             bytes,
             options,
             plan,
-            frame_delay,
+            pipeline_capacity,
             preflight,
             retain_decoded_frames,
             emit,
-            &inflight::FinishSpawner::Deferred(scope),
-            Some(&admission),
+            scope,
+            &admission,
         )
     })?;
     match decoded {
@@ -592,8 +595,8 @@ fn drive_frames<'job, 'scope>(
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
-    spawner: &inflight::FinishSpawner<'_, 'scope>,
-    admission: Option<&'scope splot_parallel::AdmissionScheduler<'job>>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
+    admission: &'scope splot_parallel::AdmissionScheduler<'job>,
 ) -> Result<Vec<PipelineFrame>>
 where
     'job: 'scope,
@@ -609,7 +612,7 @@ where
         preflight,
         retain_decoded_frames,
         emit,
-        spawner,
+        scope,
         admission,
         &mut ring,
         &mut decode_scratch_eight,
@@ -624,17 +627,8 @@ where
 
 /// Whether one frame's walk runs split, with its reconstruction deferred past
 /// the next frame's entropy pass.
-///
-/// Only the pipelined driver defers: a serial driver has no scope to hand the
-/// filter phase to and no next frame to overlap with, so it keeps the fused
-/// walk.
-fn split_walk(
-    spawner: &inflight::FinishSpawner<'_, '_>,
-    obu_type: ObuType,
-    core: &FrameHeaderCore,
-) -> bool {
-    matches!(spawner, inflight::FinishSpawner::Deferred(_))
-        && inter::splittable_inter_frame(obu_type, core)
+fn split_walk(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
+    inter::splittable_inter_frame(obu_type, core)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -646,8 +640,8 @@ fn decode_frames_in_order<'job, 'scope>(
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
-    spawner: &inflight::FinishSpawner<'_, 'scope>,
-    admission: Option<&'scope splot_parallel::AdmissionScheduler<'job>>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
+    admission: &'scope splot_parallel::AdmissionScheduler<'job>,
     ring: &mut inflight::InflightRing,
     decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
     decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
@@ -839,11 +833,11 @@ where
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     inflight::PipelineFrameSlot::Eight,
-                    spawner,
-                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
+                    scope,
+                    admission,
+                    &mut recon_lane,
                     ring,
                     0,
-                    decode_scratch_eight,
                 )?;
                 let rate = key_output_effects.frame_rate(frame_rate);
                 PipelineFrame {
@@ -884,11 +878,11 @@ where
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     inflight::PipelineFrameSlot::Ten,
-                    spawner,
-                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
+                    scope,
+                    admission,
+                    &mut recon_lane,
                     ring,
                     0,
-                    decode_scratch_ten,
                 )?;
                 let rate = key_output_effects.frame_rate(frame_rate);
                 PipelineFrame {
@@ -909,7 +903,9 @@ where
         decode_key_frame_with_effects(
             decode_scratch_eight,
             decode_scratch_ten,
-            spawner,
+            scope,
+            admission,
+            &mut recon_lane,
             ring,
             0,
             bytes,
@@ -923,7 +919,6 @@ where
             key_display_grain,
             key_user_qm,
             key_output_effects,
-            admission.map(|scheduler| (scheduler, &mut recon_lane)),
         )?
     };
     retained_frame_bytes =
@@ -1005,10 +1000,10 @@ where
             ObuType::LeadingSef | ObuType::RegularSef => {
                 frame_pipeline::drain_entropy_before_barrier(
                     &mut pending_entropy,
-                    spawner,
+                    scope,
                     admission,
                     &mut recon_lane,
-                )?;
+                );
                 let (sef_prefix_obus, sef_envelope) = match stream {
                     RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
                         obus,
@@ -1311,21 +1306,14 @@ where
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        if split_walk(spawner, next_candidate.obu_type(), &inter_core) {
-                            let admission = admission.ok_or_else(|| {
-                                unsupported(
-                                    "scheduled_entropy_without_admission",
-                                    Some(inter_envelope.offset),
-                                    "scheduled entropy requires the frame admission scheduler",
-                                )
-                            })?;
+                        if split_walk(next_candidate.obu_type(), &inter_core) {
                             frame_pipeline::prepare_entropy_submission(
                                 &mut pending_entropy,
                                 ring.capacity(),
-                                spawner,
+                                scope,
                                 admission,
                                 &mut recon_lane,
-                            )?;
+                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let records = decode_scratch_eight.take_frame_filter_records();
                             let quantizer =
@@ -1388,30 +1376,21 @@ where
                                 products.5.clone(),
                                 &dependencies,
                                 admission,
-                                spawner,
-                            )?;
+                                scope,
+                            );
                             pending_entropy.push(frame_pipeline::PendingEntropy::Eight {
                                 frame_index,
                                 result,
                                 finish,
                             });
                             products
-                        } else if inter_envelope.header.obu_type.is_tip_frame()
-                            && matches!(spawner, inflight::FinishSpawner::Deferred(_))
-                        {
+                        } else if inter_envelope.header.obu_type.is_tip_frame() {
                             frame_pipeline::drain_entropy_before_barrier(
                                 &mut pending_entropy,
-                                spawner,
+                                scope,
                                 admission,
                                 &mut recon_lane,
-                            )?;
-                            let admission = admission.ok_or_else(|| {
-                                unsupported(
-                                    "scheduled_tip_without_admission",
-                                    Some(inter_envelope.offset),
-                                    "scheduled TIP output requires the frame admission scheduler",
-                                )
-                            })?;
+                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let (
                                 slot,
@@ -1461,17 +1440,17 @@ where
                                 motion.clone(),
                                 finish,
                                 admission,
-                                spawner,
+                                scope,
                                 &mut recon_lane,
-                            )?;
+                            );
                             (slot, core, frame_cdfs, ccso_grid, segment_ids, motion)
                         } else {
                             frame_pipeline::drain_entropy_before_barrier(
                                 &mut pending_entropy,
-                                spawner,
+                                scope,
                                 admission,
                                 &mut recon_lane,
-                            )?;
+                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let setup = if inter_core.status
                                 == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
@@ -1496,11 +1475,11 @@ where
                             let slot = inflight::settle_walk_stage(
                                 walk.stage,
                                 inflight::PipelineFrameSlot::Eight,
-                                spawner,
-                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
+                                scope,
+                                admission,
+                                &mut recon_lane,
                                 ring,
                                 frame_index,
-                                decode_scratch_eight,
                             )?;
                             (
                                 slot,
@@ -1553,21 +1532,14 @@ where
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        if split_walk(spawner, next_candidate.obu_type(), &inter_core) {
-                            let admission = admission.ok_or_else(|| {
-                                unsupported(
-                                    "scheduled_entropy_without_admission",
-                                    Some(inter_envelope.offset),
-                                    "scheduled entropy requires the frame admission scheduler",
-                                )
-                            })?;
+                        if split_walk(next_candidate.obu_type(), &inter_core) {
                             frame_pipeline::prepare_entropy_submission(
                                 &mut pending_entropy,
                                 ring.capacity(),
-                                spawner,
+                                scope,
                                 admission,
                                 &mut recon_lane,
-                            )?;
+                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let records = decode_scratch_ten.take_frame_filter_records();
                             let quantizer =
@@ -1630,30 +1602,21 @@ where
                                 products.5.clone(),
                                 &dependencies,
                                 admission,
-                                spawner,
-                            )?;
+                                scope,
+                            );
                             pending_entropy.push(frame_pipeline::PendingEntropy::Ten {
                                 frame_index,
                                 result,
                                 finish,
                             });
                             products
-                        } else if inter_envelope.header.obu_type.is_tip_frame()
-                            && matches!(spawner, inflight::FinishSpawner::Deferred(_))
-                        {
+                        } else if inter_envelope.header.obu_type.is_tip_frame() {
                             frame_pipeline::drain_entropy_before_barrier(
                                 &mut pending_entropy,
-                                spawner,
+                                scope,
                                 admission,
                                 &mut recon_lane,
-                            )?;
-                            let admission = admission.ok_or_else(|| {
-                                unsupported(
-                                    "scheduled_tip_without_admission",
-                                    Some(inter_envelope.offset),
-                                    "scheduled TIP output requires the frame admission scheduler",
-                                )
-                            })?;
+                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let (
                                 slot,
@@ -1703,17 +1666,17 @@ where
                                 motion.clone(),
                                 finish,
                                 admission,
-                                spawner,
+                                scope,
                                 &mut recon_lane,
-                            )?;
+                            );
                             (slot, core, frame_cdfs, ccso_grid, segment_ids, motion)
                         } else {
                             frame_pipeline::drain_entropy_before_barrier(
                                 &mut pending_entropy,
-                                spawner,
+                                scope,
                                 admission,
                                 &mut recon_lane,
-                            )?;
+                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let setup = if inter_core.status
                                 == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
@@ -1738,11 +1701,11 @@ where
                             let slot = inflight::settle_walk_stage(
                                 walk.stage,
                                 inflight::PipelineFrameSlot::Ten,
-                                spawner,
-                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
+                                scope,
+                                admission,
+                                &mut recon_lane,
                                 ring,
                                 frame_index,
-                                decode_scratch_ten,
                             )?;
                             (
                                 slot,
@@ -1847,10 +1810,10 @@ where
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey => {
                 frame_pipeline::drain_entropy_before_barrier(
                     &mut pending_entropy,
-                    spawner,
+                    scope,
                     admission,
                     &mut recon_lane,
-                )?;
+                );
                 let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
                 {
@@ -2029,7 +1992,9 @@ where
                 let key_frame = decode_key_frame_with_effects(
                     decode_scratch_eight,
                     decode_scratch_ten,
-                    spawner,
+                    scope,
+                    admission,
+                    &mut recon_lane,
                     ring,
                     frame_index,
                     bytes,
@@ -2043,7 +2008,6 @@ where
                     key_display_grain,
                     key_user_qm,
                     key_output_effects,
-                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
                 )?;
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -2127,10 +2091,10 @@ where
 
     frame_pipeline::drain_entropy_before_barrier(
         &mut pending_entropy,
-        spawner,
+        scope,
         admission,
         &mut recon_lane,
-    )?;
+    );
     if !output_frame_limit_reached(options, scheduler.emitted.len()) {
         let flushed = scheduler.flush_all();
         charge_emitted_outputs(

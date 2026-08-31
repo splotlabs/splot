@@ -15,8 +15,9 @@ pub struct DecodeRuntimeConfig {
     /// Worker-thread policy. Defaults to [`ThreadCount::Auto`].
     pub thread_count: ThreadCount,
     /// Frame-pipelining depth policy. Defaults to [`FrameDelay::Auto`], which
-    /// resolves to the pool's worker-thread count or to the multiworker floor,
-    /// whichever is deeper. A resolved depth of one decodes serially.
+    /// resolves to the pool's worker-thread count. Every resolved depth uses
+    /// the same admission scheduler; the pipeline caps effective capacity at
+    /// the worker count.
     pub frame_delay: FrameDelay,
 }
 

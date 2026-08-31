@@ -82,13 +82,14 @@ fn decode_intra_fixture_with_core_on_threads(
     let WalkStage::Pending(walked) = walk.stage else {
         panic!("an intra frame always owes its filter phase");
     };
-    let finished = context.pool().install(|| {
+    let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
+    context.pool().install(|| {
         finish_walked_frame(*walked, None, None, |frame| {
             assert_eq!(frame.handle_count(), 1);
-            frame
+            writer.complete(frame);
         })
     })?;
-    Ok((finished.frame, walk.frame_cdfs, walk.ccso_grid))
+    Ok((slot.ready()?, walk.frame_cdfs, walk.ccso_grid))
 }
 
 #[test]

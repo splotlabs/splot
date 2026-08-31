@@ -17,9 +17,10 @@
 //! [`AdmissionScheduler`] rather than blocking: a pool task must never wait,
 //! because work stealing can resume it only from below its own stack. Such a
 //! task is submitted with the [`WatermarkCell`] / [`CompletionCell`] conditions
-//! it needs. Final publication queues the task as ready. Scheduler jobs drain
-//! newly ready work automatically, while an external publisher must call
-//! [`AdmissionScheduler::admit_ready`] after publishing.
+//! it needs. A publication satisfying the last unmet condition queues the task
+//! as ready. Each scheduler job drains newly ready work after its body returns;
+//! an external publisher must call [`AdmissionScheduler::admit_ready`] after
+//! publishing.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
@@ -39,8 +40,7 @@ pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;
 pub use pool::{
     PoolProgressSnapshot, TaskScope, WorkerPool, assist_pool_once, assist_pool_or_park,
-    current_pool_width, on_multiworker_pool, on_worker_pool, pool_progress_snapshot,
-    ready_task_scope,
+    current_pool_width, on_worker_pool, pool_progress_snapshot, ready_task_scope,
 };
 pub use thread_count::ThreadCount;
 pub use watermark::WatermarkCell;

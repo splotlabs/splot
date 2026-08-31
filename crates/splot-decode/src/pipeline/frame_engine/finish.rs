@@ -7,9 +7,9 @@
 //! reconstruction, and leaves a [`WalkedFrame`]: an owned, `Send` capture of
 //! everything the shared § 7.2 in-loop filter chain and the frame freeze still
 //! need, so the finish phase depends on no borrow of the driver's scratch or
-//! reference state. [`finish_walked_frame`] consumes it and yields a
-//! [`FinishedFrame`]. TIP output and bridge frames have no filter phase and so
-//! leave the walk already final, as [`WalkStage::Complete`].
+//! reference state. [`finish_walked_frame`] consumes it and returns the filter
+//! records for recycling. TIP output and bridge frames have no filter phase, so
+//! they leave the walk already final, as [`WalkStage::Complete`].
 //!
 //! The frame header is shared as an [`Arc`] between the walk output the driver
 //! reads and the walked frame the filter phase consumes, so a deferred filter
@@ -228,14 +228,6 @@ impl<T: ReconSample> WalkedFrame<T> {
     }
 }
 
-/// One frame after its filter stages, with the filter records to recycle.
-pub(crate) struct FinishedFrame<R> {
-    /// The value returned after publishing the filtered, frozen frame.
-    pub(crate) frame: R,
-    /// The filter-record buffers to hand back to the decode scratch.
-    pub(crate) filter_records: FrameFilterRecords,
-}
-
 /// Runs the shared § 7.2 in-loop filter chain over a walked frame and freezes it.
 ///
 /// `publish` receives the frozen frame's sole handle while the freeze still
@@ -249,19 +241,19 @@ pub(crate) struct FinishedFrame<R> {
 ///
 /// Returns the filter chain's own diagnostic when a filter stage or the freeze
 /// fails.
-pub(crate) fn finish_walked_frame<T: ReconSample, R>(
+pub(crate) fn finish_walked_frame<T: ReconSample>(
     walked: WalkedFrame<T>,
     progress: Option<Arc<FrameProgress<T>>>,
     admit: Option<&dyn splot_parallel::Admit<'_>>,
-    publish: impl FnOnce(SharedFrame<T>) -> R,
-) -> Result<FinishedFrame<R>> {
+    publish: impl FnOnce(SharedFrame<T>),
+) -> Result<FrameFilterRecords> {
     let WalkedFrame {
         sink,
         core,
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
     } = walked;
-    let (frame, filter_records) = sink.into_filtered_frame(
+    let ((), filter_records) = sink.into_filtered_frame(
         core,
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
@@ -269,10 +261,7 @@ pub(crate) fn finish_walked_frame<T: ReconSample, R>(
         admit,
         |frame| publish(SharedFrame::new(frame)),
     )?;
-    Ok(FinishedFrame {
-        frame,
-        filter_records,
-    })
+    Ok(filter_records)
 }
 
 #[cfg(test)]

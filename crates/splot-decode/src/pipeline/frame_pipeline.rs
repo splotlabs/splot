@@ -24,9 +24,7 @@ use crate::Result;
 use crate::error::DecodeError;
 use crate::prediction::inter;
 
-use super::inflight::{
-    FinishSpawner, InflightRing, PendingFinish, PipelineFrameSlot, RefFrameSlot,
-};
+use super::inflight::{InflightRing, PendingFinish, PipelineFrameSlot, RefFrameSlot};
 use super::unsupported;
 
 type EntropyResult<T> = Arc<CompletionCell<Mutex<Option<Result<inter::DeferredInterWalk<T>>>>>>;
@@ -84,8 +82,8 @@ pub(super) fn schedule_entropy<'scope, 'job, T, P>(
     motion: inter::MotionFieldHandle,
     dependencies: &inter::EntropyDependencies,
     scheduler: &'scope AdmissionScheduler<'job>,
-    spawner: &FinishSpawner<'_, 'scope>,
-) -> Result<EntropyHandles<T>>
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
+) -> EntropyHandles<T>
 where
     T: splot_recon::ReconSample + Send + 'static,
     P: FnOnce(&dyn Fn(inter::InterWalkEarly<T>)) -> Result<inter::DeferredInterWalk<T>>
@@ -93,9 +91,6 @@ where
         + 'job,
     'job: 'scope,
 {
-    let FinishSpawner::Deferred(scope) = spawner else {
-        return Err(frame_task_scope());
-    };
     let result = Arc::new(CompletionCell::new());
     let result_for_job = Arc::clone(&result);
     let early: EntropyEarly<T> = Arc::new(CompletionCell::new());
@@ -130,10 +125,10 @@ where
             let _ = early_for_job.set(Mutex::new(None));
         }),
     );
-    Ok(EntropyHandles {
+    EntropyHandles {
         early,
         tail: result,
-    })
+    }
 }
 
 const ORDER_KEY_FRAME_STRIDE: u64 = 1 << 32;
@@ -230,19 +225,15 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
     motion: inter::MotionFieldHandle,
     finish: PendingFinish<T>,
     scheduler: &'scope AdmissionScheduler<'job>,
-    spawner: &FinishSpawner<'_, 'scope>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
     lane: &mut ReconAdmissionLane,
-) -> Result<()>
-where
+) where
     T: ScheduledScratchSample + Send + 'static,
     P: FnOnce(&mut inter::InterDecodeScratch<T>) -> Result<inter::InterDecodeOutput<T>>
         + Send
         + 'job,
     'job: 'scope,
 {
-    let FinishSpawner::Deferred(scope) = spawner else {
-        return Err(frame_task_scope());
-    };
     let (scratch_source, scratch_done) = lane.reserve_recon();
     let mut conditions = dependencies.to_vec();
     if let Some(gate) = scratch_source.as_deref() {
@@ -285,7 +276,6 @@ where
             let _ = scratch_done.set(Mutex::new(Some(T::wrap_scheduled_scratch(scratch))));
         }),
     );
-    Ok(())
 }
 
 /// The frame-context admission bound for scheduled reconstruction.
@@ -779,16 +769,12 @@ pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send +
     finish: PendingFinish<T>,
     walked: super::frame_engine::finish::WalkedFrame<T>,
     frame_index: usize,
-    spawner: &FinishSpawner<'_, 'scope>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
     scheduler: &'scope AdmissionScheduler<'job>,
     lane: &mut ReconAdmissionLane,
-) -> Result<()>
-where
+) where
     'job: 'scope,
 {
-    let FinishSpawner::Deferred(scope) = spawner else {
-        return Err(frame_task_scope());
-    };
     let (gate, done) = lane.reserve_filter();
     let conditions = gate
         .as_deref()
@@ -806,23 +792,18 @@ where
             let _ = done.set(());
         }),
     );
-    Ok(())
 }
 
 fn promote_front<'scope, 'job>(
     entropy: &mut PendingEntropyQueue,
-    spawner: &FinishSpawner<'_, 'scope>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
     scheduler: &'scope AdmissionScheduler<'job>,
     lane: &mut ReconAdmissionLane,
-) -> Result<()>
-where
+) where
     'job: 'scope,
 {
     let Some(pending) = entropy.entries.pop_front() else {
-        return Ok(());
-    };
-    let FinishSpawner::Deferred(scope) = spawner else {
-        return Err(frame_task_scope());
+        return;
     };
     match pending {
         PendingEntropy::Eight {
@@ -876,16 +857,14 @@ where
             }
         }
     }
-    Ok(())
 }
 
 fn drain_ready_entropy<'scope, 'job>(
     entropy: &mut PendingEntropyQueue,
-    spawner: &FinishSpawner<'_, 'scope>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
     scheduler: &'scope AdmissionScheduler<'job>,
     lane: &mut ReconAdmissionLane,
-) -> Result<()>
-where
+) where
     'job: 'scope,
 {
     loop {
@@ -894,10 +873,10 @@ where
             .front()
             .is_some_and(PendingEntropy::is_settled)
         {
-            promote_front(entropy, spawner, scheduler, lane)?;
+            promote_front(entropy, scope, scheduler, lane);
         }
         if entropy.entries.is_empty() || !splot_parallel::assist_pool_once() {
-            return Ok(());
+            return;
         }
     }
 }
@@ -906,39 +885,34 @@ where
 pub(super) fn prepare_entropy_submission<'scope, 'job>(
     entropy: &mut PendingEntropyQueue,
     limit: usize,
-    spawner: &FinishSpawner<'_, 'scope>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
     scheduler: &'scope AdmissionScheduler<'job>,
     lane: &mut ReconAdmissionLane,
-) -> Result<()>
-where
+) where
     'job: 'scope,
 {
     let limit = limit.max(1);
-    drain_ready_entropy(entropy, spawner, scheduler, lane)?;
+    drain_ready_entropy(entropy, scope, scheduler, lane);
     while entropy.entries.len() >= limit {
-        promote_front(entropy, spawner, scheduler, lane)?;
+        promote_front(entropy, scope, scheduler, lane);
     }
-    Ok(())
 }
 
 /// Promotes every pending entropy context before a non-inter frame or output barrier.
 pub(super) fn drain_entropy_before_barrier<'scope, 'job>(
     entropy: &mut PendingEntropyQueue,
-    spawner: &FinishSpawner<'_, 'scope>,
-    admission: Option<&'scope AdmissionScheduler<'job>>,
+    scope: &splot_parallel::TaskScope<'_, 'scope>,
+    scheduler: &'scope AdmissionScheduler<'job>,
     lane: &mut ReconAdmissionLane,
-) -> Result<()>
-where
+) where
     'job: 'scope,
 {
     if entropy.entries.is_empty() {
-        return Ok(());
+        return;
     }
-    let scheduler = admission.ok_or_else(frame_task_scope)?;
     while !entropy.entries.is_empty() {
-        promote_front(entropy, spawner, scheduler, lane)?;
+        promote_front(entropy, scope, scheduler, lane);
     }
-    Ok(())
 }
 
 /// Shares the driver's active sequence header with the frames it defers.

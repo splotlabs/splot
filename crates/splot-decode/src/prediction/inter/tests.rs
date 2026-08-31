@@ -370,10 +370,21 @@ fn decode_inter_frame_after_core_mutation_inner(
     let crate::pipeline::frame_engine::finish::WalkStage::Pending(walked) = walk.stage else {
         panic!("inter fixture unexpectedly completed without its filter phase");
     };
-    finish_walked_frame(*walked, None, None, core::convert::identity).map(|done| done.frame)
+    let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
+    finish_walked_frame(*walked, None, None, |frame| writer.complete(frame))?;
+    slot.ready()
 }
 
 pub(super) fn parse_inter_core_for_validation(
+    bytes: &[u8],
+) -> Result<(SequenceHeader, FrameHeaderCore, ByteOffset)> {
+    let context = decode_context();
+    context
+        .pool()
+        .install(|| parse_inter_core_for_validation_inner(bytes))
+}
+
+fn parse_inter_core_for_validation_inner(
     bytes: &[u8],
 ) -> Result<(SequenceHeader, FrameHeaderCore, ByteOffset)> {
     let options = DecodeOptions::default();

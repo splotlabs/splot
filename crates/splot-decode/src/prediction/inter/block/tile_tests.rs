@@ -6,7 +6,6 @@
 #![allow(clippy::expect_used)]
 
 use splot_parallel::ThreadCount;
-use std::time::Duration;
 
 use super::*;
 
@@ -81,20 +80,6 @@ fn decode_hashes(bytes: &[u8], threads: usize) -> Vec<String> {
         .collect()
 }
 
-fn decode_hashes_with_timeout(bytes: &'static [u8], threads: usize) -> Vec<String> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    let worker = std::thread::spawn(move || {
-        sender
-            .send(decode_hashes(bytes, threads))
-            .expect("test receiver remains connected");
-    });
-    let hashes = receiver
-        .recv_timeout(Duration::from_secs(10))
-        .expect("decode completes without scheduler deadlock");
-    worker.join().expect("decode worker completes");
-    hashes
-}
-
 #[test]
 fn orderhint_wrap_fixture_decodes_identically_across_thread_counts() {
     let single = decode_hashes(ORDERHINT_WRAP_FIXTURE, 1);
@@ -123,7 +108,7 @@ fn bounded_admission_fixture_decodes_identically_across_thread_counts() {
 
 #[test]
 fn two_tile_fixture_decodes_identically_across_threshold_thread_counts() {
-    let single = decode_hashes_with_timeout(TWO_TILE_INTER_FIXTURE, 1);
+    let single = decode_hashes(TWO_TILE_INTER_FIXTURE, 1);
     assert_eq!(single.len(), 2, "fixture decodes two output frames");
     for threads in [2, 3, 4, 8, 10] {
         assert_eq!(
@@ -135,32 +120,20 @@ fn two_tile_fixture_decodes_identically_across_threshold_thread_counts() {
 }
 
 #[test]
-fn corrupted_tile_payload_returns_without_deadlock_on_one_worker() {
-    let fixture = LARGE_INTER_FIXTURE.to_vec();
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    let worker = std::thread::spawn(move || {
-        let mut corrupted = fixture;
-        let last = corrupted.len() - 1;
-        corrupted[last] ^= u8::MAX;
-        let options = crate::DecodeOptions::default();
-        let context =
-            crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(1)))
-                .expect("context");
-        let plan = context
-            .plan_bytes(&corrupted, options)
-            .expect("length-preserving tile-payload corruption remains planner-valid");
-        let outcome = context.pool().install(|| {
-            crate::pipeline::decode_frames_from_plan(&corrupted, &options, &plan)
-                .map(|frames| frames.len())
-        });
-        sender
-            .send(outcome)
-            .expect("test receiver remains connected");
+fn corrupted_tile_payload_fails_during_decode_on_one_worker() {
+    let mut corrupted = LARGE_INTER_FIXTURE.to_vec();
+    let last = corrupted.len() - 1;
+    corrupted[last] ^= u8::MAX;
+    let options = crate::DecodeOptions::default();
+    let context = crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(1)))
+        .expect("context");
+    let plan = context
+        .plan_bytes(&corrupted, options)
+        .expect("length-preserving tile-payload corruption remains planner-valid");
+    let outcome = context.pool().install(|| {
+        crate::pipeline::decode_frames_from_plan(&corrupted, &options, &plan)
+            .map(|frames| frames.len())
     });
-    let outcome = receiver
-        .recv_timeout(Duration::from_secs(10))
-        .expect("corrupted tile decode returns without scheduler deadlock");
-    worker.join().expect("decode worker completes");
     assert!(
         outcome.is_err(),
         "planner-valid tile payload corruption must fail during decode"

@@ -274,9 +274,9 @@ pub(super) fn required_inter_quantizer_deltas(
 /// reconstruction later.
 ///
 /// The split serves exactly one tile — a multi-tile frame already parses its
-/// tiles in parallel — needs a pool wide enough for the superblock prepass, and
-/// rules out frame-level intra block copy, whose reconstruction the walk order
-/// feeds back into. Every other frame keeps the fused walk.
+/// tiles independently — and rules out frame-level intra block copy, whose
+/// reconstruction the walk order feeds back into. Every other frame keeps the
+/// fused walk.
 #[must_use]
 pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
     core.status == splot_core::headers::frame::FrameHeaderParseStatus::InterHeaderComplete
@@ -293,8 +293,6 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
             .tile_info
             .as_ref()
             .is_some_and(|tiles| tiles.tile_cols == 1 && tiles.tile_rows == 1)
-        && splot_parallel::current_pool_width() >= 2
-        && splot_parallel::on_multiworker_pool()
 }
 
 /// One inter frame whose entropy pass is done and whose reconstruction is
