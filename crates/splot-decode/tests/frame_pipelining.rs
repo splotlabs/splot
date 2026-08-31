@@ -14,8 +14,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use splot_decode::{
-    DecodeContext, DecodeError, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
-    DecodeRuntimeConfig,
+    DecodeContext, DecodeDiagnosticReport, DecodeError, DecodeLimitThreshold, DecodeLimits,
+    DecodeOptions, DecodeRuntimeConfig,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -69,14 +69,19 @@ fn collect_raw(
     Ok(raw)
 }
 
-fn collect_raw_at_one_worker_with_timeout(
+fn collect_raw_with_timeout(
+    threads: usize,
     frame_delay: FrameDelay,
     bytes: Vec<u8>,
 ) -> Result<Vec<u8>, DecodeError> {
     let result = Arc::new((Mutex::new(None), Condvar::new()));
     let worker_result = Arc::clone(&result);
     std::thread::spawn(move || {
-        let decoded = collect_raw(&context(1, frame_delay), &bytes, DecodeOptions::default());
+        let decoded = collect_raw(
+            &context(threads, frame_delay),
+            &bytes,
+            DecodeOptions::default(),
+        );
         let (slot, ready) = &*worker_result;
         *slot.lock().unwrap() = Some(decoded);
         ready.notify_one();
@@ -91,13 +96,13 @@ fn collect_raw_at_one_worker_with_timeout(
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(
             !remaining.is_zero(),
-            "one-worker decode did not settle within five seconds"
+            "{threads}-worker decode did not settle within five seconds"
         );
         let (next, timeout) = ready.wait_timeout(slot, remaining).unwrap();
         slot = next;
         assert!(
             !(timeout.timed_out() && slot.is_none()),
-            "one-worker decode did not settle within five seconds"
+            "{threads}-worker decode did not settle within five seconds"
         );
     }
 }
@@ -207,8 +212,7 @@ fn fixed_one_and_auto_complete_on_one_worker() {
     )
     .unwrap();
     for frame_delay in [FrameDelay::from(1usize), FrameDelay::Auto] {
-        let actual =
-            collect_raw_at_one_worker_with_timeout(frame_delay, MULTIREF.to_vec()).unwrap();
+        let actual = collect_raw_with_timeout(1, frame_delay, MULTIREF.to_vec()).unwrap();
         assert_eq!(actual, expected, "output diverged at {frame_delay}");
     }
 }
@@ -233,12 +237,18 @@ fn fixed_one_and_auto_match_across_worker_widths() {
 }
 
 #[test]
-fn a_corrupt_stream_fails_with_the_depth_one_diagnostic_at_every_capacity() {
+fn a_planner_valid_corrupt_stream_fails_identically_at_every_width_and_capacity() {
     let depth_one = depth_one();
     let mut checked = 0usize;
     for offset in (MULTIREF.len() - 24)..MULTIREF.len() {
         let mut bytes = MULTIREF.to_vec();
         bytes[offset] ^= 0xff;
+        if depth_one
+            .plan_bytes(&bytes, DecodeOptions::default())
+            .is_err()
+        {
+            continue;
+        }
         let Err(expected) = collect_raw(&depth_one, &bytes, DecodeOptions::default()) else {
             continue;
         };
@@ -258,13 +268,26 @@ fn a_corrupt_stream_fails_with_the_depth_one_diagnostic_at_every_capacity() {
             );
         }
         if checked == 1 {
-            for frame_delay in [FrameDelay::from(1usize), FrameDelay::Auto] {
-                let actual = collect_raw_at_one_worker_with_timeout(frame_delay, bytes.clone())
-                    .expect_err("a corrupt stream must fail at one worker");
+            let expected_report = DecodeDiagnosticReport::from_decode_error(&expected)
+                .expect("planner-valid corruption must produce a typed diagnostic");
+            for threads in [1usize, 2, 3, 4, 8, 10] {
+                let actual = collect_raw_with_timeout(threads, FrameDelay::Auto, bytes.clone())
+                    .expect_err("a planner-valid corrupt stream must fail during decode");
+                assert_eq!(
+                    core::mem::discriminant(&actual),
+                    core::mem::discriminant(&expected),
+                    "error variant diverged at {threads} workers"
+                );
+                let actual_report = DecodeDiagnosticReport::from_decode_error(&actual)
+                    .expect("planner-valid corruption must produce a typed diagnostic");
+                assert_eq!(
+                    &actual_report, &expected_report,
+                    "typed diagnostic diverged at {threads} workers"
+                );
                 assert_eq!(
                     format!("{actual:?}"),
                     format!("{expected:?}"),
-                    "one-worker diagnostic diverged at {frame_delay}"
+                    "decode error diverged at {threads} workers"
                 );
             }
         }

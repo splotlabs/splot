@@ -1044,16 +1044,15 @@ fn resize_output_samples<T: ReconSample>(samples: &mut Vec<T>, len: usize) -> Re
 ///
 /// A block whose units carry the § 7.13.3.1 optical-flow shape is predicted by
 /// the fixed-unit batch kernel, which spawns no pool work and writes one
-/// rectangle per plane, so every sink takes it. `allow_unit_parallelism` gates
-/// only the per-unit fan-out that remains: a task predicting into an
-/// out-of-order surface holds a reference borrow across its prediction, and
-/// spawned work that waits on that borrow would never run.
+/// rectangle per plane, so every sink takes it. The per-unit fan-out is only
+/// available for the frame sink: a task predicting into an out-of-order
+/// surface holds a reference borrow across its prediction, and spawned work
+/// that waits on that borrow would never run.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
     residual_scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    allow_unit_parallelism: bool,
     grid: Option<mc::CompoundMotionGrid>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
@@ -1080,7 +1079,7 @@ pub(super) fn predict<T: ReconSample>(
     let batched_output = plan.use_optflow && plan.unit_count > 1;
     build_units(scratch, &plan, placed, temporal, batched_output)?;
     let parallel_output = !plan.use_optflow
-        && allow_unit_parallelism
+        && matches!(sink, mc::WorkspaceSink::Frame(_))
         && plan.two_references
         && splot_parallel::on_worker_pool();
     let output_stride = mc::mc_planes(sink.info().pixel_format())
@@ -1151,60 +1150,6 @@ pub(super) fn predict<T: ReconSample>(
         )?;
     }
     Ok(())
-}
-
-/// Reconstructs one § 7.13.5 TIP block: its motion half, then its prediction.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn reconstruct<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
-    residual_scratch: &mut InterResidualReconScratch<T>,
-    temporal_records: &mut Vec<TemporalMotionBlock>,
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    allow_unit_parallelism: bool,
-    placed: &PlacedInterBlock,
-    residual_blocks: &[InterResidualBlock],
-    temporal: &TemporalMvContext,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
-    qindex: u32,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
-    bit_depth: BitDepth,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    let grid = motion(
-        scratch,
-        temporal_records,
-        sink,
-        placed,
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-        tile_offset,
-    )?;
-    predict(
-        scratch,
-        residual_scratch,
-        sink,
-        allow_unit_parallelism,
-        grid,
-        placed,
-        residual_blocks,
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-        qindex,
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
-        tile_offset,
-    )
 }
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
@@ -1309,12 +1254,24 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let mut scratch = TipReconstructScratch::default();
     let mut residual_scratch = InterResidualReconScratch::default();
     let mut temporal_records = Vec::new();
-    reconstruct(
+    let mut sink = mc::WorkspaceSink::Frame(&mut workspace);
+    let grid = motion(
+        &mut scratch,
+        &mut temporal_records,
+        &sink,
+        &placed,
+        temporal,
+        sequence,
+        core,
+        ref_frame_idx,
+        reference,
+        offset,
+    )?;
+    predict(
         &mut scratch,
         &mut residual_scratch,
-        &mut temporal_records,
-        &mut mc::WorkspaceSink::Frame(&mut workspace),
-        true,
+        &mut sink,
+        grid,
         &placed,
         &[],
         temporal,

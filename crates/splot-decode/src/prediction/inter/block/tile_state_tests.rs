@@ -219,7 +219,7 @@ fn invalid_loop_restoration_index_is_typed_and_fail_atomic() {
 }
 
 #[test]
-fn tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
+fn superblock_tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
     const MAX_MI_DIMENSION: usize = (1 << 16) / 4;
 
     assert_eq!(
@@ -229,23 +229,11 @@ fn tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
             MAX_MI_DIMENSION,
             MAX_MI_DIMENSION,
             16,
-            ParserGranularity::Row,
-        ),
-        1_025
-    );
-    assert_eq!(
-        tile_unit_capacity(
-            &(0..MAX_MI_DIMENSION),
-            &(0..MAX_MI_DIMENSION),
-            MAX_MI_DIMENSION,
-            MAX_MI_DIMENSION,
-            16,
-            ParserGranularity::Superblock,
         ),
         1_048_577
     );
     assert_eq!(
-        tile_unit_capacity(&(0..4), &(0..34), 4, 34, 32, ParserGranularity::Superblock,),
+        tile_unit_capacity(&(0..4), &(0..34), 4, 34, 32),
         3,
         "two effective 128x128 roots plus the terminal unit"
     );
@@ -256,7 +244,6 @@ fn tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
             MAX_MI_DIMENSION,
             MAX_MI_DIMENSION,
             64,
-            ParserGranularity::Superblock,
         ),
         2,
         "a clipped bottom-right edge still contributes one root and one terminal"

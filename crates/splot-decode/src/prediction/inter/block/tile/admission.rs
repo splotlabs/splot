@@ -459,6 +459,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     tile_offset: ByteOffset,
     mut surfaces: std::vec::IntoIter<splot_recon::OwnedFrameRect<T>>,
     unit_count: usize,
+    units_per_row: usize,
     context: &TileDecodeContext<'_, T>,
     temporal: &TemporalMvContext,
     quantizer: &FrameQuantizerSnapshot,
@@ -469,21 +470,34 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     motion: &MotionFieldUnits,
     commit: TileCommit<T>,
 ) -> Result<TileCommit<T>> {
-    let mut prepared = Vec::new();
+    let batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
+    let batch_count = batches.len();
+    let mut prepared: Vec<Mutex<Option<Vec<ReadyReconRow<T>>>>> = Vec::new();
     prepared
-        .try_reserve_exact(unit_count)
-        .map_err(|_| inter_allocation!("ordinary inter prepared rows"))?;
-    prepared.resize_with(unit_count, || Mutex::new(None));
+        .try_reserve_exact(batch_count)
+        .map_err(|_| inter_allocation!("ordinary inter prepared batches"))?;
+    prepared.resize_with(batch_count, || Mutex::new(None));
     let mut precomputed = Vec::new();
     precomputed
-        .try_reserve_exact(unit_count)
+        .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("ordinary inter precompute completions"))?;
-    precomputed.resize_with(unit_count, CompletionCell::new);
+    precomputed.resize_with(batch_count, CompletionCell::new);
     let mut committed = Vec::new();
     committed
-        .try_reserve_exact(unit_count)
+        .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("ordinary inter commit completions"))?;
-    committed.resize_with(unit_count, CompletionCell::new);
+    committed.resize_with(batch_count, CompletionCell::new);
+    let mut ready_batches = Vec::new();
+    ready_batches
+        .try_reserve_exact(batch_count)
+        .map_err(|_| inter_allocation!("ordinary inter ready batches"))?;
+    for range in &batches {
+        let mut ready = Vec::new();
+        ready
+            .try_reserve_exact(range.len())
+            .map_err(|_| inter_allocation!("ordinary inter ready batch"))?;
+        ready_batches.push(ready);
+    }
 
     let commit = Mutex::new(Some(commit));
     let error = Mutex::new(None);
@@ -493,85 +507,110 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         .max(1)
         .saturating_mul(3);
     let mut references_settled = false;
-    let mut submitted = 0usize;
+    let mut submitted_batches = 0usize;
     let mut reached_last = false;
     let parse_result = splot_parallel::ready_task_scope(|scope| {
-        for index in 0..unit_count {
-            let step = {
-                let _quantizer_scopes = quantizer.install_frame();
-                let step = parser.next_unit(
-                    context,
-                    ParserGranularity::Superblock,
-                    Some(row_buffers.take()),
-                );
-                resolve_parser_step(step, |row| {
-                    resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)
-                })
-            };
-            let (row, last) = match step {
-                ParserStep::More(row) => (row, false),
-                ParserStep::Last(row) => (row, true),
-            };
-            let ready = ReadyReconRow {
-                bounds: row_gate.bounds_for_row(&row),
-                row,
-                surface: surfaces.next(),
-            };
-            let conditions = row_gate.conditions(&ready.bounds);
-            let prepared_slot = &prepared[index];
-            let precomputed_cell = &precomputed[index];
+        for (batch_index, range) in batches.iter().enumerate() {
+            let ready = &mut ready_batches[batch_index];
+            let mut bounds = row_gate::RowReferenceBounds::default();
+            let mut batch_last = false;
+            for _ in range.clone() {
+                let step = {
+                    let _quantizer_scopes = quantizer.install_frame();
+                    let step = parser.next_unit(
+                        context,
+                        ParserGranularity::Superblock,
+                        Some(row_buffers.take()),
+                    );
+                    resolve_parser_step(step, |row| {
+                        resolve.resolve_unit(
+                            &mut parser.mv_grid,
+                            context,
+                            temporal,
+                            row,
+                            tile_offset,
+                        )
+                    })
+                };
+                let (row, last) = match step {
+                    ParserStep::More(row) => (row, false),
+                    ParserStep::Last(row) => (row, true),
+                };
+                let row_bounds = row_gate.bounds_for_row(&row);
+                bounds.merge(row_bounds);
+                ready.push(ReadyReconRow {
+                    bounds: row_bounds,
+                    row,
+                    surface: surfaces.next(),
+                });
+                if last {
+                    reached_last = true;
+                    batch_last = true;
+                    break;
+                }
+            }
+
+            let ready = core::mem::take(ready);
+            let conditions = row_gate.conditions(&bounds);
+            let prepared_slot = &prepared[batch_index];
+            let precomputed_cell = &precomputed[batch_index];
             let precompute_error = &error;
             scheduler.submit(
                 scope,
-                (index as u64).saturating_mul(4).saturating_add(1),
+                (batch_index as u64).saturating_mul(4).saturating_add(1),
                 &conditions,
                 Box::new(move |_| {
                     let enabled = precompute_error
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .is_none();
-                    let ready = enabled.then(|| {
+                    let prepared = enabled.then(|| {
                         workers.with_scratch(|scratch| {
-                            precompute_recon_row(
-                                ready,
-                                scratch,
-                                prepass_block_decoded,
-                                motion,
-                                quantizer,
-                                temporal,
-                                context.reference,
-                                context.ref_frame_idx,
-                                context.sequence,
-                                context.core,
-                                context.sb_h4,
-                                context.mi_rows,
-                                context.mi_cols,
-                                context.current_order_hint,
-                                context.luma_use_tcq,
-                                context.residual_use_ddt,
-                                context.bit_depth,
-                            )
+                            ready
+                                .into_iter()
+                                .map(|ready| {
+                                    precompute_recon_row(
+                                        ready,
+                                        scratch,
+                                        prepass_block_decoded,
+                                        motion,
+                                        quantizer,
+                                        temporal,
+                                        context.reference,
+                                        context.ref_frame_idx,
+                                        context.sequence,
+                                        context.core,
+                                        context.sb_h4,
+                                        context.mi_rows,
+                                        context.mi_cols,
+                                        context.current_order_hint,
+                                        context.luma_use_tcq,
+                                        context.residual_use_ddt,
+                                        context.bit_depth,
+                                    )
+                                })
+                                .collect()
                         })
                     });
-                    *prepared_slot.lock().unwrap_or_else(PoisonError::into_inner) = ready;
+                    *prepared_slot.lock().unwrap_or_else(PoisonError::into_inner) = prepared;
                     let _ = precomputed_cell.set(());
                 }),
             );
 
-            let prepared_slot = &prepared[index];
-            let completed = &committed[index];
+            let prepared_slot = &prepared[batch_index];
+            let completed = &committed[batch_index];
             let commit = &commit;
             let commit_error = &error;
-            let mut conditions = vec![Condition::completion(&precomputed[index])];
-            if let Some(previous) = index.checked_sub(1) {
+            let mut conditions = vec![Condition::completion(&precomputed[batch_index])];
+            if let Some(previous) = batch_index.checked_sub(1) {
                 conditions.push(Condition::completion(&committed[previous]));
             }
             scheduler.submit(
                 scope,
-                (index as u64).saturating_mul(4).saturating_add(2),
+                (batch_index as u64).saturating_mul(4).saturating_add(2),
                 &conditions,
                 Box::new(move |_| {
-                    let ready = prepared_slot
+                    let batch = prepared_slot
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .take();
@@ -580,28 +619,33 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                         .unwrap_or_else(PoisonError::into_inner)
                         .is_none()
                     {
-                        let result = ready
+                        let result = batch
                             .ok_or_else(invalid_inter_tile_scheduling_state)
-                            .and_then(|ready| {
+                            .and_then(|batch| {
                                 let mut state = take_active_commit(commit)?;
-                                let result =
-                                    state.replay(ready, quantizer, motion, temporal, context);
+                                let mut result = Ok(());
+                                for ready in batch {
+                                    match state.replay(ready, quantizer, motion, temporal, context)
+                                    {
+                                        Ok(buffers) => row_buffers.recycle(buffers),
+                                        Err(error) => {
+                                            result = Err(error);
+                                            break;
+                                        }
+                                    }
+                                }
                                 restore_active_commit(commit, state)?;
                                 result
                             });
-                        match result {
-                            Ok(buffers) => row_buffers.recycle(buffers),
-                            Err(value) => record_first_error(commit_error, value),
+                        if let Err(value) = result {
+                            record_first_error(commit_error, value);
                         }
                     }
                     let _ = completed.set(());
                 }),
             );
-            submitted = index.saturating_add(1);
-            if last {
-                reached_last = true;
-            }
-            if let Some(target) = index.checked_sub(admission_window) {
+            submitted_batches = batch_index.saturating_add(1);
+            if let Some(target) = batch_index.checked_sub(admission_window) {
                 while !committed[target].is_set() {
                     let progress = splot_parallel::pool_progress_snapshot();
                     if !references_settled && row_gate.is_ready() {
@@ -623,7 +667,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                     splot_parallel::assist_pool_or_park(&progress);
                 }
             }
-            if last {
+            if batch_last {
                 break;
             }
         }
@@ -633,7 +677,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         record_first_error(&error, invalid_inter_tile_scheduling_state());
     }
 
-    let terminal = submitted
+    let terminal = submitted_batches
         .checked_sub(1)
         .and_then(|last| committed.get(last));
     while terminal.is_some_and(|done| !done.is_set()) {
@@ -1151,8 +1195,8 @@ fn safe_deblock_mi_end(
     )
 }
 
-/// Reconstruction units one scheduled precompute batch prepares.
-const SCHEDULED_BATCH_UNITS: usize = 4;
+/// Reconstruction units one row-bounded precompute batch prepares.
+const RECON_BATCH_UNITS: usize = 4;
 
 /// Splits the units into precompute batches that never cross a superblock row.
 ///
@@ -1258,7 +1302,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     }
     let prepass_block_decoded = geometry.block_decoded.clone();
     let block_decoded = geometry.block_decoded.clone();
-    let batches = superblock_row_batches(unit_count, units_per_row.max(1), SCHEDULED_BATCH_UNITS);
+    let batches = superblock_row_batches(unit_count, units_per_row.max(1), RECON_BATCH_UNITS);
     let batch_count = batches.len();
     let mut prepared = Vec::new();
     prepared

@@ -69,7 +69,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &cdef_state,
         &gdf_state,
         &ccso_state,
-        true,
         parse_progress,
     )?;
     let mut segment_ids = frame_segment_id_map(params.mi_rows, params.mi_cols)?;

@@ -1391,7 +1391,6 @@ fn tile_unit_capacity(
     frame_mi_rows: usize,
     frame_mi_cols: usize,
     sb_h4: usize,
-    granularity: ParserGranularity,
 ) -> usize {
     let sb_rows = mi_rows
         .end
@@ -1403,11 +1402,7 @@ fn tile_unit_capacity(
         .min(frame_mi_cols)
         .saturating_sub(mi_cols.start)
         .div_ceil(sb_h4);
-    let units = match granularity {
-        ParserGranularity::Row => sb_rows,
-        ParserGranularity::Superblock => sb_rows * sb_cols,
-    };
-    units + 1
+    sb_rows * sb_cols + 1
 }
 
 /// Monotone count of § 8.2 parse units a tile has finished, published as the
@@ -1529,7 +1524,6 @@ pub(crate) fn publish_tile_geometry<T: ReconSample>(
         params.mi_rows,
         params.mi_cols,
         params.sb_h4,
-        ParserGranularity::Superblock,
     );
     parse_progress.reserve(capacity)?;
     parse_progress.publish_geometry(TileGeometry {
@@ -1558,15 +1552,9 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     cdef_state: &CdefState,
     gdf_state: &GdfState,
     ccso_state: &CcsoState,
-    superblock_units: bool,
     parse_progress: &Arc<ParseProgress>,
 ) -> Result<ParsedTile> {
     let context = &params.context(sequence, core, reference, ref_frame_idx);
-    let granularity = if superblock_units {
-        ParserGranularity::Superblock
-    } else {
-        ParserGranularity::Row
-    };
     let geometry = parse_progress
         .geometry()
         .ok_or_else(invalid_inter_tile_scheduling_state)?;
@@ -1584,7 +1572,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     loop {
         let step = parser.next_unit(
             context,
-            granularity,
+            ParserGranularity::Superblock,
             Some(take_retained_recon_row_buffers()),
         );
         let (mut row, last) = match step {
@@ -1990,9 +1978,14 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let quantizer = FrameQuantizerSnapshot::capture();
         let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
         let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-        let superblock_rects = superblock_luma_rects(&rows, &cols, &workspace, sb_h4)?;
-        let tile_mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
-        let tile_mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+        let unit_count = tile_unit_capacity(&rows, &cols, mi_rows, mi_cols, sb_h4);
+        let units_per_row = cols
+            .end
+            .min(mi_cols)
+            .saturating_sub(cols.start)
+            .div_ceil(sb_h4);
+        let tile_mi_rows = rows;
+        let tile_mi_cols = cols;
         let mut parser = TileParser::new(
             tile,
             &context,
@@ -2014,6 +2007,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let surfaces = if global_intrabc {
             Vec::new()
         } else {
+            let superblock_rects =
+                superblock_luma_rects(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4)?;
             let info = workspace.info();
             tile_scratch.clear_incompatible_surface_layout(info, &superblock_rects);
             superblock_rects
@@ -2040,7 +2035,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &mut resolve_state,
             tile_offset,
             surfaces.into_iter(),
-            superblock_rects.len().saturating_add(1),
+            unit_count,
+            units_per_row,
             &context,
             temporal_context,
             &quantizer,

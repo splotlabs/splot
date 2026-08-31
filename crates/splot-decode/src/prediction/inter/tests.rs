@@ -916,7 +916,17 @@ fn simple_path_interintra_fixture_decodes_avm_bit_exact() {
 
 #[test]
 fn fractional_quarter_pel_intrabc_fixture_decodes_avm_bit_exact() {
-    for threads in [1, 2, 4, 8, 10] {
+    let (_, key_core) = fixture_sequence_and_key_core(FRACTIONAL_INTRABC_FIXTURE);
+    assert_eq!(
+        key_core
+            .intrabc
+            .expect("fixture key frame parses IntrABC parameters")
+            .allow_global_intrabc,
+        Some(true),
+        "fixture must exercise the global IntrABC scheduling dependency"
+    );
+
+    for threads in [1, 2, 3, 4, 8, 10] {
         let frames = decode_fixture_on_threads(FRACTIONAL_INTRABC_FIXTURE, threads);
         assert_eq!(frames.len(), 1, "one closed-loop key frame");
         assert_eq!(
@@ -1229,7 +1239,7 @@ fn multi_sb_fixture_per_frame_hash_is_stable() {
 
 #[test]
 fn multi_tile_inter_fixture_decodes_bit_exact() {
-    for threads in [1usize, 4] {
+    for threads in [1usize, 2, 3, 4, 8, 10] {
         let frames = decode_fixture_on_threads(MULTI_TILE_INTER_FIXTURE, threads);
         assert_yuv420_8bit_frames(&frames, 128, 64);
         assert_eq!(
@@ -1245,7 +1255,7 @@ fn multi_tile_inter_fixture_decodes_bit_exact() {
 
 #[test]
 fn multi_tile_lr_fixture_decodes_bit_exact() {
-    for threads in [1usize, 4] {
+    for threads in [1usize, 2, 3, 4, 8, 10] {
         let frames = decode_fixture_on_threads(MULTI_TILE_LR_FIXTURE, threads);
         assert_yuv420_8bit_frames(&frames, 768, 256);
         assert_eq!(
