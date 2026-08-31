@@ -16,7 +16,7 @@ use super::*;
 use crate::prediction::inter::block::row_gate::RowReferenceGate;
 use crate::prediction::inter::find_mv_stack::TemporalBandPlan;
 
-struct TileCommit<T: ReconSample> {
+pub(super) struct TileCommit<T: ReconSample> {
     next: usize,
     handed_rows: usize,
     ordered: deferred_recon::InterReconScratch<T>,
@@ -25,6 +25,86 @@ struct TileCommit<T: ReconSample> {
     current_block_decoded_superblock: Option<[usize; 2]>,
     decoded_any: bool,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
+}
+
+impl<T: ReconSample> TileCommit<T> {
+    pub(super) fn direct(
+        ordered: deferred_recon::InterReconScratch<T>,
+        workspace: CurrentFrameWorkspace<T>,
+        block_decoded: TileBlockDecodedState,
+        decoded_any: bool,
+        surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
+    ) -> Self {
+        Self {
+            next: 0,
+            handed_rows: 0,
+            ordered,
+            workspace,
+            block_decoded,
+            current_block_decoded_superblock: None,
+            decoded_any,
+            surfaces,
+        }
+    }
+
+    pub(super) fn replay(
+        &mut self,
+        mut ready: ReadyReconRow<'_, T>,
+        quantizer: &FrameQuantizerSnapshot,
+        motion: &MotionFieldUnits,
+        frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+        temporal: &TemporalMvContext,
+        context: &TileDecodeContext<'_, T>,
+    ) -> Result<ReconRowBuffers> {
+        validate_commit_ordinal(ready.row.ordinal, self.next)?;
+        if let Some(surface) = ready.surface.take() {
+            surface.publish_into(&mut self.workspace)?;
+            if let ReadyReconSurface::Owned(surface) = surface {
+                self.surfaces.push(surface);
+            }
+        }
+        self.ordered.with_installed(|scratch| {
+            pixel_commit::replay_recon_row(
+                ready.row,
+                &mut self.next,
+                &mut self.decoded_any,
+                quantizer,
+                scratch,
+                &mut self.workspace,
+                &mut self.block_decoded,
+                &mut self.current_block_decoded_superblock,
+                motion,
+                frame_filter_records,
+                temporal,
+                context.reference,
+                context.ref_frame_idx,
+                context.sequence,
+                context.core,
+                context.mi_rows,
+                context.mi_cols,
+                context.current_order_hint,
+                context.luma_use_tcq,
+                context.residual_use_ddt,
+                context.bit_depth,
+            )
+        })
+    }
+
+    pub(super) fn finish_direct(
+        self,
+    ) -> (
+        deferred_recon::InterReconScratch<T>,
+        CurrentFrameWorkspace<T>,
+        bool,
+        Vec<splot_recon::OwnedFrameRect<T>>,
+    ) {
+        (
+            self.ordered,
+            self.workspace,
+            self.decoded_any,
+            self.surfaces,
+        )
+    }
 }
 
 struct CommittedBatch<T: ReconSample> {
@@ -334,39 +414,22 @@ impl<T: ReconSample> TileRecon<T> {
                 .take()
                 .ok_or_else(invalid_inter_tile_scheduling_state)?
         };
-        for mut ready in batch {
-            validate_commit_ordinal(ready.row.ordinal, commit.next)?;
-            if let Some(surface) = ready.surface.take() {
-                surface.publish_into(&mut commit.workspace)?;
-                if let ReadyReconSurface::Owned(surface) = surface {
-                    commit.surfaces.push(surface);
-                }
-            }
-            let buffers = commit.ordered.with_installed(|scratch| {
-                pixel_commit::replay_recon_row(
-                    ready.row,
-                    &mut commit.next,
-                    &mut commit.decoded_any,
-                    &self.quantizer,
-                    scratch,
-                    &mut commit.workspace,
-                    &mut commit.block_decoded,
-                    &mut commit.current_block_decoded_superblock,
-                    &self.motion,
-                    &mut crate::filters::wienerns_lr::FrameFilterRecords::default(),
-                    &self.temporal,
-                    &self.reference,
-                    self.ref_frame_idx.as_slice(),
-                    &self.sequence,
-                    &self.core,
-                    self.params.mi_rows,
-                    self.params.mi_cols,
-                    self.params.current_order_hint,
-                    self.params.luma_use_tcq,
-                    self.params.residual_use_ddt,
-                    self.params.bit_depth,
-                )
-            })?;
+        let context = self.params.context(
+            &self.sequence,
+            &self.core,
+            &self.reference,
+            self.ref_frame_idx.as_slice(),
+        );
+        let mut frame_filter_records = crate::filters::wienerns_lr::FrameFilterRecords::default();
+        for ready in batch {
+            let buffers = commit.replay(
+                ready,
+                &self.quantizer,
+                &self.motion,
+                &mut frame_filter_records,
+                &self.temporal,
+                &context,
+            )?;
             recycle_retained_recon_row_buffers(buffers);
         }
         let terminal = commit.next == self.unit_count;

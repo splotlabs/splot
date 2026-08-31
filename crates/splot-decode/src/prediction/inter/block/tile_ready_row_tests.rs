@@ -6,7 +6,6 @@
 
 #![allow(clippy::expect_used)]
 
-use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -15,9 +14,7 @@ use splot_core::symbol::SymbolDecoder;
 use splot_core::symbol_encoder::SymbolEncoder;
 use splot_parallel::{ThreadCount, WorkerPool};
 
-use super::ready_rows::{
-    ReadyRowPipelineError, run_ready_row_pipeline_serial, run_ready_row_prepass_with_commit,
-};
+use super::ready_rows::{ReadyRowPipelineError, run_ready_row_prepass_with_commit};
 use super::*;
 
 fn terminal_row(error: crate::DecodeError) -> ReconRow {
@@ -185,27 +182,6 @@ fn no_decoded_block_error_is_typed_and_has_no_diagnostic() {
         }
     ));
     assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
-}
-
-#[test]
-fn serial_pipeline_calls_a_terminal_parser_exactly_once() {
-    let parsed = Cell::new(0);
-    let committed = Cell::new(0);
-
-    run_ready_row_pipeline_serial(
-        || {
-            parsed.set(parsed.get() + 1);
-            ParserStep::Last(())
-        },
-        |()| {
-            committed.set(committed.get() + 1);
-            Ok::<_, ()>(())
-        },
-    )
-    .expect("terminal row commits");
-
-    assert_eq!(parsed.get(), 1);
-    assert_eq!(committed.get(), 1);
 }
 
 #[test]
@@ -714,16 +690,6 @@ fn a_failed_reference_settle_surfaces_the_codec_diagnostic() {
             "reference filter phase failed"
         ))
     ));
-}
-
-#[test]
-fn reconstruction_error_precedes_terminal_parser_error() {
-    let result = run_ready_row_pipeline_serial(
-        || ParserStep::Last(Some("parser error")),
-        |_| Err("reconstruction error"),
-    );
-
-    assert_eq!(result, Err("reconstruction error"));
 }
 
 const ORDERHINT_WRAP_FIXTURE: &[u8] = include_bytes!(

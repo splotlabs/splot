@@ -428,23 +428,3 @@ fn ready_rows_await_references<Parser, Ready, Done, Commit, E>(
     let state = lock_ready_rows(coordinator);
     !state.deferred.is_empty() && !state.capacity_error && state.commit_error.is_none()
 }
-
-pub(super) fn run_ready_row_pipeline_serial<Parser, Recon, Row, E>(
-    mut parser: Parser,
-    mut recon: Recon,
-) -> core::result::Result<(), E>
-where
-    Parser: FnMut() -> ParserStep<Row>,
-    Recon: FnMut(Row) -> core::result::Result<(), E>,
-{
-    loop {
-        let (row, last) = match parser() {
-            ParserStep::More(row) => (row, false),
-            ParserStep::Last(row) => (row, true),
-        };
-        recon(row)?;
-        if last {
-            return Ok(());
-        }
-    }
-}
