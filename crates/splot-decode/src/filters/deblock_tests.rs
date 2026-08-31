@@ -1759,7 +1759,7 @@ fn chroma_pass_uses_4x4_tx_for_sub8_luma_records() {
 }
 
 #[test]
-fn contiguous_source_plane_pool_path_matches_serial_output_at_one_and_four_workers() {
+fn contiguous_source_plane_parallel_pass_matches_serial_output() {
     use splot_parallel::{ThreadCount, WorkerPool};
 
     let (mi_rows, mi_cols) = (16usize, 32usize);

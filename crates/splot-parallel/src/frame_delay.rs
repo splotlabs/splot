@@ -127,22 +127,15 @@ mod tests {
 
     #[test]
     fn resolve_maps_auto_to_worker_count_and_honors_fixed_depths() {
-        for (delay, threads, expected) in [
-            (FrameDelay::Auto, 10, 10),
-            (FrameDelay::Auto, 4, 4),
-            (FrameDelay::Auto, 3, 3),
-            (FrameDelay::Auto, 2, 2),
-            (FrameDelay::Auto, 1, 1),
-            (FrameDelay::Fixed(nz(4)), 10, 4),
-            (FrameDelay::Fixed(nz(64)), 10, 64),
-            (FrameDelay::Fixed(nz(3)), 2, 3),
-            (FrameDelay::Fixed(nz(1)), 2, 1),
-            (FrameDelay::Fixed(nz(1)), 1, 1),
-        ] {
+        for threads in 1..=10 {
+            assert_eq!(FrameDelay::Auto.resolve(nz(threads)), nz(threads));
+        }
+        for (depth, threads) in [(4, 10), (64, 10), (3, 2), (1, 2), (1, 1)] {
+            let delay = FrameDelay::Fixed(nz(depth));
             assert_eq!(
                 delay.resolve(nz(threads)),
-                nz(expected),
-                "expected {expected} for {delay} at {threads} worker(s)",
+                nz(depth),
+                "fixed depth {depth} changed at {threads} worker(s)",
             );
         }
     }

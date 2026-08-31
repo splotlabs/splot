@@ -12,20 +12,31 @@ use splot_parallel::ThreadCount;
 
 use super::*;
 
-fn terminal_row(error: crate::DecodeError) -> ReconRow {
-    ReconRow {
-        ordinal: 0,
-        superblocks: Vec::new(),
-        entries: Vec::new(),
-        residual_blocks: Vec::new(),
-        temporal: Vec::new(),
-        motion_grids: Vec::new(),
-        flag_log: Vec::new(),
-        filter_records: TileFilterRecords::default(),
-        motion_folded: false,
-        motion_derived: false,
-        failure: ReconRowFailure::Terminal(error),
-    }
+fn malformed_tile_error(offset: ByteOffset) -> crate::DecodeError {
+    finish_tile_symbols(
+        SymbolDecoder::new(&[]).expect("empty payload initializes bounded decoder"),
+        offset,
+    )
+    .expect_err("empty payload must fail exit validation")
+}
+
+fn assert_tile_payload_error(error: &crate::DecodeError, offset: ByteOffset) {
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
+                && issue.spec_section() == Some("8.2.4")
+                && issue.offset() == Some(offset)
+    ));
+}
+
+fn assert_invalid_tile_traversal(error: &crate::DecodeError) {
+    assert!(matches!(
+        error,
+        crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
+        }
+    ));
 }
 
 #[test]
@@ -40,110 +51,70 @@ fn tile_symbol_exit_accepts_writer_output_and_reports_eof_as_malformed() {
         offset,
     )
     .expect("writer output must pass exit validation");
-
-    let error = finish_tile_symbols(
-        SymbolDecoder::new(&[]).expect("empty payload initializes bounded decoder"),
-        offset,
-    )
-    .expect_err("empty payload must fail exit validation");
-    assert!(matches!(
-        error,
-        crate::DecodeError::MalformedSource { issue }
-            if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
-                && issue.spec_section() == Some("8.2.4")
-                && issue.offset() == Some(offset)
-    ));
+    assert_tile_payload_error(&malformed_tile_error(offset), offset);
 }
 
 #[test]
-fn terminal_parse_error_prevents_resolve_and_remains_first() {
+fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
     let offset = ByteOffset::new(43);
-    let terminal = finish_tile_symbols(
-        SymbolDecoder::new(&[]).expect("empty payload initializes bounded decoder"),
-        offset,
-    )
-    .expect_err("empty payload must fail exit validation");
+    let row = ReconRow {
+        ordinal: 0,
+        superblocks: Vec::new(),
+        entries: Vec::new(),
+        residual_blocks: Vec::new(),
+        temporal: Vec::new(),
+        motion_grids: Vec::new(),
+        flag_log: Vec::new(),
+        filter_records: TileFilterRecords::default(),
+        motion_folded: false,
+        motion_derived: false,
+        failure: ReconRowFailure::Terminal(malformed_tile_error(offset)),
+    };
     let mut resolved = false;
-    let step = resolve_parser_step(ParserStep::Last(terminal_row(terminal)), |_| {
+    let step = resolve_parser_step(ParserStep::Last(row), |_| {
         resolved = true;
         Err(crate::DecodeHeaderStateError::IncompleteInterFrame.into())
     });
-
     assert!(!resolved);
     assert!(matches!(&step, ParserStep::Last(_)));
     let ParserStep::Last(mut row) = step else {
         return;
     };
-    assert!(matches!(
-        row.failure.take_terminal(),
-        Some(crate::DecodeError::MalformedSource { issue })
-            if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
-                && issue.spec_section() == Some("8.2.4")
-                && issue.offset() == Some(offset)
-    ));
+    let mut published = false;
+    let result = row.return_terminal_error().map(|()| published = true);
+    assert!(!published);
+    assert_tile_payload_error(&result.expect_err("terminal error returned"), offset);
 }
 
-#[test]
-fn terminal_parse_error_prevents_commit_side_effects() {
-    let offset = ByteOffset::new(47);
-    let terminal = finish_tile_symbols(
-        SymbolDecoder::new(&[]).expect("empty payload initializes bounded decoder"),
-        offset,
-    )
-    .expect_err("empty payload must fail exit validation");
-    let mut row = terminal_row(terminal);
-    let mut published = false;
-    let result: crate::Result<()> = (|| {
-        row.return_terminal_error()?;
-        published = true;
-        Ok(())
-    })();
-
-    assert!(!published);
-    assert!(matches!(
-        result,
-        Err(crate::DecodeError::MalformedSource { issue })
-            if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
-                && issue.spec_section() == Some("8.2.4")
-                && issue.offset() == Some(offset)
-    ));
+fn assert_terminal_failure_wins(precompute_first: bool) {
+    let mut failure = ReconRowFailure::default();
+    if precompute_first {
+        failure.record_precompute(
+            13,
+            crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into(),
+        );
+    }
+    failure.record_terminal(crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into());
+    failure.record_terminal(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
+    if !precompute_first {
+        failure.record_precompute(
+            11,
+            crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into(),
+        );
+    }
+    let terminal = failure.take_terminal().expect("terminal failure retained");
+    assert_invalid_tile_traversal(&terminal);
+    assert!(failure.take_precompute().is_none());
 }
 
 #[test]
 fn terminal_failure_cannot_be_overwritten_by_precompute_failure() {
-    let mut failure = ReconRowFailure::None;
-    failure.record_terminal(crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into());
-    failure.record_terminal(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
-    failure.record_precompute(
-        11,
-        crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into(),
-    );
-
-    assert!(matches!(
-        failure.take_terminal(),
-        Some(crate::DecodeError::HeaderState {
-            source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
-        })
-    ));
-    assert!(failure.take_precompute().is_none());
+    assert_terminal_failure_wins(false);
 }
 
 #[test]
 fn terminal_failure_replaces_precompute_failure() {
-    let mut failure = ReconRowFailure::None;
-    failure.record_precompute(
-        13,
-        crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into(),
-    );
-    failure.record_terminal(crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into());
-
-    assert!(matches!(
-        failure.take_terminal(),
-        Some(crate::DecodeError::HeaderState {
-            source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
-        })
-    ));
-    assert!(failure.take_precompute().is_none());
+    assert_terminal_failure_wins(true);
 }
 
 #[test]
@@ -158,24 +129,14 @@ fn tile_parser_walk_reuse_and_second_finish_are_typed_errors() {
         walk.finish()
             .expect_err("finished walk cannot finish twice"),
     ] {
-        assert!(matches!(
-            error,
-            crate::DecodeError::HeaderState {
-                source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
-            }
-        ));
+        assert_invalid_tile_traversal(&error);
     }
 }
 
 #[test]
 fn no_decoded_block_error_is_typed_and_has_no_diagnostic() {
     let error = no_decoded_block_error();
-    assert!(matches!(
-        &error,
-        crate::DecodeError::HeaderState {
-            source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
-        }
-    ));
+    assert_invalid_tile_traversal(&error);
     assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
 }
 
