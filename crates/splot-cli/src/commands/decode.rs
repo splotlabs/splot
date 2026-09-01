@@ -76,6 +76,7 @@ pub(crate) struct DecodeArgs {
     /// Frame-pipelining depth: `auto` (default) resolves to the worker count, while a positive
     /// integer requests an explicit depth. Every depth uses the same admission/task path; the
     /// effective capacity is the requested depth capped by the worker count. `0` aliases auto.
+    /// At low worker counts, each in-flight single-tile inter frame may temporarily retain about one extra decoded-frame-sized buffer plus parsed data for the full frame.
     #[arg(long, default_value_t = FrameDelay::Auto)]
     frame_delay: FrameDelay,
     /// Stop after emitting this many output frames.
