@@ -555,7 +555,12 @@ impl TrajectoryBand<'_> {
     /// Reads one reference's trajectory vector at a band-relative cell.
     ///
     /// See [`TrajectoryState::cells`] for why the reference is the minor axis.
+    /// A reference past `reference_count` addresses a later cell's slot rather
+    /// than running off the grid, so callers carry that bound: `check_intersection`
+    /// tests it outright, and `observe_projection_at` inherits it from the
+    /// reference tables its `source` and `end` are resolved through.
     fn trajectory_mv(&self, reference: usize, index: usize) -> Mv {
+        debug_assert!(reference < self.reference_count);
         self.fields
             .get(index * self.reference_count + reference)
             .copied()
@@ -633,7 +638,11 @@ impl TrajectoryBand<'_> {
         Some((self.round_step(y8), self.round_step(x8)))
     }
 
+    /// Writes one reference's trajectory vector at a band-relative cell.
+    ///
+    /// Carries [`Self::trajectory_mv`]'s reference bound for the same reason.
     fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) -> Mv {
+        debug_assert!(reference < self.reference_count);
         let mv = clamp_mv(mv);
         if let Some(slot) = self
             .fields
