@@ -6,9 +6,8 @@
 #![allow(clippy::expect_used)]
 
 use super::{
-    DeblockedSource, FramePlane, StripeOutputPlane, StripePlane, lock_stripe_sample_buffers,
-    recycle_stripe_sample_buffer, recycle_stripe_sample_buffer_into_pool, select_buffer_index,
-    take_stripe_sample_buffer, take_stripe_sample_buffer_from_pool, window_bounds,
+    DeblockedSource, FramePlane, StripeOutputPlane, StripePlane, take_stripe_sample_buffer,
+    window_bounds,
 };
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
@@ -268,31 +267,6 @@ fn deblocked_source_keeps_read_leases_disjoint_from_later_writes() {
 }
 
 #[test]
-fn stripe_cache_selection_uses_fresh_storage_until_full() {
-    let capacities = [(0, 32), (1, 128), (2, 256)];
-
-    assert_eq!(select_buffer_index(capacities, 96, false), Some(1));
-    assert_eq!(select_buffer_index(capacities, 512, false), None);
-    assert_eq!(select_buffer_index(capacities, 512, true), Some(2));
-}
-
-#[test]
-fn stripe_pool_reuses_returned_allocation_while_exclusively_locked() {
-    let sample_count = 8_196;
-    let mut buffers = lock_stripe_sample_buffers();
-    buffers.clear();
-    let first = Vec::<u16>::with_capacity(sample_count);
-    let allocation = first.as_ptr();
-
-    recycle_stripe_sample_buffer_into_pool(&mut buffers, first);
-    let second = take_stripe_sample_buffer_from_pool(&mut buffers, sample_count);
-
-    assert_eq!(second.len(), 0);
-    assert_eq!(second.as_ptr(), allocation);
-    recycle_stripe_sample_buffer_into_pool(&mut buffers, second);
-}
-
-#[test]
 fn stripe_rect_mut_rejects_a_rectangle_overhanging_the_row() {
     let mut stripe = StripePlane::from_samples(4, 2, 0, vec![0; 8]).expect("a valid stripe");
     let rect = PlaneRect::new(3, 0, 2, 1).expect("a valid rectangle");
@@ -419,7 +393,7 @@ fn partial_u8_source_failure_recycles_length_zero_staging() {
 
     let staging = take_stripe_sample_buffer(sample_count).expect("recycled failed staging");
     assert_eq!(staging.len(), 0);
-    recycle_stripe_sample_buffer(staging);
+    drop(staging);
 }
 
 #[test]
