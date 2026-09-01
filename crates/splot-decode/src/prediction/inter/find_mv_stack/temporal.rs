@@ -2093,7 +2093,14 @@ fn project_temporal_motion_field(
             ) else {
                 continue;
             };
-            if let Some(trajectories) = trajectories.as_deref_mut() {
+            if let Some(trajectories) = trajectories.as_deref_mut()
+                && trajectories.admits_projection(
+                    end_ref,
+                    target_ref,
+                    (pos_y8, pos_x8),
+                    trajectory_ref_offset.abs(),
+                )
+            {
                 trajectories.observe_projection_at(
                     source_ref,
                     end_ref,

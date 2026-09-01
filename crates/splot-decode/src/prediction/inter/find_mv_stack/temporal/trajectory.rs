@@ -741,6 +741,32 @@ impl TrajectoryBand<'_> {
         );
     }
 
+    /// Reports whether a projected position still admits a § 7.9.8 observation.
+    ///
+    /// [`Self::observe_projection_at`] settles this from data the § 7.9.3 scan
+    /// already holds, and settles it against the caller 59% of the time, so the
+    /// scan tests it here instead: the rejected majority never marshals that
+    /// call's arguments or builds its frame. Returning `false` is exactly the
+    /// condition under which the call would return having written nothing.
+    #[allow(clippy::inline_always, reason = "measured trajectory scan guard")]
+    #[inline(always)]
+    pub(super) fn admits_projection(
+        &self,
+        end: Option<usize>,
+        target: Option<usize>,
+        position: Position,
+        reference_offset: i32,
+    ) -> bool {
+        let Some(index) = self.band_index(position.0, position.1) else {
+            return false;
+        };
+        let Some(&recorded_offset) = self.projection_offsets.get(index) else {
+            return false;
+        };
+        recorded_offset == INVALID_PROJECTION_OFFSET
+            || (target.is_some() && target == end && recorded_offset != reference_offset)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn observe_projection_at(
         &mut self,
