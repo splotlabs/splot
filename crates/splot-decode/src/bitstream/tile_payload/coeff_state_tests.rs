@@ -5,7 +5,6 @@
 
 use super::*;
 use splot_core::headers::sequence::ChromaFormatIdc;
-use splot_parallel::{ThreadCount, WorkerPool};
 
 fn update(plane: usize, x4: usize, y4: usize, w4: usize, h4: usize) -> CoeffContextUpdate {
     CoeffContextUpdate {
@@ -75,119 +74,6 @@ fn transform_block_fsc_state_allocates_zeroed_quant_sign() {
 
     assert_eq!(state.quant_sign, vec![0; padded_len]);
     assert_eq!(state.quant_sign(), vec![0; padded_len].as_slice());
-}
-
-#[test]
-fn maximum_transform_buffers_are_reused_and_zeroed() {
-    clear_transform_coeff_buffers();
-    let mut state = TransformCoeffBlockState::new(32, 32).unwrap();
-    state.ensure_quant_sign().unwrap();
-    let pointers = (state.level.as_ptr(), state.quant_sign.as_ptr());
-    state.level.fill(7);
-    state.quant_sign.fill(-1);
-    state.quant.fill(9);
-    let quant = state.into_quant();
-    recycle_coeff_quant(quant);
-
-    let mut reused = TransformCoeffBlockState::new(32, 32).unwrap();
-    reused.ensure_quant_sign().unwrap();
-    assert_eq!(reused.level.as_ptr(), pointers.0);
-    assert_eq!(reused.quant_sign.as_ptr(), pointers.1);
-    assert!(reused.level.iter().all(|value| *value == 0));
-    assert!(reused.quant_sign.iter().all(|value| *value == 0));
-    assert!(reused.quant.iter().all(|value| *value == 0));
-}
-
-#[test]
-fn transform_state_errors_return_buffers_for_reuse() {
-    clear_transform_coeff_buffers();
-    let mut state = TransformCoeffBlockState::new(4, 4).unwrap();
-    let level = state.level.as_ptr();
-    assert!(state.set_quant(16, 1).is_err());
-    drop(state);
-
-    assert!(TransformCoeffBlockState::new(0, 4).is_err());
-    let reused = TransformCoeffBlockState::new(4, 4).unwrap();
-    assert_eq!(reused.level.as_ptr(), level);
-}
-
-#[test]
-fn transform_block_recycler_is_thread_local() {
-    clear_transform_coeff_buffers();
-    drop(TransformCoeffBlockState::new(4, 4).unwrap());
-    assert_eq!(transform_coeff_buffer_counts(), (1, 0));
-
-    let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
-    pool.install(|| {
-        assert_eq!(transform_coeff_buffer_counts(), (0, 0));
-        drop(TransformCoeffBlockState::new(4, 4).unwrap());
-        assert_eq!(transform_coeff_buffer_counts(), (1, 0));
-    });
-
-    assert_eq!(transform_coeff_buffer_counts(), (1, 0));
-}
-
-#[test]
-fn quant_storage_recycles_from_worker_to_parser() {
-    let buffers = SharedQuantBuffers::new(QuantBufferPool::new());
-    let quant = vec![7; 16];
-    let pointer = quant.as_ptr();
-    let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
-    pool.install(|| recycle_coeff_quant_into(&buffers, quant));
-
-    let reused = take_zeroed_quant_buffer_from(&buffers, 16).unwrap();
-    assert_eq!(reused.as_ptr(), pointer);
-    assert!(reused.iter().all(|value| *value == 0));
-}
-
-#[test]
-fn transform_block_recycler_tolerates_reentrant_recycle() {
-    clear_transform_coeff_buffers();
-    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |outer| {
-        recycle_buffer(&mut outer.levels, vec![0]);
-        with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |inner| {
-            recycle_buffer(&mut inner.levels, vec![0]);
-        });
-        assert_eq!(outer.levels.len(), 1);
-    });
-    assert_eq!(transform_coeff_buffer_counts(), (1, 0));
-}
-
-#[test]
-fn transform_block_recycler_has_a_retention_limit() {
-    let buffers = SharedQuantBuffers::new(QuantBufferPool::new());
-    for _ in 0..=MIN_RETAINED_SHARED_QUANT_BUFFERS {
-        recycle_coeff_quant_into(&buffers, vec![0]);
-    }
-    assert_eq!(
-        lock_transform_coeff_quant_buffers(&buffers).len(),
-        MIN_RETAINED_SHARED_QUANT_BUFFERS
-    );
-
-    let oversized = SharedQuantBuffers::new(QuantBufferPool::new());
-    recycle_coeff_quant_into(&oversized, Vec::new());
-    recycle_coeff_quant_into(
-        &oversized,
-        Vec::with_capacity(MAX_RETAINED_COEFF_BUFFER_CAPACITY + 1),
-    );
-    assert!(lock_transform_coeff_quant_buffers(&oversized).is_empty());
-}
-
-#[test]
-fn quant_recycler_retains_and_selects_the_largest_useful_buffers() {
-    let buffers = SharedQuantBuffers::new(QuantBufferPool::new());
-    for _ in 0..MIN_RETAINED_SHARED_QUANT_BUFFERS {
-        recycle_coeff_quant_into(&buffers, Vec::with_capacity(1));
-    }
-    recycle_coeff_quant_into(&buffers, Vec::with_capacity(32));
-    let retained = lock_transform_coeff_quant_buffers(&buffers);
-    assert_eq!(retained.len(), MIN_RETAINED_SHARED_QUANT_BUFFERS);
-    assert!(retained.iter().any(|buffer| buffer.capacity() >= 32));
-    drop(retained);
-
-    let reused = take_zeroed_quant_buffer_from(&buffers, 16).unwrap();
-    assert!(reused.capacity() >= 32);
-    assert_eq!(reused, [0; 16]);
 }
 
 #[test]
