@@ -5,6 +5,8 @@
 //!
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
+use std::cell::Cell;
+
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
@@ -21,7 +23,7 @@ use super::transform_units::tx_size_log2;
 use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePlan, chroma_pair};
 
 pub(crate) struct ParsedGeneralIntraResidual {
-    planes: RecycledParsedResidualPlanes,
+    planes: Vec<ParsedResidualPlane>,
 }
 
 pub(super) struct ParsedResidualPlane {
@@ -45,24 +47,15 @@ pub(super) struct ParsedTransformUnit {
     pub(super) palette_color_map: Option<Vec<u8>>,
 }
 
-struct RecycledParsedResidualPlanes {
-    entries: Vec<ParsedResidualPlane>,
-}
-
-impl RecycledParsedResidualPlanes {
-    fn take(capacity: usize) -> Self {
-        Self {
-            entries: Vec::with_capacity(capacity),
-        }
-    }
-
-    fn push(&mut self, plane: ParsedResidualPlane) {
-        self.entries.push(plane);
-    }
-
-    fn drain(&mut self) -> std::vec::Drain<'_, ParsedResidualPlane> {
-        self.entries.drain(..)
-    }
+std::thread_local! {
+    /// Retained storage for one block's deferred chroma planes.
+    ///
+    /// A `ParsedResidualPlane` carries a whole coefficient block, so sizing this
+    /// list per block allocated ~31 KB for every general-intra block even when
+    /// nothing was deferred. One list per worker, reused, costs nothing after
+    /// the first block.
+    static DEFERRED_CHROMA_PLANES: std::cell::Cell<Option<Vec<ParsedResidualPlane>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -87,7 +80,7 @@ impl GeneralIntraResidualPlan {
     ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
         let mut u_nonzero = false;
         let mut pending_u = false;
-        let mut planes = RecycledParsedResidualPlanes::take(self.planes.len());
+        let mut planes = Vec::with_capacity(self.planes.len());
         for &plane in self.planes.iter() {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
@@ -401,9 +394,12 @@ impl ParsedGeneralIntraResidual {
         luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let mut pending_u = None;
-        let mut deferred = RecycledParsedResidualPlanes::take(MAX_DEFERRED_CHROMA_PLANES);
+        let mut deferred = DEFERRED_CHROMA_PLANES
+            .with(Cell::take)
+            .unwrap_or_else(|| Vec::with_capacity(MAX_DEFERRED_CHROMA_PLANES));
+        deferred.clear();
         let mut planes = self.planes;
-        for plane in planes.drain() {
+        for plane in planes.drain(..) {
             match plane.cctx_role {
                 CctxRole::HoldU => {
                     pending_u = Some(plane);
@@ -602,13 +598,13 @@ fn reconstruct_deferred_planes<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &mut TileBlockDecodedState,
-    mut deferred: RecycledParsedResidualPlanes,
+    mut deferred: Vec<ParsedResidualPlane>,
     qindex: u32,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let mut pending_u = None;
-    for plane in deferred.drain() {
+    for plane in deferred.drain(..) {
         if plane.plane.plane_id == PlaneId::U {
             pending_u = Some(plane);
             continue;
@@ -649,6 +645,8 @@ fn reconstruct_deferred_planes<T: ReconSample>(
             luma_context,
         )?;
     }
+    // The list is drained: hand its allocation back for the next block.
+    DEFERRED_CHROMA_PLANES.with(|slot| slot.set(Some(deferred)));
     Ok(())
 }
 
