@@ -384,14 +384,9 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
     fn next_unit<T: ReconSample>(
         &mut self,
         context: &TileDecodeContext<'_, T>,
-        granularity: ParserGranularity,
         buffers: Option<ReconRowBuffers>,
     ) -> ParserStep<ReconRow> {
         let tile_offset = self.tile.tile_byte_span().start;
-        let tile_cols = self.tile.mi_col_range();
-        let row_superblocks = (tile_cols.end as usize)
-            .saturating_sub(tile_cols.start as usize)
-            .div_ceil(context.sb_h4);
         let ReconRowBuffers {
             superblocks,
             entries,
@@ -499,33 +494,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     },
                 );
             };
-            match granularity {
-                ParserGranularity::Row => {
-                    let mut decoded = false;
-                    let mut error = None;
-                    for _ in 0..row_superblocks {
-                        let superblock = match walk.decode_next_superblock(
-                            self.tile,
-                            &mut decode_leaf,
-                            &mut on_published,
-                        ) {
-                            Ok(superblock) => superblock,
-                            Err(cause) => {
-                                error = Some(cause);
-                                break;
-                            }
-                        };
-                        if superblock.is_none() {
-                            break;
-                        }
-                        decoded = true;
-                    }
-                    error.map_or(Ok(decoded), Err)
-                }
-                ParserGranularity::Superblock => walk
-                    .decode_next_superblock(self.tile, &mut decode_leaf, &mut on_published)
-                    .map(|superblock| superblock.is_some()),
-            }
+            walk.decode_next_superblock(self.tile, &mut decode_leaf, &mut on_published)
+                .map(|superblock| superblock.is_some())
         };
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
@@ -568,12 +538,6 @@ fn finish_tile_symbols(symbols: SymbolDecoder<'_>, tile_offset: ByteOffset) -> R
         .exit_symbol()
         .map(|_| ())
         .map_err(|error| crate::pipeline::malformed_tile_payload(tile_offset, "8.2.4", error))
-}
-
-#[derive(Clone, Copy)]
-enum ParserGranularity {
-    Row,
-    Superblock,
 }
 
 /// The § 7.12 banks one tile's resolve pass owns, alongside whichever
@@ -1570,11 +1534,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     )?;
     parser.mv_grid.log_flags();
     loop {
-        let step = parser.next_unit(
-            context,
-            ParserGranularity::Superblock,
-            Some(take_retained_recon_row_buffers()),
-        );
+        let step = parser.next_unit(context, Some(take_retained_recon_row_buffers()));
         let (mut row, last) = match step {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
@@ -1592,16 +1552,6 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         unit_count,
         output: parser.into_output(),
     })
-}
-
-struct PreparedTile {
-    tile_num: u32,
-    mi_rows: Range<usize>,
-    mi_cols: Range<usize>,
-    rows: Vec<ReconRow>,
-    quantizer: FrameQuantizerSnapshot,
-    block_decoded: TileBlockDecodedState,
-    output: TileParserOutput,
 }
 
 fn tile_block_decoded<T: ReconSample>(
@@ -1623,15 +1573,6 @@ fn tile_block_decoded<T: ReconSample>(
         (tile.mi_row_range().end as usize).min(context.mi_rows),
     )
     .map_err(|error| inter_tile_block_decoded_error(&error))
-}
-
-fn tile_luma_rect<T: ReconSample>(
-    tile: &DecodeTileWorkUnit<'_>,
-    workspace: &CurrentFrameWorkspace<T>,
-) -> Result<splot_recon::PlaneRect> {
-    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
-    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-    luma_rect(&mi_rows, &mi_cols, workspace)
 }
 
 fn luma_rect<T: ReconSample>(
@@ -1700,96 +1641,6 @@ fn superblock_luma_rects<T: ReconSample>(
     Ok(rects)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn prepare_tile<T: ReconSample>(
-    tile: &mut DecodeTileWorkUnit<'_>,
-    mut surface: splot_recon::CurrentFrameRect<'_, T>,
-    context: &TileDecodeContext<'_, T>,
-    temporal_context: &TemporalMvContext,
-    motion: &MotionFieldUnits,
-    cdef_state: &CdefState,
-    gdf_state: &GdfState,
-    ccso_state: &CcsoState,
-    quantizer: FrameQuantizerSnapshot,
-    scratch_pool: &InterReconScratchPool<T>,
-) -> Result<PreparedTile> {
-    let tile_num = tile.tile_num();
-    let tile_offset = tile.tile_byte_span().start;
-    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
-    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
-    let block_decoded = tile_block_decoded(tile, context)?;
-    let row_count = mi_rows
-        .end
-        .min(context.mi_rows)
-        .saturating_sub(mi_rows.start)
-        .div_ceil(context.sb_h4)
-        + 1;
-    let mut rows = Vec::new();
-    rows.try_reserve_exact(row_count)
-        .map_err(|_| inter_allocation!("inter tile rows"))?;
-    let mut parser = TileParser::new(
-        tile,
-        context,
-        cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
-        gdf_state.for_tile(mi_rows.clone(), mi_cols.clone())?,
-        ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
-    )?;
-    let mut resolve_state = TileResolveState::new(context.sequence);
-    let mut sink = super::super::mc::WorkspaceSink::Rect(&mut surface);
-    loop {
-        let _quantizer_scopes = quantizer.install_frame();
-        let step = parser.next_unit(context, ParserGranularity::Row, None);
-        let step = resolve_parser_step(step, |row| {
-            resolve_state.resolve_unit(
-                &mut parser.mv_grid,
-                context,
-                temporal_context,
-                row,
-                tile_offset,
-            )
-        });
-        let (mut row, last) = match step {
-            ParserStep::More(row) => (row, false),
-            ParserStep::Last(row) => (row, true),
-        };
-        row.return_terminal_error()?;
-        rows.push(scratch_pool.with_scratch(|scratch| {
-            precompute_recon_row_on_surface(
-                row,
-                &mut sink,
-                scratch,
-                &block_decoded,
-                motion,
-                &quantizer,
-                temporal_context,
-                context.reference,
-                context.ref_frame_idx,
-                context.sequence,
-                context.core,
-                context.sb_h4,
-                context.mi_rows,
-                context.mi_cols,
-                context.current_order_hint,
-                context.luma_use_tcq,
-                context.residual_use_ddt,
-                context.bit_depth,
-            )
-        }));
-        if last {
-            break;
-        }
-    }
-    Ok(PreparedTile {
-        tile_num,
-        mi_rows,
-        mi_cols,
-        rows,
-        quantizer,
-        block_decoded,
-        output: parser.into_output(),
-    })
-}
-
 fn no_decoded_block_error() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into()
 }
@@ -1834,10 +1685,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
         mi_rows,
         mi_cols,
         sb_h4,
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
-        current_order_hint,
         ..
     } = params;
     frame_filter_records.clear();
@@ -1852,126 +1699,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
         temporal_context,
     );
     let global_intrabc = super::intrabc::global_intrabc_enabled(core.intrabc);
-    let independent_tiles = work_units.len() > 1 && !global_intrabc;
-    if independent_tiles {
-        row_gate.wait()?;
-        let mut luma_rects = Vec::new();
-        luma_rects
-            .try_reserve_exact(work_units.len())
-            .map_err(|_| inter_allocation!("inter tile surfaces"))?;
-        for tile in work_units.iter() {
-            luma_rects.push(tile_luma_rect(tile, &workspace)?);
-        }
-        let surfaces = workspace.rect_surfaces(&luma_rects)?;
-        let quantizer = FrameQuantizerSnapshot::capture();
-        let mut prepared_results = Vec::new();
-        prepared_results
-            .try_reserve_exact(work_units.len())
-            .map_err(|_| inter_allocation!("inter tile result slots"))?;
-        prepared_results.resize_with(work_units.len(), || None);
-        splot_parallel::ready_task_scope(|scope| {
-            for ((tile, surface), result) in work_units
-                .iter_mut()
-                .zip(surfaces)
-                .zip(&mut prepared_results)
-            {
-                let context = &context;
-                let motion = &motion;
-                let cdef_state = &cdef_state;
-                let gdf_state = &gdf_state;
-                let ccso_state = &ccso_state;
-                let workers = &workers;
-                let quantizer = quantizer.clone();
-                scope.spawn(move |_| {
-                    *result = Some(prepare_tile(
-                        tile,
-                        surface,
-                        context,
-                        temporal_context,
-                        motion,
-                        cdef_state,
-                        gdf_state,
-                        ccso_state,
-                        quantizer,
-                        workers,
-                    ));
-                });
-            }
-        })?;
-        let mut prepared = Vec::new();
-        prepared
-            .try_reserve_exact(prepared_results.len())
-            .map_err(|_| inter_allocation!("inter tile result collection"))?;
-        for result in prepared_results {
-            let result = result.ok_or_else(invalid_inter_tile_scheduling_state)?;
-            prepared.push(result?);
-        }
-        prepared.sort_by_key(|tile| tile.tile_num);
-        for mut tile in prepared {
-            let output = tile.output;
-            merge_tile_filter_state(
-                &mut cdef_state,
-                &mut gdf_state,
-                &mut ccso_state,
-                &mut segment_ids,
-                &output,
-                tile.mi_rows.clone(),
-                tile.mi_cols.clone(),
-            )?;
-            append_lr_records(
-                &mut frame_filter_records.lr_source_blocks,
-                &mut frame_filter_records.lr_unit_filters,
-                output.active_source_blocks,
-                output.unit_filters,
-            )?;
-
-            let mut recon_ordinal = 0usize;
-            let mut current_block_decoded_superblock = None;
-            for row in tile.rows {
-                drop(pixel_commit::replay_recon_row(
-                    row,
-                    &mut recon_ordinal,
-                    &mut decoded_any,
-                    &tile.quantizer,
-                    &mut ordered,
-                    &mut workspace,
-                    &mut tile.block_decoded,
-                    &mut current_block_decoded_superblock,
-                    &motion,
-                    frame_filter_records,
-                    temporal_context,
-                    reference,
-                    ref_frame_idx,
-                    sequence,
-                    core,
-                    mi_rows,
-                    mi_cols,
-                    current_order_hint,
-                    luma_use_tcq,
-                    residual_use_ddt,
-                    bit_depth,
-                )?);
-            }
-        }
-        if !decoded_any {
-            return Err(no_decoded_block_error());
-        }
-        return Ok((
-            TileDecodeScratch {
-                ordered,
-                workers,
-                surfaces: recycled_surfaces,
-            },
-            workspace,
-            TileDecodeOutput {
-                cdef_state,
-                gdf_state,
-                ccso_state,
-                segment_ids,
-                motion_field: motion.into_field(),
-            },
-        ));
-    }
     for tile in work_units.iter_mut() {
         let tile_offset = tile.tile_byte_span().start;
         let block_decoded = tile_block_decoded(tile, &context)?;

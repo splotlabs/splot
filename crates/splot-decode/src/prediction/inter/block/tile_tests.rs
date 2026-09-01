@@ -250,23 +250,30 @@ fn two_tile_fixture_decodes_identically_across_worker_widths() {
     }
 }
 
-#[test]
-fn corrupted_tile_payload_fails_during_decode_on_one_worker() {
-    let mut corrupted = LARGE_INTER_FIXTURE.to_vec();
+fn corrupted_tile_payload_error(bytes: &[u8], threads: usize) -> crate::DecodeError {
+    let mut corrupted = bytes.to_vec();
     let last = corrupted.len() - 1;
     corrupted[last] ^= u8::MAX;
     let options = crate::DecodeOptions::default();
-    let context = crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(1)))
-        .expect("context");
+    let context =
+        crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(threads)))
+            .expect("context");
     let plan = context
         .plan_bytes(&corrupted, options)
         .expect("length-preserving tile-payload corruption remains planner-valid");
-    let outcome = context.pool().install(|| {
-        crate::pipeline::decode_frames_from_plan(&corrupted, &options, &plan)
-            .map(|frames| frames.len())
-    });
-    assert!(
-        outcome.is_err(),
-        "planner-valid tile payload corruption must fail during decode"
-    );
+    context
+        .pool()
+        .install(|| crate::pipeline::decode_frames_from_plan(&corrupted, &options, &plan))
+        .err()
+        .expect("planner-valid tile payload corruption must fail during decode")
+}
+
+#[test]
+fn corrupted_multi_tile_payload_has_the_same_error_across_worker_widths() {
+    let expected = corrupted_tile_payload_error(TWO_TILE_INTER_FIXTURE, 1);
+    for threads in [2, 3, 4, 8, 10] {
+        let actual = corrupted_tile_payload_error(TWO_TILE_INTER_FIXTURE, threads);
+        assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+        assert_eq!(actual.to_string(), expected.to_string());
+    }
 }

@@ -517,11 +517,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             for _ in range.clone() {
                 let step = {
                     let _quantizer_scopes = quantizer.install_frame();
-                    let step = parser.next_unit(
-                        context,
-                        ParserGranularity::Superblock,
-                        Some(row_buffers.take()),
-                    );
+                    let step = parser.next_unit(context, Some(row_buffers.take()));
                     resolve_parser_step(step, |row| {
                         resolve.resolve_unit(
                             &mut parser.mv_grid,
