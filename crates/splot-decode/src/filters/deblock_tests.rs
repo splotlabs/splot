@@ -1817,7 +1817,6 @@ fn contiguous_source_plane_parallel_pass_matches_serial_output() {
         let pool = WorkerPool::new(ThreadCount::Fixed(threads.try_into().unwrap())).unwrap();
         let parallel_primed = pool.install(|| {
             assert!(splot_parallel::on_worker_pool());
-            assert_eq!(splot_parallel::on_multiworker_pool(), threads > 1);
             run(&mut parallel)
         });
 

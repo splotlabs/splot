@@ -292,7 +292,6 @@ impl InterReconCommand {
                 tip_scratch,
                 residual_scratch,
                 sink,
-                matches!(sink, WorkspaceSink::Frame(_)),
                 motion,
                 &self.placed,
                 residual_blocks,

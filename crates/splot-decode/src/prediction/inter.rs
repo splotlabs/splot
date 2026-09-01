@@ -136,7 +136,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     }
     let frame_walk::InterWalkPrologue {
         tile_plan,
-        mut workspace,
+        workspace,
         setup,
         facts,
         ref_frame_idx,
@@ -154,7 +154,12 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         geometry,
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
-    let (frame_cdfs, filter_inputs, segment_ids) = decode_inter_blocks(
+    let InterBlockDecodeOutput {
+        workspace,
+        frame_cdfs,
+        filter_inputs,
+        segment_ids,
+    } = decode_inter_blocks(
         scratch,
         tile_plan,
         sequence,
@@ -163,7 +168,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         facts,
         ref_frame_idx.as_slice(),
         reference,
-        &mut workspace,
+        workspace,
     )?;
     let core = Arc::new(core);
     Ok(setup.frame_walk(
@@ -1386,8 +1391,16 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
     /// Returns an internal diagnostic when a referenced frame's filter phase
     /// failed; the driver replaces it with that frame's own recorded failure.
     pub(crate) fn wait(&self) -> Result<()> {
+        let mut first_error = None;
         for slot in self.slots.iter().flatten() {
-            slot.wait_settled()?;
+            if let Err(error) = slot.wait_settled()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         Ok(())
     }
@@ -2174,8 +2187,9 @@ pub(crate) mod reference;
 mod single_ref;
 
 pub(crate) use block::{
-    InterBlockFacts, InterDecodeScratch, InterFilterInputs, InterFrameParse,
-    ScheduledFrameProgress, decode_inter_blocks, parse_inter_frame_blocks,
+    InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
+    InterFrameParse, ScheduledFrameProgress, ScheduledTileRecon, decode_inter_blocks,
+    parse_inter_frame_blocks,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
@@ -2183,7 +2197,7 @@ pub(crate) use find_mv_stack::{
 };
 pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
 pub(crate) use frame_walk::{
-    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, ScheduledInterWalk, parse_inter_frame,
+    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, parse_inter_frame,
     splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;

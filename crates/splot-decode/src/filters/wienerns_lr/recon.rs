@@ -516,7 +516,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|error| deblock_prepare_error(&error))?,
             None => None,
         };
-        if setup.stripe_ranges().len() > 1 && splot_parallel::on_multiworker_pool() {
+        if setup.stripe_ranges().len() > 1 && splot_parallel::on_worker_pool() {
             if let Some(sections) = sections.as_mut() {
                 sections
                     .prime_vertical_pass(&mut workspace, bit_depth)

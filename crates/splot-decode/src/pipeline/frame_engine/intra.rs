@@ -22,7 +22,7 @@ use crate::pipeline::{
     deblock_quant_deltas, derive_tile_plan, ensure_runtime_limits, unsupported_at,
 };
 use crate::prediction::inter::{
-    InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
+    InterBlockDecodeOutput, InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
 };
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
@@ -92,7 +92,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let mut workspace = CurrentFrameWorkspace::<T>::new_recycled(geometry.info())?; // § 7.11 writes every coded sample before any read
+    let workspace = CurrentFrameWorkspace::<T>::new_recycled(geometry.info())?; // § 7.11 writes every coded sample before any read
 
     let reference = InterReferenceState::<T>::empty().map_err(|_| {
         unsupported_at(
@@ -105,7 +105,12 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let _qm_scope = FrameQmScope::install(build_frame_qm_levels(&core));
 
-    let (frame_cdfs, filter_inputs, segment_ids) = decode_inter_blocks::<T>(
+    let InterBlockDecodeOutput {
+        workspace,
+        frame_cdfs,
+        filter_inputs,
+        segment_ids,
+    } = decode_inter_blocks::<T>(
         scratch,
         tile_plan,
         sequence,
@@ -123,7 +128,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         },
         &[],
         &reference,
-        &mut workspace,
+        workspace,
     )?;
 
     let setup = FilterSinkSetup {

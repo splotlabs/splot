@@ -219,7 +219,7 @@ fn invalid_loop_restoration_index_is_typed_and_fail_atomic() {
 }
 
 #[test]
-fn tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
+fn superblock_tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
     const MAX_MI_DIMENSION: usize = (1 << 16) / 4;
 
     assert_eq!(
@@ -229,23 +229,11 @@ fn tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
             MAX_MI_DIMENSION,
             MAX_MI_DIMENSION,
             16,
-            ParserGranularity::Row,
-        ),
-        1_025
-    );
-    assert_eq!(
-        tile_unit_capacity(
-            &(0..MAX_MI_DIMENSION),
-            &(0..MAX_MI_DIMENSION),
-            MAX_MI_DIMENSION,
-            MAX_MI_DIMENSION,
-            16,
-            ParserGranularity::Superblock,
         ),
         1_048_577
     );
     assert_eq!(
-        tile_unit_capacity(&(0..4), &(0..34), 4, 34, 32, ParserGranularity::Superblock,),
+        tile_unit_capacity(&(0..4), &(0..34), 4, 34, 32),
         3,
         "two effective 128x128 roots plus the terminal unit"
     );
@@ -256,7 +244,6 @@ fn tile_unit_capacity_is_exact_at_frame_and_raster_edges() {
             MAX_MI_DIMENSION,
             MAX_MI_DIMENSION,
             64,
-            ParserGranularity::Superblock,
         ),
         2,
         "a clipped bottom-right edge still contributes one root and one terminal"
@@ -276,5 +263,66 @@ fn superblock_surfaces_follow_raster_order_and_clip_the_frame_edge()
             splot_recon::PlaneRect::new(128, 0, 1, 16)?,
         ]
     );
+    Ok(())
+}
+
+fn surface_scratch(
+    info: splot_recon::DecodedFrameInfo,
+    rects: &[splot_recon::PlaneRect],
+) -> splot_recon::Result<TileDecodeScratch<u8>> {
+    let mut surfaces = rects
+        .iter()
+        .copied()
+        .map(|rect| splot_recon::OwnedFrameRect::new(info, rect, 0))
+        .collect::<splot_recon::Result<Vec<_>>>()?;
+    surfaces.reverse();
+    Ok(TileDecodeScratch {
+        surfaces,
+        ..TileDecodeScratch::default()
+    })
+}
+
+fn drain_surface_layout(
+    scratch: &mut TileDecodeScratch<u8>,
+    info: splot_recon::DecodedFrameInfo,
+    rects: &[splot_recon::PlaneRect],
+) -> splot_recon::Result<Vec<splot_recon::PlaneRect>> {
+    scratch.clear_incompatible_surface_layout(info, rects);
+    rects
+        .iter()
+        .copied()
+        .map(|rect| {
+            scratch
+                .take_surface(info, rect)
+                .map(|surface| surface.luma_rect())
+        })
+        .collect()
+}
+
+#[test]
+fn complete_recycled_surface_layout_drains_in_raster_order()
+-> core::result::Result<(), Box<dyn std::error::Error>> {
+    let workspace = crate::test_support::yuv420_workspace(256, 16, 0);
+    let info = workspace.info();
+    let rects = superblock_luma_rects(&(0..4), &(0..64), &workspace, 32)?;
+    let mut scratch = surface_scratch(info, &rects)?;
+
+    assert_eq!(drain_surface_layout(&mut scratch, info, &rects)?, rects);
+    assert!(scratch.surfaces.is_empty());
+    Ok(())
+}
+
+#[test]
+fn incompatible_recycled_surface_layout_is_cleared_whole()
+-> core::result::Result<(), Box<dyn std::error::Error>> {
+    let workspace = crate::test_support::yuv420_workspace(256, 32, 0);
+    let info = workspace.info();
+    let rects = superblock_luma_rects(&(0..4), &(0..64), &workspace, 32)?;
+    let stale_rects = superblock_luma_rects(&(4..8), &(0..64), &workspace, 32)?;
+    let mut scratch = surface_scratch(info, &stale_rects)?;
+
+    scratch.clear_incompatible_surface_layout(info, &rects);
+
+    assert!(scratch.surfaces.is_empty());
     Ok(())
 }

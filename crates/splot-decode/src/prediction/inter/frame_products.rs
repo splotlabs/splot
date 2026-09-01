@@ -42,7 +42,7 @@ impl<T> EntropyProductHandle<T> {
 
     /// Admits a consumer after publication or failure.
     pub(crate) fn condition(&self) -> Condition<'_> {
-        Condition::Completion(self.0.as_ref())
+        Condition::completion(self.0.as_ref())
     }
 }
 

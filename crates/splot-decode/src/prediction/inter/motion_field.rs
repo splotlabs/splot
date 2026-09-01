@@ -33,16 +33,12 @@ impl MotionFieldHandle {
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
         let layout = field.layout();
         let metadata = Arc::new(field.metadata());
-        let bands = if splot_parallel::on_multiworker_pool() {
-            field
-                .clone()
-                .into_bands()
-                .into_iter()
-                .map(|band| CompletionCell::completed(Some(Arc::new(band))))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let bands = field
+            .clone()
+            .into_bands()
+            .into_iter()
+            .map(|band| CompletionCell::completed(Some(Arc::new(band))))
+            .collect();
         Self(Arc::new(MotionFieldPublication {
             layout,
             metadata: CompletionCell::completed(Some(metadata)),
@@ -153,17 +149,35 @@ impl MotionFieldHandle {
     }
 
     pub(crate) fn metadata_condition(&self) -> Condition<'_> {
-        Condition::Completion(&self.0.metadata)
+        Condition::completion(&self.0.metadata)
     }
 
     pub(crate) fn field_condition(&self) -> Condition<'_> {
-        Condition::Completion(&self.0.field)
+        Condition::completion(&self.0.field)
     }
 
     pub(crate) fn band_condition(&self, index: usize) -> Option<Condition<'_>> {
-        self.0
-            .bands
-            .get(index)
-            .map(|band| Condition::Completion(band))
+        self.0.bands.get(index).map(Condition::completion)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settled_fields_always_publish_their_geometry_bands() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let field = TemporalMotionField::new(40, 8).ok_or("motion field")?;
+        let expected = field.clone();
+        let layout = field.layout();
+        let handle = MotionFieldHandle::settled(field);
+
+        assert_eq!(handle.field().map(Arc::as_ref), Some(&expected));
+        assert!(
+            (0..layout.band_count())
+                .all(|index| matches!(handle.band_publication(index), Some(Some(_))))
+        );
+        Ok(())
     }
 }

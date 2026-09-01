@@ -8,19 +8,11 @@ use core::str::FromStr;
 
 use crate::error::{FrameDelayParseError, parse_auto_or_count};
 
-/// Fewest frames [`FrameDelay::Auto`] keeps in flight on a multiworker pool.
-///
-/// A two-worker pipeline spends more of a short decode filling than draining, so
-/// depth two leaves a worker idle whenever the driver has nothing admitted to
-/// hand it; three frames in flight measured consistently faster there while
-/// wider pools already exceed the floor.
-const AUTO_MULTIWORKER_FLOOR: NonZeroUsize = NonZeroUsize::MIN.saturating_add(2);
-
 /// How many frames a pipelined decoder may keep in flight at once.
 ///
 /// `Auto` resolves once per pipeline setup (never inside hot loops) to the
-/// worker-thread count, or to a floor of three frames when that count is two.
-/// `Fixed(n)` requires `n > 0` (enforced by the `NonZeroUsize`).
+/// worker-thread count. `Fixed(n)` requires `n > 0` (enforced by the
+/// `NonZeroUsize`).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum FrameDelay {
     /// Resolve the pipelining depth from the worker-thread count.
@@ -43,17 +35,14 @@ impl FrameDelay {
     /// Resolves to a concrete non-zero pipelining depth for a pool of `threads`
     /// workers.
     ///
-    /// One worker stays strictly serial under `Auto`; a multiworker pool takes
-    /// the deeper of its worker count and a three-frame floor. `Fixed(n)`
-    /// is honored as requested, including above the worker count: a driver wait
-    /// runs pool jobs rather than blocking, so extra in-flight frames cost
-    /// retained frame storage (bounded by the decoder's reference-store limit)
-    /// rather than concurrency. A resolved depth of 1 means serial decode.
+    /// `Auto` uses the worker count. `Fixed(n)` preserves the requested policy;
+    /// a consumer may cap its effective in-flight work at the worker count
+    /// because a larger queue cannot add execution concurrency. A resolved
+    /// depth of 1 means one admitted frame.
     #[must_use]
     pub fn resolve(self, threads: NonZeroUsize) -> NonZeroUsize {
         match self {
-            Self::Auto if threads.get() == 1 => threads,
-            Self::Auto => threads.max(AUTO_MULTIWORKER_FLOOR),
+            Self::Auto => threads,
             Self::Fixed(depth) => depth,
         }
     }
@@ -137,23 +126,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_floors_auto_on_a_multiworker_pool_and_honors_fixed_depths() {
-        for (delay, threads, expected) in [
-            (FrameDelay::Auto, 10, 10),
-            (FrameDelay::Auto, 4, 4),
-            (FrameDelay::Auto, 3, 3),
-            (FrameDelay::Auto, 2, 3),
-            (FrameDelay::Auto, 1, 1),
-            (FrameDelay::Fixed(nz(4)), 10, 4),
-            (FrameDelay::Fixed(nz(64)), 10, 64),
-            (FrameDelay::Fixed(nz(3)), 2, 3),
-            (FrameDelay::Fixed(nz(1)), 2, 1),
-            (FrameDelay::Fixed(nz(1)), 1, 1),
-        ] {
+    fn resolve_maps_auto_to_worker_count_and_honors_fixed_depths() {
+        for threads in 1..=10 {
+            assert_eq!(FrameDelay::Auto.resolve(nz(threads)), nz(threads));
+        }
+        for (depth, threads) in [(4, 10), (64, 10), (3, 2), (1, 2), (1, 1)] {
+            let delay = FrameDelay::Fixed(nz(depth));
             assert_eq!(
                 delay.resolve(nz(threads)),
-                nz(expected),
-                "expected {expected} for {delay} at {threads} worker(s)",
+                nz(depth),
+                "fixed depth {depth} changed at {threads} worker(s)",
             );
         }
     }

@@ -28,7 +28,6 @@ std::thread_local! {
 pub struct WorkerPool {
     inner: Arc<ThreadPool>,
     progress: Arc<PoolProgressEvent>,
-    requested: ThreadCount,
     threads: NonZeroUsize,
 }
 
@@ -75,7 +74,6 @@ impl WorkerPool {
         Ok(Self {
             inner,
             progress,
-            requested: thread_count,
             threads,
         })
     }
@@ -84,17 +82,6 @@ impl WorkerPool {
     #[must_use]
     pub fn threads(&self) -> NonZeroUsize {
         self.threads
-    }
-
-    /// The originally requested (unresolved) [`ThreadCount`].
-    #[must_use]
-    pub fn requested(&self) -> ThreadCount {
-        self.requested
-    }
-
-    #[cfg(test)]
-    pub(crate) fn parked_waiters(&self) -> usize {
-        self.progress.parked_waiters()
     }
 
     /// Runs `f` inside this local pool, so any nested Rayon work uses these
@@ -269,19 +256,6 @@ pub fn assist_pool_once() -> bool {
     matches!(assist_installed_pool(), PoolAssist::Executed)
 }
 
-/// Returns whether the calling thread is a worker of an installed pool that
-/// has more than one thread.
-///
-/// Codec helpers that are usually driven inside [`WorkerPool::install`] but are
-/// also callable directly (for example from tests) use this to take their
-/// parallel path only when the context's workers are actually in scope and
-/// parallelism can help, so a bare call never falls back to Rayon's global
-/// pool and a one-thread pool never pays work-splitting overhead.
-#[must_use]
-pub fn on_multiworker_pool() -> bool {
-    on_worker_pool() && rayon::current_num_threads() > 1
-}
-
 /// The worker count of the installed pool the caller runs on (`1` when the
 /// caller is not a pool worker).
 ///
@@ -324,27 +298,9 @@ mod tests {
     }
 
     #[test]
-    fn requested_round_trips() {
-        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
-        assert_eq!(pool.requested(), ThreadCount::Fixed(nz(2)));
-
-        let auto = WorkerPool::new(ThreadCount::Auto).unwrap();
-        assert_eq!(auto.requested(), ThreadCount::Auto);
-    }
-
-    #[test]
     fn install_runs_closure() {
         let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
         assert_eq!(pool.install(|| 21 * 2), 42);
-    }
-
-    #[test]
-    fn on_multiworker_pool_tracks_install_scope_and_width() {
-        assert!(!on_multiworker_pool());
-        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
-        assert!(pool.install(on_multiworker_pool));
-        let single = WorkerPool::new(ThreadCount::Fixed(nz(1))).unwrap();
-        assert!(!single.install(on_multiworker_pool));
     }
 
     #[test]

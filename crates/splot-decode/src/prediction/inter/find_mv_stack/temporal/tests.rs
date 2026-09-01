@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use splot_parallel::{ThreadCount, WorkerPool};
 
 #[test]
 fn temporal_motion_block_stays_compact() {
@@ -401,18 +402,37 @@ fn step_two_projection_samples_and_stores_on_the_even_grid() {
 
 #[test]
 fn backward_projection_preserves_source_to_current_direction() {
-    let mut source = TemporalMotionField::new(18, 56).unwrap();
-    source.set_reference_metadata(true, (56 * 8, 18 * 8), &[Some(9)]);
-    *source.cell_mut(8, 26).unwrap() = TemporalMotionCell {
-        ref_indices: [INVALID_TEMPORAL_REF, 0],
-        mvs: [
-            CompressedTemporalMv::ZERO,
-            compress_tmvp_mv(Mv { row: 10, col: 232 }),
-        ],
+    let project = |threads| {
+        WorkerPool::new(ThreadCount::from(threads))
+            .unwrap()
+            .install(|| {
+                let mut source = TemporalMotionField::new(18, 56).unwrap();
+                source.set_reference_metadata(true, (56 * 8, 18 * 8), &[Some(9)]);
+                *source.cell_mut(8, 26).unwrap() = TemporalMotionCell {
+                    ref_indices: [INVALID_TEMPORAL_REF, 0],
+                    mvs: [
+                        CompressedTemporalMv::ZERO,
+                        compress_tmvp_mv(Mv { row: 10, col: 232 }),
+                    ],
+                };
+                let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
+                project_whole_temporal_motion_field(
+                    &source,
+                    4,
+                    2,
+                    1,
+                    8,
+                    0,
+                    1,
+                    None,
+                    &[],
+                    None,
+                    &mut output,
+                );
+                output
+            })
     };
-    let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
-
-    project_whole_temporal_motion_field(&source, 4, 2, 1, 8, 0, 1, None, &[], None, &mut output);
+    let output = project(1);
 
     assert_eq!(
         output.cell(8, 25),
@@ -426,6 +446,7 @@ fn backward_projection_preserves_source_to_current_direction() {
         })
     );
     assert!(!output.cell(8, 27).unwrap().valid);
+    assert_eq!(output, project(4));
 }
 
 #[test]

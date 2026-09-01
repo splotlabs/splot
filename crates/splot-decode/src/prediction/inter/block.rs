@@ -164,6 +164,13 @@ pub(crate) struct InterFilterInputs {
     motion_field: TemporalMotionField,
 }
 
+pub(crate) struct InterBlockDecodeOutput<T: ReconSample> {
+    pub(crate) workspace: CurrentFrameWorkspace<T>,
+    pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
+    pub(crate) filter_inputs: InterFilterInputs,
+    pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
+}
+
 impl InterFilterInputs {
     /// Takes the walk-derived temporal motion field, leaving an empty one.
     pub(crate) fn take_motion_field(&mut self) -> TemporalMotionField {
@@ -186,7 +193,9 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         self.temporal_context = Some(TemporalMvContext::from_scratch(scratch));
     }
 
-    fn from_scheduled_tile_scratch(tile: tile::TileDecodeScratch<T>) -> Self {
+    pub(in crate::prediction::inter) fn from_scheduled_tile_scratch(
+        tile: tile::TileDecodeScratch<T>,
+    ) -> Self {
         Self {
             tile,
             temporal_context: None,
@@ -220,25 +229,7 @@ enum ReconCommand {
     Inter(deferred_recon::InterReconCommand),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum ReconDependency {
-    ReferenceOnly,
-    CurrentFrame,
-    GlobalIntrabcFence,
-}
-
 impl ReconCommand {
-    fn dependency(&self) -> ReconDependency {
-        match self {
-            Self::Intrabc(command) if command.requires_global_fence() => {
-                ReconDependency::GlobalIntrabcFence
-            }
-            Self::GeneralIntra(_) | Self::Intrabc(_) => ReconDependency::CurrentFrame,
-            Self::Inter(command) if command.reads_current_frame() => ReconDependency::CurrentFrame,
-            Self::Inter(_) => ReconDependency::ReferenceOnly,
-        }
-    }
-
     fn temporal_record_capacity(&self) -> usize {
         match self {
             Self::Inter(command) => command.temporal_record_capacity(),
@@ -507,12 +498,8 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-) -> Result<(
-    Arc<FrameCdfSubset>,
-    InterFilterInputs,
-    Arc<FrameSegmentIdMap>,
-)> {
+    workspace: CurrentFrameWorkspace<T>,
+) -> Result<InterBlockDecodeOutput<T>> {
     let work_units = tile_plan.work_units_mut();
     let setup = derive_inter_block_setup(
         work_units,
@@ -534,18 +521,16 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         qindex,
     } = setup;
     let mut records = core::mem::take(&mut scratch.frame_filter_records);
-    let InterDecodeScratch {
-        tile: tile_scratch,
-        temporal_context: temporal_slot,
-        ..
-    } = scratch;
     let temporal_context = prelude.run(
-        temporal_slot.get_or_insert_with(TemporalMvContext::empty),
+        scratch
+            .temporal_context
+            .get_or_insert_with(TemporalMvContext::empty),
         core,
         ref_frame_idx,
         reference,
     )?;
-    let walked = tile::decode_tiles(
+    let tile_scratch = core::mem::take(&mut scratch.tile);
+    let (tile_scratch, workspace, walked) = tile::decode_tiles(
         tile_scratch,
         &mut records,
         work_units,
@@ -561,6 +546,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     )?;
+    scratch.tile = tile_scratch;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
     let ccso_grid = walked.ccso_state.into_grid()?;
     let filter_inputs = InterFilterInputs {
@@ -577,7 +563,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         params.mi_cols,
         walked.segment_ids,
     );
-    Ok((frame_cdfs, filter_inputs, segment_ids))
+    Ok(InterBlockDecodeOutput {
+        workspace,
+        frame_cdfs,
+        filter_inputs,
+        segment_ids,
+    })
 }
 
 fn final_segment_ids<T: ReconSample>(
@@ -1111,7 +1102,7 @@ fn decode_block<T: ReconSample>(
     frame_is_switch: bool,
     current_order_hint: u32,
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
+) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let (avail_up, avail_left) = tile_neighbour_availability(
         frontier.r,
         frontier.c,
@@ -1381,34 +1372,26 @@ fn decode_block<T: ReconSample>(
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
-            let dependency = if intrabc::global_intrabc_enabled(core.intrabc) {
-                ReconDependency::GlobalIntrabcFence
-            } else {
-                ReconDependency::CurrentFrame
-            };
             return Ok((
                 non_intra_leaf_mode(frontier).mark_intrabc(),
-                pending_intrabc_leaf(
-                    PendingIntrabcBlock {
-                        frontier: *frontier,
-                        n4w,
-                        n4h,
-                        mi_rows,
-                        mi_cols,
-                        info,
-                        spatial,
-                        residual,
-                        segment_id,
-                        qindex: block_qindex,
-                        luma_use_tcq,
-                        residual_use_ddt,
-                        bit_depth,
-                        subsampling: (u32::from(sub_x), u32::from(sub_y)),
-                        avail_up,
-                        avail_left,
-                    },
-                    dependency,
-                ),
+                pending_intrabc_leaf(PendingIntrabcBlock {
+                    frontier: *frontier,
+                    n4w,
+                    n4h,
+                    mi_rows,
+                    mi_cols,
+                    info,
+                    spatial,
+                    residual,
+                    segment_id,
+                    qindex: block_qindex,
+                    luma_use_tcq,
+                    residual_use_ddt,
+                    bit_depth,
+                    subsampling: (u32::from(sub_x), u32::from(sub_y)),
+                    avail_up,
+                    avail_left,
+                }),
             ));
         }
         let block_qindex = segment_block_qindex(
@@ -1464,9 +1447,9 @@ fn decode_block<T: ReconSample>(
         return Ok((
             leaf,
             if luma_tree {
-                ParsedLeaf::non_inter(command, n4w, n4h)
+                LeafResolveRecord::NonInter { command, n4w, n4h }
             } else {
-                ParsedLeaf::reseed(command)
+                LeafResolveRecord::Reseed(command)
             },
         ));
     }
@@ -2119,11 +2102,10 @@ mod compound_path;
 mod deferred_recon;
 mod filter_records;
 mod frame_parse;
-pub(crate) use frame_parse::{
-    InterFrameParse, PendingFilterAttach, ScheduledFrameProgress, ScheduledInterReconstruction,
-    parse_inter_frame_blocks, prepare_scheduled_recon,
-};
-pub(crate) use tile::ScheduledCommitProgress;
+pub(in crate::prediction::inter) use frame_parse::prepare_scheduled_recon;
+pub(crate) use frame_parse::{InterFrameParse, PendingFilterAttach, parse_inter_frame_blocks};
+pub(crate) use tile::ScheduledFrameProgress;
+pub(crate) use tile::ScheduledTileRecon;
 mod interintra;
 mod intrabc;
 pub(crate) use intrabc::global_intrabc_enabled;
@@ -2143,8 +2125,8 @@ use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
-    LeafResolveRecord, MvResolutionState, ParsedLeaf, PendingIntrabcBlock, SingleMotionSyntax,
-    WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf,
+    LeafResolveRecord, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax, WarpDeltaSyntax,
+    WarpModelSource, WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf,
     resolve_parsed_leaves,
 };
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;

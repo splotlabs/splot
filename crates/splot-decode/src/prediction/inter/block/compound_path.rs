@@ -81,7 +81,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     block_qindex: u32,
     frame_interpolation_filter: FrameInterpolationFilter,
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
+) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let opfl_refine_type = core
         .inter
         .as_ref()
@@ -610,7 +610,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
+) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let ParsedCompoundBlock {
         block_ctx,
         motion,
@@ -985,7 +985,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
+) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let current = compound_current_order_hint(core);
     let ref_order_hints = if num_total_refs > 1 {
         Some((

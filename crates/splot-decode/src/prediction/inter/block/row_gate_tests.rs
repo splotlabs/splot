@@ -293,12 +293,7 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
     gate.note_tip(&block, &mut bounds);
 
     assert_eq!(bounds.needs[1], 582);
-    assert!(
-        !gate.admits(&bounds),
-        "568 rows do not cover the first candidate over the 128-row batch"
-    );
-    future.progress().expect("progress").publish(1);
-    assert!(gate.admits(&bounds));
+    assert_eq!(gate.conditions(&bounds).len(), 2);
 }
 
 /// The luma row `splot-recon`'s § 7.13.3.19 block warp reads last, over every
@@ -418,64 +413,4 @@ fn a_bawp_list_bound_covers_the_template_below_its_reference_position() {
         moved.is_some_and(|rows| rows >= 120),
         "the template must not be dropped when the subpel read is shorter"
     );
-}
-
-#[test]
-fn a_row_is_admitted_once_its_lists_have_published_their_rows() {
-    let frame = info(64, 192);
-    let (first, _first_writer) = RefFrameSlot::<u8>::pending(frame).expect("pending slot");
-    let (second, _second_writer) = RefFrameSlot::<u8>::pending(frame).expect("pending slot");
-    for slot in [&first, &second] {
-        assert!(
-            slot.progress()
-                .expect("progress")
-                .begin(&[(0, 64), (64, 128), (128, 192)])
-        );
-    }
-    let lists = [
-        Some(&first),
-        Some(&second),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ];
-    let mut needs = [0u32; MAX_LISTS];
-    needs[0] = 64;
-    needs[1] = 128;
-    let bounds = RowReferenceBounds {
-        needs,
-        settle: false,
-    };
-
-    assert!(!lists_published(&lists, &bounds), "nothing published yet");
-    first.progress().expect("progress").publish(0);
-    assert!(
-        !lists_published(&lists, &bounds),
-        "the second list is still short"
-    );
-    second.progress().expect("progress").publish(0);
-    assert!(
-        !lists_published(&lists, &bounds),
-        "the second list needs two stripes"
-    );
-    second.progress().expect("progress").publish(1);
-    assert!(lists_published(&lists, &bounds), "both lists are covered");
-}
-
-#[test]
-fn a_list_a_row_never_reads_imposes_no_requirement() {
-    let frame = info(64, 192);
-    let (slot, _writer) = RefFrameSlot::<u8>::pending(frame).expect("pending slot");
-    let lists = [None, Some(&slot), None, None, None, None, None, None];
-
-    assert!(lists_published(
-        &lists,
-        &RowReferenceBounds {
-            needs: [0; MAX_LISTS],
-            settle: false,
-        }
-    ));
 }

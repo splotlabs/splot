@@ -47,8 +47,10 @@ impl DecodeContext {
         })
     }
 
-    /// The resolved, non-zero frame-pipelining depth: how many frames may be in
-    /// flight at once. One means serial decode.
+    /// The resolved, non-zero requested frame-pipelining policy.
+    ///
+    /// The pipeline uses the smaller of this value and the worker count as its
+    /// effective in-flight capacity without changing the scheduling algorithm.
     #[must_use]
     pub fn frame_delay(&self) -> NonZeroUsize {
         self.frame_delay

@@ -22,7 +22,6 @@ pub(super) struct IntrabcReconPrediction {
     morph_mv: Option<Mv>,
     /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
     morph_avail: (bool, bool),
-    global_fence: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -63,7 +62,6 @@ impl IntrabcReconPrediction {
             chroma,
             morph_mv,
             morph_avail,
-            global_fence: global_intrabc_enabled(core.intrabc),
         })
     }
 
@@ -146,10 +144,6 @@ impl IntrabcReconCommand {
             residual_use_ddt,
             bit_depth,
         }
-    }
-
-    pub(super) const fn requires_global_fence(&self) -> bool {
-        self.prediction.global_fence
     }
 
     pub(super) fn reconstruct<T: ReconSample>(
@@ -235,18 +229,24 @@ mod tests {
     }
 
     #[test]
-    fn global_intrabc_capability_requires_a_fence_even_when_local_is_enabled() {
+    fn global_intrabc_enabled_follows_only_the_global_flag() {
         let params = |global, local| IntrabcParams {
             allow_intrabc: true,
-            allow_global_intrabc: Some(global),
+            allow_global_intrabc: global,
             allow_local_intrabc: local,
             change_bvp_drl: None,
             max_bvp_drl_bits_minus_1: None,
         };
 
         assert!(!global_intrabc_enabled(None));
-        assert!(!global_intrabc_enabled(Some(params(false, None))));
-        assert!(global_intrabc_enabled(Some(params(true, Some(false)))));
-        assert!(global_intrabc_enabled(Some(params(true, Some(true)))));
+        for global in [None, Some(false), Some(true)] {
+            for local in [None, Some(false), Some(true)] {
+                assert_eq!(
+                    global_intrabc_enabled(Some(params(global, local))),
+                    global == Some(true),
+                    "global={global:?}, local={local:?}"
+                );
+            }
+        }
     }
 }

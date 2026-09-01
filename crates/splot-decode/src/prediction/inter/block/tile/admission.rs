@@ -6,17 +6,16 @@
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`,
 //! `INFRA-DECODE-FRAME-PIPELINING`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use splot_core::headers::frame::RefIdxBuf;
-use splot_parallel::Condition;
+use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
 
 use super::*;
 use crate::prediction::inter::block::row_gate::RowReferenceGate;
 use crate::prediction::inter::find_mv_stack::TemporalBandPlan;
 
-struct ScheduledCommit<T: ReconSample> {
+pub(super) struct TileCommit<T: ReconSample> {
     next: usize,
     handed_rows: usize,
     ordered: deferred_recon::InterReconScratch<T>,
@@ -25,6 +24,97 @@ struct ScheduledCommit<T: ReconSample> {
     current_block_decoded_superblock: Option<[usize; 2]>,
     decoded_any: bool,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
+    frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
+}
+
+impl<T: ReconSample> TileCommit<T> {
+    pub(super) fn direct(
+        ordered: deferred_recon::InterReconScratch<T>,
+        workspace: CurrentFrameWorkspace<T>,
+        block_decoded: TileBlockDecodedState,
+        decoded_any: bool,
+        surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
+        frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
+    ) -> Self {
+        Self {
+            next: 0,
+            handed_rows: 0,
+            ordered,
+            workspace,
+            block_decoded,
+            current_block_decoded_superblock: None,
+            decoded_any,
+            surfaces,
+            frame_filter_records,
+        }
+    }
+
+    pub(super) fn replay(
+        &mut self,
+        mut ready: ReadyReconRow<T>,
+        quantizer: &FrameQuantizerSnapshot,
+        motion: &MotionFieldUnits,
+        temporal: &TemporalMvContext,
+        context: &TileDecodeContext<'_, T>,
+    ) -> Result<ReconRowBuffers> {
+        ready.row.return_terminal_error()?;
+        if ready.row.ordinal != self.next {
+            return Err(invalid_inter_tile_scheduling_state());
+        }
+        if let Some(surface) = ready.surface.take() {
+            surface.publish_into(&mut self.workspace)?;
+            self.surfaces.push(surface);
+        }
+        self.ordered.with_installed(|scratch| {
+            pixel_commit::replay_recon_row(
+                ready.row,
+                &mut self.next,
+                &mut self.decoded_any,
+                quantizer,
+                scratch,
+                &mut self.workspace,
+                &mut self.block_decoded,
+                &mut self.current_block_decoded_superblock,
+                motion,
+                &mut self.frame_filter_records,
+                temporal,
+                context.reference,
+                context.ref_frame_idx,
+                context.sequence,
+                context.core,
+                context.mi_rows,
+                context.mi_cols,
+                context.current_order_hint,
+                context.luma_use_tcq,
+                context.residual_use_ddt,
+                context.bit_depth,
+            )
+        })
+    }
+
+    pub(super) fn finish_direct(
+        self,
+    ) -> (
+        deferred_recon::InterReconScratch<T>,
+        CurrentFrameWorkspace<T>,
+        bool,
+        Vec<splot_recon::OwnedFrameRect<T>>,
+        crate::filters::wienerns_lr::FrameFilterRecords,
+    ) {
+        (
+            self.ordered,
+            self.workspace,
+            self.decoded_any,
+            self.surfaces,
+            self.frame_filter_records,
+        )
+    }
+}
+
+struct CommittedBatch<T: ReconSample> {
+    state: TileCommit<T>,
+    frontier_rows: core::ops::Range<usize>,
+    terminal: bool,
 }
 
 /// The § 7.17 frontier's own storage, advanced by one ordered chain per frame.
@@ -49,7 +139,9 @@ struct ScheduledResolve {
     state: TileResolveState,
 }
 
-fn take_active_commit<S>(holder: &Mutex<Option<S>>) -> Result<S> {
+fn take_active_commit<T: ReconSample>(
+    holder: &Mutex<Option<TileCommit<T>>>,
+) -> Result<TileCommit<T>> {
     holder
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -57,19 +149,15 @@ fn take_active_commit<S>(holder: &Mutex<Option<S>>) -> Result<S> {
         .ok_or_else(invalid_inter_tile_scheduling_state)
 }
 
-fn restore_active_commit<S>(holder: &Mutex<Option<S>>, state: S) -> Result<()> {
+fn restore_active_commit<T: ReconSample>(
+    holder: &Mutex<Option<TileCommit<T>>>,
+    state: TileCommit<T>,
+) -> Result<()> {
     let mut holder = holder.lock().unwrap_or_else(PoisonError::into_inner);
     if holder.is_some() {
         return Err(invalid_inter_tile_scheduling_state());
     }
     *holder = Some(state);
-    Ok(())
-}
-
-fn validate_commit_ordinal(ordinal: usize, next: usize) -> Result<()> {
-    if ordinal != next {
-        return Err(invalid_inter_tile_scheduling_state());
-    }
     Ok(())
 }
 
@@ -97,20 +185,19 @@ fn project_temporal_band(
 }
 
 #[allow(clippy::large_enum_variant)]
-enum ScheduledRowState<T: ReconSample> {
+enum TileReconRow<T: ReconSample> {
     Unresolved {
         row: ReconRow,
-        surface: Option<ReadyReconSurface<'static, T>>,
+        surface: Option<splot_recon::OwnedFrameRect<T>>,
     },
-    Ready(ReadyReconRow<'static, T>),
+    Ready(ReadyReconRow<T>),
     Taken,
 }
 
 /// Filter jobs made ready by one ordered frontier link.
-pub(in crate::prediction::inter::block) struct ScheduledTileProgress<T: ReconSample> {
-    pub(in crate::prediction::inter::block) filters:
-        Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
-    pub(in crate::prediction::inter::block) output: Option<ScheduledTileOutput<T>>,
+pub(crate) struct ScheduledFrameProgress<T: ReconSample> {
+    pub(crate) filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
+    pub(crate) output: Option<crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>>,
 }
 
 /// Canonical rows one ordered commit handed to the frontier chain.
@@ -121,68 +208,526 @@ pub(crate) struct ScheduledCommitProgress {
     pub(crate) recon_complete: bool,
 }
 
-/// Completed scheduled tile reconstruction.
-pub(in crate::prediction::inter::block) struct ScheduledTileOutput<T: ReconSample> {
-    pub(in crate::prediction::inter::block) filter:
-        crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>,
-}
-
-/// Owned state shared by one admission job per parsed reconstruction unit.
-pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample> {
-    rows: Mutex<Vec<ScheduledRowState<T>>>,
-    prepared: Mutex<Vec<Option<Vec<ReadyReconRow<'static, T>>>>>,
+/// Resolved rows and the concrete reconstruction work they feed.
+struct TileRecon<T: ReconSample> {
+    rows: Mutex<Vec<TileReconRow<T>>>,
+    prepared: Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
     unit_count: usize,
     units_per_row: usize,
     batches: Vec<core::ops::Range<usize>>,
-    filter_count: usize,
     frontier_rows: usize,
-    commit: Mutex<Option<ScheduledCommit<T>>>,
+    commit: Mutex<Option<TileCommit<T>>>,
     scratch: Mutex<Option<TileDecodeScratch<T>>>,
-    frontier: Mutex<ScheduledFrontier<T>>,
-    resolve: Mutex<ScheduledResolve>,
     workers: InterReconScratchPool<T>,
     prepass_block_decoded: TileBlockDecodedState,
     motion: MotionFieldUnits,
-    info: splot_recon::DecodedFrameInfo,
     params: TileWalkParams,
     quantizer: FrameQuantizerSnapshot,
     temporal: Arc<TemporalMvContext>,
-    temporal_plan: TemporalBandPlan,
     reference: Arc<InterReferenceState<T>>,
     ref_frame_idx: RefIdxBuf,
     sequence: Arc<SequenceHeader>,
     core: Arc<FrameHeaderCore>,
+}
+
+/// Owned state shared by one admission job per parsed reconstruction unit.
+pub(crate) struct ScheduledTileRecon<T: ReconSample> {
+    recon: TileRecon<T>,
+    filter_count: usize,
+    frontier: Mutex<ScheduledFrontier<T>>,
+    resolve: Mutex<ScheduledResolve>,
+    info: splot_recon::DecodedFrameInfo,
+    temporal_plan: TemporalBandPlan,
     tile_offset: ByteOffset,
-    whole_frame: bool,
     parse_progress: Arc<super::ParseProgress>,
-    pending_surfaces: Mutex<std::vec::IntoIter<ReadyReconSurface<'static, T>>>,
-    finished: AtomicBool,
+    pending_surfaces: Mutex<std::vec::IntoIter<splot_recon::OwnedFrameRect<T>>>,
+}
+
+impl<T: ReconSample> TileRecon<T> {
+    fn batch_range(&self, index: usize) -> Option<core::ops::Range<usize>> {
+        self.batches.get(index).cloned()
+    }
+
+    fn accept_resolved(
+        rows: &mut [TileReconRow<T>],
+        index: usize,
+        ready: ReadyReconRow<T>,
+    ) -> Result<()> {
+        let slot = rows
+            .get_mut(index)
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        if !matches!(slot, TileReconRow::Taken) {
+            return Err(invalid_inter_tile_scheduling_state());
+        }
+        *slot = TileReconRow::Ready(ready);
+        Ok(())
+    }
+
+    fn conditions(&self, index: usize, info: splot_recon::DecodedFrameInfo) -> Vec<Condition<'_>> {
+        let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut bounds = row_gate::RowReferenceBounds::default();
+        for ready in self
+            .batch_range(index)
+            .and_then(|range| rows.get(range))
+            .into_iter()
+            .flatten()
+            .filter_map(|row| match row {
+                TileReconRow::Ready(ready) => Some(ready),
+                TileReconRow::Unresolved { .. } | TileReconRow::Taken => None,
+            })
+        {
+            bounds.merge(ready.bounds);
+        }
+        drop(rows);
+        RowReferenceGate::new(
+            &self.reference,
+            &self.core,
+            self.ref_frame_idx.as_slice(),
+            info,
+            &self.temporal,
+        )
+        .conditions(&bounds)
+    }
+
+    fn precompute(&self, index: usize) -> Result<()> {
+        let range = self
+            .batch_range(index)
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        {
+            let prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(slot) = prepared.get(index) else {
+                return Err(invalid_inter_tile_scheduling_state());
+            };
+            if slot.is_some() {
+                return Err(invalid_inter_tile_scheduling_state());
+            }
+        }
+        let ready = {
+            let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(rows) = rows.get_mut(range) else {
+                return Err(invalid_inter_tile_scheduling_state());
+            };
+            if rows
+                .iter()
+                .any(|row| !matches!(row, TileReconRow::Ready(_)))
+            {
+                return Err(invalid_inter_tile_scheduling_state());
+            }
+            let mut ready = Vec::with_capacity(rows.len());
+            for row in rows {
+                if let TileReconRow::Ready(row) = core::mem::replace(row, TileReconRow::Taken) {
+                    ready.push(row);
+                }
+            }
+            ready
+        };
+        let batch = self
+            .workers
+            .with_scratch(|scratch| -> Result<Vec<ReadyReconRow<T>>> {
+                let _quantizer_scopes = self.quantizer.install_frame();
+                let shared = deferred_recon::ReconShared {
+                    reference: &self.reference,
+                    ref_frame_idx: self.ref_frame_idx.as_slice(),
+                    temporal_context: &self.temporal,
+                    sequence: &self.sequence,
+                    core: &self.core,
+                    luma_use_tcq: self.params.luma_use_tcq,
+                    residual_use_ddt: self.params.residual_use_ddt,
+                    bit_depth: self.params.bit_depth,
+                    mi_rows: self.params.mi_rows,
+                    mi_cols: self.params.mi_cols,
+                    current_order_hint: self.params.current_order_hint,
+                };
+                Ok(ready
+                    .into_iter()
+                    .map(|mut ready| {
+                        scratch.with_installed(|scratch| {
+                            if !ready.row.has_terminal_error() && !ready.row.motion_derived {
+                                mvres::derive_unit_motion(
+                                    &mut ready.row,
+                                    ready.surface.as_mut(),
+                                    scratch,
+                                    &self.motion,
+                                    &shared,
+                                );
+                            }
+                            precompute_recon_row(
+                                ready,
+                                scratch,
+                                &self.prepass_block_decoded,
+                                &self.motion,
+                                &self.quantizer,
+                                &self.temporal,
+                                &self.reference,
+                                self.ref_frame_idx.as_slice(),
+                                &self.sequence,
+                                &self.core,
+                                self.params.sb_h4,
+                                self.params.mi_rows,
+                                self.params.mi_cols,
+                                self.params.current_order_hint,
+                                self.params.luma_use_tcq,
+                                self.params.residual_use_ddt,
+                                self.params.bit_depth,
+                            )
+                        })
+                    })
+                    .collect())
+            })?;
+        let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(slot) = prepared.get_mut(index) else {
+            return Err(invalid_inter_tile_scheduling_state());
+        };
+        if slot.is_some() {
+            return Err(invalid_inter_tile_scheduling_state());
+        }
+        *slot = Some(batch);
+        Ok(())
+    }
+
+    fn commit_batch(&self, index: usize) -> Result<CommittedBatch<T>> {
+        let mut commit = take_active_commit(&self.commit)?;
+        let batch = {
+            let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
+            prepared
+                .get_mut(index)
+                .ok_or_else(invalid_inter_tile_scheduling_state)?
+                .take()
+                .ok_or_else(invalid_inter_tile_scheduling_state)?
+        };
+        let context = self.params.context(
+            &self.sequence,
+            &self.core,
+            &self.reference,
+            self.ref_frame_idx.as_slice(),
+        );
+        for ready in batch {
+            let buffers = commit.replay(
+                ready,
+                &self.quantizer,
+                &self.motion,
+                &self.temporal,
+                &context,
+            )?;
+            recycle_retained_recon_row_buffers(buffers);
+        }
+        let terminal = commit.next == self.unit_count;
+        let closed_rows = closed_frontier_rows(
+            commit.next,
+            self.unit_count,
+            self.units_per_row,
+            self.frontier_rows,
+        );
+        let frontier_rows = commit.handed_rows..closed_rows;
+        commit.handed_rows = closed_rows;
+        if terminal && !commit.decoded_any {
+            return Err(no_decoded_block_error());
+        }
+        Ok(CommittedBatch {
+            state: commit,
+            frontier_rows,
+            terminal,
+        })
+    }
+
+    fn finish_commit(&self, mut commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
+        commit.surfaces.reverse();
+        let scratch =
+            TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, commit.surfaces);
+        *self.scratch.lock().unwrap_or_else(PoisonError::into_inner) = Some(scratch);
+        commit.workspace
+    }
+}
+
+fn record_first_error(error: &Mutex<Option<crate::DecodeError>>, value: crate::DecodeError) {
+    let mut error = error.lock().unwrap_or_else(PoisonError::into_inner);
+    if error.is_none() {
+        *error = Some(value);
+    }
+}
+
+/// Runs the ordinary single-tile walk through the same concrete precompute and
+/// ordered-commit operations as the scheduled frame path.
+///
+/// The driver owns entropy parsing and reference settlement. Pool jobs never
+/// wait: each precompute carries its row-reference conditions and each commit
+/// carries the preceding commit's completion.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_ordinary_tile<T: ReconSample>(
+    parser: &mut TileParser<'_, '_>,
+    resolve: &mut TileResolveState,
+    tile_offset: ByteOffset,
+    mut surfaces: std::vec::IntoIter<splot_recon::OwnedFrameRect<T>>,
+    unit_count: usize,
+    units_per_row: usize,
+    context: &TileDecodeContext<'_, T>,
+    temporal: &TemporalMvContext,
+    quantizer: &FrameQuantizerSnapshot,
+    row_gate: &RowReferenceGate<'_, T>,
+    row_buffers: &ReconRowBufferPool,
+    workers: &InterReconScratchPool<T>,
+    prepass_block_decoded: &TileBlockDecodedState,
+    motion: &MotionFieldUnits,
+    commit: TileCommit<T>,
+) -> Result<TileCommit<T>> {
+    let batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
+    let batch_count = batches.len();
+    let mut prepared: Vec<Mutex<Option<Vec<ReadyReconRow<T>>>>> = Vec::new();
+    prepared
+        .try_reserve_exact(batch_count)
+        .map_err(|_| inter_allocation!("ordinary inter prepared batches"))?;
+    prepared.resize_with(batch_count, || Mutex::new(None));
+    let mut precomputed = Vec::new();
+    precomputed
+        .try_reserve_exact(batch_count)
+        .map_err(|_| inter_allocation!("ordinary inter precompute completions"))?;
+    precomputed.resize_with(batch_count, CompletionCell::new);
+    let mut committed = Vec::new();
+    committed
+        .try_reserve_exact(batch_count)
+        .map_err(|_| inter_allocation!("ordinary inter commit completions"))?;
+    committed.resize_with(batch_count, CompletionCell::new);
+    let mut ready_batches = Vec::new();
+    ready_batches
+        .try_reserve_exact(batch_count)
+        .map_err(|_| inter_allocation!("ordinary inter ready batches"))?;
+    for range in &batches {
+        let mut ready = Vec::new();
+        ready
+            .try_reserve_exact(range.len())
+            .map_err(|_| inter_allocation!("ordinary inter ready batch"))?;
+        ready_batches.push(ready);
+    }
+
+    let commit = Mutex::new(Some(commit));
+    let error = Mutex::new(None);
+    let scheduler = AdmissionScheduler::new();
+    let admission_window = splot_parallel::current_pool_width()
+        .saturating_sub(1)
+        .max(1)
+        .saturating_mul(3);
+    let mut references_settled = false;
+    let mut submitted_batches = 0usize;
+    let mut reached_last = false;
+    let parse_result = splot_parallel::ready_task_scope(|scope| {
+        for (batch_index, range) in batches.iter().enumerate() {
+            let ready = &mut ready_batches[batch_index];
+            let mut bounds = row_gate::RowReferenceBounds::default();
+            let mut batch_last = false;
+            for _ in range.clone() {
+                let step = {
+                    let _quantizer_scopes = quantizer.install_frame();
+                    let step = parser.next_unit(context, Some(row_buffers.take()));
+                    resolve_parser_step(step, |row| {
+                        resolve.resolve_unit(
+                            &mut parser.mv_grid,
+                            context,
+                            temporal,
+                            row,
+                            tile_offset,
+                        )
+                    })
+                };
+                let (row, last) = match step {
+                    ParserStep::More(row) => (row, false),
+                    ParserStep::Last(row) => (row, true),
+                };
+                let row_bounds = row_gate.bounds_for_row(&row);
+                bounds.merge(row_bounds);
+                ready.push(ReadyReconRow {
+                    bounds: row_bounds,
+                    row,
+                    surface: surfaces.next(),
+                });
+                if last {
+                    reached_last = true;
+                    batch_last = true;
+                    break;
+                }
+            }
+
+            let ready = core::mem::take(ready);
+            let conditions = row_gate.conditions(&bounds);
+            let prepared_slot = &prepared[batch_index];
+            let precomputed_cell = &precomputed[batch_index];
+            let precompute_error = &error;
+            scheduler.submit(
+                scope,
+                (batch_index as u64).saturating_mul(4).saturating_add(1),
+                &conditions,
+                Box::new(move |_| {
+                    let enabled = precompute_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .is_none();
+                    let prepared = enabled.then(|| {
+                        workers.with_scratch(|scratch| {
+                            ready
+                                .into_iter()
+                                .map(|ready| {
+                                    precompute_recon_row(
+                                        ready,
+                                        scratch,
+                                        prepass_block_decoded,
+                                        motion,
+                                        quantizer,
+                                        temporal,
+                                        context.reference,
+                                        context.ref_frame_idx,
+                                        context.sequence,
+                                        context.core,
+                                        context.sb_h4,
+                                        context.mi_rows,
+                                        context.mi_cols,
+                                        context.current_order_hint,
+                                        context.luma_use_tcq,
+                                        context.residual_use_ddt,
+                                        context.bit_depth,
+                                    )
+                                })
+                                .collect()
+                        })
+                    });
+                    *prepared_slot.lock().unwrap_or_else(PoisonError::into_inner) = prepared;
+                    let _ = precomputed_cell.set(());
+                }),
+            );
+
+            let prepared_slot = &prepared[batch_index];
+            let completed = &committed[batch_index];
+            let commit = &commit;
+            let commit_error = &error;
+            let mut conditions = vec![Condition::completion(&precomputed[batch_index])];
+            if let Some(previous) = batch_index.checked_sub(1) {
+                conditions.push(Condition::completion(&committed[previous]));
+            }
+            scheduler.submit(
+                scope,
+                (batch_index as u64).saturating_mul(4).saturating_add(2),
+                &conditions,
+                Box::new(move |_| {
+                    let batch = prepared_slot
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take();
+                    if commit_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .is_none()
+                    {
+                        let result = batch
+                            .ok_or_else(invalid_inter_tile_scheduling_state)
+                            .and_then(|batch| {
+                                let mut state = take_active_commit(commit)?;
+                                let mut result = Ok(());
+                                for ready in batch {
+                                    match state.replay(ready, quantizer, motion, temporal, context)
+                                    {
+                                        Ok(buffers) => row_buffers.recycle(buffers),
+                                        Err(error) => {
+                                            result = Err(error);
+                                            break;
+                                        }
+                                    }
+                                }
+                                restore_active_commit(commit, state)?;
+                                result
+                            });
+                        if let Err(value) = result {
+                            record_first_error(commit_error, value);
+                        }
+                    }
+                    let _ = completed.set(());
+                }),
+            );
+            submitted_batches = batch_index.saturating_add(1);
+            if let Some(target) = batch_index.checked_sub(admission_window) {
+                while !committed[target].is_set() {
+                    let progress = splot_parallel::pool_progress_snapshot();
+                    if !references_settled && row_gate.is_ready() {
+                        references_settled = true;
+                        if let Err(value) = row_gate.wait() {
+                            record_first_error(&error, value);
+                        }
+                    }
+                    scheduler.admit_ready(scope);
+                    if committed[target].is_set() {
+                        break;
+                    }
+                    if !references_settled {
+                        if row_gate.is_ready() {
+                            continue;
+                        }
+                        break;
+                    }
+                    splot_parallel::assist_pool_or_park(&progress);
+                }
+            }
+            if batch_last {
+                break;
+            }
+        }
+    });
+    parse_result?;
+    if !reached_last {
+        record_first_error(&error, invalid_inter_tile_scheduling_state());
+    }
+
+    let terminal = submitted_batches
+        .checked_sub(1)
+        .and_then(|last| committed.get(last));
+    while terminal.is_some_and(|done| !done.is_set()) {
+        let progress = splot_parallel::pool_progress_snapshot();
+        if !references_settled && row_gate.is_ready() {
+            references_settled = true;
+            if let Err(value) = row_gate.wait() {
+                record_first_error(&error, value);
+            }
+        }
+        splot_parallel::ready_task_scope(|scope| {
+            scheduler.admit_ready(scope);
+        })?;
+        if terminal.is_none_or(CompletionCell::is_set) {
+            break;
+        }
+        if !references_settled && row_gate.is_ready() {
+            continue;
+        }
+        if references_settled {
+            break;
+        }
+        splot_parallel::assist_pool_or_park(&progress);
+    }
+    let scheduler_result = scheduler.finish();
+    if let Some(error) = error.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        return Err(error);
+    }
+    scheduler_result?;
+    take_active_commit(&commit)
 }
 
 impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Number of independently admitted reconstruction units.
-    pub(in crate::prediction::inter::block) const fn len(&self) -> usize {
-        self.batches.len()
+    pub(crate) const fn len(&self) -> usize {
+        self.recon.batches.len()
     }
 
     /// Number of final-filter stripes this frame owes.
-    pub(in crate::prediction::inter::block) const fn filter_count(&self) -> usize {
+    pub(crate) const fn filter_count(&self) -> usize {
         self.filter_count
     }
 
-    pub(in crate::prediction::inter::block) fn resolve_len(&self) -> usize {
+    pub(crate) fn resolve_len(&self) -> usize {
         self.temporal_plan.len()
     }
 
-    pub(in crate::prediction::inter::block) fn resolve_conditions(
-        &self,
-        index: usize,
-    ) -> Vec<Condition<'_>> {
+    pub(crate) fn resolve_conditions(&self, index: usize) -> Vec<Condition<'_>> {
         self.temporal_plan
             .requirements(index)
             .into_iter()
             .filter_map(|(slot, band)| {
-                self.reference
+                self.recon
+                    .reference
                     .ref_motion_fields
                     .get(slot)
                     .and_then(Option::as_ref)
@@ -200,56 +745,55 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// The § 8.2 watermark a stalled resolve step waits on.
-    pub(in crate::prediction::inter::block) fn parse_watermark(
-        &self,
-    ) -> &splot_parallel::WatermarkCell {
+    pub(crate) fn parse_watermark(&self) -> &splot_parallel::WatermarkCell {
         self.parse_progress.cell()
     }
 
-    pub(in crate::prediction::inter::block) fn resolve(
-        &self,
-        index: usize,
-    ) -> Result<(core::ops::Range<usize>, Option<usize>)> {
+    pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
         project_temporal_band(
             &self.temporal_plan,
-            &self.temporal,
-            &self.reference.ref_motion_fields,
+            &self.recon.temporal,
+            &self.recon.reference.ref_motion_fields,
             index,
         )?;
         let projected_rows = self.temporal_plan.rows8(index);
         let final_band = index.saturating_add(1) == self.temporal_plan.len();
-        let context = self.params.context(
-            &self.sequence,
-            &self.core,
-            &self.reference,
-            self.ref_frame_idx.as_slice(),
+        let context = self.recon.params.context(
+            &self.recon.sequence,
+            &self.recon.core,
+            &self.recon.reference,
+            self.recon.ref_frame_idx.as_slice(),
         );
         let row_gate = RowReferenceGate::new(
-            &self.reference,
-            &self.core,
-            self.ref_frame_idx.as_slice(),
+            &self.recon.reference,
+            &self.recon.core,
+            self.recon.ref_frame_idx.as_slice(),
             self.info,
-            &self.temporal,
+            &self.recon.temporal,
         );
-        self.materialize_rows(self.unit_count);
+        self.materialize_rows(self.recon.unit_count);
         let mut awaiting = None;
         let mut resolve = self.resolve.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut rows = self
+            .recon
+            .rows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         loop {
             let next = resolve.next;
             let Some(state) = rows.get(next) else {
-                if next < self.unit_count && !self.parse_failed() {
+                if next < self.recon.unit_count && !self.parse_failed() {
                     awaiting = Some(next.saturating_add(1));
                 }
                 break;
             };
-            let ScheduledRowState::Unresolved { row, .. } = state else {
+            let TileReconRow::Unresolved { row, .. } = state else {
                 break;
             };
             let row_end8 = row
                 .superblocks
                 .iter()
-                .filter_map(|superblock| superblock.origin[0].checked_add(self.params.sb_h4))
+                .filter_map(|superblock| superblock.origin[0].checked_add(self.recon.params.sb_h4))
                 .map(|end4| end4.div_ceil(2))
                 .max()
                 .unwrap_or(projected_rows.end);
@@ -259,8 +803,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             let Some(slot) = rows.get_mut(next) else {
                 break;
             };
-            let ScheduledRowState::Unresolved { mut row, surface } =
-                core::mem::replace(slot, ScheduledRowState::Taken)
+            let TileReconRow::Unresolved { mut row, surface } =
+                core::mem::replace(slot, TileReconRow::Taken)
             else {
                 break;
             };
@@ -268,20 +812,29 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             row.return_terminal_error()?;
             {
                 let ScheduledResolve { grid, state, .. } = &mut *resolve;
-                state.resolve_unit(grid, &context, &self.temporal, &mut row, self.tile_offset)
+                state.resolve_unit(
+                    grid,
+                    &context,
+                    &self.recon.temporal,
+                    &mut row,
+                    self.tile_offset,
+                )
             }?;
             row.return_terminal_error()?;
             let bounds = row_gate.bounds_for_row(&row);
-            if let Some(slot) = rows.get_mut(next) {
-                *slot = ScheduledRowState::Ready(ReadyReconRow {
+            TileRecon::accept_resolved(
+                &mut rows,
+                next,
+                ReadyReconRow {
                     row,
                     surface,
                     bounds,
-                });
-            }
+                },
+            )?;
             resolve.next = resolve.next.saturating_add(1);
         }
         let ready_batches = self
+            .recon
             .batches
             .partition_point(|batch| batch.end <= resolve.next);
         let ready = resolve.submitted_batches..ready_batches;
@@ -289,15 +842,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         Ok((ready, awaiting))
     }
 
-    pub(in crate::prediction::inter::block) fn fail_temporal(&self) {
-        TemporalBandPlan::fail(&self.temporal);
+    pub(crate) fn fail_temporal(&self) {
+        TemporalBandPlan::fail(&self.recon.temporal);
     }
 
-    fn batch_range(&self, index: usize) -> Option<core::ops::Range<usize>> {
-        self.batches.get(index).cloned()
-    }
-
-    /// Conditions that replace the parsed unit's former cross-frame wait.
     /// Hands the frontier its § 7.17 deblock records and final-filter setup.
     ///
     /// Reconstruction never reads either, so they arrive once the § 8.2 pass
@@ -310,15 +858,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
     ) -> Result<()> {
         let deblock = deblock_records
-            .zip(self.core.deblocking_filter_params)
+            .zip(self.recon.core.deblocking_filter_params)
             .map(|(deblock_records, filter)| {
                 crate::filters::deblock::FrameDeblock::prepare_owned(
                     deblock_records,
-                    self.params.mi_rows,
-                    self.params.mi_cols,
+                    self.recon.params.mi_rows,
+                    self.recon.params.mi_cols,
                     filter,
-                    Arc::clone(&self.core),
-                    self.sequence
+                    Arc::clone(&self.recon.core),
+                    self.recon
+                        .sequence
                         .filter
                         .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
                     deblock_quant_deltas,
@@ -328,7 +877,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .transpose()?
             .flatten();
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
-        frontier.sealed = seals_filter_copy(deblock.is_some(), self.whole_frame)
+        frontier.sealed = deblock
+            .is_some()
             .then(|| {
                 CurrentFrameWorkspace::new_recycled(self.info)
                     .map(crate::filters::source::DeblockedSource::new)
@@ -345,8 +895,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// the parse watermark for `units` finds exactly that prefix available,
     /// and a unit the pass has not reached simply stops the pull.
     fn materialize_rows(&self, units: usize) {
-        let units = units.min(self.unit_count);
-        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        let units = units.min(self.recon.unit_count);
+        let mut rows = self
+            .recon
+            .rows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if rows.len() >= units {
             return;
         }
@@ -363,166 +917,28 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             } else {
                 surfaces.next()
             };
-            rows.push(ScheduledRowState::Unresolved { row, surface });
+            rows.push(TileReconRow::Unresolved { row, surface });
         }
     }
 
-    pub(in crate::prediction::inter::block) fn conditions(
-        &self,
-        index: usize,
-    ) -> Vec<Condition<'_>> {
-        let mut conditions = match self.batch_range(index) {
-            Some(range) => vec![Condition::Watermark(self.parse_progress.cell(), range.end)],
+    pub(crate) fn conditions(&self, index: usize) -> Vec<Condition<'_>> {
+        let mut conditions = match self.recon.batch_range(index) {
+            Some(range) => vec![Condition::watermark(self.parse_progress.cell(), range.end)],
             None => Vec::new(),
         };
-        if let Some(range) = self.batch_range(index) {
+        if let Some(range) = self.recon.batch_range(index) {
             self.materialize_rows(range.end);
         }
-        let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut bounds = row_gate::RowReferenceBounds::default();
-        for ready in self
-            .batch_range(index)
-            .and_then(|range| rows.get(range))
-            .into_iter()
-            .flatten()
-            .filter_map(|row| match row {
-                ScheduledRowState::Ready(ready) => Some(ready),
-                ScheduledRowState::Unresolved { .. } | ScheduledRowState::Taken => None,
-            })
-        {
-            bounds.merge(ready.bounds);
-        }
-        drop(rows);
-        conditions.extend(
-            RowReferenceGate::new(
-                &self.reference,
-                &self.core,
-                self.ref_frame_idx.as_slice(),
-                self.info,
-                &self.temporal,
-            )
-            .conditions(&bounds),
-        );
+        conditions.extend(self.recon.conditions(index, self.info));
         conditions
     }
 
     /// Precomputes one admitted unit without entering the ordered commit spine.
-    pub(in crate::prediction::inter::block) fn precompute(&self, index: usize) -> Result<()> {
-        if self.finished.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let range = self
-            .batch_range(index)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        {
-            let prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(slot) = prepared.get(index) else {
-                self.finished.store(true, Ordering::Release);
-                return Err(invalid_inter_tile_scheduling_state());
-            };
-            if slot.is_some() {
-                self.finished.store(true, Ordering::Release);
-                return Err(invalid_inter_tile_scheduling_state());
-            }
-        }
-        self.materialize_rows(range.end);
-        let ready = {
-            let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(rows) = rows.get_mut(range.clone()) else {
-                return Err(invalid_inter_tile_scheduling_state());
-            };
-            if rows
-                .iter()
-                .any(|row| !matches!(row, ScheduledRowState::Ready(_)))
-            {
-                return Err(invalid_inter_tile_scheduling_state());
-            }
-            let mut ready = Vec::with_capacity(rows.len());
-            for row in rows {
-                if let ScheduledRowState::Ready(row) =
-                    core::mem::replace(row, ScheduledRowState::Taken)
-                {
-                    ready.push(row);
-                }
-            }
-            ready
-        };
-        let batch =
-            self.workers
-                .with_scratch(|scratch| -> Result<Vec<ReadyReconRow<'static, T>>> {
-                    let _quantizer_scopes = self.quantizer.install_frame();
-                    let ready = ready;
-                    let shared = deferred_recon::ReconShared {
-                        reference: &self.reference,
-                        ref_frame_idx: self.ref_frame_idx.as_slice(),
-                        temporal_context: &self.temporal,
-                        sequence: &self.sequence,
-                        core: &self.core,
-                        luma_use_tcq: self.params.luma_use_tcq,
-                        residual_use_ddt: self.params.residual_use_ddt,
-                        bit_depth: self.params.bit_depth,
-                        mi_rows: self.params.mi_rows,
-                        mi_cols: self.params.mi_cols,
-                        current_order_hint: self.params.current_order_hint,
-                    };
-                    Ok(ready
-                        .into_iter()
-                        .map(|mut ready| {
-                            scratch.with_installed(|scratch| {
-                                if !ready.row.has_terminal_error() && !ready.row.motion_derived {
-                                    mvres::derive_unit_motion(
-                                        &mut ready.row,
-                                        ready.surface.as_mut(),
-                                        scratch,
-                                        &self.motion,
-                                        &shared,
-                                    );
-                                }
-                                precompute_recon_row(
-                                    ready,
-                                    scratch,
-                                    &self.prepass_block_decoded,
-                                    &self.motion,
-                                    &self.quantizer,
-                                    &self.temporal,
-                                    &self.reference,
-                                    self.ref_frame_idx.as_slice(),
-                                    &self.sequence,
-                                    &self.core,
-                                    self.params.sb_h4,
-                                    self.params.mi_rows,
-                                    self.params.mi_cols,
-                                    self.params.current_order_hint,
-                                    self.params.luma_use_tcq,
-                                    self.params.residual_use_ddt,
-                                    self.params.bit_depth,
-                                )
-                            })
-                        })
-                        .collect())
-                })?;
-        let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(slot) = prepared.get_mut(index) else {
-            self.finished.store(true, Ordering::Release);
-            return Err(invalid_inter_tile_scheduling_state());
-        };
-        if slot.is_some() {
-            self.finished.store(true, Ordering::Release);
-            return Err(invalid_inter_tile_scheduling_state());
-        }
-        *slot = Some(batch);
-        Ok(())
+    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
+        self.recon.precompute(index)
     }
 
-    /// Seals every canonical superblock row this commit completed into the
-    /// frame's filter copy.
-    ///
-    /// Frames that reconstruct into the shared workspace keep their raw pixels
-    /// there, while the § 7.17 frontier and the filter windows it releases read
-    /// the sealed copy, so deblock never writes rows a later current-frame
-    /// prediction can still read. The copy needs no fill: this seals whole
-    /// rows upward from row zero, and the frontier reads only below them.
-    fn seal_committed_rows(&self, commit: &ScheduledCommit<T>, rows: usize) -> Result<()> {
+    fn seal_committed_rows(&self, commit: &TileCommit<T>, rows: usize) -> Result<()> {
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
         let ScheduledFrontier {
             sealed,
@@ -533,7 +949,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             return Ok(());
         };
         let end = rows
-            .saturating_mul(self.params.sb_h4.saturating_mul(4).max(1))
+            .saturating_mul(self.recon.params.sb_h4.saturating_mul(4).max(1))
             .min(self.info.coded_luma_size().height());
         if end > *sealed_rows {
             sealed.copy_rows_from(&commit.workspace, *sealed_rows..end)?;
@@ -543,23 +959,20 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     /// Number of ordered links in this frame's § 7.17 frontier chain.
-    pub(in crate::prediction::inter::block) const fn frontier_len(&self) -> usize {
-        self.frontier_rows
+    pub(crate) const fn frontier_len(&self) -> usize {
+        self.recon.frontier_rows
     }
 
     /// Advances the § 7.17 deblock frontier over the rows sealed by superblock
     /// row `row` and takes the filter stripes that frontier releases.
     ///
     /// The one caller that runs the final link receives the completed tile.
-    pub(in crate::prediction::inter::block) fn frontier(
-        &self,
-        row: usize,
-    ) -> Result<ScheduledTileProgress<T>> {
-        let terminal = row.saturating_add(1) >= self.frontier_rows;
+    pub(crate) fn frontier(&self, row: usize) -> Result<ScheduledFrameProgress<T>> {
+        let terminal = row.saturating_add(1) >= self.recon.frontier_rows;
         let committed_units = row
             .saturating_add(1)
-            .saturating_mul(self.units_per_row)
-            .min(self.unit_count);
+            .saturating_mul(self.recon.units_per_row)
+            .min(self.recon.unit_count);
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
         let ScheduledFrontier {
             sealed,
@@ -576,9 +989,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         if let Some(deblock) = deblock.as_mut()
             && let Some(safe_mi_end) = safe_deblock_mi_end(
                 committed_units,
-                self.units_per_row,
-                self.params.sb_h4,
-                self.params.mi_rows,
+                self.recon.units_per_row,
+                self.recon.params.sb_h4,
+                self.recon.params.mi_rows,
                 terminal,
             )
         {
@@ -600,7 +1013,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 )
             })?;
             deblock
-                .advance_source(source, safe_mi_end.get(), self.params.bit_depth)
+                .advance_source(source, safe_mi_end.get(), self.recon.params.bit_depth)
                 .map_err(|error| {
                     crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
                 })?;
@@ -620,7 +1033,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             }
         }
         if !terminal {
-            return Ok(ScheduledTileProgress {
+            return Ok(ScheduledFrameProgress {
                 filters,
                 output: None,
             });
@@ -632,7 +1045,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     fn finish_frontier(
         frontier: &mut ScheduledFrontier<T>,
         mut filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
-    ) -> Result<ScheduledTileProgress<T>> {
+    ) -> Result<ScheduledFrameProgress<T>> {
         let filter = frontier
             .filter
             .take()
@@ -659,117 +1072,44 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
         drop(frontier.sealed.take());
         drop(frontier.terminal_workspace.take());
-        Ok(ScheduledTileProgress {
+        Ok(ScheduledFrameProgress {
             filters,
-            output: Some(ScheduledTileOutput {
-                filter: filter.owned_finish(),
-            }),
+            output: Some(filter.owned_finish()),
         })
     }
 
-    pub(in crate::prediction::inter::block) fn take_scheduled_scratch(
-        &self,
-    ) -> Result<TileDecodeScratch<T>> {
-        self.scratch
+    pub(crate) fn take_scheduled_scratch(&self) -> Result<super::super::InterDecodeScratch<T>> {
+        self.recon
+            .scratch
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
             .ok_or_else(invalid_inter_tile_scheduling_state)
+            .map(super::super::InterDecodeScratch::from_scheduled_tile_scratch)
     }
 
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
-    pub(in crate::prediction::inter::block) fn commit(
-        &self,
-        index: usize,
-    ) -> Result<ScheduledCommitProgress> {
-        let result = self.commit_active(index);
-        if result.is_err() {
-            self.finished.store(true, Ordering::Release);
+    pub(crate) fn commit(&self, index: usize) -> Result<ScheduledCommitProgress> {
+        let committed = self.recon.commit_batch(index)?;
+        if !committed.frontier_rows.is_empty() {
+            self.seal_committed_rows(&committed.state, committed.frontier_rows.end)?;
         }
-        result
-    }
-
-    fn commit_active(&self, index: usize) -> Result<ScheduledCommitProgress> {
-        let mut commit = take_active_commit(&self.commit)?;
-        let batch = {
-            let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
-            prepared
-                .get_mut(index)
-                .ok_or_else(invalid_inter_tile_scheduling_state)?
-                .take()
-                .ok_or_else(invalid_inter_tile_scheduling_state)?
-        };
-        for mut ready in batch {
-            validate_commit_ordinal(ready.row.ordinal, commit.next)?;
-            if let Some(surface) = ready.surface.take() {
-                surface.publish_into(&mut commit.workspace)?;
-                if let ReadyReconSurface::Owned(surface) = surface {
-                    commit.surfaces.push(surface);
-                }
-            }
-            let buffers = commit.ordered.with_installed(|scratch| {
-                pixel_commit::replay_recon_row(
-                    ready.row,
-                    &mut commit.next,
-                    &mut commit.decoded_any,
-                    &self.quantizer,
-                    scratch,
-                    &mut commit.workspace,
-                    &mut commit.block_decoded,
-                    &mut commit.current_block_decoded_superblock,
-                    &self.motion,
-                    &mut crate::filters::wienerns_lr::FrameFilterRecords::default(),
-                    &self.temporal,
-                    &self.reference,
-                    self.ref_frame_idx.as_slice(),
-                    &self.sequence,
-                    &self.core,
-                    self.params.mi_rows,
-                    self.params.mi_cols,
-                    self.params.current_order_hint,
-                    self.params.luma_use_tcq,
-                    self.params.residual_use_ddt,
-                    self.params.bit_depth,
-                )
-            })?;
-            recycle_retained_recon_row_buffers(buffers);
-        }
-        let terminal = commit.next == self.unit_count;
-        let closed_rows = closed_frontier_rows(
-            commit.next,
-            self.unit_count,
-            self.units_per_row,
-            self.frontier_rows,
-        );
-        if closed_rows > commit.handed_rows {
-            self.seal_committed_rows(&commit, closed_rows)?;
-        }
-        let frontier_rows = commit.handed_rows..closed_rows;
-        commit.handed_rows = closed_rows;
-        if !terminal {
-            restore_active_commit(&self.commit, commit)?;
+        if !committed.terminal {
+            restore_active_commit(&self.recon.commit, committed.state)?;
             return Ok(ScheduledCommitProgress {
-                frontier_rows,
+                frontier_rows: committed.frontier_rows,
                 recon_complete: false,
             });
         }
-        if !commit.decoded_any {
-            self.finished.store(true, Ordering::Release);
-            return Err(no_decoded_block_error());
-        }
-        self.finished.store(true, Ordering::Release);
-        commit.surfaces.reverse();
-        let scratch =
-            TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, commit.surfaces);
-        *self.scratch.lock().unwrap_or_else(PoisonError::into_inner) = Some(scratch);
+        let workspace = self.recon.finish_commit(committed.state);
         {
             let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
             if frontier.sealed.is_some() {
-                commit.workspace.recycle_planes();
+                workspace.recycle_planes();
             } else {
-                let mut source = crate::filters::source::DeblockedSource::new(commit.workspace);
+                let mut source = crate::filters::source::DeblockedSource::new(workspace);
                 if frontier.deblock.is_none()
                     && !source.publish_final_rows(self.info.coded_luma_size().height())
                 {
@@ -779,7 +1119,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             }
         }
         Ok(ScheduledCommitProgress {
-            frontier_rows,
+            frontier_rows: committed.frontier_rows,
             recon_complete: true,
         })
     }
@@ -851,28 +1191,8 @@ fn safe_deblock_mi_end(
     )
 }
 
-/// Whether the frontier chain filters its own sealed copy of the frame.
-///
-/// Sealing is what decouples § 7.17 from the commit spine: deblock writes only
-/// the copy, so every current-frame reader — ordinary intra, and local or
-/// global IntraBC, whose source region is neither row-shaped nor bounded above
-/// — still reads raw reconstructed samples however far the frontier has run. A
-/// frame with no active deblock plan has nothing to advance, so it does not
-/// seal.
-const fn seals_filter_copy(has_deblock: bool, whole_frame: bool) -> bool {
-    has_deblock && whole_frame
-}
-
-/// Whether one parsed tile owns every mode-info position in the frame.
-fn covers_whole_frame(geometry: &TileGeometry, params: &TileWalkParams) -> bool {
-    geometry.mi_rows.start == 0
-        && geometry.mi_rows.end.min(params.mi_rows) == params.mi_rows
-        && geometry.mi_cols.start == 0
-        && geometry.mi_cols.end.min(params.mi_cols) == params.mi_cols
-}
-
-/// Reconstruction units one legacy precompute batch prepares.
-const LEGACY_BATCH_UNITS: usize = 4;
+/// Reconstruction units one row-bounded precompute batch prepares.
+const RECON_BATCH_UNITS: usize = 4;
 
 /// Splits the units into precompute batches that never cross a superblock row.
 ///
@@ -967,16 +1287,10 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         &workspace,
         params.sb_h4,
     )?;
-    scratch
-        .surfaces
-        .retain(|surface| surface.info() == info && rects.contains(&surface.luma_rect()));
+    scratch.clear_incompatible_surface_layout(info, &rects);
     let surfaces = rects
         .into_iter()
-        .map(|rect| {
-            scratch
-                .take_surface(info, rect)
-                .map(ReadyReconSurface::Owned)
-        })
+        .map(|rect| scratch.take_surface(info, rect))
         .collect::<splot_recon::Result<Vec<_>>>()?;
     let surface_cursor = surfaces.into_iter();
     if unit_count == 0 {
@@ -984,38 +1298,51 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     }
     let prepass_block_decoded = geometry.block_decoded.clone();
     let block_decoded = geometry.block_decoded.clone();
-    let batches = superblock_row_batches(unit_count, units_per_row.max(1), LEGACY_BATCH_UNITS);
+    let batches = superblock_row_batches(unit_count, units_per_row.max(1), RECON_BATCH_UNITS);
     let batch_count = batches.len();
     let mut prepared = Vec::new();
     prepared
         .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
     prepared.resize_with(batch_count, || None);
-    let whole_frame = covers_whole_frame(&geometry, &params);
     let TileDecodeScratch {
         ordered,
         workers,
         surfaces,
     } = scratch;
+    let resolve_state = TileResolveState::new(&sequence);
     let tile = ScheduledTileRecon {
-        rows: Mutex::new(Vec::new()),
-        prepared: Mutex::new(prepared),
-        unit_count,
-        units_per_row,
-        batches,
+        recon: TileRecon {
+            rows: Mutex::new(Vec::new()),
+            prepared: Mutex::new(prepared),
+            unit_count,
+            units_per_row,
+            batches,
+            frontier_rows: unit_count.div_ceil(units_per_row.max(1)).max(1),
+            commit: Mutex::new(Some(TileCommit {
+                next: 0,
+                handed_rows: 0,
+                ordered,
+                workspace,
+                block_decoded,
+                current_block_decoded_superblock: None,
+                decoded_any: false,
+                surfaces,
+                frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
+            })),
+            scratch: Mutex::new(None),
+            workers,
+            prepass_block_decoded,
+            motion,
+            params,
+            quantizer,
+            temporal,
+            reference,
+            ref_frame_idx,
+            sequence,
+            core,
+        },
         filter_count,
-        frontier_rows: unit_count.div_ceil(units_per_row.max(1)).max(1),
-        commit: Mutex::new(Some(ScheduledCommit {
-            next: 0,
-            handed_rows: 0,
-            ordered,
-            workspace,
-            block_decoded,
-            current_block_decoded_superblock: None,
-            decoded_any: false,
-            surfaces,
-        })),
-        scratch: Mutex::new(None),
         frontier: Mutex::new(ScheduledFrontier {
             sealed: None,
             sealed_rows: 0,
@@ -1028,35 +1355,20 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             next: 0,
             submitted_batches: 0,
             grid: resolve_grid,
-            state: TileResolveState::new(&sequence),
+            state: resolve_state,
         }),
-        workers,
-        prepass_block_decoded,
-        motion,
         info,
-        params,
-        quantizer,
-        temporal,
         temporal_plan,
-        reference,
-        ref_frame_idx,
-        sequence,
-        core,
         tile_offset,
-        whole_frame,
         parse_progress,
         pending_surfaces: Mutex::new(surface_cursor),
-        finished: AtomicBool::new(false),
     };
     Ok(tile)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        project_temporal_band, restore_active_commit, safe_deblock_mi_end, take_active_commit,
-        validate_commit_ordinal,
-    };
+    use super::{TileCommit, project_temporal_band, safe_deblock_mi_end, take_active_commit};
     use crate::prediction::inter::MotionFieldLayout;
     use std::sync::Mutex;
 
@@ -1184,7 +1496,7 @@ mod tests {
 
     #[test]
     fn missing_active_commit_is_a_typed_scheduling_invariant() -> Result<(), &'static str> {
-        let holder = Mutex::new(None::<usize>);
+        let holder = Mutex::new(None::<TileCommit<u8>>);
 
         let error = take_active_commit(&holder)
             .err()
@@ -1197,63 +1509,6 @@ mod tests {
             }
         ));
         assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn nonterminal_commit_state_is_restored_exactly_once() -> Result<(), &'static str> {
-        let holder = Mutex::new(Some(7usize));
-        let state = take_active_commit(&holder).map_err(|_| "initial commit state")?;
-
-        restore_active_commit(&holder, state).map_err(|_| "valid commit restore")?;
-        let error = restore_active_commit(&holder, 8)
-            .err()
-            .ok_or("duplicate commit restore must fail")?;
-
-        assert!(matches!(
-            error,
-            crate::DecodeError::HeaderState {
-                source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
-            }
-        ));
-        let state = take_active_commit(&holder).map_err(|_| "restored commit state")?;
-        assert_eq!(state, 7);
-        Ok(())
-    }
-
-    #[test]
-    fn terminal_commit_state_is_consumed_once() -> Result<(), &'static str> {
-        let holder = Mutex::new(Some(7usize));
-        let state = take_active_commit(&holder).map_err(|_| "initial commit state")?;
-        assert_eq!(state, 7);
-
-        let error = take_active_commit(&holder)
-            .err()
-            .ok_or("consumed terminal commit must not be reusable")?;
-
-        assert!(matches!(
-            error,
-            crate::DecodeError::HeaderState {
-                source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
-            }
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn commit_order_is_validated_before_surface_publication() -> Result<(), &'static str> {
-        validate_commit_ordinal(4, 4).map_err(|_| "matching ordinal")?;
-
-        let error = validate_commit_ordinal(6, 5)
-            .err()
-            .ok_or("out-of-order row must fail before publication")?;
-
-        assert!(matches!(
-            error,
-            crate::DecodeError::HeaderState {
-                source: crate::DecodeHeaderStateError::InvalidInterTileSchedulingState
-            }
-        ));
         Ok(())
     }
 
@@ -1336,13 +1591,6 @@ mod tests {
     fn short_superblock_rows_keep_a_zero_frontier() {
         assert_eq!(frontier(1, 1, 4, 64, false), None);
         assert_eq!(frontier(2, 1, 4, 64, false), Some(2));
-    }
-
-    #[test]
-    fn every_whole_frame_deblock_plan_seals_its_own_filter_copy() {
-        assert!(super::seals_filter_copy(true, true));
-        assert!(!super::seals_filter_copy(false, true));
-        assert!(!super::seals_filter_copy(true, false));
     }
 
     #[test]

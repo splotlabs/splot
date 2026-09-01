@@ -32,7 +32,7 @@ use core::slice;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard};
 
-use splot_parallel::{Condition, WatermarkCell};
+use splot_parallel::{CompletionCell, Condition, WatermarkCell};
 use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample};
 
 use crate::error::{DecodeError, Result};
@@ -372,6 +372,7 @@ pub(crate) struct FrameProgress<T: ReconSample> {
     workspace: RwLock<Option<DirectWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
     published_luma_rows: WatermarkCell,
+    terminal_published: CompletionCell<()>,
     luma_height: usize,
     subsampling_y: usize,
 }
@@ -395,6 +396,7 @@ impl<T: ReconSample> FrameProgress<T> {
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
             published_luma_rows: WatermarkCell::new(),
+            terminal_published: CompletionCell::new(),
             luma_height: info.coded_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
         })
@@ -412,6 +414,11 @@ impl<T: ReconSample> FrameProgress<T> {
         } else {
             WatermarkCell::FAILED
         });
+        let _ = self.terminal_published.set(());
+    }
+
+    pub(crate) fn wait_terminal(&self) {
+        let () = self.terminal_published.wait_with_pool_assist();
     }
 
     /// Installs the stripe geometry the filter phase will publish through.
@@ -553,7 +560,7 @@ impl<T: ReconSample> FrameProgress<T> {
     /// Returns the scheduler condition that admits a reader once `rows` final
     /// luma rows have been published.
     pub(crate) fn row_condition(&self, rows: usize) -> Condition<'_> {
-        Condition::Watermark(&self.published_luma_rows, rows)
+        Condition::watermark(&self.published_luma_rows, rows)
     }
 
     /// Borrows the published prefix of the frame's filtered samples.
