@@ -1022,13 +1022,11 @@ impl TemporalMvContext {
                     self.field.width8 * 2,
                 )?);
             }
-            self.trajectories = Some(TrajectoryState::from_fields(fields));
+            self.trajectories = Some(TrajectoryState::from_fields(&fields));
         }
         self.trajectories
             .as_mut()?
-            .fields
-            .get_mut(reference)?
-            .set(y8, x8, mv);
+            .set_trajectory_cell(reference, y8, x8, mv);
         Some(())
     }
 
@@ -1283,9 +1281,7 @@ impl TemporalMvContext {
         }
         self.trajectories
             .as_ref()?
-            .fields()
-            .get(reference)?
-            .cell(y8, x8)
+            .trajectory_cell(reference, y8, x8)
     }
 
     pub(crate) fn prepare_tip(
@@ -2093,7 +2089,14 @@ fn project_temporal_motion_field(
             ) else {
                 continue;
             };
-            if let Some(trajectories) = trajectories.as_deref_mut() {
+            if let Some(trajectories) = trajectories.as_deref_mut()
+                && trajectories.admits_projection(
+                    end_ref,
+                    target_ref,
+                    (pos_y8, pos_x8),
+                    trajectory_ref_offset.abs(),
+                )
+            {
                 trajectories.observe_projection_at(
                     source_ref,
                     end_ref,
