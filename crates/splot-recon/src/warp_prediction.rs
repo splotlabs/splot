@@ -782,7 +782,56 @@ fn build_interior_intermediate<T: ReconSample>(
     }
 }
 
-#[allow(clippy::needless_range_loop, reason = "transpose warp taps for SIMD")]
+/// Transposes the eight per-column § 7.13.3.20 warp filters into per-tap lanes.
+///
+/// Reading `columns[col][tap]` one element at a time costs 64 scalar byte loads
+/// and 64 vector lane inserts per output row, several times the multiply-
+/// accumulate work they feed. Each column's taps are contiguous, so they load
+/// as one vector; the three swizzle stages below are the standard 8x8 transpose
+/// and lower to `trn1`/`trn2` pairs.
+fn transpose_warp_taps(
+    columns: &[&'static [i8; WARP_FILTER_TAPS]; WARPED_BLOCK_SIZE],
+) -> [Simd<i16, WARPED_BLOCK_SIZE>; WARP_FILTER_TAPS] {
+    const TRN1: [usize; 8] = [0, 8, 2, 10, 4, 12, 6, 14];
+    const TRN2: [usize; 8] = [1, 9, 3, 11, 5, 13, 7, 15];
+    const TRN1_PAIRS: [usize; 8] = [0, 1, 8, 9, 4, 5, 12, 13];
+    const TRN2_PAIRS: [usize; 8] = [2, 3, 10, 11, 6, 7, 14, 15];
+    const TRN1_QUADS: [usize; 8] = [0, 1, 2, 3, 8, 9, 10, 11];
+    const TRN2_QUADS: [usize; 8] = [4, 5, 6, 7, 12, 13, 14, 15];
+    let rows: [Simd<i16, WARPED_BLOCK_SIZE>; WARPED_BLOCK_SIZE] =
+        core::array::from_fn(|col| Simd::<i8, WARP_FILTER_TAPS>::from_slice(columns[col]).cast());
+    let ones = [
+        simd_swizzle!(rows[0], rows[1], TRN1),
+        simd_swizzle!(rows[0], rows[1], TRN2),
+        simd_swizzle!(rows[2], rows[3], TRN1),
+        simd_swizzle!(rows[2], rows[3], TRN2),
+        simd_swizzle!(rows[4], rows[5], TRN1),
+        simd_swizzle!(rows[4], rows[5], TRN2),
+        simd_swizzle!(rows[6], rows[7], TRN1),
+        simd_swizzle!(rows[6], rows[7], TRN2),
+    ];
+    let pairs = [
+        simd_swizzle!(ones[0], ones[2], TRN1_PAIRS),
+        simd_swizzle!(ones[1], ones[3], TRN1_PAIRS),
+        simd_swizzle!(ones[0], ones[2], TRN2_PAIRS),
+        simd_swizzle!(ones[1], ones[3], TRN2_PAIRS),
+        simd_swizzle!(ones[4], ones[6], TRN1_PAIRS),
+        simd_swizzle!(ones[5], ones[7], TRN1_PAIRS),
+        simd_swizzle!(ones[4], ones[6], TRN2_PAIRS),
+        simd_swizzle!(ones[5], ones[7], TRN2_PAIRS),
+    ];
+    [
+        simd_swizzle!(pairs[0], pairs[4], TRN1_QUADS),
+        simd_swizzle!(pairs[1], pairs[5], TRN1_QUADS),
+        simd_swizzle!(pairs[2], pairs[6], TRN1_QUADS),
+        simd_swizzle!(pairs[3], pairs[7], TRN1_QUADS),
+        simd_swizzle!(pairs[0], pairs[4], TRN2_QUADS),
+        simd_swizzle!(pairs[1], pairs[5], TRN2_QUADS),
+        simd_swizzle!(pairs[2], pairs[6], TRN2_QUADS),
+        simd_swizzle!(pairs[3], pairs[7], TRN2_QUADS),
+    ]
+}
+
 fn build_output(
     shear: &Shear,
     projected: &ProjectedCenter,
@@ -813,11 +862,9 @@ fn build_output(
                 let i2 = col as i32 - 4;
                 warped_filter_row(projected.sy4 + shear.gamma * i2 + shear.delta * i1)
             });
+        let taps_by_tap = transpose_warp_taps(&columns);
         let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-        for tap in 0..WARP_FILTER_TAPS {
-            let taps = Simd::<i16, WARPED_BLOCK_SIZE>::from_array(core::array::from_fn(|col| {
-                i16::from(columns[col][tap])
-            }));
+        for (tap, taps) in taps_by_tap.into_iter().enumerate() {
             let samples =
                 Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]).cast::<i32>();
             sum += taps.cast::<i32>() * samples;

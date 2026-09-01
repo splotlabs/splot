@@ -213,6 +213,32 @@ pub(super) fn subpel_copy_block_u16_into<T: ReconSample>(
     Ok(())
 }
 
+/// One `LANES`-wide group of [`subpel_copy_compound_average_u16_into`].
+#[allow(
+    clippy::inline_always,
+    reason = "measured compound-average copy hot path"
+)]
+#[inline(always)]
+fn blend_compound_lanes<const LANES: usize>(
+    output: &mut [u16],
+    pred0: &[i32],
+    source: &[u16],
+    forward: i32,
+    backward: i32,
+    max_sample: i32,
+) {
+    let pred0 = Simd::<i32, LANES>::from_slice(pred0);
+    let pred1 = Simd::<u16, LANES>::from_slice(source).cast::<i32>() << 4;
+    let blended = round2_simd(
+        pred0 * Simd::splat(forward) + pred1 * Simd::splat(backward),
+        4 + compound_inter_post_round(),
+    )
+    .simd_max(Simd::splat(0))
+    .simd_min(Simd::splat(max_sample))
+    .cast::<u16>();
+    output[..LANES].copy_from_slice(&blended.to_array()); // splot-copy-ok: publish SIMD blend lanes into caller output
+}
+
 pub(super) fn subpel_copy_compound_average_u16_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -221,7 +247,6 @@ pub(super) fn subpel_copy_compound_average_u16_into<T: ReconSample>(
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<bool> {
-    const LANES: usize = 4;
     if params.step_x != 1 << SCALE_SUBPEL_BITS
         || params.step_y != 1 << SCALE_SUBPEL_BITS
         || (params.start_x >> 6) & SUBPEL_MASK != 0
@@ -264,28 +289,29 @@ pub(super) fn subpel_copy_compound_average_u16_into<T: ReconSample>(
         })?;
         let pred0 = &pred0[row * params.w..][..params.w];
         let output = &mut output[row * output_stride..][..params.w];
-        let mut source_chunks = source.chunks_exact(LANES);
-        for ((output, pred0), source) in output
-            .chunks_exact_mut(LANES)
-            .zip(pred0.chunks_exact(LANES))
-            .zip(&mut source_chunks)
-        {
-            let pred0 = Simd::<i32, LANES>::from_slice(pred0);
-            let pred1 = Simd::<u16, LANES>::from_slice(source).cast::<i32>() << 4;
-            let blended = round2_simd(
-                pred0 * Simd::splat(forward) + pred1 * Simd::splat(backward),
-                4 + compound_inter_post_round(),
-            )
-            .simd_max(Simd::splat(0))
-            .simd_min(Simd::splat(max_sample))
-            .cast::<u16>();
-            output.copy_from_slice(&blended.to_array()); // splot-copy-ok: publish SIMD blend lanes into caller output
+        let mut copied = 0usize;
+        macro_rules! blend_lane_group {
+            ($lanes:literal) => {
+                while copied + $lanes <= params.w {
+                    blend_compound_lanes::<$lanes>(
+                        &mut output[copied..],
+                        &pred0[copied..],
+                        &source[copied..],
+                        forward,
+                        backward,
+                        max_sample,
+                    );
+                    copied += $lanes;
+                }
+            };
         }
-        let copied = source.len() - source_chunks.remainder().len();
+        blend_lane_group!(16);
+        blend_lane_group!(8);
+        blend_lane_group!(4);
         for ((output, &pred0), &source) in output[copied..]
             .iter_mut()
             .zip(&pred0[copied..])
-            .zip(source_chunks.remainder())
+            .zip(&source[copied..])
         {
             *output = blend_compound_average_weighted_sample(
                 pred0,
