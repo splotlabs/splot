@@ -121,7 +121,7 @@ fn spatial_derivation_uses_reference_trajectories() {
     let mut dst = TrajectoryMotionField::new(2, 2).unwrap();
     dst.set(0, 0, Mv { row: 12, col: 240 });
     let mut context = tip_context(4, vec![Some(0), Some(9)], 2, 2);
-    context.trajectories = Some(TrajectoryState::from_fields(vec![candidate, dst]));
+    context.trajectories = Some(TrajectoryState::from_fields(&[candidate, dst]));
 
     assert_eq!(
         context.derive_spatial_mv(1, 0, Mv { row: -12, col: -67 }, 0, 0),
@@ -145,7 +145,7 @@ fn compound_spatial_derivation_uses_both_reference_trajectories() {
     let mut dst1 = TrajectoryMotionField::new(2, 2).unwrap();
     dst1.set(0, 0, Mv { row: -8, col: 100 });
     let mut context = tip_context(4, vec![Some(0), Some(9), Some(6)], 2, 2);
-    context.trajectories = Some(TrajectoryState::from_fields(vec![candidate, dst0, dst1]));
+    context.trajectories = Some(TrajectoryState::from_fields(&[candidate, dst0, dst1]));
 
     assert_eq!(
         context.derive_compound_spatial_mvs([1, 2], 0, Mv { row: -12, col: -67 }, 0, 0,),
@@ -775,7 +775,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     .unwrap();
     let field_ptr = context.field.cells.as_ptr();
     let trajectories = context.trajectories.as_ref().unwrap();
-    let trajectory_ptr = trajectories.fields[0].cells.as_ptr();
+    let trajectory_ptr = trajectories.cells.as_ptr();
     let positions_ptr = trajectories.positions[0].as_ptr();
     let offsets_ptr = trajectories.projection_offsets.as_ptr();
 
@@ -793,7 +793,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
 
     let trajectories = context.trajectories.as_ref().unwrap();
     assert_eq!(context.field.cells.as_ptr(), field_ptr);
-    assert_eq!(trajectories.fields[0].cells.as_ptr(), trajectory_ptr);
+    assert_eq!(trajectories.cells.as_ptr(), trajectory_ptr);
     assert_eq!(trajectories.positions[0].as_ptr(), positions_ptr);
     assert_eq!(trajectories.projection_offsets.as_ptr(), offsets_ptr);
 }
