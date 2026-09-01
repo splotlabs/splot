@@ -1306,38 +1306,6 @@ impl<T: ReconSample> InterReferenceState<T> {
     }
 }
 
-impl<T: ReconSample> Drop for InterReferenceState<T> {
-    fn drop(&mut self) {
-        let meta = crate::reference::buffer::ReferenceMetadata {
-            ref_valid: std::mem::take(&mut self.ref_valid),
-            ref_order_hint: std::mem::take(&mut self.ref_order_hint),
-            ref_order_hint_lsbs: std::mem::take(&mut self.ref_order_hint_lsbs),
-            ref_implicit_output_frame: std::mem::take(&mut self.ref_implicit_output_frame),
-            ref_immediate_output_frame: std::mem::take(&mut self.ref_immediate_output_frame),
-            ref_frame_width: std::mem::take(&mut self.ref_frame_width),
-            ref_frame_height: std::mem::take(&mut self.ref_frame_height),
-            ref_base_q_idx: std::mem::take(&mut self.ref_base_q_idx),
-            ref_counter: std::mem::take(&mut self.ref_counter),
-            ref_chroma_ac_deltas: std::mem::take(&mut self.ref_chroma_ac_deltas),
-            ref_is_inter: std::mem::take(&mut self.ref_is_inter),
-            ref_long_term_id: std::mem::take(&mut self.ref_long_term_id),
-            ref_num_total_refs: std::mem::take(&mut self.ref_num_total_refs),
-            saved_global_motion_order_hints: std::mem::take(
-                &mut self.saved_global_motion_order_hints,
-            ),
-            saved_global_motion_params: std::mem::take(&mut self.saved_global_motion_params),
-            lr_frame_filter_class_counts: std::mem::take(&mut self.lr_frame_filter_class_counts),
-            lr_frame_filter_taps: std::mem::take(&mut self.lr_frame_filter_taps),
-            ref_frame_cdfs: std::mem::take(&mut self.ref_frame_cdfs),
-            ref_ccso_params: std::mem::take(&mut self.ref_ccso_params),
-            ref_ccso_unit_grids: std::mem::take(&mut self.ref_ccso_unit_grids),
-            ref_segment_ids: std::mem::take(&mut self.ref_segment_ids),
-            ref_motion_fields: std::mem::take(&mut self.ref_motion_fields),
-        };
-        crate::reference::buffer::recycle_reference_metadata(meta);
-    }
-}
-
 /// The settled state of the reference frames one frame's prediction reads.
 ///
 /// A frame's entropy walk parses without reference samples; only reconstruction

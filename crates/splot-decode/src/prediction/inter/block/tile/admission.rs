@@ -402,14 +402,13 @@ impl<T: ReconSample> TileRecon<T> {
             self.ref_frame_idx.as_slice(),
         );
         for ready in batch {
-            let buffers = commit.replay(
+            drop(commit.replay(
                 ready,
                 &self.quantizer,
                 &self.motion,
                 &self.temporal,
                 &context,
-            )?;
-            recycle_retained_recon_row_buffers(buffers);
+            )?);
         }
         let terminal = commit.next == self.unit_count;
         let closed_rows = closed_frontier_rows(
@@ -1107,7 +1106,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         {
             let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
             if frontier.sealed.is_some() {
-                workspace.recycle_planes();
+                drop(workspace);
             } else {
                 let mut source = crate::filters::source::DeblockedSource::new(workspace);
                 if frontier.deblock.is_none()

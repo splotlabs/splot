@@ -143,61 +143,6 @@ impl MiGrid<'_> {
     }
 }
 
-/// Fewest deblock grids retained between frames, and the floor the pool-width
-/// bound never drops below.
-const MIN_RETAINED_DEBLOCK_GRIDS: usize = 4;
-
-/// Retains one grid per worker so a wide pool does not reallocate the grids its
-/// extra workers need, with [`MIN_RETAINED_DEBLOCK_GRIDS`] as the floor.
-/// Scales per worker only on a pool thread; off-pool callers get the floor.
-fn max_retained_deblock_grids() -> usize {
-    splot_parallel::current_pool_width().max(MIN_RETAINED_DEBLOCK_GRIDS)
-}
-const MAX_RETAINED_DEBLOCK_CELLS: usize = 1 << 22;
-static RETAINED_DEBLOCK_GRIDS: std::sync::Mutex<Vec<(Vec<MiCell>, Vec<u8>)>> =
-    std::sync::Mutex::new(Vec::new());
-static RETAINED_CHROMA_DEBLOCK_GRIDS: std::sync::Mutex<Vec<(Vec<ChromaMiCell>, Vec<u8>)>> =
-    std::sync::Mutex::new(Vec::new());
-
-fn take_deblock_grid_scratch<C>(
-    pool: &std::sync::Mutex<Vec<(Vec<C>, Vec<u8>)>>,
-) -> (Vec<C>, Vec<u8>) {
-    pool.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .pop()
-        .unwrap_or_default()
-}
-
-fn recycle_deblock_grid_scratch<C>(
-    pool: &std::sync::Mutex<Vec<(Vec<C>, Vec<u8>)>>,
-    mut cells: Vec<C>,
-    mut candidates: Vec<u8>,
-) {
-    if cells.capacity() == 0 || cells.capacity() > MAX_RETAINED_DEBLOCK_CELLS {
-        return;
-    }
-    let mut retained = pool
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.len() < max_retained_deblock_grids() {
-        cells.clear();
-        candidates.clear();
-        retained.push((cells, candidates));
-    }
-}
-
-impl MiGridStorage {
-    pub(super) fn recycle(self) {
-        recycle_deblock_grid_scratch(&RETAINED_DEBLOCK_GRIDS, self.cells, self.candidates);
-    }
-}
-
-impl ChromaMiGridStorage {
-    pub(super) fn recycle(self) {
-        recycle_deblock_grid_scratch(&RETAINED_CHROMA_DEBLOCK_GRIDS, self.cells, self.candidates);
-    }
-}
-
 pub(super) fn build_mi_grid(
     blocks: &[DeblockBlock],
     mi_rows: usize,
@@ -206,7 +151,7 @@ pub(super) fn build_mi_grid(
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
-    let (mut cells, mut candidates) = take_deblock_grid_scratch(&RETAINED_DEBLOCK_GRIDS);
+    let (mut cells, mut candidates) = (Vec::new(), Vec::new());
     cells.clear();
     cells
         .try_reserve_exact(count)
@@ -266,7 +211,7 @@ pub(super) fn overlay_mi_grid(
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
-    let (mut cells, mut candidates) = take_deblock_grid_scratch(&RETAINED_CHROMA_DEBLOCK_GRIDS);
+    let (mut cells, mut candidates) = (Vec::new(), Vec::new());
     cells.clear();
     cells
         .try_reserve_exact(count)

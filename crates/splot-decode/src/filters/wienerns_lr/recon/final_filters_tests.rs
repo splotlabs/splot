@@ -643,7 +643,7 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
     let (mut setup, workspace) = sink
         .into_owned_filter_setup(Arc::new(core), false, Some(progress), None)
         .unwrap();
-    let workspace = workspace.unwrap();
+    assert!(workspace.is_some());
 
     assert!(
         setup
@@ -660,7 +660,6 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
             .as_ref()
             .is_some_and(|grid| grid.plane_sample_lossless(PlaneId::Y, 0, 0, 0, 0))
     );
-    workspace.recycle_planes();
     Ok(())
 }
 

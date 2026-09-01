@@ -289,7 +289,7 @@ impl<T: ReconSample> DeblockedStorage<T> {
 impl<T: ReconSample> Drop for DeblockedStorage<T> {
     fn drop(&mut self) {
         unsafe {
-            ManuallyDrop::take(&mut self.workspace).recycle_planes();
+            drop(ManuallyDrop::take(&mut self.workspace));
         } // SAFETY: the final owning Arc has exclusive workspace access.
         #[cfg(test)]
         if let Some(recycled) = &self.recycled {

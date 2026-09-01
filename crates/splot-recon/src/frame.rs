@@ -280,26 +280,6 @@ impl<T: ReconSample> SharedFrame<T> {
     }
 }
 
-/// Returns the frame's plane sample buffers to the reconstruction-plane pool
-/// when the last owner releases the frame.
-///
-/// Reclaiming on drop covers every release path — the driver retiring a frame,
-/// a reference slot being replaced, an output handle going away — so a decoded
-/// frame's storage funds the next frame's workspace instead of being freed and
-/// reallocated. It can never disturb a still-referenced frame: the drop only
-/// runs once no handle remains.
-impl<T: ReconSample> Drop for DecodedFrame<T> {
-    fn drop(&mut self) {
-        crate::workspace::recycle_recon_plane_buffer(self.planes.y.take_samples());
-        if let Some(u) = self.planes.u.as_mut() {
-            crate::workspace::recycle_recon_plane_buffer(u.take_samples());
-        }
-        if let Some(v) = self.planes.v.as_mut() {
-            crate::workspace::recycle_recon_plane_buffer(v.take_samples());
-        }
-    }
-}
-
 impl<T: ReconSample> core::ops::Deref for SharedFrame<T> {
     type Target = DecodedFrame<T>;
 

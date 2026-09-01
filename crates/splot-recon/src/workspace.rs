@@ -1394,23 +1394,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         DecodedFrame::try_new(self.info, FramePlanes::new(y, u, v))
     }
 
-    /// Consumes a transient (non-frozen) workspace, returning its plane sample
-    /// buffers to the process-global retained pool so the next frame's
-    /// reconstruction workspace can reuse them instead of reallocating.
-    ///
-    /// Call this only on the reconstruction workspace once filtering has read
-    /// all of it; the filtered output workspace is [`freeze`](Self::freeze)d
-    /// into a decoded frame and must not be recycled.
-    pub fn recycle_planes(self) {
-        recycle_recon_plane_buffer(self.y.into_samples());
-        if let Some(u) = self.u {
-            recycle_recon_plane_buffer(u.into_samples());
-        }
-        if let Some(v) = self.v {
-            recycle_recon_plane_buffer(v.into_samples());
-        }
-    }
-
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {
         select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
     }
@@ -1427,68 +1410,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         let rect = block_rect(x, y, size)?;
         let bit_depth = self.info.bit_depth();
         Ok((self.plane_mut(plane)?, rect, bit_depth))
-    }
-}
-
-/// Mutable backing storage for one current-frame workspace plane.
-///
-/// Bounds the retained transient reconstruction-plane buffers by their total
-/// sample count, so a large frame cannot pin its high-water allocation in the
-/// process-global pool until process exit. Budgeting samples rather than
-/// buffers keeps the retained bytes the same at every resolution, and lets a
-/// frame retain as many planes as that budget covers instead of a fixed count
-/// sized for one decode shape.
-const MAX_RETAINED_RECON_PLANE_SAMPLES: usize = 1 << 25;
-
-/// Caps the retained buffer count as well, so the sample budget alone cannot
-/// admit a crowd of one-sample buffers whose `Vec<Vec<T>>` metadata outweighs
-/// the samples it bounds, and so the capacity scan below stays bounded — a
-/// batch of frames returning their planes costs a fixed amount per buffer
-/// rather than growing with the pool.
-///
-/// This bounds memory, not concurrency: a buffer over the cap is dropped rather
-/// than retained, and a taker that finds the pool empty allocates its own.
-const MAX_RETAINED_RECON_PLANE_BUFFERS: usize = 64;
-
-/// Takes a plane sample buffer from the per-type retained pool, reusing a prior
-/// frame's recycled reconstruction-workspace allocation when available.
-///
-/// The pool mixes luma and chroma buffers, so a plane takes one it already fits
-/// before any other: a chroma buffer taken for a luma plane would reallocate,
-/// and leave the next chroma plane the oversized one. `clear` drops the pooled
-/// samples so the caller's fill initializes the plane; a caller that overwrites
-/// every row it reads keeps a same-geometry buffer exactly as it is.
-fn take_recon_plane_buffer<T: ReconSample>(clear: bool, required_samples: usize) -> Vec<T> {
-    let mut pool = T::recon_plane_pool()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let matched = pool
-        .iter()
-        .position(|buffer| buffer.len() == required_samples)
-        .or_else(|| pool.len().checked_sub(1));
-    let mut buffer = matched.map_or_else(Vec::new, |index| pool.swap_remove(index));
-    drop(pool);
-    if clear {
-        buffer.clear();
-    }
-    buffer
-}
-
-/// Returns a plane sample buffer to the per-type retained pool, dropping it when
-/// the pool is full by either bound or the buffer is oversized.
-pub(crate) fn recycle_recon_plane_buffer<T: ReconSample>(buffer: Vec<T>) {
-    if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_RECON_PLANE_SAMPLES {
-        return;
-    }
-    let mut pool = T::recon_plane_pool()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if pool.len() >= MAX_RETAINED_RECON_PLANE_BUFFERS {
-        return;
-    }
-    let retained = pool.iter().map(Vec::capacity).sum::<usize>();
-    if retained.saturating_add(buffer.capacity()) <= MAX_RETAINED_RECON_PLANE_SAMPLES {
-        pool.push(buffer);
     }
 }
 
@@ -1529,7 +1450,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             },
         )?;
 
-        let mut samples = take_recon_plane_buffer::<T>(fill.is_some(), required_samples);
+        let mut samples: Vec<T> = Vec::new();
         samples
             .try_reserve_exact(required_samples.saturating_sub(samples.len()))
             .map_err(|_| ReconError::WorkspaceAllocationFailed {
@@ -1816,11 +1737,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             self.visible_rect,
             self.samples,
         )
-    }
-
-    /// Consumes the plane, returning its backing sample buffer for recycling.
-    fn into_samples(self) -> Vec<T> {
-        self.samples
     }
 
     /// Clamps a write/fill `rect` to the in-frame storage extent.

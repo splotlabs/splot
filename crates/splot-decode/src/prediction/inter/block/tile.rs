@@ -855,36 +855,9 @@ struct ReconRowBufferPool {
     available: Mutex<Vec<ReconRowBuffers>>,
 }
 
-/// Fewest recycled per-unit buffer sets retained, and the floor the pool-width
-/// bound never drops below.
-const MIN_RETAINED_RECON_ROW_BUFFERS: usize = 512;
-/// Buffer sets retained per worker. The parse-ahead path holds one set per unit
-/// in flight, so the sets returning between frames follow the pool width.
-const RETAINED_RECON_ROW_BUFFERS_PER_WORKER: usize = 256;
-
-/// Retains one worker's share per worker, with
-/// [`MIN_RETAINED_RECON_ROW_BUFFERS`] as the floor.
-/// Scales per worker only on a pool thread; off-pool callers get the floor.
-fn max_retained_recon_row_buffers() -> usize {
-    splot_parallel::current_pool_width()
-        .saturating_mul(RETAINED_RECON_ROW_BUFFERS_PER_WORKER)
-        .max(MIN_RETAINED_RECON_ROW_BUFFERS)
-}
-static RETAINED_RECON_ROW_BUFFERS: Mutex<Vec<ReconRowBuffers>> = Mutex::new(Vec::new());
-
 impl ReconRowBufferPool {
     fn new(slots: usize) -> Self {
         let mut available = Vec::with_capacity(slots);
-        let mut retained = RETAINED_RECON_ROW_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while available.len() < slots {
-            let Some(buffers) = retained.pop() else {
-                break;
-            };
-            available.push(buffers);
-        }
-        drop(retained);
         available.resize_with(slots, ReconRowBuffers::default);
         Self {
             available: Mutex::new(available),
@@ -900,11 +873,7 @@ impl ReconRowBufferPool {
         {
             return buffers;
         }
-        RETAINED_RECON_ROW_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
-            .unwrap_or_default()
+        ReconRowBuffers::default()
     }
 
     fn recycle(&self, buffers: ReconRowBuffers) {
@@ -912,47 +881,6 @@ impl ReconRowBufferPool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(buffers);
-    }
-}
-
-/// Takes one recycled set of per-unit buffers from the process-wide retention.
-///
-/// The parse-ahead path holds every unit of a frame at once, so it cannot draw
-/// from a per-tile pool; it borrows from the same retention the fused walk's
-/// pools fill and returns each set as its unit commits.
-fn take_retained_recon_row_buffers() -> ReconRowBuffers {
-    RETAINED_RECON_ROW_BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .pop()
-        .unwrap_or_default()
-}
-
-fn recycle_retained_recon_row_buffers(buffers: ReconRowBuffers) {
-    let mut retained = RETAINED_RECON_ROW_BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.len() < max_retained_recon_row_buffers() {
-        retained.push(buffers);
-    }
-}
-
-impl Drop for ReconRowBufferPool {
-    fn drop(&mut self) {
-        let available = self
-            .available
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut retained = RETAINED_RECON_ROW_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let limit = max_retained_recon_row_buffers();
-        while retained.len() < limit {
-            let Some(buffers) = available.pop() else {
-                break;
-            };
-            retained.push(buffers);
-        }
     }
 }
 
@@ -1534,7 +1462,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     )?;
     parser.mv_grid.log_flags();
     loop {
-        let step = parser.next_unit(context, Some(take_retained_recon_row_buffers()));
+        let step = parser.next_unit(context, Some(ReconRowBuffers::default()));
         let (mut row, last) = match step {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),

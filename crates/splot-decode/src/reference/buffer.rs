@@ -15,7 +15,7 @@ use splot_core::headers::frame::{
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use crate::error::{DecodeReferenceStateError, Result};
 use crate::pipeline::PipelineFrame;
@@ -276,7 +276,7 @@ impl RuntimeReferenceBuffer {
         let num = self.slots.len();
         let mut store: ReferenceFrameStore<RefFrameSlot<T>> =
             ReferenceFrameStore::with_capacity(num)?;
-        let mut meta = take_reference_metadata(num);
+        let mut meta = ReferenceMetadata::with_capacity(num);
         for (i, slot) in self.slots.iter().enumerate() {
             if !slot.valid {
                 meta.push_slot(slot, None);
@@ -484,68 +484,6 @@ impl ReferenceMetadata {
             .push(frame.map(|frame| frame.segment_ids.clone()));
         self.ref_motion_fields
             .push(frame.map(|frame| frame.motion_field.clone()));
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.ref_valid.clear();
-        self.ref_order_hint.clear();
-        self.ref_order_hint_lsbs.clear();
-        self.ref_implicit_output_frame.clear();
-        self.ref_immediate_output_frame.clear();
-        self.ref_frame_width.clear();
-        self.ref_frame_height.clear();
-        self.ref_base_q_idx.clear();
-        self.ref_counter.clear();
-        self.ref_chroma_ac_deltas.clear();
-        self.ref_is_inter.clear();
-        self.ref_long_term_id.clear();
-        self.ref_num_total_refs.clear();
-        self.saved_global_motion_order_hints.clear();
-        self.saved_global_motion_params.clear();
-        self.lr_frame_filter_class_counts.clear();
-        self.lr_frame_filter_taps.clear();
-        self.ref_frame_cdfs.clear();
-        self.ref_ccso_params.clear();
-        self.ref_ccso_unit_grids.clear();
-        self.ref_segment_ids.clear();
-        self.ref_motion_fields.clear();
-    }
-}
-
-static METADATA_RECYCLER: Mutex<Vec<ReferenceMetadata>> = Mutex::new(Vec::new());
-
-/// Fewest reference-metadata sets retained, and the floor the pool-width bound
-/// never drops below.
-const MIN_RETAINED_REFERENCE_METADATA: usize = 32;
-/// Metadata sets retained per worker: a wide pool has that many more frames in
-/// flight, each holding its own set.
-const RETAINED_REFERENCE_METADATA_PER_WORKER: usize = 2;
-
-/// Retains one worker's share per worker, with
-/// [`MIN_RETAINED_REFERENCE_METADATA`] as the floor.
-/// Scales per worker only on a pool thread; off-pool callers get the floor.
-fn max_retained_reference_metadata() -> usize {
-    splot_parallel::current_pool_width()
-        .saturating_mul(RETAINED_REFERENCE_METADATA_PER_WORKER)
-        .max(MIN_RETAINED_REFERENCE_METADATA)
-}
-
-pub(crate) fn take_reference_metadata(capacity: usize) -> ReferenceMetadata {
-    let mut meta = METADATA_RECYCLER
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .pop()
-        .unwrap_or_else(|| ReferenceMetadata::with_capacity(capacity));
-    meta.clear();
-    meta
-}
-
-pub(crate) fn recycle_reference_metadata(meta: ReferenceMetadata) {
-    let mut recycler = METADATA_RECYCLER
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    if recycler.len() < max_retained_reference_metadata() {
-        recycler.push(meta);
     }
 }
 

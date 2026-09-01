@@ -113,11 +113,6 @@ impl<T: ReconSample> Plane<T> {
         self.samples
     }
 
-    /// Moves the backing sample buffer out of a plane that is being dropped.
-    pub(crate) fn take_samples(&mut self) -> Vec<T> {
-        mem::take(&mut self.samples)
-    }
-
     /// Iterates over visible decoded-output rows, excluding padding and stride.
     pub const fn visible_rows(&self) -> VisibleRows<'_, T> {
         VisibleRows {

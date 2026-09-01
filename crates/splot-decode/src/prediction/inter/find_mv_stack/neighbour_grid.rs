@@ -13,7 +13,6 @@
 
 use core::ops::Range;
 
-use super::mv_grid_pool::take_neighbour_mv_planes;
 use super::{
     CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at,
 };
@@ -288,6 +287,18 @@ pub(super) struct GridPlanes {
     pub(super) leaves: Vec<LeafMotion>,
 }
 
+/// Sizes one tile's grid planes.
+///
+/// The flag plane is filled; the motion plane is left empty so a grid that only
+/// publishes flags — the split path's parse pass — never pays the motion fill,
+/// and the first `record_motion` sizes it. See `NeighbourMvGrid::motion_plane`.
+fn new_grid_planes(cells: usize) -> Result<GridPlanes, std::collections::TryReserveError> {
+    let mut planes = GridPlanes::default();
+    planes.flags.try_reserve_exact(cells)?;
+    planes.flags.resize(cells, None);
+    Ok(planes)
+}
+
 /// One leaf's flag-plane publication, replayable onto a second grid.
 ///
 /// A parse pass that hands its units to a resolve pass running later, or
@@ -327,8 +338,7 @@ impl NeighbourMvGrid {
             origin_col: mi_cols.start,
             mi_rows: rows,
             mi_cols: cols,
-            planes: take_neighbour_mv_planes(cells)
-                .map_err(|_| TileGridConstructionError::Allocation)?,
+            planes: new_grid_planes(cells).map_err(|_| TileGridConstructionError::Allocation)?,
             flag_log: Vec::new(),
             logging: false,
         })

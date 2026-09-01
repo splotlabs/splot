@@ -697,12 +697,7 @@ impl<'a> FrameDeblock<'a> {
         self.mi_rows * MI_SIZE
     }
 
-    /// Returns the grid scratch buffers to the pool.
     pub(crate) fn finish(self) -> Option<OwnedDeblockRecords> {
-        for grid in self.chroma.into_iter().flatten() {
-            grid.recycle();
-        }
-        self.grid.recycle();
         match self.records {
             DeblockRecords::Borrowed { .. } => None,
             DeblockRecords::Owned(records) => Some(records),
