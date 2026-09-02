@@ -36,9 +36,7 @@ mod workspace_intra_dc;
 mod workspace_intra_directional_angle;
 #[path = "workspace_rows.rs"]
 mod workspace_rows;
-pub use owned_rect::{
-    OwnedFrameBands, OwnedFramePlaneBand, OwnedFrameRect, OwnedFrameRectRows, OwnedFrameRowBand,
-};
+pub use owned_rect::{OwnedFrameRect, OwnedFrameRectRows};
 pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
 pub use workspace_rows::{CurrentFrameRectRows, CurrentFrameRectRowsMut, WorkspaceRectRows};
@@ -78,11 +76,12 @@ macro_rules! contiguous_rect_writer {
                 Self::OwnedRect(surface) => {
                     let target = surface.plane_mut(plane)?;
                     target.ensure_rect(rect)?;
+                    let target_rect = target.rect();
                     (
-                        &mut target.samples[..],
-                        target.rect.width(),
-                        rect.x() - target.rect.x(),
-                        rect.y() - target.rect.y(),
+                        target.into_samples_mut(),
+                        target_rect.width(),
+                        rect.x() - target_rect.x(),
+                        rect.y() - target_rect.y(),
                     )
                 }
             };
@@ -483,7 +482,7 @@ impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
         match self {
             Self::Frame(workspace) => Ok(workspace.plane(plane)?.storage_size()),
             Self::Rect(rect) => Ok(rect.plane(plane)?.storage_size()),
-            Self::OwnedRect(rect) => Ok(rect.plane(plane)?.storage_size),
+            Self::OwnedRect(rect) => Ok(rect.plane(plane)?.storage_size()),
         }
     }
 
@@ -618,14 +617,15 @@ impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
                 Ok(())
             }
             Self::OwnedRect(surface) => {
-                let target = surface.plane_mut(plane)?;
+                let mut target = surface.plane_mut(plane)?;
                 target.ensure_rect(rect)?;
+                let target_rect = target.rect();
                 write_u16_rect_to_samples(
-                    &mut target.samples,
-                    target.rect.width(),
+                    target.samples_mut(),
+                    target_rect.width(),
                     rect,
-                    rect.x() - target.rect.x(),
-                    rect.y() - target.rect.y(),
+                    rect.x() - target_rect.x(),
+                    rect.y() - target_rect.y(),
                     samples,
                     row_stride_samples,
                 )
@@ -810,16 +810,17 @@ impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
             }
             Self::OwnedRect(surface) => {
                 let target = surface.plane_mut(plane)?;
-                let rect = clamp_rect_to_storage(target.plane, target.storage_size, rect)?;
+                let rect = clamp_rect_to_storage(target.plane(), target.storage_size(), rect)?;
                 target.ensure_rect(rect)?;
-                let stride = target.rect.width();
-                let base = (rect.y() - target.rect.y())
+                let target_rect = target.rect();
+                let stride = target_rect.width();
+                let base = (rect.y() - target_rect.y())
                     .checked_mul(stride)
-                    .and_then(|start| start.checked_add(rect.x() - target.rect.x()))
+                    .and_then(|start| start.checked_add(rect.x() - target_rect.x()))
                     .ok_or(ReconError::ArithmeticOverflow {
                         context: "current-frame residual target row offset",
                     })?;
-                (&mut target.samples[..], stride, base, rect)
+                (target.into_samples_mut(), stride, base, rect)
             }
         };
         let last_target_end = (rect.height() - 1)

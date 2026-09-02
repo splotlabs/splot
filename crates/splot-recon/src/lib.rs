@@ -196,9 +196,8 @@ pub use wienerns_filter::{
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect,
     CurrentFrameRectRows, CurrentFrameRectRowsMut, CurrentFrameSurface, CurrentFrameWorkspace,
-    InterIntraMode, IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameBands,
-    OwnedFramePlaneBand, OwnedFrameRect, OwnedFrameRectRows, OwnedFrameRowBand, WorkspaceRectRows,
-    wedge_mask_plane_sample,
+    InterIntraMode, IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect,
+    OwnedFrameRectRows, WorkspaceRectRows, wedge_mask_plane_sample,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

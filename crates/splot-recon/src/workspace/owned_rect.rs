@@ -5,21 +5,35 @@
 //!
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`.
 
-use core::ops::Range;
 use core::slice;
 
 use super::*;
 
-#[derive(Debug, Eq, PartialEq)]
-pub(super) struct OwnedFramePlaneRect<T: ReconSample> {
+/// One plane's slice of an [`OwnedFrameRect`]'s single allocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct OwnedFramePlaneRect {
     pub(super) plane: PlaneId,
     pub(super) storage_size: PlaneSize,
     pub(super) rect: PlaneRect,
-    pub(super) samples: Vec<T>,
+    start: usize,
+    len: usize,
 }
 
-impl<T: ReconSample> OwnedFramePlaneRect<T> {
-    fn new(plane: PlaneId, storage_size: PlaneSize, rect: PlaneRect, fill: T) -> Result<Self> {
+/// One plane's samples plus the geometry describing them.
+pub(super) struct OwnedPlaneRef<'a, T: ReconSample> {
+    region: OwnedFramePlaneRect,
+    samples: &'a [T],
+}
+
+/// The mutable counterpart of [`OwnedPlaneRef`].
+pub(super) struct OwnedPlaneMut<'a, T: ReconSample> {
+    region: OwnedFramePlaneRect,
+    samples: &'a mut [T],
+}
+
+impl OwnedFramePlaneRect {
+    /// Describes one plane's slice, starting at `start` in the shared buffer.
+    fn new(plane: PlaneId, storage_size: PlaneSize, rect: PlaneRect, start: usize) -> Result<Self> {
         ensure_rect_in_storage(plane, storage_size, rect)?;
         let len =
             rect.width()
@@ -27,37 +41,67 @@ impl<T: ReconSample> OwnedFramePlaneRect<T> {
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "owned rectangle sample count",
                 })?;
-        let mut samples = Vec::new();
-        samples
-            .try_reserve_exact(len)
-            .map_err(|_| ReconError::WorkspaceAllocationFailed {
-                plane,
-                context: "owned rectangle samples",
-            })?;
-        samples.resize(len, fill);
         Ok(Self {
             plane,
             storage_size,
             rect,
-            samples,
+            start,
+            len,
         })
     }
 
-    pub(super) fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
-        ensure_surface_rect(self.plane, self.rect, rect)
+    fn end(&self) -> usize {
+        self.start.saturating_add(self.len)
     }
 
-    pub(super) fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
-        ensure_rect_in_storage(self.plane, self.storage_size, rect)?;
-        self.ensure_rect(rect)?;
-        let row_start = rect.y() - self.rect.y();
+    fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
+        ensure_surface_rect(self.plane, self.rect, rect)
+    }
+}
+
+impl<'a, T: ReconSample> OwnedPlaneRef<'a, T> {
+    pub(super) const fn storage_size(&self) -> PlaneSize {
+        self.region.storage_size
+    }
+
+    pub(super) fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'a, T>> {
+        ensure_rect_in_storage(self.region.plane, self.region.storage_size, rect)?;
+        self.region.ensure_rect(rect)?;
+        let row_start = rect.y() - self.region.rect.y();
         let row_end = row_start + rect.height();
-        let stride = self.rect.width();
+        let stride = self.region.rect.width();
         Ok(WorkspaceRectRows::Owned(OwnedFrameRectRows {
             rows: self.samples[row_start * stride..row_end * stride].chunks_exact(stride),
-            x: rect.x() - self.rect.x(),
+            x: rect.x() - self.region.rect.x(),
             width: rect.width(),
         }))
+    }
+}
+
+impl<'a, T: ReconSample> OwnedPlaneMut<'a, T> {
+    pub(super) const fn storage_size(&self) -> PlaneSize {
+        self.region.storage_size
+    }
+
+    pub(super) const fn rect(&self) -> PlaneRect {
+        self.region.rect
+    }
+
+    pub(super) const fn plane(&self) -> PlaneId {
+        self.region.plane
+    }
+
+    pub(super) fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
+        self.region.ensure_rect(rect)
+    }
+
+    pub(super) const fn samples_mut(&mut self) -> &mut [T] {
+        self.samples
+    }
+
+    /// Releases the plane's samples for the caller's own lifetime.
+    pub(super) const fn into_samples_mut(self) -> &'a mut [T] {
+        self.samples
     }
 
     pub(super) fn write_rect(
@@ -67,19 +111,19 @@ impl<T: ReconSample> OwnedFramePlaneRect<T> {
         row_stride_samples: usize,
         max_sample: u16,
     ) -> Result<()> {
-        let rect = clamp_rect_to_storage(self.plane, self.storage_size, rect)?;
-        self.ensure_rect(rect)?;
+        let rect = clamp_rect_to_storage(self.region.plane, self.region.storage_size, rect)?;
+        self.region.ensure_rect(rect)?;
         validate_write_source(
-            self.plane,
+            self.region.plane,
             rect,
             samples,
             row_stride_samples,
-            self.storage_size.width(),
+            self.region.storage_size.width(),
             max_sample,
         )?;
-        let stride = self.rect.width();
-        let local_x = rect.x() - self.rect.x();
-        let local_y = rect.y() - self.rect.y();
+        let stride = self.region.rect.width();
+        let local_x = rect.x() - self.region.rect.x();
+        let local_y = rect.y() - self.region.rect.y();
         for row in 0..rect.height() {
             let source = row * row_stride_samples;
             let target = (local_y + row) * stride + local_x;
@@ -90,81 +134,46 @@ impl<T: ReconSample> OwnedFramePlaneRect<T> {
         }
         Ok(())
     }
-
-    fn publish_into(&self, target: &mut CurrentFramePlane<T>) -> Result<()> {
-        if target.storage_size != self.storage_size {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: target.storage_size,
-                rect: self.rect,
-            });
-        }
-        target.ensure_rect(self.rect)?;
-        let stride = self.rect.width();
-        for row in 0..self.rect.height() {
-            let source = row * stride;
-            let target_start = (self.rect.y() + row) * target.stride_samples() + self.rect.x();
-            let target_end = target_start + stride;
-            copy_row_samples(
-                &mut target.samples[target_start..target_end],
-                &self.samples[source..source + stride],
-            );
-        }
-        Ok(())
-    }
 }
 
-/// Movable full-width storage for one contiguous band of a frame plane.
-///
-/// The band owns its samples and can therefore cross scheduler task
-/// boundaries without borrowing the frame workspace.
-#[derive(Debug, Eq, PartialEq)]
-pub struct OwnedFramePlaneBand<T: ReconSample>(OwnedFramePlaneRect<T>);
-
-impl<T: ReconSample> OwnedFramePlaneBand<T> {
-    /// Returns the plane this band belongs to.
-    pub const fn plane(&self) -> PlaneId {
-        self.0.plane
+fn publish_plane_into<T: ReconSample>(
+    region: OwnedFramePlaneRect,
+    samples: &[T],
+    target: &mut CurrentFramePlane<T>,
+) -> Result<()> {
+    if target.storage_size != region.storage_size {
+        return Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: region.plane,
+            storage: target.storage_size,
+            rect: region.rect,
+        });
     }
-
-    /// Returns the complete frame-plane storage size.
-    pub const fn storage_size(&self) -> PlaneSize {
-        self.0.storage_size
+    target.ensure_rect(region.rect)?;
+    let stride = region.rect.width();
+    for row in 0..region.rect.height() {
+        let source = row * stride;
+        let target_start = (region.rect.y() + row) * target.stride_samples() + region.rect.x();
+        let target_end = target_start + stride;
+        copy_row_samples(
+            &mut target.samples[target_start..target_end],
+            &samples[source..source + stride],
+        );
     }
-
-    /// Returns this band's rectangle in global plane coordinates.
-    pub const fn rect(&self) -> PlaneRect {
-        self.0.rect
-    }
-
-    /// Returns the tightly packed band samples.
-    pub fn samples(&self) -> &[T] {
-        &self.0.samples
-    }
-
-    /// Returns the tightly packed band samples mutably.
-    pub fn samples_mut(&mut self) -> &mut [T] {
-        &mut self.0.samples
-    }
-
-    /// Iterates over this band's complete plane rows.
-    pub fn rows(&self) -> slice::ChunksExact<'_, T> {
-        self.0.samples.chunks_exact(self.0.rect.width())
-    }
-
-    /// Iterates mutably over this band's complete plane rows.
-    pub fn rows_mut(&mut self) -> slice::ChunksExactMut<'_, T> {
-        self.0.samples.chunks_exact_mut(self.0.rect.width())
-    }
+    Ok(())
 }
 
 /// Caller-owned Y/U/V storage for one rectangular current-frame region.
+///
+/// The three planes share **one** allocation, laid out Y then U then V, so a
+/// band costs the allocator a single block rather than three. dav2d packs a
+/// whole picture the same way.
 #[derive(Debug, Eq, PartialEq)]
 pub struct OwnedFrameRect<T: ReconSample> {
     info: DecodedFrameInfo,
-    y: OwnedFramePlaneRect<T>,
-    u: Option<OwnedFramePlaneRect<T>>,
-    v: Option<OwnedFramePlaneRect<T>>,
+    samples: Vec<T>,
+    y: OwnedFramePlaneRect,
+    u: Option<OwnedFramePlaneRect>,
+    v: Option<OwnedFramePlaneRect>,
 }
 
 impl<T: ReconSample> OwnedFrameRect<T> {
@@ -172,7 +181,7 @@ impl<T: ReconSample> OwnedFrameRect<T> {
     ///
     /// # Errors
     /// Returns [`ReconError`] when the rectangle exceeds the frame or its
-    /// per-plane storage cannot be allocated.
+    /// storage cannot be allocated.
     pub fn new(info: DecodedFrameInfo, luma_rect: PlaneRect, fill: T) -> Result<Self> {
         let luma = info.coded_luma_size();
         let y_size = PlaneSize::new(luma.width(), luma.height())?;
@@ -188,17 +197,31 @@ impl<T: ReconSample> OwnedFrameRect<T> {
             .next(),
             None => None,
         };
+        let y = OwnedFramePlaneRect::new(PlaneId::Y, y_size, luma_rect, 0)?;
+        let u = chroma_rect
+            .zip(chroma_size)
+            .map(|(rect, size)| OwnedFramePlaneRect::new(PlaneId::U, size, rect, y.end()))
+            .transpose()?;
+        let v = u
+            .zip(chroma_rect)
+            .zip(chroma_size)
+            .map(|((u, rect), size)| OwnedFramePlaneRect::new(PlaneId::V, size, rect, u.end()))
+            .transpose()?;
+        let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(total)
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "owned rectangle samples",
+            })?;
+        samples.resize(total, fill);
         Ok(Self {
             info,
-            y: OwnedFramePlaneRect::new(PlaneId::Y, y_size, luma_rect, fill)?,
-            u: chroma_rect
-                .zip(chroma_size)
-                .map(|(rect, size)| OwnedFramePlaneRect::new(PlaneId::U, size, rect, fill))
-                .transpose()?,
-            v: chroma_rect
-                .zip(chroma_size)
-                .map(|(rect, size)| OwnedFramePlaneRect::new(PlaneId::V, size, rect, fill))
-                .transpose()?,
+            samples,
+            y,
+            u,
+            v,
         })
     }
 
@@ -212,23 +235,25 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         self.y.rect
     }
 
-    /// Resets every sample while retaining the rectangle's allocations.
+    /// Resets every sample while retaining the rectangle's allocation.
     pub fn fill(&mut self, sample: T) {
-        self.y.samples.fill(sample);
-        if let Some(u) = self.u.as_mut() {
-            u.samples.fill(sample);
-        }
-        if let Some(v) = self.v.as_mut() {
-            v.samples.fill(sample);
-        }
+        self.samples.fill(sample);
     }
 
-    pub(super) fn plane(&self, plane: PlaneId) -> Result<&OwnedFramePlaneRect<T>> {
-        select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref())
+    pub(super) fn plane(&self, plane: PlaneId) -> Result<OwnedPlaneRef<'_, T>> {
+        let region = *select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref())?;
+        Ok(OwnedPlaneRef {
+            region,
+            samples: &self.samples[region.start..region.end()],
+        })
     }
 
-    pub(super) fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut OwnedFramePlaneRect<T>> {
-        select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
+    pub(super) fn plane_mut(&mut self, plane: PlaneId) -> Result<OwnedPlaneMut<'_, T>> {
+        let region = *select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref())?;
+        Ok(OwnedPlaneMut {
+            region,
+            samples: &mut self.samples[region.start..region.end()],
+        })
     }
 
     /// Publishes this completed rectangle into its matching frame workspace.
@@ -236,188 +261,22 @@ impl<T: ReconSample> OwnedFrameRect<T> {
     /// # Errors
     /// Returns [`ReconError`] when plane geometry differs.
     pub fn publish_into(&self, workspace: &mut CurrentFrameWorkspace<T>) -> Result<()> {
-        self.y.publish_into(&mut workspace.y)?;
-        if let (Some(source), Some(target)) = (&self.u, &mut workspace.u) {
-            source.publish_into(target)?;
+        publish_plane_into(
+            self.y,
+            &self.samples[self.y.start..self.y.end()],
+            &mut workspace.y,
+        )?;
+        if let (Some(region), Some(target)) = (self.u, workspace.u.as_mut()) {
+            publish_plane_into(region, &self.samples[region.start..region.end()], target)?;
         }
-        if let (Some(source), Some(target)) = (&self.v, &mut workspace.v) {
-            source.publish_into(target)?;
+        if let (Some(region), Some(target)) = (self.v, workspace.v.as_mut()) {
+            publish_plane_into(region, &self.samples[region.start..region.end()], target)?;
         }
         Ok(())
     }
 }
 
-/// Movable canonical storage for one full-width luma superblock row.
-#[derive(Debug, Eq, PartialEq)]
-pub struct OwnedFrameRowBand<T: ReconSample> {
-    rect: OwnedFrameRect<T>,
-}
-
-impl<T: ReconSample> OwnedFrameRowBand<T> {
-    /// Allocates one full-width row band, clipping the final range to the frame.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] when the row range is empty or outside the coded
-    /// frame, or when its per-plane storage cannot be allocated.
-    pub fn new(info: DecodedFrameInfo, luma_rows: Range<usize>, fill: T) -> Result<Self> {
-        let luma = info.coded_luma_size();
-        if luma_rows.start >= luma_rows.end || luma_rows.end > luma.height() {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: PlaneId::Y,
-                storage: PlaneSize::new(luma.width(), luma.height())?,
-                rect: PlaneRect::new(
-                    0,
-                    luma_rows.start,
-                    luma.width(),
-                    luma_rows.end.saturating_sub(luma_rows.start),
-                )?,
-            });
-        }
-        Ok(Self {
-            rect: OwnedFrameRect::new(
-                info,
-                PlaneRect::new(
-                    0,
-                    luma_rows.start,
-                    luma.width(),
-                    luma_rows.end - luma_rows.start,
-                )?,
-                fill,
-            )?,
-        })
-    }
-
-    /// Returns the decoded-frame metadata for this band.
-    pub const fn info(&self) -> DecodedFrameInfo {
-        self.rect.info()
-    }
-
-    /// Returns the luma rectangle in global frame coordinates.
-    pub const fn luma_rect(&self) -> PlaneRect {
-        self.rect.luma_rect()
-    }
-
-    /// Borrows this owned band as a checked reconstruction target.
-    pub fn surface_mut(&mut self) -> CurrentFrameSurface<'_, '_, T> {
-        CurrentFrameSurface::OwnedRect(&mut self.rect)
-    }
-
-    /// Splits the row owner into its disjoint plane bands.
-    pub fn into_planes(
-        self,
-    ) -> (
-        OwnedFramePlaneBand<T>,
-        Option<OwnedFramePlaneBand<T>>,
-        Option<OwnedFramePlaneBand<T>>,
-    ) {
-        (
-            OwnedFramePlaneBand(self.rect.y),
-            self.rect.u.map(OwnedFramePlaneBand),
-            self.rect.v.map(OwnedFramePlaneBand),
-        )
-    }
-}
-
-/// A frame's canonical raw pixels stored as movable full-width row bands.
-#[derive(Debug, Eq, PartialEq)]
-pub struct OwnedFrameBands<T: ReconSample> {
-    info: DecodedFrameInfo,
-    next_luma_y: usize,
-    y: Vec<OwnedFramePlaneBand<T>>,
-    u: Vec<OwnedFramePlaneBand<T>>,
-    v: Vec<OwnedFramePlaneBand<T>>,
-}
-
-/// Disjoint mutable rows for the luma plane and any present chroma planes.
-type OwnedFrameRowsMut<'a, T> = (
-    Vec<&'a mut [T]>,
-    Option<Vec<&'a mut [T]>>,
-    Option<Vec<&'a mut [T]>>,
-);
-
-impl<T: ReconSample> OwnedFrameBands<T> {
-    /// Creates an empty segmented frame owner.
-    pub const fn new(info: DecodedFrameInfo) -> Self {
-        Self {
-            info,
-            next_luma_y: 0,
-            y: Vec::new(),
-            u: Vec::new(),
-            v: Vec::new(),
-        }
-    }
-
-    /// Returns the decoded-frame metadata.
-    pub const fn info(&self) -> DecodedFrameInfo {
-        self.info
-    }
-
-    /// Appends the next canonical row band.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] when metadata or row geometry is not the exact
-    /// next full-width band.
-    pub fn push(&mut self, band: OwnedFrameRowBand<T>) -> Result<()> {
-        let rect = band.luma_rect();
-        let size = self.info.coded_luma_size();
-        if band.info() != self.info
-            || rect.x() != 0
-            || rect.width() != size.width()
-            || rect.y() != self.next_luma_y
-        {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: PlaneId::Y,
-                storage: PlaneSize::new(size.width(), size.height())?,
-                rect,
-            });
-        }
-        let end = rect
-            .y()
-            .checked_add(rect.height())
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "owned frame band end",
-            })?;
-        let (y, u, v) = band.into_planes();
-        self.y.push(y);
-        if let Some(u) = u {
-            self.u.push(u);
-        }
-        if let Some(v) = v {
-            self.v.push(v);
-        }
-        self.next_luma_y = end;
-        Ok(())
-    }
-
-    /// Returns the owned bands for one plane.
-    ///
-    /// # Errors
-    /// Returns [`ReconError::MissingWorkspacePlane`] when chroma is absent.
-    pub fn plane_bands(&self, plane: PlaneId) -> Result<&[OwnedFramePlaneBand<T>]> {
-        match plane {
-            PlaneId::Y => Ok(&self.y),
-            PlaneId::U if !self.u.is_empty() => Ok(&self.u),
-            PlaneId::V if !self.v.is_empty() => Ok(&self.v),
-            PlaneId::U | PlaneId::V => Err(ReconError::MissingWorkspacePlane { plane }),
-        }
-    }
-
-    /// Splits all present plane bands into disjoint mutable row slices.
-    pub fn plane_rows_mut(&mut self) -> OwnedFrameRowsMut<'_, T> {
-        fn rows<T: ReconSample>(bands: &mut [OwnedFramePlaneBand<T>]) -> Vec<&mut [T]> {
-            bands
-                .iter_mut()
-                .flat_map(OwnedFramePlaneBand::rows_mut)
-                .collect()
-        }
-        let y = rows(&mut self.y);
-        let u = (!self.u.is_empty()).then(|| rows(&mut self.u));
-        let v = (!self.v.is_empty()).then(|| rows(&mut self.v));
-        (y, u, v)
-    }
-}
-
-/// Iterator over rows borrowed from one owned rectangular surface.
+/// Rows of one owned rectangle, clipped to a requested sub-rectangle.
 #[derive(Debug)]
 pub struct OwnedFrameRectRows<'a, T: ReconSample> {
     rows: slice::ChunksExact<'a, T>,
