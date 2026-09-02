@@ -71,11 +71,13 @@ fn append_lr_records(
         }
     }
 
+    // Exact, not amortized: these lists are appended once per tile and then
+    // held for the frame, so doubling leaves the slack resident.
     blocks
-        .try_reserve(tile_blocks.len())
+        .try_reserve_exact(tile_blocks.len())
         .map_err(|_| inter_allocation!("inter LR source-block records"))?;
     filters
-        .try_reserve(tile_filters.len())
+        .try_reserve_exact(tile_filters.len())
         .map_err(|_| inter_allocation!("inter LR unit-filter records"))?;
 
     for block in &mut tile_blocks {

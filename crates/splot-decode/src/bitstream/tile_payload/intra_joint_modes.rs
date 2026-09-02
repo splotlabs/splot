@@ -381,8 +381,7 @@ impl TileLumaPaletteState {
         palette: Option<LumaPalette>,
     ) {
         let palette = palette.and_then(|palette| {
-            let index =
-                NonZeroU32::new(u32::try_from(self.palettes.len().checked_add(1)?).ok()?)?;
+            let index = NonZeroU32::new(u32::try_from(self.palettes.len().checked_add(1)?).ok()?)?;
             self.palettes.push(palette);
             Some(index)
         });

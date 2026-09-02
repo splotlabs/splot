@@ -267,7 +267,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         None,
         false,
         crate::filters::deblock::DeblockQuantDeltas::ZERO,
-    
         (1, 1),
     )
     .unwrap()
