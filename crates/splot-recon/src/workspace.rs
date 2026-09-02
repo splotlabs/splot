@@ -1451,7 +1451,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             },
         )?;
 
-        let mut samples: Vec<T> = Vec::new();
+        let mut samples: Vec<T> = crate::plane_buffers::take(required_samples);
         samples
             .try_reserve_exact(required_samples.saturating_sub(samples.len()))
             .map_err(|_| ReconError::WorkspaceAllocationFailed {

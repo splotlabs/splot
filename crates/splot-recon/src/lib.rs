@@ -43,6 +43,7 @@ pub mod mhccp;
 mod optflow;
 mod pc_wiener;
 mod plane;
+mod plane_buffers;
 mod reconstruct;
 mod reconstruct_block;
 mod reference;
