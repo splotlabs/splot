@@ -1152,6 +1152,14 @@ pub(super) fn predict<T: ReconSample>(
     Ok(())
 }
 
+/// Luma rows per § 7.10.6 TIP-as-output prediction band.
+///
+/// The whole frame is one TIP block, so predicting it in one pass sized the
+/// compound scratch at frame scale. Banding keeps that scratch bounded; 64 is a
+/// multiple of both prediction unit sizes and of chroma subsampling, so a band
+/// boundary never splits a unit.
+const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
+
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     decode_scratch: &mut super::InterDecodeScratch<T>,
     sequence: &SequenceHeader,
@@ -1222,15 +1230,16 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             plane: splot_recon::PlaneId::Y,
             context: "TIP-output motion field",
         })?;
-    let placed = PlacedInterBlock {
+    let band_h = TIP_OUTPUT_BAND_LUMA_ROWS.min(height);
+    let mut placed = PlacedInterBlock {
         luma_x: 0,
         luma_y: 0,
         luma_w: width,
-        luma_h: height,
+        luma_h: band_h,
         chroma_luma_x: 0,
         chroma_luma_y: 0,
         chroma_luma_w: width,
-        chroma_luma_h: height,
+        chroma_luma_h: band_h,
         predict_chroma: sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
         sub8x8_chroma: false,
         interintra_chroma: false,
@@ -1255,36 +1264,45 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let mut residual_scratch = InterResidualReconScratch::default();
     let mut temporal_records = Vec::new();
     let mut sink = mc::WorkspaceSink::Frame(&mut workspace);
-    let grid = motion(
-        &mut scratch,
-        &mut temporal_records,
-        &sink,
-        &placed,
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-        offset,
-    )?;
-    predict(
-        &mut scratch,
-        &mut residual_scratch,
-        &mut sink,
-        grid,
-        &placed,
-        &[],
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-        0,
-        false,
-        false,
-        bit_depth,
-        offset,
-    )?;
+    let mut band_y = 0;
+    while band_y < height {
+        let rows = band_h.min(height - band_y);
+        placed.luma_y = band_y;
+        placed.luma_h = rows;
+        placed.chroma_luma_y = band_y;
+        placed.chroma_luma_h = rows;
+        let grid = motion(
+            &mut scratch,
+            &mut temporal_records,
+            &sink,
+            &placed,
+            temporal,
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+            offset,
+        )?;
+        predict(
+            &mut scratch,
+            &mut residual_scratch,
+            &mut sink,
+            grid,
+            &placed,
+            &[],
+            temporal,
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+            0,
+            false,
+            false,
+            bit_depth,
+            offset,
+        )?;
+        band_y += rows;
+    }
     super::temporal::commit_temporal_motion_blocks(&mut motion_field, &temporal_records);
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
