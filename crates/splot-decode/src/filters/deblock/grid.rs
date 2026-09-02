@@ -151,8 +151,7 @@ pub(super) fn build_mi_grid(
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
-    let (mut cells, mut candidates) = (Vec::new(), Vec::new());
-    cells.clear();
+    let mut cells = Vec::new();
     cells
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Allocation {
@@ -160,7 +159,7 @@ pub(super) fn build_mi_grid(
             context: "deblock MI grid",
         })?;
     cells.resize(count, MiCell::default());
-    candidates.clear();
+    let mut candidates = Vec::new();
     candidates
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Allocation {
@@ -211,8 +210,7 @@ pub(super) fn overlay_mi_grid(
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
-    let (mut cells, mut candidates) = (Vec::new(), Vec::new());
-    cells.clear();
+    let mut cells = Vec::new();
     cells
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Allocation {
@@ -220,7 +218,7 @@ pub(super) fn overlay_mi_grid(
             context: "chroma deblock MI grid",
         })?;
     cells.resize(count, ChromaMiCell::default());
-    candidates.clone_from(&base.candidates);
+    let candidates = base.candidates.clone();
     let mut grid = ChromaMiGridStorage {
         fully_covered: base.fully_covered,
         cells,
