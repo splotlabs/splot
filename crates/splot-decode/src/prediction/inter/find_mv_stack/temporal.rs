@@ -11,11 +11,13 @@ use super::{
     warp_sub_mv_at,
 };
 use selection::projection_queue;
+use shared_cells::{BandCells, SharedTemporalCells};
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
 use trajectory::{OwnedTrajectoryBand, OwnedTrajectoryFields, TrajectoryBand, TrajectoryState};
 
 mod selection;
+mod shared_cells;
 mod trajectory;
 
 const MAX_FRAME_DISTANCE: i32 = 31;
@@ -141,13 +143,36 @@ pub(crate) struct TemporalMotionFieldMetadata {
 }
 
 /// One immutable full-width source superblock row of temporal motion.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct TemporalMotionBand {
     layout: MotionFieldLayout,
     metadata: TemporalMotionFieldMetadata,
     row_base8: usize,
-    cells: Vec<TemporalMotionCell>,
+    cells: BandCells,
 }
+
+impl core::fmt::Debug for TemporalMotionBand {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("TemporalMotionBand")
+            .field("layout", &self.layout)
+            .field("metadata", &self.metadata)
+            .field("row_base8", &self.row_base8)
+            .field("cells", &self.cells.len())
+            .finish()
+    }
+}
+
+impl PartialEq for TemporalMotionBand {
+    fn eq(&self, other: &Self) -> bool {
+        self.layout == other.layout
+            && self.metadata == other.metadata
+            && self.row_base8 == other.row_base8
+            && self.cells.as_slice() == other.cells.as_slice()
+    }
+}
+
+impl Eq for TemporalMotionBand {}
 
 impl TemporalMotionBand {
     pub(crate) fn row_end8(&self) -> usize {
@@ -156,11 +181,16 @@ impl TemporalMotionBand {
             .min(self.layout.height8)
     }
 
+    #[allow(
+        clippy::inline_always,
+        reason = "TMVP projection reads one row at a time"
+    )]
+    #[inline(always)]
     fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
         let row = y8.checked_sub(self.row_base8)?;
         let start = row.checked_mul(self.layout.width8)?;
-        self.cells
-            .get(start..start.checked_add(self.layout.width8)?)
+        let end = start.checked_add(self.layout.width8)?;
+        self.cells.as_slice().get(start..end)
     }
 
     #[allow(clippy::inline_always)]
@@ -170,6 +200,9 @@ impl TemporalMotionBand {
         let row_end8 = self.row_end8();
         let width8 = self.layout.width8;
         let resolved = resolve_block_refs(block.ref_order_hints, &self.metadata.ref_order_hints);
+        // Lent once per block: the per-cell writes below then cost exactly what
+        // they did when the band owned its own `Vec`.
+        let cells = self.cells.as_mut_slice();
         visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
             let Some(row) = y8.checked_sub(row_base8) else {
                 return;
@@ -181,7 +214,7 @@ impl TemporalMotionBand {
                 return;
             };
             if y8 >= row_base8
-                && let Some(target) = self.cells.get_mut(index)
+                && let Some(target) = cells.get_mut(index)
             {
                 *target = resolve_temporal_refs(cell, hints, &resolved);
             }
@@ -304,14 +337,21 @@ impl TemporalMotionField {
         let TemporalMotionStorage::Contiguous(cells) = self.storage else {
             return Vec::new();
         };
-        cells
-            .chunks(stride)
-            .enumerate()
-            .map(|(index, cells)| TemporalMotionBand {
-                layout,
-                metadata: metadata.clone(),
-                row_base8: index.saturating_mul(layout.band_rows8),
-                cells: cells.to_vec(),
+        let total = cells.len();
+        let shared = Arc::new(SharedTemporalCells::new(cells));
+        (0..total.div_ceil(stride))
+            .filter_map(|index| {
+                let start = index.saturating_mul(stride);
+                Some(TemporalMotionBand {
+                    layout,
+                    metadata: metadata.clone(),
+                    row_base8: index.saturating_mul(layout.band_rows8),
+                    cells: BandCells::new(
+                        Arc::clone(&shared),
+                        start,
+                        stride.min(total.saturating_sub(start)),
+                    )?,
+                })
             })
             .collect()
     }
