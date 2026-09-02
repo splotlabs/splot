@@ -52,3 +52,6 @@ Thumbs.db
 !/tests/conformance/**
 
 # NOTE: Cargo.lock is intentionally committed (this repo builds binaries).
+
+# Local memory-parity working notes (not for commit)
+/MEMORY-PARITY-TODO.md
