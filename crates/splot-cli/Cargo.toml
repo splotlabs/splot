@@ -12,72 +12,8 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# The memory-mapped input reader is this crate's only unsafe boundary; every
-# other workspace crate keeps `unsafe_code = "forbid"`. A package lint table
-# replaces the workspace one rather than merging, so the rest is copied
-# verbatim -- keep it synchronized with the workspace lint table.
-[lints.rust]
-unsafe_code = "deny"
-missing_docs = "warn"
-
-[lints.clippy]
-# `all` and `pedantic` are lint groups, so they must have a lower priority than
-# the individual lints below; otherwise Cargo's `lint_groups_priority` check
-# fails and the per-lint `allow`/`deny` overrides would not apply.
-all = { level = "warn", priority = -1 }
-# `pedantic` is enforced workspace-wide (CI runs clippy with `-D warnings`),
-# minus the families below that are noise for a cast-heavy codec or pure
-# formatting nits. Re-evaluate the allow-list as the code matures.
-pedantic = { level = "warn", priority = -1 }
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-todo = "deny"
-unimplemented = "deny"
-dbg_macro = "deny"
-# Allowed pedantic families. Integer casts are pervasive and deliberate in codec
-# arithmetic; `#[allow]` per-site would bury real signal. Doc-markdown and the
-# size/naming heuristics below are stylistic nits, not correctness.
-cast_possible_truncation = "allow"
-cast_possible_wrap = "allow"
-cast_sign_loss = "allow"
-cast_lossless = "allow"
-cast_precision_loss = "allow"
-chunks_exact_to_as_chunks = "allow"
-doc_markdown = "allow"
-manual_bit_width = "allow"
-manual_midpoint = "allow"
-manual_slice_fill = "allow"
-must_use_candidate = "allow"
-too_many_lines = "allow"
-similar_names = "allow"
-struct_excessive_bools = "allow"
-fn_params_excessive_bools = "allow"
-# The crates deliberately split former monoliths into submodules that share a
-# crate-private helper namespace via `use super::*` (see e.g. the splot-validate
-# `context` split). Enforcing explicit imports would expand ~250 files into
-# fragile lists that break on every transitive re-export, so this glob-hub
-# pattern is allowed rather than fought.
-wildcard_imports = "allow"
-# Pure stylistic preference (positive condition first). Enforcing it would force
-# swapping large `if !cond { .. } else { .. }` branch bodies in writer/tile code,
-# which is churn with real transcription-bug risk and no behavioral benefit.
-if_not_else = "allow"
-
-# Build profiles. `overflow-checks` is declared explicitly on every profile: `dev`
-# and `test` trap integer overflow so the test suite, fuzzers, and CI catch codec
-# arithmetic bugs, while `release` disables the checks for decode throughput
-# (measured ~5% first-frame latency on the 1080p10 reference stream; decoded
-# output is byte-identical either way). Fat cross-crate LTO with one codegen unit
-# stays OFF by default, as a build-time decision rather than a technical one.
-# SCALE-113 re-priced it on `6dc3694a2` at -1.8 to -2.3% for 1 to 10 workers,
-# 30/30 pairs, byte-exact over 3000 frames at six widths, and SCALE-116 records
-# what turning it on is worth against dav2d. It costs a local `cargo build
-# --release` 26s -> 1m49s, and `.github/workflows/ci.yml` builds the release
-# profile twice, so every PR would pay it; `cargo xtask ci` does not. Uncomment
-# both keys below to enable it.
-# `panic = "abort"` stays at its default and must: `output/raw.rs` converts a panic
-# in the raw-output task into a typed error, which aborting would turn into a crash.
+[lints]
+workspace = true
 
 [[bin]]
 name = "splot"
@@ -94,7 +30,6 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-memmap2 = "0.9.11"
 
 [dev-dependencies]
 # Decoder-backed encoder packet oracles; not a production CLI dependency.

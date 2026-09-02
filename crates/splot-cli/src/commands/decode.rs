@@ -133,7 +133,7 @@ impl DecodeArgs {
 
 #[derive(Debug)]
 enum DecodeInputRead {
-    Bytes(super::decode_input::InputBytes),
+    Bytes(Vec<u8>),
     Limit(DecodeLimitError),
 }
 
@@ -830,31 +830,33 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
 }
 
 fn read_decode_input(path: &Path, options: &DecodeOptions) -> Result<DecodeInputRead> {
-    let file = File::open(path)
+    let mut file = File::open(path)
         .with_context(|| format!("failed to read input file: {}", path.display()))?;
 
-    if let Ok(metadata) = file.metadata()
-        && let Some(error) = input_byte_limit_error(options, metadata.len())
-    {
-        return Ok(DecodeInputRead::Limit(error));
-    }
+    if let Some(max_input_bytes) = options.limits().max_input_bytes().max_value() {
+        if let Ok(metadata) = file.metadata()
+            && let Some(error) = input_byte_limit_error(options, metadata.len())
+        {
+            return Ok(DecodeInputRead::Limit(error));
+        }
 
-    // A mapping keeps the bitstream out of the resident set; an input that
-    // cannot be mapped -- an empty file, a pipe -- still reads normally.
-    if let Ok(bytes) = super::decode_input::InputBytes::map(&file) {
+        let read_limit = max_input_bytes.checked_add(1).unwrap_or(max_input_bytes);
+        let mut bytes = sized_input_buffer(&file, Some(read_limit));
+        file.take(read_limit)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("failed to read input file: {}", path.display()))?;
+        let actual = bytes.len() as u64;
+        if let Some(error) = input_byte_limit_error(options, actual) {
+            return Ok(DecodeInputRead::Limit(error));
+        }
+
         return Ok(DecodeInputRead::Bytes(bytes));
     }
 
     let mut bytes = sized_input_buffer(&file, None);
-    (&file)
-        .read_to_end(&mut bytes)
+    file.read_to_end(&mut bytes)
         .with_context(|| format!("failed to read input file: {}", path.display()))?;
-    if let Some(error) = input_byte_limit_error(options, bytes.len() as u64) {
-        return Ok(DecodeInputRead::Limit(error));
-    }
-    Ok(DecodeInputRead::Bytes(
-        super::decode_input::InputBytes::Owned(bytes),
-    ))
+    Ok(DecodeInputRead::Bytes(bytes))
 }
 
 /// Reserves the file's exact length so `read_to_end` never doubles past it.
