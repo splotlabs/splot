@@ -446,6 +446,14 @@ impl OwnedTrajectoryFields {
     }
 }
 
+impl Drop for OwnedTrajectoryBand {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.fields);
+        crate::support::buffer_pool::recycle(&mut self.positions);
+        crate::support::buffer_pool::recycle(&mut self.projection_offsets);
+    }
+}
+
 impl OwnedTrajectoryBand {
     pub(super) fn new(
         width8: usize,
@@ -471,19 +479,19 @@ impl OwnedTrajectoryBand {
                 context: "inter temporal trajectory band",
             })
         };
-        let mut fields = Vec::new();
+        let mut fields = crate::support::buffer_pool::take(total_cells);
         fields
-            .try_reserve_exact(total_cells)
+            .try_reserve_exact(total_cells.saturating_sub(fields.len()))
             .map_err(|_| allocation())?;
         fields.resize(total_cells, PackedTrajectoryMv::INVALID);
-        let mut positions = Vec::new();
+        let mut positions = crate::support::buffer_pool::take(total_cells);
         positions
-            .try_reserve_exact(total_cells)
+            .try_reserve_exact(total_cells.saturating_sub(positions.len()))
             .map_err(|_| allocation())?;
         positions.resize(total_cells, TrajectoryPositions::EMPTY);
-        let mut projection_offsets = Vec::new();
+        let mut projection_offsets = crate::support::buffer_pool::take(cell_count);
         projection_offsets
-            .try_reserve_exact(cell_count)
+            .try_reserve_exact(cell_count.saturating_sub(projection_offsets.len()))
             .map_err(|_| allocation())?;
         projection_offsets.resize(cell_count, INVALID_PROJECTION_OFFSET);
         Ok(Self {
@@ -535,7 +543,7 @@ impl OwnedTrajectoryBand {
             }
         }
         OwnedTrajectoryFields {
-            cells: self.fields,
+            cells: core::mem::take(&mut self.fields),
             reference_count: self.reference_count,
         }
     }

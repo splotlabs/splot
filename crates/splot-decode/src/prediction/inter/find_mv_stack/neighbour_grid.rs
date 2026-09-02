@@ -294,9 +294,9 @@ pub(super) struct GridPlanes {
 /// and the first `record_motion` sizes it. See `NeighbourMvGrid::motion_plane`.
 fn new_grid_planes(cells: usize) -> Result<GridPlanes, std::collections::TryReserveError> {
     let mut planes = GridPlanes {
-        flags: take_grid_plane(cells),
-        motion: take_grid_plane(cells),
-        leaves: take_grid_plane(0),
+        flags: crate::support::buffer_pool::take(cells),
+        motion: crate::support::buffer_pool::take(cells),
+        leaves: crate::support::buffer_pool::take(0),
     };
     planes
         .flags
@@ -305,63 +305,11 @@ fn new_grid_planes(cells: usize) -> Result<GridPlanes, std::collections::TryRese
     Ok(planes)
 }
 
-/// Grid planes the decode keeps between tiles.
-///
-/// Both planes hold one cell per mode-info unit, so a tile allocated and freed
-/// megabytes of them per frame. dav2d allocates the equivalent refmvs array
-/// once for the decoder context and reuses it for the whole sequence.
-///
-/// The cap is global, not per worker: a per-worker cache multiplies by the pool
-/// width, which at ten workers cost 39 MB.
-const MAX_RETAINED_GRID_PLANES: usize = 6;
-
-type RetainedPlanes = std::sync::Mutex<Vec<Box<dyn core::any::Any + Send>>>;
-
-fn retained_planes() -> &'static RetainedPlanes {
-    static PLANES: std::sync::OnceLock<RetainedPlanes> = std::sync::OnceLock::new();
-    PLANES.get_or_init(|| std::sync::Mutex::new(Vec::new()))
-}
-
-/// Takes a retired plane that already holds `cells` cells, or an empty one.
-///
-/// Each plane type is its own `T`, so a plane is only ever reused for the same
-/// kind of grid and can grow at most to the stream's largest tile -- which is
-/// the size dav2d allocates up front anyway.
-fn take_grid_plane<T: Send + 'static>(cells: usize) -> Vec<T> {
-    let mut retained = retained_planes()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(index) = retained.iter().position(|plane| {
-        plane
-            .downcast_ref::<Vec<T>>()
-            .is_some_and(|plane| plane.capacity() >= cells)
-    }) else {
-        return Vec::new();
-    };
-    retained
-        .swap_remove(index)
-        .downcast::<Vec<T>>()
-        .map_or_else(|_| Vec::new(), |plane| *plane)
-}
-
-fn recycle_grid_plane<T: Send + 'static>(plane: &mut Vec<T>) {
-    if plane.capacity() == 0 {
-        return;
-    }
-    plane.clear();
-    let mut retained = retained_planes()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.len() < MAX_RETAINED_GRID_PLANES {
-        retained.push(Box::new(core::mem::take(plane)));
-    }
-}
-
 impl Drop for NeighbourMvGrid {
     fn drop(&mut self) {
-        recycle_grid_plane(&mut self.planes.flags);
-        recycle_grid_plane(&mut self.planes.motion);
-        recycle_grid_plane(&mut self.planes.leaves);
+        crate::support::buffer_pool::recycle(&mut self.planes.flags);
+        crate::support::buffer_pool::recycle(&mut self.planes.motion);
+        crate::support::buffer_pool::recycle(&mut self.planes.leaves);
     }
 }
 
