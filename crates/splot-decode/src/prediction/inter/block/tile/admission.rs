@@ -261,7 +261,6 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
 pub(super) struct SurfaceSource<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
     rects: Vec<splot_recon::PlaneRect>,
-    next: usize,
     free: Vec<splot_recon::OwnedFrameRect<T>>,
 }
 
@@ -271,17 +270,18 @@ impl<T: ReconSample> SurfaceSource<T> {
         rects: Vec<splot_recon::PlaneRect>,
         free: Vec<splot_recon::OwnedFrameRect<T>>,
     ) -> Self {
-        Self {
-            info,
-            rects,
-            next: 0,
-            free,
-        }
+        Self { info, rects, free }
     }
 
-    pub(super) fn take(&mut self) -> Option<splot_recon::Result<splot_recon::OwnedFrameRect<T>>> {
-        let rect = *self.rects.get(self.next)?;
-        self.next += 1;
+    /// Hands out the surface for `unit`, whose rectangle the frame fixed when
+    /// it partitioned its superblocks. Units precompute concurrently and in no
+    /// particular order, so the rectangle must follow the unit rather than a
+    /// cursor.
+    pub(super) fn take(
+        &mut self,
+        unit: usize,
+    ) -> Option<splot_recon::Result<splot_recon::OwnedFrameRect<T>>> {
+        let rect = *self.rects.get(unit)?;
         let reusable = self.free.iter().position(|surface| {
             let held = surface.luma_rect();
             surface.info() == self.info
@@ -363,7 +363,7 @@ impl<T: ReconSample> TileRecon<T> {
         .conditions(&bounds)
     }
 
-    fn precompute(&self, index: usize) -> Result<()> {
+    fn precompute(&self, index: usize, surfaces: &Mutex<SurfaceSource<T>>) -> Result<()> {
         let range = self
             .batch_range(index)
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
@@ -415,6 +415,15 @@ impl<T: ReconSample> TileRecon<T> {
                 Ok(ready
                     .into_iter()
                     .map(|mut ready| {
+                        if ready.surface.is_none() && !ready.row.superblocks.is_empty() {
+                            ready.surface = surfaces
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .take(ready.row.ordinal)
+                                .transpose()
+                                .ok()
+                                .flatten();
+                        }
                         scratch.with_installed(|scratch| {
                             if !ready.row.has_terminal_error() && !ready.row.motion_derived {
                                 mvres::derive_unit_motion(
@@ -610,16 +619,17 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 };
                 let row_bounds = row_gate.bounds_for_row(&row);
                 bounds.merge(row_bounds);
+                let surface = surfaces
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take(row.ordinal)
+                    .transpose()
+                    .ok()
+                    .flatten();
                 ready.push(ReadyReconRow {
                     bounds: row_bounds,
                     row,
-                    surface: surfaces
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .take()
-                        .transpose()
-                        .ok()
-                        .flatten(),
+                    surface,
                 });
                 if last {
                     reached_last = true;
@@ -986,20 +996,11 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         if rows.len() >= units {
             return;
         }
-        let mut surfaces = self
-            .pending_surfaces
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
         while rows.len() < units {
             let Some(row) = self.parse_progress.take_row(rows.len()) else {
                 break;
             };
-            let surface = if row.superblocks.is_empty() {
-                None
-            } else {
-                surfaces.take().transpose().ok().flatten()
-            };
-            rows.push(TileReconRow::Unresolved { row, surface });
+            rows.push(TileReconRow::Unresolved { row, surface: None });
         }
     }
 
@@ -1017,7 +1018,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Precomputes one admitted unit without entering the ordered commit spine.
     pub(crate) fn precompute(&self, index: usize) -> Result<()> {
-        self.recon.precompute(index)
+        self.recon.precompute(index, &self.pending_surfaces)
     }
 
     fn seal_committed_rows(&self, commit: &TileCommit<T>, rows: usize) -> Result<()> {

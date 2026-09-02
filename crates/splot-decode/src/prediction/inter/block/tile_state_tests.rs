@@ -289,7 +289,10 @@ fn drain_surface_layout(
 ) -> splot_recon::Result<Vec<splot_recon::PlaneRect>> {
     let mut source = super::admission::SurfaceSource::new(info, rects.to_vec(), scratch.surfaces);
     let mut handed = Vec::new();
-    while let Some(surface) = source.take() {
+    for unit in 0..rects.len() {
+        let Some(surface) = source.take(unit) else {
+            break;
+        };
         handed.push(surface?.luma_rect());
     }
     Ok(handed)
@@ -322,12 +325,12 @@ fn a_returned_surface_is_retargeted_rather_than_reallocated()
 
     let mut source =
         super::admission::SurfaceSource::<u8>::new(info, equal_sized.clone(), Vec::new());
-    let first = source.take().ok_or("a first surface")??;
+    let first = source.take(0).ok_or("a first surface")??;
     assert_eq!(first.luma_rect(), equal_sized[0]);
     source.give(first);
     assert_eq!(source.free_len(), 1);
 
-    let second = source.take().ok_or("a second surface")??;
+    let second = source.take(1).ok_or("a second surface")??;
 
     assert_eq!(second.luma_rect(), equal_sized[1]);
     assert_eq!(
