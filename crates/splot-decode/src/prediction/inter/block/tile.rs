@@ -961,31 +961,6 @@ impl<T: ReconSample> TileDecodeScratch<T> {
         }
     }
 
-    /// A reused surface keeps the previous frame's samples: the prepass and the
-    /// commit replay together write every sample of the rectangle before
-    /// `publish_into` copies it, so there is nothing for a fill to establish.
-    ///
-    /// [`poison_reused_surface`] makes that invariant self-checking: every
-    /// debug and test build hands the surface back stamped with a sentinel, so
-    /// a sample neither pass wrote reaches the output as an obvious value
-    /// instead of the previous frame's plausible one.
-    fn take_surface(
-        &mut self,
-        info: splot_recon::DecodedFrameInfo,
-        rect: splot_recon::PlaneRect,
-    ) -> splot_recon::Result<splot_recon::OwnedFrameRect<T>> {
-        if self
-            .surfaces
-            .last()
-            .is_some_and(|surface| surface.info() == info && surface.luma_rect() == rect)
-            && let Some(mut surface) = self.surfaces.pop()
-        {
-            poison_reused_surface(&mut surface);
-            return Ok(surface);
-        }
-        splot_recon::OwnedFrameRect::new(info, rect, T::default())
-    }
-
     fn clear_incompatible_surface_layout(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
@@ -1659,37 +1634,36 @@ pub(super) fn decode_tiles<T: ReconSample>(
             workers,
             surfaces: recycled_surfaces,
         };
-        let surfaces = if global_intrabc {
+        let info = workspace.info();
+        let rects = if global_intrabc {
             Vec::new()
         } else {
             let superblock_rects =
                 superblock_luma_rects(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4)?;
-            let info = workspace.info();
             tile_scratch.clear_incompatible_surface_layout(info, &superblock_rects);
             superblock_rects
-                .iter()
-                .copied()
-                .map(|rect| tile_scratch.take_surface(info, rect))
-                .collect::<splot_recon::Result<Vec<_>>>()?
         };
         let TileDecodeScratch {
             ordered: tile_ordered,
             workers: tile_workers,
             surfaces: tile_surfaces,
         } = tile_scratch;
+        let surface_source = std::sync::Arc::new(std::sync::Mutex::new(
+            admission::SurfaceSource::new(info, rects, tile_surfaces),
+        ));
         let commit = TileCommit::direct(
             tile_ordered,
             workspace,
             block_decoded.clone(),
             decoded_any,
-            tile_surfaces,
+            std::sync::Arc::clone(&surface_source),
             core::mem::take(frame_filter_records),
         );
         let commit = admission::run_ordinary_tile(
             &mut parser,
             &mut resolve_state,
             tile_offset,
-            surfaces.into_iter(),
+            &surface_source,
             unit_count,
             units_per_row,
             &context,

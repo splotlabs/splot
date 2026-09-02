@@ -283,32 +283,58 @@ fn surface_scratch(
 }
 
 fn drain_surface_layout(
-    scratch: &mut TileDecodeScratch<u8>,
+    scratch: TileDecodeScratch<u8>,
     info: splot_recon::DecodedFrameInfo,
     rects: &[splot_recon::PlaneRect],
 ) -> splot_recon::Result<Vec<splot_recon::PlaneRect>> {
-    scratch.clear_incompatible_surface_layout(info, rects);
-    rects
-        .iter()
-        .copied()
-        .map(|rect| {
-            scratch
-                .take_surface(info, rect)
-                .map(|surface| surface.luma_rect())
-        })
-        .collect()
+    let mut source = super::admission::SurfaceSource::new(info, rects.to_vec(), scratch.surfaces);
+    let mut handed = Vec::new();
+    while let Some(surface) = source.take() {
+        handed.push(surface?.luma_rect());
+    }
+    Ok(handed)
 }
 
 #[test]
-fn complete_recycled_surface_layout_drains_in_raster_order()
+fn the_surface_source_hands_out_every_rect_in_raster_order()
 -> core::result::Result<(), Box<dyn std::error::Error>> {
     let workspace = crate::test_support::yuv420_workspace(256, 16, 0);
     let info = workspace.info();
     let rects = superblock_luma_rects(&(0..4), &(0..64), &workspace, 32)?;
-    let mut scratch = surface_scratch(info, &rects)?;
+    let scratch = surface_scratch(info, &rects)?;
 
-    assert_eq!(drain_surface_layout(&mut scratch, info, &rects)?, rects);
-    assert!(scratch.surfaces.is_empty());
+    assert_eq!(drain_surface_layout(scratch, info, &rects)?, rects);
+    Ok(())
+}
+
+#[test]
+fn a_returned_surface_is_retargeted_rather_than_reallocated()
+-> core::result::Result<(), Box<dyn std::error::Error>> {
+    let workspace = crate::test_support::yuv420_workspace(256, 32, 0);
+    let info = workspace.info();
+    let rects = superblock_luma_rects(&(0..8), &(0..64), &workspace, 32)?;
+    let equal_sized: Vec<_> = rects
+        .iter()
+        .copied()
+        .filter(|rect| rect.width() == rects[0].width() && rect.height() == rects[0].height())
+        .collect();
+    assert!(equal_sized.len() >= 2, "need two same-shaped superblocks");
+
+    let mut source =
+        super::admission::SurfaceSource::<u8>::new(info, equal_sized.clone(), Vec::new());
+    let first = source.take().ok_or("a first surface")??;
+    assert_eq!(first.luma_rect(), equal_sized[0]);
+    source.give(first);
+    assert_eq!(source.free_len(), 1);
+
+    let second = source.take().ok_or("a second surface")??;
+
+    assert_eq!(second.luma_rect(), equal_sized[1]);
+    assert_eq!(
+        source.free_len(),
+        0,
+        "the returned surface must be retargeted and reused, not left behind"
+    );
     Ok(())
 }
 

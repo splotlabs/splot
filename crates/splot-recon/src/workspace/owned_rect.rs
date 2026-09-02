@@ -182,7 +182,14 @@ impl<T: ReconSample> OwnedFrameRect<T> {
     /// # Errors
     /// Returns [`ReconError`] when the rectangle exceeds the frame or its
     /// storage cannot be allocated.
-    pub fn new(info: DecodedFrameInfo, luma_rect: PlaneRect, fill: T) -> Result<Self> {
+    fn regions(
+        info: DecodedFrameInfo,
+        luma_rect: PlaneRect,
+    ) -> Result<(
+        OwnedFramePlaneRect,
+        Option<OwnedFramePlaneRect>,
+        Option<OwnedFramePlaneRect>,
+    )> {
         let luma = info.coded_luma_size();
         let y_size = PlaneSize::new(luma.width(), luma.height())?;
         let chroma_size = info.pixel_format().chroma_size(luma)?;
@@ -207,6 +214,16 @@ impl<T: ReconSample> OwnedFrameRect<T> {
             .zip(chroma_size)
             .map(|((u, rect), size)| OwnedFramePlaneRect::new(PlaneId::V, size, rect, u.end()))
             .transpose()?;
+        Ok((y, u, v))
+    }
+
+    /// Allocates one tightly packed rectangular reconstruction target.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the rectangle exceeds the frame or its
+    /// storage cannot be allocated.
+    pub fn new(info: DecodedFrameInfo, luma_rect: PlaneRect, fill: T) -> Result<Self> {
+        let (y, u, v) = Self::regions(info, luma_rect)?;
         let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
         let mut samples = Vec::new();
         samples
@@ -228,6 +245,33 @@ impl<T: ReconSample> OwnedFrameRect<T> {
     /// Returns the decoded-frame metadata for this rectangle.
     pub const fn info(&self) -> DecodedFrameInfo {
         self.info
+    }
+
+    /// Points this rectangle's storage at another region of the same frame.
+    ///
+    /// Reconstruction targets are one superblock each, so every interior
+    /// superblock needs exactly the same buffer; only the coordinates differ.
+    /// Retargeting lets one allocation serve any of them in turn instead of
+    /// keeping one per superblock alive for the whole frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconError`] when the new rectangle needs different storage,
+    /// leaving this rectangle untouched so the caller can allocate instead.
+    pub fn retarget(&mut self, luma_rect: PlaneRect) -> Result<()> {
+        let (y, u, v) = Self::regions(self.info, luma_rect)?;
+        let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
+        if total != self.samples.len() {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: PlaneId::Y,
+                storage: y.storage_size,
+                rect: luma_rect,
+            });
+        }
+        self.y = y;
+        self.u = u;
+        self.v = v;
+        Ok(())
     }
 
     /// Returns the luma rectangle in global frame coordinates.

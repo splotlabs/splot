@@ -23,7 +23,7 @@ pub(super) struct TileCommit<T: ReconSample> {
     block_decoded: TileBlockDecodedState,
     current_block_decoded_superblock: Option<[usize; 2]>,
     decoded_any: bool,
-    surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
+    surfaces: Arc<Mutex<SurfaceSource<T>>>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
 }
 
@@ -33,7 +33,7 @@ impl<T: ReconSample> TileCommit<T> {
         workspace: CurrentFrameWorkspace<T>,
         block_decoded: TileBlockDecodedState,
         decoded_any: bool,
-        surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
+        surfaces: Arc<Mutex<SurfaceSource<T>>>,
         frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
     ) -> Self {
         Self {
@@ -63,7 +63,10 @@ impl<T: ReconSample> TileCommit<T> {
         }
         if let Some(surface) = ready.surface.take() {
             surface.publish_into(&mut self.workspace)?;
-            self.surfaces.push(surface);
+            self.surfaces
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .give(surface);
         }
         self.ordered.with_installed(|scratch| {
             pixel_commit::replay_recon_row(
@@ -101,11 +104,16 @@ impl<T: ReconSample> TileCommit<T> {
         Vec<splot_recon::OwnedFrameRect<T>>,
         crate::filters::wienerns_lr::FrameFilterRecords,
     ) {
+        let surfaces = self
+            .surfaces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain_free();
         (
             self.ordered,
             self.workspace,
             self.decoded_any,
-            self.surfaces,
+            surfaces,
             self.frame_filter_records,
         )
     }
@@ -240,7 +248,73 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
     temporal_plan: TemporalBandPlan,
     tile_offset: ByteOffset,
     parse_progress: Arc<super::ParseProgress>,
-    pending_surfaces: Mutex<std::vec::IntoIter<splot_recon::OwnedFrameRect<T>>>,
+    pending_surfaces: Arc<Mutex<SurfaceSource<T>>>,
+}
+
+/// Hands out one reconstruction surface per superblock, lazily.
+///
+/// A surface is only needed between a unit's precompute and its commit, so the
+/// source allocates on demand and takes published surfaces back. Interior
+/// superblocks all need the same buffer and differ only in position, so a
+/// returned surface is retargeted rather than reallocated: the live set follows
+/// how many units are in flight instead of how many the frame has.
+pub(super) struct SurfaceSource<T: ReconSample> {
+    info: splot_recon::DecodedFrameInfo,
+    rects: Vec<splot_recon::PlaneRect>,
+    next: usize,
+    free: Vec<splot_recon::OwnedFrameRect<T>>,
+}
+
+impl<T: ReconSample> SurfaceSource<T> {
+    pub(super) fn new(
+        info: splot_recon::DecodedFrameInfo,
+        rects: Vec<splot_recon::PlaneRect>,
+        free: Vec<splot_recon::OwnedFrameRect<T>>,
+    ) -> Self {
+        Self {
+            info,
+            rects,
+            next: 0,
+            free,
+        }
+    }
+
+    pub(super) fn take(&mut self) -> Option<splot_recon::Result<splot_recon::OwnedFrameRect<T>>> {
+        let rect = *self.rects.get(self.next)?;
+        self.next += 1;
+        let reusable = self.free.iter().position(|surface| {
+            let held = surface.luma_rect();
+            surface.info() == self.info
+                && held.width() == rect.width()
+                && held.height() == rect.height()
+        });
+        if let Some(index) = reusable {
+            let mut surface = self.free.swap_remove(index);
+            if surface.luma_rect() == rect || surface.retarget(rect).is_ok() {
+                poison_reused_surface(&mut surface);
+                return Some(Ok(surface));
+            }
+            self.free.push(surface);
+        }
+        Some(splot_recon::OwnedFrameRect::new(
+            self.info,
+            rect,
+            T::default(),
+        ))
+    }
+
+    pub(super) fn give(&mut self, surface: splot_recon::OwnedFrameRect<T>) {
+        self.free.push(surface);
+    }
+
+    fn drain_free(&mut self) -> Vec<splot_recon::OwnedFrameRect<T>> {
+        core::mem::take(&mut self.free)
+    }
+
+    #[cfg(test)]
+    pub(super) fn free_len(&self) -> usize {
+        self.free.len()
+    }
 }
 
 impl<T: ReconSample> TileRecon<T> {
@@ -429,10 +503,13 @@ impl<T: ReconSample> TileRecon<T> {
         })
     }
 
-    fn finish_commit(&self, mut commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
-        commit.surfaces.reverse();
-        let scratch =
-            TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, commit.surfaces);
+    fn finish_commit(&self, commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
+        let surfaces = commit
+            .surfaces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain_free();
+        let scratch = TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, surfaces);
         *self.scratch.lock().unwrap_or_else(PoisonError::into_inner) = Some(scratch);
         commit.workspace
     }
@@ -456,7 +533,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     parser: &mut TileParser<'_, '_>,
     resolve: &mut TileResolveState,
     tile_offset: ByteOffset,
-    mut surfaces: std::vec::IntoIter<splot_recon::OwnedFrameRect<T>>,
+    surfaces: &Arc<Mutex<SurfaceSource<T>>>,
     unit_count: usize,
     units_per_row: usize,
     context: &TileDecodeContext<'_, T>,
@@ -536,7 +613,13 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 ready.push(ReadyReconRow {
                     bounds: row_bounds,
                     row,
-                    surface: surfaces.next(),
+                    surface: surfaces
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take()
+                        .transpose()
+                        .ok()
+                        .flatten(),
                 });
                 if last {
                     reached_last = true;
@@ -914,7 +997,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             let surface = if row.superblocks.is_empty() {
                 None
             } else {
-                surfaces.next()
+                surfaces.take().transpose().ok().flatten()
             };
             rows.push(TileReconRow::Unresolved { row, surface });
         }
@@ -1287,11 +1370,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         params.sb_h4,
     )?;
     scratch.clear_incompatible_surface_layout(info, &rects);
-    let surfaces = rects
-        .into_iter()
-        .map(|rect| scratch.take_surface(info, rect))
-        .collect::<splot_recon::Result<Vec<_>>>()?;
-    let surface_cursor = surfaces.into_iter();
     if unit_count == 0 {
         return Err(invalid_inter_tile_scheduling_state());
     }
@@ -1309,6 +1387,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         workers,
         surfaces,
     } = scratch;
+    let surface_source = Arc::new(Mutex::new(SurfaceSource::new(info, rects, surfaces)));
     let resolve_state = TileResolveState::new(&sequence);
     let tile = ScheduledTileRecon {
         recon: TileRecon {
@@ -1326,7 +1405,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 block_decoded,
                 current_block_decoded_superblock: None,
                 decoded_any: false,
-                surfaces,
+                surfaces: Arc::clone(&surface_source),
                 frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
             })),
             scratch: Mutex::new(None),
@@ -1360,7 +1439,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         temporal_plan,
         tile_offset,
         parse_progress,
-        pending_surfaces: Mutex::new(surface_cursor),
+        pending_surfaces: Arc::clone(&surface_source),
     };
     Ok(tile)
 }
