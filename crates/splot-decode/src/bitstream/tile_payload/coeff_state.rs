@@ -26,6 +26,8 @@ const MAX_PADDED_COEFF_LEN: usize =
 static ZERO_QUANT_SIGN: [i8; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
+use core::cell::Cell;
+
 fn zero_buffer<T: Default + Copy>(
     mut buffer: Vec<T>,
     len: usize,
@@ -34,6 +36,26 @@ fn zero_buffer<T: Default + Copy>(
     buffer.try_reserve_exact(len)?;
     buffer.resize(len, T::default());
     Ok(buffer)
+}
+
+/// A transform block's level, sign and quantised-coefficient buffers.
+type CoeffBlockBuffers = (Vec<u8>, Vec<i8>, Vec<i32>);
+
+std::thread_local! {
+    /// One transform block's buffers, reused by the next block on this worker.
+    static COEFF_BLOCK_BUFFERS: Cell<Option<CoeffBlockBuffers>> = const { Cell::new(None) };
+}
+
+impl Drop for TransformCoeffBlockState {
+    fn drop(&mut self) {
+        COEFF_BLOCK_BUFFERS.with(|slot| {
+            slot.set(Some((
+                core::mem::take(&mut self.level),
+                core::mem::take(&mut self.quant_sign),
+                core::mem::take(&mut self.quant),
+            )));
+        });
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,13 +78,16 @@ impl TransformCoeffBlockState {
         let allocation = Self::allocation(width, height)?;
         let stride = width + LEVEL_GRID_PAD;
         let level_len = stride * (height + LEVEL_GRID_PAD);
-        let level = zero_buffer(Vec::new(), level_len)?;
-        let quant = zero_buffer(Vec::new(), allocation)?;
+        let (level, mut quant_sign, quant) =
+            COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
+        let level = zero_buffer(level, level_len)?;
+        let quant = zero_buffer(quant, allocation)?;
+        quant_sign.clear();
         Ok(Self {
             height,
             stride,
             level,
-            quant_sign: Vec::new(),
+            quant_sign,
             quant,
         })
     }

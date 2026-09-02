@@ -855,9 +855,56 @@ struct ReconRowBufferPool {
     available: Mutex<Vec<ReconRowBuffers>>,
 }
 
+/// Row buffer sets each worker keeps between frames.
+///
+/// Deliberately small: this cap is per worker, so it multiplies by the pool
+/// width the way the frame-plane pool did before that one was made global.
+const MAX_RETAINED_ROW_BUFFERS: usize = 4;
+
+std::thread_local! {
+    static RETAINED_ROW_BUFFERS: core::cell::RefCell<Vec<ReconRowBuffers>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes a worker's retained row buffer set, or a fresh one.
+fn take_retained_row_buffers() -> ReconRowBuffers {
+    RETAINED_ROW_BUFFERS
+        .with(|retained| retained.borrow_mut().pop())
+        .unwrap_or_default()
+}
+
+impl Drop for ReconRowBufferPool {
+    fn drop(&mut self) {
+        let available = core::mem::take(
+            &mut *self
+                .available
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        RETAINED_ROW_BUFFERS.with(|retained| {
+            let mut retained = retained.borrow_mut();
+            for buffers in available {
+                if retained.len() >= MAX_RETAINED_ROW_BUFFERS {
+                    break;
+                }
+                retained.push(buffers);
+            }
+        });
+    }
+}
+
 impl ReconRowBufferPool {
     fn new(slots: usize) -> Self {
         let mut available = Vec::with_capacity(slots);
+        RETAINED_ROW_BUFFERS.with(|retained| {
+            let mut retained = retained.borrow_mut();
+            while available.len() < slots {
+                let Some(buffers) = retained.pop() else {
+                    break;
+                };
+                available.push(buffers);
+            }
+        });
         available.resize_with(slots, ReconRowBuffers::default);
         Self {
             available: Mutex::new(available),
@@ -873,7 +920,7 @@ impl ReconRowBufferPool {
         {
             return buffers;
         }
-        ReconRowBuffers::default()
+        take_retained_row_buffers()
     }
 
     fn recycle(&self, buffers: ReconRowBuffers) {
@@ -1437,7 +1484,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     )?;
     parser.mv_grid.log_flags();
     loop {
-        let step = parser.next_unit(context, Some(ReconRowBuffers::default()));
+        let step = parser.next_unit(context, Some(take_retained_row_buffers()));
         let (mut row, last) = match step {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
