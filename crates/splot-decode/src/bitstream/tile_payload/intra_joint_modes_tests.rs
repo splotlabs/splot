@@ -119,9 +119,12 @@ fn luma_palette_grid_stores_one_palette_per_block() {
 }
 
 #[test]
-fn luma_palette_grid_cell_stays_pointer_sized() {
-    assert_eq!(size_of::<Option<NonZeroUsize>>(), size_of::<usize>());
-    assert!(size_of::<Option<NonZeroUsize>>() < size_of::<Option<LumaPalette>>());
+fn luma_palette_grid_cell_stays_four_bytes() {
+    // One cell per mode-info unit, so the width is frame-sized memory: a
+    // `usize` index would double the grid for a value bounded by the tile's
+    // block count.
+    assert_eq!(size_of::<Option<NonZeroU32>>(), size_of::<u32>());
+    assert!(size_of::<Option<NonZeroU32>>() < size_of::<Option<LumaPalette>>());
 }
 
 #[test]

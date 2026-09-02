@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::TryReserveError;
-use std::num::NonZeroUsize;
+use std::num::NonZeroU32;
 use std::ops::Range;
 
 use splot_core::symbol::Symbol;
@@ -308,7 +308,9 @@ impl LumaPalette {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileLumaPaletteState {
-    grid: MiGrid<Option<NonZeroUsize>>,
+    /// One `u32` index per mode-info unit, not a `usize`: the index addresses
+    /// this tile's palette list, which is bounded by its block count.
+    grid: MiGrid<Option<NonZeroU32>>,
     palettes: Vec<LumaPalette>,
 }
 
@@ -320,7 +322,7 @@ impl TileLumaPaletteState {
     ) -> Result<Self, TileLumaPaletteStateError> {
         let grid = mi_grid_new_for_tile!(
             TileLumaPaletteStateError,
-            None::<NonZeroUsize>,
+            None::<NonZeroU32>,
             row_range,
             col_range,
             require_nonzero(sb_size4, TileLumaPaletteStateError::EmptySuperblockSize),
@@ -379,7 +381,8 @@ impl TileLumaPaletteState {
         palette: Option<LumaPalette>,
     ) {
         let palette = palette.and_then(|palette| {
-            let index = NonZeroUsize::new(self.palettes.len().checked_add(1)?)?;
+            let index =
+                NonZeroU32::new(u32::try_from(self.palettes.len().checked_add(1)?).ok()?)?;
             self.palettes.push(palette);
             Some(index)
         });
@@ -387,7 +390,7 @@ impl TileLumaPaletteState {
     }
 
     fn palette_at(&self, row: usize, col: usize) -> Option<LumaPalette> {
-        let index = self.grid.cell(row, col).flatten()?.get() - 1;
+        let index = usize::try_from(self.grid.cell(row, col).flatten()?.get() - 1).ok()?;
         self.palettes.get(index).copied()
     }
 
