@@ -339,10 +339,12 @@ impl<'a> FrameDeblock<'a> {
         tile_info: Option<&'a TileInfo>,
         disable_loopfilters_across_tiles: bool,
         quant_deltas: DeblockQuantDeltas,
+        chroma_subsampling: (usize, usize),
     ) -> Result<Option<Self>, DeblockError> {
         if filter.apply_deblocking_filter == [false; 4] {
             return Ok(None);
         }
+        let (sub_x, sub_y) = chroma_subsampling;
         let grid = build_mi_grid(blocks, mi_rows, mi_cols)?;
         let mut chroma = [None, None];
         for (plane, slot) in chroma.iter_mut().enumerate() {
@@ -355,6 +357,8 @@ impl<'a> FrameDeblock<'a> {
                 plane,
                 mi_rows,
                 mi_cols,
+                sub_x,
+                sub_y,
             )?);
         }
         Ok(Some(Self {
@@ -377,6 +381,7 @@ impl<'a> FrameDeblock<'a> {
 
     /// Builds the frame's mode-info grids while taking ownership of detached
     /// deblock records.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_owned(
         records: OwnedDeblockRecords,
         mi_rows: usize,
@@ -385,10 +390,12 @@ impl<'a> FrameDeblock<'a> {
         core: Arc<FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         quant_deltas: DeblockQuantDeltas,
+        chroma_subsampling: (usize, usize),
     ) -> Result<Option<Self>, DeblockError> {
         if filter.apply_deblocking_filter == [false; 4] {
             return Ok(None);
         }
+        let (sub_x, sub_y) = chroma_subsampling;
         let grid = build_mi_grid(&records.blocks, mi_rows, mi_cols)?;
         let mut chroma = [None, None];
         for (plane, slot) in chroma.iter_mut().enumerate() {
@@ -399,6 +406,8 @@ impl<'a> FrameDeblock<'a> {
                     plane,
                     mi_rows,
                     mi_cols,
+                    sub_x,
+                    sub_y,
                 )?);
             }
         }

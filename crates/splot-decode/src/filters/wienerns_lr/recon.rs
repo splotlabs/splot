@@ -512,6 +512,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 setup.core.tile_info.as_ref(),
                 disable_loopfilters_across_tiles,
                 deblock_quant_deltas,
+                {
+                    let format = workspace.info().pixel_format();
+                    (
+                        usize::from(format.subsampling_x()),
+                        usize::from(format.subsampling_y()),
+                    )
+                },
             )
             .map_err(|error| deblock_prepare_error(&error))?,
             None => None,

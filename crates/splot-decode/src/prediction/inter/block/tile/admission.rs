@@ -963,6 +963,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                         .filter
                         .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
                     deblock_quant_deltas,
+                    {
+                        let (x, y) = crate::bitstream::tile_payload::chroma_subsampling(
+                            self.recon.sequence.general.chroma_format_idc,
+                        );
+                        (usize::from(x), usize::from(y))
+                    },
                 )
                 .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))
             })

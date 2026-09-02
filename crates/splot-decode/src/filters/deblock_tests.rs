@@ -113,6 +113,8 @@ fn deblock_through_live_source<T: ReconSample>(
         tile_info,
         disable_loopfilters_across_tiles,
         quant_deltas,
+    
+        (1, 1),
     )?
     else {
         return Ok(());
@@ -197,6 +199,8 @@ fn one_row_advance_matches_the_whole_frame_deblock() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+    
+        (1, 1),
     )
     .unwrap()
     .unwrap();
@@ -338,6 +342,8 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+    
+        (1, 1),
     )
     .unwrap()
     .unwrap();
@@ -384,6 +390,8 @@ fn contiguous_source_deblock_matches_workspace_while_an_older_lease_is_live() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+    
+        (1, 1),
     )
     .unwrap()
     .unwrap();
@@ -433,6 +441,8 @@ fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+    
+        (1, 1),
     )
     .unwrap()
     .unwrap();
@@ -455,6 +465,8 @@ fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
         Arc::new(core),
         false,
         DeblockQuantDeltas::ZERO,
+    
+        (1, 1),
     )
     .unwrap()
     .unwrap();
@@ -497,6 +509,8 @@ fn incremental_deblock_enforces_frontiers_and_leases_exact_window() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+    
+        (1, 1),
     )
     .unwrap()
     .unwrap();
@@ -549,6 +563,8 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+    
+        (1, 1),
     )
     .unwrap()
     .unwrap();
@@ -604,6 +620,8 @@ fn incremental_deblock_matches_tile_boundary_rules() {
             Some(&tile_info),
             disable_loopfilters_across_tiles,
             DeblockQuantDeltas::ZERO,
+        
+            (1, 1),
         )
         .unwrap()
         .unwrap();
@@ -1412,7 +1430,7 @@ fn inherited_chroma_residual_transform_retains_prediction_metadata() {
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, metadata);
     chroma.push(0, transform);
-    let storage = overlay_mi_grid(&base, &chroma, 0, 8, 8).unwrap();
+    let storage = overlay_mi_grid(&base, &chroma, 0, 8, 8, 1, 1).unwrap();
     let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
 
     let inherited = grid.get_edge(1, 3).unwrap();
@@ -1466,7 +1484,7 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
     let base = build_mi_grid(&luma, 8, 8).unwrap();
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, ordinary);
-    let storage = overlay_mi_grid(&base, &chroma, 0, 8, 8).unwrap();
+    let storage = overlay_mi_grid(&base, &chroma, 0, 8, 8, 1, 1).unwrap();
     let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
 
     let info = grid.get_edge(1, 3).unwrap();
@@ -1513,7 +1531,7 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     let base = build_mi_grid(&luma, 16, 16).unwrap();
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, record);
-    let storage = overlay_mi_grid(&base, &chroma, 0, 16, 16).unwrap();
+    let storage = overlay_mi_grid(&base, &chroma, 0, 16, 16, 1, 1).unwrap();
     let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
     let info = grid.get_edge(6, 4).unwrap();
     let chroma_prediction = info.prediction(1);
@@ -1791,6 +1809,8 @@ fn contiguous_source_plane_parallel_pass_matches_serial_output() {
             None,
             false,
             DeblockQuantDeltas::ZERO,
+        
+            (1, 1),
         )
         .unwrap()
         .unwrap();

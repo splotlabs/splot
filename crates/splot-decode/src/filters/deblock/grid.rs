@@ -45,7 +45,15 @@ pub(super) struct MiGridStorage {
 
 pub(super) struct ChromaMiGridStorage {
     pub(super) fully_covered: bool,
+    /// One cell per chroma mode-info unit, not per luma one. A chroma deblock
+    /// record covers a chroma-aligned luma extent, so a luma-resolution grid
+    /// stored each block index `1 << (sub_x + sub_y)` times over.
     pub(super) cells: Vec<ChromaMiCell>,
+    pub(super) cell_cols: usize,
+    pub(super) sub_x: usize,
+    pub(super) sub_y: usize,
+    /// Edge flags stay at luma resolution: a vertical edge at luma column `c`
+    /// is distinct from the one at `c - 1`, which `is_candidate` reads.
     pub(super) candidates: Vec<u8>,
 }
 
@@ -88,7 +96,10 @@ impl MiGrid<'_> {
     pub(super) fn get_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
         let index = row * self.base.mi_cols + col;
         let base = self.base.cells.get(index)?;
-        let chroma = self.chroma.and_then(|grid| grid.cells.get(index));
+        let chroma = self.chroma.and_then(|grid| {
+            grid.cells
+                .get((row >> grid.sub_y) * grid.cell_cols + (col >> grid.sub_x))
+        });
         let block = match chroma.map(|cell| cell.overlay) {
             Some(overlay) if overlay != NO_BLOCK_INDEX => {
                 self.overlay_blocks.get(overlay as usize)?
@@ -201,14 +212,18 @@ pub(super) fn overlay_mi_grid(
     plane: usize,
     mi_rows: usize,
     mi_cols: usize,
+    sub_x: usize,
+    sub_y: usize,
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let plane_id = match plane {
         0 => splot_recon::PlaneId::U,
         1 => splot_recon::PlaneId::V,
         _ => return Err(DeblockError::Workspace),
     };
+    let cell_cols = mi_cols.div_ceil(1 << sub_x);
     let count = mi_rows
-        .checked_mul(mi_cols)
+        .div_ceil(1 << sub_y)
+        .checked_mul(cell_cols)
         .ok_or(DeblockError::Workspace)?;
     let mut cells = Vec::new();
     cells
@@ -222,6 +237,9 @@ pub(super) fn overlay_mi_grid(
     let mut grid = ChromaMiGridStorage {
         fully_covered: base.fully_covered,
         cells,
+        cell_cols,
+        sub_x,
+        sub_y,
         candidates,
     };
     for (block_index, block) in blocks
@@ -229,12 +247,14 @@ pub(super) fn overlay_mi_grid(
         .filter(|(_, block)| !block.chroma_transform_only)
     {
         let block_index = mi_block_index(block_index)?;
-        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
+        for (start, end) in block_chroma_spans(block, mi_rows, mi_cols, cell_cols, sub_x, sub_y) {
             if let Some(cells) = grid.cells.get_mut(start..end) {
                 for cell in cells {
                     cell.overlay = block_index;
                 }
             }
+        }
+        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
             if let Some(candidates) = grid.candidates.get_mut(start..end) {
                 for candidate in candidates {
                     *candidate |= COVERED_CANDIDATE;
@@ -248,7 +268,7 @@ pub(super) fn overlay_mi_grid(
         .filter(|(_, block)| block.chroma_transform_only)
     {
         let block_index = mi_block_index(block_index)?;
-        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
+        for (start, end) in block_chroma_spans(block, mi_rows, mi_cols, cell_cols, sub_x, sub_y) {
             if let Some(cells) = grid.cells.get_mut(start..end) {
                 for cell in cells {
                     cell.chroma_transform = block_index;
@@ -264,6 +284,26 @@ pub(super) fn overlay_mi_grid(
             .all(|candidate| candidate & COVERED_CANDIDATE != 0);
     }
     Ok(grid)
+}
+
+/// The chroma-resolution cell spans one block covers, one per chroma row.
+fn block_chroma_spans(
+    block: &DeblockBlock,
+    mi_rows: usize,
+    mi_cols: usize,
+    cell_cols: usize,
+    sub_x: usize,
+    sub_y: usize,
+) -> impl Iterator<Item = (usize, usize)> {
+    let row_end = block.r.saturating_add(block.n4h).min(mi_rows);
+    let col_end = block.c.saturating_add(block.n4w).min(mi_cols);
+    let col_start = block.c.min(col_end);
+    let chroma_col_start = col_start >> sub_x;
+    let chroma_col_end = col_end.div_ceil(1 << sub_x);
+    (block.r >> sub_y..row_end.div_ceil(1 << sub_y)).map(move |chroma_row| {
+        let base = chroma_row * cell_cols;
+        (base + chroma_col_start, base + chroma_col_end)
+    })
 }
 
 fn block_row_spans(
