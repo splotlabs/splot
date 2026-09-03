@@ -422,31 +422,63 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
 }
 
+/// Hands one frame's reference metadata lists back to the context store.
+///
+/// The set is rebuilt for every frame and holds one short list per reference
+/// slot per field, so building it from nothing costs a couple of dozen
+/// allocations a frame on its own.
+impl Drop for ReferenceMetadata {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.ref_valid);
+        crate::support::buffer_pool::recycle(&mut self.ref_order_hint);
+        crate::support::buffer_pool::recycle(&mut self.ref_order_hint_lsbs);
+        crate::support::buffer_pool::recycle(&mut self.ref_implicit_output_frame);
+        crate::support::buffer_pool::recycle(&mut self.ref_immediate_output_frame);
+        crate::support::buffer_pool::recycle(&mut self.ref_frame_width);
+        crate::support::buffer_pool::recycle(&mut self.ref_frame_height);
+        crate::support::buffer_pool::recycle(&mut self.ref_base_q_idx);
+        crate::support::buffer_pool::recycle(&mut self.ref_counter);
+        crate::support::buffer_pool::recycle(&mut self.ref_chroma_ac_deltas);
+        crate::support::buffer_pool::recycle(&mut self.ref_is_inter);
+        crate::support::buffer_pool::recycle(&mut self.ref_long_term_id);
+        crate::support::buffer_pool::recycle(&mut self.ref_num_total_refs);
+        crate::support::buffer_pool::recycle(&mut self.saved_global_motion_order_hints);
+        crate::support::buffer_pool::recycle(&mut self.saved_global_motion_params);
+        crate::support::buffer_pool::recycle(&mut self.lr_frame_filter_class_counts);
+        crate::support::buffer_pool::recycle(&mut self.lr_frame_filter_taps);
+        crate::support::buffer_pool::recycle(&mut self.ref_frame_cdfs);
+        crate::support::buffer_pool::recycle(&mut self.ref_ccso_params);
+        crate::support::buffer_pool::recycle(&mut self.ref_ccso_unit_grids);
+        crate::support::buffer_pool::recycle(&mut self.ref_segment_ids);
+        crate::support::buffer_pool::recycle(&mut self.ref_motion_fields);
+    }
+}
+
 impl ReferenceMetadata {
     fn with_capacity(num: usize) -> Self {
         Self {
-            ref_valid: Vec::with_capacity(num),
-            ref_order_hint: Vec::with_capacity(num),
-            ref_order_hint_lsbs: Vec::with_capacity(num),
-            ref_implicit_output_frame: Vec::with_capacity(num),
-            ref_immediate_output_frame: Vec::with_capacity(num),
-            ref_frame_width: Vec::with_capacity(num),
-            ref_frame_height: Vec::with_capacity(num),
-            ref_base_q_idx: Vec::with_capacity(num),
-            ref_counter: Vec::with_capacity(num),
-            ref_chroma_ac_deltas: Vec::with_capacity(num),
-            ref_is_inter: Vec::with_capacity(num),
-            ref_long_term_id: Vec::with_capacity(num),
-            ref_num_total_refs: Vec::with_capacity(num),
-            saved_global_motion_order_hints: Vec::with_capacity(num),
-            saved_global_motion_params: Vec::with_capacity(num),
-            lr_frame_filter_class_counts: Vec::with_capacity(num),
-            lr_frame_filter_taps: Vec::with_capacity(num),
-            ref_frame_cdfs: Vec::with_capacity(num),
-            ref_ccso_params: Vec::with_capacity(num),
-            ref_ccso_unit_grids: Vec::with_capacity(num),
-            ref_segment_ids: Vec::with_capacity(num),
-            ref_motion_fields: Vec::with_capacity(num),
+            ref_valid: crate::support::buffer_pool::take(num),
+            ref_order_hint: crate::support::buffer_pool::take(num),
+            ref_order_hint_lsbs: crate::support::buffer_pool::take(num),
+            ref_implicit_output_frame: crate::support::buffer_pool::take(num),
+            ref_immediate_output_frame: crate::support::buffer_pool::take(num),
+            ref_frame_width: crate::support::buffer_pool::take(num),
+            ref_frame_height: crate::support::buffer_pool::take(num),
+            ref_base_q_idx: crate::support::buffer_pool::take(num),
+            ref_counter: crate::support::buffer_pool::take(num),
+            ref_chroma_ac_deltas: crate::support::buffer_pool::take(num),
+            ref_is_inter: crate::support::buffer_pool::take(num),
+            ref_long_term_id: crate::support::buffer_pool::take(num),
+            ref_num_total_refs: crate::support::buffer_pool::take(num),
+            saved_global_motion_order_hints: crate::support::buffer_pool::take(num),
+            saved_global_motion_params: crate::support::buffer_pool::take(num),
+            lr_frame_filter_class_counts: crate::support::buffer_pool::take(num),
+            lr_frame_filter_taps: crate::support::buffer_pool::take(num),
+            ref_frame_cdfs: crate::support::buffer_pool::take(num),
+            ref_ccso_params: crate::support::buffer_pool::take(num),
+            ref_ccso_unit_grids: crate::support::buffer_pool::take(num),
+            ref_segment_ids: crate::support::buffer_pool::take(num),
+            ref_motion_fields: crate::support::buffer_pool::take(num),
         }
     }
 

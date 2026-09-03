@@ -1167,6 +1167,34 @@ pub(crate) struct InterResidualBlock {
     pub(crate) cctx_pair_delta: i16,
     pub(crate) coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
 }
+/// Hands the frame's reference metadata lists back to the context store.
+impl<T: ReconSample> Drop for InterReferenceState<T> {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.ref_valid);
+        crate::support::buffer_pool::recycle(&mut self.ref_order_hint);
+        crate::support::buffer_pool::recycle(&mut self.ref_order_hint_lsbs);
+        crate::support::buffer_pool::recycle(&mut self.ref_implicit_output_frame);
+        crate::support::buffer_pool::recycle(&mut self.ref_immediate_output_frame);
+        crate::support::buffer_pool::recycle(&mut self.ref_frame_width);
+        crate::support::buffer_pool::recycle(&mut self.ref_frame_height);
+        crate::support::buffer_pool::recycle(&mut self.ref_base_q_idx);
+        crate::support::buffer_pool::recycle(&mut self.ref_counter);
+        crate::support::buffer_pool::recycle(&mut self.ref_chroma_ac_deltas);
+        crate::support::buffer_pool::recycle(&mut self.ref_is_inter);
+        crate::support::buffer_pool::recycle(&mut self.ref_long_term_id);
+        crate::support::buffer_pool::recycle(&mut self.ref_num_total_refs);
+        crate::support::buffer_pool::recycle(&mut self.saved_global_motion_order_hints);
+        crate::support::buffer_pool::recycle(&mut self.saved_global_motion_params);
+        crate::support::buffer_pool::recycle(&mut self.lr_frame_filter_class_counts);
+        crate::support::buffer_pool::recycle(&mut self.lr_frame_filter_taps);
+        crate::support::buffer_pool::recycle(&mut self.ref_frame_cdfs);
+        crate::support::buffer_pool::recycle(&mut self.ref_ccso_params);
+        crate::support::buffer_pool::recycle(&mut self.ref_ccso_unit_grids);
+        crate::support::buffer_pool::recycle(&mut self.ref_segment_ids);
+        crate::support::buffer_pool::recycle(&mut self.ref_motion_fields);
+    }
+}
+
 pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) store: ReferenceFrameStore<RefFrameSlot<T>>,
     pub(crate) ref_valid: Vec<bool>,
@@ -1276,32 +1304,36 @@ impl<T: ReconSample> InterReferenceState<T> {
 
     pub(crate) fn from_metadata(
         store: ReferenceFrameStore<RefFrameSlot<T>>,
-        metadata: ReferenceMetadata,
+        mut metadata: ReferenceMetadata,
     ) -> Self {
         Self {
             store,
-            ref_valid: metadata.ref_valid,
-            ref_order_hint: metadata.ref_order_hint,
-            ref_order_hint_lsbs: metadata.ref_order_hint_lsbs,
-            ref_implicit_output_frame: metadata.ref_implicit_output_frame,
-            ref_immediate_output_frame: metadata.ref_immediate_output_frame,
-            ref_frame_width: metadata.ref_frame_width,
-            ref_frame_height: metadata.ref_frame_height,
-            ref_base_q_idx: metadata.ref_base_q_idx,
-            ref_counter: metadata.ref_counter,
-            ref_chroma_ac_deltas: metadata.ref_chroma_ac_deltas,
-            ref_is_inter: metadata.ref_is_inter,
-            ref_long_term_id: metadata.ref_long_term_id,
-            ref_num_total_refs: metadata.ref_num_total_refs,
-            saved_global_motion_order_hints: metadata.saved_global_motion_order_hints,
-            saved_global_motion_params: metadata.saved_global_motion_params,
-            lr_frame_filter_class_counts: metadata.lr_frame_filter_class_counts,
-            lr_frame_filter_taps: metadata.lr_frame_filter_taps,
-            ref_frame_cdfs: metadata.ref_frame_cdfs,
-            ref_ccso_params: metadata.ref_ccso_params,
-            ref_ccso_unit_grids: metadata.ref_ccso_unit_grids,
-            ref_segment_ids: metadata.ref_segment_ids,
-            ref_motion_fields: metadata.ref_motion_fields,
+            ref_valid: core::mem::take(&mut metadata.ref_valid),
+            ref_order_hint: core::mem::take(&mut metadata.ref_order_hint),
+            ref_order_hint_lsbs: core::mem::take(&mut metadata.ref_order_hint_lsbs),
+            ref_implicit_output_frame: core::mem::take(&mut metadata.ref_implicit_output_frame),
+            ref_immediate_output_frame: core::mem::take(&mut metadata.ref_immediate_output_frame),
+            ref_frame_width: core::mem::take(&mut metadata.ref_frame_width),
+            ref_frame_height: core::mem::take(&mut metadata.ref_frame_height),
+            ref_base_q_idx: core::mem::take(&mut metadata.ref_base_q_idx),
+            ref_counter: core::mem::take(&mut metadata.ref_counter),
+            ref_chroma_ac_deltas: core::mem::take(&mut metadata.ref_chroma_ac_deltas),
+            ref_is_inter: core::mem::take(&mut metadata.ref_is_inter),
+            ref_long_term_id: core::mem::take(&mut metadata.ref_long_term_id),
+            ref_num_total_refs: core::mem::take(&mut metadata.ref_num_total_refs),
+            saved_global_motion_order_hints: core::mem::take(
+                &mut metadata.saved_global_motion_order_hints,
+            ),
+            saved_global_motion_params: core::mem::take(&mut metadata.saved_global_motion_params),
+            lr_frame_filter_class_counts: core::mem::take(
+                &mut metadata.lr_frame_filter_class_counts,
+            ),
+            lr_frame_filter_taps: core::mem::take(&mut metadata.lr_frame_filter_taps),
+            ref_frame_cdfs: core::mem::take(&mut metadata.ref_frame_cdfs),
+            ref_ccso_params: core::mem::take(&mut metadata.ref_ccso_params),
+            ref_ccso_unit_grids: core::mem::take(&mut metadata.ref_ccso_unit_grids),
+            ref_segment_ids: core::mem::take(&mut metadata.ref_segment_ids),
+            ref_motion_fields: core::mem::take(&mut metadata.ref_motion_fields),
         }
     }
 }
