@@ -50,7 +50,7 @@ struct TipUnit {
     rect: mc::McBlockRect,
     has_chroma: bool,
     mvs: [Mv; 2],
-    metadata: Option<Box<mc::CompoundBlockMetadata>>,
+    metadata: Option<mc::CompoundBlockMetadata>,
 }
 
 #[derive(Clone, Copy)]
@@ -345,7 +345,7 @@ fn compute_parallel_outputs<T: ReconSample>(
             if prediction.optflow_distances.is_some() {
                 unit.mvs = tip_temporal_mvs(true, unit.mvs, metadata.stored_mvs_at_origin()?);
             }
-            unit.metadata = Some(Box::new(metadata));
+            unit.metadata = Some(metadata);
             Ok(())
         })
 }
