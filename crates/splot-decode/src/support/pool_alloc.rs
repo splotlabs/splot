@@ -42,7 +42,7 @@ const MIN_CLASS_SHIFT: u32 = 4;
 const CLASS_STEPS: u32 = 1;
 /// Largest pooled block. Above this a request goes to the system allocator,
 /// where a handful of large buffers cost far less than holding them here.
-const MAX_CLASS_SHIFT: u32 = 20;
+const MAX_CLASS_SHIFT: u32 = 23;
 /// Largest pooled block in bytes.
 const MAX_CLASS_BYTES: usize = 1 << MAX_CLASS_SHIFT;
 /// Number of size classes.
