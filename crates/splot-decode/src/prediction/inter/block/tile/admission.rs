@@ -337,7 +337,12 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn conditions(&self, index: usize, info: splot_recon::DecodedFrameInfo) -> Vec<Condition<'_>> {
+    fn conditions<'a>(
+        &'a self,
+        index: usize,
+        info: splot_recon::DecodedFrameInfo,
+        out: &mut Vec<Condition<'a>>,
+    ) {
         let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
         let mut bounds = row_gate::RowReferenceBounds::default();
         for ready in self
@@ -360,7 +365,7 @@ impl<T: ReconSample> TileRecon<T> {
             info,
             &self.temporal,
         )
-        .conditions(&bounds)
+        .conditions(&bounds, out);
     }
 
     fn precompute(&self, index: usize, surfaces: &Mutex<SurfaceSource<T>>) -> Result<()> {
@@ -639,7 +644,8 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             }
 
             let ready = core::mem::take(ready);
-            let conditions = row_gate.conditions(&bounds);
+            let mut conditions = Vec::new();
+            row_gate.conditions(&bounds, &mut conditions);
             let prepared_slot = &prepared[batch_index];
             let precomputed_cell = &precomputed[batch_index];
             let precompute_error = &error;
@@ -1010,16 +1016,13 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
     }
 
-    pub(crate) fn conditions(&self, index: usize) -> Vec<Condition<'_>> {
-        let mut conditions = match self.recon.batch_range(index) {
-            Some(range) => vec![Condition::watermark(self.parse_progress.cell(), range.end)],
-            None => Vec::new(),
-        };
+    pub(crate) fn conditions<'a>(&'a self, index: usize, out: &mut Vec<Condition<'a>>) {
+        out.clear();
         if let Some(range) = self.recon.batch_range(index) {
+            out.push(Condition::watermark(self.parse_progress.cell(), range.end));
             self.materialize_rows(range.end);
         }
-        conditions.extend(self.recon.conditions(index, self.info));
-        conditions
+        self.recon.conditions(index, self.info, out);
     }
 
     /// Precomputes one admitted unit without entering the ordered commit spine.

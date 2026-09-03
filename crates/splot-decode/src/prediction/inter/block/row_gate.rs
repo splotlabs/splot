@@ -135,22 +135,25 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
     }
 
     /// Returns the scheduler conditions that replace waiting for `bounds`.
+    /// Appends this row's reference conditions to `out`.
+    ///
+    /// Into a caller's buffer, not a fresh `Vec`: the conditions are read once
+    /// by the submission and dropped, and a submission loop reuses one buffer
+    /// for every unit it schedules.
     pub(super) fn conditions(
         &self,
         bounds: &RowReferenceBounds,
-    ) -> Vec<splot_parallel::Condition<'a>> {
+        out: &mut Vec<splot_parallel::Condition<'a>>,
+    ) {
         if bounds.settle {
-            return self.settle.conditions();
+            out.extend(self.settle.conditions());
+            return;
         }
-        self.lists
-            .iter()
-            .zip(bounds.needs)
-            .filter_map(|(slot, need)| {
-                (need != 0)
-                    .then(|| slot.map(|slot| slot.row_condition(need as usize)))
-                    .flatten()
-            })
-            .collect()
+        out.extend(self.lists.iter().zip(bounds.needs).filter_map(|(slot, need)| {
+            (need != 0)
+                .then(|| slot.map(|slot| slot.row_condition(need as usize)))
+                .flatten()
+        }));
     }
 
     /// Whether every named reference frame has settled, which admits every row.

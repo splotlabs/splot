@@ -347,8 +347,9 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         let starts_commit = batches.start == 0 && !batches.is_empty();
         let mut ready_key = None;
         let mut ready = Vec::<splot_parallel::Job<'_>>::new();
+        let mut conditions = Vec::new();
         for index in batches {
-            let conditions = self.reconstruction.conditions(index);
+            self.reconstruction.conditions(index, &mut conditions);
             let row = Arc::clone(self);
             let job: splot_parallel::Job<'_> = Box::new(move |admit| row.precompute(index, admit));
             if conditions.is_empty() {
