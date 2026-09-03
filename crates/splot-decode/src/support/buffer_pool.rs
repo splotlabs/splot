@@ -1,47 +1,70 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Frame-scale buffers the decode reuses instead of reallocating per frame.
+//! Buffers the decode keeps for the life of the process, not the frame.
 //!
-//! Several per-frame structures hold one cell per mode-info unit or per
-//! trajectory cell, so rebuilding them each frame moves megabytes through the
-//! allocator and fragments its small zone. dav2d allocates the equivalent
-//! arrays once for the decoder context and reuses them for the whole sequence.
+//! dav2d allocates a context's arrays once and reuses them for the whole
+//! stream, so a steady-state frame costs it no allocation at all. splot builds
+//! the equivalent structures per frame, per tile and per unit, which is the
+//! bulk of its dynamic memory.
 //!
-//! The cap is global rather than per worker on purpose: a per-worker cache
-//! multiplies by the pool width, which at ten workers cost tens of megabytes.
+//! This is that context store. One list of spare buffers per element type is
+//! created the first time that type asks, and every later take and give only
+//! moves a `Vec` in and out of it -- the previous type-erased store boxed each
+//! buffer as it came back, so recycling cost an allocation of its own.
 
-use core::any::Any;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use core::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
-/// Buffers retained in total, across every worker.
-const MAX_RETAINED_BUFFERS: usize = 12;
+/// Spare buffers of one element type.
+type Spares<T> = Vec<Vec<T>>;
 
-type Retained = Mutex<Vec<Box<dyn Any + Send>>>;
+type Store = Mutex<HashMap<TypeId, Box<dyn Any + Send>>>;
 
-fn retained() -> &'static Retained {
-    static BUFFERS: OnceLock<Retained> = OnceLock::new();
-    BUFFERS.get_or_init(|| Mutex::new(Vec::new()))
+fn store() -> &'static Store {
+    static STORE: std::sync::OnceLock<Store> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Takes a retired buffer that already holds `cells` items, or an empty one.
+/// Runs `act` against the spare list for `T`, creating it on first use.
+fn with_spares<T: Send + 'static, R>(act: impl FnOnce(&mut Spares<T>) -> R) -> R {
+    let mut store = store().lock().unwrap_or_else(PoisonError::into_inner);
+    let spares = store
+        .entry(TypeId::of::<T>())
+        .or_insert_with(|| Box::new(Spares::<T>::new()));
+    match spares.downcast_mut::<Spares<T>>() {
+        Some(spares) => act(spares),
+        None => act(&mut Spares::<T>::new()),
+    }
+}
+
+/// Buffers of one element type kept in reserve.
 ///
-/// Each caller has its own element type, so a buffer is only ever reused for
-/// the same kind of data and can grow at most to the stream's largest frame --
-/// the size dav2d allocates up front anyway.
+/// A frame's structures are rebuilt every frame, so the reserve has to cover
+/// every one the pipeline holds at once or the next frame allocates again. The
+/// bound is per element type, and a type that never grows that deep simply
+/// never fills it.
+const MAX_SPARES_PER_TYPE: usize = 512;
+
+/// Takes a spare buffer able to hold `cells` items, or an empty one.
+///
+/// Each element type has its own reserve, so a buffer is only ever reused for
+/// the same kind of data and grows at most to the stream's largest frame.
 pub(crate) fn take<T: Send + 'static>(cells: usize) -> Vec<T> {
-    let mut retained = retained().lock().unwrap_or_else(PoisonError::into_inner);
-    let Some(index) = retained.iter().position(|buffer| {
-        buffer
-            .downcast_ref::<Vec<T>>()
-            .is_some_and(|buffer| buffer.capacity() >= cells)
-    }) else {
-        return Vec::new();
-    };
-    retained
-        .swap_remove(index)
-        .downcast::<Vec<T>>()
-        .map_or_else(|_| Vec::new(), |buffer| *buffer)
+    with_spares::<T, _>(|spares| {
+        // Best fit, not first fit: handing a frame-sized buffer to a row-sized
+        // request would keep the larger allocation for the smaller job, and
+        // every buffer would ratchet up to the largest the stream ever needs.
+        let index = spares
+            .iter()
+            .enumerate()
+            .filter(|(_, buffer)| buffer.capacity() >= cells)
+            .min_by_key(|(_, buffer)| buffer.capacity())
+            .map(|(index, _)| index)?;
+        Some(spares.swap_remove(index))
+    })
+    .unwrap_or_default()
 }
 
 /// Retains a retired buffer for the next frame that wants this shape.
@@ -50,8 +73,10 @@ pub(crate) fn recycle<T: Send + 'static>(buffer: &mut Vec<T>) {
         return;
     }
     buffer.clear();
-    let mut retained = retained().lock().unwrap_or_else(PoisonError::into_inner);
-    if retained.len() < MAX_RETAINED_BUFFERS {
-        retained.push(Box::new(core::mem::take(buffer)));
-    }
+    let buffer = core::mem::take(buffer);
+    with_spares::<T, _>(|spares| {
+        if spares.len() < MAX_SPARES_PER_TYPE {
+            spares.push(buffer);
+        }
+    });
 }

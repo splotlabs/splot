@@ -148,6 +148,15 @@ enum RefinemvCandidates {
     },
 }
 
+/// Hands a per-cell candidate list back for the next grid of this shape.
+impl Drop for RefinemvCandidates {
+    fn drop(&mut self) {
+        if let Self::PerCell { candidates, .. } = self {
+            crate::support::buffer_pool::recycle(candidates);
+        }
+    }
+}
+
 /// Largest motion-grid subblock (refine-MV unit): 16x16 samples.
 const MAX_MOTION_GRID_SUBBLOCK_SAMPLES: usize = 256;
 /// Horizontal-pass rows for an unscaled 16-sample-tall subblock: 16 + 7 taps.
@@ -758,7 +767,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit_count,
         MotionCell::uninitialized([block.mv0, block.mv1]),
     );
-    let mut refinemv_candidates = Vec::with_capacity(unit_count);
+    let mut refinemv_candidates = crate::support::buffer_pool::take::<[Mv; 2]>(unit_count);
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;

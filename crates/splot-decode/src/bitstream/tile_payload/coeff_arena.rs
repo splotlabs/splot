@@ -15,22 +15,10 @@
 
 use core::cell::RefCell;
 use core::ops::Range;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock};
 
-/// Row buffers kept for reuse, across every worker.
-const MAX_POOLED_ROW_BUFFERS: usize = 16;
-
-fn pool() -> &'static Mutex<Vec<Vec<i32>>> {
-    static POOL: OnceLock<Mutex<Vec<Vec<i32>>>> = OnceLock::new();
-    POOL.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn take_pooled() -> Vec<i32> {
-    pool()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .pop()
-        .unwrap_or_default()
+fn take_pooled(cells: usize) -> Vec<i32> {
+    crate::support::buffer_pool::take(cells)
 }
 
 /// A row's coefficients, shared by every block parsed into it.
@@ -58,14 +46,7 @@ impl Drop for RowCoeffs {
         let Some(mut coeffs) = self.0.take() else {
             return;
         };
-        if coeffs.capacity() == 0 {
-            return;
-        }
-        coeffs.clear();
-        let mut pooled = pool().lock().unwrap_or_else(PoisonError::into_inner);
-        if pooled.len() < MAX_POOLED_ROW_BUFFERS {
-            pooled.push(coeffs);
-        }
+        crate::support::buffer_pool::recycle(&mut coeffs);
     }
 }
 
@@ -121,9 +102,11 @@ pub(crate) fn seal() {
         arena.try_borrow_mut().map_or_else(
             |_| Vec::new(),
             |mut arena| {
-                let mut row = take_pooled();
-                row.clear();
-                if row.try_reserve(arena.len()).is_ok() {
+                let mut row = take_pooled(arena.len());
+                if row
+                    .try_reserve(arena.len().saturating_sub(row.capacity()))
+                    .is_ok()
+                {
                     row.extend_from_slice(&arena);
                 }
                 arena.clear();

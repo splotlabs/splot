@@ -335,9 +335,9 @@ impl StripeCopyError {
 }
 
 fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
-    let mut buffer = Vec::new();
+    let mut buffer = crate::support::buffer_pool::take::<u16>(sample_count);
     buffer
-        .try_reserve_exact(sample_count)
+        .try_reserve_exact(sample_count.saturating_sub(buffer.capacity()))
         .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
     Ok(buffer)
 }
@@ -715,10 +715,10 @@ impl Drop for StripeSamples {
     fn drop(&mut self) {
         match &mut self.owner {
             StripeOwner::Owned(samples) => {
-                drop(core::mem::take(samples));
+                crate::support::buffer_pool::recycle(samples);
             }
             StripeOwner::DirectU8 { staging, .. } => {
-                drop(core::mem::take(staging));
+                crate::support::buffer_pool::recycle(staging);
             }
             StripeOwner::DirectU16 { .. } => {}
         }
