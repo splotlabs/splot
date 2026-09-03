@@ -176,6 +176,16 @@ pub struct OwnedFrameRect<T: ReconSample> {
     v: Option<OwnedFramePlaneRect>,
 }
 
+/// Hands the rectangle's samples to the next unit of the same geometry.
+///
+/// A unit's surface is the same size every frame, so without this the decode
+/// allocated and freed one per unit for the life of the stream.
+impl<T: ReconSample> Drop for OwnedFrameRect<T> {
+    fn drop(&mut self) {
+        crate::plane_buffers::recycle(core::mem::take(&mut self.samples));
+    }
+}
+
 impl<T: ReconSample> OwnedFrameRect<T> {
     /// Allocates one tightly packed rectangular reconstruction target.
     ///
@@ -223,9 +233,9 @@ impl<T: ReconSample> OwnedFrameRect<T> {
     pub fn new(info: DecodedFrameInfo, luma_rect: PlaneRect, fill: T) -> Result<Self> {
         let (y, u, v) = Self::regions(info, luma_rect)?;
         let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
-        let mut samples = Vec::new();
+        let mut samples = crate::plane_buffers::take(total);
         samples
-            .try_reserve_exact(total)
+            .try_reserve_exact(total.saturating_sub(samples.capacity()))
             .map_err(|_| ReconError::WorkspaceAllocationFailed {
                 plane: PlaneId::Y,
                 context: "owned rectangle samples",

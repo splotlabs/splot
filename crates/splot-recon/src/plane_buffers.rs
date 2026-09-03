@@ -9,53 +9,66 @@
 //! whole stream, stays flat. Handing a retired plane's buffer to the next frame
 //! of the same geometry removes that swing.
 
-use core::any::Any;
+use core::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::ReconSample;
 
-/// Plane buffers the decode retains in total, across every worker.
+/// Spare buffers of one sample type.
+type Spares<T> = Vec<Vec<T>>;
+
+type Store = Mutex<HashMap<TypeId, Box<dyn Any + Send>>>;
+
+fn store() -> &'static Store {
+    static STORE: OnceLock<Store> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn with_spares<T: ReconSample, R>(act: impl FnOnce(&mut Spares<T>) -> R) -> R {
+    let mut store = store().lock().unwrap_or_else(PoisonError::into_inner);
+    let spares = store
+        .entry(TypeId::of::<T>())
+        .or_insert_with(|| Box::new(Spares::<T>::new()));
+    match spares.downcast_mut::<Spares<T>>() {
+        Some(spares) => act(spares),
+        None => act(&mut Spares::<T>::new()),
+    }
+}
+
+/// Buffers of one sample type kept in reserve.
 ///
-/// The cap is global on purpose: a per-worker cap multiplies by the pool width,
-/// which at ten workers retained sixteen frames each and cost 270 MB. dav2d's
-/// picture pool is likewise one shared free list for the whole context.
-const MAX_RETAINED_PLANE_BUFFERS: usize = 8;
+/// A frame's planes and every unit's reconstruction rectangle come from here,
+/// so the reserve has to cover all of them at once or the next frame allocates
+/// again.
+const MAX_SPARES_PER_TYPE: usize = 2048;
 
-type Retained = Mutex<Vec<Box<dyn Any + Send>>>;
-
-fn retained() -> &'static Retained {
-    static PLANE_BUFFERS: OnceLock<Retained> = OnceLock::new();
-    PLANE_BUFFERS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-/// Takes a retired buffer that already holds `len` samples, or an empty one.
+/// Takes a retired buffer able to hold `len` samples, or an empty one.
 pub(crate) fn take<T: ReconSample>(len: usize) -> Vec<T> {
-    let mut retained = retained().lock().unwrap_or_else(PoisonError::into_inner);
-    // The capacity must match, not merely suffice: handing a luma buffer to a
-    // chroma plane would keep the larger allocation for the smaller plane, and
-    // every buffer would ratchet up to the largest size in the frame. dav2d's
-    // pool reallocates on any size change for the same reason.
-    let Some(index) = retained.iter().position(|buffer| {
-        buffer
-            .downcast_ref::<Vec<T>>()
-            .is_some_and(|buffer| buffer.capacity() == len)
-    }) else {
-        return Vec::new();
-    };
-    retained
-        .swap_remove(index)
-        .downcast::<Vec<T>>()
-        .map_or_else(|_| Vec::new(), |buffer| *buffer)
+    with_spares::<T, _>(|spares| {
+        // Best fit: handing a luma buffer to a chroma plane would keep the
+        // larger allocation for the smaller plane, and every buffer would
+        // ratchet up to the largest size in the frame.
+        let index = spares
+            .iter()
+            .enumerate()
+            .filter(|(_, buffer)| buffer.capacity() >= len)
+            .min_by_key(|(_, buffer)| buffer.capacity())
+            .map(|(index, _)| index)?;
+        Some(spares.swap_remove(index))
+    })
+    .unwrap_or_default()
 }
 
-/// Retains a retired plane's buffer for the next frame of this geometry.
+/// Retains a retired buffer for the next frame of this geometry.
 pub(crate) fn recycle<T: ReconSample>(mut buffer: Vec<T>) {
     if buffer.capacity() == 0 {
         return;
     }
     buffer.clear();
-    let mut retained = retained().lock().unwrap_or_else(PoisonError::into_inner);
-    if retained.len() < MAX_RETAINED_PLANE_BUFFERS {
-        retained.push(Box::new(buffer));
-    }
+    with_spares::<T, _>(|spares| {
+        if spares.len() < MAX_SPARES_PER_TYPE {
+            spares.push(buffer);
+        }
+    });
 }
