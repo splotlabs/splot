@@ -47,8 +47,12 @@ const MAX_CLASS_SHIFT: u32 = 20;
 const MAX_CLASS_BYTES: usize = 1 << MAX_CLASS_SHIFT;
 /// Number of size classes.
 const CLASS_COUNT: usize = ((MAX_CLASS_SHIFT - MIN_CLASS_SHIFT) * CLASS_STEPS + 1) as usize;
-/// Alignment a pooled block guarantees, matching the system allocator's.
-const POOL_ALIGN: usize = 1 << MIN_CLASS_SHIFT;
+/// Alignment a pooled block guarantees.
+///
+/// Above the system allocator's own promise on purpose: a request wanting more
+/// than sixteen bytes of alignment used to bypass the pool entirely and reach
+/// the system allocator on every call.
+const POOL_ALIGN: usize = 512;
 
 /// The block size class `class` hands out.
 const fn class_bytes(class: usize) -> usize {
@@ -316,11 +320,17 @@ mod tests {
 
     /// Every block is big enough to hold the free-list link, and can be asked
     /// of the system allocator at the alignment the pool promises.
+    ///
+    /// The link, not the alignment, is the size floor: `POOL_ALIGN` is what a
+    /// pooled pointer guarantees its caller, and exceeds the smallest class.
     #[test]
     fn every_block_is_a_valid_pooled_layout() {
         for class in 0..CLASS_COUNT {
             let bytes = class_bytes(class);
-            assert!(bytes >= POOL_ALIGN, "class {class} is below the link size");
+            assert!(
+                bytes >= core::mem::size_of::<*mut u8>(),
+                "class {class} cannot hold the free-list link"
+            );
             Layout::from_size_align(bytes, POOL_ALIGN)
                 .unwrap_or_else(|_| panic!("class {class} is not a valid layout"));
         }
