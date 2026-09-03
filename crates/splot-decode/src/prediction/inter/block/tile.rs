@@ -860,22 +860,33 @@ struct ReconRowBufferPool {
     available: Mutex<Vec<ReconRowBuffers>>,
 }
 
-/// Row buffer sets each worker keeps between frames.
+/// Row buffer sets kept between units and frames.
 ///
-/// Deliberately small: this cap is per worker, so it multiplies by the pool
-/// width the way the frame-plane pool did before that one was made global.
-const MAX_RETAINED_ROW_BUFFERS: usize = 4;
+/// Global, not per worker: a unit is parsed on one worker and replayed on
+/// another, so a thread-local set is returned to a thread that will not ask
+/// for it again. The cap is a whole-process one for the same reason the
+/// frame-plane pool's is.
+const MAX_RETAINED_ROW_BUFFERS: usize = 32;
 
-std::thread_local! {
-    static RETAINED_ROW_BUFFERS: core::cell::RefCell<Vec<ReconRowBuffers>> =
-        const { core::cell::RefCell::new(Vec::new()) };
-}
+static RETAINED_ROW_BUFFERS: Mutex<Vec<ReconRowBuffers>> = Mutex::new(Vec::new());
 
-/// Takes a worker's retained row buffer set, or a fresh one.
+/// Takes a retained row buffer set, or a fresh one.
 fn take_retained_row_buffers() -> ReconRowBuffers {
     RETAINED_ROW_BUFFERS
-        .with(|retained| retained.borrow_mut().pop())
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pop()
         .unwrap_or_default()
+}
+
+/// Returns a spent row buffer set, whose vectors are already cleared.
+pub(super) fn retain_row_buffers(buffers: ReconRowBuffers) {
+    let mut retained = RETAINED_ROW_BUFFERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if retained.len() < MAX_RETAINED_ROW_BUFFERS {
+        retained.push(buffers);
+    }
 }
 
 impl Drop for ReconRowBufferPool {
@@ -886,30 +897,26 @@ impl Drop for ReconRowBufferPool {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
         );
-        RETAINED_ROW_BUFFERS.with(|retained| {
-            let mut retained = retained.borrow_mut();
-            for buffers in available {
-                if retained.len() >= MAX_RETAINED_ROW_BUFFERS {
-                    break;
-                }
-                retained.push(buffers);
-            }
-        });
+        for buffers in available {
+            retain_row_buffers(buffers);
+        }
     }
 }
 
 impl ReconRowBufferPool {
     fn new(slots: usize) -> Self {
         let mut available = Vec::with_capacity(slots);
-        RETAINED_ROW_BUFFERS.with(|retained| {
-            let mut retained = retained.borrow_mut();
+        {
+            let mut retained = RETAINED_ROW_BUFFERS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             while available.len() < slots {
                 let Some(buffers) = retained.pop() else {
                     break;
                 };
                 available.push(buffers);
             }
-        });
+        }
         available.resize_with(slots, ReconRowBuffers::default);
         Self {
             available: Mutex::new(available),

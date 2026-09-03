@@ -7,7 +7,7 @@ use splot_recon::{DpcmDirection, IntraCardinalDirection, PlaneId};
 
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::thread::LocalKey;
 
 use crate::bitstream::tile_payload::{
@@ -47,17 +47,24 @@ const TX_4X4: usize = 0;
 const DCT_DCT: usize = 0;
 const IDTX: usize = 9;
 
+/// Lists retained per recycler. A single slot served only the most recently
+/// retired list, and several of these are alive at once while a block's planes
+/// are parsed, so nearly every one still allocated.
+const MAX_RECYCLED_LISTS: usize = 16;
+
 struct RecycledVec<T: 'static> {
     entries: Vec<T>,
-    recycler: &'static LocalKey<Cell<Option<Vec<T>>>>,
+    recycler: &'static LocalKey<RefCell<Vec<Vec<T>>>>,
 }
 
 impl<T> RecycledVec<T> {
     fn take(
-        recycler: &'static LocalKey<Cell<Option<Vec<T>>>>,
+        recycler: &'static LocalKey<RefCell<Vec<Vec<T>>>>,
         capacity: usize,
     ) -> core::result::Result<Self, std::collections::TryReserveError> {
-        let mut entries = recycler.with(Cell::take).unwrap_or_default();
+        let mut entries = recycler
+            .with(|pool| pool.try_borrow_mut().ok().and_then(|mut pool| pool.pop()))
+            .unwrap_or_default();
         entries.clear();
         entries.try_reserve(capacity)?;
         Ok(Self { entries, recycler })
@@ -102,12 +109,15 @@ impl<T> Drop for RecycledVec<T> {
     fn drop(&mut self) {
         let mut entries = core::mem::take(&mut self.entries);
         entries.clear();
-        self.recycler.with(|slot| {
-            let entries = match slot.take() {
-                Some(cached) if cached.capacity() > entries.capacity() => cached,
-                _ => entries,
-            };
-            slot.set(Some(entries));
+        if entries.capacity() == 0 {
+            return;
+        }
+        self.recycler.with(|pool| {
+            if let Ok(mut pool) = pool.try_borrow_mut()
+                && pool.len() < MAX_RECYCLED_LISTS
+            {
+                pool.push(entries);
+            }
         });
     }
 }

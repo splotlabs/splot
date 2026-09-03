@@ -485,7 +485,7 @@ impl<T: ReconSample> TileRecon<T> {
             self.ref_frame_idx.as_slice(),
         );
         for ready in batch {
-            drop(commit.replay(
+            super::retain_row_buffers(commit.replay(
                 ready,
                 &self.quantizer,
                 &self.motion,
