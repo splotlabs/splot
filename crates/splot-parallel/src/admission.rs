@@ -228,10 +228,18 @@ struct Slot<'job> {
     waiter: Option<Arc<Waiter>>,
 }
 
+/// Waiters kept for the next submission.
+///
+/// A waiter outlives its job only until the conditions holding it let go, so a
+/// slot the scheduler has already drained usually holds the sole reference and
+/// the allocation can serve the next job instead of a fresh one.
+const MAX_SPARE_WAITERS: usize = 64;
+
 #[derive(Default)]
 struct Slots<'job> {
     entries: Vec<Slot<'job>>,
     free: Vec<usize>,
+    spare_waiters: Vec<Arc<Waiter>>,
     next_submission_order: u64,
 }
 
@@ -251,16 +259,31 @@ impl<'job> Slots<'job> {
             generation,
         };
         self.next_submission_order = self.next_submission_order.wrapping_add(1);
-        let waiter = Arc::new(Waiter {
-            pending: AtomicUsize::new(pending),
-            entry,
-            ready: Arc::clone(ready),
+        let waiter = self.reuse_waiter(pending, entry).unwrap_or_else(|| {
+            Arc::new(Waiter {
+                pending: AtomicUsize::new(pending),
+                entry,
+                ready: Arc::clone(ready),
+            })
         });
         let slot = &mut self.entries[index];
         slot.order_key = order_key;
         slot.job = Some(job);
         slot.waiter = Some(Arc::clone(&waiter));
         waiter
+    }
+
+    /// Reuses a spare waiter, if one is left holding the sole reference.
+    fn reuse_waiter(&mut self, pending: usize, entry: ReadyEntry) -> Option<Arc<Waiter>> {
+        while let Some(mut spare) = self.spare_waiters.pop() {
+            let Some(waiter) = Arc::get_mut(&mut spare) else {
+                continue;
+            };
+            waiter.pending = AtomicUsize::new(pending);
+            waiter.entry = entry;
+            return Some(spare);
+        }
+        None
     }
 
     fn take_slot(&mut self) -> (usize, u64) {
@@ -288,7 +311,11 @@ impl<'job> Slots<'job> {
             return None;
         }
         let job = slot.job.take()?;
-        slot.waiter.take();
+        if let Some(waiter) = slot.waiter.take()
+            && self.spare_waiters.len() < MAX_SPARE_WAITERS
+        {
+            self.spare_waiters.push(waiter);
+        }
         self.free.push(entry.index);
         Some(job)
     }
