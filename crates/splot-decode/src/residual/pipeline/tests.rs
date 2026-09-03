@@ -689,8 +689,11 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         let mut coeffs = empty_luma_coeffs();
         if !all_zero {
             coeffs.eob = 1;
-            coeffs.quant = vec![0; 16];
-            coeffs.quant[0] = 1;
+            let mut values = vec![0i32; 16];
+            values[0] = 1;
+            let (batch, range) = crate::bitstream::tile_payload::coeff_arena::sealed(values);
+            coeffs.coeffs = batch;
+            coeffs.quant = range;
         }
         ParsedTransformUnit {
             block: PositionedLumaCoeffBlock {
@@ -1350,7 +1353,8 @@ fn ctx_with_chroma(block: BlockRect, bit_depth: BitDepth, chroma: ChromaSampling
 fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
     crate::bitstream::tile_payload::LumaCoeffBlock {
         eob: 0,
-        quant: Vec::new(),
+        coeffs: crate::bitstream::tile_payload::coeff_arena::batch(),
+        quant: 0..0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,

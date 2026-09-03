@@ -499,6 +499,9 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             walk.decode_next_superblock(self.tile, &mut decode_leaf, &mut on_published)
                 .map(|superblock| superblock.is_some())
         };
+        // Publish this row's coefficients to the blocks that parsed into them;
+        // the commit spine replays those blocks later, possibly elsewhere.
+        crate::bitstream::tile_payload::coeff_arena::seal();
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
         match decoded_row {

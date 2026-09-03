@@ -7,6 +7,7 @@
 
 mod block_decoded_state;
 mod cdf;
+pub(crate) mod coeff_arena;
 mod coeff_loop;
 mod coeff_state;
 mod general_intra_block;
