@@ -6,6 +6,7 @@
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
 use std::cell::Cell;
+use std::sync::{Mutex, PoisonError};
 
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
@@ -24,6 +25,44 @@ use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePla
 
 pub(crate) struct ParsedGeneralIntraResidual {
     planes: Vec<ParsedResidualPlane>,
+}
+
+/// Plane lists kept for reuse, across every worker.
+///
+/// A block's parsed planes outlive their parse -- the row is reconstructed by
+/// a later pass -- so the list cannot be a scratch buffer the parser reuses.
+/// The cap covers the units the pipeline keeps in flight, the way the row
+/// buffer pool's does; below that the pool bottoms out and the list is
+/// allocated afresh for every general-intra block.
+const MAX_POOLED_PLANE_LISTS: usize = 1024;
+
+static POOLED_PLANE_LISTS: Mutex<Vec<Vec<ParsedResidualPlane>>> = Mutex::new(Vec::new());
+
+fn take_pooled_planes(capacity: usize) -> Vec<ParsedResidualPlane> {
+    let mut planes = POOLED_PLANE_LISTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pop()
+        .unwrap_or_default();
+    planes.clear();
+    planes.reserve(capacity);
+    planes
+}
+
+impl Drop for ParsedGeneralIntraResidual {
+    fn drop(&mut self) {
+        let mut planes = core::mem::take(&mut self.planes);
+        if planes.capacity() == 0 {
+            return;
+        }
+        planes.clear();
+        let mut pooled = POOLED_PLANE_LISTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if pooled.len() < MAX_POOLED_PLANE_LISTS {
+            pooled.push(planes);
+        }
+    }
 }
 
 pub(super) struct ParsedResidualPlane {
@@ -80,7 +119,7 @@ impl GeneralIntraResidualPlan {
     ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
         let mut u_nonzero = false;
         let mut pending_u = false;
-        let mut planes = Vec::with_capacity(self.planes.len());
+        let mut planes = take_pooled_planes(self.planes.len());
         for &plane in self.planes.iter() {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
@@ -385,7 +424,7 @@ impl ResidualPlanePlan {
 
 impl ParsedGeneralIntraResidual {
     pub(crate) fn reconstruct<T: ReconSample>(
-        self,
+        mut self,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut TileBlockDecodedState,
@@ -398,8 +437,7 @@ impl ParsedGeneralIntraResidual {
             .with(Cell::take)
             .unwrap_or_else(|| Vec::with_capacity(MAX_DEFERRED_CHROMA_PLANES));
         deferred.clear();
-        let mut planes = self.planes;
-        for plane in planes.drain(..) {
+        for plane in self.planes.drain(..) {
             match plane.cctx_role {
                 CctxRole::HoldU => {
                     pending_u = Some(plane);
