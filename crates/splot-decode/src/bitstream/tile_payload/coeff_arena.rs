@@ -15,7 +15,7 @@
 
 use core::cell::RefCell;
 use core::ops::Range;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 fn take_pooled(cells: usize) -> Vec<i32> {
     crate::support::buffer_pool::take(cells)
@@ -59,6 +59,53 @@ impl RowCoeffs {
 /// The handle a block holds until its row is sealed.
 pub(crate) type CoeffBatch = Arc<RowCoeffs>;
 
+/// Handles kept for the next row to claim.
+///
+/// Sized for the rows the pipeline keeps in flight: a block holds its row's
+/// handle until the commit spine replays it, so a smaller reserve is empty
+/// every time a row opens.
+const MAX_SPARE_HANDLES: usize = 128;
+
+fn spare_handles() -> &'static Mutex<Vec<CoeffBatch>> {
+    static SPARE: OnceLock<Mutex<Vec<CoeffBatch>>> = OnceLock::new();
+    SPARE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// A handle for a new row, reusing one whose blocks have all been replayed.
+fn new_handle() -> CoeffBatch {
+    let mut spare = spare_handles()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    // Look for one whose blocks have all been replayed, and leave the rest
+    // alone: taking them out to test them would throw away every handle a row
+    // still in flight is holding.
+    let reusable = spare
+        .iter()
+        .position(|handle| Arc::strong_count(handle) == 1);
+    if let Some(index) = reusable {
+        let mut handle = spare.swap_remove(index);
+        drop(spare);
+        if let Some(row) = Arc::get_mut(&mut handle)
+            && let Some(mut coeffs) = row.0.take()
+        {
+            crate::support::buffer_pool::recycle(&mut coeffs);
+        }
+        return handle;
+    }
+    drop(spare);
+    Arc::new(RowCoeffs(OnceLock::new()))
+}
+
+/// Offers a spent handle back, for the next row.
+fn retire_handle(handle: CoeffBatch) {
+    let mut spare = spare_handles()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if spare.len() < MAX_SPARE_HANDLES {
+        spare.push(handle);
+    }
+}
+
 thread_local! {
     /// Coefficients parsed so far for the row open on this worker.
     static PARSE_ARENA: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
@@ -70,10 +117,8 @@ thread_local! {
 pub(crate) fn batch() -> CoeffBatch {
     PARSE_BATCH.with(|batch| {
         batch.try_borrow_mut().map_or_else(
-            |_| Arc::new(RowCoeffs(OnceLock::new())),
-            |mut batch| {
-                Arc::clone(batch.get_or_insert_with(|| Arc::new(RowCoeffs(OnceLock::new()))))
-            },
+            |_| new_handle(),
+            |mut batch| Arc::clone(batch.get_or_insert_with(new_handle)),
         )
     })
 }
@@ -119,6 +164,7 @@ pub(crate) fn seal() {
             && let Some(open) = batch.take()
         {
             let _ = open.0.set(coeffs);
+            retire_handle(open);
         }
     });
 }
