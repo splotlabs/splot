@@ -45,13 +45,25 @@ fn with_spares<T: Send + 'static, R>(act: impl FnOnce(&mut Spares<T>) -> R) -> R
 /// every one the pipeline holds at once or the next frame allocates again. The
 /// bound is per element type, and a type that never grows that deep simply
 /// never fills it.
-const MAX_SPARES_PER_TYPE: usize = 2048;
+const MAX_SPARES_PER_TYPE: usize = 512;
 
 /// Takes a spare buffer able to hold `cells` items, or an empty one.
 ///
 /// Each element type has its own reserve, so a buffer is only ever reused for
 /// the same kind of data and grows at most to the stream's largest frame.
 pub(crate) fn take<T: Send + 'static>(cells: usize) -> Vec<T> {
+    let Some(buffer) = take_fitting::<T>(cells) else {
+        // No spare fits: reserve the whole request in one step rather than
+        // hand back an empty list for the caller to grow one doubling at a
+        // time, which spends an allocation on every rung.
+        let mut fresh = Vec::new();
+        fresh.try_reserve_exact(cells).ok();
+        return fresh;
+    };
+    buffer
+}
+
+fn take_fitting<T: Send + 'static>(cells: usize) -> Option<Vec<T>> {
     with_spares::<T, _>(|spares| {
         // Best fit, not first fit: handing a frame-sized buffer to a row-sized
         // request would keep the larger allocation for the smaller job, and
@@ -64,7 +76,6 @@ pub(crate) fn take<T: Send + 'static>(cells: usize) -> Vec<T> {
             .map(|(index, _)| index)?;
         Some(spares.swap_remove(index))
     })
-    .unwrap_or_default()
 }
 
 /// Retains a retired buffer for the next frame that wants this shape.
