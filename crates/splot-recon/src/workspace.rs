@@ -1459,6 +1459,17 @@ pub struct CurrentFramePlane<T: ReconSample> {
     samples: Vec<T>,
 }
 
+/// Hands the plane's samples back to the store when it is not frozen.
+///
+/// A frozen plane's buffer goes on to a [`crate::Plane`], which returns it
+/// itself; one that never freezes -- a workspace dropped between frames --
+/// would otherwise take from the store and never give back.
+impl<T: ReconSample> Drop for CurrentFramePlane<T> {
+    fn drop(&mut self) {
+        crate::plane_buffers::recycle(core::mem::take(&mut self.samples));
+    }
+}
+
 impl<T: ReconSample> CurrentFramePlane<T> {
     fn new(
         plane: PlaneId,
@@ -1765,13 +1776,13 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         )
     }
 
-    fn freeze(self) -> Result<Plane<T>> {
+    fn freeze(mut self) -> Result<Plane<T>> {
         let stride_samples = self.stride_samples();
         Plane::from_vec(
             self.storage_size,
             stride_samples,
             self.visible_rect,
-            self.samples,
+            core::mem::take(&mut self.samples),
         )
     }
 
