@@ -322,6 +322,14 @@ impl<T: ReconSample> SurfaceSource<T> {
     }
 }
 
+/// Hands a finished tile's row list back to the decode's context store.
+impl<T: ReconSample> Drop for TileRecon<T> {
+    fn drop(&mut self) {
+        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        crate::support::buffer_pool::recycle(&mut rows);
+    }
+}
+
 impl<T: ReconSample> TileRecon<T> {
     fn batch_range(&self, index: usize) -> Option<core::ops::Range<usize>> {
         self.batches.get(index).cloned()
@@ -1441,7 +1449,14 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let resolve_state = TileResolveState::new(&sequence);
     let tile = ScheduledTileRecon {
         recon: TileRecon {
-            rows: Mutex::new(Vec::new()),
+            // Exactly the units this tile will materialise: the list is filled
+            // one unit at a time, so an empty one is re-grown every frame.
+            rows: Mutex::new({
+                let mut rows = crate::support::buffer_pool::take(unit_count);
+                rows.clear();
+                rows.reserve(unit_count.saturating_sub(rows.capacity()));
+                rows
+            }),
             prepared: Mutex::new(prepared),
             spare_batches: Mutex::new(Vec::new()),
             unit_count,
