@@ -1357,7 +1357,7 @@ where
                             let result = frame_pipeline::schedule_entropy(
                                 move |publish_early| {
                                     let _scopes = quantizer.install_frame();
-                                    inter::parse_inter_frame(
+                                    let (early, pending) = inter::parse_inter_frame_prologue(
                                         records,
                                         plan,
                                         next_candidate,
@@ -1371,8 +1371,9 @@ where
                                         geometry,
                                         &motion,
                                         &parse_progress,
-                                        publish_early,
-                                    )
+                                    )?;
+                                    publish_early(early);
+                                    pending.run()
                                 },
                                 frame_index,
                                 frame_cdfs,
@@ -1583,7 +1584,7 @@ where
                             let result = frame_pipeline::schedule_entropy(
                                 move |publish_early| {
                                     let _scopes = quantizer.install_frame();
-                                    inter::parse_inter_frame(
+                                    let (early, pending) = inter::parse_inter_frame_prologue(
                                         records,
                                         plan,
                                         next_candidate,
@@ -1597,8 +1598,9 @@ where
                                         geometry,
                                         &motion,
                                         &parse_progress,
-                                        publish_early,
-                                    )
+                                    )?;
+                                    publish_early(early);
+                                    pending.run()
                                 },
                                 frame_index,
                                 frame_cdfs,
