@@ -149,11 +149,16 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             out.extend(self.settle.conditions());
             return;
         }
-        out.extend(self.lists.iter().zip(bounds.needs).filter_map(|(slot, need)| {
-            (need != 0)
-                .then(|| slot.map(|slot| slot.row_condition(need as usize)))
-                .flatten()
-        }));
+        out.extend(
+            self.lists
+                .iter()
+                .zip(bounds.needs)
+                .filter_map(|(slot, need)| {
+                    (need != 0)
+                        .then(|| slot.map(|slot| slot.row_condition(need as usize)))
+                        .flatten()
+                }),
+        );
     }
 
     /// Whether every named reference frame has settled, which admits every row.
