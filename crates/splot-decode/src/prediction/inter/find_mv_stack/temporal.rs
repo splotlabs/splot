@@ -645,6 +645,13 @@ struct ProjectedTemporalMotionField {
     cells: Vec<ProjectedTemporalMotionCell>,
 }
 
+/// Hands a spent projection's cells back to the decode's context store.
+impl Drop for ProjectedTemporalMotionField {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.cells);
+    }
+}
+
 impl ProjectedTemporalMotionField {
     #[cfg(test)]
     fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
@@ -663,6 +670,15 @@ impl ProjectedTemporalMotionField {
             .width8
             .checked_mul(self.height8)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        if self.cells.capacity() < cells {
+            // A projection that outgrew its buffer takes one already this size
+            // rather than growing, so the old one serves the next frame that
+            // wants that shape instead of being freed.
+            let mut roomier = crate::support::buffer_pool::take(cells);
+            roomier.clear();
+            crate::support::buffer_pool::recycle(&mut self.cells);
+            self.cells = roomier;
+        }
         self.cells
             .try_reserve_exact(cells.saturating_sub(self.cells.len()))
             .map_err(|_| {
@@ -923,7 +939,7 @@ impl TemporalBandPlan {
         }
         let result = TemporalBandResult {
             row_base8: rows.start,
-            field: field.cells,
+            field: core::mem::take(&mut field.cells),
             trajectories: trajectories.map(OwnedTrajectoryBand::finish),
         };
         let banded = context
