@@ -72,13 +72,13 @@ fn spare_handles() -> &'static Mutex<Vec<CoeffBatch>> {
 }
 
 /// A handle for a new row, reusing one whose blocks have all been replayed.
+///
+/// The reserve is searched rather than popped: a handle a row still in flight
+/// is holding must be left where it is, not taken out to be tested and lost.
 fn new_handle() -> CoeffBatch {
     let mut spare = spare_handles()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    // Look for one whose blocks have all been replayed, and leave the rest
-    // alone: taking them out to test them would throw away every handle a row
-    // still in flight is holding.
     let reusable = spare
         .iter()
         .position(|handle| Arc::strong_count(handle) == 1);

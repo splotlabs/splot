@@ -60,13 +60,14 @@ const fn class_bytes(class: usize) -> usize {
 }
 
 /// The size class serving `layout`, or `None` when it must go through.
+///
+/// Finds the octave the size falls in, then which quarter of it, rounding up
+/// so the block handed out is never smaller than the request.
 fn class_of(layout: Layout) -> Option<usize> {
     if layout.align() > POOL_ALIGN || layout.size() > MAX_CLASS_BYTES {
         return None;
     }
     let size = layout.size().max(POOL_ALIGN);
-    // The octave `size` falls in, then which quarter of it, rounding up so the
-    // block is never smaller than the request.
     let octave = (usize::BITS - 1 - size.leading_zeros()) - MIN_CLASS_SHIFT;
     let base = 1usize << (MIN_CLASS_SHIFT + octave);
     let step = base / CLASS_STEPS as usize;
@@ -123,9 +124,8 @@ struct Central {
     len: core::cell::UnsafeCell<usize>,
 }
 
-/// `locked` guards every access to `blocks` and `len`, and a parked address is
+/// Safety: `locked` guards every access to `blocks` and `len`, and a parked address is
 /// owned by no thread.
-// SAFETY: as documented directly above.
 unsafe impl Sync for Central {}
 
 impl Central {
@@ -151,11 +151,8 @@ impl Central {
         {
             core::hint::spin_loop();
         }
-        // SAFETY: the lock is held, so no other thread is inside `act`.
-        let blocks = unsafe { &mut *self.blocks.get() };
-        // SAFETY: as above.
-        let len = unsafe { &mut *self.len.get() };
-        let result = act(blocks, len);
+        // SAFETY: the lock is held, and the two cells are distinct fields.
+        let result = unsafe { act(&mut *self.blocks.get(), &mut *self.len.get()) };
         self.locked.store(false, Ordering::Release);
         result
     }
@@ -208,77 +205,69 @@ const fn max_central(class: usize) -> usize {
 /// Size-class free lists in front of the system allocator.
 pub struct PoolAlloc;
 
-/// Every pointer handed out is one the system allocator returned for this
+/// Safety: every pointer handed out is one the system allocator returned for this
 /// class's layout, or one off a free list, which only ever holds blocks
 /// allocated with that same layout and not currently lent out.
-// SAFETY: as documented directly above.
 unsafe impl GlobalAlloc for PoolAlloc {
+    /// Safety: as [`GlobalAlloc::alloc`], `layout` must have a non-zero size.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let Some(class) = class_of(layout) else {
-            // SAFETY: the caller's contract for a non-zero layout is unchanged.
-            return unsafe { System.alloc(layout) };
-        };
-        let pooled = FREE_LISTS
-            .try_with(|lists| {
-                let head = lists[class].get();
-                if head.is_null() {
-                    return ptr::null_mut();
-                }
-                // SAFETY: a listed block holds its successor in its first word.
-                let next = unsafe { ptr::read(head.cast::<*mut u8>()) };
-                lists[class].set(next);
-                let _ = FREE_COUNTS.try_with(|counts| {
-                    counts[class].set(counts[class].get().saturating_sub(1));
-                });
-                head
-            })
-            .unwrap_or(ptr::null_mut());
-        if !pooled.is_null() {
-            return pooled;
+        let class = class_of(layout).filter(|&class| class_layout(class).is_some());
+        if let Some(class) = class {
+            let pooled = FREE_LISTS
+                .try_with(|lists| {
+                    let head = lists[class].get();
+                    if head.is_null() {
+                        return ptr::null_mut();
+                    }
+                    // SAFETY: a listed block holds its successor in its first word.
+                    let next = unsafe { ptr::read(head.cast::<*mut u8>()) };
+                    lists[class].set(next);
+                    let _ = FREE_COUNTS.try_with(|counts| {
+                        counts[class].set(counts[class].get().saturating_sub(1));
+                    });
+                    head
+                })
+                .unwrap_or(ptr::null_mut());
+            if !pooled.is_null() {
+                return pooled;
+            }
+            let shared = CENTRAL[class].pop();
+            if !shared.is_null() {
+                return shared;
+            }
         }
-        let shared = CENTRAL[class].pop();
-        if !shared.is_null() {
-            return shared;
-        }
-        let Some(block) = class_layout(class) else {
-            // SAFETY: as above.
-            return unsafe { System.alloc(layout) };
-        };
-        // SAFETY: `block` is a valid non-zero layout for this class.
+        let block = class.and_then(class_layout).unwrap_or(layout);
+        // SAFETY: `block` is this class's layout, or the caller's own.
         unsafe { System.alloc(block) }
     }
 
+    /// Safety: as [`GlobalAlloc::dealloc`], `ptr` must be a block this
+    /// allocator returned for `layout`, which fixes the class it returns to.
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let Some(class) = class_of(layout) else {
-            // SAFETY: `ptr` came from `System` for this same layout.
-            unsafe { System.dealloc(ptr, layout) };
-            return;
-        };
-        let cached = FREE_COUNTS
-            .try_with(|counts| {
-                if counts[class].get() >= max_cached(class) {
-                    return false;
-                }
-                FREE_LISTS
-                    .try_with(|lists| {
-                        // SAFETY: the block is ours while it is not lent out.
-                        unsafe { ptr::write(ptr.cast::<*mut u8>(), lists[class].get()) };
-                        lists[class].set(ptr);
-                        counts[class].set(counts[class].get().saturating_add(1));
-                        true
-                    })
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if cached || CENTRAL[class].push(ptr, max_central(class)) {
+        let class = class_of(layout).filter(|&class| class_layout(class).is_some());
+        let cached = class.is_some_and(|class| {
+            FREE_COUNTS
+                .try_with(|counts| {
+                    if counts[class].get() >= max_cached(class) {
+                        return false;
+                    }
+                    FREE_LISTS
+                        .try_with(|lists| {
+                            // SAFETY: the block is ours while it is not lent out.
+                            unsafe { ptr::write(ptr.cast::<*mut u8>(), lists[class].get()) };
+                            lists[class].set(ptr);
+                            counts[class].set(counts[class].get().saturating_add(1));
+                            true
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        });
+        if cached || class.is_some_and(|class| CENTRAL[class].push(ptr, max_central(class))) {
             return;
         }
-        let Some(block) = class_layout(class) else {
-            // SAFETY: as above.
-            unsafe { System.dealloc(ptr, layout) };
-            return;
-        };
-        // SAFETY: a pooled block was allocated with exactly this layout.
+        let block = class.and_then(class_layout).unwrap_or(layout);
+        // SAFETY: `block` is the layout this pointer was allocated with.
         unsafe { System.dealloc(ptr, block) };
     }
 }

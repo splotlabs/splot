@@ -638,8 +638,6 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
 
     let commit = Mutex::new(Some(commit));
     let error = Mutex::new(None);
-    // Boxed jobs only: this tile-local scheduler has no shape worth naming,
-    // unlike the frame pipeline's four.
     let scheduler: AdmissionScheduler<'_, splot_parallel::NoTask> = AdmissionScheduler::new();
     let admission_window = splot_parallel::current_pool_width()
         .saturating_sub(1)
@@ -1449,8 +1447,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let resolve_state = TileResolveState::new(&sequence);
     let tile = ScheduledTileRecon {
         recon: TileRecon {
-            // Exactly the units this tile will materialise: the list is filled
-            // one unit at a time, so an empty one is re-grown every frame.
             rows: Mutex::new({
                 let mut rows = crate::support::buffer_pool::take(unit_count);
                 rows.clear();

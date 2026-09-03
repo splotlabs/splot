@@ -663,6 +663,9 @@ impl ProjectedTemporalMotionField {
         })
     }
 
+    /// Sizes the field for the frame, taking a roomier buffer from the store
+    /// rather than growing this one, so the old one serves the next frame that
+    /// wants its shape instead of being freed.
     fn reset(&mut self, mi_rows: usize, mi_cols: usize) -> crate::Result<()> {
         self.width8 = mi_cols.div_ceil(2);
         self.height8 = mi_rows.div_ceil(2);
@@ -671,9 +674,6 @@ impl ProjectedTemporalMotionField {
             .checked_mul(self.height8)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         if self.cells.capacity() < cells {
-            // A projection that outgrew its buffer takes one already this size
-            // rather than growing, so the old one serves the next frame that
-            // wants that shape instead of being freed.
             let mut roomier = crate::support::buffer_pool::take(cells);
             roomier.clear();
             crate::support::buffer_pool::recycle(&mut self.cells);

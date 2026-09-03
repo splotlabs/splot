@@ -47,15 +47,15 @@ fn with_spares<T: Send + 'static, R>(act: impl FnOnce(&mut Spares<T>) -> R) -> R
 /// never fills it.
 const MAX_SPARES_PER_TYPE: usize = 512;
 
-/// Takes a spare buffer able to hold `cells` items, or an empty one.
+/// Takes a spare buffer able to hold `cells` items, or a fresh one.
 ///
 /// Each element type has its own reserve, so a buffer is only ever reused for
 /// the same kind of data and grows at most to the stream's largest frame.
+/// When no spare fits, the whole request is reserved in one step: handing back
+/// an empty list leaves the caller to grow it a doubling at a time, spending
+/// an allocation on every rung.
 pub(crate) fn take<T: Send + 'static>(cells: usize) -> Vec<T> {
     let Some(buffer) = take_fitting::<T>(cells) else {
-        // No spare fits: reserve the whole request in one step rather than
-        // hand back an empty list for the caller to grow one doubling at a
-        // time, which spends an allocation on every rung.
         let mut fresh = Vec::new();
         fresh.try_reserve_exact(cells).ok();
         return fresh;
@@ -63,11 +63,11 @@ pub(crate) fn take<T: Send + 'static>(cells: usize) -> Vec<T> {
     buffer
 }
 
+/// The smallest spare that fits, so a frame-sized buffer is never spent on a
+/// row-sized request -- which would keep the larger allocation for the smaller
+/// job and ratchet every buffer up to the largest the stream needs.
 fn take_fitting<T: Send + 'static>(cells: usize) -> Option<Vec<T>> {
     with_spares::<T, _>(|spares| {
-        // Best fit, not first fit: handing a frame-sized buffer to a row-sized
-        // request would keep the larger allocation for the smaller job, and
-        // every buffer would ratchet up to the largest the stream ever needs.
         let index = spares
             .iter()
             .enumerate()
