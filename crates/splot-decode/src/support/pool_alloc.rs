@@ -84,7 +84,7 @@ fn class_of(layout: Layout) -> Option<usize> {
 ///
 /// Small on purpose: this bound is per worker, so it multiplies by the pool
 /// width. The shared tier below is where the depth lives.
-const MAX_CACHED_BYTES_PER_CLASS: usize = 1 << 14;
+const MAX_CACHED_BYTES_PER_CLASS: usize = 1 << 12;
 
 /// Blocks a worker keeps for one class, at least a couple however large.
 const fn max_cached(class: usize) -> usize {

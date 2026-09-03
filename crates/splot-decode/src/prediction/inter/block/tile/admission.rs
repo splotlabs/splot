@@ -832,28 +832,30 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let terminal = submitted_batches
         .checked_sub(1)
         .and_then(|last| committed.get(last));
-    while terminal.is_some_and(|done| !done.is_set()) {
-        let progress = splot_parallel::pool_progress_snapshot();
-        if !references_settled && row_gate.is_ready() {
-            references_settled = true;
-            if let Err(value) = row_gate.wait() {
-                record_first_error(&error, value);
+    // One scope for the whole drain, not one per turn: a Rayon scope allocates,
+    // and the submission loop above already admits into a scope it holds open.
+    splot_parallel::ready_task_scope(|scope| {
+        while terminal.is_some_and(|done| !done.is_set()) {
+            let progress = splot_parallel::pool_progress_snapshot();
+            if !references_settled && row_gate.is_ready() {
+                references_settled = true;
+                if let Err(value) = row_gate.wait() {
+                    record_first_error(&error, value);
+                }
             }
-        }
-        splot_parallel::ready_task_scope(|scope| {
             scheduler.admit_ready(scope);
-        })?;
-        if terminal.is_none_or(CompletionCell::is_set) {
-            break;
+            if terminal.is_none_or(CompletionCell::is_set) {
+                break;
+            }
+            if !references_settled && row_gate.is_ready() {
+                continue;
+            }
+            if references_settled {
+                break;
+            }
+            splot_parallel::assist_pool_or_park(&progress);
         }
-        if !references_settled && row_gate.is_ready() {
-            continue;
-        }
-        if references_settled {
-            break;
-        }
-        splot_parallel::assist_pool_or_park(&progress);
-    }
+    })?;
     let scheduler_result = scheduler.finish();
     if let Some(error) = error.lock().unwrap_or_else(PoisonError::into_inner).take() {
         return Err(error);
