@@ -47,13 +47,16 @@ const BANNED_BYTE_CRATES: &[&str] = &[
     "arrayvec",
 ];
 
-/// Decoder modules allowed to own the reviewed raw-pointer implementation of
-/// disjoint direct frame/filter leases. Every other media module remains under
-/// the workspace-wide unsafe ban enforced below.
+/// Modules allowed to own a reviewed `unsafe` implementation: the disjoint
+/// direct frame/filter leases, the size-class block pool behind the global
+/// allocator, and one frame's temporal cells lent to bands as disjoint ranges.
+/// Every one still needs a safety rationale beside each use, and every other
+/// media module remains under the workspace-wide unsafe ban enforced below.
 const AUDITED_UNSAFE_MEDIA_MODULES: &[&str] = &[
     "crates/splot-decode/src/filters/source.rs",
     "crates/splot-decode/src/pipeline/frame_progress.rs",
     "crates/splot-decode/src/support/pool_alloc.rs",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal/shared_cells.rs",
 ];
 
 /// Exact type names treated as large media storage: a `Clone` derive/impl on any

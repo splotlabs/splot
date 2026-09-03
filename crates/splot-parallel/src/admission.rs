@@ -19,22 +19,22 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use std::sync::atomic::{AtomicBool, Ordering};
 //! use splot_parallel::{
-//!     AdmissionScheduler, CompletionCell, Condition, ThreadCount, WatermarkCell, WorkerPool,
-//!     ready_task_scope,
+//!     AdmissionScheduler, CompletionCell, Condition, Job, NoTask, ThreadCount, WatermarkCell,
+//!     WorkerPool, ready_task_scope,
 //! };
 //!
 //! let pool = WorkerPool::new(ThreadCount::from(2usize))?;
 //! let parsed = CompletionCell::new();
 //! let rows = WatermarkCell::new();
 //! let ran = AtomicBool::new(false);
-//! let scheduler = AdmissionScheduler::new();
+//! let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
 //! pool.install(|| {
 //!     ready_task_scope(|scope| {
 //!         scheduler.submit(
 //!             scope,
 //!             0,
 //!             &[Condition::completion(&parsed), Condition::watermark(&rows, 2)],
-//!             Box::new(|_| ran.store(true, Ordering::Release)),
+//!             Job::Boxed(Box::new(|_| ran.store(true, Ordering::Release))),
 //!         );
 //!         assert!(parsed.set(()).is_ok());
 //!         rows.publish(2);

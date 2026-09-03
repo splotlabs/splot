@@ -45,10 +45,10 @@ impl SharedTemporalCells {
     )]
     #[inline(always)]
     pub(super) fn range(&self, start: usize, len: usize) -> Option<&[TemporalMotionCell]> {
-        // SAFETY: `start..start + len` is this band's own range, disjoint from
-        // every other band's, so the shared borrow never aliases another band's
-        // cells; a published band is only ever read. The slice index below is
-        // the only bounds check needed — `self.len` is that slice's length.
+        // A published band is only ever read, and the slice index below is the
+        // only bounds check needed -- `self.len` is that slice's length.
+        // SAFETY: this band's range is disjoint from every other band's, so the
+        // shared borrow never aliases another band's cells.
         let cells: &[TemporalMotionCell] = unsafe { &*self.cells.get() };
         cells.get(start..start.checked_add(len)?)
     }
