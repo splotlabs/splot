@@ -97,6 +97,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         mut motion_grids,
         mut flag_log,
         filter_records: mut row_filter_records,
+        mut residual_planes,
         ..
     } = row;
     for superblock in &superblocks {
@@ -131,6 +132,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                 match command {
                     ReconCommand::GeneralIntra(command) => {
                         command.reconstruct(
+                            &mut residual_planes,
                             scratch.general_intra_mut(),
                             workspace,
                             block_decoded,
@@ -203,6 +205,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     }
     append_row_filter_records(filter_records, &mut row_filter_records);
     *decoded_any |= row_has_entries;
+    residual_planes.clear();
     superblocks.clear();
     entries.clear();
     residual_blocks.clear();
@@ -217,5 +220,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         motion_grids,
         flag_log,
         filter_records: row_filter_records,
+        residual_planes,
     })
 }

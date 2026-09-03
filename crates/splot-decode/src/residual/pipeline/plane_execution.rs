@@ -22,22 +22,32 @@ use super::plan::MAX_DEFERRED_CHROMA_PLANES;
 use super::transform_units::tx_size_log2;
 use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePlan, chroma_pair};
 
+/// One block's planes, as a range of the row's arena.
+///
+/// A list per block cost an allocation for every general-intra block until the
+/// pools saturated, because the pipeline holds a whole frame's blocks at once.
+/// The row already outlives them all -- the commit spine replays it later --
+/// so its blocks share one arena and keep a range into it, the way they share
+/// one coefficient buffer.
 pub(crate) struct ParsedGeneralIntraResidual {
-    planes: Vec<ParsedResidualPlane>,
+    planes: core::ops::Range<u32>,
 }
 
-/// Takes a block's plane list from the decode's context store.
-fn take_pooled_planes(capacity: usize) -> Vec<ParsedResidualPlane> {
-    crate::support::buffer_pool::take(capacity)
+/// The planes a row's blocks have parsed so far.
+pub(crate) type ResidualPlaneArena = Vec<Option<ParsedResidualPlane>>;
+
+/// Appends a block's planes to the row's arena.
+struct ArenaPlanes<'a> {
+    arena: &'a mut ResidualPlaneArena,
 }
 
-impl Drop for ParsedGeneralIntraResidual {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.planes);
+impl ArenaPlanes<'_> {
+    fn push(&mut self, plane: ParsedResidualPlane) {
+        self.arena.push(Some(plane));
     }
 }
 
-pub(super) struct ParsedResidualPlane {
+pub(crate) struct ParsedResidualPlane {
     pub(super) plane: ResidualPlanePlan,
     pub(super) kind: ParsedResidualPlaneKind,
     pub(super) cctx_role: CctxRole,
@@ -88,10 +98,12 @@ impl GeneralIntraResidualPlan {
         luma_tx_partition_context: Option<LumaTransformPartitionContext>,
         transform_tool_residual_policy: TransformToolResidualPolicy,
         deblock: &mut DeblockRecorder<'_>,
+        arena: &mut ResidualPlaneArena,
     ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
         let mut u_nonzero = false;
         let mut pending_u = false;
-        let mut planes = take_pooled_planes(self.planes.len());
+        let start = u32::try_from(arena.len()).unwrap_or(u32::MAX);
+        let mut planes = ArenaPlanes { arena };
         for &plane in self.planes.iter() {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
@@ -145,7 +157,8 @@ impl GeneralIntraResidualPlan {
             }
             planes.push(parsed);
         }
-        Ok(ParsedGeneralIntraResidual { planes })
+        let end = u32::try_from(planes.arena.len()).unwrap_or(u32::MAX);
+        Ok(ParsedGeneralIntraResidual { planes: start..end })
     }
 }
 
@@ -395,8 +408,10 @@ impl ResidualPlanePlan {
 }
 
 impl ParsedGeneralIntraResidual {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<T: ReconSample>(
-        mut self,
+        self,
+        arena: &mut ResidualPlaneArena,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut TileBlockDecodedState,
@@ -409,7 +424,13 @@ impl ParsedGeneralIntraResidual {
             .with(Cell::take)
             .unwrap_or_else(|| Vec::with_capacity(MAX_DEFERRED_CHROMA_PLANES));
         deferred.clear();
-        for plane in self.planes.drain(..) {
+        let range = self.planes.start as usize..self.planes.end as usize;
+        for plane in arena
+            .get_mut(range)
+            .unwrap_or_default()
+            .iter_mut()
+            .filter_map(Option::take)
+        {
             match plane.cctx_role {
                 CctxRole::HoldU => {
                     pending_u = Some(plane);

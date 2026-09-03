@@ -30,12 +30,12 @@ use crate::bitstream::tile_payload::{
 pub(crate) use deblock_recorder::DeblockRecorder;
 #[cfg(test)]
 use plan::{MAX_RESIDUAL_PLANES, coeff_plane};
-pub(crate) use plane_execution::ParsedGeneralIntraResidual;
 #[cfg(test)]
 use plane_execution::{
     CctxRole, ParsedResidualPlane, ParsedResidualPlaneKind, ParsedTransformUnit,
     chroma_angle_delta_uv,
 };
+pub(crate) use plane_execution::{ParsedGeneralIntraResidual, ResidualPlaneArena};
 #[cfg(test)]
 use splot_core::tables::conversion::TX_WIDTH_LOG2;
 #[cfg(test)]

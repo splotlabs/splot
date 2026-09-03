@@ -201,6 +201,8 @@ struct TileParser<'tile, 'payload> {
     y_smooth: crate::prediction::intra_edge::TileYSmoothGrid,
     chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
     filter_records: TileFilterRecords,
+    /// The planes this row's general-intra blocks have parsed.
+    residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     output: TileParserOutput,
     parser_ordinal: usize,
 }
@@ -371,6 +373,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             y_smooth,
             chroma_smooth,
             filter_records: TileFilterRecords::default(),
+            residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             output: TileParserOutput {
                 cdef_state,
                 gdf_state,
@@ -397,8 +400,10 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             motion_grids,
             flag_log,
             filter_records,
+            residual_planes,
         } = buffers.unwrap_or_default();
         self.filter_records = filter_records;
+        self.residual_planes = residual_planes;
         let mut recon_row = ReconRow {
             ordinal: self.parser_ordinal,
             superblocks,
@@ -408,6 +413,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             motion_grids,
             flag_log,
             filter_records: TileFilterRecords::default(),
+            residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             motion_folded: false,
             motion_derived: false,
             failure: ReconRowFailure::None,
@@ -468,6 +474,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         &mut self.filter_records.deblock_blocks,
                         &mut self.filter_records.chroma_deblock_blocks,
                         &mut self.filter_records.tx_skip_records,
+                        &mut self.residual_planes,
                         context.luma_use_tcq,
                         context.residual_use_ddt,
                         context.ref_frame_idx,
@@ -503,6 +510,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         // the commit spine replays those blocks later, possibly elsewhere.
         crate::bitstream::tile_payload::coeff_arena::seal();
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
+        recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
         match decoded_row {
             Ok(true) => ParserStep::More(recon_row),
@@ -766,6 +774,7 @@ pub(super) struct ReconRow {
     /// on a grid of its own. Empty unless the parser was logging.
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
+    pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// Whether the prepass already folded this unit's records into the frame's
     /// motion field, which it does for a unit it reconstructed in full.
     pub(super) motion_folded: bool,
@@ -854,6 +863,7 @@ pub(super) struct ReconRowBuffers {
     pub(super) motion_grids: Vec<Option<super::super::mc::CompoundMotionGrid>>,
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
+    pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
 }
 
 struct ReconRowBufferPool {

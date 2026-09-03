@@ -66,6 +66,7 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         motion_grids: Vec::new(),
         flag_log: Vec::new(),
         filter_records: TileFilterRecords::default(),
+        residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         motion_folded: false,
         motion_derived: false,
         failure: ReconRowFailure::Terminal(malformed_tile_error(offset)),
