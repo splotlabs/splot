@@ -72,6 +72,7 @@ pub use stream_plan::{
     DecodePlannedObuRole, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamInput,
     DecodeStreamPlan, DecodeUnsupportedReason, DecodeUnsupportedStructure,
 };
+pub use support::pool_alloc::PoolAlloc;
 
 use core::fmt;
 

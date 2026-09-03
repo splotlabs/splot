@@ -53,6 +53,7 @@ const BANNED_BYTE_CRATES: &[&str] = &[
 const AUDITED_UNSAFE_MEDIA_MODULES: &[&str] = &[
     "crates/splot-decode/src/filters/source.rs",
     "crates/splot-decode/src/pipeline/frame_progress.rs",
+    "crates/splot-decode/src/support/pool_alloc.rs",
 ];
 
 /// Exact type names treated as large media storage: a `Clone` derive/impl on any

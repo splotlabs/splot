@@ -13,6 +13,14 @@ use clap::{Parser, Subcommand};
 
 mod commands;
 
+/// Serves the decode's short-lived buffers from size-class free lists.
+///
+/// The decoder's own pools keep its frame-scale buffers alive across frames;
+/// this catches the traffic below them, which is spread over too many
+/// short-lived owners to reach one at a time.
+#[global_allocator]
+static ALLOCATOR: splot_decode::PoolAlloc = splot_decode::PoolAlloc;
+
 /// splot — an AV2 bitstream validator, inspector, and experimental decoder.
 #[derive(Parser, Debug)]
 #[command(
