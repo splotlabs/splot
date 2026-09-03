@@ -194,14 +194,12 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         let y_size = PlaneSize::new(luma.width(), luma.height())?;
         let chroma_size = info.pixel_format().chroma_size(luma)?;
         let chroma_rect = match chroma_size {
-            Some(size) => subsampled_rects(
-                &[luma_rect],
+            Some(size) => Some(super::subsampled_rect(
+                luma_rect,
                 info.pixel_format().subsampling_x(),
                 info.pixel_format().subsampling_y(),
                 size,
-            )?
-            .into_iter()
-            .next(),
+            )?),
             None => None,
         };
         let y = OwnedFramePlaneRect::new(PlaneId::Y, y_size, luma_rect, 0)?;

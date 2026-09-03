@@ -919,6 +919,41 @@ fn partition_plane_rects<'a, T: ReconSample>(
     Ok(surfaces)
 }
 
+/// The chroma rectangle covering one luma rectangle.
+///
+/// The rectangle form exists because callers that want a single rectangle
+/// vastly outnumber the one that partitions a whole frame, and building a
+/// `Vec` to take its first element was one allocation per rectangle.
+pub(crate) fn subsampled_rect(
+    rect: PlaneRect,
+    shift_x: u8,
+    shift_y: u8,
+    storage: PlaneSize,
+) -> Result<PlaneRect> {
+    let scale_x = 1usize << shift_x;
+    let scale_y = 1usize << shift_y;
+    let right = rect
+        .x()
+        .checked_add(rect.width())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "rectangle surface chroma right edge",
+        })?;
+    let bottom = rect
+        .y()
+        .checked_add(rect.height())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "rectangle surface chroma bottom edge",
+        })?;
+    let x = rect.x() / scale_x;
+    let y = rect.y() / scale_y;
+    PlaneRect::new(
+        x,
+        y,
+        right.div_ceil(scale_x).min(storage.width()) - x,
+        bottom.div_ceil(scale_y).min(storage.height()) - y,
+    )
+}
+
 fn subsampled_rects(
     rects: &[PlaneRect],
     shift_x: u8,
