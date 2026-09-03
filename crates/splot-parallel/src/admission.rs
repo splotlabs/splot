@@ -153,6 +153,13 @@ pub trait Admit<'job, F: Task<'job> = NoTask>: Sync {
 
 const CONTINUATION_BUDGET: usize = 8;
 
+/// Continuation slots the scheduler builds up front, one per worker.
+///
+/// A fixed count rather than the pool's width: the scheduler is usually built
+/// off a worker thread, where the width reads as one, and a single shared slot
+/// would put every worker's continuation through the same lock.
+const MAX_WORKER_CONTINUATIONS: usize = 64;
+
 struct OrderedJob<'job, F: Task<'job>> {
     order_key: u64,
     job: Job<'job, F>,
@@ -384,6 +391,12 @@ impl<'job, F: Task<'job>> Slots<'job, F> {
 pub struct AdmissionScheduler<'job, F: Task<'job> = NoTask> {
     slots: Mutex<Slots<'job, F>>,
     ready: Arc<ReadyQueue>,
+    /// One continuation slot per worker, built once.
+    ///
+    /// A slot per running job allocated its platform lock the first time that
+    /// job touched it. dav2d gives each worker one context and reuses it for
+    /// every task the worker runs; these are that context's continuation.
+    continuations: Vec<ContinuationSlot<'job, F>>,
 }
 
 impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
@@ -393,6 +406,9 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         Self {
             slots: Mutex::new(Slots::default()),
             ready: Arc::new(ReadyQueue::default()),
+            continuations: (0..MAX_WORKER_CONTINUATIONS)
+                .map(|_| ContinuationSlot::new())
+                .collect(),
         }
     }
 
@@ -452,15 +468,22 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         spawned
     }
 
+    /// This worker's continuation slot, or a shared one when it has no index.
+    fn worker_continuations(&self) -> &ContinuationSlot<'job, F> {
+        let index = crate::pool::current_worker_index().unwrap_or(0);
+        let count = self.continuations.len().max(1);
+        &self.continuations[index % count]
+    }
+
     fn run_job<'scope>(&'scope self, scope: &TaskScope<'_, 'scope>, mut job: Job<'job, F>)
     where
         'job: 'scope,
     {
-        let continuations = ContinuationSlot::new();
+        let continuations = self.worker_continuations();
         let admit = ScopeAdmit {
             scheduler: self,
             scope,
-            continuations: &continuations,
+            continuations,
         };
         let mut continued = 0;
         loop {

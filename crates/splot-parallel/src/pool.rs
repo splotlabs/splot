@@ -264,6 +264,13 @@ pub fn assist_pool_once() -> bool {
 ///
 /// A retention bound built on this scales with the pool only for calls made on
 /// a worker; a caller outside the pool reads `1` and so gets the bound's floor.
+/// This worker's index in the pool, or `None` off a worker thread.
+#[must_use]
+pub(crate) fn current_worker_index() -> Option<usize> {
+    rayon::current_thread_index()
+}
+
+/// The width of the pool this call runs on, or `1` off a worker thread.
 #[must_use]
 pub fn current_pool_width() -> usize {
     if rayon::current_thread_index().is_some() {
