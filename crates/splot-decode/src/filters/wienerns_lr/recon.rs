@@ -28,13 +28,15 @@ const MI_SIZE: usize = 4;
 /// [`FrameProgress`]: crate::pipeline::frame_progress::FrameProgress
 struct FilteredFrameSink<'a, 'job, T: ReconSample> {
     progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-    admit: Option<&'a dyn splot_parallel::Admit<'job>>,
+    admit: Option<&'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>>,
 }
 
 impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
     fn open(
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&'a dyn splot_parallel::Admit<'job>>,
+        admit: Option<
+            &'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        >,
         info: splot_recon::DecodedFrameInfo,
         ranges: &[(usize, usize)],
     ) -> Result<Self> {
@@ -341,7 +343,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&'progress dyn splot_parallel::Admit<'job>>,
+        admit: Option<
+            &'progress dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        >,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
         Option<CurrentFrameWorkspace<T>>,
@@ -373,7 +377,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&'progress dyn splot_parallel::Admit<'job>>,
+        admit: Option<
+            &'progress dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        >,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
         Option<CurrentFrameWorkspace<T>>,
@@ -493,7 +499,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&dyn splot_parallel::Admit<'_>>,
+        admit: Option<&dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>>,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
         let (setup, workspace) =

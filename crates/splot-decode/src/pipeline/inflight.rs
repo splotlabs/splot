@@ -473,7 +473,10 @@ pub(super) fn settle_walk_stage<'job, 'scope, T: ReconSample + Send + 'static>(
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
     scope: &TaskScope<'_, 'scope>,
-    scheduler: &'scope splot_parallel::AdmissionScheduler<'job>,
+    scheduler: &'scope splot_parallel::AdmissionScheduler<
+        'job,
+        crate::pipeline::frame_pipeline::FrameTask,
+    >,
     lane: &mut super::frame_pipeline::ReconAdmissionLane,
     ring: &mut InflightRing,
     frame_index: usize,
@@ -561,7 +564,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     pub(crate) fn run_finish(
         self,
         walked: WalkedFrame<T>,
-        admit: Option<&dyn splot_parallel::Admit<'_>>,
+        admit: Option<&dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>>,
     ) {
         let Self {
             writer,

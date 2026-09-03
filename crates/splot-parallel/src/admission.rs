@@ -97,28 +97,65 @@ impl<'a> Condition<'a> {
     }
 }
 
+/// Work the scheduler stores in its slot rather than on the heap.
+///
+/// dav2d keeps a preallocated array of task records and dispatches on a kind
+/// tag; a boxed closure per task is the same thing with an allocation in front
+/// of it. A caller with a fixed set of job shapes names them here and pays
+/// nothing per task; anything else still boxes.
+pub trait Task<'job>: Send + Sized + 'job {
+    /// Runs this task.
+    fn run(self, admit: &dyn Admit<'job, Self>);
+}
+
+/// A job shape for callers that have none worth naming.
+pub enum NoTask {}
+
+impl<'job> Task<'job> for NoTask {
+    fn run(self, _admit: &dyn Admit<'job, Self>) {
+        match self {}
+    }
+}
+
+/// A job the scheduler had to put on the heap, because its shape is not named.
+type BoxedJob<'job, F> = Box<dyn for<'a> FnOnce(&'a dyn Admit<'job, F>) + Send + 'job>;
+
 /// A unit of deferred work.
-pub type Job<'job> = Box<dyn for<'a> FnOnce(&'a dyn Admit<'job>) + Send + 'job>;
+pub enum Job<'job, F: Task<'job> = NoTask> {
+    /// A named task, stored in the scheduler's slot.
+    Inline(F),
+    /// Anything else, on the heap.
+    Boxed(BoxedJob<'job, F>),
+}
+
+impl<'job, F: Task<'job>> Job<'job, F> {
+    fn run(self, admit: &dyn Admit<'job, F>) {
+        match self {
+            Self::Inline(task) => task.run(admit),
+            Self::Boxed(job) => job(admit),
+        }
+    }
+}
 
 /// Operations available to a running admitted job.
-pub trait Admit<'job>: Sync {
+pub trait Admit<'job, F: Task<'job> = NoTask>: Sync {
     /// Spawns all jobs that are admissible now.
     fn admit_ready(&self) -> usize;
     /// Submits a job under the same scheduler.
-    fn submit(&self, order_key: u64, conditions: &[Condition<'_>], job: Job<'job>);
+    fn submit(&self, order_key: u64, conditions: &[Condition<'_>], job: Job<'job, F>);
     /// Spawns a job already known to be ready, without a scheduler slot.
-    fn spawn_ready(&self, job: Job<'job>);
+    fn spawn_ready(&self, job: Job<'job, F>);
     /// Submits proven-ready jobs as one ordered scheduler entry.
-    fn submit_ready_batch(&self, order_key: u64, jobs: Vec<Job<'job>>);
+    fn submit_ready_batch(&self, order_key: u64, jobs: Vec<Job<'job, F>>);
     /// Records one serial successor for this worker.
-    fn continue_ready(&self, order_key: u64, job: Job<'job>);
+    fn continue_ready(&self, order_key: u64, job: Job<'job, F>);
 }
 
 const CONTINUATION_BUDGET: usize = 8;
 
-struct OrderedJob<'job> {
+struct OrderedJob<'job, F: Task<'job>> {
     order_key: u64,
-    job: Job<'job>,
+    job: Job<'job, F>,
 }
 
 /// The continuation a running job may leave for its own worker.
@@ -127,12 +164,12 @@ struct OrderedJob<'job> {
 /// and a platform lock is allocated the first time each one is locked, so a
 /// job that leaves no continuation -- most of them -- paid an allocation for a
 /// lock guarding a `None`.
-struct ContinuationSlot<'job> {
+struct ContinuationSlot<'job, F: Task<'job>> {
     pending: AtomicBool,
-    job: Mutex<Option<OrderedJob<'job>>>,
+    job: Mutex<Option<OrderedJob<'job, F>>>,
 }
 
-impl<'job> ContinuationSlot<'job> {
+impl<'job, F: Task<'job>> ContinuationSlot<'job, F> {
     fn new() -> Self {
         Self {
             pending: AtomicBool::new(false),
@@ -140,7 +177,7 @@ impl<'job> ContinuationSlot<'job> {
         }
     }
 
-    fn put(&self, next: OrderedJob<'job>) -> Result<(), OrderedJob<'job>> {
+    fn put(&self, next: OrderedJob<'job, F>) -> Result<(), OrderedJob<'job, F>> {
         let mut pending = self.job.lock().unwrap_or_else(PoisonError::into_inner);
         if pending.is_some() {
             return Err(next);
@@ -150,7 +187,7 @@ impl<'job> ContinuationSlot<'job> {
         Ok(())
     }
 
-    fn take(&self) -> Option<OrderedJob<'job>> {
+    fn take(&self) -> Option<OrderedJob<'job, F>> {
         if !self.pending.load(Ordering::Acquire) {
             return None;
         }
@@ -221,10 +258,10 @@ impl Waiter {
     }
 }
 
-struct Slot<'job> {
+struct Slot<'job, F: Task<'job>> {
     generation: u64,
     order_key: u64,
-    job: Option<Job<'job>>,
+    job: Option<Job<'job, F>>,
     waiter: Option<Arc<Waiter>>,
 }
 
@@ -235,20 +272,30 @@ struct Slot<'job> {
 /// the allocation can serve the next job instead of a fresh one.
 const MAX_SPARE_WAITERS: usize = 64;
 
-#[derive(Default)]
-struct Slots<'job> {
-    entries: Vec<Slot<'job>>,
+struct Slots<'job, F: Task<'job>> {
+    entries: Vec<Slot<'job, F>>,
     free: Vec<usize>,
     spare_waiters: Vec<Arc<Waiter>>,
     next_submission_order: u64,
 }
 
-impl<'job> Slots<'job> {
+impl<'job, F: Task<'job>> Default for Slots<'job, F> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            free: Vec::new(),
+            spare_waiters: Vec::new(),
+            next_submission_order: 0,
+        }
+    }
+}
+
+impl<'job, F: Task<'job>> Slots<'job, F> {
     fn store(
         &mut self,
         pending: usize,
         order_key: u64,
-        job: Job<'job>,
+        job: Job<'job, F>,
         ready: &Arc<ReadyQueue>,
     ) -> Arc<Waiter> {
         let (index, generation) = self.take_slot();
@@ -305,7 +352,7 @@ impl<'job> Slots<'job> {
         (index, 0)
     }
 
-    fn take_job(&mut self, entry: ReadyEntry) -> Option<Job<'job>> {
+    fn take_job(&mut self, entry: ReadyEntry) -> Option<Job<'job, F>> {
         let slot = self.entries.get_mut(entry.index)?;
         if slot.generation != entry.generation {
             return None;
@@ -320,7 +367,7 @@ impl<'job> Slots<'job> {
         Some(job)
     }
 
-    fn take_stranded(&mut self) -> Vec<(u64, Job<'job>)> {
+    fn take_stranded(&mut self) -> Vec<(u64, Job<'job, F>)> {
         let mut stranded = Vec::new();
         for (index, slot) in self.entries.iter_mut().enumerate() {
             if let Some(job) = slot.job.take() {
@@ -334,12 +381,12 @@ impl<'job> Slots<'job> {
 }
 
 /// A dependency-ordered admission scheduler over a task scope.
-pub struct AdmissionScheduler<'job> {
-    slots: Mutex<Slots<'job>>,
+pub struct AdmissionScheduler<'job, F: Task<'job> = NoTask> {
+    slots: Mutex<Slots<'job, F>>,
     ready: Arc<ReadyQueue>,
 }
 
-impl<'job> AdmissionScheduler<'job> {
+impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
     /// Creates an empty scheduler.
     #[must_use]
     pub fn new() -> Self {
@@ -361,7 +408,7 @@ impl<'job> AdmissionScheduler<'job> {
         scope: &TaskScope<'_, 'scope>,
         order_key: u64,
         conditions: &[Condition<'_>],
-        job: Job<'job>,
+        job: Job<'job, F>,
     ) where
         'job: 'scope,
     {
@@ -405,7 +452,7 @@ impl<'job> AdmissionScheduler<'job> {
         spawned
     }
 
-    fn run_job<'scope>(&'scope self, scope: &TaskScope<'_, 'scope>, mut job: Job<'job>)
+    fn run_job<'scope>(&'scope self, scope: &TaskScope<'_, 'scope>, mut job: Job<'job, F>)
     where
         'job: 'scope,
     {
@@ -417,7 +464,7 @@ impl<'job> AdmissionScheduler<'job> {
         };
         let mut continued = 0;
         loop {
-            job(&admit);
+            job.run(&admit);
             self.admit_ready(scope);
             let Some(next) = continuations.take() else {
                 return;
@@ -452,34 +499,34 @@ impl<'job> AdmissionScheduler<'job> {
     }
 }
 
-impl Default for AdmissionScheduler<'_> {
+impl<'job, F: Task<'job>> Default for AdmissionScheduler<'job, F> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-struct ScopeAdmit<'a, 'handle, 'scope, 'job> {
-    scheduler: &'scope AdmissionScheduler<'job>,
+struct ScopeAdmit<'a, 'handle, 'scope, 'job, F: Task<'job>> {
+    scheduler: &'scope AdmissionScheduler<'job, F>,
     scope: &'a TaskScope<'handle, 'scope>,
-    continuations: &'a ContinuationSlot<'job>,
+    continuations: &'a ContinuationSlot<'job, F>,
 }
 
-impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
+impl<'job, F: Task<'job>> Admit<'job, F> for ScopeAdmit<'_, '_, '_, 'job, F> {
     fn admit_ready(&self) -> usize {
         self.scheduler.admit_ready(self.scope)
     }
 
-    fn submit(&self, order_key: u64, conditions: &[Condition<'_>], job: Job<'job>) {
+    fn submit(&self, order_key: u64, conditions: &[Condition<'_>], job: Job<'job, F>) {
         self.scheduler
             .submit(self.scope, order_key, conditions, job);
     }
 
-    fn spawn_ready(&self, job: Job<'job>) {
+    fn spawn_ready(&self, job: Job<'job, F>) {
         let scheduler = self.scheduler;
         self.scope.spawn(move |scope| scheduler.run_job(scope, job));
     }
 
-    fn submit_ready_batch(&self, order_key: u64, mut jobs: Vec<Job<'job>>) {
+    fn submit_ready_batch(&self, order_key: u64, mut jobs: Vec<Job<'job, F>>) {
         match jobs.len() {
             0 => {}
             1 => {
@@ -491,16 +538,16 @@ impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
                 self.scope,
                 order_key,
                 &[],
-                Box::new(move |admit| {
+                Job::Boxed(Box::new(move |admit: &dyn Admit<'job, F>| {
                     for job in jobs {
                         admit.spawn_ready(job);
                     }
-                }),
+                })),
             ),
         }
     }
 
-    fn continue_ready(&self, order_key: u64, job: Job<'job>) {
+    fn continue_ready(&self, order_key: u64, job: Job<'job, F>) {
         let next = OrderedJob { order_key, job };
         if let Err(next) = self.continuations.put(next) {
             self.scheduler
@@ -512,6 +559,13 @@ impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
+
+    /// Wraps a test closure as a boxed job.
+    fn boxed<'job, F: Task<'job>>(
+        job: impl for<'a> FnOnce(&'a dyn Admit<'job, F>) + Send + 'job,
+    ) -> Job<'job, F> {
+        Job::Boxed(Box::new(job))
+    }
 
     use super::*;
     use crate::pool::{WorkerPool, ready_task_scope};
@@ -528,7 +582,7 @@ mod tests {
         for _ in 0..32 {
             let done = Arc::new(CompletionCell::new());
             let ran = AtomicUsize::new(0);
-            let scheduler = AdmissionScheduler::new();
+            let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
             let barrier = Arc::new(Barrier::new(2));
             let publish_done = Arc::clone(&done);
             let publish_barrier = Arc::clone(&barrier);
@@ -543,7 +597,7 @@ mod tests {
                         scope,
                         0,
                         &[Condition::completion(done.as_ref())],
-                        Box::new(|_| {
+                        boxed(|_| {
                             ran.fetch_add(1, Ordering::Relaxed);
                         }),
                     );
@@ -563,7 +617,7 @@ mod tests {
         let done = CompletionCell::completed(());
         let last = CompletionCell::new();
         let ran = AtomicUsize::new(0);
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
         pool(2).install(|| {
             ready_task_scope(|scope| {
                 scheduler.submit(
@@ -574,7 +628,7 @@ mod tests {
                         Condition::completion(&done),
                         Condition::completion(&last),
                     ],
-                    Box::new(|_| {
+                    boxed(|_| {
                         ran.fetch_add(1, Ordering::Relaxed);
                     }),
                 );
@@ -593,13 +647,13 @@ mod tests {
     #[test]
     fn stale_generation_cannot_take_a_reused_slot() {
         let ready = Arc::new(ReadyQueue::default());
-        let mut slots = Slots::default();
-        let first = slots.store(1, 0, Box::new(|_| {}), &ready);
+        let mut slots: Slots<'_, NoTask> = Slots::default();
+        let first = slots.store(1, 0, boxed(|_| {}), &ready);
         let stale = first.entry;
         first.satisfy();
         assert!(slots.take_job(ready.pop().unwrap()).is_some());
 
-        let second = slots.store(1, 1, Box::new(|_| {}), &ready);
+        let second = slots.store(1, 1, boxed(|_| {}), &ready);
         assert_eq!(second.entry.index, stale.index);
         assert_ne!(second.entry.generation, stale.generation);
         ready.push(stale);
@@ -614,7 +668,7 @@ mod tests {
         const JOBS: usize = 64;
         let rows = WatermarkCell::new();
         let visits: Vec<_> = (0..JOBS).map(|_| AtomicUsize::new(0)).collect();
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
         pool(4).install(|| {
             ready_task_scope(|scope| {
                 for (index, visit) in visits.iter().enumerate() {
@@ -622,7 +676,7 @@ mod tests {
                         scope,
                         index as u64,
                         &[Condition::watermark(&rows, 1)],
-                        Box::new(move |admit| {
+                        boxed(move |admit| {
                             visit.fetch_add(1, Ordering::Relaxed);
                             admit.admit_ready();
                         }),
@@ -644,11 +698,11 @@ mod tests {
     #[test]
     fn finish_reports_and_releases_stranded_jobs() {
         let gate = CompletionCell::<()>::new();
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
         pool(1).install(|| {
             ready_task_scope(|scope| {
-                scheduler.submit(scope, 9, &[Condition::completion(&gate)], Box::new(|_| {}));
-                scheduler.submit(scope, 4, &[Condition::completion(&gate)], Box::new(|_| {}));
+                scheduler.submit(scope, 9, &[Condition::completion(&gate)], boxed(|_| {}));
+                scheduler.submit(scope, 4, &[Condition::completion(&gate)], boxed(|_| {}));
             })
             .unwrap();
         });
@@ -666,14 +720,14 @@ mod tests {
     fn failed_watermark_releases_dependents() {
         let rows = WatermarkCell::new();
         let ran = AtomicBool::new(false);
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
         pool(1).install(|| {
             ready_task_scope(|scope| {
                 scheduler.submit(
                     scope,
                     0,
                     &[Condition::watermark(&rows, 99)],
-                    Box::new(|_| ran.store(true, Ordering::Relaxed)),
+                    boxed(|_| ran.store(true, Ordering::Relaxed)),
                 );
                 rows.publish(WatermarkCell::FAILED);
                 scheduler.admit_ready(scope);
@@ -687,7 +741,7 @@ mod tests {
     fn chain<'job>(admit: &dyn Admit<'job>, count: &'job AtomicUsize, left: usize) {
         count.fetch_add(1, Ordering::Relaxed);
         if left != 0 {
-            admit.continue_ready(left as u64, Box::new(move |a| chain(a, count, left - 1)));
+            admit.continue_ready(left as u64, boxed(move |a| chain(a, count, left - 1)));
         }
     }
 
@@ -702,7 +756,7 @@ mod tests {
             admit.submit(
                 id as u64,
                 &[],
-                Box::new(move |admit| leaf_chain(admit, visits, id + 1, left - 1)),
+                boxed(move |admit| leaf_chain(admit, visits, id + 1, left - 1)),
             );
         }
     }
@@ -711,15 +765,15 @@ mod tests {
     fn continuations_are_iterative_and_allow_nested_work() {
         let chained = AtomicUsize::new(0);
         let nested = AtomicUsize::new(0);
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
         pool(2).install(|| {
             ready_task_scope(|scope| {
                 scheduler.submit(
                     scope,
                     0,
                     &[],
-                    Box::new(|admit| {
-                        admit.spawn_ready(Box::new(|_| {
+                    boxed(|admit| {
+                        admit.spawn_ready(boxed(|_| {
                             nested.fetch_add(1, Ordering::Relaxed);
                         }));
                         chain(admit, &chained, 32);
@@ -735,11 +789,11 @@ mod tests {
 
     #[test]
     fn panic_propagates_without_corrupting_scheduler() {
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             pool(1).install(|| {
                 ready_task_scope(|scope| {
-                    scheduler.submit(scope, 0, &[], Box::new(|_| panic!("job panic")));
+                    scheduler.submit(scope, 0, &[], boxed(|_| panic!("job panic")));
                 })
                 .unwrap();
             });
@@ -768,7 +822,7 @@ mod tests {
                 })
                 .collect();
             model.sort_unstable();
-            let scheduler = AdmissionScheduler::new();
+            let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
             pool(threads).install(|| {
                 ready_task_scope(|scope| {
                     for submission in 0..JOBS {
@@ -789,7 +843,7 @@ mod tests {
                                 Condition::completion(parsed),
                                 Condition::completion(prepared),
                             ],
-                            Box::new(move |admit| {
+                            boxed(move |admit| {
                                 assert_eq!(first_rows.current(), 2);
                                 assert_eq!(second_rows.current(), 3);
                                 assert!(parsed.is_set() && prepared.is_set());
@@ -799,14 +853,14 @@ mod tests {
                                 admit.submit(
                                     key,
                                     &[Condition::completion(prepared)],
-                                    Box::new(move |admit| {
+                                    boxed(move |admit| {
                                         leaf_chain(admit, visits, base + 1, 1);
                                     }),
                                 );
                                 admit.submit(
                                     key,
                                     &[Condition::watermark(second_rows, 3)],
-                                    Box::new(move |_| {
+                                    boxed(move |_| {
                                         visits[base + 3].fetch_add(1, Ordering::Relaxed);
                                     }),
                                 );
@@ -821,10 +875,10 @@ mod tests {
                         scope,
                         u64::MAX,
                         &[],
-                        Box::new(move |admit| {
+                        boxed(move |admit| {
                             first_rows.publish(2);
                             parsed.set(()).unwrap();
-                            admit.spawn_ready(Box::new(|admit| {
+                            admit.spawn_ready(boxed(|admit| {
                                 second_rows.publish(3);
                                 prepared.set(()).unwrap();
                                 admit.admit_ready();

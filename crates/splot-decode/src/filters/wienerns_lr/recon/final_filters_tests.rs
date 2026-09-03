@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Default)]
 struct AdmitCounter(AtomicUsize);
 
-impl<'job> splot_parallel::Admit<'job> for AdmitCounter {
+impl<'job> splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>
+    for AdmitCounter
+{
     fn admit_ready(&self) -> usize {
         self.0.fetch_add(1, Ordering::SeqCst);
         0
@@ -24,20 +26,31 @@ impl<'job> splot_parallel::Admit<'job> for AdmitCounter {
         &self,
         _order_key: u64,
         _conditions: &[splot_parallel::Condition<'_>],
-        job: splot_parallel::Job<'job>,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
         drop(job);
     }
 
-    fn spawn_ready(&self, job: splot_parallel::Job<'job>) {
+    fn spawn_ready(
+        &self,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         drop(job);
     }
 
-    fn submit_ready_batch(&self, _order_key: u64, jobs: Vec<splot_parallel::Job<'job>>) {
+    fn submit_ready_batch(
+        &self,
+        _order_key: u64,
+        jobs: Vec<splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>>,
+    ) {
         drop(jobs);
     }
 
-    fn continue_ready(&self, _order_key: u64, job: splot_parallel::Job<'job>) {
+    fn continue_ready(
+        &self,
+        _order_key: u64,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         drop(job);
     }
 }

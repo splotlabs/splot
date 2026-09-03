@@ -120,7 +120,7 @@ mod tests {
     fn publication_is_monotonic_and_thresholds_use_equality() {
         let cell = WatermarkCell::new();
         let visits: Vec<_> = (0..2).map(|_| AtomicUsize::new(0)).collect();
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, crate::admission::NoTask> = AdmissionScheduler::new();
         WorkerPool::new(ThreadCount::from(2usize))
             .unwrap()
             .install(|| {
@@ -129,9 +129,9 @@ mod tests {
                         scope,
                         0,
                         &[Condition::watermark(&cell, 3)],
-                        Box::new(|_| {
+                        crate::admission::Job::Boxed(Box::new(|_| {
                             visits[0].fetch_add(1, Ordering::Relaxed);
-                        }),
+                        })),
                     );
                     assert_eq!(cell.publish(2), 2);
                     assert_eq!(cell.publish(1), 2);
@@ -144,9 +144,9 @@ mod tests {
                         scope,
                         1,
                         &[Condition::watermark(&cell, 3)],
-                        Box::new(|_| {
+                        crate::admission::Job::Boxed(Box::new(|_| {
                             visits[1].fetch_add(1, Ordering::Relaxed);
-                        }),
+                        })),
                     );
                 })
                 .unwrap();
@@ -165,7 +165,8 @@ mod tests {
         for _ in 0..128 {
             let cell = Arc::new(WatermarkCell::new());
             let ran = AtomicUsize::new(0);
-            let scheduler = AdmissionScheduler::new();
+            let scheduler: AdmissionScheduler<'_, crate::admission::NoTask> =
+                AdmissionScheduler::new();
             let publishing = Arc::clone(&cell);
             let publisher = std::thread::spawn(move || publishing.publish(1));
             pool.install(|| {
@@ -174,9 +175,9 @@ mod tests {
                         scope,
                         0,
                         &[Condition::watermark(cell.as_ref(), 1)],
-                        Box::new(|_| {
+                        crate::admission::Job::Boxed(Box::new(|_| {
                             ran.fetch_add(1, Ordering::Relaxed);
-                        }),
+                        })),
                     );
                     publisher.join().unwrap();
                     scheduler.admit_ready(scope);
@@ -193,7 +194,7 @@ mod tests {
         const MAX: usize = 32;
         let cell = WatermarkCell::new();
         let visits: Vec<_> = (1..=MAX).map(|_| AtomicUsize::new(0)).collect();
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, crate::admission::NoTask> = AdmissionScheduler::new();
         let start = Barrier::new(4);
         WorkerPool::new(ThreadCount::from(4usize))
             .unwrap()
@@ -204,9 +205,9 @@ mod tests {
                             scope,
                             threshold as u64,
                             &[Condition::watermark(&cell, threshold)],
-                            Box::new(move |_| {
+                            crate::admission::Job::Boxed(Box::new(move |_| {
                                 visit.fetch_add(1, Ordering::Relaxed);
-                            }),
+                            })),
                         );
                     }
                     for lane in 0..4 {
@@ -237,7 +238,7 @@ mod tests {
     fn failed_admits_every_waiter() {
         let cell = WatermarkCell::new();
         let visits: Vec<_> = (0..3).map(|_| AtomicUsize::new(0)).collect();
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, crate::admission::NoTask> = AdmissionScheduler::new();
         WorkerPool::new(ThreadCount::from(2usize))
             .unwrap()
             .install(|| {
@@ -248,9 +249,9 @@ mod tests {
                             scope,
                             threshold as u64,
                             &[Condition::watermark(&cell, threshold)],
-                            Box::new(move |_| {
+                            crate::admission::Job::Boxed(Box::new(move |_| {
                                 visit.fetch_add(1, Ordering::Relaxed);
-                            }),
+                            })),
                         );
                     }
                     cell.publish(WatermarkCell::FAILED);

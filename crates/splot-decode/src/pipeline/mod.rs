@@ -44,7 +44,7 @@ use crate::support::pipeline_limits::checked_add;
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 mod frame_lifecycle;
-mod frame_pipeline;
+pub(crate) mod frame_pipeline;
 pub(crate) mod frame_progress;
 pub(crate) mod inflight;
 pub(crate) mod output_effects;
@@ -436,7 +436,10 @@ fn decode_key_frame_with_effects<'job, 'scope>(
     scratch_eight: &mut inter::InterDecodeScratch<u8>,
     scratch_ten: &mut inter::InterDecodeScratch<u16>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope splot_parallel::AdmissionScheduler<'job>,
+    scheduler: &'scope splot_parallel::AdmissionScheduler<
+        'job,
+        crate::pipeline::frame_pipeline::FrameTask,
+    >,
     lane: &mut frame_pipeline::ReconAdmissionLane,
     ring: &mut inflight::InflightRing,
     frame_index: usize,
@@ -554,8 +557,10 @@ fn decode_frames_from_plan_impl<'job>(
 ) -> Result<Vec<PipelineFrame>> {
     let pipeline_capacity = frame_delay
         .min(NonZeroUsize::new(splot_parallel::current_pool_width()).unwrap_or(NonZeroUsize::MIN));
-    let admission: splot_parallel::AdmissionScheduler<'job> =
-        splot_parallel::AdmissionScheduler::new();
+    let admission: splot_parallel::AdmissionScheduler<
+        'job,
+        crate::pipeline::frame_pipeline::FrameTask,
+    > = splot_parallel::AdmissionScheduler::new();
     let decoded = splot_parallel::ready_task_scope(|scope| {
         drive_frames(
             parsed,
@@ -596,7 +601,10 @@ fn drive_frames<'job, 'scope>(
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    admission: &'scope splot_parallel::AdmissionScheduler<'job>,
+    admission: &'scope splot_parallel::AdmissionScheduler<
+        'job,
+        crate::pipeline::frame_pipeline::FrameTask,
+    >,
 ) -> Result<Vec<PipelineFrame>>
 where
     'job: 'scope,
@@ -635,7 +643,10 @@ fn decode_frames_in_order<'job, 'scope>(
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    admission: &'scope splot_parallel::AdmissionScheduler<'job>,
+    admission: &'scope splot_parallel::AdmissionScheduler<
+        'job,
+        crate::pipeline::frame_pipeline::FrameTask,
+    >,
     ring: &mut inflight::InflightRing,
     decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
     decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,

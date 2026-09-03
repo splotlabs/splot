@@ -628,7 +628,9 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
 
     let commit = Mutex::new(Some(commit));
     let error = Mutex::new(None);
-    let scheduler = AdmissionScheduler::new();
+    // Boxed jobs only: this tile-local scheduler has no shape worth naming,
+    // unlike the frame pipeline's four.
+    let scheduler: AdmissionScheduler<'_, splot_parallel::NoTask> = AdmissionScheduler::new();
     let admission_window = splot_parallel::current_pool_width()
         .saturating_sub(1)
         .max(1)
@@ -690,7 +692,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 scope,
                 (batch_index as u64).saturating_mul(4).saturating_add(1),
                 &conditions,
-                Box::new(move |_| {
+                splot_parallel::Job::Boxed(Box::new(move |_| {
                     let enabled = precompute_error
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -725,7 +727,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                     });
                     *prepared_slot.lock().unwrap_or_else(PoisonError::into_inner) = prepared;
                     let _ = precomputed_cell.set(());
-                }),
+                })),
             );
 
             let prepared_slot = &prepared[batch_index];
@@ -740,7 +742,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 scope,
                 (batch_index as u64).saturating_mul(4).saturating_add(2),
                 &conditions,
-                Box::new(move |_| {
+                splot_parallel::Job::Boxed(Box::new(move |_| {
                     let batch = prepared_slot
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -773,7 +775,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                         }
                     }
                     let _ = completed.set(());
-                }),
+                })),
             );
             submitted_batches = batch_index.saturating_add(1);
             if let Some(target) = batch_index.checked_sub(admission_window) {

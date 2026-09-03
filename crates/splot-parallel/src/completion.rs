@@ -204,7 +204,7 @@ mod tests {
     fn set_wakes_multiple_admission_and_blocking_waiters() {
         let cell = Arc::new(CompletionCell::new());
         let visits: Vec<_> = (0..2).map(|_| AtomicUsize::new(0)).collect();
-        let scheduler = AdmissionScheduler::new();
+        let scheduler: AdmissionScheduler<'_, crate::admission::NoTask> = AdmissionScheduler::new();
         let pool = WorkerPool::new(ThreadCount::Fixed(2.try_into().unwrap())).unwrap();
         pool.install(|| {
             ready_task_scope(|scope| {
@@ -213,9 +213,9 @@ mod tests {
                         scope,
                         0,
                         &[Condition::completion(cell.as_ref())],
-                        Box::new(move |_| {
+                        crate::admission::Job::Boxed(Box::new(move |_| {
                             visit.fetch_add(1, Ordering::Relaxed);
-                        }),
+                        })),
                     );
                 }
             })
@@ -264,7 +264,8 @@ mod tests {
         for _ in 0..128 {
             let cell = Arc::new(CompletionCell::new());
             let ran = AtomicUsize::new(0);
-            let scheduler = AdmissionScheduler::new();
+            let scheduler: AdmissionScheduler<'_, crate::admission::NoTask> =
+                AdmissionScheduler::new();
             let setting = Arc::clone(&cell);
             let setter = std::thread::spawn(move || setting.set(()).unwrap());
             pool.install(|| {
@@ -273,9 +274,9 @@ mod tests {
                         scope,
                         0,
                         &[Condition::completion(cell.as_ref())],
-                        Box::new(|_| {
+                        crate::admission::Job::Boxed(Box::new(|_| {
                             ran.fetch_add(1, Ordering::Relaxed);
-                        }),
+                        })),
                     );
                     setter.join().unwrap();
                     scheduler.admit_ready(scope);
