@@ -45,7 +45,7 @@ fn with_spares<T: Send + 'static, R>(act: impl FnOnce(&mut Spares<T>) -> R) -> R
 /// every one the pipeline holds at once or the next frame allocates again. The
 /// bound is per element type, and a type that never grows that deep simply
 /// never fills it.
-const MAX_SPARES_PER_TYPE: usize = 512;
+const MAX_SPARES_PER_TYPE: usize = 2048;
 
 /// Takes a spare buffer able to hold `cells` items, or an empty one.
 ///

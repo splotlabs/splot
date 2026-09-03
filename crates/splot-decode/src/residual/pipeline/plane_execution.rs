@@ -6,7 +6,6 @@
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
 use std::cell::Cell;
-use std::sync::{Mutex, PoisonError};
 
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
@@ -27,41 +26,14 @@ pub(crate) struct ParsedGeneralIntraResidual {
     planes: Vec<ParsedResidualPlane>,
 }
 
-/// Plane lists kept for reuse, across every worker.
-///
-/// A block's parsed planes outlive their parse -- the row is reconstructed by
-/// a later pass -- so the list cannot be a scratch buffer the parser reuses.
-/// The cap covers the units the pipeline keeps in flight, the way the row
-/// buffer pool's does; below that the pool bottoms out and the list is
-/// allocated afresh for every general-intra block.
-const MAX_POOLED_PLANE_LISTS: usize = 1024;
-
-static POOLED_PLANE_LISTS: Mutex<Vec<Vec<ParsedResidualPlane>>> = Mutex::new(Vec::new());
-
+/// Takes a block's plane list from the decode's context store.
 fn take_pooled_planes(capacity: usize) -> Vec<ParsedResidualPlane> {
-    let mut planes = POOLED_PLANE_LISTS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .pop()
-        .unwrap_or_default();
-    planes.clear();
-    planes.reserve(capacity);
-    planes
+    crate::support::buffer_pool::take(capacity)
 }
 
 impl Drop for ParsedGeneralIntraResidual {
     fn drop(&mut self) {
-        let mut planes = core::mem::take(&mut self.planes);
-        if planes.capacity() == 0 {
-            return;
-        }
-        planes.clear();
-        let mut pooled = POOLED_PLANE_LISTS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if pooled.len() < MAX_POOLED_PLANE_LISTS {
-            pooled.push(planes);
-        }
+        crate::support::buffer_pool::recycle(&mut self.planes);
     }
 }
 
