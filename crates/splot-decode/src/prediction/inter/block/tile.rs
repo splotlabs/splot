@@ -866,7 +866,7 @@ struct ReconRowBufferPool {
 /// another, so a thread-local set is returned to a thread that will not ask
 /// for it again. The cap is a whole-process one for the same reason the
 /// frame-plane pool's is.
-const MAX_RETAINED_ROW_BUFFERS: usize = 32;
+const MAX_RETAINED_ROW_BUFFERS: usize = 256;
 
 static RETAINED_ROW_BUFFERS: Mutex<Vec<ReconRowBuffers>> = Mutex::new(Vec::new());
 
