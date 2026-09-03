@@ -43,6 +43,14 @@ pub(super) struct MiGridStorage {
     pub(super) candidates: Vec<u8>,
 }
 
+/// Hands the frame's grid back to the decode's context store.
+impl Drop for MiGridStorage {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.cells);
+        crate::support::buffer_pool::recycle(&mut self.candidates);
+    }
+}
+
 pub(super) struct ChromaMiGridStorage {
     pub(super) fully_covered: bool,
     /// One cell per chroma mode-info unit, not per luma one. A chroma deblock
@@ -162,17 +170,17 @@ pub(super) fn build_mi_grid(
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
-    let mut cells = Vec::new();
+    let mut cells = crate::support::buffer_pool::take(count);
     cells
-        .try_reserve_exact(count)
+        .try_reserve_exact(count.saturating_sub(cells.capacity()))
         .map_err(|_| DeblockError::Allocation {
             plane: splot_recon::PlaneId::Y,
             context: "deblock MI grid",
         })?;
     cells.resize(count, MiCell::default());
-    let mut candidates = Vec::new();
+    let mut candidates = crate::support::buffer_pool::take(count);
     candidates
-        .try_reserve_exact(count)
+        .try_reserve_exact(count.saturating_sub(candidates.capacity()))
         .map_err(|_| DeblockError::Allocation {
             plane: splot_recon::PlaneId::Y,
             context: "deblock MI grid",
