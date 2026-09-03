@@ -36,22 +36,50 @@ use std::alloc::System;
 
 /// Smallest pooled block, and the alignment every pooled block satisfies.
 const MIN_CLASS_SHIFT: u32 = 4;
+/// Classes per doubling. Powers of two alone round a request up by as much as
+/// half its size again, which at ten workers cost a hundred megabytes of slack;
+/// four steps to the doubling bring that under a fifth.
+const CLASS_STEPS: u32 = 1;
 /// Largest pooled block. Above this a request goes to the system allocator,
 /// where a handful of large buffers cost far less than holding them here.
-const MAX_CLASS_SHIFT: u32 = 23;
+const MAX_CLASS_SHIFT: u32 = 18;
 /// Largest pooled block in bytes.
 const MAX_CLASS_BYTES: usize = 1 << MAX_CLASS_SHIFT;
 /// Number of size classes.
-const CLASS_COUNT: usize = (MAX_CLASS_SHIFT - MIN_CLASS_SHIFT + 1) as usize;
+const CLASS_COUNT: usize = ((MAX_CLASS_SHIFT - MIN_CLASS_SHIFT) * CLASS_STEPS + 1) as usize;
 /// Alignment a pooled block guarantees, matching the system allocator's.
 const POOL_ALIGN: usize = 1 << MIN_CLASS_SHIFT;
+
+/// The block size class `class` hands out.
+const fn class_bytes(class: usize) -> usize {
+    let steps = CLASS_STEPS as usize;
+    let octave = class / steps;
+    let step = class % steps;
+    let base = 1usize << (MIN_CLASS_SHIFT as usize + octave);
+    base + (base / steps) * step
+}
+
+/// The size class serving `layout`, or `None` when it must go through.
+fn class_of(layout: Layout) -> Option<usize> {
+    if layout.align() > POOL_ALIGN || layout.size() > MAX_CLASS_BYTES {
+        return None;
+    }
+    let size = layout.size().max(POOL_ALIGN);
+    // The octave `size` falls in, then which quarter of it, rounding up so the
+    // block is never smaller than the request.
+    let octave = (usize::BITS - 1 - size.leading_zeros()) - MIN_CLASS_SHIFT;
+    let base = 1usize << (MIN_CLASS_SHIFT + octave);
+    let step = base / CLASS_STEPS as usize;
+    let within = size.saturating_sub(base).div_ceil(step);
+    let class = (octave as usize) * CLASS_STEPS as usize + within;
+    (class < CLASS_COUNT).then_some(class)
+}
+
 /// Bytes a worker keeps cached per size class.
 ///
-/// A byte budget rather than a block count, so the small classes -- where the
-/// traffic is -- keep plenty while a class of megabyte blocks keeps one or two.
-/// Bounded either way, so a thread that frees far more than it allocates cannot
-/// pin memory indefinitely.
-const MAX_CACHED_BYTES_PER_CLASS: usize = 1 << 22;
+/// Small on purpose: this bound is per worker, so it multiplies by the pool
+/// width. The shared tier below is where the depth lives.
+const MAX_CACHED_BYTES_PER_CLASS: usize = 1 << 14;
 
 /// Blocks a worker keeps for one class, at least a couple however large.
 const fn max_cached(class: usize) -> usize {
@@ -72,22 +100,6 @@ thread_local! {
         const { [const { Cell::new(0) }; CLASS_COUNT] };
 }
 
-/// The size class serving `layout`, or `None` when it must go through.
-fn class_of(layout: Layout) -> Option<usize> {
-    if layout.align() > POOL_ALIGN || layout.size() > MAX_CLASS_BYTES {
-        return None;
-    }
-    let size = layout.size().max(POOL_ALIGN);
-    let shift = usize::BITS - (size - 1).leading_zeros();
-    let shift = shift.max(MIN_CLASS_SHIFT);
-    Some((shift - MIN_CLASS_SHIFT) as usize)
-}
-
-/// The block size one class hands out.
-const fn class_bytes(class: usize) -> usize {
-    1 << (MIN_CLASS_SHIFT as usize + class)
-}
-
 /// The layout a pooled block of `class` was allocated with.
 fn class_layout(class: usize) -> Option<Layout> {
     Layout::from_size_align(class_bytes(class), POOL_ALIGN).ok()
@@ -98,7 +110,7 @@ fn class_layout(class: usize) -> Option<Layout> {
 /// A worker's own list only sees blocks it freed itself, and the decode parses
 /// on one worker and reconstructs on another, so a list can starve while
 /// another worker's is at its cap. This is the shared tier those spill into.
-const CENTRAL_CAPACITY: usize = 512;
+const CENTRAL_CAPACITY: usize = 4096;
 
 /// One class's shared blocks, behind a spin lock.
 ///
@@ -117,6 +129,10 @@ struct Central {
 unsafe impl Sync for Central {}
 
 impl Central {
+    #[allow(
+        clippy::large_stack_arrays,
+        reason = "the array lives in a static, not on a stack"
+    )]
     const fn new() -> Self {
         Self {
             locked: core::sync::atomic::AtomicBool::new(false),
@@ -156,9 +172,9 @@ impl Central {
     }
 
     /// Parks a block for any worker, reporting whether it was taken.
-    fn push(&self, block: *mut u8) -> bool {
+    fn push(&self, block: *mut u8, cap: usize) -> bool {
         self.with(|blocks, len| {
-            if *len == CENTRAL_CAPACITY {
+            if *len >= cap.min(CENTRAL_CAPACITY) {
                 return false;
             }
             blocks[*len] = block.expose_provenance();
@@ -170,6 +186,24 @@ impl Central {
 
 /// Shared blocks per class.
 static CENTRAL: [Central; CLASS_COUNT] = [const { Central::new() }; CLASS_COUNT];
+
+/// Bytes the shared tier keeps for one class.
+///
+/// A byte budget, like the per-worker one: a slot count alone would let the
+/// megabyte classes park gigabytes between them.
+const MAX_CENTRAL_BYTES_PER_CLASS: usize = 1 << 22;
+
+/// Blocks the shared tier keeps for one class.
+const fn max_central(class: usize) -> usize {
+    let by_bytes = MAX_CENTRAL_BYTES_PER_CLASS / class_bytes(class);
+    if by_bytes > CENTRAL_CAPACITY {
+        CENTRAL_CAPACITY
+    } else if by_bytes < 2 {
+        2
+    } else {
+        by_bytes
+    }
+}
 
 /// Size-class free lists in front of the system allocator.
 pub struct PoolAlloc;
@@ -236,7 +270,7 @@ unsafe impl GlobalAlloc for PoolAlloc {
                     .unwrap_or(false)
             })
             .unwrap_or(false);
-        if cached || CENTRAL[class].push(ptr) {
+        if cached || CENTRAL[class].push(ptr, max_central(class)) {
             return;
         }
         let Some(block) = class_layout(class) else {
@@ -246,5 +280,68 @@ unsafe impl GlobalAlloc for PoolAlloc {
         };
         // SAFETY: a pooled block was allocated with exactly this layout.
         unsafe { System.dealloc(ptr, block) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::panic,
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "a failed invariant here is a memory-safety bug, so tests shout"
+    )]
+
+    use super::{CLASS_COUNT, MAX_CLASS_BYTES, POOL_ALIGN, class_bytes, class_of};
+    use core::alloc::Layout;
+
+    /// Every request must be served by a block at least its size, or not at all.
+    #[test]
+    fn every_class_covers_its_requests() {
+        for size in 1..=(1usize << 16) {
+            let Ok(layout) = Layout::from_size_align(size, 1) else {
+                continue;
+            };
+            let Some(class) = class_of(layout) else {
+                continue;
+            };
+            assert!(class < CLASS_COUNT, "class {class} out of range for {size}");
+            assert!(
+                class_bytes(class) >= size,
+                "class {class} of {} bytes cannot hold {size}",
+                class_bytes(class)
+            );
+        }
+    }
+
+    /// Block sizes rise with the class, so a bigger request never gets less.
+    #[test]
+    fn class_sizes_are_increasing() {
+        for class in 1..CLASS_COUNT {
+            assert!(
+                class_bytes(class) > class_bytes(class - 1),
+                "class {class} is not larger than the one below"
+            );
+        }
+    }
+
+    /// Every block is big enough to hold the free-list link, and can be asked
+    /// of the system allocator at the alignment the pool promises.
+    #[test]
+    fn every_block_is_a_valid_pooled_layout() {
+        for class in 0..CLASS_COUNT {
+            let bytes = class_bytes(class);
+            assert!(bytes >= POOL_ALIGN, "class {class} is below the link size");
+            Layout::from_size_align(bytes, POOL_ALIGN)
+                .unwrap_or_else(|_| panic!("class {class} is not a valid layout"));
+        }
+    }
+
+    /// The largest request the pool accepts still has a class.
+    #[test]
+    fn the_largest_pooled_request_has_a_class() {
+        let layout = Layout::from_size_align(MAX_CLASS_BYTES, 1).expect("valid layout");
+        let class = class_of(layout).expect("largest pooled size must have a class");
+        assert!(class_bytes(class) >= MAX_CLASS_BYTES);
     }
 }
