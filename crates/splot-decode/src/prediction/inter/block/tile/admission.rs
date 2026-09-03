@@ -220,6 +220,9 @@ pub(crate) struct ScheduledCommitProgress {
 struct TileRecon<T: ReconSample> {
     rows: Mutex<Vec<TileReconRow<T>>>,
     prepared: Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
+    /// Row lists a replayed unit gave back, for the next unit to precompute
+    /// into. Every unit of the tile builds two of these and drops them again.
+    spare_batches: Mutex<Vec<Vec<ReadyReconRow<T>>>>,
     unit_count: usize,
     units_per_row: usize,
     batches: Vec<core::ops::Range<usize>>,
@@ -368,6 +371,38 @@ impl<T: ReconSample> TileRecon<T> {
         .conditions(&bounds, out);
     }
 
+    /// Row lists the tile keeps between units.
+    ///
+    /// Small on purpose: a unit holds at most the two lists it is building, so
+    /// beyond a handful the pool only pins memory the tile has stopped using.
+    const MAX_SPARE_BATCHES: usize = 8;
+
+    fn take_spare_batch(&self, capacity: usize) -> Vec<ReadyReconRow<T>> {
+        let mut batch = self
+            .spare_batches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop()
+            .unwrap_or_default();
+        batch.clear();
+        batch.reserve(capacity);
+        batch
+    }
+
+    fn return_spare_batch(&self, mut batch: Vec<ReadyReconRow<T>>) {
+        if batch.capacity() == 0 {
+            return;
+        }
+        batch.clear();
+        let mut spare = self
+            .spare_batches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if spare.len() < Self::MAX_SPARE_BATCHES {
+            spare.push(batch);
+        }
+    }
+
     fn precompute(&self, index: usize, surfaces: &Mutex<SurfaceSource<T>>) -> Result<()> {
         let range = self
             .batch_range(index)
@@ -392,7 +427,7 @@ impl<T: ReconSample> TileRecon<T> {
             {
                 return Err(invalid_inter_tile_scheduling_state());
             }
-            let mut ready = Vec::with_capacity(rows.len());
+            let mut ready = self.take_spare_batch(rows.len());
             for row in rows {
                 if let TileReconRow::Ready(row) = core::mem::replace(row, TileReconRow::Taken) {
                     ready.push(row);
@@ -489,7 +524,8 @@ impl<T: ReconSample> TileRecon<T> {
             &self.reference,
             self.ref_frame_idx.as_slice(),
         );
-        for ready in batch {
+        let mut batch = batch;
+        for ready in batch.drain(..) {
             super::retain_row_buffers(commit.replay(
                 ready,
                 &self.quantizer,
@@ -498,6 +534,7 @@ impl<T: ReconSample> TileRecon<T> {
                 &context,
             )?);
         }
+        self.return_spare_batch(batch);
         let terminal = commit.next == self.unit_count;
         let closed_rows = closed_frontier_rows(
             commit.next,
@@ -1403,6 +1440,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         recon: TileRecon {
             rows: Mutex::new(Vec::new()),
             prepared: Mutex::new(prepared),
+            spare_batches: Mutex::new(Vec::new()),
             unit_count,
             units_per_row,
             batches,
