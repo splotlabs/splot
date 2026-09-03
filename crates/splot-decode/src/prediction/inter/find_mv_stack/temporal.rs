@@ -732,6 +732,16 @@ struct TemporalBandResult {
     trajectories: Option<OwnedTrajectoryFields>,
 }
 
+/// Hands a spent band's projected field back to the decode's context store.
+///
+/// The band outlives the projection that built it -- it is what later frames
+/// read -- so the buffer can only be returned once the band itself goes.
+impl Drop for TemporalBandResult {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.field);
+    }
+}
+
 pub(crate) struct TemporalBandPlan {
     projections: Vec<ScheduledTemporalProjection>,
     config: TemporalProjectionConfig,
@@ -798,18 +808,21 @@ impl TemporalBandPlan {
         self.layout.rows8(index)
     }
 
-    pub(crate) fn requirements(&self, index: usize) -> Vec<(usize, usize)> {
-        let mut requirements = Vec::new();
+    /// Collects the reference bands this band's projection reads into `out`.
+    ///
+    /// Into a caller's buffer, because the list is read once and dropped, and
+    /// the callers ask per unit.
+    pub(crate) fn requirements(&self, index: usize, out: &mut Vec<(usize, usize)>) {
+        out.clear();
         for projection in &self.projections {
             if index >= projection.source_layout.band_count() {
                 continue;
             }
             let requirement = (projection.slot, index);
-            if !requirements.contains(&requirement) {
-                requirements.push(requirement);
+            if !out.contains(&requirement) {
+                out.push(requirement);
             }
         }
-        requirements
     }
 
     pub(crate) fn project(
@@ -827,13 +840,16 @@ impl TemporalBandPlan {
         let cells = width8
             .checked_mul(row_count)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-        let mut field_cells = Vec::new();
-        field_cells.try_reserve_exact(cells).map_err(|_| {
-            crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: splot_recon::PlaneId::Y,
-                context: "inter temporal motion band",
-            })
-        })?;
+        let mut field_cells = crate::support::buffer_pool::take(cells);
+        field_cells.clear();
+        field_cells
+            .try_reserve_exact(cells.saturating_sub(field_cells.capacity()))
+            .map_err(|_| {
+                crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
+                    plane: splot_recon::PlaneId::Y,
+                    context: "inter temporal motion band",
+                })
+            })?;
         field_cells.resize(cells, ProjectedTemporalMotionCell::default());
         let mut output = ProjectedFieldBand {
             cells: &mut field_cells,

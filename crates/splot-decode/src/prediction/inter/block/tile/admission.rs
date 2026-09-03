@@ -175,7 +175,9 @@ fn project_temporal_band(
     reference_fields: &[Option<MotionFieldHandle>],
     index: usize,
 ) -> Result<()> {
-    for (slot, band) in plan.requirements(index) {
+    let mut requirements = crate::support::buffer_pool::Retained::<(usize, usize)>::take();
+    plan.requirements(index, &mut requirements);
+    for (slot, band) in requirements.drain(..) {
         let publication = reference_fields
             .get(slot)
             .and_then(Option::as_ref)
@@ -858,19 +860,18 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.temporal_plan.len()
     }
 
-    pub(crate) fn resolve_conditions(&self, index: usize) -> Vec<Condition<'_>> {
-        self.temporal_plan
-            .requirements(index)
-            .into_iter()
-            .filter_map(|(slot, band)| {
-                self.recon
-                    .reference
-                    .ref_motion_fields
-                    .get(slot)
-                    .and_then(Option::as_ref)
-                    .and_then(|field| field.band_condition(band))
-            })
-            .collect()
+    pub(crate) fn resolve_conditions<'a>(&'a self, index: usize, out: &mut Vec<Condition<'a>>) {
+        let mut requirements = crate::support::buffer_pool::Retained::<(usize, usize)>::take();
+        self.temporal_plan.requirements(index, &mut requirements);
+        out.clear();
+        out.extend(requirements.drain(..).filter_map(|(slot, band)| {
+            self.recon
+                .reference
+                .ref_motion_fields
+                .get(slot)
+                .and_then(Option::as_ref)
+                .and_then(|field| field.band_condition(band))
+        }));
     }
 
     /// Whether the § 8.2 pass failed.
@@ -1540,7 +1541,9 @@ mod tests {
                 false,
             )
             .ok_or("valid banded plan")?;
-        if plan.requirements(0) != [(0, 0)] {
+        let mut requirements = Vec::new();
+        plan.requirements(0, &mut requirements);
+        if requirements != [(0, 0)] {
             return Err("expected one source-band requirement");
         }
         let handle = super::MotionFieldHandle::pending_with_layout(source.layout());

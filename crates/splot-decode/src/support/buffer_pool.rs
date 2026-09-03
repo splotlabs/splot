@@ -80,3 +80,36 @@ pub(crate) fn recycle<T: Send + 'static>(buffer: &mut Vec<T>) {
         }
     });
 }
+
+/// A buffer that returns itself to the store when it leaves scope.
+///
+/// For the short-lived lists a caller builds, reads once and drops, where
+/// threading a reusable buffer through the callers would say less than it
+/// costs.
+pub(crate) struct Retained<T: Send + 'static>(Vec<T>);
+
+impl<T: Send + 'static> Retained<T> {
+    pub(crate) fn take() -> Self {
+        Self(take(0))
+    }
+}
+
+impl<T: Send + 'static> core::ops::Deref for Retained<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: Send + 'static> core::ops::DerefMut for Retained<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: Send + 'static> Drop for Retained<T> {
+    fn drop(&mut self) {
+        recycle(&mut self.0);
+    }
+}

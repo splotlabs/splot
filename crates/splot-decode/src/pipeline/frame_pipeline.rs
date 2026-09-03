@@ -532,7 +532,9 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         index: usize,
         admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
-        let conditions = self.reconstruction.resolve_conditions(index);
+        let mut conditions = Vec::new();
+        self.reconstruction
+            .resolve_conditions(index, &mut conditions);
         let resolve = Arc::clone(self);
         let index_key = u64::try_from(index).unwrap_or(u64::MAX / 2);
         admit.submit(
