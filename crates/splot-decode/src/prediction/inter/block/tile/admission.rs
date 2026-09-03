@@ -609,11 +609,15 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
 ) -> Result<TileCommit<T>> {
     let batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
     let batch_count = batches.len();
-    let mut prepared: Vec<Mutex<Option<Vec<ReadyReconRow<T>>>>> = Vec::new();
-    prepared
+    // One lock over the batch slots, not one per slot: each slot's `Mutex`
+    // heap-allocates its platform lock the first time it is taken, and a frame
+    // has a slot per batch.
+    let mut prepared_slots: Vec<Option<Vec<ReadyReconRow<T>>>> = Vec::new();
+    prepared_slots
         .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("ordinary inter prepared batches"))?;
-    prepared.resize_with(batch_count, || Mutex::new(None));
+    prepared_slots.resize_with(batch_count, || None);
+    let prepared = Mutex::new(prepared_slots);
     let mut precomputed = Vec::new();
     precomputed
         .try_reserve_exact(batch_count)
@@ -693,7 +697,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             let ready = core::mem::take(ready);
             let mut conditions = Vec::new();
             row_gate.conditions(&bounds, &mut conditions);
-            let prepared_slot = &prepared[batch_index];
+            let prepared_slot = &prepared;
             let precomputed_cell = &precomputed[batch_index];
             let precompute_error = &error;
             scheduler.submit(
@@ -733,12 +737,18 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                                 .collect()
                         })
                     });
-                    *prepared_slot.lock().unwrap_or_else(PoisonError::into_inner) = prepared;
+                    if let Some(slot) = prepared_slot
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get_mut(batch_index)
+                    {
+                        *slot = prepared;
+                    }
                     let _ = precomputed_cell.set(());
                 })),
             );
 
-            let prepared_slot = &prepared[batch_index];
+            let prepared_slot = &prepared;
             let completed = &committed[batch_index];
             let commit = &commit;
             let commit_error = &error;
@@ -754,7 +764,8 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                     let batch = prepared_slot
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .take();
+                        .get_mut(batch_index)
+                        .and_then(Option::take);
                     if commit_error
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
