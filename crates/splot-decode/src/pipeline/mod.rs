@@ -1311,7 +1311,9 @@ where
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        if inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core) {
+                        if splot_parallel::current_pool_width() > 1
+                            && inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
+                        {
                             frame_pipeline::prepare_entropy_submission(
                                 &mut pending_entropy,
                                 ring.capacity(),
@@ -1538,7 +1540,9 @@ where
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        if inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core) {
+                        if splot_parallel::current_pool_width() > 1
+                            && inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
+                        {
                             frame_pipeline::prepare_entropy_submission(
                                 &mut pending_entropy,
                                 ring.capacity(),
