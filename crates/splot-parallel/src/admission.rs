@@ -48,7 +48,7 @@
 //! ```
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::completion::CompletionCell;
@@ -121,20 +121,46 @@ struct OrderedJob<'job> {
     job: Job<'job>,
 }
 
-struct ContinuationSlot<'job>(Mutex<Option<OrderedJob<'job>>>);
+/// The continuation a running job may leave for its own worker.
+///
+/// The flag is what keeps the lock cold. A slot is built per `run_job` frame,
+/// and a platform lock is allocated the first time each one is locked, so a
+/// job that leaves no continuation -- most of them -- paid an allocation for a
+/// lock guarding a `None`.
+struct ContinuationSlot<'job> {
+    pending: AtomicBool,
+    job: Mutex<Option<OrderedJob<'job>>>,
+}
 
 impl<'job> ContinuationSlot<'job> {
+    fn new() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+            job: Mutex::new(None),
+        }
+    }
+
     fn put(&self, next: OrderedJob<'job>) -> Result<(), OrderedJob<'job>> {
-        let mut pending = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self.job.lock().unwrap_or_else(PoisonError::into_inner);
         if pending.is_some() {
             return Err(next);
         }
         *pending = Some(next);
+        self.pending.store(true, Ordering::Release);
         Ok(())
     }
 
     fn take(&self) -> Option<OrderedJob<'job>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+        if !self.pending.load(Ordering::Acquire) {
+            return None;
+        }
+        let taken = self
+            .job
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        self.pending.store(false, Ordering::Release);
+        taken
     }
 }
 
@@ -356,7 +382,7 @@ impl<'job> AdmissionScheduler<'job> {
     where
         'job: 'scope,
     {
-        let continuations = ContinuationSlot(Mutex::new(None));
+        let continuations = ContinuationSlot::new();
         let admit = ScopeAdmit {
             scheduler: self,
             scope,
