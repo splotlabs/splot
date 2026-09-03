@@ -226,6 +226,22 @@ pub(crate) struct TileCoeffContextState {
     left_dc: [Vec<u8>; PLANE_COUNT],
 }
 
+/// Hands a finished tile's context lines back to the decode's context store.
+impl Drop for TileCoeffContextState {
+    fn drop(&mut self) {
+        for lines in [
+            &mut self.above_level,
+            &mut self.left_level,
+            &mut self.above_dc,
+            &mut self.left_dc,
+        ] {
+            for line in lines {
+                crate::support::buffer_pool::recycle(line);
+            }
+        }
+    }
+}
+
 impl TileCoeffContextState {
     pub(crate) fn allocation(mi_rows: usize, mi_cols: usize) -> Result<(), TileCoeffStateError> {
         if mi_rows == 0 || mi_cols == 0 {
@@ -640,7 +656,7 @@ fn fill_context_line(
     }
 }
 
-fn zeroed_plane_lines<T: Default>(
+fn zeroed_plane_lines<T: Default + Send + 'static>(
     lengths: [usize; PLANE_COUNT],
 ) -> Result<[Vec<T>; PLANE_COUNT], TileCoeffStateError> {
     Ok([
@@ -650,9 +666,10 @@ fn zeroed_plane_lines<T: Default>(
     ])
 }
 
-fn zeroed_vec<T: Default>(len: usize) -> Result<Vec<T>, TileCoeffStateError> {
-    let mut values = Vec::new();
-    values.try_reserve_exact(len)?;
+fn zeroed_vec<T: Default + Send + 'static>(len: usize) -> Result<Vec<T>, TileCoeffStateError> {
+    let mut values = crate::support::buffer_pool::take(len);
+    values.clear();
+    values.try_reserve_exact(len.saturating_sub(values.capacity()))?;
     values.resize_with(len, T::default);
     Ok(values)
 }
