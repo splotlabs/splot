@@ -430,6 +430,17 @@ pub(super) struct OwnedTrajectoryFields {
     reference_count: usize,
 }
 
+/// Hands the finished band's cells back to the decode's context store.
+///
+/// The band moves its buffer here when it finishes, so by the time the band
+/// itself is dropped there is nothing left for it to return: without this the
+/// trajectory field was the one frame-scale buffer the store never saw again.
+impl Drop for OwnedTrajectoryFields {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.cells);
+    }
+}
+
 impl OwnedTrajectoryFields {
     pub(super) fn cell(&self, reference: usize, index: usize) -> Option<Mv> {
         if reference >= self.reference_count {
