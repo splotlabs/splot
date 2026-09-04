@@ -51,12 +51,6 @@ impl Drop for RowCoeffs {
     }
 }
 
-impl RowCoeffs {
-    fn get(&self) -> Option<&Vec<i32>> {
-        self.0.get()
-    }
-}
-
 /// The handle a block holds until its row is sealed.
 pub(crate) type CoeffBatch = Arc<RowCoeffs>;
 
@@ -181,6 +175,7 @@ pub(crate) fn coeffs_of<'a>(batch: &'a CoeffBatch, range: &Range<u32>) -> &'a [i
     let start = range.start as usize;
     let end = range.end as usize;
     batch
+        .0
         .get()
         .and_then(|coeffs| coeffs.get(start..end))
         .unwrap_or(&[])
