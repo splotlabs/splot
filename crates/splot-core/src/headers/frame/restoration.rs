@@ -44,7 +44,7 @@ use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 mod wienerns;
 
 use wienerns::parse_frame_wiener_ns_filter;
-pub use wienerns::{WienerNsFrameFilterBank, WienerNsFrameFilterClass};
+pub use wienerns::{MAX_WIENER_NS_CLASSES, WienerNsFrameFilterBank, WienerNsFrameFilterClass};
 
 /// `RESTORATION_TILESIZE_MAX` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`):
 /// maximum size of a loop-restoration tile. Exposed `pub(crate)` so the § 5.18.7.11 writer
