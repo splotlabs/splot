@@ -39,16 +39,27 @@ use crate::pipeline::unsupported;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 
 /// The stripe geometry one frame's filter phase publishes through.
-struct ProgressLayout {
-    /// Each stripe's exclusive luma row end, in stripe order.
-    stripe_ends: Vec<usize>,
-    /// Whether each stripe has landed, indexed as `stripe_ends`.
-    landed: Vec<bool>,
-    leased: Vec<bool>,
-    /// Live holders of each stripe's direct lease: the lease itself plus one
-    /// per plane target. The lease is released when this reaches zero, which is
+/// One stripe's publication state.
+///
+/// The four facts a stripe carries were four parallel vectors, so a frame paid
+/// four allocations to open its progress and every read walked four
+/// allocations; they are one row each now.
+#[derive(Clone, Copy, Default)]
+struct StripeProgress {
+    /// The stripe's exclusive luma row end.
+    end: usize,
+    /// Whether the stripe has landed.
+    landed: bool,
+    leased: bool,
+    /// Live holders of the stripe's direct lease: the lease itself plus one per
+    /// plane target. The lease is released when this reaches zero, which is
     /// what a per-lease reference count used to track.
-    direct_holds: Vec<u32>,
+    holds: u32,
+}
+
+struct ProgressLayout {
+    /// Each stripe's publication state, in stripe order.
+    stripes: Vec<StripeProgress>,
     direct_aligned: bool,
     freezing: bool,
     /// The next stripe the contiguous prefix is waiting for.
@@ -436,19 +447,16 @@ impl<T: ReconSample> FrameProgress<T> {
             }
             next = end;
         }
-        let mut stripe_ends = crate::support::buffer_pool::take::<usize>(ranges.len());
-        stripe_ends.extend(ranges.iter().map(|&(_, end)| end));
-        let mut landed = crate::support::buffer_pool::take::<bool>(ranges.len());
-        landed.resize(ranges.len(), false);
-        let mut leased = crate::support::buffer_pool::take::<bool>(ranges.len());
-        leased.resize(ranges.len(), false);
-        let mut direct_holds = crate::support::buffer_pool::take::<u32>(ranges.len());
-        direct_holds.resize(ranges.len(), 0);
+        let mut stripes = Vec::new();
+        if stripes.try_reserve_exact(ranges.len()).is_err() {
+            return false;
+        }
+        stripes.extend(ranges.iter().map(|&(_, end)| StripeProgress {
+            end,
+            ..StripeProgress::default()
+        }));
         let layout = ProgressLayout {
-            stripe_ends,
-            landed,
-            leased,
-            direct_holds,
+            stripes,
             direct_aligned: ranges
                 .iter()
                 .take(ranges.len().saturating_sub(1))
@@ -467,17 +475,17 @@ impl<T: ReconSample> FrameProgress<T> {
         let mut layout = layout.lock();
         if layout.freezing
             || !layout.direct_aligned
-            || layout.landed.get(stripe).copied()?
-            || *layout.leased.get(stripe)?
+            || layout.stripes.get(stripe)?.landed
+            || layout.stripes.get(stripe)?.leased
         {
             return None;
         }
         let start = if stripe == 0 {
             0
         } else {
-            *layout.stripe_ends.get(stripe - 1)?
+            layout.stripes.get(stripe - 1)?.end
         };
-        let end = *layout.stripe_ends.get(stripe)?;
+        let end = layout.stripes.get(stripe)?.end;
         let workspace_guard = self.workspace.read();
         let workspace = workspace_guard.as_ref()?;
         let chroma_start = start >> self.subsampling_y;
@@ -488,9 +496,13 @@ impl<T: ReconSample> FrameProgress<T> {
         if u.is_some() != v.is_some() {
             return None;
         }
-        layout.leased[stripe] = true;
+        layout.stripes[stripe].leased = true;
         let holds = 2 + u32::from(u.is_some()) + u32::from(v.is_some());
-        if let Some(slot) = layout.direct_holds.get_mut(stripe) {
+        if let Some(slot) = layout
+            .stripes
+            .get_mut(stripe)
+            .map(|stripe| &mut stripe.holds)
+        {
             *slot = holds;
         }
         drop(workspace_guard);
@@ -514,14 +526,23 @@ impl<T: ReconSample> FrameProgress<T> {
             return;
         };
         let mut layout = layout.lock();
-        let released = match layout.direct_holds.get_mut(stripe) {
+        let released = match layout
+            .stripes
+            .get_mut(stripe)
+            .map(|stripe| &mut stripe.holds)
+        {
             Some(holds) => {
                 *holds = holds.saturating_sub(1);
                 *holds == 0
             }
             None => return,
         };
-        if released && let Some(leased) = layout.leased.get_mut(stripe) {
+        if released
+            && let Some(leased) = layout
+                .stripes
+                .get_mut(stripe)
+                .map(|stripe| &mut stripe.leased)
+        {
             *leased = false;
         }
     }
@@ -529,7 +550,11 @@ impl<T: ReconSample> FrameProgress<T> {
     /// Holders left on a stripe's direct lease.
     fn direct_holds(&self, stripe: usize) -> u32 {
         self.layout.get().map_or(0, |layout| {
-            layout.lock().direct_holds.get(stripe).copied().unwrap_or(0)
+            layout
+                .lock()
+                .stripes
+                .get(stripe)
+                .map_or(0, |stripe| stripe.holds)
         })
     }
 
@@ -551,7 +576,11 @@ impl<T: ReconSample> FrameProgress<T> {
             return;
         };
         let mut layout = layout.lock();
-        let Some(leased) = layout.leased.get_mut(stripe) else {
+        let Some(leased) = layout
+            .stripes
+            .get_mut(stripe)
+            .map(|stripe| &mut stripe.leased)
+        else {
             return;
         };
         *leased = false;
@@ -625,7 +654,7 @@ impl<T: ReconSample> FrameProgress<T> {
     ) -> Result<R> {
         if let Some(layout) = self.layout.get() {
             let mut layout = layout.lock();
-            if layout.leased.iter().any(|&leased| leased) {
+            if layout.stripes.iter().any(|stripe| stripe.leased) {
                 return Err(live_direct_lease());
             }
             layout.freezing = true;
@@ -637,26 +666,29 @@ impl<T: ReconSample> FrameProgress<T> {
 }
 
 fn complete_stripe(layout: &mut ProgressLayout, stripe: usize) -> usize {
-    let Some(landed) = layout.landed.get_mut(stripe) else {
+    let Some(landed) = layout
+        .stripes
+        .get_mut(stripe)
+        .map(|stripe| &mut stripe.landed)
+    else {
         return layout
             .prefix
             .checked_sub(1)
-            .and_then(|last| layout.stripe_ends.get(last).copied())
+            .and_then(|last| layout.stripes.get(last).map(|stripe| stripe.end))
             .unwrap_or_default();
     };
     *landed = true;
     while layout
-        .landed
+        .stripes
         .get(layout.prefix)
-        .copied()
-        .unwrap_or_default()
+        .is_some_and(|stripe| stripe.landed)
     {
         layout.prefix += 1;
     }
     layout
         .prefix
         .checked_sub(1)
-        .and_then(|last| layout.stripe_ends.get(last).copied())
+        .and_then(|last| layout.stripes.get(last).map(|stripe| stripe.end))
         .unwrap_or_default()
 }
 
