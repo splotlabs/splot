@@ -18,10 +18,6 @@ use core::ops::Range;
 use parking_lot::Mutex;
 use std::sync::{Arc, OnceLock};
 
-fn take_pooled(cells: usize) -> Vec<i32> {
-    crate::support::buffer_pool::take(cells)
-}
-
 /// A row's coefficients, shared by every block parsed into it.
 pub(crate) struct RowCoeffs(OnceLock<Vec<i32>>);
 
@@ -138,7 +134,7 @@ pub(crate) fn seal() {
         arena.try_borrow_mut().map_or_else(
             |_| Vec::new(),
             |mut arena| {
-                let mut row = take_pooled(arena.len());
+                let mut row = crate::support::buffer_pool::take(arena.len());
                 if row
                     .try_reserve(arena.len().saturating_sub(row.capacity()))
                     .is_ok()
