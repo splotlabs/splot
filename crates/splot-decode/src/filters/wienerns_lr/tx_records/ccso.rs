@@ -15,6 +15,14 @@ use crate::filters::ccso::CcsoUnitGrid;
 
 use super::{CCSO_PLANES, CCSO_SYMBOL_VALUES, MI_SIZE_LOG2, read_tx_symbol};
 
+impl Drop for CcsoState {
+    fn drop(&mut self) {
+        for plane in &mut self.blocks {
+            crate::support::buffer_pool::recycle(plane);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CcsoState {
     pub(crate) active: bool,
@@ -50,10 +58,12 @@ impl CcsoState {
             .checked_mul(grid_cols)
             .ok_or_else(ccso_state_error)?;
         let copy_region = |source: &[u8], plane: splot_recon::PlaneId| -> Result<Vec<u8>> {
-            let mut blocks = Vec::new();
-            blocks
-                .try_reserve_exact(len)
-                .map_err(|_| ccso_allocation_error(plane))?;
+            let mut blocks = crate::support::buffer_pool::take::<u8>(len);
+            if blocks.capacity() < len {
+                blocks
+                    .try_reserve_exact(len)
+                    .map_err(|_| ccso_allocation_error(plane))?;
+            }
             for row in row_start..row_end {
                 let start = row
                     .checked_mul(self.grid_cols)
@@ -123,7 +133,13 @@ impl CcsoState {
             shift,
             plane_enabled,
             sb_reuse,
-            blocks: std::array::from_fn(|_| vec![0u8; cells]),
+            // From the reserve, returned by `Drop`: a frame builds one of these
+            // grids per plane and drops it when the frame is done.
+            blocks: std::array::from_fn(|_| {
+                let mut plane = crate::support::buffer_pool::take::<u8>(cells);
+                plane.resize(cells, 0);
+                plane
+            }),
             row_start: 0,
             col_start: 0,
             grid_rows,
@@ -321,18 +337,21 @@ impl CcsoState {
         Ok(())
     }
 
-    pub(crate) fn into_grid(self) -> Result<Option<CcsoUnitGrid>> {
+    pub(crate) fn into_grid(mut self) -> Result<Option<CcsoUnitGrid>> {
         if !self.active {
             return Ok(None);
         }
         if self.row_start != 0 || self.col_start != 0 {
             return Err(ccso_state_error());
         }
+        // Taken, not moved out: the grid inherits the reserve's buffers and this
+        // state's `Drop` then has nothing left to return.
+        let blocks = core::mem::take(&mut self.blocks);
         CcsoUnitGrid::new(
             self.active,
             self.shift,
             self.plane_enabled,
-            self.blocks,
+            blocks,
             self.grid_rows,
             self.grid_cols,
         )

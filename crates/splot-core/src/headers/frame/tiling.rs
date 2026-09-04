@@ -56,10 +56,10 @@ pub struct CoreSeqTileView {
     /// `SeqSbColStarts[0..SeqTileCols]` (AV2 § 5.4.2), needed by the non-uniform
     /// `reuse_tile_params()` branch (§ 5.18.7.4); empty unless a non-reserved sequence
     /// tile layout is present. Bounded by `MAX_TILE_COLS`.
-    pub seq_sb_col_starts: Vec<u32>,
+    pub seq_sb_col_starts: std::sync::Arc<[u32]>,
     /// `SeqSbRowStarts[0..SeqTileRows]` (AV2 § 5.4.2), the row companion of
     /// [`Self::seq_sb_col_starts`]. Bounded by `MAX_TILE_ROWS`.
-    pub seq_sb_row_starts: Vec<u32>,
+    pub seq_sb_row_starts: std::sync::Arc<[u32]>,
     /// `get_seq_sb_size()` (AV2 § 5.18.7.6): the `seqSbSize` argument of
     /// `tile_params()` / `reuse_tile_params()` (§ 5.18.7.2).
     pub seq_sb_size: SuperblockSize,
@@ -97,8 +97,10 @@ impl CoreSeqTileView {
             seq_tile_info_present_flag: tile.seq_tile_info_present_flag,
             allow_tile_info_change: tile.allow_tile_info_change.unwrap_or(false),
             seq_tile_params: tile.params,
-            seq_sb_col_starts: tile.seq_sb_col_starts.clone(),
-            seq_sb_row_starts: tile.seq_sb_row_starts.clone(),
+            // Shared, not copied: the sequence's tile starts do not change
+            // between frames, and this view is rebuilt for every one.
+            seq_sb_col_starts: std::sync::Arc::clone(&tile.seq_sb_col_starts),
+            seq_sb_row_starts: std::sync::Arc::clone(&tile.seq_sb_row_starts),
             seq_sb_size: partition.seq_sb_size(),
             use_256x256_superblock: partition.use_256x256_superblock,
             use_128x128_superblock: partition.use_128x128_superblock,
@@ -592,8 +594,8 @@ mod tests {
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
-        view.seq_sb_col_starts = vec![0, 2];
-        view.seq_sb_row_starts = vec![0, 2];
+        view.seq_sb_col_starts = std::sync::Arc::from(vec![0, 2]);
+        view.seq_sb_row_starts = std::sync::Arc::from(vec![0, 2]);
         let mut bits = Bits::default();
         bits.f(2, 2); // context_update_tile_id (n = TileRowsLog2 + TileColsLog2 = 2)
         bits.f(1, 2); // tile_size_bytes_minus_1 -> TileSizeBytes = 2
@@ -628,8 +630,8 @@ mod tests {
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
-        view.seq_sb_col_starts = vec![0, 2];
-        view.seq_sb_row_starts = vec![0, 2];
+        view.seq_sb_col_starts = std::sync::Arc::from(vec![0, 2]);
+        view.seq_sb_row_starts = std::sync::Arc::from(vec![0, 2]);
         let mut bits = Bits::default();
         bits.bit(1); // uniform_tile_spacing_flag (fresh tile_params)
         let data = bits.into_bytes();
@@ -646,8 +648,8 @@ mod tests {
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
-        view.seq_sb_col_starts = vec![0, 2];
-        view.seq_sb_row_starts = vec![0, 2];
+        view.seq_sb_col_starts = std::sync::Arc::from(vec![0, 2]);
+        view.seq_sb_row_starts = std::sync::Arc::from(vec![0, 2]);
         assert!(matches!(
             parse(&view, &[], FrameSize::new(256, 256)),
             Err(Error::UnexpectedEof { .. })
@@ -765,8 +767,8 @@ mod proptests {
                     covers_cols: true,
                     covers_rows: true,
                 }),
-                seq_sb_col_starts,
-                seq_sb_row_starts,
+                seq_sb_col_starts: std::sync::Arc::from(seq_sb_col_starts),
+                seq_sb_row_starts: std::sync::Arc::from(seq_sb_row_starts),
                 seq_sb_size: sb_size(seq_sb),
                 use_256x256_superblock: use_256,
                 use_128x128_superblock: use_128,

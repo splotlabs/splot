@@ -163,8 +163,8 @@ mod tests {
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
-        view.seq_sb_col_starts = vec![0, 2];
-        view.seq_sb_row_starts = vec![0, 2];
+        view.seq_sb_col_starts = std::sync::Arc::from(vec![0, 2]);
+        view.seq_sb_row_starts = std::sync::Arc::from(vec![0, 2]);
         let mut bits = Bits::default();
         bits.f(2, 2).f(1, 2);
         let info = parse(&view, &bits.into_bytes(), FrameSize::new(256, 256), false, false);

@@ -802,10 +802,10 @@ pub struct SequenceTileConfig {
     /// time so the frame § 5.18.7.4 non-uniform `reuse_tile_params()` branch can rebuild
     /// the layout. Empty when tile info is not signalled or the level is reserved (no
     /// parsed [`Self::params`]). Bounded by `MAX_TILE_COLS`.
-    pub seq_sb_col_starts: Vec<u32>,
+    pub seq_sb_col_starts: std::sync::Arc<[u32]>,
     /// `SeqSbRowStarts[0..SeqTileRows]` (AV2 § 5.4.2; the `sbRowStarts` companion of
     /// [`Self::seq_sb_col_starts`]). Bounded by `MAX_TILE_ROWS`.
-    pub seq_sb_row_starts: Vec<u32>,
+    pub seq_sb_row_starts: std::sync::Arc<[u32]>,
 }
 
 impl SequenceTileConfig {
@@ -848,8 +848,8 @@ pub fn parse_sequence_tile_config(
             seq_tile_info_present_flag: false,
             allow_tile_info_change: None,
             params: None,
-            seq_sb_col_starts: Vec::new(),
-            seq_sb_row_starts: Vec::new(),
+            seq_sb_col_starts: std::sync::Arc::from(Vec::new()),
+            seq_sb_row_starts: std::sync::Arc::from(Vec::new()),
         });
     }
 
@@ -869,7 +869,7 @@ pub fn parse_sequence_tile_config(
         seq_tile_info_present_flag: true,
         allow_tile_info_change: Some(allow_tile_info_change),
         params,
-        seq_sb_col_starts,
-        seq_sb_row_starts,
+        seq_sb_col_starts: std::sync::Arc::from(seq_sb_col_starts),
+        seq_sb_row_starts: std::sync::Arc::from(seq_sb_row_starts),
     })
 }
