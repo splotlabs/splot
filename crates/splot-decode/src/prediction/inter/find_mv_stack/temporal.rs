@@ -1134,17 +1134,16 @@ impl TemporalMvContext {
                     .and_then(|_| ref_order_hint.get(slot as usize).copied())
                     .filter(|&hint| hint != u32::MAX)
             }));
-        let mut ref_motion_metadata = crate::support::buffer_pool::take::<
-            Option<TemporalMotionFieldMetadata>,
-        >(ref_motion_fields.len());
-        ref_motion_metadata.extend(
+        let mut ref_motion_metadata =
+            crate::reference::buffer::RefSlots::<Option<TemporalMotionFieldMetadata>>::default();
+        ref_motion_metadata.extend_within(
             ref_motion_fields
                 .iter()
                 .map(|field| field.as_ref().map(|field| field.metadata())),
         );
         let mut ref_motion_layouts =
-            crate::support::buffer_pool::take::<Option<MotionFieldLayout>>(ref_motion_fields.len());
-        ref_motion_layouts.extend(
+            crate::reference::buffer::RefSlots::<Option<MotionFieldLayout>>::default();
+        ref_motion_layouts.extend_within(
             ref_motion_fields
                 .iter()
                 .map(|field| field.as_ref().map(|field| field.layout())),
@@ -1186,7 +1185,10 @@ impl TemporalMvContext {
             self.trajectory_scratch = self.trajectories.take();
             None
         };
-        let mut prepared = Vec::with_capacity(projections.len());
+        // At most `MFMV_STACK_SIZE` projections are ever queued, and an
+        // `Option` is `Default` whatever it holds, so the prepared list is
+        // inline even though a projection borrows its source field.
+        let mut prepared = PreparedProjections::default();
         for projection in projections.iter().copied() {
             let slot = *ref_frame_idx
                 .get(projection.ref_index)
@@ -1216,10 +1218,12 @@ impl TemporalMvContext {
                 &self.ref_order_hints,
             )
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-            prepared.push(PreparedTemporalProjection {
-                source,
-                field: source_field,
-            });
+            prepared
+                .push(Some(PreparedTemporalProjection {
+                    source,
+                    field: source_field,
+                }))
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         }
         run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field);
         if let Some(trajectories) = trajectories.as_mut() {
@@ -1893,7 +1897,7 @@ fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usi
 /// run in. An installed pool runs the same band tasks at every worker count;
 /// direct callers outside the owned pool replay those bands in place.
 fn run_band_projections(
-    prepared: &[PreparedTemporalProjection<'_>],
+    prepared: &[Option<PreparedTemporalProjection<'_>>],
     config: TemporalProjectionConfig,
     trajectories: Option<&mut TrajectoryState>,
     field: &mut ProjectedTemporalMotionField,
@@ -1901,7 +1905,7 @@ fn run_band_projections(
     let band_rows = projection_band_rows(field.height8, config);
     let run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
         let rows8 = band.row_base..band.row_base + band_rows;
-        for prepared in prepared {
+        for prepared in prepared.iter().flatten() {
             project_temporal_motion_field(
                 &prepared.source,
                 prepared.field,
@@ -1983,7 +1987,12 @@ fn project_whole_temporal_motion_field(
         source: source_info,
         field: source,
     });
-    run_band_projections(prepared.as_slice(), config, trajectories, output);
+    run_band_projections(
+        core::slice::from_ref(&prepared),
+        config,
+        trajectories,
+        output,
+    );
 }
 
 /// One unit-aligned row band of a projected motion field.
@@ -2012,6 +2021,12 @@ impl ProjectedTemporalMotionField {
 
 /// One queued AV2 § 7.9.3 motion-field projection with its per-source preamble
 /// resolved once, so the scan can be replayed band by band.
+/// One frame's prepared projections, bounded like the queue that names them.
+type PreparedProjections<'a> = splot_core::tile::InlineVec<
+    Option<PreparedTemporalProjection<'a>>,
+    { selection::MFMV_STACK_SIZE },
+>;
+
 struct PreparedTemporalProjection<'a> {
     source: TemporalProjectionSource,
     field: &'a TemporalMotionField,

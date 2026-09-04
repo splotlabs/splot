@@ -15,7 +15,7 @@ type RefSlots<T> =
     splot_core::tile::InlineVec<T, { splot_core::headers::sequence::MAX_REF_FRAMES }>;
 
 const TIP_MFMV_STACK_SIZE: usize = 3;
-const MFMV_STACK_SIZE: usize = 4;
+pub(super) const MFMV_STACK_SIZE: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct TemporalProjection {
