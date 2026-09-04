@@ -73,7 +73,6 @@ pub(super) struct BandCells {
     #[allow(dead_code, reason = "keeps the block `data` points into alive")]
     owner: std::sync::Arc<SharedTemporalCells>,
     data: core::ptr::NonNull<[TemporalMotionCell]>,
-    len: usize,
 }
 
 /// Safety: the owning block is `Send`, and a band's range is disjoint from
@@ -90,11 +89,11 @@ impl BandCells {
         len: usize,
     ) -> Option<Self> {
         let data = core::ptr::NonNull::from(owner.range(start, len)?);
-        Some(Self { owner, data, len })
+        Some(Self { owner, data })
     }
 
     pub(super) const fn len(&self) -> usize {
-        self.len
+        self.data.len()
     }
 
     #[allow(
