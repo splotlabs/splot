@@ -148,7 +148,9 @@ impl Iterator for ReferenceRefreshSlots {
 /// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug, Eq, PartialEq)]
 pub struct ReferenceFrameStore<F> {
-    slots: Vec<Option<F>>,
+    /// One entry per reference slot, of which AV2 § 3 allows at most
+    /// [`ReferenceSlot::MAX_SLOTS`], so the store costs no allocation.
+    slots: splot_core::tile::InlineVec<Option<F>, { ReferenceSlot::MAX_SLOTS }>,
 }
 
 impl<F> ReferenceFrameStore<F> {
@@ -165,22 +167,30 @@ impl<F> ReferenceFrameStore<F> {
             });
         }
 
-        let mut slots = Vec::with_capacity(capacity);
-        slots.resize_with(capacity, || None);
+        let mut slots = splot_core::tile::InlineVec::default();
+        for _ in 0..capacity {
+            slots
+                .push(None)
+                .ok_or(ReconError::InvalidReferenceStoreCapacity {
+                    capacity,
+                    max_slots: ReferenceSlot::MAX_SLOTS,
+                })?;
+        }
         Ok(Self { slots })
     }
 
     /// Returns the fixed slot capacity.
     pub const fn capacity(&self) -> usize {
-        self.slots.len()
+        let (_, len) = self.slots.as_array();
+        len
     }
 
     /// Returns the number of occupied slots.
     pub const fn occupied(&self) -> usize {
-        let slots = self.slots.as_slice();
+        let (slots, len) = self.slots.as_array();
         let mut occupied = 0;
         let mut index = 0;
-        while index < slots.len() {
+        while index < len {
             if slots[index].is_some() {
                 occupied += 1;
             }

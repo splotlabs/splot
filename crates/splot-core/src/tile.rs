@@ -276,6 +276,23 @@ impl<T, const N: usize> InlineVec<T, N> {
     }
 }
 
+impl<T, const N: usize> InlineVec<T, N> {
+    /// The backing array and the live length, for `const` readers that cannot
+    /// go through [`Deref`].
+    pub const fn as_array(&self) -> (&[T; N], usize) {
+        (&self.values, self.len as usize)
+    }
+}
+
+impl<'a, T, const N: usize> IntoIterator for &'a mut InlineVec<T, N> {
+    type IntoIter = core::slice::IterMut<'a, T>;
+    type Item = &'a mut T;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
 impl<T, const N: usize> core::ops::Deref for InlineVec<T, N> {
     type Target = [T];
 
