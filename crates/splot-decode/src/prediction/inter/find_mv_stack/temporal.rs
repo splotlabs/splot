@@ -1180,7 +1180,7 @@ impl TemporalMvContext {
             None
         };
         let mut prepared = Vec::with_capacity(projections.len());
-        for projection in projections {
+        for projection in projections.iter().copied() {
             let slot = *ref_frame_idx
                 .get(projection.ref_index)
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
@@ -1267,7 +1267,7 @@ impl TemporalMvContext {
             ref_motion_layouts,
         );
         let mut prepared = Vec::with_capacity(projections.len());
-        for projection in projections {
+        for projection in projections.iter().copied() {
             let slot = usize::try_from(*ref_frame_idx.get(projection.ref_index)?).ok()?;
             let source_order_hint = self
                 .ref_order_hints

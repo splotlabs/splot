@@ -252,6 +252,20 @@ impl<T, const N: usize> InlineVec<T, N> {
 }
 
 impl<T, const N: usize> InlineVec<T, N> {
+    /// Appends every item that fits, dropping any beyond the capacity.
+    ///
+    /// For lists a bound already covers, where a caller that has checked the
+    /// bound would only restate it at every element.
+    pub fn extend_within(&mut self, items: impl IntoIterator<Item = T>) {
+        for item in items {
+            if self.push(item).is_none() {
+                return;
+            }
+        }
+    }
+}
+
+impl<T, const N: usize> InlineVec<T, N> {
     /// Shortens the list to `len`, keeping the first entries.
     pub fn truncate(&mut self, len: usize) {
         if let Ok(len) = u16::try_from(len)

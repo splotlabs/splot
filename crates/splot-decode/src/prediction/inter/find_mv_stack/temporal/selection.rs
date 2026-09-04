@@ -6,10 +6,18 @@ use super::{
     sorted_reference_hints,
 };
 
+/// One projection candidate list, bounded by [`MFMV_STACK_SIZE`].
+pub(super) type ProjectionQueue = splot_core::tile::InlineVec<TemporalProjection, MFMV_STACK_SIZE>;
+
+/// One entry per reference slot, which a sequence bounds at
+/// [`splot_core::headers::sequence::MAX_REF_FRAMES`].
+type RefSlots<T> =
+    splot_core::tile::InlineVec<T, { splot_core::headers::sequence::MAX_REF_FRAMES }>;
+
 const TIP_MFMV_STACK_SIZE: usize = 3;
 const MFMV_STACK_SIZE: usize = 4;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct TemporalProjection {
     pub(super) ref_index: usize,
     pub(super) side: usize,
@@ -39,7 +47,7 @@ fn topo_sort_reference(
     ref_motion_fields: &[Option<TemporalMotionFieldMetadata>],
     overlays: &[bool],
     visited: &mut [bool],
-    stack: &mut Vec<usize>,
+    stack: &mut RefSlots<usize>,
 ) {
     if visited.get(ref_index).copied().unwrap_or(true) {
         return;
@@ -48,7 +56,7 @@ fn topo_sort_reference(
     let Some(source) = reference_motion_field(ref_index, ref_frame_idx, ref_motion_fields)
         .filter(|source| source.is_inter)
     else {
-        stack.push(ref_index);
+        let _ = stack.push(ref_index);
         return;
     };
     for target_hint in source.ref_order_hints.iter().flatten() {
@@ -116,7 +124,7 @@ pub(super) fn projection_queue(
     ref_order_hints: &[Option<u32>],
     ref_motion_fields: &[Option<TemporalMotionFieldMetadata>],
     ref_motion_layouts: &[Option<MotionFieldLayout>],
-) -> Vec<TemporalProjection> {
+) -> ProjectionQueue {
     let mut sorted_buffer = [(0usize, 0i32); super::MAX_SORTED_REFS];
     let sorted_len = sorted_reference_hints(ref_order_hints, &mut sorted_buffer);
     let mut sorted_slots = [0usize; super::MAX_SORTED_REFS];
@@ -124,8 +132,8 @@ pub(super) fn projection_queue(
         *slot = index;
     }
     let sorted = &sorted_slots[..sorted_len];
-    let mut overlays = crate::support::buffer_pool::take::<bool>(ref_order_hints.len());
-    overlays.extend((0..ref_order_hints.len()).map(|index| {
+    let mut overlays = RefSlots::<bool>::default();
+    overlays.extend_within((0..ref_order_hints.len()).map(|index| {
         let Some(hint) = ref_order_hints[index] else {
             return false;
         };
@@ -137,9 +145,9 @@ pub(super) fn projection_queue(
                 .any(|&target| relative_distance(hint, target) == 0)
         })
     }));
-    let mut visited = crate::support::buffer_pool::take::<bool>(ref_order_hints.len());
-    visited.resize(ref_order_hints.len(), false);
-    let mut stack = crate::support::buffer_pool::take::<usize>(ref_order_hints.len());
+    let mut visited = RefSlots::<bool>::default();
+    visited.extend_within(core::iter::repeat_n(false, ref_order_hints.len()));
+    let mut stack = RefSlots::<usize>::default();
     for index in 0..ref_order_hints.len() {
         topo_sort_reference(
             index,
@@ -152,7 +160,7 @@ pub(super) fn projection_queue(
         );
     }
     if stack.len() < 2 {
-        return Vec::new();
+        return ProjectionQueue::default();
     }
 
     let cur_idx = sorted
@@ -161,9 +169,9 @@ pub(super) fn projection_queue(
             ref_order_hints[index].is_some_and(|hint| relative_distance(hint, current_hint) < 0)
         })
         .map_or(-1, |index| index as isize);
-    let mut checked = crate::support::buffer_pool::take::<[bool; 2]>(ref_order_hints.len());
-    checked.resize(ref_order_hints.len(), [false; 2]);
-    let mut queue = Vec::with_capacity(MFMV_STACK_SIZE);
+    let mut checked = RefSlots::<[bool; 2]>::default();
+    checked.extend_within(core::iter::repeat_n([false; 2], ref_order_hints.len()));
+    let mut queue = ProjectionQueue::default();
     let mut add = |projection: TemporalProjection, max_check: usize| {
         let Some(source_hint) = ref_order_hints.get(projection.ref_index).copied().flatten() else {
             return;
@@ -189,7 +197,7 @@ pub(super) fn projection_queue(
             return;
         }
         checked[projection.ref_index][projection.side] = true;
-        queue.push(projection);
+        let _ = queue.push(projection);
     };
 
     let past_count = sorted
@@ -364,7 +372,7 @@ mod tests {
         };
 
         assert_eq!(
-            projection_queue(
+            *projection_queue(
                 (4, 4),
                 2,
                 config,
@@ -372,7 +380,8 @@ mod tests {
                 &[Some(1), Some(3)],
                 &fields,
                 &layouts,
-            ),
+            )
+            .as_ref(),
             vec![
                 TemporalProjection {
                     ref_index: 0,
@@ -456,7 +465,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            projection_queue(
+            *projection_queue(
                 (4, 4),
                 2,
                 TemporalProjectionConfig {
@@ -471,7 +480,8 @@ mod tests {
                 &[Some(1), Some(3)],
                 &fields,
                 &layouts,
-            ),
+            )
+            .as_ref(),
             vec![TemporalProjection {
                 ref_index: 0,
                 side: 1,
