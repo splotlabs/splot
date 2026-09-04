@@ -75,7 +75,7 @@ const SHUFFLED_INDEX: [usize; 64] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WienerNsFrameFilterBank {
     /// One resolved class entry per `numClasses`, held inline: AV2 bounds a
-    /// bank at [`MAX_WIENER_NS_CLASSES`] classes.
+    /// bank at `MAX_WIENER_NS_CLASSES` classes.
     pub classes: crate::tile::InlineVec<WienerNsFrameFilterClass, MAX_WIENER_NS_CLASSES>,
 }
 

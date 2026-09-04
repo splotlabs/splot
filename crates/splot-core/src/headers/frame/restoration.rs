@@ -298,7 +298,7 @@ pub struct LrParams {
     pub uses_lr: bool,
     /// Per-plane parsed state (`NumPlanes` entries; empty when restoration is disabled).
     /// Per-plane parsed state, held inline: AV2 codes at most
-    /// [`MAX_LR_PLANES`] planes.
+    /// `MAX_LR_PLANES` planes.
     pub planes: crate::tile::InlineVec<
         LrPlaneParams,
         { crate::headers::frame::restoration::MAX_LR_PLANES },
@@ -701,7 +701,7 @@ pub struct CcsoParams {
     /// is disabled (the early return leaves all `ccso_planes` `0`).
     pub ccso_frame_flag: Option<bool>,
     /// Per-plane parsed state (`NumPlanes` entries; empty when CCSO is disabled or the
-    /// frame flag is `0`). Held inline: AV2 codes at most [`MAX_CCSO_PLANES`].
+    /// frame flag is `0`). Held inline: AV2 codes at most `MAX_CCSO_PLANES`.
     pub planes: crate::tile::InlineVec<CcsoPlaneParams, MAX_CCSO_PLANES>,
 }
 
