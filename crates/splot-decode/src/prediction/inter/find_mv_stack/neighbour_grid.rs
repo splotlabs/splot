@@ -292,17 +292,18 @@ pub(super) struct GridPlanes {
 /// The flag plane is filled; the motion plane is left empty so a grid that only
 /// publishes flags — the split path's parse pass — never pays the motion fill,
 /// and the first `record_motion` sizes it. See `NeighbourMvGrid::motion_plane`.
-fn new_grid_planes(cells: usize) -> Result<GridPlanes, std::collections::TryReserveError> {
-    let mut planes = GridPlanes {
-        flags: crate::support::buffer_pool::take(cells),
-        motion: crate::support::buffer_pool::take(cells),
-        leaves: crate::support::buffer_pool::take(0),
-    };
+fn reset_grid_planes(
+    planes: &mut GridPlanes,
+    cells: usize,
+) -> Result<(), std::collections::TryReserveError> {
+    planes.flags.clear();
+    planes.motion.clear();
+    planes.leaves.clear();
     planes
         .flags
-        .try_reserve_exact(cells.saturating_sub(planes.flags.len()))?;
+        .try_reserve_exact(cells.saturating_sub(planes.flags.capacity()))?;
     planes.flags.resize(cells, None);
-    Ok(planes)
+    Ok(())
 }
 
 /// One leaf's flag-plane publication, replayable onto a second grid.
@@ -321,6 +322,7 @@ pub(crate) struct NeighbourFlagRecord {
     syntax: NeighbourFlagSyntax,
 }
 
+#[derive(Default)]
 pub(crate) struct NeighbourMvGrid {
     pub(super) origin_row: usize,
     pub(super) origin_col: usize,
@@ -338,16 +340,30 @@ impl NeighbourMvGrid {
         mi_rows: core::ops::Range<usize>,
         mi_cols: core::ops::Range<usize>,
     ) -> Result<Self, TileGridConstructionError> {
+        let mut grid = Self::default();
+        grid.reset_for_tile(mi_rows, mi_cols)?;
+        Ok(grid)
+    }
+
+    /// Lays this grid out for another tile, keeping the plane storage.
+    ///
+    /// The decoder holds one grid for the whole stream, so a steady-state tile
+    /// reuses the planes the last one left instead of sizing new ones.
+    pub(crate) fn reset_for_tile(
+        &mut self,
+        mi_rows: core::ops::Range<usize>,
+        mi_cols: core::ops::Range<usize>,
+    ) -> Result<(), TileGridConstructionError> {
         let (rows, cols, cells) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
-        Ok(Self {
-            origin_row: mi_rows.start,
-            origin_col: mi_cols.start,
-            mi_rows: rows,
-            mi_cols: cols,
-            planes: new_grid_planes(cells).map_err(|_| TileGridConstructionError::Allocation)?,
-            flag_log: Vec::new(),
-            logging: false,
-        })
+        self.origin_row = mi_rows.start;
+        self.origin_col = mi_cols.start;
+        self.mi_rows = rows;
+        self.mi_cols = cols;
+        reset_grid_planes(&mut self.planes, cells)
+            .map_err(|_| TileGridConstructionError::Allocation)?;
+        self.flag_log.clear();
+        self.logging = false;
+        Ok(())
     }
 
     /// Starts logging flag publications for later replay onto another grid.

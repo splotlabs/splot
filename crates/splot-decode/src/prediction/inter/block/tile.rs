@@ -313,6 +313,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         cdef_state: CdefState,
         gdf_state: GdfState,
         ccso_state: CcsoState,
+        mut mv_grid: NeighbourMvGrid,
     ) -> Result<Self> {
         let tile_offset = tile.tile_byte_span().start;
         let chroma = context.sequence.general.chroma_format_idc;
@@ -338,7 +339,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         let segment_id_state =
             TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone())
                 .map_err(|error| inter_tile_segment_id_error(&error))?;
-        let mv_grid = NeighbourMvGrid::new_for_tile(tile_rows.clone(), tile_cols.clone())
+        mv_grid
+            .reset_for_tile(tile_rows.clone(), tile_cols.clone())
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
         let y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new_for_tile(
             tile_rows.clone(),
@@ -539,8 +541,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         }
     }
 
-    fn into_output(self) -> TileParserOutput {
-        self.output
+    fn into_output(self) -> (TileParserOutput, NeighbourMvGrid) {
+        (self.output, self.mv_grid)
     }
 }
 
@@ -977,6 +979,8 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
 
 #[derive(Default)]
 pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
+    /// The neighbour grid every tile of the stream is laid out into.
+    mv_grid: NeighbourMvGrid,
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
@@ -990,6 +994,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
         surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
     ) -> Self {
         Self {
+            mv_grid: NeighbourMvGrid::default(),
             ordered,
             workers: workers.take_reusable(),
             surfaces,
@@ -1461,6 +1466,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
         gdf_state.for_tile(mi_rows.clone(), mi_cols.clone())?,
         ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
+        NeighbourMvGrid::default(),
     )?;
     parser.mv_grid.log_flags();
     loop {
@@ -1480,7 +1486,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         mi_rows,
         mi_cols,
         unit_count,
-        output: parser.into_output(),
+        output: parser.into_output().0,
     })
 }
 
@@ -1601,6 +1607,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
     TileDecodeOutput,
 )> {
     let TileDecodeScratch {
+        mut mv_grid,
         mut ordered,
         mut workers,
         surfaces: mut recycled_surfaces,
@@ -1650,6 +1657,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             cdef_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
             gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
             ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
+            mv_grid,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
         let row_buffers = ReconRowBufferPool::new(
@@ -1658,6 +1666,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 .max(1),
         );
         let mut tile_scratch = TileDecodeScratch {
+            mv_grid: NeighbourMvGrid::default(),
             ordered,
             workers,
             surfaces: recycled_surfaces,
@@ -1673,6 +1682,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             superblock_rects
         };
         let TileDecodeScratch {
+            mv_grid: _,
             ordered: tile_ordered,
             workers: tile_workers,
             surfaces: tile_surfaces,
@@ -1721,7 +1731,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
         }
         *frame_filter_records = next_records;
         workers = tile_workers;
-        let output = parser.into_output();
+        let (output, next_mv_grid) = parser.into_output();
+        mv_grid = next_mv_grid;
         merge_tile_filter_state(
             &mut cdef_state,
             &mut gdf_state,
@@ -1744,6 +1755,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
 
     Ok((
         TileDecodeScratch {
+            mv_grid,
             ordered,
             workers,
             surfaces: recycled_surfaces,
