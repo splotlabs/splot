@@ -2052,7 +2052,9 @@ struct TemporalProjectionSource {
     target_ref: Option<usize>,
     target_order_hint: Option<u32>,
     source_to_current: i32,
-    target_cache: Vec<Option<(u32, Option<usize>, i32)>>,
+    /// One entry per reference slot, so it sits inline rather than in a vector
+    /// built for every projection of every frame.
+    target_cache: [Option<(u32, Option<usize>, i32)>; MAX_SORTED_REFS],
 }
 
 impl TemporalProjectionSource {
@@ -2081,19 +2083,20 @@ impl TemporalProjectionSource {
             target_order_hint: target_ref
                 .and_then(|target| ref_order_hints.get(target).copied().flatten()),
             source_to_current: super::super::get_relative_dist(source_hint, current_hint),
-            target_cache: source
-                .ref_order_hints
-                .iter()
-                .map(|&hint| {
-                    let hint = hint?;
-                    let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
-                    Some((
-                        hint,
-                        mapped_reference(source_order_hint, hint, ref_order_hints),
-                        super::super::get_relative_dist(source_hint, target_hint),
-                    ))
-                })
-                .collect(),
+            target_cache: {
+                let mut cache = [const { None }; MAX_SORTED_REFS];
+                for (slot, &hint) in cache.iter_mut().zip(source.ref_order_hints.iter()) {
+                    *slot = hint.map(|hint| {
+                        let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
+                        (
+                            hint,
+                            mapped_reference(source_order_hint, hint, ref_order_hints),
+                            super::super::get_relative_dist(source_hint, target_hint),
+                        )
+                    });
+                }
+                cache
+            },
         })
     }
 }

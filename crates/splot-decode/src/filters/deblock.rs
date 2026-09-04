@@ -451,7 +451,14 @@ impl<'a> FrameDeblock<'a> {
             }
         }
         let (y, u, v) = workspace.as_frame_mut().into_planes();
+        // Reserved once: a plane contributes one job per vertical band, and
+        // growing from empty spends an allocation on every doubling.
+        let luma_bands = dimensions[0].map_or(0, |(_, height)| {
+            height.div_ceil(VERTICAL_BAND_MI_ROWS * MI_SIZE)
+        });
         let mut jobs = Vec::new();
+        jobs.try_reserve(luma_bands.saturating_mul(3).saturating_add(3))
+            .map_err(|_| DeblockError::Workspace)?;
         for (plane, samples) in [Some(y), u, v].into_iter().enumerate() {
             let (Some(samples), Some((width, height))) = (samples, dimensions[plane]) else {
                 continue;
