@@ -117,10 +117,13 @@ pub(super) fn projection_queue(
     ref_motion_fields: &[Option<TemporalMotionFieldMetadata>],
     ref_motion_layouts: &[Option<MotionFieldLayout>],
 ) -> Vec<TemporalProjection> {
-    let sorted = sorted_reference_hints(ref_order_hints)
-        .into_iter()
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
+    let mut sorted_buffer = [(0usize, 0i32); super::MAX_SORTED_REFS];
+    let sorted_len = sorted_reference_hints(ref_order_hints, &mut sorted_buffer);
+    let mut sorted_slots = [0usize; super::MAX_SORTED_REFS];
+    for (slot, &(index, _)) in sorted_slots.iter_mut().zip(&sorted_buffer[..sorted_len]) {
+        *slot = index;
+    }
+    let sorted = &sorted_slots[..sorted_len];
     let overlays: Vec<_> = (0..ref_order_hints.len())
         .map(|index| {
             let Some(hint) = ref_order_hints[index] else {

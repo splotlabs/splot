@@ -1585,7 +1585,9 @@ pub(crate) fn tip_reference_pair_from_hints(
     ref_order_hints: &[Option<u32>],
 ) -> Option<TipReferencePair> {
     let current = i32::try_from(current_order_hint).ok()?;
-    let sorted = sorted_reference_hints(ref_order_hints);
+    let mut sorted_buffer = [(0usize, 0i32); MAX_SORTED_REFS];
+    let sorted_len = sorted_reference_hints(ref_order_hints, &mut sorted_buffer);
+    let sorted = &sorted_buffer[..sorted_len];
     let past_index = sorted
         .iter()
         .rposition(|&(_, hint)| super::super::get_relative_dist(hint, current) < 0)?;
@@ -1615,21 +1617,33 @@ pub(crate) fn tip_reference_pair_from_hints(
     })
 }
 
-fn sorted_reference_hints(ref_order_hints: &[Option<u32>]) -> Vec<(usize, i32)> {
-    let mut sorted = ref_order_hints
-        .iter()
-        .copied()
-        .enumerate()
-        .filter_map(|(index, hint)| Some((index, i32::try_from(hint?).ok()?)))
-        .collect::<Vec<_>>();
-    for i in 0..sorted.len() {
-        for j in i + 1..sorted.len() {
-            if super::super::get_relative_dist(sorted[j].1, sorted[i].1) < 0 {
-                sorted.swap(i, j);
+/// Reference slots AV2 § 6.8.2 `NUM_REF_FRAMES` allows, so the sort fits a
+/// caller's array and needs no heap.
+const MAX_SORTED_REFS: usize = 8;
+
+fn sorted_reference_hints(
+    ref_order_hints: &[Option<u32>],
+    out: &mut [(usize, i32); MAX_SORTED_REFS],
+) -> usize {
+    let mut len = 0;
+    for (index, hint) in ref_order_hints.iter().copied().enumerate() {
+        if len == MAX_SORTED_REFS {
+            break;
+        }
+        let Some(hint) = hint.and_then(|hint| i32::try_from(hint).ok()) else {
+            continue;
+        };
+        out[len] = (index, hint);
+        len = len.saturating_add(1);
+    }
+    for i in 0..len {
+        for j in i + 1..len {
+            if super::super::get_relative_dist(out[j].1, out[i].1) < 0 {
+                out.swap(i, j);
             }
         }
     }
-    sorted
+    len
 }
 
 fn prepare_tip_field(
