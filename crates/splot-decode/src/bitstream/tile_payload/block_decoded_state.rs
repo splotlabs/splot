@@ -25,7 +25,7 @@ use std::collections::TryReserveError;
 
 const MAX_PLANES: usize = 3;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct TileBlockDecodedState {
     subsampling_x: usize,
     subsampling_y: usize,
@@ -64,6 +64,37 @@ impl Clone for PlaneGrid {
         self.height = source.height;
         self.cells.clear();
         self.cells.extend_from_slice(&source.cells);
+    }
+}
+
+/// Written by hand so `clone_from` reaches the plane grids' own.
+///
+/// `#[derive(Clone)]` generates only `clone`, leaving `clone_from` to replace
+/// the destination wholesale -- which allocates three plane grids on a
+/// destination that already had them.
+impl Clone for TileBlockDecodedState {
+    fn clone(&self) -> Self {
+        Self {
+            subsampling_x: self.subsampling_x,
+            subsampling_y: self.subsampling_y,
+            num_planes: self.num_planes,
+            sb_size4: self.sb_size4,
+            mi_col_end: self.mi_col_end,
+            mi_row_end: self.mi_row_end,
+            planes: core::array::from_fn(|index| self.planes[index].clone()),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.subsampling_x = source.subsampling_x;
+        self.subsampling_y = source.subsampling_y;
+        self.num_planes = source.num_planes;
+        self.sb_size4 = source.sb_size4;
+        self.mi_col_end = source.mi_col_end;
+        self.mi_row_end = source.mi_row_end;
+        for (plane, source) in self.planes.iter_mut().zip(&source.planes) {
+            plane.clone_from(source);
+        }
     }
 }
 

@@ -337,7 +337,7 @@ pub fn parse_lr_params(
         geometry,
         0,
         [0; 3],
-        &[Vec::new(), Vec::new(), Vec::new()],
+        &[&[], &[], &[]],
         LrTemporalReferenceView::unknown(&[]),
     )
 }
@@ -362,7 +362,7 @@ pub fn parse_lr_params_for_inter(
     geometry: LrGeometry,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
-    reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
+    reference_filter_taps: &[&[Option<&[i16]>]; 3],
     temporal_references: LrTemporalReferenceView<'_>,
 ) -> Result<LrParams> {
     parse_lr_params_with_references(
@@ -387,7 +387,7 @@ fn parse_lr_params_with_references(
     geometry: LrGeometry,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
-    reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
+    reference_filter_taps: &[&[Option<&[i16]>]; 3],
     temporal_references: LrTemporalReferenceView<'_>,
 ) -> Result<LrParams> {
     if coded_lossless || !view.enable_restoration {
@@ -509,9 +509,7 @@ fn parse_lr_params_with_references(
         } else {
             let classes = plane_params.num_filter_classes.unwrap_or(1);
             let num_ref_filters = reference_filter_counts.get(plane).copied().unwrap_or(0);
-            let ref_taps = reference_filter_taps
-                .get(plane)
-                .map_or(&[][..], Vec::as_slice);
+            let ref_taps = reference_filter_taps.get(plane).copied().unwrap_or(&[]);
             plane_params.frame_filter_bank = Some(parse_frame_wiener_ns_filter(
                 reader,
                 plane,
@@ -1040,7 +1038,7 @@ mod tests {
             geom_128_420(),
             1,
             [0; 3],
-            &[Vec::new(), Vec::new(), Vec::new()],
+            &[&[], &[], &[]],
             LrTemporalReferenceView::unknown(&[0]),
         )
         .unwrap();
@@ -1070,7 +1068,7 @@ mod tests {
             geom_128_420(),
             1,
             [1, 0, 0],
-            &[vec![None], Vec::new(), Vec::new()],
+            &[&[None], &[], &[]],
             LrTemporalReferenceView::unknown(&[0]),
         )
         .unwrap_err();
@@ -1115,7 +1113,7 @@ mod tests {
             geom_128_420(),
             2,
             [0; 3],
-            &[Vec::new(), Vec::new(), Vec::new()],
+            &[&[], &[], &[]],
             LrTemporalReferenceView::new(&[0, 1], Some(&counts), Some(&taps)),
         )
         .unwrap();
