@@ -36,17 +36,6 @@ pub(crate) struct ParsedGeneralIntraResidual {
 /// The planes a row's blocks have parsed so far.
 pub(crate) type ResidualPlaneArena = Vec<Option<ParsedResidualPlane>>;
 
-/// Appends a block's planes to the row's arena.
-struct ArenaPlanes<'a> {
-    arena: &'a mut ResidualPlaneArena,
-}
-
-impl ArenaPlanes<'_> {
-    fn push(&mut self, plane: ParsedResidualPlane) {
-        self.arena.push(Some(plane));
-    }
-}
-
 pub(crate) struct ParsedResidualPlane {
     pub(super) plane: ResidualPlanePlan,
     pub(super) kind: ParsedResidualPlaneKind,
@@ -103,7 +92,6 @@ impl GeneralIntraResidualPlan {
         let mut u_nonzero = false;
         let mut pending_u = false;
         let start = u32::try_from(arena.len()).unwrap_or(u32::MAX);
-        let mut planes = ArenaPlanes { arena };
         for &plane in self.planes.iter() {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
@@ -120,7 +108,7 @@ impl GeneralIntraResidualPlan {
                 )?;
                 u_nonzero = parsed.u_nonzero();
                 parsed.cctx_role = CctxRole::HoldU;
-                planes.push(parsed);
+                arena.push(Some(parsed));
                 pending_u = true;
                 continue;
             }
@@ -137,7 +125,7 @@ impl GeneralIntraResidualPlan {
                     deblock,
                 )?;
                 parsed.cctx_role = CctxRole::PairV;
-                planes.push(parsed);
+                arena.push(Some(parsed));
                 pending_u = false;
                 continue;
             }
@@ -155,9 +143,9 @@ impl GeneralIntraResidualPlan {
             if plane.plane_id == PlaneId::U {
                 u_nonzero = parsed.u_nonzero();
             }
-            planes.push(parsed);
+            arena.push(Some(parsed));
         }
-        let end = u32::try_from(planes.arena.len()).unwrap_or(u32::MAX);
+        let end = u32::try_from(arena.len()).unwrap_or(u32::MAX);
         Ok(ParsedGeneralIntraResidual { planes: start..end })
     }
 }
