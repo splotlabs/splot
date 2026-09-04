@@ -1950,20 +1950,23 @@ fn run_band_projections(
     let mut trajectory_slots = trajectory_bands
         .as_deref_mut()
         .map_or_else(Vec::new, |bands| bands.iter_mut().map(Some).collect());
-    // One worker projects the bands itself: a spawn would only cost the heap
-    // job Rayon allocates for it.
-    let alone = splot_parallel::current_pool_width() <= 1;
-    let scheduled = splot_parallel::ready_task_scope(|scope| {
+    // One worker projects the bands itself, so it needs no task scope at all:
+    // entering one would allocate for a hand-off that never happens.
+    let scheduled = if splot_parallel::current_pool_width() <= 1 {
         for (index, band) in field_bands.iter_mut().enumerate() {
             let rows = trajectory_slots.get_mut(index).and_then(Option::take);
-            let run = &run;
-            if alone {
-                run(band, rows);
-            } else {
+            run(band, rows);
+        }
+        Ok(())
+    } else {
+        splot_parallel::ready_task_scope(|scope| {
+            for (index, band) in field_bands.iter_mut().enumerate() {
+                let rows = trajectory_slots.get_mut(index).and_then(Option::take);
+                let run = &run;
                 scope.spawn(move |_| run(band, rows));
             }
-        }
-    });
+        })
+    };
     if scheduled.is_err() {
         for (index, band) in field_bands.iter_mut().enumerate() {
             run(
