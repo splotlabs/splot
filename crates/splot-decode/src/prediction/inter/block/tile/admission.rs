@@ -168,7 +168,7 @@ fn project_temporal_band(
     reference_fields: &[Option<MotionFieldHandle>],
     index: usize,
 ) -> Result<()> {
-    let mut requirements = crate::support::buffer_pool::Retained::<(usize, usize)>::take();
+    let mut requirements = Vec::new();
     plan.requirements(index, &mut requirements);
     for (slot, band) in requirements.drain(..) {
         let publication = reference_fields
@@ -943,7 +943,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     pub(crate) fn resolve_conditions<'a>(&'a self, index: usize, out: &mut Vec<Condition<'a>>) {
-        let mut requirements = crate::support::buffer_pool::Retained::<(usize, usize)>::take();
+        let mut requirements = Vec::new();
         self.temporal_plan.requirements(index, &mut requirements);
         out.clear();
         out.extend(requirements.drain(..).filter_map(|(slot, band)| {

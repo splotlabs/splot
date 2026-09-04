@@ -268,7 +268,7 @@ fn with_lr_output_scratch<T: ReconSample, R>(f: impl FnOnce(&mut Vec<T>) -> R) -
 fn luma_lr_frame_coeffs(
     plane: &LrPlaneParams,
     num_classes: usize,
-) -> Result<crate::support::buffer_pool::Retained<[i16; WIENER_NS_LUMA_COEFFS]>> {
+) -> Result<Vec<[i16; WIENER_NS_LUMA_COEFFS]>> {
     if num_classes == 0 {
         return Err(super::lr_pipeline_state_error());
     }
@@ -278,7 +278,7 @@ fn luma_lr_frame_coeffs(
     if bank.classes.len() != num_classes {
         return Err(super::lr_pipeline_state_error());
     }
-    let mut coeffs = crate::support::buffer_pool::Retained::take();
+    let mut coeffs = Vec::new();
     let extra = num_classes.saturating_sub(coeffs.capacity());
     coeffs.reserve(extra);
     for class in &bank.classes {
