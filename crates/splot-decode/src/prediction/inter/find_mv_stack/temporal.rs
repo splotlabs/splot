@@ -314,11 +314,20 @@ impl TemporalMotionField {
         if let TemporalMotionStorage::Bands(bands) = self.storage {
             return bands;
         }
+        self.bands()
+    }
+
+    /// This field's cells split into bands, without consuming it.
+    ///
+    /// A band owns a copy of its cells either way, so a publisher that also
+    /// keeps the field reads it here instead of cloning the whole field first.
+    pub(crate) fn bands(&self) -> Vec<TemporalMotionBand> {
         let layout = self.layout();
         let metadata = self.metadata();
         let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
-        let TemporalMotionStorage::Contiguous(cells) = self.storage else {
-            return Vec::new();
+        let cells = match &self.storage {
+            TemporalMotionStorage::Contiguous(cells) => cells,
+            TemporalMotionStorage::Bands(bands) => return bands.clone(),
         };
         cells
             .chunks(stride)

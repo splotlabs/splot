@@ -33,7 +33,7 @@ impl MotionFieldHandle {
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
         let layout = field.layout();
         let metadata = Arc::new(field.metadata());
-        let mut band_list = field.clone().into_bands();
+        let mut band_list = field.bands();
         let mut bands = crate::support::buffer_pool::take::<
             CompletionCell<Option<TemporalMotionBand>>,
         >(band_list.len());
@@ -75,7 +75,7 @@ impl MotionFieldHandle {
     /// handle is filled by exactly one reconstruction.
     pub(crate) fn publish(&self, field: TemporalMotionField) {
         self.publish_metadata(field.metadata());
-        for (cell, band) in self.0.bands.iter().zip(field.clone().into_bands()) {
+        for (cell, band) in self.0.bands.iter().zip(field.bands()) {
             let _ = cell.set(Some(band));
         }
         let _ = self.0.field.set(Some(Arc::new(field)));
