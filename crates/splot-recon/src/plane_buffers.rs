@@ -11,7 +11,7 @@
 
 use core::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use crate::ReconSample;
 
@@ -20,13 +20,10 @@ type Spares<T> = Vec<Vec<T>>;
 
 type Store = Mutex<HashMap<TypeId, Box<dyn Any + Send>>>;
 
-fn store() -> &'static Store {
-    static STORE: OnceLock<Store> = OnceLock::new();
-    STORE.get_or_init(|| Mutex::new(HashMap::new()))
-}
+static STORE: LazyLock<Store> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn with_spares<T: ReconSample, R>(act: impl FnOnce(&mut Spares<T>) -> R) -> R {
-    let mut store = store().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut store = STORE.lock().unwrap_or_else(PoisonError::into_inner);
     let spares = store
         .entry(TypeId::of::<T>())
         .or_insert_with(|| Box::new(Spares::<T>::new()));
