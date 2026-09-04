@@ -166,6 +166,20 @@ impl<T: ReconSample> TipHeldReferences<'_, T> {
 pub(super) struct TipReconstructScratch<T: ReconSample> {
     units: Vec<TipUnit>,
     output_samples: Vec<T>,
+    bands: Vec<PublishedBand>,
+    band_rects: Vec<splot_recon::PlaneRect>,
+}
+
+/// One published row band and the run of units that fill it.
+///
+/// A band collects the units that share its top row, and those are consecutive
+/// by construction, so the run is a range rather than a list of its own.
+#[derive(Clone, Copy, Debug)]
+struct PublishedBand {
+    top: usize,
+    bottom: usize,
+    first_unit: usize,
+    units: usize,
 }
 
 const fn tip_uses_two_references(weight: i16) -> bool {
@@ -918,50 +932,69 @@ fn publish_units_by_band<T: ReconSample>(
 ) -> Result<()> {
     let height = workspace.info().coded_luma_size().height();
     let width = workspace.info().coded_luma_size().width();
-    let mut bands: Vec<(usize, usize)> = Vec::new();
-    let mut members: Vec<Vec<usize>> = Vec::new();
-    for (index, unit) in scratch.units.iter().enumerate() {
+    let TipReconstructScratch {
+        units,
+        output_samples,
+        bands,
+        band_rects,
+    } = scratch;
+    bands.clear();
+    band_rects.clear();
+    for (index, unit) in units.iter().enumerate() {
         let Some(metadata) = unit.metadata.as_ref() else {
             return Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into());
         };
         let (_, y, _, h) = metadata.luma_rect();
         let end = y.saturating_add(h).min(height);
         if let Some(last) = bands.last_mut()
-            && last.0 == y
+            && last.top == y
         {
-            last.1 = last.1.max(end);
-            if let Some(group) = members.last_mut() {
-                group.push(index);
-            }
+            last.bottom = last.bottom.max(end);
+            last.units = last.units.saturating_add(1);
             continue;
         }
-        bands.push((y, end));
-        members.push(vec![index]);
+        bands.push(PublishedBand {
+            top: y,
+            bottom: end,
+            first_unit: index,
+            units: 1,
+        });
     }
     if bands.is_empty() {
         return Ok(());
     }
-    let rects = bands
-        .iter()
-        .map(|(start, end)| splot_recon::PlaneRect::new(0, *start, width, end - start))
-        .collect::<splot_recon::Result<Vec<_>>>()?;
-    let surfaces = workspace.rect_surfaces(&rects)?;
-    let chunks: Vec<&[T]> = scratch.output_samples.chunks_exact(output_stride).collect();
-    let units = &scratch.units;
+    for band in bands.iter() {
+        band_rects.push(splot_recon::PlaneRect::new(
+            0,
+            band.top,
+            width,
+            band.bottom - band.top,
+        )?);
+    }
+    let surfaces = workspace.rect_surfaces(band_rects)?;
     surfaces
         .into_par_iter()
-        .zip(members.into_par_iter())
-        .try_for_each(|(mut surface, group)| -> Result<()> {
+        .zip(bands.par_iter())
+        .try_for_each(|(mut surface, band)| -> Result<()> {
             let mut sink = mc::WorkspaceSink::Rect(&mut surface);
-            for index in group {
-                let metadata = units[index]
+            let members = units
+                .get(band.first_unit..band.first_unit.saturating_add(band.units))
+                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+            for (offset, unit) in members.iter().enumerate() {
+                let metadata = unit
                     .metadata
                     .as_ref()
                     .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-                let samples = chunks.get(index).ok_or(ReconError::BufferLengthMismatch {
-                    expected: output_stride,
-                    actual: 0,
-                })?;
+                let start = band
+                    .first_unit
+                    .saturating_add(offset)
+                    .saturating_mul(output_stride);
+                let samples = output_samples
+                    .get(start..start.saturating_add(output_stride))
+                    .ok_or(ReconError::BufferLengthMismatch {
+                        expected: output_stride,
+                        actual: 0,
+                    })?;
                 metadata.publish(samples, &mut sink)?;
             }
             Ok(())
