@@ -31,6 +31,14 @@ unsafe impl Send for SharedTemporalCells {}
 /// Safety: bands address disjoint ranges, so shared access never aliases.
 unsafe impl Sync for SharedTemporalCells {}
 
+impl Drop for SharedTemporalCells {
+    fn drop(&mut self) {
+        // Back to the reserve: this is a whole frame's motion grid, and the
+        // next frame wants one the same shape.
+        crate::support::buffer_pool::recycle(self.cells.get_mut());
+    }
+}
+
 impl SharedTemporalCells {
     pub(super) fn new(cells: Vec<TemporalMotionCell>) -> Self {
         Self {

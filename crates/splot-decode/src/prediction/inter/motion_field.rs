@@ -19,6 +19,12 @@ struct MotionFieldPublication {
     bands: Vec<CompletionCell<Option<TemporalMotionBand>>>,
 }
 
+impl Drop for MotionFieldPublication {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.bands);
+    }
+}
+
 /// One frame's § 7.9 temporal motion field, named before it is derived.
 ///
 /// The canonical `PipelineFrame` owns this handle before reconstruction derives
@@ -33,12 +39,18 @@ impl MotionFieldHandle {
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
         let layout = field.layout();
         let metadata = Arc::new(field.metadata());
-        let bands = field
-            .clone()
-            .into_bands()
-            .into_iter()
-            .map(|band| CompletionCell::completed(Some(band)))
-            .collect();
+        // Both lists come from the reserve; the publication returns the cell
+        // list when it drops, and the band list goes back here.
+        let mut band_list = field.clone().into_bands();
+        let mut bands = crate::support::buffer_pool::take::<
+            CompletionCell<Option<TemporalMotionBand>>,
+        >(band_list.len());
+        bands.extend(
+            band_list
+                .drain(..)
+                .map(|band| CompletionCell::completed(Some(band))),
+        );
+        crate::support::buffer_pool::recycle(&mut band_list);
         Self(Arc::new(MotionFieldPublication {
             layout,
             metadata: CompletionCell::completed(Some(metadata)),

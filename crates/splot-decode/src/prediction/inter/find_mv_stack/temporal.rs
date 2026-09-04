@@ -56,13 +56,16 @@ impl Default for TemporalMotionCell {
 
 fn allocate_temporal_grid<T>(mi_rows: usize, mi_cols: usize) -> Option<(usize, usize, Vec<T>)>
 where
-    T: Clone + Default,
+    T: Clone + Default + Send + 'static,
 {
     let width8 = mi_cols.div_ceil(2);
     let height8 = mi_rows.div_ceil(2);
     let cells = width8.checked_mul(height8)?;
-    let mut grid = Vec::new();
-    grid.try_reserve_exact(cells).ok()?;
+    let mut grid = crate::support::buffer_pool::take::<T>(cells);
+    if grid.capacity() < cells {
+        grid.try_reserve_exact(cells).ok()?;
+    }
+    grid.clear();
     grid.resize(cells, T::default());
     Some((width8, height8, grid))
 }
@@ -339,21 +342,22 @@ impl TemporalMotionField {
         };
         let total = cells.len();
         let shared = Arc::new(SharedTemporalCells::new(cells));
-        (0..total.div_ceil(stride))
-            .filter_map(|index| {
-                let start = index.saturating_mul(stride);
-                Some(TemporalMotionBand {
-                    layout,
-                    metadata: metadata.clone(),
-                    row_base8: index.saturating_mul(layout.band_rows8),
-                    cells: BandCells::new(
-                        Arc::clone(&shared),
-                        start,
-                        stride.min(total.saturating_sub(start)),
-                    )?,
-                })
+        let mut bands =
+            crate::support::buffer_pool::take::<TemporalMotionBand>(total.div_ceil(stride));
+        bands.extend((0..total.div_ceil(stride)).filter_map(|index| {
+            let start = index.saturating_mul(stride);
+            Some(TemporalMotionBand {
+                layout,
+                metadata: metadata.clone(),
+                row_base8: index.saturating_mul(layout.band_rows8),
+                cells: BandCells::new(
+                    Arc::clone(&shared),
+                    start,
+                    stride.min(total.saturating_sub(start)),
+                )?,
             })
-            .collect()
+        }));
+        bands
     }
 
     pub(crate) fn from_bands(
