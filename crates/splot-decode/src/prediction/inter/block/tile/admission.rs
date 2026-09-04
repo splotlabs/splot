@@ -628,17 +628,10 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("ordinary inter commit completions"))?;
     committed.resize_with(batch_count, CompletionCell::new);
-    let mut ready_batches = Vec::new();
-    ready_batches
-        .try_reserve_exact(batch_count)
-        .map_err(|_| inter_allocation!("ordinary inter ready batches"))?;
-    for range in &batches {
-        let mut ready = Vec::new();
-        ready
-            .try_reserve_exact(range.len())
-            .map_err(|_| inter_allocation!("ordinary inter ready batch"))?;
-        ready_batches.push(ready);
-    }
+    // One list, refilled per batch. Only the batch being walked is ever being
+    // filled -- a submitted batch takes its rows with it -- so a list per batch
+    // held every batch's rows for the whole frame to no purpose.
+    let mut ready_list: Vec<ReadyReconRow<T>> = Vec::new();
 
     let commit = Mutex::new(Some(commit));
     let error = Mutex::new(None);
@@ -656,7 +649,11 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let mut reached_last = false;
     let parse_result = splot_parallel::ready_task_scope(|scope| {
         for (batch_index, range) in batches.iter().enumerate() {
-            let ready = &mut ready_batches[batch_index];
+            let ready = &mut ready_list;
+            if ready.capacity() < range.len() && ready.try_reserve_exact(range.len()).is_err() {
+                record_first_error(&error, inter_allocation!("ordinary inter ready batch"));
+                break;
+            }
             let mut bounds = row_gate::RowReferenceBounds::default();
             let mut batch_last = false;
             for _ in range.clone() {
