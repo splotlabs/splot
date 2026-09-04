@@ -6,5 +6,4 @@
 pub(crate) mod buffer_pool;
 pub(crate) mod capability;
 pub(crate) mod pipeline_limits;
-pub mod pool_alloc;
 pub(crate) mod reusable_scratch;
