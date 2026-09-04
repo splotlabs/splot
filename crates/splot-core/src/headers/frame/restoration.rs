@@ -209,7 +209,7 @@ pub struct LrGeometry {
 /// Retained frame-level Wiener-NS filter taps for one reference slot, shared
 /// from the decoder's § 7.23 reference buffer. `None` marks a slot with no
 /// frame-level filter, avoiding an allocation for the common empty case.
-pub type SlotFrameFilterTaps = Option<Arc<[Vec<Vec<i16>>; 3]>>;
+pub type SlotFrameFilterTaps = Option<Arc<[Vec<Arc<[i16]>>; 3]>>;
 
 /// Reference-frame Wiener-NS state used by the inter `lr_params()` temporal-copy arm.
 ///
@@ -572,7 +572,7 @@ fn copy_temporal_frame_filter(
                 ref_bank: 0,
                 subset: None,
                 wiener_ns_uv_sym: false,
-                coeffs: coeffs.clone(),
+                coeffs: Arc::clone(coeffs),
             })
             .collect(),
     });
@@ -986,7 +986,11 @@ mod tests {
         assert_eq!(bank.classes[0].match_index, 0);
         assert_eq!(bank.classes[1].match_index, 1);
         assert!(bank.classes.iter().all(|class| class.merged));
-        assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
+        assert!(
+            bank.classes
+                .iter()
+                .all(|class| class.coeffs.as_ref() == [0; 16].as_slice())
+        );
     }
 
     #[test]
@@ -1068,9 +1072,13 @@ mod tests {
         let mut r = reader(&data);
         let counts = [[1, 0, 0], [2, 0, 0]];
         let taps = [
-            Some(Arc::new([vec![vec![1; 16]], Vec::new(), Vec::new()])),
             Some(Arc::new([
-                vec![vec![3; 16], vec![7; 16]],
+                vec![Arc::from(vec![1; 16])],
+                Vec::new(),
+                Vec::new(),
+            ])),
+            Some(Arc::new([
+                vec![Arc::from(vec![3; 16]), Arc::from(vec![7; 16])],
                 Vec::new(),
                 Vec::new(),
             ])),
@@ -1093,14 +1101,18 @@ mod tests {
             .frame_filter_bank
             .as_ref()
             .expect("temporal reference coefficients are retained");
-        assert_eq!(bank.classes[0].coeffs, vec![3; 16]);
-        assert_eq!(bank.classes[1].coeffs, vec![7; 16]);
+        assert_eq!(bank.classes[0].coeffs.as_ref(), [3; 16].as_slice());
+        assert_eq!(bank.classes[1].coeffs.as_ref(), [7; 16].as_slice());
     }
 
     #[test]
     fn temporal_filter_copy_uses_alternate_chroma_and_rejects_short_bank() {
         let counts = [[2, 0, 1]];
-        let taps = [Some(Arc::new([Vec::new(), Vec::new(), vec![vec![9; 8]]]))];
+        let taps = [Some(Arc::new([
+            Vec::new(),
+            Vec::new(),
+            vec![Arc::from(vec![9; 8])],
+        ]))];
         let references = LrTemporalReferenceView::new(&[0], Some(&counts), Some(&taps));
         let mut chroma = LrPlaneParams {
             restoration_type: FrameRestorationType::WienerNonsep,
@@ -1113,7 +1125,7 @@ mod tests {
             .frame_filter_bank
             .as_ref()
             .expect("U falls back to the retained V bank");
-        assert_eq!(bank.classes[0].coeffs, vec![9; 8]);
+        assert_eq!(bank.classes[0].coeffs.as_ref(), [9; 8].as_slice());
 
         let mut luma = LrPlaneParams {
             restoration_type: FrameRestorationType::WienerNonsep,

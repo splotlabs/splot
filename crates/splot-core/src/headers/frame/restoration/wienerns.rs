@@ -94,7 +94,10 @@ pub struct WienerNsFrameFilterClass {
     /// `wiener_ns_uv_sym`, only meaningful for chroma classes with `subset > 0`.
     pub wiener_ns_uv_sym: bool,
     /// The parsed `FrameLrWienerNs[plane][c]` coefficients.
-    pub coeffs: Vec<i16>,
+    /// Shared, not owned: a temporal copy and the decoder's per-frame tap
+    /// table both take this bank, and copying the coefficients for each one
+    /// cost an allocation per class per frame.
+    pub coeffs: std::sync::Arc<[i16]>,
 }
 
 /// Parses a § 5.18 frame-level Wiener-NS filter bank. `ref_taps` are the
@@ -228,7 +231,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
             ref_bank: 0,
             subset,
             wiener_ns_uv_sym,
-            coeffs,
+            coeffs: std::sync::Arc::from(coeffs),
         });
     }
 
@@ -541,7 +544,11 @@ mod tests {
         assert!(bank.classes.iter().all(|class| class.merged));
         assert!(bank.classes.iter().all(|class| class.ref_bank == 0));
         assert!(bank.classes.iter().all(|class| class.coeffs.len() == 16));
-        assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
+        assert!(
+            bank.classes
+                .iter()
+                .all(|class| class.coeffs.as_ref() == [0; 16].as_slice())
+        );
     }
 
     #[test]
@@ -565,7 +572,7 @@ mod tests {
 
         assert_eq!(bank.classes.len(), 1);
         assert_eq!(bank.classes[0].match_index, 1);
-        assert_eq!(bank.classes[0].coeffs, taps);
+        assert_eq!(bank.classes[0].coeffs.as_ref(), taps.as_slice());
     }
 
     #[test]
@@ -581,7 +588,10 @@ mod tests {
 
         assert_eq!(bank.classes.len(), 1);
         assert_eq!(bank.classes[0].match_index, 1);
-        assert_eq!(bank.classes[0].coeffs, vec![0; WIENER_NS_LUMA_COEFFS]);
+        assert_eq!(
+            bank.classes[0].coeffs.as_ref(),
+            [0; WIENER_NS_LUMA_COEFFS].as_slice()
+        );
     }
 
     #[test]

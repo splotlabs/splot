@@ -284,7 +284,7 @@ fn luma_lr_frame_coeffs(
     for class in &bank.classes {
         let coeff: [i16; WIENER_NS_LUMA_COEFFS] = class
             .coeffs
-            .as_slice()
+            .as_ref()
             .try_into()
             .map_err(|_| super::lr_pipeline_state_error())?;
         coeffs.push(coeff);
@@ -314,7 +314,7 @@ fn chroma_lr_frame_coeffs(plane: &LrPlaneParams) -> Result<[i16; WIENER_NS_CHROM
     };
     class
         .coeffs
-        .as_slice()
+        .as_ref()
         .try_into()
         .map_err(|_| super::lr_pipeline_state_error())
 }

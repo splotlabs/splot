@@ -554,9 +554,9 @@ pub(crate) fn frame_ref_update_from_core(
     })
 }
 
-fn lr_frame_filter_taps(core: &FrameHeaderCore) -> Option<Arc<[Vec<Vec<i16>>; 3]>> {
+fn lr_frame_filter_taps(core: &FrameHeaderCore) -> splot_core::headers::frame::SlotFrameFilterTaps {
     let lr = core.lr_params.as_ref()?;
-    let mut taps: [Vec<Vec<i16>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut taps: [Vec<Arc<[i16]>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut any = false;
     for (plane, params) in lr.planes.iter().enumerate().take(3) {
         if !params.frame_filters_on {
@@ -568,7 +568,7 @@ fn lr_frame_filter_taps(core: &FrameHeaderCore) -> Option<Arc<[Vec<Vec<i16>>; 3]
         taps[plane] = bank
             .classes
             .iter()
-            .map(|class| class.coeffs.clone())
+            .map(|class| Arc::clone(&class.coeffs))
             .collect();
         any = any || !taps[plane].is_empty();
     }

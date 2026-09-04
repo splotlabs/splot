@@ -303,7 +303,7 @@ mod tests {
                         ref_bank: 0,
                         subset: None,
                         wiener_ns_uv_sym: false,
-                        coeffs: vec![0; 16],
+                        coeffs: std::sync::Arc::from(vec![0; 16]),
                     }],
                 }),
             }],

@@ -398,12 +398,20 @@ fn lr_reference_filter_entries<'a>(
         };
         let planes = planes.as_deref();
         for class in 0..usize::from(counts[0]) {
-            entries[0].push(planes.and_then(|p| p[0].get(class)).map(Vec::as_slice));
+            entries[0].push(
+                planes
+                    .and_then(|p| p[0].get(class))
+                    .map(std::sync::Arc::as_ref),
+            );
         }
         for (plane, checks) in [(1usize, [1usize, 2usize]), (2, [2, 1])] {
             for check in checks {
                 if counts[check] > 0 {
-                    entries[plane].push(planes.and_then(|p| p[check].first()).map(Vec::as_slice));
+                    entries[plane].push(
+                        planes
+                            .and_then(|p| p[check].first())
+                            .map(std::sync::Arc::as_ref),
+                    );
                 }
             }
         }
