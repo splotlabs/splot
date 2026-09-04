@@ -5,7 +5,9 @@
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use crate::admission::Waiter;
 use crate::pool::{bind_installed_pool_progress, notify_bound_pool_progress};
@@ -79,7 +81,7 @@ impl WatermarkCell {
         }
         notify_bound_pool_progress(&self.progress);
         let fired = {
-            let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut waiters = self.waiters.lock();
             let mut fired = Vec::new();
             while waiters
                 .peek()
@@ -99,7 +101,7 @@ impl WatermarkCell {
 
     pub(crate) fn register(&self, threshold: usize, waiter: Arc<Waiter>) -> bool {
         bind_installed_pool_progress(&self.progress);
-        let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut waiters = self.waiters.lock();
         if self.value.load(Ordering::Acquire) >= threshold {
             return false;
         }
