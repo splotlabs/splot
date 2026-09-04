@@ -85,14 +85,6 @@ fn new_handle() -> CoeffBatch {
     Arc::new(RowCoeffs(OnceLock::new()))
 }
 
-/// Offers a spent handle back, for the next row.
-fn retire_handle(handle: CoeffBatch) {
-    let mut spare = spare_handles().lock();
-    if spare.len() < MAX_SPARE_HANDLES {
-        spare.push(handle);
-    }
-}
-
 thread_local! {
     /// Coefficients parsed so far for the row open on this worker.
     static PARSE_ARENA: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
@@ -151,7 +143,10 @@ pub(crate) fn seal() {
             && let Some(open) = batch.take()
         {
             let _ = open.0.set(coeffs);
-            retire_handle(open);
+            let mut spare = spare_handles().lock();
+            if spare.len() < MAX_SPARE_HANDLES {
+                spare.push(open);
+            }
         }
     });
 }
