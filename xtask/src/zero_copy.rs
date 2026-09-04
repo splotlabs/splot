@@ -48,14 +48,12 @@ const BANNED_BYTE_CRATES: &[&str] = &[
 ];
 
 /// Modules allowed to own a reviewed `unsafe` implementation: the disjoint
-/// direct frame/filter leases and one frame's temporal cells lent to bands as
-/// disjoint ranges.
+/// direct frame/filter leases.
 /// Every one still needs a safety rationale beside each use, and every other
 /// media module remains under the workspace-wide unsafe ban enforced below.
 const AUDITED_UNSAFE_MEDIA_MODULES: &[&str] = &[
     "crates/splot-decode/src/filters/source.rs",
     "crates/splot-decode/src/pipeline/frame_progress.rs",
-    "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal/shared_cells.rs",
 ];
 
 /// Exact type names treated as large media storage: a `Clone` derive/impl on any

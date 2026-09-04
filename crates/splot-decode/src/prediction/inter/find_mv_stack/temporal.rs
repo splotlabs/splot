@@ -11,13 +11,11 @@ use super::{
     warp_sub_mv_at,
 };
 use selection::projection_queue;
-use shared_cells::{BandCells, SharedTemporalCells};
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
 use trajectory::{OwnedTrajectoryBand, OwnedTrajectoryFields, TrajectoryBand, TrajectoryState};
 
 mod selection;
-mod shared_cells;
 mod trajectory;
 
 const MAX_FRAME_DISTANCE: i32 = 31;
@@ -153,36 +151,13 @@ pub(crate) struct TemporalMotionFieldMetadata {
 }
 
 /// One immutable full-width source superblock row of temporal motion.
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TemporalMotionBand {
     layout: MotionFieldLayout,
     metadata: TemporalMotionFieldMetadata,
     row_base8: usize,
-    cells: BandCells,
+    cells: Vec<TemporalMotionCell>,
 }
-
-impl core::fmt::Debug for TemporalMotionBand {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("TemporalMotionBand")
-            .field("layout", &self.layout)
-            .field("metadata", &self.metadata)
-            .field("row_base8", &self.row_base8)
-            .field("cells", &self.cells.len())
-            .finish()
-    }
-}
-
-impl PartialEq for TemporalMotionBand {
-    fn eq(&self, other: &Self) -> bool {
-        self.layout == other.layout
-            && self.metadata == other.metadata
-            && self.row_base8 == other.row_base8
-            && self.cells.as_slice() == other.cells.as_slice()
-    }
-}
-
-impl Eq for TemporalMotionBand {}
 
 impl TemporalMotionBand {
     pub(crate) fn row_end8(&self) -> usize {
@@ -200,7 +175,7 @@ impl TemporalMotionBand {
         let row = y8.checked_sub(self.row_base8)?;
         let start = row.checked_mul(self.layout.width8)?;
         let end = start.checked_add(self.layout.width8)?;
-        self.cells.as_slice().get(start..end)
+        self.cells.get(start..end)
     }
 
     #[allow(clippy::inline_always)]
@@ -210,7 +185,7 @@ impl TemporalMotionBand {
         let row_end8 = self.row_end8();
         let width8 = self.layout.width8;
         let resolved = resolve_block_refs(block.ref_order_hints, &self.metadata.ref_order_hints);
-        let cells = self.cells.as_mut_slice();
+        let cells = &mut self.cells;
         visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
             let Some(row) = y8.checked_sub(row_base8) else {
                 return;
@@ -345,24 +320,16 @@ impl TemporalMotionField {
         let TemporalMotionStorage::Contiguous(cells) = self.storage else {
             return Vec::new();
         };
-        let total = cells.len();
-        let shared = Arc::new(SharedTemporalCells::new(cells));
-        let mut bands =
-            crate::support::buffer_pool::take::<TemporalMotionBand>(total.div_ceil(stride));
-        bands.extend((0..total.div_ceil(stride)).filter_map(|index| {
-            let start = index.saturating_mul(stride);
-            Some(TemporalMotionBand {
+        cells
+            .chunks(stride)
+            .enumerate()
+            .map(|(index, cells)| TemporalMotionBand {
                 layout,
                 metadata: metadata.clone(),
                 row_base8: index.saturating_mul(layout.band_rows8),
-                cells: BandCells::new(
-                    Arc::clone(&shared),
-                    start,
-                    stride.min(total.saturating_sub(start)),
-                )?,
+                cells: cells.to_vec(),
             })
-        }));
-        bands
+            .collect()
     }
 
     pub(crate) fn from_bands(
