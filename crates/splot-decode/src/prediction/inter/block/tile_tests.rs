@@ -161,7 +161,11 @@ fn recon_entries_keep_contiguous_superblock_order() {
 
 #[test]
 fn reconstruction_pools_reuse_owned_storage() {
-    let rows = ReconRowBufferPool::new(0);
+    let rows = {
+        let mut pool = ReconRowBufferPool::default();
+        pool.reset(0);
+        pool
+    };
     let mut buffers = ReconRowBuffers::default();
     buffers.temporal.reserve(8);
     let pointer = buffers.temporal.as_ptr();

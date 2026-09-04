@@ -52,11 +52,16 @@ impl Default for TemporalMotionCell {
     }
 }
 
-/// One shared empty hint list, so the empty-field constructors cost a
-/// reference-count bump rather than an allocation each.
-fn empty_ref_order_hints() -> Arc<[Option<u32>]> {
-    static EMPTY: std::sync::OnceLock<Arc<[Option<u32>]>> = std::sync::OnceLock::new();
-    Arc::clone(EMPTY.get_or_init(|| Arc::from(Vec::new())))
+/// The order hints one motion field carries, one per reference slot.
+///
+/// A sequence bounds the slot count at
+/// [`splot_core::headers::sequence::MAX_REF_FRAMES`], so the list is inline and
+/// a field's metadata costs no allocation to build or to hand to a band.
+pub(crate) type RefOrderHints =
+    splot_core::tile::InlineVec<Option<u32>, { splot_core::headers::sequence::MAX_REF_FRAMES }>;
+
+fn empty_ref_order_hints() -> RefOrderHints {
+    RefOrderHints::default()
 }
 
 fn allocate_temporal_grid<T>(mi_rows: usize, mi_cols: usize) -> Option<(usize, usize, Vec<T>)>
@@ -91,7 +96,7 @@ pub(crate) struct TemporalMotionField {
     pending_ref_hints: Option<Vec<[u32; 2]>>,
     is_inter: bool,
     frame_size: Option<(usize, usize)>,
-    ref_order_hints: Arc<[Option<u32>]>,
+    ref_order_hints: RefOrderHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,7 +152,7 @@ impl MotionFieldLayout {
 pub(crate) struct TemporalMotionFieldMetadata {
     is_inter: bool,
     frame_size: Option<(usize, usize)>,
-    ref_order_hints: Arc<[Option<u32>]>,
+    ref_order_hints: RefOrderHints,
 }
 
 /// One immutable full-width source superblock row of temporal motion.
@@ -243,11 +248,8 @@ impl TemporalMotionField {
         ref_order_hints: &[Option<u32>],
     ) -> Option<Self> {
         let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
-        let mut owned_ref_order_hints = Vec::new();
-        owned_ref_order_hints
-            .try_reserve_exact(ref_order_hints.len())
-            .ok()?;
-        owned_ref_order_hints.extend_from_slice(ref_order_hints);
+        let mut owned_ref_order_hints = RefOrderHints::default();
+        owned_ref_order_hints.extend_within(ref_order_hints.iter().copied());
         Some(Self {
             width8,
             height8,
@@ -256,7 +258,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter,
             frame_size: Some(frame_size),
-            ref_order_hints: Arc::from(owned_ref_order_hints),
+            ref_order_hints: owned_ref_order_hints,
         })
     }
 
@@ -269,7 +271,9 @@ impl TemporalMotionField {
     ) {
         self.is_inter = is_inter;
         self.frame_size = Some(frame_size);
-        self.ref_order_hints = Arc::from(ref_order_hints);
+        self.ref_order_hints = RefOrderHints::default();
+        self.ref_order_hints
+            .extend_within(ref_order_hints.iter().copied());
         if let Some(pending) = self.pending_ref_hints.take()
             && let TemporalMotionStorage::Contiguous(cells) = &mut self.storage
         {
@@ -306,7 +310,7 @@ impl TemporalMotionField {
         TemporalMotionFieldMetadata {
             is_inter: self.is_inter,
             frame_size: self.frame_size,
-            ref_order_hints: Arc::clone(&self.ref_order_hints),
+            ref_order_hints: self.ref_order_hints,
         }
     }
 
@@ -349,7 +353,10 @@ impl TemporalMotionField {
         let cells = bands
             .iter()
             .try_fold(0usize, |cells, band| cells.checked_add(band.cells.len()))?;
-        (cells == layout.width8.checked_mul(layout.height8)?).then(|| Self {
+        if cells != layout.width8.checked_mul(layout.height8)? {
+            return None;
+        }
+        Some(Self {
             width8: layout.width8,
             height8: layout.height8,
             band_rows8: layout.band_rows8,
@@ -357,7 +364,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter: metadata.is_inter,
             frame_size: metadata.frame_size,
-            ref_order_hints: Arc::clone(&metadata.ref_order_hints),
+            ref_order_hints: metadata.ref_order_hints,
         })
     }
 

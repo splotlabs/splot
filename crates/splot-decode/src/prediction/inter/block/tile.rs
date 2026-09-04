@@ -551,6 +551,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             TileParseState {
                 mv_grid: self.mv_grid,
                 coeff_ctx: self.coeff_ctx,
+                row_buffers: ReconRowBufferPool::default(),
                 lr_records: crate::bitstream::tile_payload::LrTileRecords::default(),
                 block_decoded: TileBlockDecodedState::default(),
                 commit_block_decoded: TileBlockDecodedState::default(),
@@ -883,6 +884,7 @@ pub(super) struct ReconRowBuffers {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
 }
 
+#[derive(Default)]
 struct ReconRowBufferPool {
     available: Mutex<Vec<ReconRowBuffers>>,
 }
@@ -910,30 +912,15 @@ pub(super) fn retain_row_buffers(buffers: ReconRowBuffers) {
     }
 }
 
-impl Drop for ReconRowBufferPool {
-    fn drop(&mut self) {
-        let available = core::mem::take(&mut *self.available.lock());
-        for buffers in available {
-            retain_row_buffers(buffers);
-        }
-    }
-}
-
 impl ReconRowBufferPool {
-    fn new(slots: usize) -> Self {
-        let mut available = Vec::with_capacity(slots);
-        {
-            let mut retained = RETAINED_ROW_BUFFERS.lock();
-            while available.len() < slots {
-                let Some(buffers) = retained.pop() else {
-                    break;
-                };
-                available.push(buffers);
-            }
-        }
-        available.resize_with(slots, ReconRowBuffers::default);
-        Self {
-            available: Mutex::new(available),
+    /// Tops this tile's set up to `slots`, keeping what the last tile left.
+    ///
+    /// The decoder holds one of these for the life of the stream, so the sets
+    /// stay here between tiles instead of going back to the retained list.
+    fn reset(&mut self, slots: usize) {
+        let available = self.available.get_mut();
+        while available.len() < slots {
+            available.push(take_retained_row_buffers());
         }
     }
 
@@ -1001,6 +988,8 @@ pub(in crate::prediction::inter) struct TileParseState {
     coeff_ctx: TileCoeffContextState,
     /// The loop-restoration record lists this tile fills.
     lr_records: crate::bitstream::tile_payload::LrTileRecords,
+    /// The row buffer sets this tile's units are parsed and replayed through.
+    row_buffers: ReconRowBufferPool,
     /// The tile's block-decoded grid, and the copy the commit spine reads.
     block_decoded: TileBlockDecodedState,
     commit_block_decoded: TileBlockDecodedState,
@@ -1695,6 +1684,12 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .div_ceil(sb_h4);
         let tile_mi_rows = rows;
         let tile_mi_cols = cols;
+        parse_state.row_buffers.reset(
+            splot_parallel::current_pool_width()
+                .saturating_mul(3)
+                .max(1),
+        );
+        let row_buffers = core::mem::take(&mut parse_state.row_buffers);
         let mut parser = TileParser::new(
             tile,
             &context,
@@ -1704,11 +1699,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
             parse_state,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
-        let row_buffers = ReconRowBufferPool::new(
-            splot_parallel::current_pool_width()
-                .saturating_mul(3)
-                .max(1),
-        );
         let mut tile_scratch = TileDecodeScratch {
             parse: TileParseState::default(),
             ordered,
@@ -1785,6 +1775,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         parse_state = next_parse_state;
         parse_state.block_decoded = block_decoded;
         parse_state.commit_block_decoded = spent_block_decoded;
+        parse_state.row_buffers = row_buffers;
         merge_tile_filter_state(
             &mut cdef_state,
             &mut gdf_state,
