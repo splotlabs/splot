@@ -35,32 +35,24 @@ use core::ptr;
 use std::alloc::System;
 
 /// Smallest pooled block, and the alignment every pooled block satisfies.
-const MIN_CLASS_SHIFT: u32 = 4;
-/// Classes per doubling. Powers of two alone round a request up by as much as
-/// half its size again, which at ten workers cost a hundred megabytes of slack;
-/// four steps to the doubling bring that under a fifth.
-const CLASS_STEPS: u32 = 1;
+const MIN_CLASS_SHIFT: u32 = 9;
 /// Largest pooled block. Above this a request goes to the system allocator,
 /// where a handful of large buffers cost far less than holding them here.
 const MAX_CLASS_SHIFT: u32 = 23;
 /// Largest pooled block in bytes.
 const MAX_CLASS_BYTES: usize = 1 << MAX_CLASS_SHIFT;
 /// Number of size classes.
-const CLASS_COUNT: usize = ((MAX_CLASS_SHIFT - MIN_CLASS_SHIFT) * CLASS_STEPS + 1) as usize;
+const CLASS_COUNT: usize = (MAX_CLASS_SHIFT - MIN_CLASS_SHIFT + 1) as usize;
 /// Alignment a pooled block guarantees.
 ///
 /// Above the system allocator's own promise on purpose: a request wanting more
 /// than sixteen bytes of alignment used to bypass the pool entirely and reach
 /// the system allocator on every call.
-const POOL_ALIGN: usize = 512;
+const POOL_ALIGN: usize = 1 << MIN_CLASS_SHIFT;
 
 /// The block size class `class` hands out.
 const fn class_bytes(class: usize) -> usize {
-    let steps = CLASS_STEPS as usize;
-    let octave = class / steps;
-    let step = class % steps;
-    let base = 1usize << (MIN_CLASS_SHIFT as usize + octave);
-    base + (base / steps) * step
+    1usize << (MIN_CLASS_SHIFT as usize + class)
 }
 
 /// The size class serving `layout`, or `None` when it must go through.
@@ -72,11 +64,7 @@ fn class_of(layout: Layout) -> Option<usize> {
         return None;
     }
     let size = layout.size().max(POOL_ALIGN);
-    let octave = (usize::BITS - 1 - size.leading_zeros()) - MIN_CLASS_SHIFT;
-    let base = 1usize << (MIN_CLASS_SHIFT + octave);
-    let step = base / CLASS_STEPS as usize;
-    let within = size.saturating_sub(base).div_ceil(step);
-    let class = (octave as usize) * CLASS_STEPS as usize + within;
+    let class = (size.next_power_of_two().ilog2() - MIN_CLASS_SHIFT) as usize;
     (class < CLASS_COUNT).then_some(class)
 }
 
@@ -185,13 +173,8 @@ static CENTRAL: [Central; CLASS_COUNT] = [const { Central::new() }; CLASS_COUNT]
 const SLAB_BYTES: usize = 1 << 16;
 
 /// Blocks one slab of `class` yields.
-const fn slab_blocks(class: usize) -> usize {
-    let bytes = class_bytes(class);
-    if bytes == 0 || !bytes.is_multiple_of(POOL_ALIGN) {
-        return 1;
-    }
-    let blocks = SLAB_BYTES / bytes;
-    if blocks < 1 { 1 } else { blocks }
+fn slab_blocks(class: usize) -> usize {
+    (SLAB_BYTES / class_bytes(class)).max(1)
 }
 
 /// Parks `block` on this worker's list, or the shared tier when that is full.
