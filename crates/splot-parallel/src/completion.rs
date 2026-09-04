@@ -2,8 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! A one-shot completion slot for pipeline hand-off.
+use parking_lot::{Condvar, Mutex};
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::admission::Waiter;
 use crate::pool::{
@@ -83,7 +84,7 @@ impl<V> CompletionCell<V> {
             return Ok(());
         };
         let (parked, waiters) = {
-            let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = wait.state.lock();
             (
                 state.parked != 0,
                 core::mem::take(&mut state.additional_waiters),
@@ -117,7 +118,7 @@ impl<V> CompletionCell<V> {
             Err(weak) => weak,
         };
         let wait = self.wait_state();
-        let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = wait.state.lock();
         if self.is_set() {
             return false;
         }
@@ -150,13 +151,10 @@ impl<V> CompletionCell<V> {
                 PoolAssist::Executed | PoolAssist::Idle => {}
                 PoolAssist::OffPool => {
                     let wait = self.wait_state();
-                    let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut state = wait.state.lock();
                     while self.value.get().is_none() {
                         state.parked += 1;
-                        state = wait
-                            .cond
-                            .wait(state)
-                            .unwrap_or_else(PoisonError::into_inner);
+                        wait.cond.wait(&mut state);
                         state.parked -= 1;
                     }
                 }

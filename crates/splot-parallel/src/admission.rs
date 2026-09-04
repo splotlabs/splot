@@ -46,10 +46,11 @@
 //! # Ok(())
 //! # }
 //! ```
+use parking_lot::Mutex;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::completion::CompletionCell;
 use crate::error::ParallelError;
@@ -201,7 +202,7 @@ impl<'job, F: Task<'job>> ContinuationSlot<'job, F> {
     }
 
     fn put(&self, next: OrderedJob<'job, F>) -> Result<(), OrderedJob<'job, F>> {
-        let mut pending = self.job.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pending = self.job.lock();
         if pending.is_some() {
             return Err(next);
         }
@@ -214,11 +215,7 @@ impl<'job, F: Task<'job>> ContinuationSlot<'job, F> {
         if !self.pending.load(Ordering::Acquire) {
             return None;
         }
-        let taken = self
-            .job
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let taken = self.job.lock().take();
         self.pending.store(false, Ordering::Release);
         taken
     }
@@ -237,18 +234,11 @@ struct ReadyQueue(Mutex<BinaryHeap<Reverse<ReadyEntry>>>);
 
 impl ReadyQueue {
     fn push(&self, entry: ReadyEntry) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Reverse(entry));
+        self.0.lock().push(Reverse(entry));
     }
 
     fn pop(&self) -> Option<ReadyEntry> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop()
-            .map(|Reverse(entry)| entry)
+        self.0.lock().pop().map(|Reverse(entry)| entry)
     }
 }
 
@@ -463,17 +453,13 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
     {
         if conditions.iter().all(Condition::is_satisfied) {
             // Nothing left to wait on, so the job needs no waiter of its own.
-            self.slots
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .store_ready(order_key, job, &self.ready);
+            self.slots.lock().store_ready(order_key, job, &self.ready);
             self.admit_ready(scope);
             return;
         }
         let waiter = self
             .slots
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .store(conditions.len() + 1, order_key, job, &self.ready);
         for condition in conditions {
             if !condition.register(Arc::clone(&waiter)) {
@@ -500,11 +486,7 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         let alone = crate::pool::current_pool_width() <= 1;
         let mut spawned = 0;
         while let Some(entry) = self.ready.pop() {
-            let job = self
-                .slots
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take_job(entry);
+            let job = self.slots.lock().take_job(entry);
             let Some(job) = job else { continue };
             if alone {
                 self.run_job(scope, job);
@@ -540,11 +522,7 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         let mut spawned = 0;
         let mut parked = alone;
         while let Some(entry) = self.ready.pop() {
-            let job = self
-                .slots
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take_job(entry);
+            let job = self.slots.lock().take_job(entry);
             let Some(mut job) = job else { continue };
             if !parked {
                 match continuations.put(OrderedJob {
@@ -611,11 +589,7 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
     /// # Errors
     /// Returns [`ParallelError::JobsNeverAdmitted`] when a job remains.
     pub fn finish(&self) -> Result<(), ParallelError> {
-        let stranded = self
-            .slots
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take_stranded();
+        let stranded = self.slots.lock().take_stranded();
         let Some(lowest_order_key) = stranded.iter().map(|(key, _)| *key).min() else {
             return Ok(());
         };
@@ -977,7 +951,7 @@ mod tests {
                                 assert!(parsed.is_set() && prepared.is_set());
                                 let base = id * 4;
                                 visits[base].fetch_add(1, Ordering::Relaxed);
-                                order.lock().unwrap().push(id);
+                                order.lock().push(id);
                                 admit.submit(
                                     key,
                                     &[Condition::completion(prepared)],
@@ -1018,7 +992,7 @@ mod tests {
             });
             if threads == 1 {
                 let expected: Vec<_> = model.into_iter().map(|(_, _, id)| id).collect();
-                assert_eq!(*order.lock().unwrap(), expected);
+                assert_eq!(*order.lock(), expected);
             }
             assert!(
                 visits
