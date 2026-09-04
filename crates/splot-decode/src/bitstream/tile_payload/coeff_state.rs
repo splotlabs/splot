@@ -218,7 +218,7 @@ impl TransformCoeffBlockState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub(crate) struct TileCoeffContextState {
     plane_row_origins: [usize; PLANE_COUNT],
     plane_col_origins: [usize; PLANE_COUNT],
@@ -243,23 +243,41 @@ impl TileCoeffContextState {
         Ok(())
     }
 
+    /// A state laid out for one tile, for tests that want a fresh one.
+    #[cfg(test)]
     pub(crate) fn new_for_tile_chroma(
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
         chroma: ChromaFormatIdc,
     ) -> Result<Self, TileCoeffStateError> {
-        Self::new_for_tile_with_chroma_sampling(
+        let mut state = Self::default();
+        state.reset_for_tile_chroma(mi_rows, mi_cols, chroma)?;
+        Ok(state)
+    }
+
+    /// Lays this state out for another tile, keeping the context lines.
+    ///
+    /// The decoder holds one of these for the whole stream, so a steady-state
+    /// tile zeroes the lines the last one left rather than sizing new ones.
+    pub(crate) fn reset_for_tile_chroma(
+        &mut self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+        chroma: ChromaFormatIdc,
+    ) -> Result<(), TileCoeffStateError> {
+        self.reset_for_tile_with_chroma_sampling(
             mi_rows,
             mi_cols,
             ChromaSampling::from_chroma_format_idc(chroma),
         )
     }
 
-    fn new_for_tile_with_chroma_sampling(
+    fn reset_for_tile_with_chroma_sampling(
+        &mut self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
         chroma: ChromaSampling,
-    ) -> Result<Self, TileCoeffStateError> {
+    ) -> Result<(), TileCoeffStateError> {
         let rows = mi_rows.end.saturating_sub(mi_rows.start);
         let cols = mi_cols.end.saturating_sub(mi_cols.start);
         Self::allocation(rows, cols)?;
@@ -276,16 +294,15 @@ impl TileCoeffContextState {
             plane_cols[index] = (subsampled_context_len(mi_cols.end, sub_x)?)
                 .saturating_sub(plane_col_origins[index]);
         }
-        Ok(Self {
-            plane_row_origins,
-            plane_col_origins,
-            plane_rows,
-            plane_cols,
-            above_level: zeroed_plane_lines(plane_cols)?,
-            left_level: zeroed_plane_lines(plane_rows)?,
-            above_dc: zeroed_plane_lines(plane_cols)?,
-            left_dc: zeroed_plane_lines(plane_rows)?,
-        })
+        self.plane_row_origins = plane_row_origins;
+        self.plane_col_origins = plane_col_origins;
+        self.plane_rows = plane_rows;
+        self.plane_cols = plane_cols;
+        zero_plane_lines(&mut self.above_level, plane_cols)?;
+        zero_plane_lines(&mut self.left_level, plane_rows)?;
+        zero_plane_lines(&mut self.above_dc, plane_cols)?;
+        zero_plane_lines(&mut self.left_dc, plane_rows)?;
+        Ok(())
     }
 
     pub(crate) fn above_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
@@ -644,22 +661,21 @@ fn fill_context_line(
     }
 }
 
-fn zeroed_plane_lines<T: Default + Send + 'static>(
+fn zero_plane_lines<T: Default>(
+    lines: &mut [Vec<T>; PLANE_COUNT],
     lengths: [usize; PLANE_COUNT],
-) -> Result<[Vec<T>; PLANE_COUNT], TileCoeffStateError> {
-    Ok([
-        zeroed_vec(lengths[0])?,
-        zeroed_vec(lengths[1])?,
-        zeroed_vec(lengths[2])?,
-    ])
+) -> Result<(), TileCoeffStateError> {
+    for (line, len) in lines.iter_mut().zip(lengths) {
+        zero_line(line, len)?;
+    }
+    Ok(())
 }
 
-fn zeroed_vec<T: Default + Send + 'static>(len: usize) -> Result<Vec<T>, TileCoeffStateError> {
-    let mut values = crate::support::buffer_pool::take(len);
+fn zero_line<T: Default>(values: &mut Vec<T>, len: usize) -> Result<(), TileCoeffStateError> {
     values.clear();
     values.try_reserve_exact(len.saturating_sub(values.capacity()))?;
     values.resize_with(len, T::default);
-    Ok(values)
+    Ok(())
 }
 
 #[cfg(test)]

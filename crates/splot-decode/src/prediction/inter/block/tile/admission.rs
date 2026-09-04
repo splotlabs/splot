@@ -1565,7 +1565,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
     prepared.resize_with(batch_count, || None);
     let TileDecodeScratch {
-        mv_grid: _,
+        parse: _,
         ordered,
         workers,
         surfaces,

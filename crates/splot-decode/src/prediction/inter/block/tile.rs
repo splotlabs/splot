@@ -313,7 +313,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         cdef_state: CdefState,
         gdf_state: GdfState,
         ccso_state: CcsoState,
-        mut mv_grid: NeighbourMvGrid,
+        mut parse: TileParseState,
     ) -> Result<Self> {
         let tile_offset = tile.tile_byte_span().start;
         let chroma = context.sequence.general.chroma_format_idc;
@@ -321,12 +321,10 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             ..(tile.mi_row_range().end as usize).min(context.mi_rows);
         let tile_cols = tile.mi_col_range().start as usize
             ..(tile.mi_col_range().end as usize).min(context.mi_cols);
-        let coeff_ctx = TileCoeffContextState::new_for_tile_chroma(
-            tile_rows.clone(),
-            tile_cols.clone(),
-            chroma,
-        )
-        .map_err(|error| inter_tile_coeff_context_error(&error))?;
+        parse
+            .coeff_ctx
+            .reset_for_tile_chroma(tile_rows.clone(), tile_cols.clone(), chroma)
+            .map_err(|error| inter_tile_coeff_context_error(&error))?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core)?;
         let intrabc_state = TileIntrabcPreludeState::new_for_tile(
             (context.mi_rows, context.mi_cols),
@@ -339,7 +337,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         let segment_id_state =
             TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone())
                 .map_err(|error| inter_tile_segment_id_error(&error))?;
-        mv_grid
+        parse
+            .mv_grid
             .reset_for_tile(tile_rows.clone(), tile_cols.clone())
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
         let y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new_for_tile(
@@ -365,11 +364,11 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         Ok(Self {
             tile,
             walk: TileParserWalk::Active(walk),
-            coeff_ctx,
+            coeff_ctx: parse.coeff_ctx,
             residual_scratch: InterResidualParseScratch::default(),
             delta_q_state,
             intrabc_state,
-            mv_grid,
+            mv_grid: parse.mv_grid,
             y_smooth,
             chroma_smooth,
             filter_records: TileFilterRecords::default(),
@@ -541,8 +540,14 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         }
     }
 
-    fn into_output(self) -> (TileParserOutput, NeighbourMvGrid) {
-        (self.output, self.mv_grid)
+    fn into_output(self) -> (TileParserOutput, TileParseState) {
+        (
+            self.output,
+            TileParseState {
+                mv_grid: self.mv_grid,
+                coeff_ctx: self.coeff_ctx,
+            },
+        )
     }
 }
 
@@ -977,10 +982,20 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
     }
 }
 
+/// The parse state one tile at a time is laid out into.
+///
+/// dav2d keeps a frame context's arrays for the whole stream and resets them
+/// per frame. These are splot's tile-scoped equivalents: the decoder holds one
+/// set, and each tile is laid out into it rather than building its own.
+#[derive(Default)]
+pub(in crate::prediction::inter) struct TileParseState {
+    mv_grid: NeighbourMvGrid,
+    coeff_ctx: TileCoeffContextState,
+}
+
 #[derive(Default)]
 pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
-    /// The neighbour grid every tile of the stream is laid out into.
-    mv_grid: NeighbourMvGrid,
+    parse: TileParseState,
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
@@ -994,7 +1009,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
         surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
     ) -> Self {
         Self {
-            mv_grid: NeighbourMvGrid::default(),
+            parse: TileParseState::default(),
             ordered,
             workers: workers.take_reusable(),
             surfaces,
@@ -1466,7 +1481,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
         gdf_state.for_tile(mi_rows.clone(), mi_cols.clone())?,
         ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
-        NeighbourMvGrid::default(),
+        TileParseState::default(),
     )?;
     parser.mv_grid.log_flags();
     loop {
@@ -1607,7 +1622,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
     TileDecodeOutput,
 )> {
     let TileDecodeScratch {
-        mut mv_grid,
+        parse: mut parse_state,
         mut ordered,
         mut workers,
         surfaces: mut recycled_surfaces,
@@ -1657,7 +1672,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             cdef_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
             gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
             ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
-            mv_grid,
+            parse_state,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
         let row_buffers = ReconRowBufferPool::new(
@@ -1666,7 +1681,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 .max(1),
         );
         let mut tile_scratch = TileDecodeScratch {
-            mv_grid: NeighbourMvGrid::default(),
+            parse: TileParseState::default(),
             ordered,
             workers,
             surfaces: recycled_surfaces,
@@ -1682,7 +1697,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             superblock_rects
         };
         let TileDecodeScratch {
-            mv_grid: _,
+            parse: _,
             ordered: tile_ordered,
             workers: tile_workers,
             surfaces: tile_surfaces,
@@ -1731,8 +1746,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
         }
         *frame_filter_records = next_records;
         workers = tile_workers;
-        let (output, next_mv_grid) = parser.into_output();
-        mv_grid = next_mv_grid;
+        let (output, next_parse_state) = parser.into_output();
+        parse_state = next_parse_state;
         merge_tile_filter_state(
             &mut cdef_state,
             &mut gdf_state,
@@ -1755,7 +1770,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
 
     Ok((
         TileDecodeScratch {
-            mv_grid,
+            parse: parse_state,
             ordered,
             workers,
             surfaces: recycled_surfaces,
