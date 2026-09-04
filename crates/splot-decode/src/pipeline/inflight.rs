@@ -25,7 +25,7 @@
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use splot_parallel::{CompletionCell, Condition, TaskScope};
 use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
@@ -37,6 +37,7 @@ use crate::error::{DecodeError, Result};
 use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::prediction::inter::InterDecodeScratch;
 use crate::prediction::inter::reference::HeldFrameSamples;
+use parking_lot::Mutex;
 
 /// The one-shot value a decoded-frame slot publishes.
 enum SlotValue<T: ReconSample> {
@@ -432,7 +433,7 @@ impl InflightRing {
         };
         let _ = entry.slot.wait_settled();
         let report = entry.report.wait_with_pool_assist();
-        let mut outcome = report.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut outcome = report.lock();
         if let Some(records) = outcome.records.take() {
             match entry.slot {
                 PipelineFrameSlot::Eight(_) => eight.recycle_frame_filter_records(records),

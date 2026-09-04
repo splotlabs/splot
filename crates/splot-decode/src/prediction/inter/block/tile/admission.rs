@@ -6,7 +6,7 @@
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`,
 //! `INFRA-DECODE-FRAME-PIPELINING`.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use splot_core::headers::frame::RefIdxBuf;
 use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
@@ -14,6 +14,7 @@ use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
 use super::*;
 use crate::prediction::inter::block::row_gate::RowReferenceGate;
 use crate::prediction::inter::find_mv_stack::TemporalBandPlan;
+use parking_lot::Mutex;
 
 pub(super) struct TileCommit<T: ReconSample> {
     next: usize,
@@ -63,10 +64,7 @@ impl<T: ReconSample> TileCommit<T> {
         }
         if let Some(surface) = ready.surface.take() {
             surface.publish_into(&mut self.workspace)?;
-            self.surfaces
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .give(surface);
+            self.surfaces.lock().give(surface);
         }
         self.ordered.with_installed(|scratch| {
             pixel_commit::replay_recon_row(
@@ -104,11 +102,7 @@ impl<T: ReconSample> TileCommit<T> {
         Vec<splot_recon::OwnedFrameRect<T>>,
         crate::filters::wienerns_lr::FrameFilterRecords,
     ) {
-        let surfaces = self
-            .surfaces
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .drain_free();
+        let surfaces = self.surfaces.lock().drain_free();
         (
             self.ordered,
             self.workspace,
@@ -152,7 +146,6 @@ fn take_active_commit<T: ReconSample>(
 ) -> Result<TileCommit<T>> {
     holder
         .lock()
-        .unwrap_or_else(PoisonError::into_inner)
         .take()
         .ok_or_else(invalid_inter_tile_scheduling_state)
 }
@@ -161,7 +154,7 @@ fn restore_active_commit<T: ReconSample>(
     holder: &Mutex<Option<TileCommit<T>>>,
     state: TileCommit<T>,
 ) -> Result<()> {
-    let mut holder = holder.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut holder = holder.lock();
     if holder.is_some() {
         return Err(invalid_inter_tile_scheduling_state());
     }
@@ -325,7 +318,7 @@ impl<T: ReconSample> SurfaceSource<T> {
 /// Hands a finished tile's row list back to the decode's context store.
 impl<T: ReconSample> Drop for TileRecon<T> {
     fn drop(&mut self) {
-        let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut rows = self.rows.lock();
         crate::support::buffer_pool::recycle(&mut rows);
     }
 }
@@ -356,7 +349,7 @@ impl<T: ReconSample> TileRecon<T> {
         info: splot_recon::DecodedFrameInfo,
         out: &mut Vec<Condition<'a>>,
     ) {
-        let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+        let rows = self.rows.lock();
         let mut bounds = row_gate::RowReferenceBounds::default();
         for ready in self
             .batch_range(index)
@@ -388,12 +381,7 @@ impl<T: ReconSample> TileRecon<T> {
     const MAX_SPARE_BATCHES: usize = 8;
 
     fn take_spare_batch(&self, capacity: usize) -> Vec<ReadyReconRow<T>> {
-        let mut batch = self
-            .spare_batches
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop()
-            .unwrap_or_default();
+        let mut batch = self.spare_batches.lock().pop().unwrap_or_default();
         batch.clear();
         batch.reserve(capacity);
         batch
@@ -404,10 +392,7 @@ impl<T: ReconSample> TileRecon<T> {
             return;
         }
         batch.clear();
-        let mut spare = self
-            .spare_batches
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut spare = self.spare_batches.lock();
         if spare.len() < Self::MAX_SPARE_BATCHES {
             spare.push(batch);
         }
@@ -418,7 +403,7 @@ impl<T: ReconSample> TileRecon<T> {
             .batch_range(index)
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         {
-            let prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
+            let prepared = self.prepared.lock();
             let Some(slot) = prepared.get(index) else {
                 return Err(invalid_inter_tile_scheduling_state());
             };
@@ -427,7 +412,7 @@ impl<T: ReconSample> TileRecon<T> {
             }
         }
         let ready = {
-            let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut rows = self.rows.lock();
             let Some(rows) = rows.get_mut(range) else {
                 return Err(invalid_inter_tile_scheduling_state());
             };
@@ -468,7 +453,6 @@ impl<T: ReconSample> TileRecon<T> {
                         if ready.surface.is_none() && !ready.row.superblocks.is_empty() {
                             ready.surface = surfaces
                                 .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
                                 .take(ready.row.ordinal)
                                 .transpose()
                                 .ok()
@@ -507,7 +491,7 @@ impl<T: ReconSample> TileRecon<T> {
                     })
                     .collect())
             })?;
-        let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut prepared = self.prepared.lock();
         let Some(slot) = prepared.get_mut(index) else {
             return Err(invalid_inter_tile_scheduling_state());
         };
@@ -521,7 +505,7 @@ impl<T: ReconSample> TileRecon<T> {
     fn commit_batch(&self, index: usize) -> Result<CommittedBatch<T>> {
         let mut commit = take_active_commit(&self.commit)?;
         let batch = {
-            let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut prepared = self.prepared.lock();
             prepared
                 .get_mut(index)
                 .ok_or_else(invalid_inter_tile_scheduling_state)?
@@ -565,19 +549,15 @@ impl<T: ReconSample> TileRecon<T> {
     }
 
     fn finish_commit(&self, commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
-        let surfaces = commit
-            .surfaces
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .drain_free();
+        let surfaces = commit.surfaces.lock().drain_free();
         let scratch = TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, surfaces);
-        *self.scratch.lock().unwrap_or_else(PoisonError::into_inner) = Some(scratch);
+        *self.scratch.lock() = Some(scratch);
         commit.workspace
     }
 }
 
 fn record_first_error(error: &Mutex<Option<crate::DecodeError>>, value: crate::DecodeError) {
-    let mut error = error.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut error = error.lock();
     if error.is_none() {
         *error = Some(value);
     }
@@ -629,14 +609,9 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
         let ready = shared
             .pending
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .get_mut(self.index)
             .and_then(Option::take);
-        let enabled = shared
-            .error
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none();
+        let enabled = shared.error.lock().is_none();
         let prepared = ready.filter(|_| enabled).map(|mut ready| {
             let out = shared.workers.with_scratch(|scratch| {
                 let mut out = crate::support::buffer_pool::take::<ReadyReconRow<T>>(ready.len());
@@ -666,12 +641,7 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
             crate::support::buffer_pool::recycle(&mut ready);
             out
         });
-        if let Some(slot) = shared
-            .prepared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_mut(self.index)
-        {
+        if let Some(slot) = shared.prepared.lock().get_mut(self.index) {
             *slot = prepared;
         }
         if let Some(cell) = shared.precomputed.get(self.index) {
@@ -684,15 +654,9 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
         let batch = shared
             .prepared
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .get_mut(self.index)
             .and_then(Option::take);
-        if shared
-            .error
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none()
-        {
+        if shared.error.lock().is_none() {
             let result = batch
                 .ok_or_else(invalid_inter_tile_scheduling_state)
                 .and_then(|mut batch| {
@@ -848,13 +812,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 };
                 let row_bounds = row_gate.bounds_for_row(&row);
                 bounds.merge(row_bounds);
-                let surface = surfaces
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take(row.ordinal)
-                    .transpose()
-                    .ok()
-                    .flatten();
+                let surface = surfaces.lock().take(row.ordinal).transpose().ok().flatten();
                 ready.push(ReadyReconRow {
                     bounds: row_bounds,
                     row,
@@ -867,12 +825,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 }
             }
 
-            if let Some(slot) = shared
-                .pending
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get_mut(batch_index)
-            {
+            if let Some(slot) = shared.pending.lock().get_mut(batch_index) {
                 *slot = Some(ready);
             }
             gate_conditions.clear();
@@ -975,16 +928,14 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let scheduler_result = scheduler.finish();
     drop(scheduler);
     // Back to the reserve: the next frame lays out the same lists.
-    let mut prepared_slots =
-        core::mem::take(&mut *prepared.lock().unwrap_or_else(PoisonError::into_inner));
-    let mut pending_slots =
-        core::mem::take(&mut *pending.lock().unwrap_or_else(PoisonError::into_inner));
+    let mut prepared_slots = core::mem::take(&mut *prepared.lock());
+    let mut pending_slots = core::mem::take(&mut *pending.lock());
     crate::support::buffer_pool::recycle(&mut prepared_slots);
     crate::support::buffer_pool::recycle(&mut pending_slots);
     crate::support::buffer_pool::recycle(&mut precomputed);
     crate::support::buffer_pool::recycle(&mut committed);
     crate::support::buffer_pool::recycle(&mut batches);
-    if let Some(error) = error.lock().unwrap_or_else(PoisonError::into_inner).take() {
+    if let Some(error) = error.lock().take() {
         return Err(error);
     }
     scheduler_result?;
@@ -1057,12 +1008,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         );
         self.materialize_rows(self.recon.unit_count);
         let mut awaiting = None;
-        let mut resolve = self.resolve.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut rows = self
-            .recon
-            .rows
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut resolve = self.resolve.lock();
+        let mut rows = self.recon.rows.lock();
         loop {
             let next = resolve.next;
             let Some(state) = rows.get(next) else {
@@ -1166,7 +1113,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             })
             .transpose()?
             .flatten();
-        let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut frontier = self.frontier.lock();
         frontier.sealed = deblock
             .is_some()
             .then(|| {
@@ -1186,11 +1133,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// and a unit the pass has not reached simply stops the pull.
     fn materialize_rows(&self, units: usize) {
         let units = units.min(self.recon.unit_count);
-        let mut rows = self
-            .recon
-            .rows
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut rows = self.recon.rows.lock();
         if rows.len() >= units {
             return;
         }
@@ -1217,7 +1160,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     fn seal_committed_rows(&self, commit: &TileCommit<T>, rows: usize) -> Result<()> {
-        let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut frontier = self.frontier.lock();
         let ScheduledFrontier {
             sealed,
             sealed_rows,
@@ -1251,7 +1194,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .saturating_add(1)
             .saturating_mul(self.recon.units_per_row)
             .min(self.recon.unit_count);
-        let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut frontier = self.frontier.lock();
         let ScheduledFrontier {
             sealed,
             sealed_rows,
@@ -1360,7 +1303,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.recon
             .scratch
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .take()
             .ok_or_else(invalid_inter_tile_scheduling_state)
             .map(super::super::InterDecodeScratch::from_scheduled_tile_scratch)
@@ -1383,7 +1325,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
         let workspace = self.recon.finish_commit(committed.state);
         {
-            let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut frontier = self.frontier.lock();
             if frontier.sealed.is_some() {
                 drop(workspace);
             } else {
@@ -1653,7 +1595,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
 mod tests {
     use super::{TileCommit, project_temporal_band, safe_deblock_mi_end, take_active_commit};
     use crate::prediction::inter::MotionFieldLayout;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     struct TemporalProjectionCase {
         plan: super::TemporalBandPlan,

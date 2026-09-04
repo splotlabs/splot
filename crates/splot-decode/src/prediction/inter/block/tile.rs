@@ -7,7 +7,6 @@
 
 use std::num::NonZeroUsize;
 use std::ops::Range;
-use std::sync::{Mutex, PoisonError};
 
 use splot_recon::{PlaneId, ReconError};
 
@@ -29,6 +28,7 @@ enum ParserStep<Row> {
 use super::super::MotionFieldHandle;
 use super::temporal::MotionFieldUnits;
 use crate::prediction::TileGridConstructionError;
+use parking_lot::Mutex;
 
 pub(super) struct TileDecodeOutput {
     pub(super) cdef_state: CdefState,
@@ -886,18 +886,12 @@ static RETAINED_ROW_BUFFERS: Mutex<Vec<ReconRowBuffers>> = Mutex::new(Vec::new()
 
 /// Takes a retained row buffer set, or a fresh one.
 fn take_retained_row_buffers() -> ReconRowBuffers {
-    RETAINED_ROW_BUFFERS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .pop()
-        .unwrap_or_default()
+    RETAINED_ROW_BUFFERS.lock().pop().unwrap_or_default()
 }
 
 /// Returns a spent row buffer set, whose vectors are already cleared.
 pub(super) fn retain_row_buffers(buffers: ReconRowBuffers) {
-    let mut retained = RETAINED_ROW_BUFFERS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut retained = RETAINED_ROW_BUFFERS.lock();
     if retained.len() < MAX_RETAINED_ROW_BUFFERS {
         retained.push(buffers);
     }
@@ -905,12 +899,7 @@ pub(super) fn retain_row_buffers(buffers: ReconRowBuffers) {
 
 impl Drop for ReconRowBufferPool {
     fn drop(&mut self) {
-        let available = core::mem::take(
-            &mut *self
-                .available
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+        let available = core::mem::take(&mut *self.available.lock());
         for buffers in available {
             retain_row_buffers(buffers);
         }
@@ -921,9 +910,7 @@ impl ReconRowBufferPool {
     fn new(slots: usize) -> Self {
         let mut available = Vec::with_capacity(slots);
         {
-            let mut retained = RETAINED_ROW_BUFFERS
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut retained = RETAINED_ROW_BUFFERS.lock();
             while available.len() < slots {
                 let Some(buffers) = retained.pop() else {
                     break;
@@ -938,22 +925,14 @@ impl ReconRowBufferPool {
     }
 
     fn take(&self) -> ReconRowBuffers {
-        if let Some(buffers) = self
-            .available
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
-        {
+        if let Some(buffers) = self.available.lock().pop() {
             return buffers;
         }
         take_retained_row_buffers()
     }
 
     fn recycle(&self, buffers: ReconRowBuffers) {
-        self.available
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(buffers);
+        self.available.lock().push(buffers);
     }
 }
 
@@ -969,37 +948,21 @@ struct InterReconScratchPool<T: ReconSample> {
 
 impl<T: ReconSample> InterReconScratchPool<T> {
     fn ensure_workers(&mut self, workers: usize) {
-        let available = self
-            .available
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let available = self.available.get_mut();
         if available.len() < workers {
             available.resize_with(workers, deferred_recon::InterReconScratch::default);
         }
     }
 
     fn with_scratch<R>(&self, f: impl FnOnce(&mut deferred_recon::InterReconScratch<T>) -> R) -> R {
-        let mut scratch = self
-            .available
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
-            .unwrap_or_default();
+        let mut scratch = self.available.lock().pop().unwrap_or_default();
         let result = f(&mut scratch);
-        self.available
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(scratch);
+        self.available.lock().push(scratch);
         result
     }
 
     fn take_reusable(&self) -> Self {
-        let available = core::mem::take(
-            &mut *self
-                .available
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let available = core::mem::take(&mut *self.available.lock());
         Self {
             available: Mutex::new(available),
         }
@@ -1377,12 +1340,9 @@ impl ParseProgress {
     /// parse order, because the scheduler claims units on its own schedule and
     /// the frame-level detach must not depend on when it does.
     pub(super) fn publish_row(&self, mut row: ReconRow) {
-        pixel_commit::detach_row_filter_records(
-            &mut row,
-            &mut self.records.lock().unwrap_or_else(PoisonError::into_inner),
-        );
+        pixel_commit::detach_row_filter_records(&mut row, &mut self.records.lock());
         let finished = {
-            let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut rows = self.rows.lock();
             rows.push(Some(row));
             rows.len()
         };
@@ -1391,16 +1351,12 @@ impl ParseProgress {
 
     /// Takes the unit at `index`, which a caller may claim exactly once.
     pub(super) fn take_row(&self, index: usize) -> Option<ReconRow> {
-        self.rows
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_mut(index)
-            .and_then(Option::take)
+        self.rows.lock().get_mut(index).and_then(Option::take)
     }
 
     /// Takes the filter records detached from units already handed out.
     pub(super) fn take_records(&self) -> crate::filters::wienerns_lr::FrameFilterRecords {
-        core::mem::take(&mut self.records.lock().unwrap_or_else(PoisonError::into_inner))
+        core::mem::take(&mut self.records.lock())
     }
 
     /// Reserves room for one tile's units up front, so the parser never
@@ -1408,7 +1364,6 @@ impl ParseProgress {
     pub(super) fn reserve(&self, capacity: usize) -> Result<()> {
         self.rows
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .try_reserve_exact(capacity)
             .map_err(|_| inter_allocation!("inter parsed rows"))
     }
@@ -1416,15 +1371,12 @@ impl ParseProgress {
     /// Publishes the tile geometry, which the parser settles before its
     /// first unit.
     pub(super) fn publish_geometry(&self, geometry: TileGeometry) {
-        *self.geometry.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(geometry));
+        *self.geometry.lock() = Some(Arc::new(geometry));
     }
 
     /// The published tile geometry, if the parser has reached its first unit.
     pub(super) fn geometry(&self) -> Option<Arc<TileGeometry>> {
-        self.geometry
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.geometry.lock().clone()
     }
 
     /// Releases every waiter after a failed pass.
@@ -1721,9 +1673,11 @@ pub(super) fn decode_tiles<T: ReconSample>(
             workers: tile_workers,
             surfaces: tile_surfaces,
         } = tile_scratch;
-        let surface_source = std::sync::Arc::new(std::sync::Mutex::new(
-            admission::SurfaceSource::new(info, rects, tile_surfaces),
-        ));
+        let surface_source = std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
+            info,
+            rects,
+            tile_surfaces,
+        )));
         let commit = TileCommit::direct(
             tile_ordered,
             workspace,

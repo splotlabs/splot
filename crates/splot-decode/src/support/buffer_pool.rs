@@ -14,8 +14,8 @@
 //! buffer as it came back, so recycling cost an allocation of its own.
 
 use core::any::{Any, TypeId};
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
 
 /// Spare buffers of one element type.
 type Spares<T> = Vec<Vec<T>>;
@@ -29,7 +29,7 @@ fn store() -> &'static Store {
 
 /// Runs `act` against the spare list for `T`, creating it on first use.
 fn with_spares<T: Send + 'static, R>(act: impl FnOnce(&mut Spares<T>) -> R) -> R {
-    let mut store = store().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut store = store().lock();
     let spares = store
         .entry(TypeId::of::<T>())
         .or_insert_with(|| Box::new(Spares::<T>::new()));

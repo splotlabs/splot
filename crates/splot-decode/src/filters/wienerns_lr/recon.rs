@@ -12,9 +12,10 @@
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrame, PlaneId, ReconSample};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::Result;
+use parking_lot::Mutex;
 
 const MI_SIZE: usize = 4;
 
@@ -739,10 +740,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         &self,
         records: crate::filters::deblock::OwnedDeblockRecords,
     ) -> Result<()> {
-        let mut slot = self
-            .deblock_records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = self.deblock_records.lock();
         if slot.is_some() {
             return Err(lr_pipeline_state_error());
         }
@@ -786,10 +784,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             chain.validate_filter_stripe(PlaneId::V, plane)?;
         }
         {
-            let mut state = self
-                .stripe_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.stripe_state.lock();
             let Some(lifecycle) = state.get_mut(stripe.stripe) else {
                 return Err(lr_pipeline_state_error());
             };
@@ -806,10 +801,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .ranges
             .get(stripe)
             .ok_or_else(lr_pipeline_state_error)?;
-        let mut state = self
-            .stripe_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.stripe_state.lock();
         let lifecycle = state.get_mut(stripe).ok_or_else(lr_pipeline_state_error)?;
         if *lifecycle != StripeLifecycle::Pending {
             return Err(lr_pipeline_state_error());
@@ -1039,7 +1031,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let complete = self
             .stripe_state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .all(|lifecycle| *lifecycle == StripeLifecycle::Submitted);
         if !complete {
@@ -1047,22 +1038,14 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         }
         self.filter_records.lr_source_blocks = self.lr_source_blocks;
         self.filter_records.lr_unit_filters = self.lr_unit_filters;
-        let has_restored_deblock = self
-            .deblock_records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some();
+        let has_restored_deblock = self.deblock_records.lock().is_some();
         if has_restored_deblock
             && (!self.filter_records.deblock_blocks.is_empty()
                 || !self.filter_records.chroma_deblock_blocks.is_empty())
         {
             return Err(lr_pipeline_state_error());
         }
-        if let Some(records) = self
-            .deblock_records
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
+        if let Some(records) = self.deblock_records.into_inner() {
             self.filter_records.deblock_blocks = records.blocks;
             self.filter_records.chroma_deblock_blocks = records.chroma;
         }

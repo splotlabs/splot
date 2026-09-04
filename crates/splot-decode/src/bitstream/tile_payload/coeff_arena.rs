@@ -15,7 +15,8 @@
 
 use core::cell::RefCell;
 use core::ops::Range;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use parking_lot::Mutex;
+use std::sync::{Arc, OnceLock};
 
 fn take_pooled(cells: usize) -> Vec<i32> {
     crate::support::buffer_pool::take(cells)
@@ -76,9 +77,7 @@ fn spare_handles() -> &'static Mutex<Vec<CoeffBatch>> {
 /// The reserve is searched rather than popped: a handle a row still in flight
 /// is holding must be left where it is, not taken out to be tested and lost.
 fn new_handle() -> CoeffBatch {
-    let mut spare = spare_handles()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut spare = spare_handles().lock();
     let reusable = spare
         .iter()
         .position(|handle| Arc::strong_count(handle) == 1);
@@ -98,9 +97,7 @@ fn new_handle() -> CoeffBatch {
 
 /// Offers a spent handle back, for the next row.
 fn retire_handle(handle: CoeffBatch) {
-    let mut spare = spare_handles()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut spare = spare_handles().lock();
     if spare.len() < MAX_SPARE_HANDLES {
         spare.push(handle);
     }

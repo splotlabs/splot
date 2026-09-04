@@ -12,8 +12,8 @@
 //! Feature tracking: `INFRA-DECODE-FRAME-PIPELINING`.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
@@ -26,6 +26,7 @@ use crate::prediction::inter;
 
 use super::inflight::{InflightRing, PendingFinish, PipelineFrameSlot, RefFrameSlot};
 use super::unsupported;
+use parking_lot::Mutex;
 
 type EntropyResult<T> = Arc<CompletionCell<Mutex<Option<Result<inter::DeferredInterWalk<T>>>>>>;
 type EntropyEarly<T> = Arc<CompletionCell<Mutex<Option<inter::InterWalkEarly<T>>>>>;
@@ -322,11 +323,7 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
             let mut scratch = scratch_for_job
                 .as_deref()
                 .and_then(CompletionCell::get)
-                .and_then(|scratch| {
-                    T::take_scheduled_scratch(
-                        &mut scratch.lock().unwrap_or_else(PoisonError::into_inner),
-                    )
-                })
+                .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
                 .unwrap_or_default();
             match reconstruct(&mut scratch) {
                 Ok((frame, _, cdfs, ccso, field, segments)) => {
@@ -659,10 +656,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             let frame = Arc::clone(self);
             admit.spawn_ready(boxed_task(move |_| {
                 if let Err(error) = filter.run() {
-                    let mut owed = frame
-                        .filter_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
+                    let mut owed = frame.filter_error.lock();
                     if owed.is_none() {
                         *owed = Some(error);
                     }
@@ -673,11 +667,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         let Some(filter) = progress.output else {
             return;
         };
-        let finish = self
-            .finish
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let finish = self.finish.lock().take();
         if let Some(finish) = finish {
             let mut conditions = self
                 .filter_gate
@@ -691,11 +681,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 self.order_base + u64::from(u32::MAX),
                 &conditions,
                 boxed_task(move |_| {
-                    let error = frame
-                        .filter_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .take();
+                    let error = frame.filter_error.lock().take();
                     if let Some(error) = error {
                         finish.fail(error);
                     } else {
@@ -728,12 +714,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             let _ = completion.set(());
         }
         admit.admit_ready();
-        if let Some(finish) = self
-            .finish
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
+        if let Some(finish) = self.finish.lock().take() {
             finish.fail(error);
         }
     }
@@ -780,21 +761,12 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
             let temporal_scratch = temporal_source
                 .as_deref()
                 .and_then(CompletionCell::get)
-                .and_then(|scratch| {
-                    scratch
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .take()
-                })
+                .and_then(|scratch| scratch.lock().take())
                 .unwrap_or_default();
             let decode_scratch = scheduled_scratch_source
                 .as_deref()
                 .and_then(CompletionCell::get)
-                .and_then(|scratch| {
-                    T::take_scheduled_scratch(
-                        &mut scratch.lock().unwrap_or_else(PoisonError::into_inner),
-                    )
-                })
+                .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
                 .unwrap_or_default();
             let settle_prepare_failure = |finish: PendingFinish<T>, error| {
                 let _ = temporal_done.set(Mutex::new(Some(inter::TemporalMvScratch::default())));
@@ -846,9 +818,7 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                     order_base.saturating_add(1 << 19),
                     &[Condition::completion(tail.as_ref())],
                     boxed_task(move |admit| {
-                        let parsed = attach_tail.get().and_then(|slot| {
-                            slot.lock().unwrap_or_else(PoisonError::into_inner).take()
-                        });
+                        let parsed = attach_tail.get().and_then(|slot| slot.lock().take());
                         let outcome = match parsed {
                             Some(Ok(deferred)) => deferred
                                 .attach_filters(pending_filters, &attach_frame.reconstruction),
@@ -930,21 +900,13 @@ fn promote_front<'scope, 'job>(
             finish,
         } => {
             let settled = early.wait_with_pool_assist();
-            let early = settled
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
+            let early = settled.lock().take();
             if let Some(early) = early {
                 schedule_typed(early, tail, finish, frame_index, scheduler, scope, lane);
             } else {
                 let error = tail
                     .get()
-                    .and_then(|slot| {
-                        slot.lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .take()
-                            .and_then(Result::err)
-                    })
+                    .and_then(|slot| slot.lock().take().and_then(Result::err))
                     .unwrap_or_else(frame_task_scope);
                 finish.fail(error);
             }
@@ -955,21 +917,13 @@ fn promote_front<'scope, 'job>(
             finish,
         } => {
             let settled = early.wait_with_pool_assist();
-            let early = settled
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
+            let early = settled.lock().take();
             if let Some(early) = early {
                 schedule_typed(early, tail, finish, frame_index, scheduler, scope, lane);
             } else {
                 let error = tail
                     .get()
-                    .and_then(|slot| {
-                        slot.lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .take()
-                            .and_then(Result::err)
-                    })
+                    .and_then(|slot| slot.lock().take().and_then(Result::err))
                     .unwrap_or_else(frame_task_scope);
                 finish.fail(error);
             }
@@ -1076,7 +1030,7 @@ mod tests {
         assert_eq!(lane.recon.len(), 1);
         let prior = prior.expect("prior context");
         let stored = prior.get().expect("settled prior context");
-        let mut stored = stored.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut stored = stored.lock();
         assert!(u8::take_scheduled_scratch(&mut stored).is_none());
         assert!(u16::take_scheduled_scratch(&mut stored).is_some());
     }
@@ -1094,7 +1048,6 @@ mod tests {
                 .get()
                 .expect("settled failure")
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner)
                 .is_none()
         );
     }

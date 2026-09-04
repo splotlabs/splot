@@ -29,13 +29,14 @@ use core::cell::UnsafeCell;
 use core::num::NonZeroUsize;
 use core::ptr::NonNull;
 use core::slice;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard};
+use std::sync::{Arc, OnceLock};
 
 use splot_parallel::{CompletionCell, Condition, WatermarkCell};
 use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample};
 
 use crate::error::{DecodeError, Result};
 use crate::pipeline::unsupported;
+use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 
 /// The stripe geometry one frame's filter phase publishes through.
 struct ProgressLayout {
@@ -457,7 +458,7 @@ impl<T: ReconSample> FrameProgress<T> {
         stripe: usize,
     ) -> Option<DirectStripeLease<T>> {
         let layout = self.layout.get()?;
-        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut layout = layout.lock();
         if layout.freezing
             || !layout.direct_aligned
             || layout.landed.get(stripe).copied()?
@@ -471,10 +472,7 @@ impl<T: ReconSample> FrameProgress<T> {
             *layout.stripe_ends.get(stripe - 1)?
         };
         let end = *layout.stripe_ends.get(stripe)?;
-        let workspace_guard = self
-            .workspace
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
+        let workspace_guard = self.workspace.read();
         let workspace = workspace_guard.as_ref()?;
         let chroma_start = start >> self.subsampling_y;
         let chroma_end = end.div_ceil(1 << self.subsampling_y);
@@ -510,7 +508,7 @@ impl<T: ReconSample> FrameProgress<T> {
         let Some(layout) = self.layout.get() else {
             return;
         };
-        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut layout = layout.lock();
         let released = match layout.direct_holds.get_mut(stripe) {
             Some(holds) => {
                 *holds = holds.saturating_sub(1);
@@ -526,13 +524,7 @@ impl<T: ReconSample> FrameProgress<T> {
     /// Holders left on a stripe's direct lease.
     fn direct_holds(&self, stripe: usize) -> u32 {
         self.layout.get().map_or(0, |layout| {
-            layout
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .direct_holds
-                .get(stripe)
-                .copied()
-                .unwrap_or(0)
+            layout.lock().direct_holds.get(stripe).copied().unwrap_or(0)
         })
     }
 
@@ -543,7 +535,7 @@ impl<T: ReconSample> FrameProgress<T> {
         let Some(layout) = self.layout.get() else {
             return;
         };
-        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut layout = layout.lock();
         let rows = complete_stripe(&mut layout, stripe);
         drop(layout);
         self.published_luma_rows.publish(rows);
@@ -553,7 +545,7 @@ impl<T: ReconSample> FrameProgress<T> {
         let Some(layout) = self.layout.get() else {
             return;
         };
-        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut layout = layout.lock();
         let Some(leased) = layout.leased.get_mut(stripe) else {
             return;
         };
@@ -594,10 +586,7 @@ impl<T: ReconSample> FrameProgress<T> {
     pub(crate) fn read(&self) -> Option<PublishedFrame<'_, T>> {
         let rows = self.published_luma_rows();
         let luma_rows = NonZeroUsize::new(rows)?;
-        let workspace = self
-            .workspace
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
+        let workspace = self.workspace.read();
         if workspace.is_none() {
             return None;
         }
@@ -630,16 +619,13 @@ impl<T: ReconSample> FrameProgress<T> {
         publish: impl FnOnce(splot_recon::DecodedFrame<T>) -> R,
     ) -> Result<R> {
         if let Some(layout) = self.layout.get() {
-            let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut layout = layout.lock();
             if layout.leased.iter().any(|&leased| leased) {
                 return Err(live_direct_lease());
             }
             layout.freezing = true;
         }
-        let mut guard = self
-            .workspace
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut guard = self.workspace.write();
         let workspace = guard.take().ok_or_else(taken_workspace)?;
         Ok(publish(workspace.into_workspace().freeze()?))
     }

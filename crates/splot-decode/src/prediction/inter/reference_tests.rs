@@ -12,7 +12,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use parking_lot::MutexGuard;
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
@@ -27,6 +27,7 @@ use crate::prediction::inter::mc::{
     InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into,
 };
 use crate::{DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig};
+use parking_lot::Mutex;
 use splot_parallel::{FrameDelay, ThreadCount};
 
 const WIDTH: usize = 64;
@@ -213,7 +214,7 @@ fn a_settled_frame_reads_the_same_bytes_through_the_banded_path() {
 
 /// Turns forced banded reads on for the caller's scope.
 fn forced_band_scope() -> ForcedBand {
-    let guard = FORCED_BAND.lock().unwrap_or_else(PoisonError::into_inner);
+    let guard = FORCED_BAND.lock();
     set_forced_banded_reads(true);
     ForcedBand { _guard: guard }
 }

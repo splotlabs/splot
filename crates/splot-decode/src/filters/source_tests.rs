@@ -9,14 +9,15 @@ use super::{
     DeblockedSource, FramePlane, StripeOutputPlane, StripePlane, take_stripe_sample_buffer,
     window_bounds,
 };
+use parking_lot::Mutex;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
     PlaneRect, PlaneSize,
 };
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(miri))]
-use std::sync::{Barrier, Mutex};
+use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u16> {
     workspace_with_format(width, height, PixelFormat::Yuv420)
@@ -243,9 +244,7 @@ fn deblocked_source_keeps_read_leases_disjoint_from_later_writes() {
                         .iter()
                         .copied()
                         .sum::<u16>();
-                    *reader_sum
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sum);
+                    *reader_sum.lock() = Some(sum);
                 });
                 ready.wait();
                 source
@@ -256,10 +255,7 @@ fn deblocked_source_keeps_read_leases_disjoint_from_later_writes() {
             })
             .expect("ready task scope");
         });
-        read_sum
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .expect("reader result")
+        read_sum.lock().expect("reader result")
     };
 
     let expected = (0..16).map(|x| (15 * 17 + x * 3) & 255).sum::<usize>() as u16;
