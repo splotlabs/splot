@@ -889,21 +889,35 @@ fn partition_plane_rects<'a, T: ReconSample>(
             rows,
         });
     }
+    // The row walk consumes rectangles left to right, so it needs them in
+    // column order. A caller that already partitions the plane in that order --
+    // the whole-width band split does -- needs no ordering list at all.
+    let ordered = rects
+        .windows(2)
+        .all(|pair| (pair[0].x(), pair[0].y()) <= (pair[1].x(), pair[1].y()));
     let mut order = Vec::new();
-    order
-        .try_reserve_exact(rects.len())
-        .map_err(|_| ReconError::WorkspaceAllocationFailed {
-            plane: plane.plane,
-            context: "rectangle surface ordering",
+    if !ordered {
+        order.try_reserve_exact(rects.len()).map_err(|_| {
+            ReconError::WorkspaceAllocationFailed {
+                plane: plane.plane,
+                context: "rectangle surface ordering",
+            }
         })?;
-    order.extend(0..rects.len());
-    order.sort_unstable_by_key(|&index| (rects[index].x(), rects[index].y()));
+        order.extend(0..rects.len());
+        order.sort_unstable_by_key(|&index| (rects[index].x(), rects[index].y()));
+    }
 
     let stride_samples = plane.stride_samples();
     for (y, row) in plane.samples.chunks_exact_mut(stride_samples).enumerate() {
         let mut rest = row;
         let mut consumed = 0usize;
-        for &index in &order {
+        // Column order for the row walk: the sorted list when the rectangles
+        // needed one, and their natural order when they arrived in it.
+        let walk = order
+            .iter()
+            .copied()
+            .chain((0..rects.len()).skip(if ordered { 0 } else { rects.len() }));
+        for index in walk {
             let rect = rects[index];
             if y < rect.y() || y >= rect.y() + rect.height() {
                 continue;

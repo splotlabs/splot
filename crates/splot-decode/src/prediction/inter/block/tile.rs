@@ -1001,6 +1001,9 @@ pub(in crate::prediction::inter) struct TileParseState {
 #[derive(Default)]
 pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     parse: TileParseState,
+    /// The surface source the tile's units draw their reconstruction
+    /// rectangles from, kept whole so its lock and handle outlive the tile.
+    surface_source: Option<std::sync::Arc<Mutex<admission::SurfaceSource<T>>>>,
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
@@ -1015,6 +1018,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
     ) -> Self {
         Self {
             parse: TileParseState::default(),
+            surface_source: None,
             ordered,
             workers: workers.take_reusable(),
             surfaces,
@@ -1639,6 +1643,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
 )> {
     let TileDecodeScratch {
         parse: mut parse_state,
+        surface_source: mut spent_surface_source,
         mut ordered,
         mut workers,
         surfaces: mut recycled_surfaces,
@@ -1675,6 +1680,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .commit_block_decoded
             .clone_from(&parse_state.block_decoded);
         let commit_block_decoded = core::mem::take(&mut parse_state.commit_block_decoded);
+        let reusable_surface_source = spent_surface_source.take();
         let block_decoded = core::mem::take(&mut parse_state.block_decoded);
         let quantizer = FrameQuantizerSnapshot::capture();
         let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
@@ -1704,6 +1710,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut resolve_state = TileResolveState::new(sequence);
         let mut tile_scratch = TileDecodeScratch {
             parse: TileParseState::default(),
+            surface_source: None,
             ordered,
             workers,
             surfaces: recycled_surfaces,
@@ -1720,16 +1727,33 @@ pub(super) fn decode_tiles<T: ReconSample>(
         };
         let TileDecodeScratch {
             parse: _,
+            surface_source: _,
             ordered: tile_ordered,
             workers: tile_workers,
             surfaces: tile_surfaces,
             batches: mut tile_batches,
         } = tile_scratch;
-        let surface_source = std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
-            info,
-            rects,
-            tile_surfaces,
-        )));
+        let surface_source = match reusable_surface_source
+            .filter(|source| std::sync::Arc::strong_count(source) == 1)
+        {
+            Some(mut source) => {
+                if let Some(inner) = std::sync::Arc::get_mut(&mut source) {
+                    inner.get_mut().reset(info, rects, tile_surfaces);
+                    source
+                } else {
+                    std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
+                        info,
+                        rects,
+                        tile_surfaces,
+                    )))
+                }
+            }
+            None => std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
+                info,
+                rects,
+                tile_surfaces,
+            ))),
+        };
         let commit = TileCommit::direct(
             tile_ordered,
             workspace,
@@ -1779,6 +1803,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         parse_state.block_decoded = block_decoded;
         parse_state.commit_block_decoded = spent_block_decoded;
         parse_state.row_buffers = row_buffers;
+        spent_surface_source = Some(surface_source);
         merge_tile_filter_state(
             &mut cdef_state,
             &mut gdf_state,
@@ -1807,6 +1832,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
     Ok((
         TileDecodeScratch {
             parse: parse_state,
+            surface_source: spent_surface_source,
             ordered,
             workers,
             surfaces: recycled_surfaces,

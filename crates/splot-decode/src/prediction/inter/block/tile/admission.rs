@@ -274,6 +274,18 @@ impl<T: ReconSample> SurfaceSource<T> {
         Self { info, rects, free }
     }
 
+    /// Lays this source out for another tile, keeping its free surfaces.
+    pub(super) fn reset(
+        &mut self,
+        info: splot_recon::DecodedFrameInfo,
+        rects: Vec<splot_recon::PlaneRect>,
+        free: Vec<splot_recon::OwnedFrameRect<T>>,
+    ) {
+        self.info = info;
+        self.rects = rects;
+        self.free = free;
+    }
+
     /// Hands out the surface for `unit`, whose rectangle the frame fixed when
     /// it partitioned its superblocks. Units precompute concurrently and in no
     /// particular order, so the rectangle must follow the unit rather than a
@@ -1577,6 +1589,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     prepared.resize_with(batch_count, || None);
     let TileDecodeScratch {
         parse: _,
+        surface_source: _,
         ordered,
         workers,
         surfaces,
