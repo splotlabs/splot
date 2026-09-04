@@ -19,6 +19,7 @@ use parking_lot::Mutex;
 use std::sync::{Arc, OnceLock};
 
 /// A row's coefficients, shared by every block parsed into it.
+#[derive(PartialEq, Eq)]
 pub(crate) struct RowCoeffs(OnceLock<Vec<i32>>);
 
 impl core::fmt::Debug for RowCoeffs {
@@ -29,14 +30,6 @@ impl core::fmt::Debug for RowCoeffs {
             .finish()
     }
 }
-
-impl PartialEq for RowCoeffs {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.get() == other.0.get()
-    }
-}
-
-impl Eq for RowCoeffs {}
 
 impl Drop for RowCoeffs {
     fn drop(&mut self) {
