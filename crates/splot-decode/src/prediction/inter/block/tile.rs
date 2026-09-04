@@ -60,7 +60,7 @@ fn append_lr_records(
     blocks: &mut Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     filters: &mut Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     mut tile_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
-    tile_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
+    mut tile_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
 ) -> Result<()> {
     let filter_base = filters.len();
     for block in &tile_blocks {
@@ -89,8 +89,12 @@ fn append_lr_records(
             );
         }
     }
-    blocks.extend(tile_blocks);
-    filters.extend(tile_filters);
+    blocks.append(&mut tile_blocks);
+    filters.append(&mut tile_filters);
+    // Back to the reserve rather than dropped: the next tile builds the same
+    // two lists, and starting from empty spends an allocation per doubling.
+    crate::support::buffer_pool::recycle(&mut tile_blocks);
+    crate::support::buffer_pool::recycle(&mut tile_filters);
     Ok(())
 }
 

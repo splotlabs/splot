@@ -119,7 +119,11 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
     ) -> Result<Self, TilePartitionTraversalError> {
         ensure_supported_traversal_frame(frame)?;
         let symbols = symbol_decoder_for_work_unit(work_unit)?;
-        let lr_activity = WienerNsLrUnitActivity::default();
+        let lr_activity = WienerNsLrUnitActivity {
+            active_source_blocks: crate::support::buffer_pool::take(0),
+            unit_filters: crate::support::buffer_pool::take(0),
+            ..Default::default()
+        };
         let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
         let tile_rows = work_unit.mi_row_range().start as usize
             ..(work_unit.mi_row_range().end as usize).min(frame.mi_rows);
