@@ -154,8 +154,9 @@ mod proptests {
                     frame_filters_on,
                     num_filter_classes,
                     frame_filter_bank: None,
-                })
-                .collect();
+                });
+            let planes = crate::tile::InlineVec::from_iter_checked(planes)
+                .expect("proptest plane count is bounded");
             let params = LrParams {
                 uses_lr,
                 planes,

@@ -309,7 +309,7 @@ fn chroma_lr_frame_coeffs(plane: &LrPlaneParams) -> Result<[i16; WIENER_NS_CHROM
     let Some(bank) = plane.frame_filter_bank.as_ref() else {
         return Err(super::lr_pipeline_state_error());
     };
-    let [class] = bank.classes.as_slice() else {
+    let [class] = bank.classes.as_ref() else {
         return Err(super::lr_pipeline_state_error());
     };
     class

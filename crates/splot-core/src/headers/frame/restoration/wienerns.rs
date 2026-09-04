@@ -74,8 +74,28 @@ const SHUFFLED_INDEX: [usize; 64] = [
 /// The resolved frame-level `FrameLrWienerNs[plane]` bank.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WienerNsFrameFilterBank {
-    /// One resolved class entry per `numClasses`.
-    pub classes: Vec<WienerNsFrameFilterClass>,
+    /// One resolved class entry per `numClasses`, held inline: AV2 bounds a
+    /// bank at [`MAX_WIENER_NS_CLASSES`] classes.
+    pub classes: crate::tile::InlineVec<WienerNsFrameFilterClass, MAX_WIENER_NS_CLASSES>,
+}
+
+/// Classes a frame-level Wiener NS bank may carry (`DECODE_NUM_FILTER_CLASSES`).
+pub const MAX_WIENER_NS_CLASSES: usize = 16;
+
+impl Default for WienerNsFrameFilterClass {
+    fn default() -> Self {
+        // One shared empty slice for every default class, so filling an inline
+        // bank costs reference-count bumps rather than allocations.
+        static EMPTY: std::sync::OnceLock<std::sync::Arc<[i16]>> = std::sync::OnceLock::new();
+        Self {
+            match_index: 0,
+            merged: false,
+            ref_bank: 0,
+            subset: None,
+            wiener_ns_uv_sym: false,
+            coeffs: std::sync::Arc::clone(EMPTY.get_or_init(|| std::sync::Arc::from(Vec::new()))),
+        }
+    }
 }
 
 /// One class from a resolved frame-level Wiener NS filter bank.
@@ -155,7 +175,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
     }
 
     let mut frame_coeffs = vec![vec![0i16; n_coeffs]; num_classes];
-    let mut classes = Vec::with_capacity(num_classes);
+    let mut classes = crate::tile::InlineVec::default();
     for c in 0..num_classes {
         fill_first_slot_of_bank_with_filter_match(
             c,
@@ -225,14 +245,18 @@ pub(super) fn parse_frame_wiener_ns_filter(
             }
         }
         frame_coeffs[c].clone_from(&coeffs);
-        classes.push(WienerNsFrameFilterClass {
-            match_index: match_indices[c] as u8,
-            merged: merged[c],
-            ref_bank: 0,
-            subset,
-            wiener_ns_uv_sym,
-            coeffs: std::sync::Arc::from(coeffs),
-        });
+        classes
+            .push(WienerNsFrameFilterClass {
+                match_index: match_indices[c] as u8,
+                merged: merged[c],
+                ref_bank: 0,
+                subset,
+                wiener_ns_uv_sym,
+                coeffs: std::sync::Arc::from(coeffs),
+            })
+            .ok_or(crate::error::Error::Unimplemented {
+                feature: "wienerns_filter_bank_classes",
+            })?;
     }
 
     Ok(WienerNsFrameFilterBank { classes })

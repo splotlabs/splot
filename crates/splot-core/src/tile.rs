@@ -208,76 +208,101 @@ pub struct TileParams {
     pub covers_rows: bool,
 }
 
-/// Tile start offsets, held inline.
+/// A list with a fixed ceiling, held inline instead of on the heap.
 ///
-/// AV2 bounds a frame at [`MAX_TILE_COLS`] columns and [`MAX_TILE_ROWS`] rows,
-/// and the `MiColStarts` / `MiRowStarts` arrays carry one extra sentinel, so the
-/// whole list fits in the header rather than in a vector allocated per frame.
-/// It dereferences to `[u32]`, so readers use it as the slice it replaces.
+/// AV2 bounds several per-frame lists -- tile starts, loop-restoration planes,
+/// a Wiener filter bank's classes -- so they fit in the header they belong to
+/// rather than in a vector allocated for every frame. Dereferences to `[T]`,
+/// which leaves readers using it exactly as the slice it replaces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TileStarts {
-    values: [u32; MAX_TILE_STARTS],
+pub struct InlineVec<T, const N: usize> {
+    values: [T; N],
     len: u16,
 }
 
-/// Entries a [`TileStarts`] holds: one per tile plus the trailing sentinel.
-pub const MAX_TILE_STARTS: usize = MAX_TILE_COLS as usize + 1;
-
-impl Default for TileStarts {
+impl<T: Default, const N: usize> Default for InlineVec<T, N> {
     fn default() -> Self {
         Self {
-            values: [0; MAX_TILE_STARTS],
+            values: core::array::from_fn(|_| T::default()),
             len: 0,
         }
     }
 }
 
-impl TileStarts {
-    /// Collects `starts`, or `None` when there are more than [`MAX_TILE_STARTS`].
+impl<T: Default, const N: usize> InlineVec<T, N> {
+    /// Collects `items`, or `None` when there are more than `N`.
     #[must_use]
-    pub fn from_iter_checked(starts: impl IntoIterator<Item = u32>) -> Option<Self> {
+    pub fn from_iter_checked(items: impl IntoIterator<Item = T>) -> Option<Self> {
         let mut built = Self::default();
-        for start in starts {
-            built.push(start)?;
+        for item in items {
+            built.push(item)?;
         }
         Some(built)
     }
+}
 
-    /// Appends one start, or `None` when the list is already full.
-    pub fn push(&mut self, start: u32) -> Option<()> {
-        let slot = self.values.get_mut(self.len as usize)?;
-        *slot = start;
+impl<T, const N: usize> InlineVec<T, N> {
+    /// Appends one item, or `None` when the list is already full.
+    pub fn push(&mut self, item: T) -> Option<()> {
+        let slot = self.values.get_mut(usize::from(self.len))?;
+        *slot = item;
         self.len = self.len.checked_add(1)?;
         Some(())
     }
 }
 
-impl core::ops::Deref for TileStarts {
-    type Target = [u32];
-
-    fn deref(&self) -> &Self::Target {
-        self.values.get(..self.len as usize).unwrap_or(&[])
+impl<T, const N: usize> InlineVec<T, N> {
+    /// Shortens the list to `len`, keeping the first entries.
+    pub fn truncate(&mut self, len: usize) {
+        if let Ok(len) = u16::try_from(len)
+            && len < self.len
+        {
+            self.len = len;
+        }
     }
 }
 
-impl core::ops::DerefMut for TileStarts {
+impl<T, const N: usize> core::ops::Deref for InlineVec<T, N> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.values.get(..usize::from(self.len)).unwrap_or(&[])
+    }
+}
+
+impl<T, const N: usize> core::ops::DerefMut for InlineVec<T, N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        let len = self.len as usize;
+        let len = usize::from(self.len);
         self.values.get_mut(..len).unwrap_or(&mut [])
     }
 }
 
-impl PartialEq<[u32]> for TileStarts {
-    fn eq(&self, other: &[u32]) -> bool {
+impl<'a, T, const N: usize> IntoIterator for &'a InlineVec<T, N> {
+    type Item = &'a T;
+    type IntoIter = core::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq<[T]> for InlineVec<T, N> {
+    fn eq(&self, other: &[T]) -> bool {
         self.as_ref() == other
     }
 }
 
-impl AsRef<[u32]> for TileStarts {
-    fn as_ref(&self) -> &[u32] {
+impl<T, const N: usize> AsRef<[T]> for InlineVec<T, N> {
+    fn as_ref(&self) -> &[T] {
         self
     }
 }
+
+/// Tile start offsets: one per tile plus the trailing sentinel.
+pub type TileStarts = InlineVec<u32, MAX_TILE_STARTS>;
+
+/// Entries a [`TileStarts`] holds.
+pub const MAX_TILE_STARTS: usize = MAX_TILE_COLS as usize + 1;
 
 /// Full `tile_params()` result (AV2 v1.0.0 § 5.18.7.3): the [`TileParams`] summary
 /// plus the superblock start arrays and the returned `sbShift`, which the

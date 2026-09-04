@@ -310,7 +310,7 @@ pub fn parse_tile_info(
 
     let sb_shift2 = sb_shift2.min(31);
     let mut mi_col_starts = crate::tile::TileStarts::default();
-    for &start in sb_col_starts.iter() {
+    for &start in &sb_col_starts {
         mi_col_starts
             .push(start << sb_shift2)
             .ok_or_else(|| tile_starts_overflow(reader))?;
@@ -319,7 +319,7 @@ pub fn parse_tile_info(
         .push(mi_cols)
         .ok_or_else(|| tile_starts_overflow(reader))?;
     let mut mi_row_starts = crate::tile::TileStarts::default();
-    for &start in sb_row_starts.iter() {
+    for &start in &sb_row_starts {
         mi_row_starts
             .push(start << sb_shift2)
             .ok_or_else(|| tile_starts_overflow(reader))?;

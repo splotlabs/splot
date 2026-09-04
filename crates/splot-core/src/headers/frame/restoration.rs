@@ -56,7 +56,8 @@ pub(crate) const RESTORATION_TILESIZE_MAX: u32 = 512;
 const RESTORE_SWITCHABLE_TYPES: usize = 3;
 
 /// Maximum `NumPlanes` (Y, U, V); bounds the per-plane loop-restoration scratch.
-const MAX_LR_PLANES: usize = 3;
+/// Planes an `lr_params()` payload may carry.
+pub const MAX_LR_PLANES: usize = 3;
 
 /// `Decode_Num_Filter_Classes[8]` (AV2 § 5.18.7.11, mirror :7410): maps the f(3)
 /// `num_filter_classes_idx` to `NumFilterClasses`.
@@ -96,9 +97,10 @@ pub fn ccso_quant_step(scale_idx: u8, quant_idx: u8) -> u16 {
 
 /// `FrameRestorationType[plane]` (AV2 § 5.18.7.11 / § 6.17.7.7, mirror semantics
 /// :5680-5688): the loop-restoration tool selected for a plane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameRestorationType {
     /// `RESTORE_NONE` (0).
+    #[default]
     None,
     /// `RESTORE_PC_WIENER` (1).
     PcWiener,
@@ -267,7 +269,7 @@ impl LrGeometry {
 }
 
 /// One plane's parsed `lr_params()` per-plane state (AV2 § 5.18.7.11).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LrPlaneParams {
     /// `FrameRestorationType[plane]` (selected via `tool_index ns(n)`).
     pub restoration_type: FrameRestorationType,
@@ -292,7 +294,12 @@ pub struct LrParams {
     /// `UsesLr`: any plane uses loop restoration.
     pub uses_lr: bool,
     /// Per-plane parsed state (`NumPlanes` entries; empty when restoration is disabled).
-    pub planes: Vec<LrPlaneParams>,
+    /// Per-plane parsed state, held inline: AV2 codes at most
+    /// [`MAX_LR_PLANES`] planes.
+    pub planes: crate::tile::InlineVec<
+        LrPlaneParams,
+        { crate::headers::frame::restoration::MAX_LR_PLANES },
+    >,
     /// `LoopRestorationSize[0..3]` derived per plane.
     pub loop_restoration_size: [u32; 3],
 }
@@ -383,14 +390,14 @@ fn parse_lr_params_with_references(
     if coded_lossless || !view.enable_restoration {
         return Ok(LrParams {
             uses_lr: false,
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
             loop_restoration_size: default_restoration_size(geometry),
         });
     }
 
     let mut uses_luma_lr = false;
     let mut uses_chroma_lr = false;
-    let mut planes: Vec<LrPlaneParams> = Vec::with_capacity(usize::from(num_planes));
+    let mut planes = crate::tile::InlineVec::default();
     let mut temporal_pred_flags = [false; MAX_LR_PLANES];
     let mut temporal_ref_indices = [0usize; MAX_LR_PLANES];
 
@@ -452,12 +459,16 @@ fn parse_lr_params_with_references(
         if let Some(slot) = temporal_ref_indices.get_mut(plane) {
             *slot = temporal_ref_index;
         }
-        planes.push(LrPlaneParams {
-            restoration_type,
-            frame_filters_on,
-            num_filter_classes,
-            frame_filter_bank: None,
-        });
+        planes
+            .push(LrPlaneParams {
+                restoration_type,
+                frame_filters_on,
+                num_filter_classes,
+                frame_filter_bank: None,
+            })
+            .ok_or(crate::error::Error::Unimplemented {
+                feature: "lr_params_plane_count",
+            })?;
     }
 
     let uses_lr = uses_luma_lr || uses_chroma_lr;
@@ -561,8 +572,8 @@ fn copy_temporal_frame_filter(
     else {
         return;
     };
-    plane_params.frame_filter_bank = Some(WienerNsFrameFilterBank {
-        classes: classes
+    let Some(classes) = crate::tile::InlineVec::from_iter_checked(
+        classes
             .iter()
             .take(class_count)
             .enumerate()
@@ -573,9 +584,11 @@ fn copy_temporal_frame_filter(
                 subset: None,
                 wiener_ns_uv_sym: false,
                 coeffs: Arc::clone(coeffs),
-            })
-            .collect(),
-    });
+            }),
+    ) else {
+        return;
+    };
+    plane_params.frame_filter_bank = Some(WienerNsFrameFilterBank { classes });
 }
 
 /// Reads the luma/chroma restoration size `shift` (AV2 § 5.18.7.11, mirror :7287-7369).

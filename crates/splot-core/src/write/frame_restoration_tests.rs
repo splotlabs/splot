@@ -76,7 +76,7 @@ mod tests {
     ) -> LrParams {
         LrParams {
             uses_lr,
-            planes,
+            planes: crate::tile::InlineVec::from_iter_checked(planes).expect("test planes fit"),
             loop_restoration_size,
         }
     }
@@ -115,7 +115,7 @@ mod tests {
             let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
             let params = LrParams {
                 uses_lr: false,
-                planes: Vec::new(),
+                planes: crate::tile::InlineVec::default(),
                 loop_restoration_size: default_restoration_size(geometry),
             };
             let mut writer = BitWriter::new();
@@ -136,7 +136,7 @@ mod tests {
         bad[0] += 1;
         let params = LrParams {
             uses_lr: false,
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
             loop_restoration_size: bad,
         };
         let mut writer = BitWriter::new();
@@ -292,21 +292,21 @@ mod tests {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {
             uses_lr: false,
-            planes: vec![LrPlaneParams {
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([LrPlaneParams {
                 restoration_type: FrameRestorationType::None,
                 frame_filters_on: false,
                 num_filter_classes: None,
                 frame_filter_bank: Some(WienerNsFrameFilterBank {
-                    classes: vec![WienerNsFrameFilterClass {
+                    classes: crate::tile::InlineVec::<_, 16>::from_iter_checked([WienerNsFrameFilterClass {
                         match_index: 0,
                         merged: true,
                         ref_bank: 0,
                         subset: None,
                         wiener_ns_uv_sym: false,
                         coeffs: std::sync::Arc::from(vec![0; 16]),
-                    }],
+                    }]).expect("fits"),
                 }),
-            }],
+            }]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
         };
         let mut writer = BitWriter::new();
@@ -324,12 +324,12 @@ mod tests {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {
             uses_lr: false,
-            planes: vec![LrPlaneParams {
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([LrPlaneParams {
                 restoration_type: FrameRestorationType::None,
                 frame_filters_on: false,
                 num_filter_classes: None,
                 frame_filter_bank: None,
-            }],
+            }]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
         };
         let mut writer = BitWriter::new();
@@ -381,7 +381,7 @@ mod tests {
         };
         let params = LrParams {
             uses_lr: false,
-            planes: vec![
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
@@ -400,7 +400,7 @@ mod tests {
                     num_filter_classes: None,
                     frame_filter_bank: None,
                 },
-            ],
+            ]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
         };
         let mut writer = BitWriter::new();
@@ -479,7 +479,7 @@ mod tests {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {
             uses_lr: false,
-            planes: vec![
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
@@ -498,7 +498,7 @@ mod tests {
                     num_filter_classes: None,
                     frame_filter_bank: None,
                 },
-            ],
+            ]).expect("fits"),
             loop_restoration_size: [64, 32, 16],
         };
         let mut writer = BitWriter::new();
