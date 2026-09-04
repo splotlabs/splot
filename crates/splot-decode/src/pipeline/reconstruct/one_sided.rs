@@ -18,7 +18,7 @@ use super::sink::{
     noneighbour_above, noneighbour_corner, noneighbour_left, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
-    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
+    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext,
 };
 
 const ONE_SIDED_IDIF_EDGE_CAPACITY: usize = 138;
@@ -64,7 +64,7 @@ pub(crate) struct OneSidedAboveMrl {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     p_angle: u16,
     plane_id: PlaneId,
     x: usize,
@@ -214,7 +214,7 @@ fn predict_general_intra_luma_one_sided_idif_mrl_into<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     p_angle: u16,
     x: usize,
     y: usize,
@@ -296,7 +296,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     direction: IntraCardinalDirection,
     x: usize,
     y: usize,
@@ -568,7 +568,7 @@ pub(super) fn finalize_one_sided_idif_edge<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     p_angle: u16,
     plane_id: PlaneId,
     x: usize,
@@ -706,7 +706,7 @@ fn predict_general_intra_luma_one_sided_left_mrl_into<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     p_angle: u16,
     x: usize,
     y: usize,

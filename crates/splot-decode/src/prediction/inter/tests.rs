@@ -460,10 +460,10 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
     }
 }
 
-fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
+fn luma_coeff_block(quant: &[i32], eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type,
         plane_tx_type: 0,
@@ -473,7 +473,7 @@ fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> Lu
 }
 
 fn all_zero_inter_coeff_block() -> LumaCoeffBlock {
-    luma_coeff_block(Vec::new(), 0, None)
+    luma_coeff_block(&[], 0, None)
 }
 
 fn read_rect_samples(
@@ -510,13 +510,13 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
     let mut u_quant = vec![0; 32];
     u_quant[0] = -1;
     u_quant[1] = 1;
-    let mut u_coeffs = luma_coeff_block(u_quant, 3, Some(5));
+    let mut u_coeffs = luma_coeff_block(&u_quant, 3, Some(5));
     u_coeffs.plane_tx_type = 6;
     let v_coeffs = all_zero_inter_coeff_block();
     let (want_u, want_v) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
-        &u_coeffs,
+        u_coeffs.view(&u_quant),
         &u_prediction,
-        &v_coeffs,
+        v_coeffs.view(&[]),
         &v_prediction,
         101,
         3,
@@ -566,6 +566,7 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
+        &u_quant,
         101,
         false,
         true,
@@ -614,7 +615,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
     ] {
         quant[index] = value;
     }
-    let mut coeffs = luma_coeff_block(quant, 22, None);
+    let mut coeffs = luma_coeff_block(&quant, 22, None);
     coeffs.plane_tx_type = 1;
     let residual_blocks = vec![super::InterResidualBlock {
         plane: PlaneId::Y,
@@ -633,6 +634,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
+        &quant,
         150,
         false,
         true,

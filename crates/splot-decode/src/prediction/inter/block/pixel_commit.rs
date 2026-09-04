@@ -91,6 +91,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     let _quantizer_scopes = quantizer.install_frame();
     let ReconRow {
         mut superblocks,
+        mut residual_coeffs,
         mut entries,
         mut residual_blocks,
         mut temporal,
@@ -133,13 +134,19 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     ReconCommand::GeneralIntra(command) => {
                         command.reconstruct(
                             &mut residual_planes,
+                            &residual_coeffs,
                             scratch.general_intra_mut(),
                             workspace,
                             block_decoded,
                         )?;
                     }
                     ReconCommand::Intrabc(command) => {
-                        scratch.reconstruct_intrabc(command, &residual_blocks, workspace)?;
+                        scratch.reconstruct_intrabc(
+                            command,
+                            &residual_blocks,
+                            &residual_coeffs,
+                            workspace,
+                        )?;
                     }
                     ReconCommand::Inter(command) => {
                         if motion_derived {
@@ -149,6 +156,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                 block_decoded,
                                 entry.take_motion(&mut motion_grids),
                                 &residual_blocks,
+                                &residual_coeffs,
                                 &deferred_recon::ReconShared {
                                     reference,
                                     ref_frame_idx,
@@ -171,6 +179,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                 motion,
                                 ordinal,
                                 &residual_blocks,
+                                &residual_coeffs,
                                 temporal_context,
                                 reference,
                                 ref_frame_idx,
@@ -209,11 +218,13 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     superblocks.clear();
     entries.clear();
     residual_blocks.clear();
+    residual_coeffs.clear();
     temporal.clear();
     motion_grids.clear();
     flag_log.clear();
     Ok(ReconRowBuffers {
         superblocks,
+        residual_coeffs,
         entries,
         residual_blocks,
         temporal,

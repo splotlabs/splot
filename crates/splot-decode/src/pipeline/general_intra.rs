@@ -223,6 +223,7 @@ impl GeneralIntraReconCommand {
     pub(crate) fn reconstruct<T: ReconSample>(
         self,
         arena: &mut crate::residual::pipeline::ResidualPlaneArena,
+        coeffs_arena: &[i32],
         scratch: &mut GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
@@ -234,8 +235,13 @@ impl GeneralIntraReconCommand {
         HOT_INTRA_VECTORS.with(|vectors| {
             std::mem::swap(&mut *vectors.borrow_mut(), &mut scratch.hot_vectors.slots);
         });
-        let result =
-            self.reconstruct_with_installed_quantizer(arena, scratch, workspace, block_decoded);
+        let result = self.reconstruct_with_installed_quantizer(
+            arena,
+            coeffs_arena,
+            scratch,
+            workspace,
+            block_decoded,
+        );
         HOT_INTRA_VECTORS.with(|vectors| {
             std::mem::swap(&mut *vectors.borrow_mut(), &mut scratch.hot_vectors.slots);
         });
@@ -246,6 +252,7 @@ impl GeneralIntraReconCommand {
     fn reconstruct_with_installed_quantizer<T: ReconSample>(
         self,
         arena: &mut crate::residual::pipeline::ResidualPlaneArena,
+        coeffs_arena: &[i32],
         scratch: &mut GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
@@ -253,6 +260,7 @@ impl GeneralIntraReconCommand {
         self.residual
             .reconstruct(
                 arena,
+                coeffs_arena,
                 scratch,
                 workspace,
                 block_decoded,
@@ -353,6 +361,7 @@ pub(crate) fn decode_one_general_intra_block(
     chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     arena: &mut crate::residual::pipeline::ResidualPlaneArena,
+    coeffs_arena: &mut Vec<i32>,
     qindex: u32,
     luma_use_tcq: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
@@ -450,6 +459,7 @@ pub(crate) fn decode_one_general_intra_block(
             chroma_deblock_blocks,
             tx_skip_records,
             arena,
+            coeffs_arena,
             chroma_smooth.as_deref_mut(),
             qindex,
             transform_tool_residual_policy,
@@ -551,6 +561,7 @@ pub(crate) fn decode_one_general_intra_block(
         chroma_deblock_blocks,
         tx_skip_records,
         arena,
+        coeffs_arena,
         qindex,
         luma_use_tcq,
         lossless,
@@ -588,6 +599,7 @@ fn parse_one_general_intra_chroma_part_block(
     chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     arena: &mut crate::residual::pipeline::ResidualPlaneArena,
+    coeffs_arena: &mut Vec<i32>,
     chroma_smooth: Option<&mut crate::prediction::intra_edge::TileChromaSmoothGrid>,
     qindex: u32,
     transform_tool_residual_policy: TransformToolResidualPolicy,
@@ -632,6 +644,7 @@ fn parse_one_general_intra_chroma_part_block(
         segment_id,
         tile_offset,
         arena,
+        coeffs_arena,
     )?;
     record_chroma_smooth(chroma_smooth, block_ctx, chroma.supported_chroma_mode());
     Ok((GeneralIntraLeafMode::chroma(chroma.is_cfl()), command))
@@ -648,6 +661,7 @@ fn parse_one_general_intra_rect_block(
     chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     arena: &mut crate::residual::pipeline::ResidualPlaneArena,
+    coeffs_arena: &mut Vec<i32>,
     qindex: u32,
     luma_use_tcq: bool,
     lossless: bool,
@@ -691,6 +705,7 @@ fn parse_one_general_intra_rect_block(
         segment_id,
         tile_offset,
         arena,
+        coeffs_arena,
     )?;
     Ok((leaf_mode_for_block(modes), command))
 }
@@ -1035,6 +1050,7 @@ fn parse_general_intra_residual_plan(
     segment_id: u8,
     tile_offset: ByteOffset,
     arena: &mut crate::residual::pipeline::ResidualPlaneArena,
+    coeffs_arena: &mut Vec<i32>,
 ) -> Result<GeneralIntraReconCommand> {
     let block = block_ctx.block();
     let mut deblock = crate::residual::pipeline::DeblockRecorder {
@@ -1059,6 +1075,7 @@ fn parse_general_intra_residual_plan(
             transform_tool_residual_policy,
             &mut deblock,
             arena,
+            coeffs_arena,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
     Ok(GeneralIntraReconCommand {
@@ -1092,6 +1109,9 @@ fn general_intra_residual_error(
     offset: ByteOffset,
 ) -> DecodeError {
     match error {
+        GeneralIntraResidualError::CoeffSpanOutOfRange => {
+            DecodeError::from(crate::DecodeHeaderStateError::InvalidInterResidualReconstruction)
+        }
         error @ (GeneralIntraResidualError::AllZeroRead { .. }
         | GeneralIntraResidualError::NonZeroStart { .. }
         | GeneralIntraResidualError::StagedNonZeroPass { .. }

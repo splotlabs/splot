@@ -689,8 +689,7 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         let mut coeffs = empty_luma_coeffs();
         if !all_zero {
             coeffs.eob = 1;
-            coeffs.quant = vec![0; 16];
-            coeffs.quant[0] = 1;
+            coeffs.quant_range = 0..16;
         }
         ParsedTransformUnit {
             block: PositionedLumaCoeffBlock {
@@ -1059,6 +1058,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
             &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
             &mut workspace,
             &mut block_decoded,
+            &[],
             0,
             crate::prediction::intra_edge::IntraEdgeCtx {
                 enable_ibp: false,
@@ -1350,7 +1350,7 @@ fn ctx_with_chroma(block: BlockRect, bit_depth: BitDepth, chroma: ChromaSampling
 fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
     crate::bitstream::tile_payload::LumaCoeffBlock {
         eob: 0,
-        quant: Vec::new(),
+        quant_range: 0..0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -1394,7 +1394,7 @@ fn tile_top_reconstruction_samples(plan: RectLumaPlan, above: u8) -> Vec<u8> {
         .reconstruct(
             &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
             &mut workspace,
-            &empty_luma_coeffs(),
+            empty_luma_coeffs().view(&[]),
             &block_decoded,
             None,
             0,

@@ -7,7 +7,8 @@
 
 use super::*;
 use crate::bitstream::tile_payload::{
-    GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext, SupportedChromaMode,
+    CoeffBlock, GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext,
+    SupportedChromaMode,
 };
 
 #[path = "reconstruct_tests/directional_edge.rs"]
@@ -30,7 +31,7 @@ impl IntraEdgeAvailability {
 fn all_zero_luma_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
-        quant: Vec::new(),
+        quant_range: 0..0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -48,7 +49,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
             most_probable_stx_set: None,
@@ -58,7 +59,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
         use_tcq: true,
         lossless: false,
     };
-    let reconstruct = |block: &LumaCoeffBlock| {
+    let reconstruct = |block: CoeffBlock<'_>| {
         let mut workspace =
             new_general_intra_workspace::<u8>(64, 16, BitDepth::Eight, PixelFormat::Yuv420)
                 .unwrap();
@@ -87,13 +88,13 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
         result.map(|()| workspace.reconstructed_sample(PlaneId::Y, 0, 0).unwrap())
     };
 
-    assert_eq!(reconstruct(&block).unwrap(), 40);
+    assert_eq!(reconstruct(block.view(&quant)).unwrap(), 40);
     let mut missing_intra_ist = block.clone();
     missing_intra_ist.intra_ist = None;
-    assert_eq!(reconstruct(&missing_intra_ist).unwrap(), 76);
+    assert_eq!(reconstruct(missing_intra_ist.view(&quant)).unwrap(), 76);
     let mut wrong_plane_tx_type = block;
     wrong_plane_tx_type.plane_tx_type = 1;
-    assert!(reconstruct(&wrong_plane_tx_type).is_err());
+    assert!(reconstruct(wrong_plane_tx_type.view(&quant)).is_err());
 }
 
 #[test]
@@ -105,7 +106,7 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
             most_probable_stx_set: Some(5),
@@ -115,7 +116,7 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
         use_tcq: true,
         lossless: false,
     };
-    let reconstruct = |block: &LumaCoeffBlock| {
+    let reconstruct = |block: CoeffBlock<'_>| {
         let mut workspace =
             new_general_intra_workspace::<u8>(32, 16, BitDepth::Eight, PixelFormat::Yuv420)
                 .unwrap();
@@ -148,10 +149,10 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
             .collect::<Vec<_>>()
     };
 
-    let with_ist = reconstruct(&block);
+    let with_ist = reconstruct(block.view(&quant));
     let mut without_ist = block;
     without_ist.intra_ist = None;
-    assert_ne!(with_ist, reconstruct(&without_ist));
+    assert_ne!(with_ist, reconstruct(without_ist.view(&quant)));
 }
 
 #[test]
@@ -160,7 +161,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -182,7 +183,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     for workspace in [&mut full, &mut cropped] {
         reconstruct_inter_block_residual_rect_into(
             &mut crate::prediction::inter::mc::WorkspaceSink::Frame(workspace),
-            &block,
+            block.view(&quant),
             PlaneId::Y,
             0,
             4,
@@ -220,14 +221,15 @@ fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
         )
         .unwrap();
     let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
+    let mut quant = vec![0; 16];
+    quant[0] = 1;
     let mut block = all_zero_luma_block();
     block.eob = 1;
-    block.quant = vec![0; 16];
-    block.quant[0] = 1;
+    block.quant_range = 0..quant.len();
     assert!(matches!(
         reconstruct_inter_block_residual_rect_into(
             &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
-            &block,
+            block.view(&quant),
             PlaneId::Y,
             0,
             0,
@@ -246,7 +248,7 @@ fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
 
     reconstruct_inter_block_residual_rect_into(
         &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         PlaneId::U,
         usize::MAX,
         usize::MAX,
@@ -282,7 +284,7 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -292,7 +294,7 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
 
     let result = write_intra_prediction_block(
         &mut workspace,
-        &block,
+        block.view(&quant),
         prediction,
         PlaneId::Y,
         0,
@@ -409,7 +411,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
     reconstruct_general_intra_chroma_block_into(
         &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut via_chroma,
-        &block,
+        block.view(&[]),
         PlaneId::U,
         8,
         8,
@@ -427,7 +429,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
     .unwrap();
     reconstruct_general_intra_block_rect_with_availability_into(
         &mut via_rect,
-        &block,
+        block.view(&[]),
         PlaneId::U,
         8,
         8,
@@ -444,7 +446,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
     reconstruct_general_intra_chroma_block_into(
         &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut without_ibp,
-        &block,
+        block.view(&[]),
         PlaneId::U,
         8,
         8,
@@ -517,7 +519,7 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
 
     reconstruct_general_intra_one_sided_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         45,
         PlaneId::Y,
         8,
@@ -712,7 +714,7 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
 
     reconstruct_general_intra_mrl_secondary_above_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         45,
         8,
         12,
@@ -753,7 +755,7 @@ fn cardinal_mrl_synthesizes_both_missing_edges() {
                 .unwrap();
         reconstruct_general_intra_cardinal_mrl_luma_block_into(
             &mut ws,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             direction,
             0,
             0,
@@ -793,7 +795,7 @@ fn zone3_mrl_without_left_uses_above_mrl_row() {
 
     reconstruct_general_intra_one_sided_left_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         203,
         PlaneId::Y,
         0,
@@ -831,7 +833,7 @@ fn zone2_mrl_synthesizes_both_missing_edges() {
 
     reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         135,
         0,
         0,
@@ -908,7 +910,7 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
 
     reconstruct_general_intra_middle_neighbour_rect_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         132,
         PlaneId::Y,
         8,
@@ -958,7 +960,7 @@ fn zone2_top_row_left_edge_filter_matches_avm_z2_idif() {
 
     reconstruct_general_intra_middle_neighbour_rect_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         119,
         PlaneId::Y,
         4,
@@ -1058,7 +1060,7 @@ fn d135_neighbour_masks_unavailable_tile_above_edge() {
     fn reconstruct(mut ws: CurrentFrameWorkspace<u8>) -> Vec<u8> {
         reconstruct_general_intra_directional_neighbour_block_into(
             &mut ws,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             SupportedDirectionalLumaMode::D135,
             PlaneId::Y,
             8,
@@ -1133,7 +1135,7 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
 
     reconstruct_general_intra_one_sided_left_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         203,
         PlaneId::Y,
         8,
@@ -1273,7 +1275,7 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
 
     reconstruct_general_intra_one_sided_left_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         203,
         PlaneId::Y,
         16,
@@ -1309,7 +1311,7 @@ fn zone2_mrl_middle_left_edge_synthesizes_left_from_above() {
 
     reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         91,
         0,
         16,
@@ -1369,7 +1371,7 @@ fn two_sided_middle_mrl_clamps_bottom_edge_extension() {
     for workspace in [&mut full, &mut cropped] {
         reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
             workspace,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             158,
             8,
             16,
@@ -1425,7 +1427,7 @@ fn chroma_middle_prediction_clamps_bottom_edge_extension() {
     for workspace in [&mut full, &mut cropped] {
         reconstruct_general_intra_middle_neighbour_rect_block_into(
             workspace,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             157,
             PlaneId::U,
             8,
@@ -1471,7 +1473,7 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
 
     reconstruct_general_intra_cardinal_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         IntraCardinalDirection::Vertical,
         PlaneId::Y,
         0,
@@ -1512,7 +1514,7 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
 
     reconstruct_general_intra_cardinal_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         IntraCardinalDirection::Horizontal,
         PlaneId::Y,
         64,
@@ -1557,7 +1559,7 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
 
     reconstruct_general_intra_cardinal_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         IntraCardinalDirection::Vertical,
         PlaneId::Y,
         64,
@@ -1597,7 +1599,7 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
 
     reconstruct_general_intra_one_sided_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         36,
         PlaneId::Y,
         64,
@@ -1642,7 +1644,7 @@ fn zone1_d45_top_edge_mrl_uses_offset_left_reference() {
 
     reconstruct_general_intra_one_sided_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         45,
         PlaneId::Y,
         64,
@@ -1686,7 +1688,7 @@ fn zone1_d45_top_left_synthesizes_no_neighbour_above_fallback() {
 
     reconstruct_general_intra_one_sided_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         45,
         PlaneId::Y,
         0,
@@ -1726,7 +1728,7 @@ fn zone3_d203_top_left_synthesizes_no_neighbour_left_fallback() {
 
     reconstruct_general_intra_one_sided_left_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         203,
         PlaneId::Y,
         0,
@@ -1774,7 +1776,7 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
 
     reconstruct_general_intra_cardinal_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         IntraCardinalDirection::Horizontal,
         PlaneId::Y,
         0,
@@ -1820,7 +1822,7 @@ fn cardinal_horizontal_follow_chroma_top_left_uses_no_neighbour_left_fallback() 
     reconstruct_general_intra_chroma_block_into(
         &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         PlaneId::U,
         0,
         0,
@@ -1859,7 +1861,7 @@ fn d45_follow_chroma_top_left_uses_no_neighbour_above_fallback() {
     reconstruct_general_intra_chroma_block_into(
         &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         PlaneId::U,
         0,
         0,
@@ -1894,7 +1896,7 @@ fn d113_chroma_top_left_uses_no_neighbour_middle_edges() {
     reconstruct_general_intra_chroma_block_into(
         &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         PlaneId::U,
         0,
         0,
@@ -1932,7 +1934,7 @@ fn assert_cardinal_top_left_fallback(direction: IntraCardinalDirection, expected
 
     reconstruct_general_intra_cardinal_neighbour_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         direction,
         PlaneId::Y,
         0,
@@ -2031,7 +2033,7 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
     reconstruct_general_intra_luma_paeth_neighbour_block_into(
         &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         PlaneId::Y,
         16,
         16,
@@ -2077,7 +2079,7 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
     reconstruct_general_intra_luma_paeth_neighbour_block_into(
         &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         PlaneId::Y,
         16,
         0,
@@ -2163,7 +2165,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     quant[9] = 12;
     let block = LumaCoeffBlock {
         eob: 10,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 3, // ADST_ADST
@@ -2173,7 +2175,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
 
     let mut want = Vec::new();
     reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        &block,
+        block.view(&quant),
         &paeth_pred,
         &mut want,
         149,
@@ -2190,7 +2192,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     reconstruct_general_intra_luma_paeth_neighbour_block_into(
         &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
-        &block,
+        block.view(&quant),
         PlaneId::Y,
         16,
         16,
@@ -2272,7 +2274,7 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
 
     reconstruct_general_intra_one_sided_ibp_luma_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         45, // pAngle (zone-1)
         PlaneId::Y,
         8,
@@ -2326,7 +2328,7 @@ fn one_sided_ibp_p203_synthesizes_missing_left_edge_from_above() {
 
     reconstruct_general_intra_one_sided_ibp_luma_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         203,
         PlaneId::Y,
         0,
@@ -2378,7 +2380,7 @@ fn one_sided_ibp_p45_synthesizes_both_missing_edges() {
 
     reconstruct_general_intra_one_sided_ibp_luma_block_into(
         &mut workspace,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         45,
         PlaneId::Y,
         0,

@@ -883,6 +883,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
+    residual_coeffs: &[i32],
     qindex: u32,
     luma_use_tcq: bool,
     enable_inter_ddt: bool,
@@ -905,6 +906,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
                 scratch,
                 sink,
                 [block, v_block],
+                residual_coeffs,
                 qindex,
                 cctx_type,
                 use_ddt,
@@ -918,7 +920,8 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
         crate::pipeline::reconstruct::reconstruct_inter_block_residual_rect_into(
             sink,
-            &block.coeffs,
+            crate::bitstream::tile_payload::CoeffBlock::new(&block.coeffs, residual_coeffs)
+                .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?,
             block.plane,
             block.x,
             block.y,
@@ -982,10 +985,12 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
     v.plane == ReconPlaneId::V && u.x == v.x && u.y == v.y && u.tx_size == v.tx_size
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     [u, v]: [&InterResidualBlock; 2],
+    residual_coeffs: &[i32],
     qindex: u32,
     cctx_type: usize,
     use_ddt: bool,
@@ -1004,9 +1009,9 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     read_inter_residual_prediction(sink, u, u_rect, &mut scratch.u_prediction)?;
     read_inter_residual_prediction(sink, v, v_rect, &mut scratch.v_prediction)?;
     reconstruct_general_intra_chroma_cctx_pair_into(
-        &u.coeffs,
+        crate::bitstream::tile_payload::CoeffBlock::new(&u.coeffs, residual_coeffs)?,
         &scratch.u_prediction,
-        &v.coeffs,
+        crate::bitstream::tile_payload::CoeffBlock::new(&v.coeffs, residual_coeffs)?,
         &scratch.v_prediction,
         qindex,
         log2_width,

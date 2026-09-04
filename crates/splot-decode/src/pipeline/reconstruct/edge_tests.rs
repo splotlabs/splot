@@ -97,7 +97,7 @@ fn chroma_d135_top_row_filters_available_left_edge() {
 
     reconstruct_general_intra_middle_neighbour_rect_block_into(
         &mut ws,
-        &all_zero_luma_block(),
+        all_zero_luma_block().view(&[]),
         135,
         PlaneId::U,
         32,

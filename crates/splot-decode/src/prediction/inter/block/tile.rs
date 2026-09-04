@@ -392,6 +392,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         let tile_offset = self.tile.tile_byte_span().start;
         let ReconRowBuffers {
             superblocks,
+            residual_coeffs,
             entries,
             residual_blocks,
             temporal,
@@ -405,6 +406,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         let mut recon_row = ReconRow {
             ordinal: self.parser_ordinal,
             superblocks,
+            residual_coeffs,
             entries,
             residual_blocks,
             temporal,
@@ -444,6 +446,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         &mut self.coeff_ctx,
                         &mut self.residual_scratch,
                         &mut recon_row.residual_blocks,
+                        &mut recon_row.residual_coeffs,
                         &mut self.output.gdf_state,
                         &mut self.output.cdef_state,
                         &mut self.output.ccso_state,
@@ -761,6 +764,8 @@ fn push_recon_entry<Entry>(
 pub(super) struct ReconRow {
     pub(super) ordinal: usize,
     pub(super) superblocks: Vec<ReconSuperblock>,
+    /// The coefficients this row's transform blocks index into.
+    pub(super) residual_coeffs: Vec<i32>,
     pub(super) entries: Vec<ReconRowEntry>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
@@ -852,6 +857,8 @@ impl ReconRowFailure {
 #[derive(Default)]
 pub(super) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
+    /// The coefficients this row's transform blocks index into.
+    pub(super) residual_coeffs: Vec<i32>,
     pub(super) entries: Vec<ReconRowEntry>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
@@ -1155,6 +1162,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     block_decoded,
                     entry.take_motion(&mut row.motion_grids),
                     &row.residual_blocks,
+                    &row.residual_coeffs,
                     &deferred_recon::ReconShared {
                         reference,
                         ref_frame_idx,
@@ -1176,6 +1184,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     block_decoded,
                     &mut row.temporal,
                     &row.residual_blocks,
+                    &row.residual_coeffs,
                     temporal_context,
                     reference,
                     ref_frame_idx,

@@ -22,7 +22,7 @@ fn one_sided_edge_state_failures_do_not_mutate_luma_plane() {
     assert!(matches!(
         reconstruct_general_intra_one_sided_neighbour_block_into(
             &mut ws,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             45,
             PlaneId::Y,
             4,
@@ -49,7 +49,7 @@ fn one_sided_edge_state_failures_do_not_mutate_luma_plane() {
     assert!(matches!(
         reconstruct_general_intra_one_sided_left_neighbour_block_into(
             &mut ws,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             203,
             PlaneId::Y,
             0,
@@ -93,7 +93,7 @@ fn chroma_mrl_edge_state_failure_does_not_mutate_plane() {
     assert!(matches!(
         reconstruct_general_intra_one_sided_neighbour_block_into(
             &mut ws,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             45,
             PlaneId::U,
             0,
@@ -138,7 +138,7 @@ fn middle_edge_state_failure_does_not_mutate_luma_plane() {
     assert!(matches!(
         reconstruct_general_intra_middle_neighbour_rect_block_into(
             &mut ws,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             135,
             PlaneId::Y,
             0,
@@ -181,7 +181,7 @@ fn dip_edge_state_failure_does_not_mutate_luma_plane() {
     assert!(matches!(
         reconstruct_general_intra_luma_dip_rect_block_into(
             &mut ws,
-            &all_zero_luma_block(),
+            all_zero_luma_block().view(&[]),
             0,
             false,
             4,

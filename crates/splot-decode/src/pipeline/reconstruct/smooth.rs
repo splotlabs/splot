@@ -12,7 +12,7 @@ use super::sink::{
     IntraEdgeAvailability, noneighbour_above, noneighbour_left, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
-    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext, SupportedNonDcLumaMode,
+    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedNonDcLumaMode,
 };
 
 const SMOOTH_EDGE_CAPACITY: usize = 65;
@@ -22,7 +22,7 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_with_availability
     T: ReconSample,
 >(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     mode: SupportedNonDcLumaMode,
     x: usize,
     y: usize,
@@ -65,7 +65,7 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_with_availability
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,

@@ -6,9 +6,9 @@
 use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
 
 use crate::bitstream::tile_payload::{
-    DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
-    TileBlockDecodedState, current_frame_qm_segment_id, is_cctx_geometry_allowed,
-    reconstruct_general_intra_chroma_cctx_pair_into,
+    CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
+    LumaTransformTypeContext, TileBlockDecodedState, current_frame_qm_segment_id,
+    is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_pair_into;
 
@@ -46,15 +46,15 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
-    u: (ResidualPlanePlan, LumaCoeffBlock),
-    v: Option<(ResidualPlanePlan, LumaCoeffBlock)>,
+    u: &(ResidualPlanePlan, CoeffBlock<'_>),
+    v: Option<&(ResidualPlanePlan, CoeffBlock<'_>)>,
     qindex: u32,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let (u_plane, u_coeffs) = u;
+    let (u_plane, u_coeffs) = *u;
     let cctx_type = u_coeffs.cctx_type.unwrap_or(0);
-    let Some((v_plane, v_coeffs)) = v else {
+    let Some(&(v_plane, v_coeffs)) = v else {
         if cctx_type != 0 {
             return Err(GeneralIntraResidualError::InvalidReconstructionState {
                 context: "CCTX paired V plane",
@@ -63,7 +63,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         return u_plane.reconstruct(
             scratch,
             workspace,
-            &u_coeffs,
+            u_coeffs,
             block_decoded,
             None,
             qindex,
@@ -76,8 +76,8 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             scratch,
             workspace,
             block_decoded,
-            (u_plane, &u_coeffs),
-            (v_plane, &v_coeffs),
+            &(u_plane, u_coeffs),
+            &(v_plane, v_coeffs),
             qindex,
         )? {
             return Ok(());
@@ -85,7 +85,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         u_plane.reconstruct(
             scratch,
             workspace,
-            &u_coeffs,
+            u_coeffs,
             block_decoded,
             None,
             qindex,
@@ -95,7 +95,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         return v_plane.reconstruct(
             scratch,
             workspace,
-            &v_coeffs,
+            v_coeffs,
             block_decoded,
             None,
             qindex,
@@ -107,8 +107,8 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         scratch,
         workspace,
         block_decoded,
-        (u_plane, u_coeffs),
-        (v_plane, v_coeffs),
+        &(u_plane, u_coeffs),
+        &(v_plane, v_coeffs),
         qindex,
         cctx_type,
         intra_edge,
@@ -120,12 +120,12 @@ fn reconstruct_cfl_pair<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
-    u: (ResidualPlanePlan, &LumaCoeffBlock),
-    v: (ResidualPlanePlan, &LumaCoeffBlock),
+    u: &(ResidualPlanePlan, CoeffBlock<'_>),
+    v: &(ResidualPlanePlan, CoeffBlock<'_>),
     qindex: u32,
 ) -> core::result::Result<bool, GeneralIntraResidualError> {
-    let (u_plane, u_coeffs) = u;
-    let (v_plane, v_coeffs) = v;
+    let (u_plane, u_coeffs) = *u;
+    let (v_plane, v_coeffs) = *v;
     let (
         ResidualReconstructionPlan::ChromaCfl {
             params: u_params,
@@ -180,15 +180,15 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
-    u: (ResidualPlanePlan, LumaCoeffBlock),
-    v: (ResidualPlanePlan, LumaCoeffBlock),
+    u: &(ResidualPlanePlan, CoeffBlock<'_>),
+    v: &(ResidualPlanePlan, CoeffBlock<'_>),
     qindex: u32,
     cctx_type: usize,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let (u_plane, u_coeffs) = u;
-    let (v_plane, v_coeffs) = v;
+    let (u_plane, u_coeffs) = *u;
+    let (v_plane, v_coeffs) = *v;
     if u_plane.plane_id != PlaneId::U
         || v_plane.plane_id != PlaneId::V
         || u_plane.x != v_plane.x
@@ -199,11 +199,11 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
             context: "CCTX paired plane geometry",
         });
     }
-    let u_prediction_block = prediction_only_coeff_block(&u_coeffs);
+    let u_prediction_block = prediction_only_coeff_block(u_coeffs);
     u_plane.reconstruct(
         scratch,
         workspace,
-        &u_prediction_block,
+        CoeffBlock::new(&u_prediction_block, &[])?,
         block_decoded,
         None,
         qindex,
@@ -211,11 +211,11 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         luma_context,
     )?;
     read_plane_prediction(workspace, u_plane, &mut scratch.cctx_mut().u_prediction)?;
-    let v_prediction_block = prediction_only_coeff_block(&v_coeffs);
+    let v_prediction_block = prediction_only_coeff_block(v_coeffs);
     v_plane.reconstruct(
         scratch,
         workspace,
-        &v_prediction_block,
+        CoeffBlock::new(&v_prediction_block, &[])?,
         block_decoded,
         None,
         qindex,
@@ -225,9 +225,9 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     let cctx = scratch.cctx_mut();
     read_plane_prediction(workspace, v_plane, &mut cctx.v_prediction)?;
     reconstruct_general_intra_chroma_cctx_pair_into(
-        &u_coeffs,
+        u_coeffs,
         &cctx.u_prediction,
-        &v_coeffs,
+        v_coeffs,
         &cctx.v_prediction,
         qindex,
         u_plane.tx.width_log2(),
@@ -243,16 +243,8 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     Ok(())
 }
 
-fn prediction_only_coeff_block(coeffs: &LumaCoeffBlock) -> LumaCoeffBlock {
-    LumaCoeffBlock {
-        eob: 0,
-        quant: Vec::new(),
-        intra_ist: None,
-        cctx_type: None,
-        plane_tx_type: coeffs.plane_tx_type,
-        use_tcq: false,
-        lossless: coeffs.lossless,
-    }
+fn prediction_only_coeff_block(coeffs: CoeffBlock<'_>) -> LumaCoeffBlock {
+    LumaCoeffBlock::empty(coeffs.plane_tx_type, coeffs.lossless)
 }
 
 fn plane_rect(

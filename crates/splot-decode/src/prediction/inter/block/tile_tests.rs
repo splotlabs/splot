@@ -59,6 +59,7 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
     let offset = ByteOffset::new(43);
     let row = ReconRow {
         ordinal: 0,
+        residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
         entries: Vec::new(),
         residual_blocks: Vec::new(),

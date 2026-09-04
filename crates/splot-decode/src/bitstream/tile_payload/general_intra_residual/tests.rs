@@ -107,7 +107,7 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -117,7 +117,7 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
     let prediction = vec![128u8; 8];
     let mut output = Vec::new();
     let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        &block,
+        block.view(&quant),
         &prediction,
         &mut output,
         64,
@@ -144,7 +144,7 @@ fn reconstruct_into_reuses_rectangular_u16_output_storage() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -157,7 +157,7 @@ fn reconstruct_into_reuses_rectangular_u16_output_storage() {
     let allocation = out.as_ptr();
 
     reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        &block,
+        block.view(&quant),
         &prediction,
         &mut out,
         80,
@@ -181,7 +181,7 @@ fn reconstruct_into_supports_maximum_u8_transform_geometry() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -193,7 +193,7 @@ fn reconstruct_into_supports_maximum_u8_transform_geometry() {
     let allocation = out.as_ptr();
 
     reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        &block,
+        block.view(&quant),
         &prediction,
         &mut out,
         64,
@@ -218,7 +218,7 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     quant[0] = 1;
     let invalid_quant = LumaCoeffBlock {
         eob: 1,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -228,7 +228,7 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     let mut out = vec![91u8; 7];
 
     let quant_result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        &invalid_quant,
+        invalid_quant.view(&quant),
         &prediction,
         &mut out,
         64,
@@ -250,9 +250,9 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     assert_eq!(out, vec![91; 7]);
 
     let mut valid_quant = invalid_quant;
-    valid_quant.quant.push(0);
+    valid_quant.quant_range = 0..quant.len();
     let prediction_result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        &valid_quant,
+        valid_quant.view(&quant),
         &prediction[..15],
         &mut out,
         64,
@@ -1118,9 +1118,10 @@ fn typed_transform_and_ist_domains_do_not_reach_invalid_state() {
 
 #[test]
 fn invalid_ist_shape_is_reconstruction_state() {
+    let quant = vec![0; 16];
     let block = LumaCoeffBlock {
         eob: 2,
-        quant: vec![0; 16],
+        quant_range: 0..quant.len(),
         intra_ist: Some(IntraIstSyntax {
             sec_tx_type: 1,
             most_probable_stx_set: Some(0),
@@ -1132,7 +1133,7 @@ fn invalid_ist_shape_is_reconstruction_state() {
     };
 
     let result = reconstruct::resolve_secondary_inverse_transform(
-        &block,
+        block.view(&quant),
         1,
         2,
         BitDepth::Eight,
@@ -1831,9 +1832,10 @@ fn dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct() {
 
 #[test]
 fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
+    let quant = vec![0, 0, 0, 3, 0, 0, 2, 9, 0, 0, 0, 6, 0, 0, 0, 6];
     let block = LumaCoeffBlock {
         eob: 16,
-        quant: vec![0, 0, 0, 3, 0, 0, 2, 9, 0, 0, 0, 6, 0, 0, 0, 6],
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: IDTX,
@@ -1846,7 +1848,7 @@ fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
 
     let mut fsc = Vec::new();
     reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        &block,
+        block.view(&quant),
         &prediction,
         &mut fsc,
         78,
@@ -1871,7 +1873,7 @@ fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
     ordinary_tcq.use_tcq = true;
     let mut ordinary = Vec::new();
     reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        &ordinary_tcq,
+        ordinary_tcq.view(&quant),
         &prediction,
         &mut ordinary,
         78,
@@ -1937,9 +1939,10 @@ fn invalid_cctx_state_preserves_coefficient_pairs() {
 
 #[test]
 fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
+    let quant = vec![-2, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
     let u_block = LumaCoeffBlock {
         eob: 7,
-        quant: vec![-2, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type: Some(5),
         plane_tx_type: DCT_ADST,
@@ -1948,7 +1951,7 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     };
     let v_block = LumaCoeffBlock {
         eob: 0,
-        quant: Vec::new(),
+        quant_range: 0..0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -1963,9 +1966,9 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     ];
 
     let (u, v) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
-        &u_block,
+        u_block.view(&quant),
         &u_prediction,
-        &v_block,
+        v_block.view(&[]),
         &v_prediction,
         83,
         2,
@@ -1999,7 +2002,7 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[5] = 9;
         let block = LumaCoeffBlock {
             eob: 6,
-            quant,
+            quant_range: 0..quant.len(),
             intra_ist: None,
             cctx_type: None,
             plane_tx_type: DCT_DCT,
@@ -2009,7 +2012,7 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         let prediction = vec![301u16; 16];
         let mut output = Vec::new();
         reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-            &block,
+            block.view(&quant),
             &prediction,
             &mut output,
             80,
@@ -2030,7 +2033,7 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[9] = 61;
         let block = LumaCoeffBlock {
             eob: 10,
-            quant,
+            quant_range: 0..quant.len(),
             intra_ist: None,
             cctx_type: None,
             plane_tx_type: DCT_DCT,
@@ -2040,7 +2043,7 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         let prediction = vec![144u16; 64];
         let mut output = Vec::new();
         reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-            &block,
+            block.view(&quant),
             &prediction,
             &mut output,
             96,

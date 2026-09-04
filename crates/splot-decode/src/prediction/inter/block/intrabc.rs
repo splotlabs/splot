@@ -150,16 +150,23 @@ impl IntrabcReconCommand {
         self,
         residual_scratch: &mut InterResidualReconScratch<T>,
         residual_blocks: &[InterResidualBlock],
+        residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
-        self.reconstruct_with_installed_quantizer(residual_scratch, residual_blocks, workspace)
+        self.reconstruct_with_installed_quantizer(
+            residual_scratch,
+            residual_blocks,
+            residual_coeffs,
+            workspace,
+        )
     }
 
     fn reconstruct_with_installed_quantizer<T: ReconSample>(
         self,
         residual_scratch: &mut InterResidualReconScratch<T>,
         residual_blocks: &[InterResidualBlock],
+        residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
         let prediction = self.prediction;
@@ -201,6 +208,7 @@ impl IntrabcReconCommand {
                 &mut mc::WorkspaceSink::Frame(workspace),
                 residual,
                 residual_blocks,
+                residual_coeffs,
                 self.qindex,
                 self.luma_use_tcq,
                 self.residual_use_ddt,

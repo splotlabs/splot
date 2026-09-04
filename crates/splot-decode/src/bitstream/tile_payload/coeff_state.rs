@@ -136,8 +136,13 @@ impl TransformCoeffBlockState {
     }
 
     #[must_use]
-    pub(crate) fn into_quant(mut self) -> Vec<i32> {
-        core::mem::take(&mut self.quant)
+    /// The block's quantised coefficients.
+    ///
+    /// Borrowed, not taken: the caller copies them into its row's arena and
+    /// lets this state drop, which hands all three buffers to the next block
+    /// parsed on this worker.
+    pub(crate) fn quant(&self) -> &[i32] {
+        &self.quant
     }
 
     pub(crate) fn set_level(

@@ -23,7 +23,7 @@ use splot_recon::{
 };
 
 use crate::bitstream::tile_payload::{
-    CflMultiDirection, CflParams, GeneralIntraResidualError, LumaCoeffBlock,
+    CflMultiDirection, CflParams, CoeffBlock, GeneralIntraResidualError,
 };
 use crate::pipeline::reconstruct::commit_intra_prediction;
 use crate::tile::block_context::NeighbourAvailability;
@@ -44,7 +44,7 @@ const NUM_REF_SAM_CFL: usize = 8;
 pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -122,8 +122,8 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
 pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
-    u_block: &LumaCoeffBlock,
-    v_block: &LumaCoeffBlock,
+    u_block: CoeffBlock<'_>,
+    v_block: CoeffBlock<'_>,
     x: usize,
     y: usize,
     log2_width: u32,

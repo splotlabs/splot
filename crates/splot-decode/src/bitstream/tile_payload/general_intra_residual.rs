@@ -441,15 +441,94 @@ pub(crate) struct IntraIstSyntax {
     pub(crate) most_probable_stx_set: Option<usize>,
 }
 
+/// One transform block's parsed coefficients, as a span of its row's arena.
+///
+/// dav2d parses a frame's coefficients into one buffer owned by the frame
+/// context and gives each block an index into it. The reconstruction row is
+/// splot's equivalent span -- it already carries a block's parse across the
+/// handoff to the pass that replays it -- so a row's blocks share one arena and
+/// keep a range, and a steady-state row costs no allocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LumaCoeffBlock {
     pub(crate) eob: usize,
-    pub(crate) quant: Vec<i32>,
+    pub(crate) quant_range: core::ops::Range<usize>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
     pub(crate) cctx_type: Option<usize>,
     pub(crate) plane_tx_type: usize,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
+}
+
+impl LumaCoeffBlock {
+    /// A block with no coefficients of its own.
+    pub(crate) const fn empty(plane_tx_type: usize, lossless: bool) -> Self {
+        Self {
+            eob: 0,
+            quant_range: 0..0,
+            intra_ist: None,
+            cctx_type: None,
+            plane_tx_type,
+            use_tcq: false,
+            lossless,
+        }
+    }
+
+    /// Appends `coeffs` to `arena` and records the span they landed in.
+    fn with_coeffs(mut self, arena: &mut Vec<i32>, coeffs: &[i32]) -> Self {
+        let start = arena.len();
+        arena.extend_from_slice(coeffs);
+        self.quant_range = start..arena.len();
+        self
+    }
+}
+
+/// A parsed block read together with the arena holding its coefficients.
+///
+/// The two travel separately -- the block sits in its row's block list and the
+/// coefficients in the row's arena -- so reconstruction pairs them up once and
+/// passes the pair down instead of an owned buffer per block.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CoeffBlock<'a> {
+    block: &'a LumaCoeffBlock,
+    /// This block's coefficients, already narrowed to its own span.
+    pub(crate) quant: &'a [i32],
+}
+
+impl<'a> CoeffBlock<'a> {
+    /// Pairs a block with its coefficients.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeneralIntraResidualError::CoeffSpanOutOfRange`] when the
+    /// block's span does not lie inside the arena.
+    pub(crate) fn new(
+        block: &'a LumaCoeffBlock,
+        arena: &'a [i32],
+    ) -> Result<Self, GeneralIntraResidualError> {
+        let quant = arena
+            .get(block.quant_range.clone())
+            .ok_or(GeneralIntraResidualError::CoeffSpanOutOfRange)?;
+        Ok(Self { block, quant })
+    }
+}
+
+#[cfg(test)]
+impl LumaCoeffBlock {
+    /// Pairs this block with the arena a test built it against.
+    pub(crate) fn view<'a>(&'a self, arena: &'a [i32]) -> CoeffBlock<'a> {
+        CoeffBlock {
+            block: self,
+            quant: arena.get(self.quant_range.clone()).unwrap_or(&[]),
+        }
+    }
+}
+
+impl core::ops::Deref for CoeffBlock<'_> {
+    type Target = LumaCoeffBlock;
+
+    fn deref(&self) -> &Self::Target {
+        self.block
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -465,6 +544,8 @@ pub(crate) struct PositionedLumaCoeffBlock {
 pub(crate) enum GeneralIntraResidualError {
     #[error("general intra luma all_zero symbol read failed: {source}")]
     AllZeroRead { source: BlockSymbolTraceReadError },
+    #[error("transform block coefficient span lies outside its row arena")]
+    CoeffSpanOutOfRange,
     #[error("general intra luma coefficient context state failed: {source}")]
     CoeffContextState { source: TileCoeffStateError },
     #[error("general intra luma staged nonzero EOB read failed: {source}")]
@@ -527,6 +608,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
+    arena: &mut Vec<i32>,
     start_x: usize,
     start_y: usize,
     frame_width: usize,
@@ -565,6 +647,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
             work_unit,
             symbols,
             context,
+            arena,
             0,
             record.tx_size,
             record.x,
@@ -898,6 +981,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
+    arena: &mut Vec<i32>,
     plane: usize,
     tx_size: usize,
     start_x: usize,
@@ -998,17 +1082,12 @@ pub(crate) fn decode_general_intra_plane_coeffs(
                 dc_category: 0,
             })
             .map_err(coeff_ctx_err)?;
-        return Ok(LumaCoeffBlock {
-            eob: 0,
-            quant: Vec::new(),
-            intra_ist: None,
-            cctx_type: None,
-            plane_tx_type: DCT_DCT,
-            use_tcq: false,
-            lossless: frame_facts
+        return Ok(LumaCoeffBlock::empty(
+            DCT_DCT,
+            frame_facts
                 .lossless_for_segment(current_frame_qm_segment_id())
                 .unwrap_or(false),
-        });
+        ));
     }
 
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
@@ -1022,6 +1101,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         work_unit,
         symbols,
         context,
+        arena,
         frame_facts,
         geometry,
         coeff_cdf_q_ctx,
@@ -1041,6 +1121,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
+    arena: &mut Vec<i32>,
     frame_facts: TileCoeffFrameFacts,
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     coeff_cdf_q_ctx: usize,
@@ -1132,13 +1213,14 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
         return Ok(LumaCoeffBlock {
             eob,
-            quant: block.into_quant(),
+            quant_range: 0..0,
             intra_ist: metadata.intra_ist,
             cctx_type: metadata.cctx_type,
             plane_tx_type,
             use_tcq: false,
             lossless,
-        });
+        }
+        .with_coeffs(arena, block.quant()));
     }
     let block = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         context,
@@ -1156,13 +1238,14 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
     Ok(LumaCoeffBlock {
         eob,
-        quant: block.into_quant(),
+        quant_range: 0..0,
         intra_ist: metadata.intra_ist,
         cctx_type: metadata.cctx_type,
         plane_tx_type,
         use_tcq: base_config.use_tcq,
         lossless,
-    })
+    }
+    .with_coeffs(arena, block.quant()))
 }
 
 fn staged_transform_tool_lossless_base_config(
