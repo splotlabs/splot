@@ -51,6 +51,19 @@ pub(crate) struct InterResidualParseScratch {
     chroma_reads: Vec<InterChromaURead>,
 }
 
+impl Drop for InterResidualParseScratch {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.luma_tx_records);
+        crate::support::buffer_pool::recycle(&mut self.chroma_reads);
+    }
+}
+
+impl Drop for InterLumaTxTypeMap {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.values);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InterResidualLumaTxSizeMode {
     Inter,
@@ -67,9 +80,18 @@ impl InterLumaTxTypeMap {
 
     fn reset(&mut self, row: usize, col: usize, rows: usize, cols: usize) -> Result<()> {
         let len = rows.checked_mul(cols).ok_or_else(residual_geometry_error)?;
-        self.values
-            .try_reserve(len.saturating_sub(self.values.len()))
-            .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
+        if self.values.capacity() < len {
+            // From the reserve: this map is built fresh for every tile, so
+            // growing it from empty spent an allocation on every frame.
+            let mut fresh = crate::support::buffer_pool::take::<usize>(len);
+            if fresh.capacity() < len {
+                fresh
+                    .try_reserve_exact(len)
+                    .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
+            }
+            crate::support::buffer_pool::recycle(&mut self.values);
+            self.values = fresh;
+        }
         self.values.resize(len, DCT_DCT);
         self.values.fill(DCT_DCT);
         self.row = row;

@@ -59,6 +59,9 @@ const RESTORE_SWITCHABLE_TYPES: usize = 3;
 /// Planes an `lr_params()` payload may carry.
 pub const MAX_LR_PLANES: usize = 3;
 
+/// Planes a `ccso_params()` payload may carry.
+pub const MAX_CCSO_PLANES: usize = 3;
+
 /// `Decode_Num_Filter_Classes[8]` (AV2 § 5.18.7.11, mirror :7410): maps the f(3)
 /// `num_filter_classes_idx` to `NumFilterClasses`.
 const DECODE_NUM_FILTER_CLASSES: [u8; 8] = [1, 2, 3, 4, 6, 8, 12, 16];
@@ -654,7 +657,7 @@ pub(crate) const fn default_restoration_size(geometry: LrGeometry) -> [u32; 3] {
 /// One plane's parsed `ccso_params()` state (AV2 § 5.18.7.12).
 ///
 /// Not `Copy`: [`Self::ccso_offset_idx`] owns the per-plane `ccso_offset_idx` array.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CcsoPlaneParams {
     /// `ccso_planes[plane]`: whether CCSO is enabled for the plane.
     pub ccso_planes: bool,
@@ -698,8 +701,8 @@ pub struct CcsoParams {
     /// is disabled (the early return leaves all `ccso_planes` `0`).
     pub ccso_frame_flag: Option<bool>,
     /// Per-plane parsed state (`NumPlanes` entries; empty when CCSO is disabled or the
-    /// frame flag is `0`).
-    pub planes: Vec<CcsoPlaneParams>,
+    /// frame flag is `0`). Held inline: AV2 codes at most [`MAX_CCSO_PLANES`].
+    pub planes: crate::tile::InlineVec<CcsoPlaneParams, MAX_CCSO_PLANES>,
 }
 
 /// Parses `ccso_params()` (AV2 v1.0.0 § 5.18.7.12) on the intra path.
@@ -755,7 +758,7 @@ fn parse_ccso_params_with_references(
     if coded_lossless || !view.enable_ccso {
         return Ok(CcsoParams {
             ccso_frame_flag: None,
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
         });
     }
 
@@ -767,11 +770,11 @@ fn parse_ccso_params_with_references(
     if !ccso_frame_flag {
         return Ok(CcsoParams {
             ccso_frame_flag: Some(false),
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
         });
     }
 
-    let mut planes: Vec<CcsoPlaneParams> = Vec::with_capacity(usize::from(num_planes));
+    let mut planes = crate::tile::InlineVec::default();
     for _ in 0..usize::from(num_planes) {
         let ccso_planes = reader.read_flag()?;
         let mut plane_params = CcsoPlaneParams {
@@ -805,7 +808,11 @@ fn parse_ccso_params_with_references(
                 }
             }
             if reuse_ccso {
-                planes.push(plane_params);
+                planes
+                    .push(plane_params)
+                    .ok_or(crate::error::Error::Unimplemented {
+                        feature: "ccso_params_plane_count",
+                    })?;
                 continue;
             }
 
@@ -850,7 +857,11 @@ fn parse_ccso_params_with_references(
             plane_params.ccso_offset_idx = ccso_offset_idx;
         }
 
-        planes.push(plane_params);
+        planes
+            .push(plane_params)
+            .ok_or(crate::error::Error::Unimplemented {
+                feature: "ccso_params_plane_count",
+            })?;
     }
 
     Ok(CcsoParams {
