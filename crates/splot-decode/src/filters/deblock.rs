@@ -25,6 +25,7 @@ use std::{
 
 mod grid;
 
+pub(crate) use grid::DeblockGridStorage;
 #[cfg(test)]
 use grid::MiCell;
 use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, build_mi_grid, overlay_mi_grid};
@@ -340,14 +341,15 @@ impl<'a> FrameDeblock<'a> {
         disable_loopfilters_across_tiles: bool,
         quant_deltas: DeblockQuantDeltas,
         chroma_subsampling: (usize, usize),
+        storage: &mut DeblockGridStorage,
     ) -> Result<Option<Self>, DeblockError> {
         if filter.apply_deblocking_filter == [false; 4] {
             return Ok(None);
         }
         let (sub_x, sub_y) = chroma_subsampling;
-        let grid = build_mi_grid(blocks, mi_rows, mi_cols)?;
+        let grid = build_mi_grid(blocks, mi_rows, mi_cols, storage)?;
         let mut chroma = [None, None];
-        for (plane, slot) in chroma.iter_mut().enumerate() {
+        for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
             if !filter.apply_deblocking_filter[plane + 2] {
                 continue;
             }
@@ -359,6 +361,7 @@ impl<'a> FrameDeblock<'a> {
                 mi_cols,
                 sub_x,
                 sub_y,
+                storage,
             )?);
         }
         Ok(Some(Self {
@@ -396,9 +399,10 @@ impl<'a> FrameDeblock<'a> {
             return Ok(None);
         }
         let (sub_x, sub_y) = chroma_subsampling;
-        let grid = build_mi_grid(&records.blocks, mi_rows, mi_cols)?;
+        let mut storage = DeblockGridStorage::default();
+        let grid = build_mi_grid(&records.blocks, mi_rows, mi_cols, &mut storage)?;
         let mut chroma = [None, None];
-        for (plane, slot) in chroma.iter_mut().enumerate() {
+        for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
             if filter.apply_deblocking_filter[plane + 2] {
                 *slot = Some(overlay_mi_grid(
                     &grid,
@@ -408,6 +412,7 @@ impl<'a> FrameDeblock<'a> {
                     mi_cols,
                     sub_x,
                     sub_y,
+                    storage,
                 )?);
             }
         }
@@ -709,6 +714,18 @@ impl<'a> FrameDeblock<'a> {
     /// reaches.
     pub(crate) const fn luma_rows(&self) -> usize {
         self.mi_rows * MI_SIZE
+    }
+
+    /// Hands the grid vectors back for the next frame to lay out over.
+    pub(crate) fn release_grids(&mut self, storage: &mut DeblockGridStorage) {
+        storage.cells = core::mem::take(&mut self.grid.cells);
+        storage.candidates = core::mem::take(&mut self.grid.candidates);
+        for (slot, storage) in self.chroma.iter_mut().zip(&mut storage.chroma) {
+            if let Some(grid) = slot.as_mut() {
+                storage.0 = core::mem::take(&mut grid.cells);
+                storage.1 = core::mem::take(&mut grid.candidates);
+            }
+        }
     }
 
     pub(crate) fn finish(self) -> Option<OwnedDeblockRecords> {

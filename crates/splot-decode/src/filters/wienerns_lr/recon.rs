@@ -537,6 +537,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         usize::from(format.subsampling_y()),
                     )
                 },
+                &mut setup.filter_records.deblock_grids,
             )
             .map_err(|error| deblock_prepare_error(&error))?,
             None => None,
@@ -646,7 +647,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 setup.publish(filtered)?;
             }
         }
-        if let Some(sections) = sections {
+        if let Some(mut sections) = sections {
+            sections.release_grids(&mut setup.filter_records.deblock_grids);
             sections.finish();
         }
         let frame = setup.finish(publish)?;

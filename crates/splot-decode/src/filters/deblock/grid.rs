@@ -154,15 +154,28 @@ impl MiGrid<'_> {
     }
 }
 
+/// The six grid vectors one frame's deblock fills.
+///
+/// They travel on the frame filter records, so the next frame lays its grids
+/// out over the ones the last frame left rather than sizing new ones.
+#[derive(Default)]
+pub(crate) struct DeblockGridStorage {
+    pub(super) cells: Vec<MiCell>,
+    pub(super) candidates: Vec<u8>,
+    pub(super) chroma: [(Vec<ChromaMiCell>, Vec<u8>); 2],
+}
+
 pub(super) fn build_mi_grid(
     blocks: &[DeblockBlock],
     mi_rows: usize,
     mi_cols: usize,
+    storage: &mut DeblockGridStorage,
 ) -> Result<MiGridStorage, DeblockError> {
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
-    let mut cells = crate::support::buffer_pool::take(count);
+    let mut cells = core::mem::take(&mut storage.cells);
+    cells.clear();
     cells
         .try_reserve_exact(count.saturating_sub(cells.capacity()))
         .map_err(|_| DeblockError::Allocation {
@@ -170,7 +183,8 @@ pub(super) fn build_mi_grid(
             context: "deblock MI grid",
         })?;
     cells.resize(count, MiCell::default());
-    let mut candidates = crate::support::buffer_pool::take(count);
+    let mut candidates = core::mem::take(&mut storage.candidates);
+    candidates.clear();
     candidates
         .try_reserve_exact(count.saturating_sub(candidates.capacity()))
         .map_err(|_| DeblockError::Allocation {
@@ -206,6 +220,7 @@ pub(super) fn build_mi_grid(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn overlay_mi_grid(
     base: &MiGridStorage,
     blocks: &ChromaDeblockRecords,
@@ -214,6 +229,7 @@ pub(super) fn overlay_mi_grid(
     mi_cols: usize,
     sub_x: usize,
     sub_y: usize,
+    storage: &mut (Vec<ChromaMiCell>, Vec<u8>),
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let plane_id = match plane {
         0 => splot_recon::PlaneId::U,
@@ -225,7 +241,8 @@ pub(super) fn overlay_mi_grid(
         .div_ceil(1 << sub_y)
         .checked_mul(cell_cols)
         .ok_or(DeblockError::Workspace)?;
-    let mut cells = crate::support::buffer_pool::take::<ChromaMiCell>(count);
+    let mut cells = core::mem::take(&mut storage.0);
+    cells.clear();
     if cells.capacity() < count {
         cells
             .try_reserve_exact(count)
@@ -235,7 +252,8 @@ pub(super) fn overlay_mi_grid(
             })?;
     }
     cells.resize(count, ChromaMiCell::default());
-    let mut candidates = crate::support::buffer_pool::take(base.candidates.len());
+    let mut candidates = core::mem::take(&mut storage.1);
+    candidates.clear();
     candidates.extend_from_slice(&base.candidates);
     let mut grid = ChromaMiGridStorage {
         fully_covered: base.fully_covered,

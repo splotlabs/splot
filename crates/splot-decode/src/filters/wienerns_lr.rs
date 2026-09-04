@@ -39,6 +39,8 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     /// The per-stripe lists the filter phase borrows and hands back.
     pub(crate) stripes: FilterStripeLists,
+    /// The deblock grid vectors, borrowed and handed back the same way.
+    pub(crate) deblock_grids: crate::filters::deblock::DeblockGridStorage,
 }
 
 /// The per-stripe lists one frame's filter phase works through.
