@@ -36,11 +36,30 @@ pub(crate) struct TileBlockDecodedState {
     planes: [PlaneGrid; MAX_PLANES],
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Debug, Eq, PartialEq, Default)]
 struct PlaneGrid {
     width: usize,
     height: usize,
     cells: Vec<bool>,
+}
+
+impl Clone for PlaneGrid {
+    fn clone(&self) -> Self {
+        // The reserve, not a fresh vector: a tile clones this grid every frame.
+        let mut cells = crate::support::buffer_pool::take::<bool>(self.cells.len());
+        cells.extend_from_slice(&self.cells);
+        Self {
+            width: self.width,
+            height: self.height,
+            cells,
+        }
+    }
+}
+
+impl Drop for PlaneGrid {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.cells);
+    }
 }
 
 impl TileBlockDecodedState {
@@ -85,10 +104,12 @@ impl TileBlockDecodedState {
             let cells_len = width
                 .checked_mul(height)
                 .ok_or(TileBlockDecodedStateError::Overflow)?;
-            let mut cells = Vec::new();
-            cells
-                .try_reserve_exact(cells_len)
-                .map_err(|source| TileBlockDecodedStateError::Allocation { source })?;
+            let mut cells = crate::support::buffer_pool::take::<bool>(cells_len);
+            if cells.capacity() < cells_len {
+                cells
+                    .try_reserve_exact(cells_len)
+                    .map_err(|source| TileBlockDecodedStateError::Allocation { source })?;
+            }
             cells.resize(cells_len, false);
             *grid = PlaneGrid {
                 width,

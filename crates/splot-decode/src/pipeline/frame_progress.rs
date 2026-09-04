@@ -380,6 +380,19 @@ pub(crate) struct FrameProgress<T: ReconSample> {
     subsampling_y: usize,
 }
 
+impl<T: ReconSample> Drop for FrameProgress<T> {
+    fn drop(&mut self) {
+        let Some(layout) = self.layout.get_mut() else {
+            return;
+        };
+        let layout = layout.get_mut();
+        crate::support::buffer_pool::recycle(&mut layout.stripe_ends);
+        crate::support::buffer_pool::recycle(&mut layout.landed);
+        crate::support::buffer_pool::recycle(&mut layout.leased);
+        crate::support::buffer_pool::recycle(&mut layout.direct_holds);
+    }
+}
+
 impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
     fn release_hold(&self, stripe: usize) {
         self.release_direct_hold(stripe);
@@ -438,11 +451,21 @@ impl<T: ReconSample> FrameProgress<T> {
             }
             next = end;
         }
+        // From the decoder's reserve, and returned by this progress handle's
+        // `Drop`: every frame lays out the same four per-stripe arrays.
+        let mut stripe_ends = crate::support::buffer_pool::take::<usize>(ranges.len());
+        stripe_ends.extend(ranges.iter().map(|&(_, end)| end));
+        let mut landed = crate::support::buffer_pool::take::<bool>(ranges.len());
+        landed.resize(ranges.len(), false);
+        let mut leased = crate::support::buffer_pool::take::<bool>(ranges.len());
+        leased.resize(ranges.len(), false);
+        let mut direct_holds = crate::support::buffer_pool::take::<u32>(ranges.len());
+        direct_holds.resize(ranges.len(), 0);
         let layout = ProgressLayout {
-            stripe_ends: ranges.iter().map(|&(_, end)| end).collect(),
-            landed: vec![false; ranges.len()],
-            leased: vec![false; ranges.len()],
-            direct_holds: vec![0; ranges.len()],
+            stripe_ends,
+            landed,
+            leased,
+            direct_holds,
             direct_aligned: ranges
                 .iter()
                 .take(ranges.len().saturating_sub(1))
