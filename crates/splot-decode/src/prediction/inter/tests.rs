@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::reference::buffer::RefSlots;
 use splot_parallel::ThreadCount;
 
 use splot_core::headers::frame::{
@@ -62,7 +63,9 @@ fn motion_dependencies_deduplicate_slots_and_ignore_invalid_indices() {
     let handle = || MotionFieldHandle::settled(TemporalMotionField::new(2, 2).unwrap());
     let (zero, last) = (handle(), handle());
     let mut reference = super::InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_motion_fields = vec![None; ReferenceSlot::MAX_SLOTS];
+    reference.ref_motion_fields =
+        RefSlots::from_iter_checked(core::iter::repeat_n(None, ReferenceSlot::MAX_SLOTS))
+            .expect("reference slots fit");
     reference.ref_motion_fields[0] = Some(zero.clone());
     reference.ref_motion_fields[15] = Some(last.clone());
     let deps = reference.motion_dependencies(&[15, 15, 0, 15]);
@@ -2355,10 +2358,14 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
             .ref_frame_idx = [0, 1, 2, 3].into_iter().collect();
 
         let mut reference = super::InterReferenceState::<u8>::empty().unwrap();
-        reference.ref_valid = vec![true; 4];
-        reference.ref_order_hint = vec![6, 9, 12, 15];
-        reference.ref_base_q_idx = vec![50, 101, 104, 200];
-        reference.ref_chroma_ac_deltas = vec![[20, 20], [-3, -5], [4, -2], [40, 40]];
+        reference.ref_valid = RefSlots::from_iter_checked([true; 4]).expect("reference slots fit");
+        reference.ref_order_hint =
+            RefSlots::from_iter_checked([6, 9, 12, 15]).expect("reference slots fit");
+        reference.ref_base_q_idx =
+            RefSlots::from_iter_checked([50, 101, 104, 200]).expect("reference slots fit");
+        reference.ref_chroma_ac_deltas =
+            RefSlots::from_iter_checked([[20, 20], [-3, -5], [4, -2], [40, 40]])
+                .expect("reference slots fit");
 
         super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset, None)
             .unwrap();

@@ -30,6 +30,7 @@ use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateErro
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
+use crate::reference::buffer::RefSlots;
 use crate::reference::buffer::ReferenceMetadata;
 use crate::{
     DecodeIvfFrameContext, DecodeOptions, DecodePlannedObu, DecodeSourceIssue, DecodeStreamPlan,
@@ -1174,29 +1175,30 @@ pub(crate) struct InterResidualBlock {
 }
 pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) store: ReferenceFrameStore<RefFrameSlot<T>>,
-    pub(crate) ref_valid: Vec<bool>,
-    pub(crate) ref_order_hint: Vec<u32>,
-    pub(crate) ref_order_hint_lsbs: Vec<u32>,
-    pub(crate) ref_implicit_output_frame: Vec<bool>,
-    pub(crate) ref_immediate_output_frame: Vec<bool>,
-    pub(crate) ref_frame_width: Vec<u32>,
-    pub(crate) ref_frame_height: Vec<u32>,
-    pub(crate) ref_base_q_idx: Vec<u32>,
-    pub(crate) ref_counter: Vec<u32>,
-    ref_chroma_ac_deltas: Vec<[i32; 2]>,
-    pub(crate) ref_is_inter: Vec<bool>,
-    pub(crate) ref_long_term_id: Vec<Option<u32>>,
-    pub(crate) ref_num_total_refs: Vec<u32>,
+    pub(crate) ref_valid: RefSlots<bool>,
+    pub(crate) ref_order_hint: RefSlots<u32>,
+    pub(crate) ref_order_hint_lsbs: RefSlots<u32>,
+    pub(crate) ref_implicit_output_frame: RefSlots<bool>,
+    pub(crate) ref_immediate_output_frame: RefSlots<bool>,
+    pub(crate) ref_frame_width: RefSlots<u32>,
+    pub(crate) ref_frame_height: RefSlots<u32>,
+    pub(crate) ref_base_q_idx: RefSlots<u32>,
+    pub(crate) ref_counter: RefSlots<u32>,
+    ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
+    pub(crate) ref_is_inter: RefSlots<bool>,
+    pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
+    pub(crate) ref_num_total_refs: RefSlots<u32>,
     pub(crate) saved_global_motion_order_hints:
-        Vec<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
-    pub(crate) saved_global_motion_params: Vec<splot_core::headers::frame::SavedGlobalMotionParams>,
-    pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
-    pub(crate) lr_frame_filter_taps: Vec<SlotFrameFilterTaps>,
-    pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: Vec<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
-    pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoGridHandle>>,
-    pub(crate) ref_segment_ids: Vec<Option<SegmentIdMapHandle>>,
-    pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
+        RefSlots<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
+    pub(crate) saved_global_motion_params:
+        RefSlots<splot_core::headers::frame::SavedGlobalMotionParams>,
+    pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
+    pub(crate) lr_frame_filter_taps: RefSlots<SlotFrameFilterTaps>,
+    pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
+    pub(crate) ref_ccso_params: RefSlots<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
+    pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
+    pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
+    pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
 }
 
 impl<T: ReconSample> InterReferenceState<T> {
@@ -1206,31 +1208,10 @@ impl<T: ReconSample> InterReferenceState<T> {
     /// Returns [`splot_recon::ReconError`] when the minimal store capacity is
     /// rejected.
     pub(crate) fn empty() -> splot_recon::Result<Self> {
-        Ok(Self {
-            store: ReferenceFrameStore::with_capacity(1)?,
-            ref_valid: Vec::new(),
-            ref_order_hint: Vec::new(),
-            ref_order_hint_lsbs: Vec::new(),
-            ref_implicit_output_frame: Vec::new(),
-            ref_immediate_output_frame: Vec::new(),
-            ref_frame_width: Vec::new(),
-            ref_frame_height: Vec::new(),
-            ref_base_q_idx: Vec::new(),
-            ref_counter: Vec::new(),
-            ref_chroma_ac_deltas: Vec::new(),
-            ref_is_inter: Vec::new(),
-            ref_long_term_id: Vec::new(),
-            ref_num_total_refs: Vec::new(),
-            saved_global_motion_order_hints: Vec::new(),
-            saved_global_motion_params: Vec::new(),
-            lr_frame_filter_class_counts: Vec::new(),
-            lr_frame_filter_taps: Vec::new(),
-            ref_frame_cdfs: Vec::new(),
-            ref_ccso_params: Vec::new(),
-            ref_ccso_unit_grids: Vec::new(),
-            ref_segment_ids: Vec::new(),
-            ref_motion_fields: Vec::new(),
-        })
+        Ok(Self::from_metadata(
+            ReferenceFrameStore::with_capacity(1)?,
+            ReferenceMetadata::default(),
+        ))
     }
 
     /// Shares the selected reference slots' published § 7.9 motion fields.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use crate::reference::buffer::RefSlots;
 use splot_core::error::SymbolCdfErrorKind;
 use splot_core::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use splot_core::span::{BitOffset, ByteOffset};
@@ -35,7 +36,8 @@ fn scheduled_motion_fields_require_selected_metadata_only() -> TestResult {
     let fields = [Some(settled.clone()), None, Some(pending)];
 
     let mut reference = InterReferenceState::<u8>::empty()?;
-    reference.ref_motion_fields = vec![Some(settled), None];
+    reference.ref_motion_fields =
+        RefSlots::from_iter_checked([Some(settled), None]).unwrap_or_default();
     assert!(matches!(
         reference.resolve_motion_fields(&[1]),
         Err(DecodeError::ReferenceState {

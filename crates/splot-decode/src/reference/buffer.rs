@@ -12,6 +12,7 @@ use splot_core::headers::frame::{
     CcsoParams, GlobalMotionRef, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
     SlotFrameFilterTaps,
 };
+use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
 
@@ -276,7 +277,7 @@ impl RuntimeReferenceBuffer {
         let num = self.slots.len();
         let mut store: ReferenceFrameStore<RefFrameSlot<T>> =
             ReferenceFrameStore::with_capacity(num)?;
-        let mut meta = ReferenceMetadata::with_capacity(num);
+        let mut meta = ReferenceMetadata::with_capacity(num)?;
         for (i, slot) in self.slots.iter().enumerate() {
             if !slot.valid {
                 meta.push_slot(slot, None);
@@ -396,58 +397,46 @@ fn ensure_slot_matches_frame(
     Ok(())
 }
 
+/// One entry per reference slot.
+///
+/// A sequence header signals at most [`MAX_REF_FRAMES`] slots, so every one of
+/// these lists is fixed and the reference metadata a frame reads costs no
+/// allocation of its own.
+pub(crate) type RefSlots<T> = splot_core::tile::InlineVec<T, MAX_REF_FRAMES>;
+
 #[allow(clippy::struct_field_names)]
+#[derive(Default)]
 pub(crate) struct ReferenceMetadata {
-    pub(crate) ref_valid: Vec<bool>,
-    pub(crate) ref_order_hint: Vec<u32>,
-    pub(crate) ref_order_hint_lsbs: Vec<u32>,
-    pub(crate) ref_implicit_output_frame: Vec<bool>,
-    pub(crate) ref_immediate_output_frame: Vec<bool>,
-    pub(crate) ref_frame_width: Vec<u32>,
-    pub(crate) ref_frame_height: Vec<u32>,
-    pub(crate) ref_base_q_idx: Vec<u32>,
-    pub(crate) ref_counter: Vec<u32>,
-    pub(crate) ref_chroma_ac_deltas: Vec<[i32; 2]>,
-    pub(crate) ref_is_inter: Vec<bool>,
-    pub(crate) ref_long_term_id: Vec<Option<u32>>,
-    pub(crate) ref_num_total_refs: Vec<u32>,
-    pub(crate) saved_global_motion_order_hints: Vec<SavedGlobalMotionOrderHints>,
-    pub(crate) saved_global_motion_params: Vec<SavedGlobalMotionParams>,
-    pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
-    pub(crate) lr_frame_filter_taps: Vec<SlotFrameFilterTaps>,
-    pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: Vec<Option<Arc<CcsoParams>>>,
-    pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoGridHandle>>,
-    pub(crate) ref_segment_ids: Vec<Option<SegmentIdMapHandle>>,
-    pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
+    pub(crate) ref_valid: RefSlots<bool>,
+    pub(crate) ref_order_hint: RefSlots<u32>,
+    pub(crate) ref_order_hint_lsbs: RefSlots<u32>,
+    pub(crate) ref_implicit_output_frame: RefSlots<bool>,
+    pub(crate) ref_immediate_output_frame: RefSlots<bool>,
+    pub(crate) ref_frame_width: RefSlots<u32>,
+    pub(crate) ref_frame_height: RefSlots<u32>,
+    pub(crate) ref_base_q_idx: RefSlots<u32>,
+    pub(crate) ref_counter: RefSlots<u32>,
+    pub(crate) ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
+    pub(crate) ref_is_inter: RefSlots<bool>,
+    pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
+    pub(crate) ref_num_total_refs: RefSlots<u32>,
+    pub(crate) saved_global_motion_order_hints: RefSlots<SavedGlobalMotionOrderHints>,
+    pub(crate) saved_global_motion_params: RefSlots<SavedGlobalMotionParams>,
+    pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
+    pub(crate) lr_frame_filter_taps: RefSlots<SlotFrameFilterTaps>,
+    pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
+    pub(crate) ref_ccso_params: RefSlots<Option<Arc<CcsoParams>>>,
+    pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
+    pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
+    pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
 }
 
 impl ReferenceMetadata {
-    fn with_capacity(num: usize) -> Self {
-        Self {
-            ref_valid: crate::support::buffer_pool::take(num),
-            ref_order_hint: crate::support::buffer_pool::take(num),
-            ref_order_hint_lsbs: crate::support::buffer_pool::take(num),
-            ref_implicit_output_frame: crate::support::buffer_pool::take(num),
-            ref_immediate_output_frame: crate::support::buffer_pool::take(num),
-            ref_frame_width: crate::support::buffer_pool::take(num),
-            ref_frame_height: crate::support::buffer_pool::take(num),
-            ref_base_q_idx: crate::support::buffer_pool::take(num),
-            ref_counter: crate::support::buffer_pool::take(num),
-            ref_chroma_ac_deltas: crate::support::buffer_pool::take(num),
-            ref_is_inter: crate::support::buffer_pool::take(num),
-            ref_long_term_id: crate::support::buffer_pool::take(num),
-            ref_num_total_refs: crate::support::buffer_pool::take(num),
-            saved_global_motion_order_hints: crate::support::buffer_pool::take(num),
-            saved_global_motion_params: crate::support::buffer_pool::take(num),
-            lr_frame_filter_class_counts: crate::support::buffer_pool::take(num),
-            lr_frame_filter_taps: crate::support::buffer_pool::take(num),
-            ref_frame_cdfs: crate::support::buffer_pool::take(num),
-            ref_ccso_params: crate::support::buffer_pool::take(num),
-            ref_ccso_unit_grids: crate::support::buffer_pool::take(num),
-            ref_segment_ids: crate::support::buffer_pool::take(num),
-            ref_motion_fields: crate::support::buffer_pool::take(num),
+    fn with_capacity(num: usize) -> Result<Self> {
+        if num > MAX_REF_FRAMES {
+            return Err(DecodeReferenceStateError::TooManyReferenceFrames { slots: num }.into());
         }
+        Ok(Self::default())
     }
 
     fn push_slot(&mut self, slot: &Slot, frame: Option<&PipelineFrame>) {

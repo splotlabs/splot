@@ -295,6 +295,12 @@ pub enum DecodeReferenceStateError {
     /// A selected reference had not published the motion field required by TIP output.
     #[error("a selected TIP-output reference has no published motion field")]
     MissingMotionFieldPublication,
+    /// The sequence signalled more reference slots than AV2 § 5.5.2 allows.
+    #[error("sequence signals {slots} reference slots, more than the sixteen AV2 allows")]
+    TooManyReferenceFrames {
+        /// The signalled slot count.
+        slots: usize,
+    },
     /// A selected reference completed without publishing a required motion-field band.
     #[error("reference slot {slot} has no published motion-field band {band}")]
     MissingMotionFieldBandPublication {

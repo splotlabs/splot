@@ -877,3 +877,8 @@ pub fn parse_sequence_tile_config(
         seq_sb_row_starts: std::sync::Arc::from(&*seq_sb_row_starts),
     })
 }
+
+/// The largest `NumRefFrames` a sequence header can signal (AV2 v1.0.0 § 5.5.2):
+/// `num_ref_frames_minus_1` is `f(4)`, so the reference store never holds more
+/// than sixteen slots.
+pub const MAX_REF_FRAMES: usize = 16;

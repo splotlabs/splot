@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::reference::buffer::RefSlots;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
@@ -640,7 +641,8 @@ fn missing_reference_cdf_context_is_a_typed_reference_state_error() {
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
     let failed = super::super::FrameCdfHandle::pending();
     failed.fail();
-    reference.ref_frame_cdfs = vec![Some(failed)];
+    reference.ref_frame_cdfs =
+        RefSlots::from_iter_checked([Some(failed)]).expect("reference slots fit");
 
     for slot in [0, 1] {
         let error = reference
@@ -658,7 +660,7 @@ fn missing_reference_cdf_context_is_a_typed_reference_state_error() {
 #[test]
 fn missing_reference_ccso_params_is_a_typed_reference_state_error() {
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_ccso_params = vec![None];
+    reference.ref_ccso_params = RefSlots::from_iter_checked([None]).expect("reference slots fit");
 
     for slot in [0, 1] {
         let error = reference
@@ -715,7 +717,8 @@ fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
         let plane = &mut core.ccso_params.as_mut().expect("CCSO state").planes[0];
         plane.reuse_ccso = reuse_ccso;
         plane.sb_reuse_ccso = sb_reuse_ccso;
-        reference.ref_ccso_params = vec![Some(std::sync::Arc::new(saved))];
+        reference.ref_ccso_params = RefSlots::from_iter_checked([Some(std::sync::Arc::new(saved))])
+            .expect("reference slots fit");
         let error =
             super::super::resolve_ccso_reference_reuse(&mut core, &reference, offset, Some(2))
                 .expect_err("missing or disabled saved CCSO plane");
@@ -1010,8 +1013,10 @@ fn sef_reference_slot_out_of_range_is_a_malformed_source_diagnostic() {
         })
         .expect("SEF OBU");
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_valid = vec![false; 3];
-    reference.ref_order_hint = vec![0; 3];
+    reference.ref_valid =
+        RefSlots::from_iter_checked(core::iter::repeat_n(false, 3)).expect("reference slots fit");
+    reference.ref_order_hint =
+        RefSlots::from_iter_checked(core::iter::repeat_n(0, 3)).expect("reference slots fit");
     for derive_sef_order_hint in [false, true] {
         let mut envelope = sef_envelope;
         let mut payload = BitWriter::new();
@@ -1072,8 +1077,10 @@ fn empty_sef_trailing_bits_use_payload_conformance_section() {
             .num_ref_frames,
     );
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_valid = vec![false; num_ref_frames];
-    reference.ref_order_hint = vec![0; num_ref_frames];
+    reference.ref_valid = RefSlots::from_iter_checked(core::iter::repeat_n(false, num_ref_frames))
+        .expect("reference slots fit");
+    reference.ref_order_hint = RefSlots::from_iter_checked(core::iter::repeat_n(0, num_ref_frames))
+        .expect("reference slots fit");
     let mut core =
         super::super::parse_inter_frame_activation(envelope, &sequence, &reference, true, Some(2))
             .expect("complete SEF state");
@@ -1135,8 +1142,10 @@ fn tip_output_without_reference_pair_is_a_malformed_source_diagnostic() {
     core.quantization_params = None;
     core.inter.as_mut().expect("inter control").ref_frame_idx = [0, 1].into_iter().collect();
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_valid = vec![true; 2];
-    reference.ref_order_hint = vec![10; 2];
+    reference.ref_valid =
+        RefSlots::from_iter_checked(core::iter::repeat_n(true, 2)).expect("reference slots fit");
+    reference.ref_order_hint =
+        RefSlots::from_iter_checked(core::iter::repeat_n(10, 2)).expect("reference slots fit");
 
     let error = super::super::infer_tip_output_quantization(
         &mut core,
@@ -1168,8 +1177,9 @@ fn explicit_qp_tip_output_without_reference_pair_is_malformed_during_admission()
     assert!(core.quantization_params.is_some());
     core.inter.as_mut().expect("inter control").ref_frame_idx = [0, 1].into_iter().collect();
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_valid = vec![true; 2];
-    reference.ref_order_hint = vec![12, 13];
+    reference.ref_valid =
+        RefSlots::from_iter_checked(core::iter::repeat_n(true, 2)).expect("reference slots fit");
+    reference.ref_order_hint = RefSlots::from_iter_checked([12, 13]).expect("reference slots fit");
 
     let error = super::super::infer_tip_output_quantization(
         &mut core,
@@ -1197,8 +1207,9 @@ fn tip_as_ref_without_reference_pair_is_malformed_during_admission() {
     inter.ref_frame_idx = [0, 1].into_iter().collect();
     inter.num_total_refs = Some(2);
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_valid = vec![true; 2];
-    reference.ref_order_hint = vec![12, 13];
+    reference.ref_valid =
+        RefSlots::from_iter_checked(core::iter::repeat_n(true, 2)).expect("reference slots fit");
+    reference.ref_order_hint = RefSlots::from_iter_checked([12, 13]).expect("reference slots fit");
 
     let error = super::super::validate_and_resolve_inter_frame_core(
         &mut core,
@@ -1229,8 +1240,9 @@ fn tip_output_missing_reference_quantizer_is_a_typed_reference_state_error() {
     core.quantization_params = None;
     core.inter.as_mut().expect("inter control").ref_frame_idx = [0, 1].into_iter().collect();
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_valid = vec![true; 2];
-    reference.ref_order_hint = vec![9, 12];
+    reference.ref_valid =
+        RefSlots::from_iter_checked(core::iter::repeat_n(true, 2)).expect("reference slots fit");
+    reference.ref_order_hint = RefSlots::from_iter_checked([9, 12]).expect("reference slots fit");
 
     let error =
         super::super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset, None)
@@ -1416,9 +1428,11 @@ fn unpublished_tip_output_motion_field_is_a_typed_reference_state_error() {
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
     core.inter.as_mut().expect("inter control").ref_frame_idx = [0].into_iter().collect();
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_motion_fields = vec![Some(super::super::MotionFieldHandle::pending_with_layout(
-        super::super::MotionFieldLayout::new(16, 16, 16).expect("valid motion-field layout"),
-    ))];
+    reference.ref_motion_fields =
+        RefSlots::from_iter_checked([Some(super::super::MotionFieldHandle::pending_with_layout(
+            super::super::MotionFieldLayout::new(16, 16, 16).expect("valid motion-field layout"),
+        ))])
+        .expect("reference slots fit");
     let geometry = super::super::FrameDecodeGeometry::new(
         &core,
         &sequence,
@@ -1463,8 +1477,10 @@ fn impossible_sef_state_is_a_typed_header_state_error() {
             .num_ref_frames,
     );
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_valid = vec![false; num_ref_frames];
-    reference.ref_order_hint = vec![0; num_ref_frames];
+    reference.ref_valid = RefSlots::from_iter_checked(core::iter::repeat_n(false, num_ref_frames))
+        .expect("reference slots fit");
+    reference.ref_order_hint = RefSlots::from_iter_checked(core::iter::repeat_n(0, num_ref_frames))
+        .expect("reference slots fit");
     let mut core =
         super::super::parse_inter_frame_activation(envelope, &sequence, &reference, true, Some(2))
             .expect("complete SEF state");
@@ -1490,7 +1506,8 @@ fn ras_unlisted_long_term_reference_is_a_malformed_source_diagnostic() {
     inter.num_total_refs = Some(1);
     inter.ref_frame_idx = [0].into_iter().collect();
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_long_term_id = vec![Some(5)];
+    reference.ref_long_term_id =
+        RefSlots::from_iter_checked([Some(5)]).expect("reference slots fit");
 
     let error = super::super::validate_ras_reference_ids(&core, &reference, offset, Some(1))
         .expect_err("unlisted RAS reference");
