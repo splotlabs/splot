@@ -696,7 +696,10 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         }
         .into());
     }
-    if unit_count >= 1024 && splot_parallel::on_worker_pool() {
+    if unit_count >= 1024
+        && splot_parallel::current_pool_width() > 1
+        && splot_parallel::on_worker_pool()
+    {
         let mut cells = take_motion_cells(
             unit_count,
             MotionCell::uninitialized([block.mv0, block.mv1]),
