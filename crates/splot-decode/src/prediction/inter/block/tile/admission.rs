@@ -589,6 +589,153 @@ fn record_first_error(error: &Mutex<Option<crate::DecodeError>>, value: crate::D
 /// The driver owns entropy parsing and reference settlement. Pool jobs never
 /// wait: each precompute carries its row-reference conditions and each commit
 /// carries the preceding commit's completion.
+/// Everything a batch job of the ordinary tile reads, named once per tile.
+///
+/// The jobs were boxed closures, so a tile paid one heap allocation per batch
+/// per stage. Naming the shape lets the scheduler hold each job in its own slot.
+struct BatchContext<'a, 'c, T: ReconSample> {
+    pending: &'a Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
+    prepared: &'a Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
+    precomputed: &'a [CompletionCell<()>],
+    committed: &'a [CompletionCell<()>],
+    error: &'a Mutex<Option<crate::DecodeError>>,
+    commit: &'a Mutex<Option<TileCommit<T>>>,
+    workers: &'a InterReconScratchPool<T>,
+    prepass_block_decoded: &'a TileBlockDecodedState,
+    motion: &'a MotionFieldUnits,
+    quantizer: &'a FrameQuantizerSnapshot,
+    temporal: &'a TemporalMvContext,
+    context: &'a TileDecodeContext<'c, T>,
+    row_buffers: &'a ReconRowBufferPool,
+}
+
+/// Which half of a batch's work a [`BatchJob`] runs.
+#[derive(Clone, Copy)]
+enum BatchStage {
+    Precompute,
+    Commit,
+}
+
+/// One batch's work at one stage.
+struct BatchJob<'a, 'c, T: ReconSample> {
+    shared: &'a BatchContext<'a, 'c, T>,
+    index: usize,
+    stage: BatchStage,
+}
+
+impl<T: ReconSample> BatchJob<'_, '_, T> {
+    fn precompute(self) {
+        let shared = self.shared;
+        let ready = shared
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(self.index)
+            .and_then(Option::take);
+        let enabled = shared
+            .error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_none();
+        let prepared = ready.filter(|_| enabled).map(|mut ready| {
+            let out = shared.workers.with_scratch(|scratch| {
+                let mut out = crate::support::buffer_pool::take::<ReadyReconRow<T>>(ready.len());
+                for row in ready.drain(..) {
+                    out.push(precompute_recon_row(
+                        row,
+                        scratch,
+                        shared.prepass_block_decoded,
+                        shared.motion,
+                        shared.quantizer,
+                        shared.temporal,
+                        shared.context.reference,
+                        shared.context.ref_frame_idx,
+                        shared.context.sequence,
+                        shared.context.core,
+                        shared.context.sb_h4,
+                        shared.context.mi_rows,
+                        shared.context.mi_cols,
+                        shared.context.current_order_hint,
+                        shared.context.luma_use_tcq,
+                        shared.context.residual_use_ddt,
+                        shared.context.bit_depth,
+                    ));
+                }
+                out
+            });
+            crate::support::buffer_pool::recycle(&mut ready);
+            out
+        });
+        if let Some(slot) = shared
+            .prepared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(self.index)
+        {
+            *slot = prepared;
+        }
+        if let Some(cell) = shared.precomputed.get(self.index) {
+            let _ = cell.set(());
+        }
+    }
+
+    fn commit(self) {
+        let shared = self.shared;
+        let batch = shared
+            .prepared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(self.index)
+            .and_then(Option::take);
+        if shared
+            .error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_none()
+        {
+            let result = batch
+                .ok_or_else(invalid_inter_tile_scheduling_state)
+                .and_then(|mut batch| {
+                    let mut state = take_active_commit(shared.commit)?;
+                    let mut result = Ok(());
+                    for ready in batch.drain(..) {
+                        match state.replay(
+                            ready,
+                            shared.quantizer,
+                            shared.motion,
+                            shared.temporal,
+                            shared.context,
+                        ) {
+                            Ok(buffers) => shared.row_buffers.recycle(buffers),
+                            Err(error) => {
+                                result = Err(error);
+                                break;
+                            }
+                        }
+                    }
+                    crate::support::buffer_pool::recycle(&mut batch);
+                    restore_active_commit(shared.commit, state)?;
+                    result
+                });
+            if let Err(value) = result {
+                record_first_error(shared.error, value);
+            }
+        }
+        if let Some(cell) = shared.committed.get(self.index) {
+            let _ = cell.set(());
+        }
+    }
+}
+
+impl<'a, 'c: 'a, T: ReconSample> splot_parallel::Task<'a> for BatchJob<'a, 'c, T> {
+    fn run(self, _admit: &dyn splot_parallel::Admit<'a, Self>) {
+        match self.stage {
+            BatchStage::Precompute => self.precompute(),
+            BatchStage::Commit => self.commit(),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_ordinary_tile<T: ReconSample>(
     parser: &mut TileParser<'_, '_>,
@@ -618,6 +765,12 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         .map_err(|_| inter_allocation!("ordinary inter prepared batches"))?;
     prepared_slots.resize_with(batch_count, || None);
     let prepared = Mutex::new(prepared_slots);
+    let mut pending_slots: Vec<Option<Vec<ReadyReconRow<T>>>> = Vec::new();
+    pending_slots
+        .try_reserve_exact(batch_count)
+        .map_err(|_| inter_allocation!("ordinary inter pending batches"))?;
+    pending_slots.resize_with(batch_count, || None);
+    let pending = Mutex::new(pending_slots);
     let mut precomputed = Vec::new();
     precomputed
         .try_reserve_exact(batch_count)
@@ -628,14 +781,25 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         .try_reserve_exact(batch_count)
         .map_err(|_| inter_allocation!("ordinary inter commit completions"))?;
     committed.resize_with(batch_count, CompletionCell::new);
-    // One list, refilled per batch. Only the batch being walked is ever being
-    // filled -- a submitted batch takes its rows with it -- so a list per batch
-    // held every batch's rows for the whole frame to no purpose.
-    let mut ready_list: Vec<ReadyReconRow<T>> = Vec::new();
 
     let commit = Mutex::new(Some(commit));
     let error = Mutex::new(None);
-    let scheduler: AdmissionScheduler<'_, splot_parallel::NoTask> = AdmissionScheduler::new();
+    let shared = BatchContext {
+        pending: &pending,
+        prepared: &prepared,
+        precomputed: &precomputed,
+        committed: &committed,
+        error: &error,
+        commit: &commit,
+        workers,
+        prepass_block_decoded,
+        motion,
+        quantizer,
+        temporal,
+        context,
+        row_buffers,
+    };
+    let scheduler: AdmissionScheduler<'_, BatchJob<'_, '_, T>> = AdmissionScheduler::new();
     // A wider pool wants slack so its workers stay fed, but one worker runs
     // every batch itself, so slack there only keeps more units' buffers alive.
     let pool_width = splot_parallel::current_pool_width();
@@ -648,9 +812,15 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let mut submitted_batches = 0usize;
     let mut reached_last = false;
     let parse_result = splot_parallel::ready_task_scope(|scope| {
+        // Refilled per batch: `submit` reads the slice and keeps nothing, so a
+        // fresh list each time only re-walked the growth ladder from empty.
+        let mut gate_conditions = Vec::new();
         for (batch_index, range) in batches.iter().enumerate() {
-            let ready = &mut ready_list;
-            if ready.capacity() < range.len() && ready.try_reserve_exact(range.len()).is_err() {
+            // From the tile's own reserve, and returned to it once the batch's
+            // rows are consumed, so a batch reuses a list rather than building
+            // one.
+            let mut ready = crate::support::buffer_pool::take::<ReadyReconRow<T>>(range.len());
+            if ready.capacity() < range.len() {
                 record_first_error(&error, inter_allocation!("ordinary inter ready batch"));
                 break;
             }
@@ -695,107 +865,50 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 }
             }
 
-            let ready = core::mem::take(ready);
-            let mut conditions = Vec::new();
-            row_gate.conditions(&bounds, &mut conditions);
-            let prepared_slot = &prepared;
-            let precomputed_cell = &precomputed[batch_index];
-            let precompute_error = &error;
+            if let Some(slot) = shared
+                .pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_mut(batch_index)
+            {
+                *slot = Some(ready);
+            }
+            gate_conditions.clear();
+            row_gate.conditions(&bounds, &mut gate_conditions);
             scheduler.submit(
                 scope,
                 (batch_index as u64).saturating_mul(4).saturating_add(1),
-                &conditions,
-                splot_parallel::Job::Boxed(Box::new(move |_| {
-                    let enabled = precompute_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .is_none();
-                    let prepared = enabled.then(|| {
-                        workers.with_scratch(|scratch| {
-                            ready
-                                .into_iter()
-                                .map(|ready| {
-                                    precompute_recon_row(
-                                        ready,
-                                        scratch,
-                                        prepass_block_decoded,
-                                        motion,
-                                        quantizer,
-                                        temporal,
-                                        context.reference,
-                                        context.ref_frame_idx,
-                                        context.sequence,
-                                        context.core,
-                                        context.sb_h4,
-                                        context.mi_rows,
-                                        context.mi_cols,
-                                        context.current_order_hint,
-                                        context.luma_use_tcq,
-                                        context.residual_use_ddt,
-                                        context.bit_depth,
-                                    )
-                                })
-                                .collect()
-                        })
-                    });
-                    if let Some(slot) = prepared_slot
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .get_mut(batch_index)
-                    {
-                        *slot = prepared;
-                    }
-                    let _ = precomputed_cell.set(());
-                })),
+                &gate_conditions,
+                splot_parallel::Job::Inline(BatchJob {
+                    shared: &shared,
+                    index: batch_index,
+                    stage: BatchStage::Precompute,
+                }),
             );
 
-            let prepared_slot = &prepared;
-            let completed = &committed[batch_index];
-            let commit = &commit;
-            let commit_error = &error;
-            let mut conditions = vec![Condition::completion(&precomputed[batch_index])];
-            if let Some(previous) = batch_index.checked_sub(1) {
-                conditions.push(Condition::completion(&committed[previous]));
-            }
+            // On the stack: a commit waits on its own precompute and, after the
+            // first, the previous commit -- never more.
+            let pair;
+            let single;
+            let conditions: &[Condition<'_>] = if let Some(previous) = batch_index.checked_sub(1) {
+                pair = [
+                    Condition::completion(&precomputed[batch_index]),
+                    Condition::completion(&committed[previous]),
+                ];
+                &pair
+            } else {
+                single = [Condition::completion(&precomputed[batch_index])];
+                &single
+            };
             scheduler.submit(
                 scope,
                 (batch_index as u64).saturating_mul(4).saturating_add(2),
-                &conditions,
-                splot_parallel::Job::Boxed(Box::new(move |_| {
-                    let batch = prepared_slot
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .get_mut(batch_index)
-                        .and_then(Option::take);
-                    if commit_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .is_none()
-                    {
-                        let result = batch
-                            .ok_or_else(invalid_inter_tile_scheduling_state)
-                            .and_then(|batch| {
-                                let mut state = take_active_commit(commit)?;
-                                let mut result = Ok(());
-                                for ready in batch {
-                                    match state.replay(ready, quantizer, motion, temporal, context)
-                                    {
-                                        Ok(buffers) => row_buffers.recycle(buffers),
-                                        Err(error) => {
-                                            result = Err(error);
-                                            break;
-                                        }
-                                    }
-                                }
-                                restore_active_commit(commit, state)?;
-                                result
-                            });
-                        if let Err(value) = result {
-                            record_first_error(commit_error, value);
-                        }
-                    }
-                    let _ = completed.set(());
-                })),
+                conditions,
+                splot_parallel::Job::Inline(BatchJob {
+                    shared: &shared,
+                    index: batch_index,
+                    stage: BatchStage::Commit,
+                }),
             );
             submitted_batches = batch_index.saturating_add(1);
             if let Some(target) = batch_index.checked_sub(admission_window) {

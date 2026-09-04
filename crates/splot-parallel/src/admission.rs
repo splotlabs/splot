@@ -468,6 +468,52 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         spawned
     }
 
+    /// Drains ready jobs, leaving the first on `continuations` rather than
+    /// spawning it.
+    ///
+    /// Rayon heap-allocates a job for every spawn, so a job admitted from
+    /// inside [`Self::run_job`] rides that loop instead: the caller is already
+    /// draining continuations, and one worker running its own successor needs
+    /// no hand-off at all.
+    fn admit_ready_continuing<'scope>(
+        &'scope self,
+        scope: &TaskScope<'_, 'scope>,
+        continuations: &ContinuationSlot<'job, F>,
+    ) -> usize
+    where
+        'job: 'scope,
+    {
+        let mut spawned = 0;
+        let mut parked = false;
+        while let Some(entry) = self.ready.pop() {
+            let job = self
+                .slots
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take_job(entry);
+            let Some(mut job) = job else { continue };
+            if !parked {
+                match continuations.put(OrderedJob {
+                    order_key: entry.order_key,
+                    job,
+                }) {
+                    Ok(()) => {
+                        parked = true;
+                        spawned += 1;
+                        continue;
+                    }
+                    Err(back) => job = back.job,
+                }
+            }
+            scope.spawn(move |scope| self.run_job(scope, job));
+            spawned += 1;
+        }
+        if spawned != 0 {
+            notify_installed_pool_progress();
+        }
+        spawned
+    }
+
     /// This worker's continuation slot, or a shared one when it has no index.
     fn worker_continuations(&self) -> &ContinuationSlot<'job, F> {
         let index = crate::pool::current_worker_index().unwrap_or(0);
@@ -488,7 +534,7 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         let mut continued = 0;
         loop {
             job.run(&admit);
-            self.admit_ready(scope);
+            self.admit_ready_continuing(scope, continuations);
             let Some(next) = continuations.take() else {
                 return;
             };
@@ -536,7 +582,8 @@ struct ScopeAdmit<'a, 'handle, 'scope, 'job, F: Task<'job>> {
 
 impl<'job, F: Task<'job>> Admit<'job, F> for ScopeAdmit<'_, '_, '_, 'job, F> {
     fn admit_ready(&self) -> usize {
-        self.scheduler.admit_ready(self.scope)
+        self.scheduler
+            .admit_ready_continuing(self.scope, self.continuations)
     }
 
     fn submit(&self, order_key: u64, conditions: &[Condition<'_>], job: Job<'job, F>) {
