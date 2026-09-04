@@ -546,6 +546,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             TileParseState {
                 mv_grid: self.mv_grid,
                 coeff_ctx: self.coeff_ctx,
+                block_decoded: TileBlockDecodedState::default(),
+                commit_block_decoded: TileBlockDecodedState::default(),
             },
         )
     }
@@ -991,6 +993,9 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
 pub(in crate::prediction::inter) struct TileParseState {
     mv_grid: NeighbourMvGrid,
     coeff_ctx: TileCoeffContextState,
+    /// The tile's block-decoded grid, and the copy the commit spine reads.
+    block_decoded: TileBlockDecodedState,
+    commit_block_decoded: TileBlockDecodedState,
 }
 
 #[derive(Default)]
@@ -1509,21 +1514,32 @@ fn tile_block_decoded<T: ReconSample>(
     tile: &DecodeTileWorkUnit<'_>,
     context: &TileDecodeContext<'_, T>,
 ) -> Result<TileBlockDecodedState> {
+    let mut state = TileBlockDecodedState::default();
+    reset_tile_block_decoded(&mut state, tile, context)?;
+    Ok(state)
+}
+
+fn reset_tile_block_decoded<T: ReconSample>(
+    state: &mut TileBlockDecodedState,
+    tile: &DecodeTileWorkUnit<'_>,
+    context: &TileDecodeContext<'_, T>,
+) -> Result<()> {
     let chroma = context.sequence.general.chroma_format_idc;
     let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
-    TileBlockDecodedState::new(
-        if chroma == ChromaFormatIdc::Monochrome {
-            1
-        } else {
-            3
-        },
-        usize::from(subsampling_x),
-        usize::from(subsampling_y),
-        context.sb_h4,
-        (tile.mi_col_range().end as usize).min(context.mi_cols),
-        (tile.mi_row_range().end as usize).min(context.mi_rows),
-    )
-    .map_err(|error| inter_tile_block_decoded_error(&error))
+    state
+        .reset(
+            if chroma == ChromaFormatIdc::Monochrome {
+                1
+            } else {
+                3
+            },
+            usize::from(subsampling_x),
+            usize::from(subsampling_y),
+            context.sb_h4,
+            (tile.mi_col_range().end as usize).min(context.mi_cols),
+            (tile.mi_row_range().end as usize).min(context.mi_rows),
+        )
+        .map_err(|error| inter_tile_block_decoded_error(&error))
 }
 
 fn luma_rect<T: ReconSample>(
@@ -1654,7 +1670,12 @@ pub(super) fn decode_tiles<T: ReconSample>(
     let global_intrabc = super::intrabc::global_intrabc_enabled(core.intrabc);
     for tile in work_units.iter_mut() {
         let tile_offset = tile.tile_byte_span().start;
-        let block_decoded = tile_block_decoded(tile, &context)?;
+        reset_tile_block_decoded(&mut parse_state.block_decoded, tile, &context)?;
+        parse_state
+            .commit_block_decoded
+            .clone_from(&parse_state.block_decoded);
+        let commit_block_decoded = core::mem::take(&mut parse_state.commit_block_decoded);
+        let block_decoded = core::mem::take(&mut parse_state.block_decoded);
         let quantizer = FrameQuantizerSnapshot::capture();
         let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
         let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
@@ -1711,7 +1732,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let commit = TileCommit::direct(
             tile_ordered,
             workspace,
-            block_decoded.clone(),
+            commit_block_decoded,
             decoded_any,
             std::sync::Arc::clone(&surface_source),
             core::mem::take(frame_filter_records),
@@ -1734,8 +1755,14 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &mut tile_batches,
             commit,
         )?;
-        let (next_ordered, next_workspace, next_decoded, next_surfaces, next_records) =
-            commit.finish_direct();
+        let (
+            next_ordered,
+            next_workspace,
+            next_decoded,
+            next_surfaces,
+            next_records,
+            spent_block_decoded,
+        ) = commit.finish_direct();
         batches = tile_batches;
         ordered = next_ordered;
         workspace = next_workspace;
@@ -1748,6 +1775,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
         workers = tile_workers;
         let (output, next_parse_state) = parser.into_output();
         parse_state = next_parse_state;
+        parse_state.block_decoded = block_decoded;
+        parse_state.commit_block_decoded = spent_block_decoded;
         merge_tile_filter_state(
             &mut cdef_state,
             &mut gdf_state,

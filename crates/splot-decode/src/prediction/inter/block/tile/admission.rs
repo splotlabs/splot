@@ -16,6 +16,16 @@ use crate::prediction::inter::block::row_gate::RowReferenceGate;
 use crate::prediction::inter::find_mv_stack::TemporalBandPlan;
 use parking_lot::Mutex;
 
+/// What a direct tile hands back to the decoder when its commit spine ends.
+pub(super) type FinishedDirectTile<T> = (
+    deferred_recon::InterReconScratch<T>,
+    CurrentFrameWorkspace<T>,
+    bool,
+    Vec<splot_recon::OwnedFrameRect<T>>,
+    crate::filters::wienerns_lr::FrameFilterRecords,
+    TileBlockDecodedState,
+);
+
 pub(super) struct TileCommit<T: ReconSample> {
     next: usize,
     handed_rows: usize,
@@ -93,15 +103,7 @@ impl<T: ReconSample> TileCommit<T> {
         })
     }
 
-    pub(super) fn finish_direct(
-        self,
-    ) -> (
-        deferred_recon::InterReconScratch<T>,
-        CurrentFrameWorkspace<T>,
-        bool,
-        Vec<splot_recon::OwnedFrameRect<T>>,
-        crate::filters::wienerns_lr::FrameFilterRecords,
-    ) {
+    pub(super) fn finish_direct(self) -> FinishedDirectTile<T> {
         let surfaces = self.surfaces.lock().drain_free();
         (
             self.ordered,
@@ -109,6 +111,7 @@ impl<T: ReconSample> TileCommit<T> {
             self.decoded_any,
             surfaces,
             self.frame_filter_records,
+            self.block_decoded,
         )
     }
 }
