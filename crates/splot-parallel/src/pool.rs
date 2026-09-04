@@ -33,7 +33,10 @@ pub struct WorkerPool {
 
 /// A borrowed scope for nonblocking tasks that are ready to run.
 pub struct TaskScope<'handle, 'scope> {
-    inner: &'handle rayon::ScopeFifo<'scope>,
+    /// The Rayon scope tasks are handed to, or `None` when the pool has one
+    /// worker and the caller runs them itself. Entering a Rayon scope
+    /// allocates, and a lone worker has no peer to hand anything to.
+    inner: Option<&'handle rayon::ScopeFifo<'scope>>,
 }
 
 impl<'scope> TaskScope<'_, 'scope> {
@@ -42,8 +45,12 @@ impl<'scope> TaskScope<'_, 'scope> {
     where
         F: for<'next> FnOnce(&TaskScope<'next, 'scope>) + Send + 'scope,
     {
-        self.inner
-            .spawn_fifo(move |inner| task(&TaskScope { inner }));
+        match self.inner {
+            Some(inner) => inner.spawn_fifo(move |inner| {
+                task(&TaskScope { inner: Some(inner) });
+            }),
+            None => task(&TaskScope { inner: None }),
+        }
     }
 }
 
@@ -137,7 +144,10 @@ where
     let pool = INSTALLED_POOL
         .with(|installed| installed.borrow().upgrade())
         .ok_or(ParallelError::NotOnWorkerPool)?;
-    Ok(pool.scope_fifo(|inner| f(&TaskScope { inner })))
+    if pool.current_num_threads() <= 1 {
+        return Ok(f(&TaskScope { inner: None }));
+    }
+    Ok(pool.scope_fifo(|inner| f(&TaskScope { inner: Some(inner) })))
 }
 
 /// One pool-progress generation captured before a driver checks its condition.
@@ -394,22 +404,28 @@ mod tests {
         assert!(all_on_pool.load(Ordering::Relaxed));
     }
 
+    /// A one-worker pool runs its own spawns rather than queueing them, so
+    /// there is never anything for the assist to pick up.
     #[test]
-    fn pool_assist_runs_a_queued_job_on_the_calling_worker() {
+    fn a_lone_worker_runs_its_spawn_instead_of_queueing_it() {
         assert!(matches!(assist_installed_pool(), PoolAssist::OffPool));
         let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).unwrap();
         let ran = AtomicBool::new(false);
-        let (idle, executed) = pool.install(|| {
+        let (idle, ran_before_assist, still_idle) = pool.install(|| {
             let idle = matches!(assist_installed_pool(), PoolAssist::Idle);
-            let executed = ready_task_scope(|scope| {
+            let (ran_before_assist, still_idle) = ready_task_scope(|scope| {
                 scope.spawn(|_| ran.store(true, Ordering::Relaxed));
-                matches!(assist_installed_pool(), PoolAssist::Executed)
+                (
+                    ran.load(Ordering::Relaxed),
+                    matches!(assist_installed_pool(), PoolAssist::Idle),
+                )
             })
             .unwrap();
-            (idle, executed)
+            (idle, ran_before_assist, still_idle)
         });
         assert!(idle, "an empty pool has no job to assist with");
-        assert!(executed, "a queued job must run on the assisting worker");
+        assert!(ran_before_assist, "the spawn runs on the spawning worker");
+        assert!(still_idle, "a lone worker leaves nothing queued");
         assert!(ran.load(Ordering::Relaxed));
     }
 
