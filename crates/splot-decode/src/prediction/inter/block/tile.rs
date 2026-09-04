@@ -341,18 +341,16 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             .mv_grid
             .reset_for_tile(tile_rows.clone(), tile_cols.clone())
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
-        let y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new_for_tile(
-            tile_rows.clone(),
-            tile_cols.clone(),
-        )
-        .map_err(|error| inter_tile_grid_error(&error, "inter luma smooth grid"))?;
+        parse
+            .y_smooth
+            .reset_for_tile(tile_rows.clone(), tile_cols.clone())
+            .map_err(|error| inter_tile_grid_error(&error, "inter luma smooth grid"))?;
         let (chroma_rows, chroma_cols) =
             super::chroma_smooth_tile_ranges(tile_rows, tile_cols, chroma);
-        let chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new_for_tile(
-            chroma_rows,
-            chroma_cols,
-        )
-        .map_err(|error| inter_tile_grid_error(&error, "inter chroma smooth grid"))?;
+        parse
+            .chroma_smooth
+            .reset_for_tile(chroma_rows, chroma_cols)
+            .map_err(|error| inter_tile_grid_error(&error, "inter chroma smooth grid"))?;
         let walk = GeneralIntraMultiblockCursor::new(
             tile,
             context.sequence,
@@ -374,8 +372,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             delta_q_state,
             intrabc_state,
             mv_grid: parse.mv_grid,
-            y_smooth,
-            chroma_smooth,
+            y_smooth: parse.y_smooth,
+            chroma_smooth: parse.chroma_smooth,
             filter_records: TileFilterRecords::default(),
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             output: TileParserOutput {
@@ -551,6 +549,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             TileParseState {
                 mv_grid: self.mv_grid,
                 coeff_ctx: self.coeff_ctx,
+                y_smooth: self.y_smooth,
+                chroma_smooth: self.chroma_smooth,
                 row_buffers: ReconRowBufferPool::default(),
                 lr_records: crate::bitstream::tile_payload::LrTileRecords::default(),
                 block_decoded: TileBlockDecodedState::default(),
@@ -990,6 +990,9 @@ pub(in crate::prediction::inter) struct TileParseState {
     lr_records: crate::bitstream::tile_payload::LrTileRecords,
     /// The row buffer sets this tile's units are parsed and replayed through.
     row_buffers: ReconRowBufferPool,
+    /// The smooth-mode grids this tile's intra edges are recorded in.
+    y_smooth: crate::prediction::intra_edge::TileYSmoothGrid,
+    chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
     /// The tile's block-decoded grid, and the copy the commit spine reads.
     block_decoded: TileBlockDecodedState,
     commit_block_decoded: TileBlockDecodedState,
