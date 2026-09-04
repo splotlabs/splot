@@ -1160,14 +1160,23 @@ impl TemporalMvContext {
                     .and_then(|_| ref_order_hint.get(slot as usize).copied())
                     .filter(|&hint| hint != u32::MAX)
             }));
-        let ref_motion_metadata = ref_motion_fields
-            .iter()
-            .map(|field| field.as_ref().map(|field| field.metadata()))
-            .collect::<Vec<_>>();
-        let ref_motion_layouts = ref_motion_fields
-            .iter()
-            .map(|field| field.as_ref().map(|field| field.layout()))
-            .collect::<Vec<_>>();
+        // From the reserve: both lists are one entry per reference slot and are
+        // rebuilt every frame.
+        let mut ref_motion_metadata = crate::support::buffer_pool::take::<
+            Option<TemporalMotionFieldMetadata>,
+        >(ref_motion_fields.len());
+        ref_motion_metadata.extend(
+            ref_motion_fields
+                .iter()
+                .map(|field| field.as_ref().map(|field| field.metadata())),
+        );
+        let mut ref_motion_layouts =
+            crate::support::buffer_pool::take::<Option<MotionFieldLayout>>(ref_motion_fields.len());
+        ref_motion_layouts.extend(
+            ref_motion_fields
+                .iter()
+                .map(|field| field.as_ref().map(|field| field.layout())),
+        );
         let projections = projection_queue(
             mi_dimensions,
             current_order_hint,

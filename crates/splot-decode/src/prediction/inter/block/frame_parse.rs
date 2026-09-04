@@ -196,8 +196,12 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
     let temporal = Arc::new(temporal);
     let info = workspace.info();
     let plane_sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(&workspace);
-    let filter_count =
-        crate::filters::gdf::stripe_ranges(&core, filter_sink_setup.luma_height)?.len();
+    let filter_count = {
+        let mut ranges = crate::filters::gdf::stripe_ranges(&core, filter_sink_setup.luma_height)?;
+        let count = ranges.len();
+        crate::support::buffer_pool::recycle(&mut ranges);
+        count
+    };
     let tile = tile::prepare_scheduled_tile(
         tile,
         *params,
