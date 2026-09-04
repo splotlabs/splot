@@ -148,10 +148,10 @@ pub struct TileInfo {
     pub tile_rows_log2: u8,
     /// `MiColStarts[0..=TileCols]` (`sbColStarts[i] << sbShift2`, with
     /// `MiColStarts[TileCols] = MiCols`).
-    pub mi_col_starts: Vec<u32>,
+    pub mi_col_starts: crate::tile::TileStarts,
     /// `MiRowStarts[0..=TileRows]` (`sbRowStarts[i] << sbShift2`, with
     /// `MiRowStarts[TileRows] = MiRows`).
-    pub mi_row_starts: Vec<u32>,
+    pub mi_row_starts: crate::tile::TileStarts,
     /// `context_update_tile_id` (read only for a multi-tile, non-bridge,
     /// non-TIP-as-output layout when `!enable_avg_cdf || !avg_cdf_type`; else `0`).
     pub context_update_tile_id: u32,
@@ -165,6 +165,15 @@ pub struct TileInfo {
     /// discard). `Some` on the explicit branch; `None` on the reuse branch (which writes
     /// no `tile_params()` bits — the layout is recomputed from the stored sequence layout).
     pub tile_params: Option<TileParams>,
+}
+
+/// More tile starts than AV2 allows for one axis.
+fn tile_starts_overflow(reader: &BitReader<'_>) -> Error {
+    Error::InvalidTileParams {
+        offset: reader.byte_offset(),
+        bit_offset: reader.bit_offset(),
+        kind: crate::error::TileParamsErrorKind::TileColsOutOfRange,
+    }
 }
 
 /// Parses `tile_info()` (AV2 v1.0.0 § 5.18.7.2,
@@ -300,12 +309,24 @@ pub fn parse_tile_info(
     };
 
     let sb_shift2 = sb_shift2.min(31);
-    let mut mi_col_starts: Vec<u32> = Vec::with_capacity(sb_col_starts.len() + 1);
-    mi_col_starts.extend(sb_col_starts.iter().map(|&start| start << sb_shift2));
-    mi_col_starts.push(mi_cols);
-    let mut mi_row_starts: Vec<u32> = Vec::with_capacity(sb_row_starts.len() + 1);
-    mi_row_starts.extend(sb_row_starts.iter().map(|&start| start << sb_shift2));
-    mi_row_starts.push(mi_rows);
+    let mut mi_col_starts = crate::tile::TileStarts::default();
+    for &start in sb_col_starts.iter() {
+        mi_col_starts
+            .push(start << sb_shift2)
+            .ok_or_else(|| tile_starts_overflow(reader))?;
+    }
+    mi_col_starts
+        .push(mi_cols)
+        .ok_or_else(|| tile_starts_overflow(reader))?;
+    let mut mi_row_starts = crate::tile::TileStarts::default();
+    for &start in sb_row_starts.iter() {
+        mi_row_starts
+            .push(start << sb_shift2)
+            .ok_or_else(|| tile_starts_overflow(reader))?;
+    }
+    mi_row_starts
+        .push(mi_rows)
+        .ok_or_else(|| tile_starts_overflow(reader))?;
 
     let (context_update_tile_id, tile_size_bytes) =
         if (tile_cols > 1 || tile_rows > 1) && !is_bridge && !tip_frame_as_output {
@@ -398,8 +419,8 @@ mod tests {
         assert_eq!(info.tile_rows, 1);
         assert_eq!(info.tile_cols_log2, 0);
         assert_eq!(info.tile_rows_log2, 0);
-        assert_eq!(info.mi_col_starts, vec![0, 4]);
-        assert_eq!(info.mi_row_starts, vec![0, 2]);
+        assert_eq!(info.mi_col_starts.as_ref(), [0, 4].as_slice());
+        assert_eq!(info.mi_row_starts.as_ref(), [0, 2].as_slice());
         assert_eq!(info.context_update_tile_id, 0);
         assert_eq!(info.tile_size_bytes, None);
         assert_eq!(reader.consumed_bits(), 1);
@@ -430,8 +451,8 @@ mod tests {
         assert_eq!(info.tile_rows, 1);
         assert_eq!(info.tile_cols_log2, 1);
         assert_eq!(info.tile_rows_log2, 0);
-        assert_eq!(info.mi_col_starts, vec![0, 32, 64]);
-        assert_eq!(info.mi_row_starts, vec![0, 64]);
+        assert_eq!(info.mi_col_starts.as_ref(), [0, 32, 64].as_slice());
+        assert_eq!(info.mi_row_starts.as_ref(), [0, 64].as_slice());
         assert_eq!(info.context_update_tile_id, 1);
         assert_eq!(info.tile_size_bytes, Some(4));
         assert_eq!(reader.consumed_bits(), 7);
@@ -463,8 +484,8 @@ mod tests {
         assert_eq!(info.tile_rows, 2);
         assert_eq!(info.tile_cols_log2, 1);
         assert_eq!(info.tile_rows_log2, 1);
-        assert_eq!(info.mi_col_starts, vec![0, 32, 64]);
-        assert_eq!(info.mi_row_starts, vec![0, 32, 64]);
+        assert_eq!(info.mi_col_starts.as_ref(), [0, 32, 64].as_slice());
+        assert_eq!(info.mi_row_starts.as_ref(), [0, 32, 64].as_slice());
         assert_eq!(info.context_update_tile_id, 2);
         assert_eq!(info.tile_size_bytes, Some(2));
         assert_eq!(reader.consumed_bits(), 5);
@@ -606,8 +627,8 @@ mod tests {
         assert_eq!(info.tile_rows, 2);
         assert_eq!(info.tile_cols_log2, 1);
         assert_eq!(info.tile_rows_log2, 1);
-        assert_eq!(info.mi_col_starts, vec![0, 32, 64]);
-        assert_eq!(info.mi_row_starts, vec![0, 32, 64]);
+        assert_eq!(info.mi_col_starts.as_ref(), [0, 32, 64].as_slice());
+        assert_eq!(info.mi_row_starts.as_ref(), [0, 32, 64].as_slice());
         assert_eq!(info.context_update_tile_id, 2);
         assert_eq!(info.tile_size_bytes, Some(2));
         let mut reader = BitReader::new(&data, ByteOffset::new(0));

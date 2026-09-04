@@ -298,7 +298,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
         gdf_band_segments(
             core.tile_info
                 .as_ref()
-                .map(|tile| (tile.tile_cols, tile.mi_col_starts.as_slice())),
+                .map(|tile| (tile.tile_cols, tile.mi_col_starts.as_ref())),
             width,
         )?
     } else {

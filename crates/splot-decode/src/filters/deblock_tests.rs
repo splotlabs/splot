@@ -580,8 +580,8 @@ fn incremental_deblock_matches_tile_boundary_rules() {
     let blocks = deblock_blocks(mi_rows, mi_cols);
     let params = filter([true; 4]);
     let tile_info = two_by_two_tile_info();
-    assert_eq!(tile_info.mi_col_starts, [0, 16, 32]);
-    assert_eq!(tile_info.mi_row_starts, [0, 16, 32]);
+    assert_eq!(tile_info.mi_col_starts.as_ref(), [0, 16, 32].as_slice());
+    assert_eq!(tile_info.mi_row_starts.as_ref(), [0, 16, 32].as_slice());
 
     for disable_loopfilters_across_tiles in [false, true] {
         let make_workspace = || {

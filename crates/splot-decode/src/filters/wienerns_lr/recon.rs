@@ -823,7 +823,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         self.core
             .tile_info
             .as_ref()
-            .map(|tile| (tile.mi_row_starts.as_slice(), tile.mi_col_starts.as_slice()))
+            .map(|tile| (tile.mi_row_starts.as_ref(), tile.mi_col_starts.as_ref()))
     }
 
     fn cdef_ccso_range<'d>(

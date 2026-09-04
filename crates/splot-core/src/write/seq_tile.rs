@@ -446,7 +446,7 @@ fn uniform_cols_log2_target(
 ) -> WriteResult<u8> {
     for target in grid.min_log2_tile_cols..=grid.max_log2_tile_cols {
         let cols = uniform_spacing(target, grid.mi_cols, input.uniform_sb_size);
-        if cols.starts == sb_col_starts {
+        if cols.starts.as_ref() == sb_col_starts {
             return Ok(target);
         }
     }
@@ -466,7 +466,7 @@ fn uniform_rows_log2_target(
 ) -> WriteResult<u8> {
     for target in min_log2_tile_rows..=grid.max_log2_tile_rows {
         let rows = uniform_spacing(target, grid.mi_rows, input.uniform_sb_size);
-        if rows.starts == sb_row_starts {
+        if rows.starts.as_ref() == sb_row_starts {
             return Ok(target);
         }
     }

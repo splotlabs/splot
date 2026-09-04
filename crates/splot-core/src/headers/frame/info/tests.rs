@@ -1073,8 +1073,8 @@ fn frame_header_core_intra_tail_parses_full_structure_cluster() {
     assert_eq!(tile_info.tile_cols, 2);
     assert_eq!(tile_info.tile_rows, 1);
     assert_eq!(tile_info.tile_cols_log2, 1);
-    assert_eq!(tile_info.mi_col_starts, vec![0, 256, 480]);
-    assert_eq!(tile_info.mi_row_starts, vec![0, 270]);
+    assert_eq!(tile_info.mi_col_starts.as_ref(), [0, 256, 480].as_slice());
+    assert_eq!(tile_info.mi_row_starts.as_ref(), [0, 270].as_slice());
     assert_eq!(tile_info.context_update_tile_id, 1);
     assert_eq!(tile_info.tile_size_bytes, Some(4));
     assert_eq!(core.quantization_params.unwrap().base_q_idx, 40);

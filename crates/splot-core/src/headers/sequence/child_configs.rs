@@ -861,7 +861,11 @@ pub fn parse_sequence_tile_config(
                 layout.sb_col_starts,
                 layout.sb_row_starts,
             ),
-            Err(Error::Unimplemented { .. }) => (None, Vec::new(), Vec::new()),
+            Err(Error::Unimplemented { .. }) => (
+                None,
+                crate::tile::TileStarts::default(),
+                crate::tile::TileStarts::default(),
+            ),
             Err(error) => return Err(error),
         };
 
@@ -869,7 +873,7 @@ pub fn parse_sequence_tile_config(
         seq_tile_info_present_flag: true,
         allow_tile_info_change: Some(allow_tile_info_change),
         params,
-        seq_sb_col_starts: std::sync::Arc::from(seq_sb_col_starts),
-        seq_sb_row_starts: std::sync::Arc::from(seq_sb_row_starts),
+        seq_sb_col_starts: std::sync::Arc::from(&*seq_sb_col_starts),
+        seq_sb_row_starts: std::sync::Arc::from(&*seq_sb_row_starts),
     })
 }

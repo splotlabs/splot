@@ -114,7 +114,7 @@ pub fn tile_log2(blk_size: u32, target: u32) -> u8 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileSpacing {
     /// Superblock start positions, one per tile.
-    pub starts: Vec<u32>,
+    pub starts: TileStarts,
     /// Number of tiles produced (`i` at loop exit).
     pub count: u32,
 }
@@ -141,11 +141,13 @@ pub fn uniform_spacing(tile_log2: u8, mis: u32, sb_size: SuperblockSize) -> Tile
     };
 
     let num_tiles = 1u32 << tile_log2;
-    let mut starts = Vec::with_capacity(num_tiles.min(sbs) as usize);
+    let mut starts = TileStarts::default();
     let mut start_sb = 0u32;
     let mut i = 0u32;
     while i < num_tiles && start_sb < sbs {
-        starts.push(start_sb);
+        if starts.push(start_sb).is_none() {
+            break;
+        }
         start_sb += tile_sb;
         if i < extra_sbs {
             start_sb += 1;
@@ -206,6 +208,77 @@ pub struct TileParams {
     pub covers_rows: bool,
 }
 
+/// Tile start offsets, held inline.
+///
+/// AV2 bounds a frame at [`MAX_TILE_COLS`] columns and [`MAX_TILE_ROWS`] rows,
+/// and the `MiColStarts` / `MiRowStarts` arrays carry one extra sentinel, so the
+/// whole list fits in the header rather than in a vector allocated per frame.
+/// It dereferences to `[u32]`, so readers use it as the slice it replaces.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TileStarts {
+    values: [u32; MAX_TILE_STARTS],
+    len: u16,
+}
+
+/// Entries a [`TileStarts`] holds: one per tile plus the trailing sentinel.
+pub const MAX_TILE_STARTS: usize = MAX_TILE_COLS as usize + 1;
+
+impl Default for TileStarts {
+    fn default() -> Self {
+        Self {
+            values: [0; MAX_TILE_STARTS],
+            len: 0,
+        }
+    }
+}
+
+impl TileStarts {
+    /// Collects `starts`, or `None` when there are more than [`MAX_TILE_STARTS`].
+    #[must_use]
+    pub fn from_iter_checked(starts: impl IntoIterator<Item = u32>) -> Option<Self> {
+        let mut built = Self::default();
+        for start in starts {
+            built.push(start)?;
+        }
+        Some(built)
+    }
+
+    /// Appends one start, or `None` when the list is already full.
+    pub fn push(&mut self, start: u32) -> Option<()> {
+        let slot = self.values.get_mut(self.len as usize)?;
+        *slot = start;
+        self.len = self.len.checked_add(1)?;
+        Some(())
+    }
+}
+
+impl core::ops::Deref for TileStarts {
+    type Target = [u32];
+
+    fn deref(&self) -> &Self::Target {
+        self.values.get(..self.len as usize).unwrap_or(&[])
+    }
+}
+
+impl core::ops::DerefMut for TileStarts {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let len = self.len as usize;
+        self.values.get_mut(..len).unwrap_or(&mut [])
+    }
+}
+
+impl PartialEq<[u32]> for TileStarts {
+    fn eq(&self, other: &[u32]) -> bool {
+        self.as_ref() == other
+    }
+}
+
+impl AsRef<[u32]> for TileStarts {
+    fn as_ref(&self) -> &[u32] {
+        self
+    }
+}
+
 /// Full `tile_params()` result (AV2 v1.0.0 § 5.18.7.3): the [`TileParams`] summary
 /// plus the superblock start arrays and the returned `sbShift`, which the
 /// frame-level `tile_info()` (§ 5.18.7.2) needs to derive `MiColStarts` /
@@ -215,9 +288,9 @@ pub struct TileLayout {
     /// The derived tile counts, log2 sizes, grid dimensions, and coverage flags.
     pub params: TileParams,
     /// `sbColStarts[0..TileCols]`.
-    pub sb_col_starts: Vec<u32>,
+    pub sb_col_starts: TileStarts,
     /// `sbRowStarts[0..TileRows]`.
-    pub sb_row_starts: Vec<u32>,
+    pub sb_row_starts: TileStarts,
     /// The returned `sbShift` (`Mi_Width_Log2[uniformSbSize]` for a uniform layout —
     /// reassigned inside the uniform branch — else `Mi_Width_Log2[sbSize]`), the
     /// `sbShift2` of the § 5.18.7.2 caller.
@@ -333,7 +406,7 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
         let mut widest_tile_sb = 1u32;
         let mut start_sb = 0u32;
         let mut tile_cols = 0u32;
-        let mut sb_col_starts = Vec::new();
+        let mut sb_col_starts = TileStarts::default();
         while start_sb < sb_cols {
             if tile_cols >= MAX_TILE_COLS {
                 return Err(Error::InvalidTileParams {
@@ -362,7 +435,7 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
 
         let mut start_sb = 0u32;
         let mut tile_rows = 0u32;
-        let mut sb_row_starts = Vec::new();
+        let mut sb_row_starts = TileStarts::default();
         while start_sb < sb_rows {
             if tile_rows >= MAX_TILE_ROWS {
                 return Err(Error::InvalidTileParams {
@@ -452,13 +525,13 @@ pub struct ReuseTileParamsInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReuseTileParams {
     /// `sbRowStarts[0..tileRows]`.
-    pub sb_row_starts: Vec<u32>,
+    pub sb_row_starts: TileStarts,
     /// `tileRows`.
     pub tile_rows: u32,
     /// `tileRowsLog2`.
     pub tile_rows_log2: u8,
     /// `sbColStarts[0..tileCols]`.
-    pub sb_col_starts: Vec<u32>,
+    pub sb_col_starts: TileStarts,
     /// `tileCols`.
     pub tile_cols: u32,
     /// `tileColsLog2`.
@@ -492,10 +565,12 @@ pub fn reuse_tile_params(input: ReuseTileParamsInput<'_>) -> ReuseTileParams {
         }
     } else {
         ReuseTileParams {
-            sb_row_starts: input.seq_sb_row_starts.to_vec(),
+            sb_row_starts: TileStarts::from_iter_checked(input.seq_sb_row_starts.iter().copied())
+                .unwrap_or_default(),
             tile_rows: input.seq_tile_rows,
             tile_rows_log2: tile_log2(1, input.seq_tile_rows),
-            sb_col_starts: input.seq_sb_col_starts.to_vec(),
+            sb_col_starts: TileStarts::from_iter_checked(input.seq_sb_col_starts.iter().copied())
+                .unwrap_or_default(),
             tile_cols: input.seq_tile_cols,
             tile_cols_log2: tile_log2(1, input.seq_tile_cols),
             sb_shift2: mi_width_log2(input.sb_size),
@@ -552,14 +627,14 @@ mod tests {
     fn uniform_spacing_single_tile() {
         let spacing = uniform_spacing(0, 4, SuperblockSize::Block64x64);
         assert_eq!(spacing.count, 1);
-        assert_eq!(spacing.starts, vec![0]);
+        assert_eq!(spacing.starts.as_ref(), [0].as_slice());
     }
 
     #[test]
     fn uniform_spacing_two_tiles() {
         let spacing = uniform_spacing(1, 32, SuperblockSize::Block64x64);
         assert_eq!(spacing.count, 2);
-        assert_eq!(spacing.starts, vec![0, 1]);
+        assert_eq!(spacing.starts.as_ref(), [0, 1].as_slice());
     }
 
     #[test]
@@ -710,8 +785,8 @@ mod tests {
         let layout = parse_tile_layout(&mut reader, input(256, 8)).unwrap();
         assert_eq!(layout.params.tile_cols, 2);
         assert_eq!(layout.params.tile_rows, 1);
-        assert_eq!(layout.sb_col_starts, vec![0, 2]);
-        assert_eq!(layout.sb_row_starts, vec![0]);
+        assert_eq!(layout.sb_col_starts.as_ref(), [0, 2].as_slice());
+        assert_eq!(layout.sb_row_starts.as_ref(), [0].as_slice());
         assert_eq!(layout.sb_shift2, 4);
     }
 
@@ -724,8 +799,8 @@ mod tests {
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let layout = parse_tile_layout(&mut reader, input(128, 8)).unwrap();
         assert_eq!(layout.params.tile_cols, 2);
-        assert_eq!(layout.sb_col_starts, vec![0, 1]);
-        assert_eq!(layout.sb_row_starts, vec![0]);
+        assert_eq!(layout.sb_col_starts.as_ref(), [0, 1].as_slice());
+        assert_eq!(layout.sb_row_starts.as_ref(), [0].as_slice());
         assert_eq!(layout.sb_shift2, 4);
     }
 
@@ -748,8 +823,8 @@ mod tests {
         assert_eq!(result.tile_rows, 2);
         assert_eq!(result.tile_cols_log2, 1);
         assert_eq!(result.tile_rows_log2, 1);
-        assert_eq!(result.sb_col_starts, vec![0, 2]);
-        assert_eq!(result.sb_row_starts, vec![0, 2]);
+        assert_eq!(result.sb_col_starts.as_ref(), [0, 2].as_slice());
+        assert_eq!(result.sb_row_starts.as_ref(), [0, 2].as_slice());
         assert_eq!(result.sb_shift2, 4);
     }
 
@@ -772,8 +847,8 @@ mod tests {
         assert_eq!(result.tile_rows, 2);
         assert_eq!(result.tile_cols_log2, 2);
         assert_eq!(result.tile_rows_log2, 1);
-        assert_eq!(result.sb_col_starts, vec![0, 1, 2]);
-        assert_eq!(result.sb_row_starts, vec![0, 3]);
+        assert_eq!(result.sb_col_starts.as_ref(), [0, 1, 2].as_slice());
+        assert_eq!(result.sb_row_starts.as_ref(), [0, 3].as_slice());
         assert_eq!(result.sb_shift2, 5);
     }
 

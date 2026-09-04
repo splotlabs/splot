@@ -1325,7 +1325,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             seq_quant.base_uv_ac_delta_q,
             core.tile_info
                 .as_ref()
-                .map(|tile| (tile.mi_col_starts.as_slice(), tile.mi_row_starts.as_slice())),
+                .map(|tile| (tile.mi_col_starts.as_ref(), tile.mi_row_starts.as_ref())),
             sequence
                 .filter
                 .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
