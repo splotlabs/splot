@@ -754,32 +754,34 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     motion: &MotionFieldUnits,
     commit: TileCommit<T>,
 ) -> Result<TileCommit<T>> {
-    let batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
+    let mut batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
     let batch_count = batches.len();
     // One lock over the batch slots, not one per slot: each slot's `Mutex`
     // heap-allocates its platform lock the first time it is taken, and a frame
     // has a slot per batch.
-    let mut prepared_slots: Vec<Option<Vec<ReadyReconRow<T>>>> = Vec::new();
-    prepared_slots
-        .try_reserve_exact(batch_count)
-        .map_err(|_| inter_allocation!("ordinary inter prepared batches"))?;
+    let mut prepared_slots =
+        crate::support::buffer_pool::take::<Option<Vec<ReadyReconRow<T>>>>(batch_count);
+    if prepared_slots.capacity() < batch_count {
+        return Err(inter_allocation!("ordinary inter prepared batches"));
+    }
     prepared_slots.resize_with(batch_count, || None);
     let prepared = Mutex::new(prepared_slots);
-    let mut pending_slots: Vec<Option<Vec<ReadyReconRow<T>>>> = Vec::new();
-    pending_slots
-        .try_reserve_exact(batch_count)
-        .map_err(|_| inter_allocation!("ordinary inter pending batches"))?;
+    let mut pending_slots =
+        crate::support::buffer_pool::take::<Option<Vec<ReadyReconRow<T>>>>(batch_count);
+    if pending_slots.capacity() < batch_count {
+        return Err(inter_allocation!("ordinary inter pending batches"));
+    }
     pending_slots.resize_with(batch_count, || None);
     let pending = Mutex::new(pending_slots);
-    let mut precomputed = Vec::new();
-    precomputed
-        .try_reserve_exact(batch_count)
-        .map_err(|_| inter_allocation!("ordinary inter precompute completions"))?;
+    let mut precomputed = crate::support::buffer_pool::take::<CompletionCell<()>>(batch_count);
+    if precomputed.capacity() < batch_count {
+        return Err(inter_allocation!("ordinary inter precompute completions"));
+    }
     precomputed.resize_with(batch_count, CompletionCell::new);
-    let mut committed = Vec::new();
-    committed
-        .try_reserve_exact(batch_count)
-        .map_err(|_| inter_allocation!("ordinary inter commit completions"))?;
+    let mut committed = crate::support::buffer_pool::take::<CompletionCell<()>>(batch_count);
+    if committed.capacity() < batch_count {
+        return Err(inter_allocation!("ordinary inter commit completions"));
+    }
     committed.resize_with(batch_count, CompletionCell::new);
 
     let commit = Mutex::new(Some(commit));
@@ -971,6 +973,17 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         }
     })?;
     let scheduler_result = scheduler.finish();
+    drop(scheduler);
+    // Back to the reserve: the next frame lays out the same lists.
+    let mut prepared_slots =
+        core::mem::take(&mut *prepared.lock().unwrap_or_else(PoisonError::into_inner));
+    let mut pending_slots =
+        core::mem::take(&mut *pending.lock().unwrap_or_else(PoisonError::into_inner));
+    crate::support::buffer_pool::recycle(&mut prepared_slots);
+    crate::support::buffer_pool::recycle(&mut pending_slots);
+    crate::support::buffer_pool::recycle(&mut precomputed);
+    crate::support::buffer_pool::recycle(&mut committed);
+    crate::support::buffer_pool::recycle(&mut batches);
     if let Some(error) = error.lock().unwrap_or_else(PoisonError::into_inner).take() {
         return Err(error);
     }
@@ -1475,7 +1488,10 @@ fn superblock_row_batches(
 ) -> Vec<core::ops::Range<usize>> {
     let batch_units = batch_units.max(1);
     let units_per_row = units_per_row.max(1);
-    let mut batches = Vec::new();
+    // From the reserve, and returned there once the frame's batches are done.
+    let mut batches = crate::support::buffer_pool::take::<core::ops::Range<usize>>(
+        unit_count.div_ceil(batch_units).saturating_add(1),
+    );
     let mut start = 0;
     while start < unit_count {
         let row_end = (start / units_per_row)
