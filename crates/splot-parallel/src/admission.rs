@@ -58,11 +58,16 @@ use crate::watermark::WatermarkCell;
 
 trait CompletionSource {
     fn register(&self, waiter: Arc<Waiter>) -> bool;
+    fn is_ready(&self) -> bool;
 }
 
 impl<V> CompletionSource for CompletionCell<V> {
     fn register(&self, waiter: Arc<Waiter>) -> bool {
         self.register_waiter(waiter)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.is_set()
     }
 }
 
@@ -93,6 +98,17 @@ impl<'a> Condition<'a> {
         match self.0 {
             ConditionSource::Watermark(cell, threshold) => cell.register(threshold, waiter),
             ConditionSource::Completion(cell) => cell.register(waiter),
+        }
+    }
+
+    /// Whether this condition already holds.
+    ///
+    /// Both sources only ever move toward satisfied, so a caller that finds
+    /// every condition met needs no waiter to watch them.
+    fn is_satisfied(&self) -> bool {
+        match self.0 {
+            ConditionSource::Watermark(cell, threshold) => cell.current() >= threshold,
+            ConditionSource::Completion(cell) => cell.is_ready(),
         }
     }
 }
@@ -327,6 +343,23 @@ impl<'job, F: Task<'job>> Slots<'job, F> {
         waiter
     }
 
+    /// Stores a job whose conditions already hold, queueing it with no waiter.
+    fn store_ready(&mut self, order_key: u64, job: Job<'job, F>, ready: &ReadyQueue) {
+        let (index, generation) = self.take_slot();
+        let entry = ReadyEntry {
+            order_key,
+            submission_order: self.next_submission_order,
+            index,
+            generation,
+        };
+        self.next_submission_order = self.next_submission_order.wrapping_add(1);
+        let slot = &mut self.entries[index];
+        slot.order_key = order_key;
+        slot.job = Some(job);
+        slot.waiter = None;
+        ready.push(entry);
+    }
+
     /// Reuses a spare waiter, if one is left holding the sole reference.
     fn reuse_waiter(&mut self, pending: usize, entry: ReadyEntry) -> Option<Arc<Waiter>> {
         while let Some(mut spare) = self.spare_waiters.pop() {
@@ -428,6 +461,15 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
     ) where
         'job: 'scope,
     {
+        if conditions.iter().all(Condition::is_satisfied) {
+            // Nothing left to wait on, so the job needs no waiter of its own.
+            self.slots
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .store_ready(order_key, job, &self.ready);
+            self.admit_ready(scope);
+            return;
+        }
         let waiter = self
             .slots
             .lock()
