@@ -165,6 +165,11 @@ impl<T: ReconSample> TipHeldReferences<'_, T> {
 #[derive(Debug, Default)]
 pub(super) struct TipReconstructScratch<T: ReconSample> {
     units: Vec<TipUnit>,
+    /// The per-unit refine-MV candidates a batch's motion grid holds.
+    ///
+    /// One batch grid is live at a time, so the list travels into the grid and
+    /// comes back here as each unit is published.
+    grid_candidates: Vec<[Mv; 2]>,
     output_samples: Vec<T>,
     bands: Vec<PublishedBand>,
     band_rects: Vec<splot_recon::PlaneRect>,
@@ -861,7 +866,7 @@ pub(super) fn motion<T: ReconSample>(
 
 /// Builds the optical-flow motion grid the block's units share.
 fn tip_motion_grid<T: ReconSample>(
-    scratch: &TipReconstructScratch<T>,
+    scratch: &mut TipReconstructScratch<T>,
     plan: &TipBlockPlan,
     sink: &mc::WorkspaceSink<'_, '_, T>,
     reference: &InterReferenceState<T>,
@@ -890,6 +895,7 @@ fn tip_motion_grid<T: ReconSample>(
             (unit.rect, unit.mvs)
         },
         tile_offset,
+        core::mem::take(&mut scratch.grid_candidates),
     )
 }
 
@@ -937,6 +943,7 @@ fn publish_units_by_band<T: ReconSample>(
         output_samples,
         bands,
         band_rects,
+        grid_candidates: _,
     } = scratch;
     bands.clear();
     band_rects.clear();
@@ -999,10 +1006,29 @@ fn publish_units_by_band<T: ReconSample>(
             }
             Ok(())
         })?;
-    for unit in &mut scratch.units {
-        unit.metadata = None;
-    }
+    release_unit_metadata(scratch);
     Ok(())
+}
+
+/// Keeps the largest candidate list a published unit hands back.
+///
+/// The list came from the scratch and returns to it, so the next batch's motion
+/// grid is filled into the same allocation.
+fn keep_candidates(best: &mut Vec<[Mv; 2]>, candidates: Vec<[Mv; 2]>) {
+    if candidates.capacity() > best.capacity() {
+        *best = candidates;
+    }
+}
+
+/// Clears every unit's metadata, keeping the batch grid's candidate list.
+fn release_unit_metadata<T: ReconSample>(scratch: &mut TipReconstructScratch<T>) {
+    let mut best = core::mem::take(&mut scratch.grid_candidates);
+    for unit in &mut scratch.units {
+        if let Some(mut metadata) = unit.metadata.take() {
+            keep_candidates(&mut best, metadata.take_grid_candidates());
+        }
+    }
+    scratch.grid_candidates = best;
 }
 
 fn publish_unit_outputs<T: ReconSample>(
@@ -1020,6 +1046,7 @@ fn publish_unit_outputs<T: ReconSample>(
     {
         return publish_units_by_band(scratch, workspace, output_stride);
     }
+    let mut best_candidates = core::mem::take(&mut scratch.grid_candidates);
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     let mut units_per_hold = scratch.units.len().max(1);
     if scratch.units.iter().any(|unit| unit.metadata.is_none()) && !plan.hold(reference)?.settled()
@@ -1037,7 +1064,7 @@ fn publish_unit_outputs<T: ReconSample>(
             .map(|held| held.prediction(&plan.plan))
             .transpose()?;
         for unit in batch {
-            if let Some(metadata) = unit.metadata.take() {
+            if let Some(mut metadata) = unit.metadata.take() {
                 let samples = output_chunks
                     .next()
                     .ok_or(ReconError::BufferLengthMismatch {
@@ -1045,6 +1072,7 @@ fn publish_unit_outputs<T: ReconSample>(
                         actual: 0,
                     })?;
                 metadata.publish(samples, sink)?;
+                keep_candidates(&mut best_candidates, metadata.take_grid_candidates());
                 continue;
             }
             let params = prediction
@@ -1062,6 +1090,7 @@ fn publish_unit_outputs<T: ReconSample>(
             }
         }
     }
+    scratch.grid_candidates = best_candidates;
     Ok(())
 }
 
@@ -1130,7 +1159,7 @@ pub(super) fn predict<T: ReconSample>(
         resize_output_samples(&mut scratch.output_samples, arena_len)?;
     }
     let mut grid = grid;
-    let batch_metadata = if batched_output {
+    let mut batch_metadata = if batched_output {
         let held = plan.hold(reference)?;
         Some(compute_batched_output(
             sink,
@@ -1156,8 +1185,10 @@ pub(super) fn predict<T: ReconSample>(
             tile_offset,
         )?;
     }
-    if let Some(metadata) = batch_metadata.as_ref() {
+    if let Some(metadata) = batch_metadata.as_mut() {
         metadata.publish(&scratch.output_samples, sink)?;
+        let candidates = metadata.take_grid_candidates();
+        keep_candidates(&mut scratch.grid_candidates, candidates);
     } else {
         publish_unit_outputs(
             scratch,

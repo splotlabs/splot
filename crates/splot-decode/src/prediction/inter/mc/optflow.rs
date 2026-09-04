@@ -260,6 +260,14 @@ pub(crate) struct CompoundMotionGrid {
 }
 
 impl CompoundMotionGrid {
+    /// Takes the per-cell candidate list back so the caller's context keeps it.
+    pub(crate) fn take_candidates(&mut self) -> Vec<[Mv; 2]> {
+        match &mut self.refinemv_candidates {
+            RefinemvCandidates::PerCell { candidates, .. } => core::mem::take(candidates),
+            RefinemvCandidates::None | RefinemvCandidates::Uniform { .. } => Vec::new(),
+        }
+    }
+
     pub(super) fn from_single_refinemv(candidates: [Mv; 2], cell: MotionCell) -> Self {
         Self {
             unit_size: 16,
@@ -672,6 +680,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn tip_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
@@ -680,7 +689,14 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     unit_count: usize,
     unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
     offset: ByteOffset,
+    mut refinemv_candidates: Vec<[Mv; 2]>,
 ) -> Result<CompoundMotionGrid> {
+    refinemv_candidates.clear();
+    refinemv_candidates
+        .try_reserve_exact(unit_count.saturating_sub(refinemv_candidates.capacity()))
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "TIP refine-MV candidate list",
+        })?;
     if unit_count == 0 || columns == 0 {
         return Err(ReconError::ZeroDimension {
             field: "TIP compound motion grid",
@@ -752,7 +768,10 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             columns,
             cells: MotionCells::from_vec(cells),
             refinemv_candidates: RefinemvCandidates::PerCell {
-                candidates: (0..unit_count).map(|index| unit_at(index).1).collect(),
+                candidates: {
+                    refinemv_candidates.extend((0..unit_count).map(|index| unit_at(index).1));
+                    refinemv_candidates
+                },
                 unit_size,
             },
         });
@@ -761,7 +780,6 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit_count,
         MotionCell::uninitialized([block.mv0, block.mv1]),
     );
-    let mut refinemv_candidates = crate::support::buffer_pool::take::<[Mv; 2]>(unit_count);
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;

@@ -407,6 +407,15 @@ pub(super) struct CompoundBlockMetadata {
 }
 
 impl CompoundBlockMetadata {
+    /// Takes the motion grid's per-cell candidate list back for the caller's
+    /// context, leaving the metadata otherwise intact.
+    pub(super) fn take_grid_candidates(&mut self) -> Vec<[Mv; 2]> {
+        self.motion
+            .as_mut()
+            .map(CompoundMotionGrid::take_candidates)
+            .unwrap_or_default()
+    }
+
     /// The block's luma rectangle, which publication scatters into.
     pub(super) const fn luma_rect(&self) -> (usize, usize, usize, usize) {
         (
@@ -648,8 +657,18 @@ pub(super) fn tip_batch_motion_grid<T: ReconSample>(
     unit_count: usize,
     unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
     offset: ByteOffset,
+    refinemv_candidates: Vec<[Mv; 2]>,
 ) -> Result<CompoundMotionGrid> {
-    optflow::tip_motion_grid(sink, block, 8, columns, unit_count, unit_at, offset)
+    optflow::tip_motion_grid(
+        sink,
+        block,
+        8,
+        columns,
+        unit_count,
+        unit_at,
+        offset,
+        refinemv_candidates,
+    )
 }
 
 pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
