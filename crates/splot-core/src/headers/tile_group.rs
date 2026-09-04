@@ -550,7 +550,12 @@ pub fn parse_tile_group_framing(
 ) -> TileGroupFraming {
     let region_len = payload.len() as u64;
     let tsb = u64::from(tile_size_bytes.clamp(1, 4));
+    // Reserved once: the group's tile count is known before the walk, and
+    // growing from empty spent an allocation on every doubling.
     let mut tiles = Vec::new();
+    tiles
+        .try_reserve_exact(usize::try_from(tg_end.saturating_sub(tg_start)).unwrap_or(0) + 1)
+        .ok();
 
     let max_tiles = crate::tile::MAX_TILE_COLS * crate::tile::MAX_TILE_ROWS;
     let tg_end = tg_end.min(tg_start.saturating_add(max_tiles - 1));

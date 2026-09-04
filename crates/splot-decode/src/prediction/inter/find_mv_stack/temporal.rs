@@ -54,6 +54,13 @@ impl Default for TemporalMotionCell {
     }
 }
 
+/// One shared empty hint list, so the empty-field constructors cost a
+/// reference-count bump rather than an allocation each.
+fn empty_ref_order_hints() -> Arc<[Option<u32>]> {
+    static EMPTY: std::sync::OnceLock<Arc<[Option<u32>]>> = std::sync::OnceLock::new();
+    Arc::clone(EMPTY.get_or_init(|| Arc::from(Vec::new())))
+}
+
 fn allocate_temporal_grid<T>(mi_rows: usize, mi_cols: usize) -> Option<(usize, usize, Vec<T>)>
 where
     T: Clone + Default + Send + 'static,
@@ -235,7 +242,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter: false,
             frame_size: None,
-            ref_order_hints: Arc::from(Vec::new()),
+            ref_order_hints: empty_ref_order_hints(),
         }
     }
 
@@ -251,7 +258,7 @@ impl TemporalMotionField {
             pending_ref_hints: Some(pending_ref_hints),
             is_inter: false,
             frame_size: None,
-            ref_order_hints: Arc::from(Vec::new()),
+            ref_order_hints: empty_ref_order_hints(),
         })
     }
 
