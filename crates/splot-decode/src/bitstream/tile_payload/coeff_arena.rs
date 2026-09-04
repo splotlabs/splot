@@ -57,17 +57,14 @@ pub(crate) type CoeffBatch = Arc<RowCoeffs>;
 /// every time a row opens.
 const MAX_SPARE_HANDLES: usize = 128;
 
-fn spare_handles() -> &'static Mutex<Vec<CoeffBatch>> {
-    static SPARE: OnceLock<Mutex<Vec<CoeffBatch>>> = OnceLock::new();
-    SPARE.get_or_init(|| Mutex::new(Vec::new()))
-}
+static SPARE_HANDLES: Mutex<Vec<CoeffBatch>> = Mutex::new(Vec::new());
 
 /// A handle for a new row, reusing one whose blocks have all been replayed.
 ///
 /// The reserve is searched rather than popped: a handle a row still in flight
 /// is holding must be left where it is, not taken out to be tested and lost.
 fn new_handle() -> CoeffBatch {
-    let mut spare = spare_handles().lock();
+    let mut spare = SPARE_HANDLES.lock();
     let reusable = spare
         .iter()
         .position(|handle| Arc::strong_count(handle) == 1);
@@ -143,7 +140,7 @@ pub(crate) fn seal() {
             && let Some(open) = batch.take()
         {
             let _ = open.0.set(coeffs);
-            let mut spare = spare_handles().lock();
+            let mut spare = SPARE_HANDLES.lock();
             if spare.len() < MAX_SPARE_HANDLES {
                 spare.push(open);
             }
