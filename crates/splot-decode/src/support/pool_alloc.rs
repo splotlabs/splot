@@ -87,9 +87,8 @@ fn class_of(layout: Layout) -> Option<usize> {
 const MAX_CACHED_BYTES_PER_CLASS: usize = 1 << 12;
 
 /// Blocks a worker keeps for one class, at least a couple however large.
-const fn max_cached(class: usize) -> usize {
-    let by_bytes = MAX_CACHED_BYTES_PER_CLASS / class_bytes(class);
-    if by_bytes < 2 { 2 } else { by_bytes }
+fn max_cached(class: usize) -> usize {
+    (MAX_CACHED_BYTES_PER_CLASS / class_bytes(class)).max(2)
 }
 
 thread_local! {
