@@ -581,6 +581,61 @@ struct BatchContext<'a, 'c, T: ReconSample> {
     row_buffers: &'a ReconRowBufferPool,
 }
 
+/// The per-batch state one ordinary tile schedules through, kept across tiles.
+///
+/// dav2d sizes a frame context's arrays once and resets them between frames.
+/// These grow to the widest tile the stream has shown and are reset after that,
+/// and a row list travels out of its slot and back into it rather than being
+/// rebuilt, so a steady-state tile schedules its batches without allocating.
+pub(in crate::prediction::inter) struct BatchRowSlots<T: ReconSample> {
+    ranges: Vec<core::ops::Range<usize>>,
+    parsed: Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
+    precomputed: Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
+    precompute_done: Vec<CompletionCell<()>>,
+    commit_done: Vec<CompletionCell<()>>,
+}
+
+impl<T: ReconSample> Default for BatchRowSlots<T> {
+    fn default() -> Self {
+        Self {
+            ranges: Vec::new(),
+            parsed: Mutex::new(Vec::new()),
+            precomputed: Mutex::new(Vec::new()),
+            precompute_done: Vec::new(),
+            commit_done: Vec::new(),
+        }
+    }
+}
+
+impl<T: ReconSample> BatchRowSlots<T> {
+    /// Lays the slots out for one tile's batches, emptying but keeping the row
+    /// lists the previous tile left in them.
+    fn reset(&mut self, unit_count: usize, units_per_row: usize) {
+        superblock_row_batches_into(
+            unit_count,
+            units_per_row,
+            RECON_BATCH_UNITS,
+            &mut self.ranges,
+        );
+        let batches = self.ranges.len();
+        empty_row_slots(self.parsed.get_mut(), batches);
+        empty_row_slots(self.precomputed.get_mut(), batches);
+        self.precompute_done.clear();
+        self.precompute_done
+            .resize_with(batches, CompletionCell::new);
+        self.commit_done.clear();
+        self.commit_done.resize_with(batches, CompletionCell::new);
+    }
+}
+
+/// Leaves `batches` slots holding empty row lists of the capacity they had.
+fn empty_row_slots<T: ReconSample>(slots: &mut Vec<Option<Vec<ReadyReconRow<T>>>>, batches: usize) {
+    slots.resize_with(batches, || None);
+    for rows in slots.iter_mut().flatten() {
+        rows.clear();
+    }
+}
+
 /// Which half of a batch's work a [`BatchJob`] runs.
 #[derive(Clone, Copy)]
 enum BatchStage {
@@ -598,15 +653,23 @@ struct BatchJob<'a, 'c, T: ReconSample> {
 impl<T: ReconSample> BatchJob<'_, '_, T> {
     fn precompute(self) {
         let shared = self.shared;
-        let ready = shared
+        let mut parsed = shared
             .pending
             .lock()
             .get_mut(self.index)
             .and_then(Option::take);
-        let enabled = shared.error.lock().is_none();
-        let prepared = ready.filter(|_| enabled).map(|mut ready| {
-            shared.workers.with_scratch(|scratch| {
-                let mut out = crate::support::buffer_pool::take::<ReadyReconRow<T>>(ready.len());
+        let mut prepared = shared
+            .prepared
+            .lock()
+            .get_mut(self.index)
+            .and_then(Option::take)
+            .unwrap_or_default();
+        prepared.clear();
+        if shared.error.lock().is_none()
+            && let Some(ready) = parsed.as_mut()
+        {
+            prepared = shared.workers.with_scratch(|scratch| {
+                let mut out = prepared;
                 for row in ready.drain(..) {
                     out.push(precompute_recon_row(
                         row,
@@ -629,10 +692,17 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
                     ));
                 }
                 out
-            })
-        });
+            });
+        }
+        // Both lists go home, so the next tile parses and precomputes this
+        // batch into the same two allocations. A batch skipped because the tile
+        // has already failed hands back the rows it never read; the commit
+        // stage reads a batch only while no error is recorded.
+        if let Some(slot) = shared.pending.lock().get_mut(self.index) {
+            *slot = parsed;
+        }
         if let Some(slot) = shared.prepared.lock().get_mut(self.index) {
-            *slot = prepared;
+            *slot = Some(prepared);
         }
         if let Some(cell) = shared.precomputed.get(self.index) {
             let _ = cell.set(());
@@ -641,42 +711,53 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
 
     fn commit(self) {
         let shared = self.shared;
-        let batch = shared
+        let mut batch = shared
             .prepared
             .lock()
             .get_mut(self.index)
             .and_then(Option::take);
         if shared.error.lock().is_none() {
-            let result = batch
-                .ok_or_else(invalid_inter_tile_scheduling_state)
-                .and_then(|mut batch| {
-                    let mut state = take_active_commit(shared.commit)?;
-                    let mut result = Ok(());
-                    for ready in batch.drain(..) {
-                        match state.replay(
-                            ready,
-                            shared.quantizer,
-                            shared.motion,
-                            shared.temporal,
-                            shared.context,
-                        ) {
-                            Ok(buffers) => shared.row_buffers.recycle(buffers),
-                            Err(error) => {
-                                result = Err(error);
-                                break;
-                            }
-                        }
-                    }
-                    restore_active_commit(shared.commit, state)?;
-                    result
-                });
+            let result = match batch.as_mut() {
+                Some(batch) => Self::replay_batch(shared, batch),
+                None => Err(invalid_inter_tile_scheduling_state()),
+            };
             if let Err(value) = result {
                 record_first_error(shared.error, value);
             }
         }
+        // The drained list goes home, so the next tile precomputes this batch
+        // into the same allocation.
+        if let Some(slot) = shared.prepared.lock().get_mut(self.index) {
+            *slot = batch;
+        }
         if let Some(cell) = shared.committed.get(self.index) {
             let _ = cell.set(());
         }
+    }
+
+    fn replay_batch(
+        shared: &BatchContext<'_, '_, T>,
+        batch: &mut Vec<ReadyReconRow<T>>,
+    ) -> Result<()> {
+        let mut state = take_active_commit(shared.commit)?;
+        let mut result = Ok(());
+        for ready in batch.drain(..) {
+            match state.replay(
+                ready,
+                shared.quantizer,
+                shared.motion,
+                shared.temporal,
+                shared.context,
+            ) {
+                Ok(buffers) => shared.row_buffers.recycle(buffers),
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        restore_active_commit(shared.commit, state)?;
+        result
     }
 }
 
@@ -705,42 +786,25 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     workers: &InterReconScratchPool<T>,
     prepass_block_decoded: &TileBlockDecodedState,
     motion: &MotionFieldUnits,
+    slots: &mut BatchRowSlots<T>,
     commit: TileCommit<T>,
 ) -> Result<TileCommit<T>> {
-    let batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
-    let batch_count = batches.len();
-    let mut prepared_slots =
-        crate::support::buffer_pool::take::<Option<Vec<ReadyReconRow<T>>>>(batch_count);
-    if prepared_slots.capacity() < batch_count {
-        return Err(inter_allocation!("ordinary inter prepared batches"));
-    }
-    prepared_slots.resize_with(batch_count, || None);
-    let prepared = Mutex::new(prepared_slots);
-    let mut pending_slots =
-        crate::support::buffer_pool::take::<Option<Vec<ReadyReconRow<T>>>>(batch_count);
-    if pending_slots.capacity() < batch_count {
-        return Err(inter_allocation!("ordinary inter pending batches"));
-    }
-    pending_slots.resize_with(batch_count, || None);
-    let pending = Mutex::new(pending_slots);
-    let mut precomputed = crate::support::buffer_pool::take::<CompletionCell<()>>(batch_count);
-    if precomputed.capacity() < batch_count {
-        return Err(inter_allocation!("ordinary inter precompute completions"));
-    }
-    precomputed.resize_with(batch_count, CompletionCell::new);
-    let mut committed = crate::support::buffer_pool::take::<CompletionCell<()>>(batch_count);
-    if committed.capacity() < batch_count {
-        return Err(inter_allocation!("ordinary inter commit completions"));
-    }
-    committed.resize_with(batch_count, CompletionCell::new);
+    slots.reset(unit_count, units_per_row);
+    let BatchRowSlots {
+        ranges: batches,
+        parsed: pending,
+        precomputed: prepared,
+        precompute_done: precomputed,
+        commit_done: committed,
+    } = &*slots;
 
     let commit = Mutex::new(Some(commit));
     let error = Mutex::new(None);
     let shared = BatchContext {
-        pending: &pending,
-        prepared: &prepared,
-        precomputed: &precomputed,
-        committed: &committed,
+        pending,
+        prepared,
+        precomputed,
+        committed,
         error: &error,
         commit: &commit,
         workers,
@@ -764,11 +828,13 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let parse_result = splot_parallel::ready_task_scope(|scope| {
         let mut gate_conditions = Vec::new();
         for (batch_index, range) in batches.iter().enumerate() {
-            let mut ready = crate::support::buffer_pool::take::<ReadyReconRow<T>>(range.len());
-            if ready.capacity() < range.len() {
-                record_first_error(&error, inter_allocation!("ordinary inter ready batch"));
-                break;
-            }
+            let mut ready = shared
+                .pending
+                .lock()
+                .get_mut(batch_index)
+                .and_then(Option::take)
+                .unwrap_or_default();
+            ready.clear();
             let mut bounds = row_gate::RowReferenceBounds::default();
             let mut batch_last = false;
             for _ in range.clone() {
@@ -1395,11 +1461,21 @@ fn superblock_row_batches(
     units_per_row: usize,
     batch_units: usize,
 ) -> Vec<core::ops::Range<usize>> {
+    let mut batches = Vec::new();
+    superblock_row_batches_into(unit_count, units_per_row, batch_units, &mut batches);
+    batches
+}
+
+/// Lays this tile's batches into a list a previous tile left behind.
+fn superblock_row_batches_into(
+    unit_count: usize,
+    units_per_row: usize,
+    batch_units: usize,
+    batches: &mut Vec<core::ops::Range<usize>>,
+) {
     let batch_units = batch_units.max(1);
     let units_per_row = units_per_row.max(1);
-    let mut batches = crate::support::buffer_pool::take::<core::ops::Range<usize>>(
-        unit_count.div_ceil(batch_units).saturating_add(1),
-    );
+    batches.clear();
     let mut start = 0;
     while start < unit_count {
         let row_end = (start / units_per_row)
@@ -1410,7 +1486,6 @@ fn superblock_row_batches(
         batches.push(start..end);
         start = end;
     }
-    batches
 }
 
 fn prepare_scheduled_motion(
@@ -1493,6 +1568,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         ordered,
         workers,
         surfaces,
+        batches: _,
     } = scratch;
     let surface_source = Arc::new(Mutex::new(SurfaceSource::new(info, rects, surfaces)));
     let resolve_state = TileResolveState::new(&sequence);

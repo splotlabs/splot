@@ -973,6 +973,7 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
+    batches: admission::BatchRowSlots<T>,
 }
 
 impl<T: ReconSample> TileDecodeScratch<T> {
@@ -985,6 +986,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             ordered,
             workers: workers.take_reusable(),
             surfaces,
+            batches: admission::BatchRowSlots::default(),
         }
     }
 
@@ -1593,6 +1595,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         mut ordered,
         mut workers,
         surfaces: mut recycled_surfaces,
+        mut batches,
     } = scratch;
     workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -1649,6 +1652,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             ordered,
             workers,
             surfaces: recycled_surfaces,
+            batches,
         };
         let info = workspace.info();
         let rects = if global_intrabc {
@@ -1663,6 +1667,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             ordered: tile_ordered,
             workers: tile_workers,
             surfaces: tile_surfaces,
+            batches: mut tile_batches,
         } = tile_scratch;
         let surface_source = std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
             info,
@@ -1692,10 +1697,12 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &tile_workers,
             &block_decoded,
             &motion,
+            &mut tile_batches,
             commit,
         )?;
         let (next_ordered, next_workspace, next_decoded, next_surfaces, next_records) =
             commit.finish_direct();
+        batches = tile_batches;
         ordered = next_ordered;
         workspace = next_workspace;
         decoded_any = next_decoded;
@@ -1731,6 +1738,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             ordered,
             workers,
             surfaces: recycled_surfaces,
+            batches,
         },
         workspace,
         TileDecodeOutput {
