@@ -65,6 +65,13 @@ pub(super) struct ChromaMiGridStorage {
     pub(super) candidates: Vec<u8>,
 }
 
+impl Drop for ChromaMiGridStorage {
+    fn drop(&mut self) {
+        crate::support::buffer_pool::recycle(&mut self.cells);
+        crate::support::buffer_pool::recycle(&mut self.candidates);
+    }
+}
+
 pub(super) struct MiGrid<'a> {
     pub(super) base: &'a MiGridStorage,
     pub(super) chroma: Option<&'a ChromaMiGridStorage>,
@@ -233,15 +240,20 @@ pub(super) fn overlay_mi_grid(
         .div_ceil(1 << sub_y)
         .checked_mul(cell_cols)
         .ok_or(DeblockError::Workspace)?;
-    let mut cells = Vec::new();
-    cells
-        .try_reserve_exact(count)
-        .map_err(|_| DeblockError::Allocation {
-            plane: plane_id,
-            context: "chroma deblock MI grid",
-        })?;
+    // Both lists come from the decoder's reserve and go back when the grid
+    // drops: a frame builds one of these per chroma plane.
+    let mut cells = crate::support::buffer_pool::take::<ChromaMiCell>(count);
+    if cells.capacity() < count {
+        cells
+            .try_reserve_exact(count)
+            .map_err(|_| DeblockError::Allocation {
+                plane: plane_id,
+                context: "chroma deblock MI grid",
+            })?;
+    }
     cells.resize(count, ChromaMiCell::default());
-    let candidates = base.candidates.clone();
+    let mut candidates = crate::support::buffer_pool::take(base.candidates.len());
+    candidates.extend_from_slice(&base.candidates);
     let mut grid = ChromaMiGridStorage {
         fully_covered: base.fully_covered,
         cells,
