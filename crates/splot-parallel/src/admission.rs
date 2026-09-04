@@ -451,6 +451,11 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
     where
         'job: 'scope,
     {
+        // With peers, hand the job to the pool. Alone there is no peer to hand
+        // it to, and Rayon heap-allocates a job for every spawn, so this worker
+        // runs it -- still in the order the ready queue yields, which is
+        // priority order.
+        let alone = crate::pool::current_pool_width() <= 1;
         let mut spawned = 0;
         while let Some(entry) = self.ready.pop() {
             let job = self
@@ -459,7 +464,11 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .take_job(entry);
             let Some(job) = job else { continue };
-            scope.spawn(move |scope| self.run_job(scope, job));
+            if alone {
+                self.run_job(scope, job);
+            } else {
+                scope.spawn(move |scope| self.run_job(scope, job));
+            }
             spawned += 1;
         }
         if spawned != 0 {
@@ -483,8 +492,11 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
     where
         'job: 'scope,
     {
+        // Alone, run in pop order rather than parking: a parked job resumes
+        // after the rest, which would put the highest-priority one last.
+        let alone = crate::pool::current_pool_width() <= 1;
         let mut spawned = 0;
-        let mut parked = false;
+        let mut parked = alone;
         while let Some(entry) = self.ready.pop() {
             let job = self
                 .slots
@@ -505,7 +517,11 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
                     Err(back) => job = back.job,
                 }
             }
-            scope.spawn(move |scope| self.run_job(scope, job));
+            if alone {
+                self.run_job(scope, job);
+            } else {
+                scope.spawn(move |scope| self.run_job(scope, job));
+            }
             spawned += 1;
         }
         if spawned != 0 {
