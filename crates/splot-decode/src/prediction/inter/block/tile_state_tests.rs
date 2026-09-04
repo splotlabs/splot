@@ -160,19 +160,19 @@ fn loop_restoration_records_rebase_each_tile_once_in_append_order() {
     append_lr_records(
         &mut blocks,
         &mut filters,
-        vec![
+        &mut vec![
             lr_source_block(None, 1),
             lr_source_block(Some(0), 2),
             lr_source_block(Some(1), 3),
         ],
-        vec![lr_unit_filter(1), lr_unit_filter(2)],
+        &mut vec![lr_unit_filter(1), lr_unit_filter(2)],
     )
     .unwrap();
     append_lr_records(
         &mut blocks,
         &mut filters,
-        vec![lr_source_block(Some(0), 4)],
-        vec![lr_unit_filter(3)],
+        &mut vec![lr_source_block(Some(0), 4)],
+        &mut vec![lr_unit_filter(3)],
     )
     .unwrap();
 
@@ -202,8 +202,8 @@ fn invalid_loop_restoration_index_is_typed_and_fail_atomic() {
     let error = append_lr_records(
         &mut blocks,
         &mut filters,
-        vec![lr_source_block(Some(1), 1)],
-        vec![lr_unit_filter(1)],
+        &mut vec![lr_source_block(Some(1), 1)],
+        &mut vec![lr_unit_filter(1)],
     )
     .unwrap_err();
 

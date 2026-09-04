@@ -11,6 +11,7 @@ use super::super::cdf::{
     tile_cdf_save_policy,
 };
 use super::super::{SymbolInitBoundary, TileCoeffFrameFacts, TileCoeffFrameFactsInput};
+use super::tree_walk::LrTileRecords;
 use super::*;
 use crate::bitstream::tile_payload::encode_symbol_sequence;
 use crate::{DecodeLimitError, DecodeLimitThreshold};
@@ -216,7 +217,8 @@ fn run_first_superblock<'payload>(
     let mut uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len())
         .unwrap()
         .with_origin(tile_rows.start, tile_cols.start);
-    let mut cursor = GeneralIntraPartitionTreeCursor::new(work_unit, frame, limits)?;
+    let mut cursor =
+        GeneralIntraPartitionTreeCursor::new(work_unit, frame, limits, LrTileRecords::default())?;
     let mut frontiers = Vec::new();
     cursor.decode_next_superblock_with_publication(
         work_unit,
@@ -275,9 +277,14 @@ fn assert_cursor_unsupported(
     expected: TilePartitionTraversalUnsupported,
 ) {
     let work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
-    let err = GeneralIntraPartitionTreeCursor::new(&work_unit, frame, DecodeLimits::DEFAULT)
-        .err()
-        .unwrap();
+    let err = GeneralIntraPartitionTreeCursor::new(
+        &work_unit,
+        frame,
+        DecodeLimits::DEFAULT,
+        LrTileRecords::default(),
+    )
+    .err()
+    .unwrap();
 
     assert!(matches!(
         err,
@@ -785,9 +792,14 @@ fn read_lr_gate_precedes_partition_symbol_reads() {
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
 
-    let err = GeneralIntraPartitionTreeCursor::new(&work_unit, facts, DecodeLimits::DEFAULT)
-        .err()
-        .unwrap();
+    let err = GeneralIntraPartitionTreeCursor::new(
+        &work_unit,
+        facts,
+        DecodeLimits::DEFAULT,
+        LrTileRecords::default(),
+    )
+    .err()
+    .unwrap();
 
     assert!(matches!(
         err,
@@ -1000,9 +1012,14 @@ fn switchable_lr_rejects_chroma_before_symbol_read() {
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = TilePartitionLoopRestorationState::Frame(invalid_state);
 
-    let err = GeneralIntraPartitionTreeCursor::new(&work_unit, facts, DecodeLimits::DEFAULT)
-        .err()
-        .unwrap();
+    let err = GeneralIntraPartitionTreeCursor::new(
+        &work_unit,
+        facts,
+        DecodeLimits::DEFAULT,
+        LrTileRecords::default(),
+    )
+    .err()
+    .unwrap();
 
     assert!(matches!(
         err,
@@ -1251,8 +1268,13 @@ fn unsupported_gates_are_explicit() {
     extended_sdp.frame_is_intra = false;
     let work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     assert!(
-        GeneralIntraPartitionTreeCursor::new(&work_unit, extended_sdp, DecodeLimits::DEFAULT)
-            .is_ok()
+        GeneralIntraPartitionTreeCursor::new(
+            &work_unit,
+            extended_sdp,
+            DecodeLimits::DEFAULT,
+            LrTileRecords::default()
+        )
+        .is_ok()
     );
 
     let mut read_lr = frame(BLOCK_32X32);
@@ -1264,7 +1286,15 @@ fn unsupported_gates_are_explicit() {
 
     let mut inter = frame(BLOCK_32X32);
     inter.frame_is_intra = false;
-    assert!(GeneralIntraPartitionTreeCursor::new(&work_unit, inter, DecodeLimits::DEFAULT).is_ok());
+    assert!(
+        GeneralIntraPartitionTreeCursor::new(
+            &work_unit,
+            inter,
+            DecodeLimits::DEFAULT,
+            LrTileRecords::default()
+        )
+        .is_ok()
+    );
 }
 
 #[test]

@@ -59,11 +59,11 @@ fn merge_tile_filter_state(
 fn append_lr_records(
     blocks: &mut Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     filters: &mut Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
-    mut tile_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
-    mut tile_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
+    tile_blocks: &mut Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+    tile_filters: &mut Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
 ) -> Result<()> {
     let filter_base = filters.len();
-    for block in &tile_blocks {
+    for block in tile_blocks.iter() {
         if let Some(index) = block.unit_filter_index
             && index >= tile_filters.len()
         {
@@ -78,7 +78,7 @@ fn append_lr_records(
         .try_reserve_exact(tile_filters.len())
         .map_err(|_| inter_allocation!("inter LR unit-filter records"))?;
 
-    for block in &mut tile_blocks {
+    for block in tile_blocks.iter_mut() {
         if let Some(index) = block.unit_filter_index {
             block.unit_filter_index = Some(
                 filter_base
@@ -87,8 +87,8 @@ fn append_lr_records(
             );
         }
     }
-    blocks.append(&mut tile_blocks);
-    filters.append(&mut tile_filters);
+    blocks.append(tile_blocks);
+    filters.append(tile_filters);
     Ok(())
 }
 
@@ -353,14 +353,19 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             chroma_cols,
         )
         .map_err(|error| inter_tile_grid_error(&error, "inter chroma smooth grid"))?;
-        let walk =
-            GeneralIntraMultiblockCursor::new(tile, context.sequence, context.core, context.limits)
-                .map_err(|error| {
-                    map_inter_multiblock_error(
-                        GeneralIntraMultiblockError::<crate::DecodeError>::Setup(error),
-                        tile_offset,
-                    )
-                })?;
+        let walk = GeneralIntraMultiblockCursor::new(
+            tile,
+            context.sequence,
+            context.core,
+            context.limits,
+            core::mem::take(&mut parse.lr_records),
+        )
+        .map_err(|error| {
+            map_inter_multiblock_error(
+                GeneralIntraMultiblockError::<crate::DecodeError>::Setup(error),
+                tile_offset,
+            )
+        })?;
         Ok(Self {
             tile,
             walk: TileParserWalk::Active(walk),
@@ -546,6 +551,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             TileParseState {
                 mv_grid: self.mv_grid,
                 coeff_ctx: self.coeff_ctx,
+                lr_records: crate::bitstream::tile_payload::LrTileRecords::default(),
                 block_decoded: TileBlockDecodedState::default(),
                 commit_block_decoded: TileBlockDecodedState::default(),
             },
@@ -993,6 +999,8 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
 pub(in crate::prediction::inter) struct TileParseState {
     mv_grid: NeighbourMvGrid,
     coeff_ctx: TileCoeffContextState,
+    /// The loop-restoration record lists this tile fills.
+    lr_records: crate::bitstream::tile_payload::LrTileRecords,
     /// The tile's block-decoded grid, and the copy the commit spine reads.
     block_decoded: TileBlockDecodedState,
     commit_block_decoded: TileBlockDecodedState,
@@ -1307,8 +1315,8 @@ impl ParsedTile {
         append_lr_records(
             &mut frame_filter_records.lr_source_blocks,
             &mut frame_filter_records.lr_unit_filters,
-            core::mem::take(&mut output.active_source_blocks),
-            core::mem::take(&mut output.unit_filters),
+            &mut output.active_source_blocks,
+            &mut output.unit_filters,
         )?;
         Ok(())
     }
@@ -1786,12 +1794,17 @@ pub(super) fn decode_tiles<T: ReconSample>(
             tile_mi_rows,
             tile_mi_cols,
         )?;
+        let mut output = output;
         append_lr_records(
             &mut frame_filter_records.lr_source_blocks,
             &mut frame_filter_records.lr_unit_filters,
-            output.active_source_blocks,
-            output.unit_filters,
+            &mut output.active_source_blocks,
+            &mut output.unit_filters,
         )?;
+        parse_state.lr_records = crate::bitstream::tile_payload::LrTileRecords {
+            active_source_blocks: core::mem::take(&mut output.active_source_blocks),
+            unit_filters: core::mem::take(&mut output.unit_filters),
+        };
     }
     if !decoded_any {
         return Err(no_decoded_block_error());
