@@ -73,11 +73,21 @@ pub(crate) fn stripe_ranges(
     core: &FrameHeaderCore,
     luma_height: usize,
 ) -> Result<Vec<(usize, usize)>> {
+    let mut ranges = Vec::new();
+    stripe_ranges_into(core, luma_height, &mut ranges)?;
+    Ok(ranges)
+}
+
+/// Lays a frame's stripe ranges into a list a previous frame left behind.
+pub(crate) fn stripe_ranges_into(
+    core: &FrameHeaderCore,
+    luma_height: usize,
+    ranges: &mut Vec<(usize, usize)>,
+) -> Result<()> {
+    ranges.clear();
     if luma_height == 0 {
         return Err(gdf_state_error());
     }
-    let mut ranges =
-        crate::support::buffer_pool::take::<(usize, usize)>(luma_height.div_ceil(64).max(1));
     let mut y = 0;
     while y < luma_height {
         let (tile_start, tile_end) = core
@@ -91,7 +101,7 @@ pub(crate) fn stripe_ranges(
         ranges.push((y, end));
         y = end;
     }
-    Ok(ranges)
+    Ok(())
 }
 
 #[derive(Default)]

@@ -37,6 +37,20 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) tx_skip_records: Vec<WienerNsLrTxSkipTransformRecord>,
     pub(crate) lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
+    /// The per-stripe lists the filter phase borrows and hands back.
+    pub(crate) stripes: FilterStripeLists,
+}
+
+/// The per-stripe lists one frame's filter phase works through.
+///
+/// The phase borrows them from the records and hands them back when it
+/// finishes, so they ride the same channel to the decoder's scratch and a
+/// steady-state frame opens its filter setup without allocating.
+#[derive(Default)]
+pub(crate) struct FilterStripeLists {
+    pub(crate) ranges: Vec<(usize, usize)>,
+    pub(crate) lifecycles: Vec<recon::StripeLifecycle>,
+    pub(crate) outcomes: Vec<Option<crate::Result<()>>>,
 }
 
 impl FrameFilterRecords {
