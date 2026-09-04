@@ -334,12 +334,61 @@ impl StripeCopyError {
     }
 }
 
+/// Staging buffers one worker's filter stage keeps between stripes.
+///
+/// dav2d gives each worker a task context whose scratch is sized once and
+/// reused for the life of the decode. A stripe that cannot be filtered straight
+/// into the published frame stages its rows here instead, and hands the buffer
+/// back when the stripe's planes drop. The slot count is the most a single
+/// stripe holds at once -- three planes for the stripe itself and three for the
+/// fringe rows the GDF read radius needs -- so it is a fixed context, not a
+/// store that grows with the stream.
+const STRIPE_STAGING_SLOTS: usize = 6;
+
+std::thread_local! {
+    static STRIPE_STAGING: core::cell::RefCell<[Vec<u16>; STRIPE_STAGING_SLOTS]> =
+        const { core::cell::RefCell::new([const { Vec::new() }; STRIPE_STAGING_SLOTS]) };
+}
+
+/// Takes this worker's largest free staging buffer, or a fresh one.
 fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
-    let mut buffer = crate::support::buffer_pool::take::<u16>(sample_count);
+    let mut buffer = STRIPE_STAGING.with(|slots| {
+        slots
+            .try_borrow_mut()
+            .ok()
+            .map_or_else(Vec::new, |mut slots| {
+                slots
+                    .iter_mut()
+                    .max_by_key(|slot| slot.capacity())
+                    .map(core::mem::take)
+                    .unwrap_or_default()
+            })
+    });
+    buffer.clear();
+    // Counted from the cleared length, not from the capacity: a reused buffer
+    // that already holds some of the request would otherwise be grown short of
+    // it, and the staged write reads `sample_count` spare slots.
     buffer
-        .try_reserve_exact(sample_count.saturating_sub(buffer.capacity()))
+        .try_reserve_exact(sample_count)
         .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
     Ok(buffer)
+}
+
+/// Returns a spent staging buffer to this worker's context.
+fn give_stripe_sample_buffer(buffer: Vec<u16>) {
+    if buffer.capacity() == 0 {
+        return;
+    }
+    STRIPE_STAGING.with(|slots| {
+        if let Ok(mut slots) = slots.try_borrow_mut()
+            && let Some(slot) = slots
+                .iter_mut()
+                .min_by_key(|slot| slot.capacity())
+                .filter(|slot| slot.capacity() < buffer.capacity())
+        {
+            *slot = buffer;
+        }
+    });
 }
 
 /// A frame plane backed by one contiguous row span.
@@ -557,6 +606,14 @@ struct StripeSamples {
 
 // SAFETY: the `Send` owner keeps the cached pointer's allocation alive.
 unsafe impl Send for StripeSamples {}
+
+impl Drop for StripeSamples {
+    fn drop(&mut self) {
+        if let StripeOwner::Owned(buffer) = &mut self.owner {
+            give_stripe_sample_buffer(core::mem::take(buffer));
+        }
+    }
+}
 
 impl StripeSamples {
     fn owned(mut samples: Vec<u16>) -> Self {
