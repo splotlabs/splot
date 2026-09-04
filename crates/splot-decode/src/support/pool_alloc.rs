@@ -115,38 +115,29 @@ fn class_layout(class: usize) -> Option<Layout> {
 /// A worker's own list only sees blocks it freed itself, and the decode parses
 /// on one worker and reconstructs on another, so a list can starve while
 /// another worker's is at its cap. This is the shared tier those spill into.
-const CENTRAL_CAPACITY: usize = 4096;
-
-/// One class's shared blocks, behind a spin lock.
 ///
-/// A spin lock rather than a mutex: a mutex allocates its platform lock the
-/// first time it is taken, and that allocation would re-enter this allocator
-/// while the lock is held.
+/// Unbounded, and threaded through the blocks themselves: a block carved from a
+/// slab cannot be handed back to the system allocator on its own, so the tier
+/// that holds the spill must never refuse one.
 struct Central {
     locked: core::sync::atomic::AtomicBool,
-    blocks: core::cell::UnsafeCell<[usize; CENTRAL_CAPACITY]>,
-    len: core::cell::UnsafeCell<usize>,
+    head: core::cell::UnsafeCell<*mut u8>,
 }
 
-/// Safety: `locked` guards every access to `blocks` and `len`, and a parked address is
+/// Safety: `locked` guards every access to `head`, and a parked address is
 /// owned by no thread.
 unsafe impl Sync for Central {}
 
 impl Central {
-    #[allow(
-        clippy::large_stack_arrays,
-        reason = "the array lives in a static, not on a stack"
-    )]
     const fn new() -> Self {
         Self {
             locked: core::sync::atomic::AtomicBool::new(false),
-            blocks: core::cell::UnsafeCell::new([0; CENTRAL_CAPACITY]),
-            len: core::cell::UnsafeCell::new(0),
+            head: core::cell::UnsafeCell::new(ptr::null_mut()),
         }
     }
 
     /// Runs `act` holding this class's lock.
-    fn with<R>(&self, act: impl FnOnce(&mut [usize; CENTRAL_CAPACITY], &mut usize) -> R) -> R {
+    fn with<R>(&self, act: impl FnOnce(&mut *mut u8) -> R) -> R {
         use core::sync::atomic::Ordering;
         while self
             .locked
@@ -155,55 +146,103 @@ impl Central {
         {
             core::hint::spin_loop();
         }
-        // SAFETY: the lock is held, and the two cells are distinct fields.
-        let result = unsafe { act(&mut *self.blocks.get(), &mut *self.len.get()) };
+        // SAFETY: the lock is held, so this is the only reference to the head.
+        let result = unsafe { act(&mut *self.head.get()) };
         self.locked.store(false, Ordering::Release);
         result
     }
 
     /// Claims a parked block, if this class has one.
     fn pop(&self) -> *mut u8 {
-        self.with(|blocks, len| {
-            if *len == 0 {
+        self.with(|head| {
+            let block = *head;
+            if block.is_null() {
                 return ptr::null_mut();
             }
-            *len -= 1;
-            ptr::with_exposed_provenance_mut(blocks[*len])
+            // SAFETY: a parked block holds its successor in its first word.
+            *head = unsafe { ptr::read(block.cast::<*mut u8>()) };
+            block
         })
     }
 
-    /// Parks a block for any worker, reporting whether it was taken.
-    fn push(&self, block: *mut u8, cap: usize) -> bool {
-        self.with(|blocks, len| {
-            if *len >= cap.min(CENTRAL_CAPACITY) {
-                return false;
-            }
-            blocks[*len] = block.expose_provenance();
-            *len += 1;
-            true
-        })
+    /// Parks a block for any worker.
+    fn push(&self, block: *mut u8) {
+        self.with(|head| {
+            // SAFETY: the block is ours while it is not lent out, and every
+            // pooled block is at least a pointer wide.
+            unsafe { ptr::write(block.cast::<*mut u8>(), *head) };
+            *head = block;
+        });
     }
 }
 
 /// Shared blocks per class.
 static CENTRAL: [Central; CLASS_COUNT] = [const { Central::new() }; CLASS_COUNT];
 
-/// Bytes the shared tier keeps for one class.
+/// Bytes one system allocation is carved into for a class.
 ///
-/// A byte budget, like the per-worker one: a slot count alone would let the
-/// megabyte classes park gigabytes between them.
-const MAX_CENTRAL_BYTES_PER_CLASS: usize = 1 << 22;
+/// The count of system allocations, not their size, is what this pool exists to
+/// hold down, so a miss takes a slab and parks the blocks it does not return.
+const SLAB_BYTES: usize = 1 << 16;
 
-/// Blocks the shared tier keeps for one class.
-const fn max_central(class: usize) -> usize {
-    let by_bytes = MAX_CENTRAL_BYTES_PER_CLASS / class_bytes(class);
-    if by_bytes > CENTRAL_CAPACITY {
-        CENTRAL_CAPACITY
-    } else if by_bytes < 2 {
-        2
-    } else {
-        by_bytes
+/// Blocks one slab of `class` yields.
+const fn slab_blocks(class: usize) -> usize {
+    let bytes = class_bytes(class);
+    if bytes == 0 || !bytes.is_multiple_of(POOL_ALIGN) {
+        return 1;
     }
+    let blocks = SLAB_BYTES / bytes;
+    if blocks < 1 { 1 } else { blocks }
+}
+
+/// Parks `block` on this worker's list, or the shared tier when that is full.
+fn park(class: usize, block: *mut u8) {
+    let cached = FREE_COUNTS
+        .try_with(|counts| {
+            if counts[class].get() >= max_cached(class) {
+                return false;
+            }
+            FREE_LISTS
+                .try_with(|lists| {
+                    // SAFETY: the block is ours while it is not lent out.
+                    unsafe { ptr::write(block.cast::<*mut u8>(), lists[class].get()) };
+                    lists[class].set(block);
+                    counts[class].set(counts[class].get().saturating_add(1));
+                    true
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if !cached {
+        CENTRAL[class].push(block);
+    }
+}
+
+/// Takes one system allocation for `class` and parks all but the block it
+/// returns, so a class costs one allocation per slab rather than per block.
+///
+/// Returns `None` when the slab layout is invalid or the system refuses it, so
+/// the caller can still fall back to a single block.
+fn carve_slab(class: usize) -> Option<*mut u8> {
+    let bytes = class_bytes(class);
+    let blocks = slab_blocks(class);
+    if blocks < 2 {
+        return None;
+    }
+    let span = bytes.checked_mul(blocks)?;
+    let layout = Layout::from_size_align(span, POOL_ALIGN).ok()?;
+    // SAFETY: the layout is non-zero, and its alignment is a power of two.
+    let base = unsafe { System.alloc(layout) };
+    if base.is_null() {
+        return None;
+    }
+    for index in 1..blocks {
+        // SAFETY: `index` is below the block count, so the offset stays in the
+        // slab, and the class size is a multiple of `POOL_ALIGN`.
+        let block = unsafe { base.add(index * bytes) };
+        park(class, block);
+    }
+    Some(base)
 }
 
 /// Size-class free lists in front of the system allocator.
@@ -239,6 +278,9 @@ unsafe impl GlobalAlloc for PoolAlloc {
             if !shared.is_null() {
                 return shared;
             }
+            if let Some(carved) = carve_slab(class) {
+                return carved;
+            }
         }
         let block = class.and_then(class_layout).unwrap_or(layout);
         // SAFETY: `block` is this class's layout, or the caller's own.
@@ -249,30 +291,13 @@ unsafe impl GlobalAlloc for PoolAlloc {
     /// allocator returned for `layout`, which fixes the class it returns to.
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let class = class_of(layout).filter(|&class| class_layout(class).is_some());
-        let cached = class.is_some_and(|class| {
-            FREE_COUNTS
-                .try_with(|counts| {
-                    if counts[class].get() >= max_cached(class) {
-                        return false;
-                    }
-                    FREE_LISTS
-                        .try_with(|lists| {
-                            // SAFETY: the block is ours while it is not lent out.
-                            unsafe { ptr::write(ptr.cast::<*mut u8>(), lists[class].get()) };
-                            lists[class].set(ptr);
-                            counts[class].set(counts[class].get().saturating_add(1));
-                            true
-                        })
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false)
-        });
-        if cached || class.is_some_and(|class| CENTRAL[class].push(ptr, max_central(class))) {
+        if let Some(class) = class {
+            // Never returned to the system: this may be one block of a slab.
+            park(class, ptr);
             return;
         }
-        let block = class.and_then(class_layout).unwrap_or(layout);
-        // SAFETY: `block` is the layout this pointer was allocated with.
-        unsafe { System.dealloc(ptr, block) };
+        // SAFETY: `layout` is the layout this pointer was allocated with.
+        unsafe { System.dealloc(ptr, layout) };
     }
 }
 
