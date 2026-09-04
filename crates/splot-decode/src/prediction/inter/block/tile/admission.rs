@@ -643,10 +643,14 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let commit = Mutex::new(Some(commit));
     let error = Mutex::new(None);
     let scheduler: AdmissionScheduler<'_, splot_parallel::NoTask> = AdmissionScheduler::new();
-    let admission_window = splot_parallel::current_pool_width()
-        .saturating_sub(1)
-        .max(1)
-        .saturating_mul(3);
+    // A wider pool wants slack so its workers stay fed, but one worker runs
+    // every batch itself, so slack there only keeps more units' buffers alive.
+    let pool_width = splot_parallel::current_pool_width();
+    let admission_window = if pool_width > 1 {
+        pool_width.saturating_sub(1).saturating_mul(3)
+    } else {
+        1
+    };
     let mut references_settled = false;
     let mut submitted_batches = 0usize;
     let mut reached_last = false;
