@@ -180,7 +180,10 @@ impl InterFilterInputs {
 
 #[derive(Default)]
 pub(crate) struct InterDecodeScratch<T: ReconSample> {
-    tile: tile::TileDecodeScratch<T>,
+    /// Held in an `Option` so taking it for a frame leaves nothing behind:
+    /// `TileDecodeScratch`'s `Default` reserves a whole reconstruction scratch,
+    /// which a placeholder would build and discard on every frame.
+    tile: Option<tile::TileDecodeScratch<T>>,
     temporal_context: Option<TemporalMvContext>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
 }
@@ -197,7 +200,7 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         tile: tile::TileDecodeScratch<T>,
     ) -> Self {
         Self {
-            tile,
+            tile: Some(tile),
             temporal_context: None,
             frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
         }
@@ -529,7 +532,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ref_frame_idx,
         reference,
     )?;
-    let tile_scratch = core::mem::take(&mut scratch.tile);
+    let tile_scratch = scratch.tile.take().unwrap_or_default();
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
         tile_scratch,
         &mut records,
@@ -546,7 +549,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     )?;
-    scratch.tile = tile_scratch;
+    scratch.tile = Some(tile_scratch);
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
     let ccso_grid = walked.ccso_state.into_grid()?;
     let filter_inputs = InterFilterInputs {

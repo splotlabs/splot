@@ -124,22 +124,24 @@ pub(super) fn projection_queue(
         *slot = index;
     }
     let sorted = &sorted_slots[..sorted_len];
-    let overlays: Vec<_> = (0..ref_order_hints.len())
-        .map(|index| {
-            let Some(hint) = ref_order_hints[index] else {
-                return false;
-            };
-            reference_motion_field(index, ref_frame_idx, ref_motion_fields).is_some_and(|field| {
-                field
-                    .ref_order_hints
-                    .iter()
-                    .flatten()
-                    .any(|&target| relative_distance(hint, target) == 0)
-            })
+    // From the decoder's reserve: these four lists are rebuilt every frame and
+    // are the same shape each time.
+    let mut overlays = crate::support::buffer_pool::take::<bool>(ref_order_hints.len());
+    overlays.extend((0..ref_order_hints.len()).map(|index| {
+        let Some(hint) = ref_order_hints[index] else {
+            return false;
+        };
+        reference_motion_field(index, ref_frame_idx, ref_motion_fields).is_some_and(|field| {
+            field
+                .ref_order_hints
+                .iter()
+                .flatten()
+                .any(|&target| relative_distance(hint, target) == 0)
         })
-        .collect();
-    let mut visited = vec![false; ref_order_hints.len()];
-    let mut stack = Vec::with_capacity(ref_order_hints.len());
+    }));
+    let mut visited = crate::support::buffer_pool::take::<bool>(ref_order_hints.len());
+    visited.resize(ref_order_hints.len(), false);
+    let mut stack = crate::support::buffer_pool::take::<usize>(ref_order_hints.len());
     for index in 0..ref_order_hints.len() {
         topo_sort_reference(
             index,
@@ -152,6 +154,9 @@ pub(super) fn projection_queue(
         );
     }
     if stack.len() < 2 {
+        crate::support::buffer_pool::recycle(&mut overlays);
+        crate::support::buffer_pool::recycle(&mut visited);
+        crate::support::buffer_pool::recycle(&mut stack);
         return Vec::new();
     }
 
@@ -161,7 +166,8 @@ pub(super) fn projection_queue(
             ref_order_hints[index].is_some_and(|hint| relative_distance(hint, current_hint) < 0)
         })
         .map_or(-1, |index| index as isize);
-    let mut checked = vec![[false; 2]; ref_order_hints.len()];
+    let mut checked = crate::support::buffer_pool::take::<[bool; 2]>(ref_order_hints.len());
+    checked.resize(ref_order_hints.len(), [false; 2]);
     let mut queue = Vec::with_capacity(MFMV_STACK_SIZE);
     let mut add = |projection: TemporalProjection, max_check: usize| {
         let Some(source_hint) = ref_order_hints.get(projection.ref_index).copied().flatten() else {
@@ -315,6 +321,10 @@ pub(super) fn projection_queue(
     if config.reduced {
         queue.truncate(1);
     }
+    crate::support::buffer_pool::recycle(&mut overlays);
+    crate::support::buffer_pool::recycle(&mut visited);
+    crate::support::buffer_pool::recycle(&mut stack);
+    crate::support::buffer_pool::recycle(&mut checked);
     queue
 }
 
