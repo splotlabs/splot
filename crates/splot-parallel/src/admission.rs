@@ -419,7 +419,7 @@ pub struct AdmissionScheduler<'job, F: Task<'job> = NoTask> {
     /// A slot per running job allocated its platform lock the first time that
     /// job touched it. dav2d gives each worker one context and reuses it for
     /// every task the worker runs; these are that context's continuation.
-    continuations: Vec<ContinuationSlot<'job, F>>,
+    continuations: [ContinuationSlot<'job, F>; MAX_WORKER_CONTINUATIONS],
 }
 
 impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
@@ -429,9 +429,7 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         Self {
             slots: Mutex::new(Slots::default()),
             ready: Arc::new(ReadyQueue::default()),
-            continuations: (0..MAX_WORKER_CONTINUATIONS)
-                .map(|_| ContinuationSlot::new())
-                .collect(),
+            continuations: core::array::from_fn(|_| ContinuationSlot::new()),
         }
     }
 
