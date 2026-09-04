@@ -378,19 +378,6 @@ pub(crate) struct FrameProgress<T: ReconSample> {
     subsampling_y: usize,
 }
 
-impl<T: ReconSample> Drop for FrameProgress<T> {
-    fn drop(&mut self) {
-        let Some(layout) = self.layout.get_mut() else {
-            return;
-        };
-        let layout = layout.get_mut();
-        crate::support::buffer_pool::recycle(&mut layout.stripe_ends);
-        crate::support::buffer_pool::recycle(&mut layout.landed);
-        crate::support::buffer_pool::recycle(&mut layout.leased);
-        crate::support::buffer_pool::recycle(&mut layout.direct_holds);
-    }
-}
-
 impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
     fn release_hold(&self, stripe: usize) {
         self.release_direct_hold(stripe);

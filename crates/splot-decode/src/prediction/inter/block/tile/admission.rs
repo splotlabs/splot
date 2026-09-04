@@ -315,14 +315,6 @@ impl<T: ReconSample> SurfaceSource<T> {
     }
 }
 
-/// Hands a finished tile's row list back to the decode's context store.
-impl<T: ReconSample> Drop for TileRecon<T> {
-    fn drop(&mut self) {
-        let mut rows = self.rows.lock();
-        crate::support::buffer_pool::recycle(&mut rows);
-    }
-}
-
 impl<T: ReconSample> TileRecon<T> {
     fn batch_range(&self, index: usize) -> Option<core::ops::Range<usize>> {
         self.batches.get(index).cloned()
@@ -613,7 +605,7 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
             .and_then(Option::take);
         let enabled = shared.error.lock().is_none();
         let prepared = ready.filter(|_| enabled).map(|mut ready| {
-            let out = shared.workers.with_scratch(|scratch| {
+            shared.workers.with_scratch(|scratch| {
                 let mut out = crate::support::buffer_pool::take::<ReadyReconRow<T>>(ready.len());
                 for row in ready.drain(..) {
                     out.push(precompute_recon_row(
@@ -637,9 +629,7 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
                     ));
                 }
                 out
-            });
-            crate::support::buffer_pool::recycle(&mut ready);
-            out
+            })
         });
         if let Some(slot) = shared.prepared.lock().get_mut(self.index) {
             *slot = prepared;
@@ -677,7 +667,6 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
                             }
                         }
                     }
-                    crate::support::buffer_pool::recycle(&mut batch);
                     restore_active_commit(shared.commit, state)?;
                     result
                 });
@@ -718,7 +707,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     motion: &MotionFieldUnits,
     commit: TileCommit<T>,
 ) -> Result<TileCommit<T>> {
-    let mut batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
+    let batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
     let batch_count = batches.len();
     let mut prepared_slots =
         crate::support::buffer_pool::take::<Option<Vec<ReadyReconRow<T>>>>(batch_count);
@@ -913,13 +902,6 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     })?;
     let scheduler_result = scheduler.finish();
     drop(scheduler);
-    let mut prepared_slots = core::mem::take(&mut *prepared.lock());
-    let mut pending_slots = core::mem::take(&mut *pending.lock());
-    crate::support::buffer_pool::recycle(&mut prepared_slots);
-    crate::support::buffer_pool::recycle(&mut pending_slots);
-    crate::support::buffer_pool::recycle(&mut precomputed);
-    crate::support::buffer_pool::recycle(&mut committed);
-    crate::support::buffer_pool::recycle(&mut batches);
     if let Some(error) = error.lock().take() {
         return Err(error);
     }

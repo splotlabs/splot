@@ -148,15 +148,6 @@ enum RefinemvCandidates {
     },
 }
 
-/// Hands a per-cell candidate list back for the next grid of this shape.
-impl Drop for RefinemvCandidates {
-    fn drop(&mut self) {
-        if let Self::PerCell { candidates, .. } = self {
-            crate::support::buffer_pool::recycle(candidates);
-        }
-    }
-}
-
 /// Largest motion-grid subblock (refine-MV unit): 16x16 samples.
 const MAX_MOTION_GRID_SUBBLOCK_SAMPLES: usize = 256;
 /// Horizontal-pass rows for an unscaled 16-sample-tall subblock: 16 + 7 taps.

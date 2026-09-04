@@ -152,9 +152,6 @@ pub(super) fn projection_queue(
         );
     }
     if stack.len() < 2 {
-        crate::support::buffer_pool::recycle(&mut overlays);
-        crate::support::buffer_pool::recycle(&mut visited);
-        crate::support::buffer_pool::recycle(&mut stack);
         return Vec::new();
     }
 
@@ -319,10 +316,6 @@ pub(super) fn projection_queue(
     if config.reduced {
         queue.truncate(1);
     }
-    crate::support::buffer_pool::recycle(&mut overlays);
-    crate::support::buffer_pool::recycle(&mut visited);
-    crate::support::buffer_pool::recycle(&mut stack);
-    crate::support::buffer_pool::recycle(&mut checked);
     queue
 }
 

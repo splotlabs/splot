@@ -55,12 +55,6 @@ impl Clone for PlaneGrid {
     }
 }
 
-impl Drop for PlaneGrid {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.cells);
-    }
-}
-
 impl TileBlockDecodedState {
     pub(crate) fn new(
         num_planes: usize,

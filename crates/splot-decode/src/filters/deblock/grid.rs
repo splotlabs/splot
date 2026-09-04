@@ -43,14 +43,6 @@ pub(super) struct MiGridStorage {
     pub(super) candidates: Vec<u8>,
 }
 
-/// Hands the frame's grid back to the decode's context store.
-impl Drop for MiGridStorage {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.cells);
-        crate::support::buffer_pool::recycle(&mut self.candidates);
-    }
-}
-
 pub(super) struct ChromaMiGridStorage {
     pub(super) fully_covered: bool,
     /// One cell per chroma mode-info unit, not per luma one. A chroma deblock
@@ -63,13 +55,6 @@ pub(super) struct ChromaMiGridStorage {
     /// Edge flags stay at luma resolution: a vertical edge at luma column `c`
     /// is distinct from the one at `c - 1`, which `is_candidate` reads.
     pub(super) candidates: Vec<u8>,
-}
-
-impl Drop for ChromaMiGridStorage {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.cells);
-        crate::support::buffer_pool::recycle(&mut self.candidates);
-    }
 }
 
 pub(super) struct MiGrid<'a> {

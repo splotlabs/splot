@@ -89,8 +89,6 @@ fn append_lr_records(
     }
     blocks.append(&mut tile_blocks);
     filters.append(&mut tile_filters);
-    crate::support::buffer_pool::recycle(&mut tile_blocks);
-    crate::support::buffer_pool::recycle(&mut tile_filters);
     Ok(())
 }
 

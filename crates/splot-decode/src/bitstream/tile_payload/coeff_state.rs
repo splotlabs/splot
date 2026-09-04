@@ -226,22 +226,6 @@ pub(crate) struct TileCoeffContextState {
     left_dc: [Vec<u8>; PLANE_COUNT],
 }
 
-/// Hands a finished tile's context lines back to the decode's context store.
-impl Drop for TileCoeffContextState {
-    fn drop(&mut self) {
-        for lines in [
-            &mut self.above_level,
-            &mut self.left_level,
-            &mut self.above_dc,
-            &mut self.left_dc,
-        ] {
-            for line in lines {
-                crate::support::buffer_pool::recycle(line);
-            }
-        }
-    }
-}
-
 impl TileCoeffContextState {
     pub(crate) fn allocation(mi_rows: usize, mi_cols: usize) -> Result<(), TileCoeffStateError> {
         if mi_rows == 0 || mi_cols == 0 {

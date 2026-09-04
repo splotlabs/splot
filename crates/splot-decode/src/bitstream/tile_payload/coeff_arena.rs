@@ -31,15 +31,6 @@ impl core::fmt::Debug for RowCoeffs {
     }
 }
 
-impl Drop for RowCoeffs {
-    fn drop(&mut self) {
-        let Some(mut coeffs) = self.0.take() else {
-            return;
-        };
-        crate::support::buffer_pool::recycle(&mut coeffs);
-    }
-}
-
 /// The handle a block holds until its row is sealed.
 pub(crate) type CoeffBatch = Arc<RowCoeffs>;
 
@@ -64,10 +55,8 @@ fn new_handle() -> CoeffBatch {
     if let Some(index) = reusable {
         let mut handle = spare.swap_remove(index);
         drop(spare);
-        if let Some(row) = Arc::get_mut(&mut handle)
-            && let Some(mut coeffs) = row.0.take()
-        {
-            crate::support::buffer_pool::recycle(&mut coeffs);
+        if let Some(row) = Arc::get_mut(&mut handle) {
+            let _ = row.0.take();
         }
         return handle;
     }

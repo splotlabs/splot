@@ -51,19 +51,6 @@ pub(crate) struct InterResidualParseScratch {
     chroma_reads: Vec<InterChromaURead>,
 }
 
-impl Drop for InterResidualParseScratch {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.luma_tx_records);
-        crate::support::buffer_pool::recycle(&mut self.chroma_reads);
-    }
-}
-
-impl Drop for InterLumaTxTypeMap {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.values);
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InterResidualLumaTxSizeMode {
     Inter,
@@ -87,7 +74,6 @@ impl InterLumaTxTypeMap {
                     .try_reserve_exact(len)
                     .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
             }
-            crate::support::buffer_pool::recycle(&mut self.values);
             self.values = fresh;
         }
         self.values.resize(len, DCT_DCT);

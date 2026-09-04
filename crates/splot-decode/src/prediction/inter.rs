@@ -1167,34 +1167,6 @@ pub(crate) struct InterResidualBlock {
     pub(crate) cctx_pair_delta: i16,
     pub(crate) coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
 }
-/// Hands the frame's reference metadata lists back to the context store.
-impl<T: ReconSample> Drop for InterReferenceState<T> {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.ref_valid);
-        crate::support::buffer_pool::recycle(&mut self.ref_order_hint);
-        crate::support::buffer_pool::recycle(&mut self.ref_order_hint_lsbs);
-        crate::support::buffer_pool::recycle(&mut self.ref_implicit_output_frame);
-        crate::support::buffer_pool::recycle(&mut self.ref_immediate_output_frame);
-        crate::support::buffer_pool::recycle(&mut self.ref_frame_width);
-        crate::support::buffer_pool::recycle(&mut self.ref_frame_height);
-        crate::support::buffer_pool::recycle(&mut self.ref_base_q_idx);
-        crate::support::buffer_pool::recycle(&mut self.ref_counter);
-        crate::support::buffer_pool::recycle(&mut self.ref_chroma_ac_deltas);
-        crate::support::buffer_pool::recycle(&mut self.ref_is_inter);
-        crate::support::buffer_pool::recycle(&mut self.ref_long_term_id);
-        crate::support::buffer_pool::recycle(&mut self.ref_num_total_refs);
-        crate::support::buffer_pool::recycle(&mut self.saved_global_motion_order_hints);
-        crate::support::buffer_pool::recycle(&mut self.saved_global_motion_params);
-        crate::support::buffer_pool::recycle(&mut self.lr_frame_filter_class_counts);
-        crate::support::buffer_pool::recycle(&mut self.lr_frame_filter_taps);
-        crate::support::buffer_pool::recycle(&mut self.ref_frame_cdfs);
-        crate::support::buffer_pool::recycle(&mut self.ref_ccso_params);
-        crate::support::buffer_pool::recycle(&mut self.ref_ccso_unit_grids);
-        crate::support::buffer_pool::recycle(&mut self.ref_segment_ids);
-        crate::support::buffer_pool::recycle(&mut self.ref_motion_fields);
-    }
-}
-
 pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) store: ReferenceFrameStore<RefFrameSlot<T>>,
     pub(crate) ref_valid: Vec<bool>,

@@ -44,13 +44,6 @@ pub(crate) struct TileMiSizeState {
     storage: Vec<u8>,
 }
 
-/// Hands the tile's coalesced grid back to the decode's context store.
-impl Drop for TileMiSizeState {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.storage);
-    }
-}
-
 impl TileMiSizeState {
     pub(crate) fn allocation(
         mi_rows: usize,

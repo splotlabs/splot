@@ -305,14 +305,6 @@ fn new_grid_planes(cells: usize) -> Result<GridPlanes, std::collections::TryRese
     Ok(planes)
 }
 
-impl Drop for NeighbourMvGrid {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.planes.flags);
-        crate::support::buffer_pool::recycle(&mut self.planes.motion);
-        crate::support::buffer_pool::recycle(&mut self.planes.leaves);
-    }
-}
-
 /// One leaf's flag-plane publication, replayable onto a second grid.
 ///
 /// A parse pass that hands its units to a resolve pass running later, or

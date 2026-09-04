@@ -540,7 +540,7 @@ fn window_bounds(
 }
 
 enum StripeOwner {
-    Owned(Vec<u16>),
+    Owned(#[allow(dead_code, reason = "keeps borrowed stripe samples alive")] Vec<u16>),
     DirectU16 {
         _target: crate::pipeline::frame_progress::DirectPlaneTarget,
     },
@@ -709,20 +709,6 @@ fn write_uninit_u16(
         destination.write(source);
     }
     Ok(())
-}
-
-impl Drop for StripeSamples {
-    fn drop(&mut self) {
-        match &mut self.owner {
-            StripeOwner::Owned(samples) => {
-                crate::support::buffer_pool::recycle(samples);
-            }
-            StripeOwner::DirectU8 { staging, .. } => {
-                crate::support::buffer_pool::recycle(staging);
-            }
-            StripeOwner::DirectU16 { .. } => {}
-        }
-    }
 }
 
 pub(crate) struct StripePlane {

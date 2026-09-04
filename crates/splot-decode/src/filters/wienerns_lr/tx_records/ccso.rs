@@ -15,14 +15,6 @@ use crate::filters::ccso::CcsoUnitGrid;
 
 use super::{CCSO_PLANES, CCSO_SYMBOL_VALUES, MI_SIZE_LOG2, read_tx_symbol};
 
-impl Drop for CcsoState {
-    fn drop(&mut self) {
-        for plane in &mut self.blocks {
-            crate::support::buffer_pool::recycle(plane);
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CcsoState {
     pub(crate) active: bool,

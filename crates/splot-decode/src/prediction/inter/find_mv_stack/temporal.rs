@@ -654,13 +654,6 @@ struct ProjectedTemporalMotionField {
     cells: Vec<ProjectedTemporalMotionCell>,
 }
 
-/// Hands a spent projection's cells back to the decode's context store.
-impl Drop for ProjectedTemporalMotionField {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.cells);
-    }
-}
-
 impl ProjectedTemporalMotionField {
     #[cfg(test)]
     fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
@@ -685,7 +678,6 @@ impl ProjectedTemporalMotionField {
         if self.cells.capacity() < cells {
             let mut roomier = crate::support::buffer_pool::take(cells);
             roomier.clear();
-            crate::support::buffer_pool::recycle(&mut self.cells);
             self.cells = roomier;
         }
         self.cells
@@ -755,16 +747,6 @@ struct TemporalBandResult {
     row_base8: usize,
     field: Vec<ProjectedTemporalMotionCell>,
     trajectories: Option<OwnedTrajectoryFields>,
-}
-
-/// Hands a spent band's projected field back to the decode's context store.
-///
-/// The band outlives the projection that built it -- it is what later frames
-/// read -- so the buffer can only be returned once the band itself goes.
-impl Drop for TemporalBandResult {
-    fn drop(&mut self) {
-        crate::support::buffer_pool::recycle(&mut self.field);
-    }
 }
 
 pub(crate) struct TemporalBandPlan {

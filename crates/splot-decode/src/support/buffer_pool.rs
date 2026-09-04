@@ -9,8 +9,3 @@ pub(crate) fn take<T>(cells: usize) -> Vec<T> {
     let _ = buffer.try_reserve_exact(cells);
     buffer
 }
-
-/// Clears a buffer before its owner drops it.
-pub(crate) fn recycle<T>(buffer: &mut Vec<T>) {
-    buffer.clear();
-}
