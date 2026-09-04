@@ -89,7 +89,7 @@ pub(crate) struct TemporalMotionField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TemporalMotionStorage {
     Contiguous(Vec<TemporalMotionCell>),
-    Bands(Vec<Arc<TemporalMotionBand>>),
+    Bands(Vec<TemporalMotionBand>),
 }
 
 /// Fixed geometry of one frame's motion-field publication.
@@ -329,7 +329,7 @@ impl TemporalMotionField {
 
     pub(crate) fn into_bands(self) -> Vec<TemporalMotionBand> {
         if let TemporalMotionStorage::Bands(bands) = self.storage {
-            return bands.into_iter().map(Arc::unwrap_or_clone).collect();
+            return bands;
         }
         let layout = self.layout();
         let metadata = self.metadata();
@@ -359,7 +359,7 @@ impl TemporalMotionField {
     pub(crate) fn from_bands(
         layout: MotionFieldLayout,
         metadata: &TemporalMotionFieldMetadata,
-        bands: Vec<Arc<TemporalMotionBand>>,
+        bands: Vec<TemporalMotionBand>,
     ) -> Option<Self> {
         let cells = bands
             .iter()
@@ -845,7 +845,7 @@ impl TemporalBandPlan {
         &self,
         context: &TemporalMvContext,
         index: usize,
-        mut source_band: impl FnMut(usize, usize) -> Option<Arc<TemporalMotionBand>>,
+        mut source_band: impl FnMut(usize, usize) -> Option<TemporalMotionBand>,
     ) -> crate::Result<()> {
         let rows = self.rows8(index);
         if rows.is_empty() {
@@ -907,7 +907,7 @@ impl TemporalBandPlan {
             };
             project_temporal_motion_field(
                 &projection.source,
-                source.as_ref(),
+                &source,
                 rows.clone(),
                 self.config.step,
                 self.config.unit_size8,

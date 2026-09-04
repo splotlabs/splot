@@ -16,7 +16,7 @@ struct MotionFieldPublication {
     layout: MotionFieldLayout,
     metadata: CompletionCell<Option<Arc<TemporalMotionFieldMetadata>>>,
     field: CompletionCell<Option<Arc<TemporalMotionField>>>,
-    bands: Vec<CompletionCell<Option<Arc<TemporalMotionBand>>>>,
+    bands: Vec<CompletionCell<Option<TemporalMotionBand>>>,
 }
 
 /// One frame's § 7.9 temporal motion field, named before it is derived.
@@ -37,7 +37,7 @@ impl MotionFieldHandle {
             .clone()
             .into_bands()
             .into_iter()
-            .map(|band| CompletionCell::completed(Some(Arc::new(band))))
+            .map(|band| CompletionCell::completed(Some(band)))
             .collect();
         Self(Arc::new(MotionFieldPublication {
             layout,
@@ -73,7 +73,7 @@ impl MotionFieldHandle {
     pub(crate) fn publish(&self, field: TemporalMotionField) {
         self.publish_metadata(field.metadata());
         for (cell, band) in self.0.bands.iter().zip(field.clone().into_bands()) {
-            let _ = cell.set(Some(Arc::new(band)));
+            let _ = cell.set(Some(band));
         }
         let _ = self.0.field.set(Some(Arc::new(field)));
     }
@@ -81,7 +81,7 @@ impl MotionFieldHandle {
     /// Publishes one completed full-width source superblock row.
     pub(crate) fn publish_band(&self, index: usize, band: TemporalMotionBand) {
         if let Some(cell) = self.0.bands.get(index) {
-            let _ = cell.set(Some(Arc::new(band)));
+            let _ = cell.set(Some(band));
         }
     }
 
@@ -137,14 +137,11 @@ impl MotionFieldHandle {
         self.0.metadata.get().and_then(Option::as_ref)
     }
 
-    pub(crate) fn band(&self, index: usize) -> Option<&Arc<TemporalMotionBand>> {
+    pub(crate) fn band(&self, index: usize) -> Option<&TemporalMotionBand> {
         self.0.bands.get(index)?.get().and_then(Option::as_ref)
     }
 
-    pub(crate) fn band_publication(
-        &self,
-        index: usize,
-    ) -> Option<&Option<Arc<TemporalMotionBand>>> {
+    pub(crate) fn band_publication(&self, index: usize) -> Option<&Option<TemporalMotionBand>> {
         self.0.bands.get(index)?.get()
     }
 

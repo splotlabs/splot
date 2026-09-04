@@ -94,11 +94,7 @@ fn whole_field_reuses_published_band_cells() {
     let layout = field.layout();
     let metadata = field.metadata();
     let expected = field.cell(0, 0);
-    let bands = field
-        .into_bands()
-        .into_iter()
-        .map(Arc::new)
-        .collect::<Vec<_>>();
+    let bands = field.into_bands();
     let first_band_cells = bands[0].cells.as_slice().as_ptr();
 
     let rebuilt = TemporalMotionField::from_bands(layout, &metadata, bands).unwrap();
