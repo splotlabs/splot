@@ -83,7 +83,7 @@ pub(crate) struct TemporalMotionField {
     pending_ref_hints: Option<Vec<[u32; 2]>>,
     is_inter: bool,
     frame_size: Option<(usize, usize)>,
-    ref_order_hints: Vec<Option<u32>>,
+    ref_order_hints: Arc<[Option<u32>]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -232,7 +232,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter: false,
             frame_size: None,
-            ref_order_hints: Vec::new(),
+            ref_order_hints: Arc::from(Vec::new()),
         }
     }
 
@@ -248,7 +248,7 @@ impl TemporalMotionField {
             pending_ref_hints: Some(pending_ref_hints),
             is_inter: false,
             frame_size: None,
-            ref_order_hints: Vec::new(),
+            ref_order_hints: Arc::from(Vec::new()),
         })
     }
 
@@ -273,7 +273,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter,
             frame_size: Some(frame_size),
-            ref_order_hints: owned_ref_order_hints,
+            ref_order_hints: Arc::from(owned_ref_order_hints),
         })
     }
 
@@ -286,7 +286,7 @@ impl TemporalMotionField {
     ) {
         self.is_inter = is_inter;
         self.frame_size = Some(frame_size);
-        self.ref_order_hints = ref_order_hints.to_vec();
+        self.ref_order_hints = Arc::from(ref_order_hints);
         if let Some(pending) = self.pending_ref_hints.take()
             && let TemporalMotionStorage::Contiguous(cells) = &mut self.storage
         {
@@ -323,7 +323,7 @@ impl TemporalMotionField {
         TemporalMotionFieldMetadata {
             is_inter: self.is_inter,
             frame_size: self.frame_size,
-            ref_order_hints: Arc::from(self.ref_order_hints.as_slice()),
+            ref_order_hints: Arc::clone(&self.ref_order_hints),
         }
     }
 
@@ -372,7 +372,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter: metadata.is_inter,
             frame_size: metadata.frame_size,
-            ref_order_hints: metadata.ref_order_hints.to_vec(),
+            ref_order_hints: Arc::clone(&metadata.ref_order_hints),
         })
     }
 
