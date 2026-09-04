@@ -20,13 +20,6 @@ pub struct Plane<T: ReconSample> {
     samples: Vec<T>,
 }
 
-/// Hands the plane's buffer to the next frame of the same geometry.
-impl<T: ReconSample> Drop for Plane<T> {
-    fn drop(&mut self) {
-        crate::plane_buffers::recycle(mem::take(&mut self.samples));
-    }
-}
-
 impl<T: ReconSample> Plane<T> {
     /// Creates a plane from owned sample storage.
     ///
@@ -116,8 +109,8 @@ impl<T: ReconSample> Plane<T> {
     }
 
     /// Consumes the plane and returns the complete backing sample buffer.
-    pub fn into_samples(mut self) -> Vec<T> {
-        mem::take(&mut self.samples)
+    pub fn into_samples(self) -> Vec<T> {
+        self.samples
     }
 
     /// Iterates over visible decoded-output rows, excluding padding and stride.
