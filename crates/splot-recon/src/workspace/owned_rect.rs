@@ -272,6 +272,33 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         Ok(())
     }
 
+    /// Lays this rectangle out over another one, keeping the sample storage.
+    ///
+    /// [`Self::retarget`] only moves a rectangle of the same size; this also
+    /// resizes it, so a surface a frame has finished with serves the next
+    /// rectangle of any shape rather than being replaced.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the rectangle exceeds the frame or the
+    /// storage cannot grow to hold it.
+    pub fn reshape(&mut self, info: DecodedFrameInfo, luma_rect: PlaneRect, fill: T) -> Result<()> {
+        let (y, u, v) = Self::regions(info, luma_rect)?;
+        let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
+        self.samples.clear();
+        self.samples
+            .try_reserve(total.saturating_sub(self.samples.capacity()))
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "owned rectangle samples",
+            })?;
+        self.samples.resize(total, fill);
+        self.info = info;
+        self.y = y;
+        self.u = u;
+        self.v = v;
+        Ok(())
+    }
+
     /// Returns the luma rectangle in global frame coordinates.
     pub const fn luma_rect(&self) -> PlaneRect {
         self.y.rect

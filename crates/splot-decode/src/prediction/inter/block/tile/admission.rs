@@ -297,6 +297,14 @@ impl<T: ReconSample> SurfaceSource<T> {
             }
             self.free.push(surface);
         }
+        // A surface of another shape still carries usable storage, so the
+        // frame's set is laid out over rather than added to.
+        if let Some(mut surface) = self.free.pop() {
+            return Some(surface.reshape(self.info, rect, T::default()).map(|()| {
+                poison_reused_surface(&mut surface);
+                surface
+            }));
+        }
         Some(splot_recon::OwnedFrameRect::new(
             self.info,
             rect,
