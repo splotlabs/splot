@@ -475,16 +475,7 @@ fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> Lu
 }
 
 fn all_zero_inter_coeff_block() -> LumaCoeffBlock {
-    LumaCoeffBlock {
-        eob: 0,
-        coeffs: crate::bitstream::tile_payload::coeff_arena::batch(),
-        quant: 0..0,
-        intra_ist: None,
-        cctx_type: None,
-        plane_tx_type: 0,
-        use_tcq: false,
-        lossless: false,
-    }
+    luma_coeff_block(Vec::new(), 0, None)
 }
 
 fn read_rect_samples(
