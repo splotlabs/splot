@@ -118,7 +118,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
         (plane_id, dpcm, None)
     };
     super::reconstruct_general_intra_block_rect_with_prediction_core(
-        block.quant(),
+        &block.quant,
         prediction,
         out,
         qindex,
@@ -198,13 +198,13 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     if block.quant.len() != setup.adjusted {
         return Err(GeneralIntraResidualError::QuantLength {
             expected: setup.adjusted,
-            actual: block.quant_len(),
+            actual: block.quant.len(),
         });
     }
     let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         super::with_residual_scratch(|scratch| {
             let dequant = &mut scratch.dequant[..setup.adjusted];
-            dequantize_block(&setup.params, block.quant(), dequant)?;
+            dequantize_block(&setup.params, &block.quant, dequant)?;
             if let Some(secondary) = secondary.as_ref() {
                 secondary_inverse_transform(dequant, secondary)?;
             }
@@ -250,7 +250,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     if block.quant.len() != setup.adjusted {
         return Err(GeneralIntraResidualError::QuantLength {
             expected: setup.adjusted,
-            actual: block.quant_len(),
+            actual: block.quant.len(),
         });
     }
     if block.eob == 1
@@ -259,23 +259,13 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         && secondary.is_none()
         && setup.params.qm.is_none()
     {
-        let residual = dct_dc_residual(
-            block
-                .quant()
-                .first()
-                .copied()
-                .ok_or(GeneralIntraResidualError::QuantLength {
-                    expected: 1,
-                    actual: block.quant_len(),
-                })?,
-            &setup,
-        );
+        let residual = dct_dc_residual(block.quant[0], &setup);
         sink.add_constant_residual_rect_block(plane_id, x, y, block_size, residual)?;
         return Ok(());
     }
     super::with_residual_scratch(|scratch| {
         let dequant = &mut scratch.dequant[..setup.adjusted];
-        dequantize_block(&setup.params, block.quant(), dequant)?;
+        dequantize_block(&setup.params, &block.quant, dequant)?;
         if let Some(secondary) = secondary.as_ref() {
             secondary_inverse_transform(dequant, secondary)?;
         }
@@ -401,10 +391,10 @@ pub(super) fn dequantize_coeff_block(
     if block.quant.len() != out.len() {
         return Err(GeneralIntraResidualError::QuantLength {
             expected: out.len(),
-            actual: block.quant_len(),
+            actual: block.quant.len(),
         });
     }
-    dequantize_block(params, block.quant(), out)?;
+    dequantize_block(params, &block.quant, out)?;
     Ok(())
 }
 

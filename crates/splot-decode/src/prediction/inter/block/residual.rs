@@ -250,7 +250,6 @@ pub(crate) fn read_inter_residual(
     })();
     if let Err(error) = result {
         blocks.truncate(block_start);
-        crate::bitstream::tile_payload::coeff_arena::reset();
         return Err(error);
     }
     Ok(InterResidual {

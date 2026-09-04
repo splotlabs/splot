@@ -30,8 +30,7 @@ impl IntraEdgeAvailability {
 fn all_zero_luma_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
-        coeffs: crate::bitstream::tile_payload::coeff_arena::batch(),
-        quant: 0..0,
+        quant: Vec::new(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -49,14 +48,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
-        coeffs: {
-            let (c, _) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            c
-        },
-        quant: {
-            let (_, r) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            r
-        },
+        quant,
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
             most_probable_stx_set: None,
@@ -113,14 +105,7 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
-        coeffs: {
-            let (c, _) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            c
-        },
-        quant: {
-            let (_, r) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            r
-        },
+        quant,
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
             most_probable_stx_set: Some(5),
@@ -175,14 +160,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        coeffs: {
-            let (c, _) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            c
-        },
-        quant: {
-            let (_, r) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            r
-        },
+        quant,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -244,11 +222,8 @@ fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
     let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
     let mut block = all_zero_luma_block();
     block.eob = 1;
-    let mut values = vec![0i32; 16];
-    values[0] = 1;
-    let (batch, range) = crate::bitstream::tile_payload::coeff_arena::sealed(values);
-    block.coeffs = batch;
-    block.quant = range;
+    block.quant = vec![0; 16];
+    block.quant[0] = 1;
     assert!(matches!(
         reconstruct_inter_block_residual_rect_into(
             &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
@@ -307,14 +282,7 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        coeffs: {
-            let (c, _) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            c
-        },
-        quant: {
-            let (_, r) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            r
-        },
+        quant,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -2195,14 +2163,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     quant[9] = 12;
     let block = LumaCoeffBlock {
         eob: 10,
-        coeffs: {
-            let (c, _) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            c
-        },
-        quant: {
-            let (_, r) = crate::bitstream::tile_payload::coeff_arena::sealed(quant.clone());
-            r
-        },
+        quant,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 3, // ADST_ADST

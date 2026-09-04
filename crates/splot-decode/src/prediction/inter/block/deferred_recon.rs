@@ -795,8 +795,7 @@ mod tests {
             cctx_pair_delta: 0,
             coeffs: LumaCoeffBlock {
                 eob: 0,
-                coeffs: crate::bitstream::tile_payload::coeff_arena::batch(),
-                quant: 0..0,
+                quant: Vec::new(),
                 intra_ist: None,
                 cctx_type: None,
                 plane_tx_type: 0,

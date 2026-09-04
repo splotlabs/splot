@@ -136,9 +136,8 @@ impl TransformCoeffBlockState {
     }
 
     #[must_use]
-    /// The block's quantised coefficients, for appending to the row's buffer.
-    pub(crate) fn quant(&self) -> &[i32] {
-        &self.quant
+    pub(crate) fn into_quant(mut self) -> Vec<i32> {
+        core::mem::take(&mut self.quant)
     }
 
     pub(crate) fn set_level(

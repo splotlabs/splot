@@ -504,7 +504,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             walk.decode_next_superblock(self.tile, &mut decode_leaf, &mut on_published)
                 .map(|superblock| superblock.is_some())
         };
-        crate::bitstream::tile_payload::coeff_arena::seal();
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
         recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);

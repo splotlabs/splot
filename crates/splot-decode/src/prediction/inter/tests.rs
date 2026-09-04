@@ -461,10 +461,8 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
 }
 
 fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
-    let (coeffs, quant) = crate::bitstream::tile_payload::coeff_arena::sealed(quant);
     LumaCoeffBlock {
         eob,
-        coeffs,
         quant,
         intra_ist: None,
         cctx_type,

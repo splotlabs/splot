@@ -444,26 +444,12 @@ pub(crate) struct IntraIstSyntax {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LumaCoeffBlock {
     pub(crate) eob: usize,
-    /// This block's coefficients inside its row's buffer, not its own `Vec`.
-    pub(crate) coeffs: super::coeff_arena::CoeffBatch,
-    pub(crate) quant: core::ops::Range<u32>,
+    pub(crate) quant: Vec<i32>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
     pub(crate) cctx_type: Option<usize>,
     pub(crate) plane_tx_type: usize,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
-}
-
-impl LumaCoeffBlock {
-    /// This block's coefficients, or empty when its row is not yet sealed.
-    pub(crate) fn quant(&self) -> &[i32] {
-        super::coeff_arena::coeffs_of(&self.coeffs, &self.quant)
-    }
-
-    /// Number of coefficients this block owns in its row's buffer.
-    pub(crate) const fn quant_len(&self) -> usize {
-        (self.quant.end - self.quant.start) as usize
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1014,8 +1000,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             .map_err(coeff_ctx_err)?;
         return Ok(LumaCoeffBlock {
             eob: 0,
-            coeffs: super::coeff_arena::batch(),
-            quant: 0..0,
+            quant: Vec::new(),
             intra_ist: None,
             cctx_type: None,
             plane_tx_type: DCT_DCT,
@@ -1147,8 +1132,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
         return Ok(LumaCoeffBlock {
             eob,
-            coeffs: super::coeff_arena::batch(),
-            quant: super::coeff_arena::append(block.quant()),
+            quant: block.into_quant(),
             intra_ist: metadata.intra_ist,
             cctx_type: metadata.cctx_type,
             plane_tx_type,
@@ -1172,8 +1156,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
     Ok(LumaCoeffBlock {
         eob,
-        coeffs: super::coeff_arena::batch(),
-        quant: super::coeff_arena::append(block.quant()),
+        quant: block.into_quant(),
         intra_ist: metadata.intra_ist,
         cctx_type: metadata.cctx_type,
         plane_tx_type,

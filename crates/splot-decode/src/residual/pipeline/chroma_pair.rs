@@ -246,8 +246,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
 fn prediction_only_coeff_block(coeffs: &LumaCoeffBlock) -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
-        coeffs: crate::bitstream::tile_payload::coeff_arena::batch(),
-        quant: 0..0,
+        quant: Vec::new(),
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: coeffs.plane_tx_type,
