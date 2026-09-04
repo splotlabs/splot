@@ -155,8 +155,7 @@ impl Central {
     /// Parks a block for any worker.
     fn push(&self, block: *mut u8) {
         self.with(|head| {
-            // SAFETY: the block is ours while it is not lent out, and every
-            // pooled block is at least a pointer wide.
+            // SAFETY: every unloaned pooled block can hold the link.
             unsafe { ptr::write(block.cast::<*mut u8>(), *head) };
             *head = block;
         });
@@ -219,8 +218,7 @@ fn carve_slab(class: usize) -> Option<*mut u8> {
         return None;
     }
     for index in 1..blocks {
-        // SAFETY: `index` is below the block count, so the offset stays in the
-        // slab, and the class size is a multiple of `POOL_ALIGN`.
+        // SAFETY: `index` selects an aligned block inside the slab.
         let block = unsafe { base.add(index * bytes) };
         park(class, block);
     }
@@ -274,7 +272,6 @@ unsafe impl GlobalAlloc for PoolAlloc {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let class = class_of(layout).filter(|&class| class_layout(class).is_some());
         if let Some(class) = class {
-            // Never returned to the system: this may be one block of a slab.
             park(class, ptr);
             return;
         }

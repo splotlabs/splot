@@ -39,8 +39,6 @@ impl MotionFieldHandle {
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
         let layout = field.layout();
         let metadata = Arc::new(field.metadata());
-        // Both lists come from the reserve; the publication returns the cell
-        // list when it drops, and the band list goes back here.
         let mut band_list = field.clone().into_bands();
         let mut bands = crate::support::buffer_pool::take::<
             CompletionCell<Option<TemporalMotionBand>>,

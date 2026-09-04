@@ -210,8 +210,6 @@ impl TemporalMotionBand {
         let row_end8 = self.row_end8();
         let width8 = self.layout.width8;
         let resolved = resolve_block_refs(block.ref_order_hints, &self.metadata.ref_order_hints);
-        // Lent once per block: the per-cell writes below then cost exactly what
-        // they did when the band owned its own `Vec`.
         let cells = self.cells.as_mut_slice();
         visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
             let Some(row) = y8.checked_sub(row_base8) else {
@@ -1171,8 +1169,6 @@ impl TemporalMvContext {
                     .and_then(|_| ref_order_hint.get(slot as usize).copied())
                     .filter(|&hint| hint != u32::MAX)
             }));
-        // From the reserve: both lists are one entry per reference slot and are
-        // rebuilt every frame.
         let mut ref_motion_metadata = crate::support::buffer_pool::take::<
             Option<TemporalMotionFieldMetadata>,
         >(ref_motion_fields.len());
@@ -1957,8 +1953,6 @@ fn run_band_projections(
     let mut trajectory_slots = trajectory_bands
         .as_deref_mut()
         .map_or_else(Vec::new, |bands| bands.iter_mut().map(Some).collect());
-    // One worker projects the bands itself, so it needs no task scope at all:
-    // entering one would allocate for a hand-off that never happens.
     let scheduled = if splot_parallel::current_pool_width() <= 1 {
         for (index, band) in field_bands.iter_mut().enumerate() {
             let rows = trajectory_slots.get_mut(index).and_then(Option::take);

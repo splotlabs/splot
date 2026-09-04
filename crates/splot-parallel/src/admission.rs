@@ -452,7 +452,6 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         'job: 'scope,
     {
         if conditions.iter().all(Condition::is_satisfied) {
-            // Nothing left to wait on, so the job needs no waiter of its own.
             self.slots.lock().store_ready(order_key, job, &self.ready);
             self.admit_ready(scope);
             return;
@@ -479,10 +478,6 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
     where
         'job: 'scope,
     {
-        // With peers, hand the job to the pool. Alone there is no peer to hand
-        // it to, and Rayon heap-allocates a job for every spawn, so this worker
-        // runs it -- still in the order the ready queue yields, which is
-        // priority order.
         let alone = crate::pool::current_pool_width() <= 1;
         let mut spawned = 0;
         while let Some(entry) = self.ready.pop() {
@@ -516,8 +511,6 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
     where
         'job: 'scope,
     {
-        // Alone, run in pop order rather than parking: a parked job resumes
-        // after the rest, which would put the highest-priority one last.
         let alone = crate::pool::current_pool_width() <= 1;
         let mut spawned = 0;
         let mut parked = alone;

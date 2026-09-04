@@ -124,8 +124,6 @@ pub(super) fn projection_queue(
         *slot = index;
     }
     let sorted = &sorted_slots[..sorted_len];
-    // From the decoder's reserve: these four lists are rebuilt every frame and
-    // are the same shape each time.
     let mut overlays = crate::support::buffer_pool::take::<bool>(ref_order_hints.len());
     overlays.extend((0..ref_order_hints.len()).map(|index| {
         let Some(hint) = ref_order_hints[index] else {

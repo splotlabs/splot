@@ -328,8 +328,6 @@ impl<T: ReconSample> DirectStripeLease<T> {
 
     pub(crate) fn submit(mut self) -> bool {
         drop(self.target.take());
-        // Only this lease's own hold may remain; a target still outstanding
-        // means its plane has not landed.
         if self.progress.direct_holds(self.stripe) != 1 {
             return false;
         }
@@ -451,8 +449,6 @@ impl<T: ReconSample> FrameProgress<T> {
             }
             next = end;
         }
-        // From the decoder's reserve, and returned by this progress handle's
-        // `Drop`: every frame lays out the same four per-stripe arrays.
         let mut stripe_ends = crate::support::buffer_pool::take::<usize>(ranges.len());
         stripe_ends.extend(ranges.iter().map(|&(_, end)| end));
         let mut landed = crate::support::buffer_pool::take::<bool>(ranges.len());
@@ -506,7 +502,6 @@ impl<T: ReconSample> FrameProgress<T> {
             return None;
         }
         layout.leased[stripe] = true;
-        // The lease's own hold plus one per plane target.
         let holds = 2 + u32::from(u.is_some()) + u32::from(v.is_some());
         if let Some(slot) = layout.direct_holds.get_mut(stripe) {
             *slot = holds;

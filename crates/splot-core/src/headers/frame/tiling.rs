@@ -97,8 +97,6 @@ impl CoreSeqTileView {
             seq_tile_info_present_flag: tile.seq_tile_info_present_flag,
             allow_tile_info_change: tile.allow_tile_info_change.unwrap_or(false),
             seq_tile_params: tile.params,
-            // Shared, not copied: the sequence's tile starts do not change
-            // between frames, and this view is rebuilt for every one.
             seq_sb_col_starts: std::sync::Arc::clone(&tile.seq_sb_col_starts),
             seq_sb_row_starts: std::sync::Arc::clone(&tile.seq_sb_row_starts),
             seq_sb_size: partition.seq_sb_size(),

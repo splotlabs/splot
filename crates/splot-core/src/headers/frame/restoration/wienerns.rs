@@ -84,8 +84,6 @@ pub const MAX_WIENER_NS_CLASSES: usize = 16;
 
 impl Default for WienerNsFrameFilterClass {
     fn default() -> Self {
-        // One shared empty slice for every default class, so filling an inline
-        // bank costs reference-count bumps rather than allocations.
         static EMPTY: std::sync::OnceLock<std::sync::Arc<[i16]>> = std::sync::OnceLock::new();
         Self {
             match_index: 0,

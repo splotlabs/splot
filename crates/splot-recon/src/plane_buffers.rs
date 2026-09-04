@@ -43,9 +43,6 @@ const MAX_SPARES_PER_TYPE: usize = 2048;
 /// Takes a retired buffer able to hold `len` samples, or an empty one.
 pub(crate) fn take<T: ReconSample>(len: usize) -> Vec<T> {
     with_spares::<T, _>(|spares| {
-        // Best fit: handing a luma buffer to a chroma plane would keep the
-        // larger allocation for the smaller plane, and every buffer would
-        // ratchet up to the largest size in the frame.
         let index = spares
             .iter()
             .enumerate()

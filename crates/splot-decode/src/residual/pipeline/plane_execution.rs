@@ -664,7 +664,6 @@ fn reconstruct_deferred_planes<T: ReconSample>(
             luma_context,
         )?;
     }
-    // The list is drained: hand its allocation back for the next block.
     DEFERRED_CHROMA_PLANES.with(|slot| slot.set(Some(deferred)));
     Ok(())
 }

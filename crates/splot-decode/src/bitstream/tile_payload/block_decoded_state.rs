@@ -45,7 +45,6 @@ struct PlaneGrid {
 
 impl Clone for PlaneGrid {
     fn clone(&self) -> Self {
-        // The reserve, not a fresh vector: a tile clones this grid every frame.
         let mut cells = crate::support::buffer_pool::take::<bool>(self.cells.len());
         cells.extend_from_slice(&self.cells);
         Self {

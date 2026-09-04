@@ -133,8 +133,6 @@ impl CcsoState {
             shift,
             plane_enabled,
             sb_reuse,
-            // From the reserve, returned by `Drop`: a frame builds one of these
-            // grids per plane and drops it when the frame is done.
             blocks: std::array::from_fn(|_| {
                 let mut plane = crate::support::buffer_pool::take::<u8>(cells);
                 plane.resize(cells, 0);
@@ -344,8 +342,6 @@ impl CcsoState {
         if self.row_start != 0 || self.col_start != 0 {
             return Err(ccso_state_error());
         }
-        // Taken, not moved out: the grid inherits the reserve's buffers and this
-        // state's `Drop` then has nothing left to return.
         let blocks = core::mem::take(&mut self.blocks);
         CcsoUnitGrid::new(
             self.active,

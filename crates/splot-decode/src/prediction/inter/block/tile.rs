@@ -71,8 +71,6 @@ fn append_lr_records(
         }
     }
 
-    // Exact, not amortized: these lists are appended once per tile and then
-    // held for the frame, so doubling leaves the slack resident.
     blocks
         .try_reserve_exact(tile_blocks.len())
         .map_err(|_| inter_allocation!("inter LR source-block records"))?;
@@ -91,8 +89,6 @@ fn append_lr_records(
     }
     blocks.append(&mut tile_blocks);
     filters.append(&mut tile_filters);
-    // Back to the reserve rather than dropped: the next tile builds the same
-    // two lists, and starting from empty spends an allocation per doubling.
     crate::support::buffer_pool::recycle(&mut tile_blocks);
     crate::support::buffer_pool::recycle(&mut tile_filters);
     Ok(())
@@ -510,8 +506,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             walk.decode_next_superblock(self.tile, &mut decode_leaf, &mut on_published)
                 .map(|superblock| superblock.is_some())
         };
-        // Publish this row's coefficients to the blocks that parsed into them;
-        // the commit spine replays those blocks later, possibly elsewhere.
         crate::bitstream::tile_payload::coeff_arena::seal();
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
         recon_row.residual_planes = core::mem::take(&mut self.residual_planes);

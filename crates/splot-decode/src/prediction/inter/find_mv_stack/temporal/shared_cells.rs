@@ -33,8 +33,6 @@ unsafe impl Sync for SharedTemporalCells {}
 
 impl Drop for SharedTemporalCells {
     fn drop(&mut self) {
-        // Back to the reserve: this is a whole frame's motion grid, and the
-        // next frame wants one the same shape.
         crate::support::buffer_pool::recycle(self.cells.get_mut());
     }
 }
@@ -53,10 +51,7 @@ impl SharedTemporalCells {
     )]
     #[inline(always)]
     pub(super) fn range(&self, start: usize, len: usize) -> Option<&[TemporalMotionCell]> {
-        // A published band is only ever read, and the slice index below is the
-        // only bounds check needed -- `self.len` is that slice's length.
-        // SAFETY: this band's range is disjoint from every other band's, so the
-        // shared borrow never aliases another band's cells.
+        // SAFETY: every band has a disjoint range in the shared cell block.
         let cells: &[TemporalMotionCell] = unsafe { &*self.cells.get() };
         cells.get(start..start.checked_add(len)?)
     }
@@ -102,15 +97,13 @@ impl BandCells {
     )]
     #[inline(always)]
     pub(super) fn as_slice(&self) -> &[TemporalMotionCell] {
-        // SAFETY: `data` is this band's own range of a block kept alive by
-        // `owner`, disjoint from every other band's.
+        // SAFETY: `owner` keeps this band's disjoint range alive.
         unsafe { self.data.as_ref() }
     }
 
     /// Lends the band's range for writing, once per record run.
     pub(super) fn as_mut_slice(&mut self) -> &mut [TemporalMotionCell] {
-        // SAFETY: as `as_slice`, and `&mut self` plus the band's mutex make
-        // this the only live borrow while the band is unpublished.
+        // SAFETY: `&mut self` uniquely borrows this unpublished band.
         unsafe { self.data.as_mut() }
     }
 }

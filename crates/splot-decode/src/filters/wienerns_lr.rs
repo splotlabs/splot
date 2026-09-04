@@ -42,9 +42,6 @@ pub(crate) struct FrameFilterRecords {
 impl FrameFilterRecords {
     /// Moves every record out of `other` and onto the end of these lists.
     pub(crate) fn append(&mut self, other: &mut Self) {
-        // Reserve exactly first: `Vec::append` grows amortized, and these
-        // lists are appended once per tile and then held for the frame, so the
-        // doubling slack would stay resident.
         self.deblock_blocks
             .reserve_exact(other.deblock_blocks.len());
         self.tx_skip_records

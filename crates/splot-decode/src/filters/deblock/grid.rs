@@ -240,8 +240,6 @@ pub(super) fn overlay_mi_grid(
         .div_ceil(1 << sub_y)
         .checked_mul(cell_cols)
         .ok_or(DeblockError::Workspace)?;
-    // Both lists come from the decoder's reserve and go back when the grid
-    // drops: a frame builds one of these per chroma plane.
     let mut cells = crate::support::buffer_pool::take::<ChromaMiCell>(count);
     if cells.capacity() < count {
         cells

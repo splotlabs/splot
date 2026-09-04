@@ -76,7 +76,6 @@ pub(crate) fn stripe_ranges(
     if luma_height == 0 {
         return Err(gdf_state_error());
     }
-    // From the reserve: a frame's stripe layout is the same shape each time.
     let mut ranges =
         crate::support::buffer_pool::take::<(usize, usize)>(luma_height.div_ceil(64).max(1));
     let mut y = 0;

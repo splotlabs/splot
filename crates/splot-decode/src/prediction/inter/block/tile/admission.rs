@@ -720,9 +720,6 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
 ) -> Result<TileCommit<T>> {
     let mut batches = superblock_row_batches(unit_count, units_per_row, RECON_BATCH_UNITS);
     let batch_count = batches.len();
-    // One lock over the batch slots, not one per slot: each slot's `Mutex`
-    // heap-allocates its platform lock the first time it is taken, and a frame
-    // has a slot per batch.
     let mut prepared_slots =
         crate::support::buffer_pool::take::<Option<Vec<ReadyReconRow<T>>>>(batch_count);
     if prepared_slots.capacity() < batch_count {
@@ -766,8 +763,6 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         row_buffers,
     };
     let scheduler: AdmissionScheduler<'_, BatchJob<'_, '_, T>> = AdmissionScheduler::new();
-    // A wider pool wants slack so its workers stay fed, but one worker runs
-    // every batch itself, so slack there only keeps more units' buffers alive.
     let pool_width = splot_parallel::current_pool_width();
     let admission_window = if pool_width > 1 {
         pool_width.saturating_sub(1).saturating_mul(3)
@@ -778,13 +773,8 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let mut submitted_batches = 0usize;
     let mut reached_last = false;
     let parse_result = splot_parallel::ready_task_scope(|scope| {
-        // Refilled per batch: `submit` reads the slice and keeps nothing, so a
-        // fresh list each time only re-walked the growth ladder from empty.
         let mut gate_conditions = Vec::new();
         for (batch_index, range) in batches.iter().enumerate() {
-            // From the tile's own reserve, and returned to it once the batch's
-            // rows are consumed, so a batch reuses a list rather than building
-            // one.
             let mut ready = crate::support::buffer_pool::take::<ReadyReconRow<T>>(range.len());
             if ready.capacity() < range.len() {
                 record_first_error(&error, inter_allocation!("ordinary inter ready batch"));
@@ -841,8 +831,6 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 }),
             );
 
-            // On the stack: a commit waits on its own precompute and, after the
-            // first, the previous commit -- never more.
             let pair;
             let single;
             let conditions: &[Condition<'_>] = if let Some(previous) = batch_index.checked_sub(1) {
@@ -901,8 +889,6 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     let terminal = submitted_batches
         .checked_sub(1)
         .and_then(|last| committed.get(last));
-    // One scope for the whole drain, not one per turn: a Rayon scope allocates,
-    // and the submission loop above already admits into a scope it holds open.
     splot_parallel::ready_task_scope(|scope| {
         while terminal.is_some_and(|done| !done.is_set()) {
             let progress = splot_parallel::pool_progress_snapshot();
@@ -927,7 +913,6 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     })?;
     let scheduler_result = scheduler.finish();
     drop(scheduler);
-    // Back to the reserve: the next frame lays out the same lists.
     let mut prepared_slots = core::mem::take(&mut *prepared.lock());
     let mut pending_slots = core::mem::take(&mut *pending.lock());
     crate::support::buffer_pool::recycle(&mut prepared_slots);
@@ -1430,7 +1415,6 @@ fn superblock_row_batches(
 ) -> Vec<core::ops::Range<usize>> {
     let batch_units = batch_units.max(1);
     let units_per_row = units_per_row.max(1);
-    // From the reserve, and returned there once the frame's batches are done.
     let mut batches = crate::support::buffer_pool::take::<core::ops::Range<usize>>(
         unit_count.div_ceil(batch_units).saturating_add(1),
     );

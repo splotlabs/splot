@@ -543,8 +543,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let mut slots: Vec<Option<Result<()>>> =
                 (0..setup.stripe_ranges().len()).map(|_| None).collect();
             let mut owed: Option<crate::error::DecodeError> = None;
-            // One worker filters the stripes itself: a spawn would only cost the
-            // heap job Rayon allocates for it.
             let alone = splot_parallel::current_pool_width() <= 1;
             let scheduled = splot_parallel::ready_task_scope(|scope| {
                 for ((stripe, range), slot) in
