@@ -94,7 +94,7 @@ impl GeneralIntraResidualPlan {
         let mut u_nonzero = false;
         let mut pending_u = false;
         let start = u32::try_from(arena.len()).unwrap_or(u32::MAX);
-        for &plane in self.planes.iter() {
+        for &plane in &self.planes {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
                 let mut parsed = plane.with_deferred_reconstruction().parse(
