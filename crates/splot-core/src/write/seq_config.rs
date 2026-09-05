@@ -22,8 +22,8 @@
 //! These configs are read **mid-byte** inside `sequence_header_obu()` (immediately after
 //! the general fields / preceding config), so — unlike the byte-aligned § 5.4.1 prefix —
 //! the writers do **not** require byte alignment at entry; they mirror the parser's bit
-//! position exactly. The top-level `write_sequence_header` (which composes them in
-//! § 5.4.1 read order) and the filter/tile configs land in later changes.
+//! position exactly. The top-level `write_sequence_header` composes these writers
+//! with the filter/tile configs in § 5.4.1 read order.
 //!
 //! This module is additive: it depends on the model/parser read-only and serializes a
 //! parsed config back to bits via [`BitWriter`]. The universal contract is semantic
@@ -66,7 +66,7 @@ const SELECT_INTEGER_MV: u8 = 2;
 /// Returns `Ok(())` if `value` fits in `width_bits`, else [`WriteError::ValueTooWide`] —
 /// the same bound the `f(n)` write enforces, checked up front so a rejected config never
 /// leaves a partial encoding in the writer.
-fn check_field_width(value: u64, width_bits: u32) -> WriteResult<()> {
+pub(super) fn check_field_width(value: u64, width_bits: u32) -> WriteResult<()> {
     let fits = width_bits >= 64 || value < (1u64 << width_bits);
     if fits {
         Ok(())
@@ -443,9 +443,7 @@ pub(crate) fn check_inter_encodable(
     }
 
     if single_picture {
-        let inferred_ok = !config.seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
-            .iter()
-            .any(|&e| e)
+        let inferred_ok = !any_motion_mode_enabled(config)
             && !config.seq_frame_motion_modes_present_flag
             && !config.enable_six_param_warp_delta
             && !config.enable_masked_compound

@@ -12,7 +12,7 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::conversion::MAX_TX_SIZE_RECT;
 
 use super::*;
-use crate::bitstream::tile_payload::TileCoeffFrameFactsInput;
+use crate::bitstream::tile_payload::TileCoeffFrameFacts;
 
 const PAYLOAD: [u8; 2] = [0x00, 0x80];
 
@@ -560,13 +560,13 @@ fn sequence_partition_reduction_suppresses_one_axis_four_way_symbol() {
 fn sequence_partition_and_frame_transform_type_reductions_are_independent() {
     let mut input = frame_facts_input();
     input.reduced_tx_set = 3;
-    let frame_type_reduced = TileCoeffFrameFacts::new(input);
+    let frame_type_reduced = input;
     assert_eq!(frame_type_reduced.reduced_tx_set(), 3);
     assert!(!frame_type_reduced.reduced_tx_part_set());
 
     input.reduced_tx_set = 0;
     input.reduced_tx_part_set = true;
-    let sequence_partition_reduced = TileCoeffFrameFacts::new(input);
+    let sequence_partition_reduced = input;
     assert_eq!(sequence_partition_reduced.reduced_tx_set(), 0);
     assert!(sequence_partition_reduced.reduced_tx_part_set());
 }
@@ -574,105 +574,32 @@ fn sequence_partition_and_frame_transform_type_reductions_are_independent() {
 #[test]
 fn writer_produced_narrow_four_and_five_way_partitions_are_nonconforming() {
     let cases = [
-        (
-            3,
-            vec![
-                (
-                    TileCdfSelector::TxDoPartition {
-                        fsc_mode: 0,
-                        is_inter: 0,
-                        txfm_split_group: 1,
-                    },
-                    1,
-                ),
-                (
-                    TileCdfSelector::TxPartitionType {
-                        fsc_mode: 0,
-                        is_inter: 0,
-                        ctx: 0,
-                        reduced: false,
-                    },
-                    3,
-                ),
-            ],
-            LumaTxPartition::Horz4,
-            (8, 0),
-        ),
-        (
-            3,
-            vec![
-                (
-                    TileCdfSelector::TxDoPartition {
-                        fsc_mode: 0,
-                        is_inter: 0,
-                        txfm_split_group: 1,
-                    },
-                    1,
-                ),
-                (
-                    TileCdfSelector::TxPartitionType {
-                        fsc_mode: 0,
-                        is_inter: 0,
-                        ctx: 0,
-                        reduced: false,
-                    },
-                    4,
-                ),
-            ],
-            LumaTxPartition::Vert4,
-            (0, 8),
-        ),
-        (
-            3,
-            vec![
-                (
-                    TileCdfSelector::TxDoPartition {
-                        fsc_mode: 0,
-                        is_inter: 0,
-                        txfm_split_group: 1,
-                    },
-                    1,
-                ),
-                (
-                    TileCdfSelector::TxPartitionType {
-                        fsc_mode: 0,
-                        is_inter: 0,
-                        ctx: 0,
-                        reduced: false,
-                    },
-                    5,
-                ),
-            ],
-            LumaTxPartition::Horz5,
-            (4, 0),
-        ),
-        (
-            3,
-            vec![
-                (
-                    TileCdfSelector::TxDoPartition {
-                        fsc_mode: 0,
-                        is_inter: 0,
-                        txfm_split_group: 1,
-                    },
-                    1,
-                ),
-                (
-                    TileCdfSelector::TxPartitionType {
-                        fsc_mode: 0,
-                        is_inter: 0,
-                        ctx: 0,
-                        reduced: false,
-                    },
-                    6,
-                ),
-            ],
-            LumaTxPartition::Vert5,
-            (0, 4),
-        ),
+        (3, LumaTxPartition::Horz4, (8, 0)),
+        (4, LumaTxPartition::Vert4, (0, 8)),
+        (5, LumaTxPartition::Horz5, (4, 0)),
+        (6, LumaTxPartition::Vert5, (0, 4)),
     ];
-
-    for (block_size_index, sequence, expected_partition, (width, height)) in cases {
+    for (symbol, expected_partition, (width, height)) in cases {
+        let block_size_index = 3;
+        let sequence = [
+            (
+                TileCdfSelector::TxDoPartition {
+                    fsc_mode: 0,
+                    is_inter: 0,
+                    txfm_split_group: 1,
+                },
+                1,
+            ),
+            (
+                TileCdfSelector::TxPartitionType {
+                    fsc_mode: 0,
+                    is_inter: 0,
+                    ctx: 0,
+                    reduced: false,
+                },
+                symbol,
+            ),
+        ];
         let payload = encode_transform_symbols(&sequence);
         let mut symbols = symbol_decoder_for_payload(&payload);
         let mut cdfs = tile_cdfs();
@@ -775,38 +702,38 @@ fn frame_facts(
     enable_chroma_dctonly: bool,
     enable_cctx: bool,
 ) -> TileCoeffFrameFacts {
-    TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+    TileCoeffFrameFacts {
         enable_intra_ist,
         enable_chroma_dctonly,
         enable_cctx,
         ..frame_facts_input()
-    })
+    }
 }
 
 fn frame_facts_with_coeff_tools(allow_tcq: bool, allow_parity_hiding: bool) -> TileCoeffFrameFacts {
-    TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+    TileCoeffFrameFacts {
         allow_tcq,
         allow_parity_hiding,
         ..frame_facts_input()
-    })
+    }
 }
 
 fn frame_facts_with_fsc() -> TileCoeffFrameFacts {
-    TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+    TileCoeffFrameFacts {
         enable_fsc: true,
         ..frame_facts_input()
-    })
+    }
 }
 
 fn lossless_frame_facts() -> TileCoeffFrameFacts {
     let mut input = frame_facts_input();
     input.enable_intra_ist = true;
     input.lossless_array[0] = true;
-    TileCoeffFrameFacts::new(input)
+    input
 }
 
-fn frame_facts_input() -> TileCoeffFrameFactsInput {
-    TileCoeffFrameFactsInput {
+fn frame_facts_input() -> TileCoeffFrameFacts {
+    TileCoeffFrameFacts {
         enable_fsc: false,
         enable_intra_ist: false,
         enable_inter_ist: false,
@@ -1589,7 +1516,7 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
     let mut input = frame_facts_input();
     input.enable_cctx = true;
     input.lossless_array[0] = true;
-    let facts = TileCoeffFrameFacts::new(input);
+    let facts = input;
     let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 1)]);
     let mut cdfs = tile_cdfs();
     let mut symbols = symbol_decoder_for_payload(&payload);

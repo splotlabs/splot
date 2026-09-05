@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -114,7 +113,6 @@ mod tests {
         u32::try_from(body.bit_len() / 8).unwrap()
     }
 
-
     #[test]
     fn reset_local_round_trips() {
         round_trip(&reset_ops(ExtendedLayerId::from_bits(2), false, 3));
@@ -128,41 +126,7 @@ mod tests {
 
     #[test]
     fn local_minimal_round_trips() {
-        let xlayer = ExtendedLayerId::from_bits(4);
-        let mut ops = OperatingPointSet {
-            xlayer_id: xlayer,
-            reset_flag: false,
-            ops_id: 1,
-            ops_cnt: 1,
-            priority: Some(0),
-            intent: Some(0),
-            intent_present: false,
-            ptl_present: false,
-            color_info_present: false,
-            mlayer_info_idc: None,
-            local_reserved_2bits: Some(0),
-            payloads: vec![OperatingPointPayload {
-                index: 0,
-                declared_size_bytes: 0,
-                computed_size_bytes: 0,
-                op_intent: None,
-                aggregate_info: None,
-                color_info: None,
-                decoder_model_info: None,
-                initial_display_delay_minus_1: None,
-                xlayer_map: None,
-                xlayer_entries: vec![OpsXlayerEntry {
-                    xlayer_id: xlayer,
-                    ptl_info: None,
-                    mlayer: OpsMlayerSource::Explicit(OpsMlayerInfo {
-                        mlayer_map: 0,
-                        tlayer_maps: vec![],
-                    }),
-                }],
-            }],
-        };
-        canonicalize_sizes(&mut ops);
-        round_trip(&ops);
+        round_trip(&local_one_payload());
     }
 
     #[test]
@@ -397,7 +361,6 @@ mod tests {
         round_trip(&ops);
     }
 
-
     fn global_entry(
         layer_bit: u8,
         profile: Option<u8>,
@@ -450,7 +413,6 @@ mod tests {
             }],
         }
     }
-
 
     /// Asserts the writer rejects `ops` with `NonCanonicalOperatingPointSet { what }` and writes
     /// no bit.
@@ -889,7 +851,6 @@ mod tests {
         canonicalize_sizes(&mut ops);
         ops
     }
-
 
     #[test]
     fn out_of_field_ops_id_rejects() {

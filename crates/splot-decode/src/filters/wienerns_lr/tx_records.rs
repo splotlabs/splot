@@ -170,13 +170,6 @@ fn selectable_state_error() -> crate::error::DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
-fn selectable_read_error(
-    tile_offset: ByteOffset,
-    spec_section: &'static str,
-) -> crate::error::DecodeError {
-    selectable_symbol_read_error(tile_offset, spec_section)
-}
-
 impl DeltaQState {
     pub(crate) fn new(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
         let delta_q = core.delta_q_params.as_ref();
@@ -226,7 +219,7 @@ impl DeltaQState {
             if delta_q_abs != 0 {
                 let sign_bit = symbols
                     .read_literal(DELTA_Q_SIGN_BIT_WIDTH)
-                    .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?
+                    .map_err(|_| selectable_symbol_read_error(tile_offset, "5.20.5.11"))?
                     != 0;
                 let delta_q_abs =
                     i32::try_from(delta_q_abs).map_err(|_| selectable_state_error())?;
@@ -753,7 +746,6 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
                         max_tx_size,
                         b_size,
                         fsc_mode,
-                        true,
                         reduced_tx_part_set,
                         tile_offset,
                     )?
@@ -797,7 +789,6 @@ fn read_tx_partition_symbols(
     tx_size: usize,
     mi_size: usize,
     fsc_mode: u8,
-    is_inter: bool,
     reduced_tx_part_set: bool,
     tile_offset: ByteOffset,
 ) -> Result<Option<usize>> {
@@ -815,7 +806,6 @@ fn read_tx_partition_symbols(
     let block_width = block_dimension("Block_Width", mi_size, true)?;
     let block_height = block_dimension("Block_Height", mi_size, false)?;
     let tx_fsc_mode = usize::from(fsc_mode != 0);
-    let tx_is_inter = usize::from(is_inter);
     if block_width <= 64 && block_height <= 64 {
         let txfm_split_group = table_usize(
             "Size_To_Tx_Part_Group_Lookup",
@@ -828,7 +818,7 @@ fn read_tx_partition_symbols(
             symbols,
             TileCdfSelector::TxDoPartition {
                 fsc_mode: tx_fsc_mode,
-                is_inter: tx_is_inter,
+                is_inter: 1,
                 txfm_split_group,
             },
             tile_offset,
@@ -847,7 +837,7 @@ fn read_tx_partition_symbols(
                     symbols,
                     TileCdfSelector::TxPartitionType {
                         fsc_mode: tx_fsc_mode,
-                        is_inter: tx_is_inter,
+                        is_inter: 1,
                         ctx,
                         reduced: reduced_tx_part_set,
                     },
@@ -871,7 +861,7 @@ fn read_tx_partition_symbols(
                             symbols,
                             TileCdfSelector::Tx2Or3PartitionType {
                                 fsc_mode: tx_fsc_mode,
-                                is_inter: tx_is_inter,
+                                is_inter: 1,
                                 ctx: vert_or_horz_ctx,
                             },
                             tile_offset,
@@ -922,8 +912,8 @@ fn apply_tx_partition(
     tx_size: usize,
     tx_partition: usize,
 ) -> std::result::Result<usize, SelectableTransformRecordError> {
-    let tx_width = tx_dimension_for_grid("Tx_Width", &TX_WIDTH, tx_size)?;
-    let tx_height = tx_dimension_for_grid("Tx_Height", &TX_HEIGHT, tx_size)?;
+    let tx_width = table_usize("Tx_Width", &TX_WIDTH, tx_size)?;
+    let tx_height = table_usize("Tx_Height", &TX_HEIGHT, tx_size)?;
     let mut w4 = tx_width / MI_SIZE;
     let mut h4 = tx_height / MI_SIZE;
     match tx_partition {
@@ -1053,11 +1043,11 @@ fn read_delta_q_abs(
     }
     let delta_q_rem_bits = symbols
         .read_literal(DELTA_Q_REM_BITS_WIDTH)
-        .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?
+        .map_err(|_| selectable_symbol_read_error(tile_offset, "5.20.5.11"))?
         + 1;
     let delta_q_abs_bits = symbols
         .read_literal(delta_q_rem_bits)
-        .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?;
+        .map_err(|_| selectable_symbol_read_error(tile_offset, "5.20.5.11"))?;
     let delta_q_large_base = 1usize << delta_q_rem_bits;
     Ok(delta_q_abs_bits as usize + delta_q_large_base + (DELTA_Q_SMALL - 2))
 }
@@ -1102,26 +1092,7 @@ fn block_dimension(table: &'static str, block_size: usize, width: bool) -> Resul
 }
 
 fn tx_dimension(table: &'static str, values: &[i32], tx_size: usize) -> Result<usize> {
-    tx_dimension_for_grid(table, values, tx_size).map_err(selectable_transform_record_error)
-}
-
-fn tx_dimension_for_grid(
-    table: &'static str,
-    values: &[i32],
-    tx_size: usize,
-) -> std::result::Result<usize, SelectableTransformRecordError> {
-    let value = values
-        .get(tx_size)
-        .copied()
-        .ok_or(SelectableTransformRecordError::TableIndex {
-            table,
-            index: tx_size,
-        })?;
-    usize::try_from(value).map_err(|_| SelectableTransformRecordError::TableValue {
-        table,
-        index: tx_size,
-        value,
-    })
+    table_usize(table, values, tx_size).map_err(selectable_transform_record_error)
 }
 
 fn table_usize(

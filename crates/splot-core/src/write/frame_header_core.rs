@@ -58,9 +58,7 @@ fn reject<T>(what: &'static str) -> WriteResult<T> {
 /// Returns `f(n)` writability: `value` fits an `n`-bit fixed field (`n == 0` accepts only
 /// `0`, matching the parser's `read_f` no-bit inference).
 fn fits_in_f(value: u32, n: u32) -> bool {
-    if n == 0 {
-        value == 0
-    } else if n >= u32::BITS {
+    if n >= u32::BITS {
         true
     } else {
         value < (1u32 << n)
@@ -168,29 +166,19 @@ fn write_refresh_frame_flags(
     let bits = ceil_log2(seq.num_ref_frames);
     match arm {
         RefreshFlagsArm::InferredAllFrames => Ok(()),
-        RefreshFlagsArm::ShortKey { frame_to_refresh } => write_f(writer, frame_to_refresh, bits),
+        RefreshFlagsArm::ShortKey { frame_to_refresh } => writer.write_bits(frame_to_refresh, bits),
         RefreshFlagsArm::ShortIntraOnly {
             has_flags,
             frame_to_refresh,
         } => {
             writer.write_flag(has_flags)?;
             if has_flags {
-                write_f(writer, frame_to_refresh, bits)?;
+                writer.write_bits(frame_to_refresh, bits)?;
             }
             Ok(())
         }
-        RefreshFlagsArm::Direct => write_f(writer, refresh_frame_flags, seq.num_ref_frames),
+        RefreshFlagsArm::Direct => writer.write_bits(refresh_frame_flags, seq.num_ref_frames),
     }
-}
-
-/// Writes `f(n)`, treating `n == 0` as no bits (the value must be `0`), mirroring the
-/// parser's `read_f` (AV2 v1.0.0 § 4.11.2,
-/// `docs/spec/av2/1.0.0/04-conventions.md#s-4-11-2`).
-fn write_f(writer: &mut BitWriter, value: u32, n: u32) -> WriteResult<()> {
-    if n == 0 {
-        return Ok(());
-    }
-    writer.write_bits(value, n)
 }
 
 /// The fully-validated control-region facts a [`FrameHeaderCore`] carries on the
@@ -347,7 +335,7 @@ fn check_frame_header_core_encodable(
     if core.inter.is_some() {
         return reject("inter");
     }
-    // Finding 7: sef_film_grain is the show-existing-frame film_grain_config (info.rs:1518),
+    // sef_film_grain is the show-existing-frame film_grain_config,
     // None on the intra path.
     if core.sef_film_grain.is_some() {
         return reject("sef_film_grain");
@@ -532,7 +520,7 @@ fn write_intra_header_into(
             .ok_or(WriteError::NonCanonicalFrameHeader {
                 what: "bridge_frame_ref_idx",
             })?;
-        write_f(scratch, idx, ceil_log2(seq.num_ref_frames))?;
+        scratch.write_bits(idx, ceil_log2(seq.num_ref_frames))?;
     }
 
     if !glue.single_picture {
@@ -556,7 +544,7 @@ fn write_intra_header_into(
                     what: "long_term_id",
                 }
             })?;
-            write_f(scratch, plus_1, seq.long_term_frame_id_bits)?;
+            scratch.write_bits(plus_1, seq.long_term_frame_id_bits)?;
         }
         let ref_lt_coded = (obu_type == ObuType::RasFrame || obu_type == ObuType::OpenLoopKey)
             && seq.long_term_frame_id_bits != 0;
@@ -566,9 +554,9 @@ fn write_intra_header_into(
                     what: "ref_long_term_ids",
                 }
             })?;
-            write_f(scratch, num, 3)?;
+            scratch.write_bits(num, 3)?;
             for &id in &core.ref_long_term_ids {
-                write_f(scratch, id, seq.long_term_frame_id_bits)?;
+                scratch.write_bits(id, seq.long_term_frame_id_bits)?;
             }
         }
 
@@ -583,7 +571,7 @@ fn write_intra_header_into(
     if !glue.single_picture {
         scratch.write_flag(glue.frame_size_override_flag)?;
     }
-    write_f(scratch, glue.order_hint_lsb, seq.order_hint_bits)?;
+    scratch.write_bits(glue.order_hint_lsb, seq.order_hint_bits)?;
     write_refresh_frame_flags(scratch, seq, glue.refresh_arm, glue.refresh_frame_flags)?;
 
     let default_dims = if core.cur_mfh_id.is_zero() {
@@ -796,12 +784,6 @@ fn reconstruct_prefix(
     let mut probe = BitWriter::new();
     if !core.is_bridge {
         let cur = core.cur_mfh_id.get();
-        if cur == u32::MAX {
-            return Err(WriteError::ValueOutOfRange {
-                descriptor: "uvlc",
-                value: i64::from(cur),
-            });
-        }
         probe.write_uvlc(cur)?;
     }
     if core.cur_mfh_id.is_zero() {
@@ -810,12 +792,6 @@ fn reconstruct_prefix(
                 .ok_or(WriteError::NonCanonicalFrameHeader {
                     what: "seq_header_id_in_frame_header",
                 })?;
-        if raw == u32::MAX {
-            return Err(WriteError::ValueOutOfRange {
-                descriptor: "uvlc",
-                value: i64::from(raw),
-            });
-        }
         probe.write_uvlc(raw)?;
     }
     let consumed_bits = probe.bit_len();

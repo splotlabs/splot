@@ -65,15 +65,8 @@ impl MfhId {
 /// HLS availability record for a parsed multi-frame header OBU (AV2 v1.0.0 § 5.7 /
 /// § 7.3.8.7), consumed by the frame-header `cur_mfh_id` reference check.
 ///
-/// Beyond the availability identity (`mfh_id` / `mfh_seq_header_id` / layer ids) this
-/// also carries the parsed § 5.7 state a `cur_mfh_id > 0` frame header consumes at
-/// § 5.18.2: the frame-size payload (for the § 5.18.4.1 default dimensions),
-/// the segment-info gating flags and the parsed `MfhFeatureEnabled` / `MfhFeatureData`
-/// (for the § 5.18.7.1 MFH-gated `segmentation_params()` arm), and
-/// `mfh_deblocking_filter_update` (groundwork; deblocking parsing itself lands with
-/// the frame-filtering change). Keeping this state in `splot-core` lets the validator
-/// pass a complete view into the core parse without `splot-core` depending on any
-/// `splot-validate` type.
+/// Carries the frame-size, segmentation, and deblocking defaults consumed by
+/// frame headers with `cur_mfh_id > 0` (§ 5.18.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MultiFrameHeaderRecord {
     /// `mfhId = mfh_id_minus_1 + 1` (in range, `< MAX_MFH_NUM`).
@@ -240,8 +233,7 @@ pub struct MfhFrameSize {
 
 /// Parsed `multi_frame_header_obu()` syntax (AV2 v1.0.0 § 5.7).
 ///
-/// Frame-header reuse semantics are out of scope for this phase; this captures the
-/// syntax fields needed for HLS availability and future frame references.
+/// Carries the fields used for HLS availability and frame-header references.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MultiFrameHeader {

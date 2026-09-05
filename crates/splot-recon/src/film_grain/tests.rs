@@ -41,28 +41,22 @@ fn frame<T: ReconSample>(
     pixel_format: PixelFormat,
     samples: &[u8],
 ) -> DecodedFrame<T> {
+    let convert = |values: &[u8]| {
+        values
+            .iter()
+            .copied()
+            .map(u16::from)
+            .map(T::try_from_u16)
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap()
+    };
     let luma_len = width * height;
-    let luma = samples[..luma_len]
-        .iter()
-        .copied()
-        .map(u16::from)
-        .map(T::try_from_u16)
-        .collect::<crate::Result<Vec<_>>>()
-        .unwrap();
+    let luma = convert(&samples[..luma_len]);
     let luma_size = PlaneSize::new(width, height).unwrap();
     let chroma_size = pixel_format.chroma_size(luma_size).unwrap();
     let mut offset = luma_len;
     let (u, v) = if let Some(size) = chroma_size {
         let len = size.width() * size.height();
-        let convert = |values: &[u8]| {
-            values
-                .iter()
-                .copied()
-                .map(u16::from)
-                .map(T::try_from_u16)
-                .collect::<crate::Result<Vec<_>>>()
-                .unwrap()
-        };
         let u = plane(
             size.width(),
             size.height(),

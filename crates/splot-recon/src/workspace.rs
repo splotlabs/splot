@@ -117,8 +117,8 @@ macro_rules! contiguous_rect_writer {
 
 /// Mutable current-frame reconstruction workspace.
 ///
-/// The workspace owns checked plane storage that future decode or encoder paths
-/// can fill incrementally before freezing into the immutable [`DecodedFrame`]
+/// The workspace owns checked plane storage that callers fill incrementally
+/// before freezing into the immutable [`DecodedFrame`]
 /// model. It is intentionally scheduler-free: callers own any parallel
 /// partitioning above this type.
 ///
@@ -406,38 +406,26 @@ pub enum CurrentFrameSurface<'surface, 'storage, T: ReconSample> {
     OwnedRect(&'surface mut OwnedFrameRect<T>),
 }
 
-enum CurrentFrameResidualTarget<'surface, T: ReconSample> {
-    Contiguous {
-        samples: &'surface mut [T],
-        stride: usize,
-        base: usize,
-        rect: PlaneRect,
-        max_sample: u16,
-    },
+struct CurrentFrameResidualTarget<'surface, T: ReconSample> {
+    samples: &'surface mut [T],
+    stride: usize,
+    base: usize,
+    rect: PlaneRect,
+    max_sample: u16,
 }
 
 impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
     #[inline]
     fn add(self, mut residual_at: impl FnMut(usize, usize) -> i32) -> Result<()> {
-        match self {
-            Self::Contiguous {
-                samples,
-                stride,
-                base,
-                rect,
-                max_sample,
-            } => {
-                let max = i32::from(max_sample);
-                for row in 0..rect.height() {
-                    let target_start = base + row * stride;
-                    add_residual_row(
-                        &mut samples[target_start..target_start + rect.width()],
-                        row,
-                        max,
-                        &mut residual_at,
-                    )?;
-                }
-            }
+        let max = i32::from(self.max_sample);
+        for row in 0..self.rect.height() {
+            let target_start = self.base + row * self.stride;
+            add_residual_row(
+                &mut self.samples[target_start..target_start + self.rect.width()],
+                row,
+                max,
+                &mut residual_at,
+            )?;
         }
         Ok(())
     }
@@ -826,7 +814,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 }
             }
         }
-        Ok(CurrentFrameResidualTarget::Contiguous {
+        Ok(CurrentFrameResidualTarget {
             samples: target,
             stride: target_stride,
             base: target_base,

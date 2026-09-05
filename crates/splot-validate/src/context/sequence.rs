@@ -5,43 +5,20 @@
 
 use super::*;
 
-/// Per-extended-layer distinct-`obu_mlayer_id` accumulator for the § 6.4.1
-/// `SeqMaxMlayerCnt` count (AV2 v1.0.0 § 6.4.1).
-///
-/// § 6.4.1 (mirror `06-syntax-structures-semantics.md` lines 445-447) requires "the
-/// number of distinct values of obu_mlayer_id present in the coded video sequence
-/// associated with this sequence header is less than or equal to SeqMaxMlayerCnt", and
-/// the § 6.4.1 NOTE (lines 450-452) adds that "the counting applies to all OBUs, even
-/// if they are not layer-specific".
-///
-/// **Attribution (design decision 4, conservative under-approximation).** The count is
-/// scoped to *one extended layer's* coded video sequence (§ 7.3.6), but a global
-/// (`GLOBAL_XLAYER_ID`) OBU belongs to no single extended layer's CVS, so attributing
-/// its `obu_mlayer_id` to a specific extended layer is ambiguous. Only OBUs whose
-/// `obu_xlayer_id` names a concrete extended layer are counted under that layer; the
-/// `obu_mlayer_id` of a global OBU is left uncounted. This can only *under*-count, so a
-/// reported exceedance is always real. The forced-`obu_mlayer_id == 0` of a per-layer
-/// `OBU_SEQUENCE_HEADER` (§ 6.2.2) is itself a concrete-`obu_xlayer_id` OBU and is
-/// counted, matching the NOTE's "a sequence containing only embedded layer 1 will count
-/// as two layers" example.
-/// TODO(spec: AV2-6.4-SEQUENCE-HEADER-SEMANTICS): attribute global-`obu_xlayer_id`
-/// OBUs (e.g. a global LCR) to the per-extended-layer CVS counts once the § 6.2.2 /
-/// § 7.3.6 global-OBU-to-CVS association is modeled.
+/// Per-layer distinct obu_mlayer_id count (§ 6.4.1,
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md`). Count all concrete
+/// layer OBUs, including sequence headers forced to mlayer 0. Global OBUs are
+/// unattributed: this conservative undercount cannot create a false positive.
+/// TODO(spec: AV2-6.4-SEQUENCE-HEADER-SEMANTICS): attribute global OBUs once their
+/// § 6.2.2 / § 7.3.6 association to per-layer CVSs is modeled.
 #[derive(Debug, Default)]
 pub(super) struct DistinctMlayerTracker {
     /// For each extended layer, the distinct `obu_mlayer_id` values counted in its
     /// current coded video sequence, and whether the § 6.4.1 exceedance has already
     /// been reported for that coded video sequence (emit once per CVS).
     pub(super) per_xlayer: BTreeMap<ExtendedLayerId, DistinctMlayerState>,
-    /// For each extended layer, the distinct `obu_mlayer_id` values observed so far in
-    /// the *current temporal unit* (cleared at each temporal-unit advance, analogous to
-    /// [`ValidatorContext::frames_seen_in_tu`]). § 7.3.6 (mirror
-    /// `07-decoding-process.md` lines 604-606) starts a new coded video sequence AT the
-    /// temporal unit containing the CLK, so every id of that temporal unit — including a
-    /// § 7.3.8.1 resent-at-RAP sequence header observed before the CLK — belongs to the
-    /// NEW coded video sequence. [`Self::reset_cvs`] re-seeds the new coded video
-    /// sequence from this per-temporal-unit set so those pre-CLK ids are attributed to
-    /// the new CVS (exact re-attribution, not the former whole-state drop).
+    /// Ids observed in the current TU. A CLK starts the new CVS at that TU
+    /// (§ 7.3.6), so reset_cvs reattributes even ids observed before the CLK.
     pub(super) per_xlayer_tu: BTreeMap<ExtendedLayerId, BTreeSet<EmbeddedLayerId>>,
 }
 
@@ -51,16 +28,8 @@ pub(super) struct DistinctMlayerTracker {
 pub(super) struct DistinctMlayerState {
     /// The distinct `obu_mlayer_id` values seen so far in this coded video sequence.
     pub(super) seen: BTreeSet<EmbeddedLayerId>,
-    /// The temporal unit in which the first `obu_mlayer_id` of this coded video sequence
-    /// was counted, or `None` until the first count. The exceedance baseline for
-    /// [`CvsTracker::defer_or_emit`]: when the whole accumulated set was first observed in
-    /// the temporal unit of the OBU that triggers the exceedance, all members share one
-    /// coded video sequence regardless of a later same-temporal-unit CLK (§ 7.3.6: a CVS
-    /// starts *at* a temporal unit, so same-TU OBUs join the same new CVS), and the
-    /// diagnostic is emitted eagerly; when the set spans an earlier temporal unit, a CLK
-    /// later in the current temporal unit could split it across two coded video sequences,
-    /// so the diagnostic is deferred and dropped by [`CvsTracker::flush_completed_tu`] if
-    /// such a CLK arrives.
+    /// First counted TU, used as the CvsTracker deferral baseline. A count confined
+    /// to this TU emits eagerly; one spanning earlier TUs may cross a later CLK.
     pub(super) first_tu: Option<u64>,
     /// `true` once `sequence-state/distinct-mlayer-count-exceeds-seq-max` has been
     /// emitted for this coded video sequence (the check emits once per CVS).
@@ -68,33 +37,11 @@ pub(super) struct DistinctMlayerState {
 }
 
 impl DistinctMlayerTracker {
-    /// Resets `xlayer`'s distinct-`obu_mlayer_id` count at a § 7.3.6 coded-video-sequence
-    /// start (CLK), *re-attributing* the same-temporal-unit ids observed before the CLK
-    /// to the new coded video sequence rather than dropping them.
-    ///
-    /// § 7.3.6 (mirror `07-decoding-process.md` lines 604-606): the new coded video
-    /// sequence starts AT the temporal unit containing the CLK, so every id of that
-    /// temporal unit — canonically the § 7.3.8.1 resent-at-RAP sequence header, forced to
-    /// `obu_mlayer_id == 0` (the § 6.4.1 NOTE, mirror
-    /// `06-syntax-structures-semantics.md` lines 450-452) — belongs to the new coded
-    /// video sequence and must count toward `SeqMaxMlayerCnt`. The new state is therefore
-    /// re-seeded from the current temporal unit's seen set (`per_xlayer_tu`) with
-    /// `first_tu == tu_index` (the boundary temporal unit, so an exceedance within the new
-    /// coded video sequence counted in this temporal unit emits eagerly). The once-per-CVS
-    /// `reported` flag is carried only when the old set's first temporal unit *was* this
-    /// boundary temporal unit — meaning the old set was entirely in the boundary temporal
-    /// unit and thus is the same coded video sequence — so an exceedance already reported
-    /// among the pre-CLK ids is not re-reported; when the old set spanned an earlier
-    /// temporal unit, its (deferred) exceedance belonged to the ending coded video
-    /// sequence and the new coded video sequence starts unreported.
-    ///
-    /// Only re-seeds the state; the § 6.4.1 exceedance comparison runs *after* the CLK's
-    /// frame header activates the new coded video sequence's referenced sequence header
-    /// (see [`ValidatorContext::observe_frame_bearing_obu`]'s activation path), where the
-    /// correct `SeqMaxMlayerCnt` is available. A set whose pre-CLK members already exceed
-    /// `SeqMaxMlayerCnt` cannot be re-surfaced by [`Self::observe`] (it never re-yields an
-    /// already-seen id), so the activation path runs [`Self::current_count`] to read the
-    /// re-seeded set back out.
+    /// Reseeds the new § 7.3.6 CVS with all ids observed in the CLK's TU.
+    /// Carry reported only when the old set began in this same TU; otherwise its
+    /// pending report belongs to the ending CVS. The activation path checks the
+    /// reseeded count after the CLK resolves the correct sequence header; observe
+    /// cannot re-yield ids already in the set.
     pub(super) fn reset_cvs(&mut self, xlayer: ExtendedLayerId, tu_index: u64) {
         let prior_first_tu = self.per_xlayer.get(&xlayer).and_then(|s| s.first_tu);
         let prior_reported = self.per_xlayer.get(&xlayer).is_some_and(|s| s.reported);
@@ -119,18 +66,9 @@ impl DistinctMlayerTracker {
         self.per_xlayer_tu.clear();
     }
 
-    /// Records `mlayer` under `xlayer`'s current coded video sequence at temporal unit
-    /// `tu_index` and returns `(new_distinct_count, first_tu)` when this `obu_mlayer_id`
-    /// was not already counted *and* the exceedance has not yet been reported for this
-    /// coded video sequence; otherwise `None`. `first_tu` is the temporal unit of the
-    /// set's first counted OBU (the [`CvsTracker::defer_or_emit`] baseline). The caller
-    /// compares the returned count against `SeqMaxMlayerCnt` and, on the first exceedance,
-    /// marks the coded video sequence reported via [`Self::mark_reported`].
-    ///
-    /// The id is always recorded in the per-temporal-unit set
-    /// ([`DistinctMlayerTracker::per_xlayer_tu`]) regardless of the once-per-CVS report
-    /// state, so [`Self::reset_cvs`] can re-attribute every pre-CLK id of the boundary
-    /// temporal unit to the new coded video sequence.
+    /// Records an id in both TU and CVS sets. Returns (new count, first TU) only
+    /// for a new id before the first report. Always update the TU set so a later
+    /// CLK can reattribute ids even after the old CVS reported an exceedance.
     pub(super) fn observe(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -156,13 +94,8 @@ impl DistinctMlayerTracker {
         self.per_xlayer.entry(xlayer).or_default().reported = true;
     }
 
-    /// Returns the distinct `obu_mlayer_id` count accumulated so far in `xlayer`'s
-    /// current coded video sequence and the set's first-counted temporal unit, or `None`
-    /// when nothing has been counted yet or the exceedance was already reported for this
-    /// coded video sequence (emit once per CVS). Read-only: it does not record a new id,
-    /// so it surfaces a count that [`Self::observe`] cannot re-yield (its already-seen ids
-    /// return `None`). Used by the activation-path retroactive check, which compares a
-    /// count accumulated *before* a sequence header became active for the extended layer.
+    /// Unreported count and first TU for activation-time checking. Unlike observe,
+    /// this surfaces ids accumulated before a sequence header became active.
     pub(super) fn current_count(&self, xlayer: ExtendedLayerId) -> Option<(usize, u64)> {
         let state = self.per_xlayer.get(&xlayer)?;
         if state.reported {
@@ -188,17 +121,9 @@ impl ValidatorContext {
         Some((id, header.general))
     }
 
-    /// The frame-confirmed extended layers whose latest activation lies within the *current*
-    /// CMVS window — i.e. whose most recent frame-confirmed sequence-header activation
-    /// happened at a temporal unit at or after the CMVS-window start
-    /// (`cmvs_start_tu_index`). Returns an empty vector when no CMVS window is open.
-    ///
-    /// The § 6.8.2 LCR DOH requirement and the § 6.6 MSDO DOH requirement scope their
-    /// per-layer evaluation to this set instead of the whole-history `frame_confirmed_xlayers`
-    /// accumulator, so a non-monotonic header left active from an earlier, already-ended
-    /// coded video sequence outside the current CMVS does not trigger a diagnostic against
-    /// this CMVS's MSDO / global LCR. The § 7.3.2 CMVS spans
-    /// specific temporal units, so a temporal-unit lower bound is the right scope.
+    /// Confirmed layers activated at or after the current CMVS start, or empty
+    /// outside a CMVS. Old active non-monotonic headers must not constrain a later
+    /// CMVS's MSDO/global LCR (§ 6.6 / § 6.8.2).
     pub(super) fn frame_confirmed_xlayers_in_current_cmvs(&self) -> Vec<ExtendedLayerId> {
         let Some(cmvs_start) = self.cmvs.current_cmvs_start_tu_index() else {
             return Vec::new();
@@ -235,20 +160,9 @@ impl ValidatorContext {
         }
     }
 
-    /// The activated sequence header for `xlayer`, but *only* when a parsed
-    /// frame-header reference confirmed it (§ 5.18.2 `load_sequence_header`) — the
-    /// strict variant of [`Self::agreement_activation_for`] that does *not* admit the
-    /// sole-in-band-header OBU-order fallback.
-    ///
-    /// The fallback (`sequence_headers.len() == 1`) is a guess: § 7.3.6 permits staging a
-    /// header before any frame activates one, and with external HLS declared the *real*
-    /// activated header could be the external one (the in-band staged header may never be
-    /// referenced). Checks that fire unconditionally on a violation (the Annex A
-    /// value-space check, and the § 6.8.5 / § 6.8.8 / § 6.8.9 LCR-agreement checks)
-    /// therefore use this strict gate so they never emit against a fallback guess; they
-    /// re-enter the moment a frame confirms the activation. Contrast the OPS / § 6.8.2
-    /// resolutions that tolerate the fallback because they emit nothing without an
-    /// OPS/global-LCR present and are otherwise suppressed under external HLS.
+    /// Strict activation gate: requires a parsed frame-header reference (§ 5.18.2).
+    /// Unlike agreement_activation_for, excludes the sole-header OBU-order guess,
+    /// which may merely be staged (§ 7.3.6) or replaced by external HLS.
     pub(super) fn frame_confirmed_activation_for(
         &self,
         xlayer: ExtendedLayerId,
@@ -407,10 +321,7 @@ impl ValidatorContext {
             self.emitted_dependency_findings
                 .retain(|key| key.seq_header_id() != seq_header_id);
         }
-        let external_hls_suppresses = matches!(
-            &options.external_hls,
-            ExternalHlsMode::Provided(set) if set.declares_any_sequence_header()
-        );
+        let external_hls_suppresses = external_declares_sequence_header(options);
         for layer in layers_to_check {
             self.on_sequence_activation(layer, options, report);
             self.check_monotonic_output_order_agreement(layer, obu.offset, options, report);
@@ -431,9 +342,7 @@ impl ValidatorContext {
             return;
         }
 
-        if let ExternalHlsMode::Provided(set) = &options.external_hls
-            && set.declares_any_sequence_header()
-        {
+        if external_declares_sequence_header(options) {
             return;
         }
 
@@ -511,31 +420,11 @@ impl ValidatorContext {
         }
     }
 
-    /// Counts the distinct `obu_mlayer_id` values present in `obu`'s extended layer's
-    /// current coded video sequence and emits
-    /// `sequence-state/distinct-mlayer-count-exceeds-seq-max` (AV2 § 6.4.1) the first
-    /// time the count exceeds the active sequence header's `SeqMaxMlayerCnt`.
-    ///
-    /// § 6.4.1 requires "the number of distinct values of obu_mlayer_id present in the
-    /// coded video sequence associated with this sequence header is less than or equal
-    /// to SeqMaxMlayerCnt" (mirror `06-syntax-structures-semantics.md` lines 445-447).
-    /// Only OBUs carrying a concrete `obu_xlayer_id` are counted (global OBUs cannot be
-    /// unambiguously attributed to one extended layer's coded video sequence; see
-    /// [`DistinctMlayerTracker`] for the conservative attribution reading and the
-    /// associated spec TODO). The comparison uses the extended layer's active sequence
-    /// header, so a layer with no active header yet — or whose active header is supplied
-    /// out of band — is skipped rather than guessed.
-    ///
-    /// § 7.3.6 starts a new coded video sequence *at* the temporal unit containing the
-    /// CLK, so an OBU of this extended layer observed earlier in the temporal unit that a
-    /// later CLK begins a coded video sequence already belongs to the *new* coded video
-    /// sequence. The validator cannot know a CLK is still coming when it counts that OBU,
-    /// so an exceedance whose accumulated set spans an earlier temporal unit is routed
-    /// through [`CvsTracker::defer_or_emit`]: deferred, then dropped by
-    /// [`CvsTracker::flush_completed_tu`] when a CLK started a coded video sequence for
-    /// this extended layer in the temporal unit (the set straddled the boundary), and
-    /// emitted otherwise. An exceedance whose set is entirely within the current temporal
-    /// unit is in one coded video sequence regardless of a later CLK and is emitted eagerly.
+    /// Counts concrete-layer ids and checks § 6.4.1 SeqMaxMlayerCnt once per CVS.
+    /// Unknown/external active headers are not guessed. CvsTracker defers counts
+    /// spanning earlier TUs because a later CLK begins the new CVS at this TU;
+    /// a count wholly within this TU emits eagerly. See DistinctMlayerTracker for
+    /// the conservative global-OBU attribution limit.
     pub(super) fn count_distinct_mlayer(
         &mut self,
         obu: &ObuEnvelope<'_>,
@@ -546,9 +435,7 @@ impl ValidatorContext {
             return;
         }
 
-        if let ExternalHlsMode::Provided(set) = &options.external_hls
-            && set.declares_any_sequence_header()
-        {
+        if external_declares_sequence_header(options) {
             return;
         }
 
@@ -574,17 +461,9 @@ impl ValidatorContext {
         );
     }
 
-    /// Retroactively compares `xlayer`'s already-accumulated distinct-`obu_mlayer_id`
-    /// count against the `SeqMaxMlayerCnt` of the sequence header that just became active
-    /// for it (AV2 § 6.4.1). OBUs arriving before any active sequence header for an
-    /// extended layer accumulate a distinct count that [`Self::count_distinct_mlayer`]
-    /// never compares (it has no header to associate the count with, and the activating
-    /// sequence header's own already-seen `obu_mlayer_id == 0` makes [`DistinctMlayerTracker::observe`]
-    /// yield `None`). Once a header activates, its `SeqMaxMlayerCnt` is available, so the
-    /// pre-activation count is compared here. The diagnostic is anchored to the activating
-    /// OBU's `byte_offset` and routed/deduplicated identically to the eager check
-    /// (emit once per CVS via [`DistinctMlayerTracker::mark_reported`]). Called from the
-    /// sequence-activation path; the external-HLS gate is applied by the caller.
+    /// Checks ids accumulated before activation against the now-known SeqMaxMlayerCnt.
+    /// The activating OBU anchors the diagnostic; routing/dedup matches the eager
+    /// check. The caller applies the external-HLS gate.
     pub(super) fn retroactive_distinct_mlayer_check(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -606,18 +485,9 @@ impl ValidatorContext {
         );
     }
 
-    /// Emits `sequence-state/distinct-mlayer-count-exceeds-seq-max` (AV2 § 6.4.1) when the
-    /// distinct count exceeds the active header's `SeqMaxMlayerCnt`, routing the diagnostic
-    /// through the § 7.3.6 boundary logic and marking `xlayer`'s coded video sequence
-    /// reported (emit once per CVS). Shared by the eager [`Self::count_distinct_mlayer`]
-    /// and the activation-path [`Self::retroactive_distinct_mlayer_check`].
-    /// `count_and_first_tu` is the distinct count and the set's first-counted temporal unit
-    /// (the [`CvsTracker::defer_or_emit`] deferral baseline): a set confined to the current
-    /// temporal unit emits eagerly; a set spanning an earlier temporal unit is deferred and
-    /// dropped if a CLK begins a new coded video sequence for this extended layer in this
-    /// temporal unit (the pre-CLK members then belong to the new coded video sequence, not
-    /// the exceeding old one). `active_header` is the activated header's id and its
-    /// `SeqMaxMlayerCnt`.
+    /// Shared eager/activation-time § 6.4.1 exceedance check. count_and_first_tu
+    /// carries the CvsTracker deferral baseline; active_header is (id, SeqMaxMlayerCnt).
+    /// Marks the CVS reported only on exceedance.
     pub(super) fn emit_distinct_mlayer_exceedance(
         &mut self,
         xlayer: ExtendedLayerId,

@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Committed conformance-corpus runner (CONF-AVM-VALID-STREAMS).
-//!
-//! Loads `tests/conformance/manifest.toml`, reads each committed vector's bytes,
-//! validates them with `splot_validate::Validator::validate_bytes` (the same
-//! entry point the CLI `validate` command uses), and asserts the manifest's
-//! expected outcome. This is the CI gate: it runs under `cargo test`, hence under
-//! `cargo xtask ci`.
-//!
-//! There is NO AVM dependency: the runner only validates already-committed vector
-//! bytes against the manifest, and never invokes AVM or touches the network. AVM
-//! is the LOCAL generator of the committed vectors only (see docs/CONFORMANCE.md).
+//! Validates the committed conformance corpus (CONF-AVM-VALID-STREAMS).
+//! Checks expected diagnostics and rejects unlisted vectors. AVM is only the
+//! local vector generator; this test needs no external decoder or network.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

@@ -2,10 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 #![no_main]
 
-use std::{
-    fmt::Write as _,
-    io::{self, Write},
-};
+use std::fmt::Write as _;
+
+#[path = "../support/output.rs"]
+mod output;
+use output::FailAfterBytes;
 
 use libfuzzer_sys::fuzz_target;
 use splot_recon::{
@@ -374,16 +375,14 @@ impl<'a> Header<'a> {
 }
 
 struct SampleReader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    bytes: std::slice::Iter<'a, u8>,
     bit_depth: BitDepth,
 }
 
 impl<'a> SampleReader<'a> {
-    const fn new(bytes: &'a [u8], bit_depth: BitDepth) -> Self {
+    fn new(bytes: &'a [u8], bit_depth: BitDepth) -> Self {
         Self {
-            bytes,
-            offset: 0,
+            bytes: bytes.iter(),
             bit_depth,
         }
     }
@@ -408,9 +407,7 @@ impl<'a> SampleReader<'a> {
     }
 
     fn byte(&mut self) -> u8 {
-        let byte = self.bytes.get(self.offset).copied().unwrap_or(0);
-        self.offset = self.offset.saturating_add(1);
-        byte
+        self.bytes.next().copied().unwrap_or(0)
     }
 }
 
@@ -453,35 +450,5 @@ fn crop_origin(pixel_format: PixelFormat, enabled: bool, seed: u8, horizontal: b
         1 + usize::from(seed) % MAX_CROP_ORIGIN
     } else {
         MAX_CROP_ORIGIN
-    }
-}
-
-#[derive(Debug)]
-struct FailAfterBytes {
-    bytes_written: usize,
-    max_bytes: usize,
-}
-
-impl FailAfterBytes {
-    const fn new(max_bytes: usize) -> Self {
-        Self {
-            bytes_written: 0,
-            max_bytes,
-        }
-    }
-}
-
-impl Write for FailAfterBytes {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.bytes_written >= self.max_bytes {
-            return Err(io::Error::other("fuzz writer byte budget exhausted"));
-        }
-        let allowed = (self.max_bytes - self.bytes_written).min(buf.len());
-        self.bytes_written += allowed;
-        Ok(allowed)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }

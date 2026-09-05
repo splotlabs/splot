@@ -7,26 +7,19 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use splot_decode::DecodeOptions;
 
 mod common;
-use common::{empty_avmenc_ivf, read_dir_names};
-
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+use common::{
+    conformance_vector, empty_avmenc_ivf, read_dir_names, splot, temp_dir, temp_input, temp_output,
+    temp_path,
+};
 
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
 const UNSUPPORTED_MULTISTREAM: &[u8] = &[0x01, 0x50];
 const MALFORMED_ANNEX_B: &[u8] = &[0x05, 0x10];
 const LOCAL_DECODER_MISSION_ENV: &str = "SPLOT_LOCAL_DECODER_MISSION_IVF";
-
-fn splot(args: &[&str]) -> Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args(args)
-        .output()
-        .expect("failed to run the splot binary")
-}
 
 fn splot_in(args: &[&str], cwd: &Path) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
@@ -34,30 +27,6 @@ fn splot_in(args: &[&str], cwd: &Path) -> Output {
         .args(args)
         .output()
         .expect("failed to run the splot binary")
-}
-
-fn temp_path(stem: &str, extension: &str) -> PathBuf {
-    let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time is after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "splot-decode-cli-test-{stem}-{}-{nanos}-{id}.{extension}",
-        std::process::id()
-    ))
-}
-
-fn temp_input(extension: &str, data: &[u8]) -> PathBuf {
-    let path = temp_path("input", extension);
-    std::fs::write(&path, data).expect("write temporary input");
-    path
-}
-
-fn conformance_vector(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/conformance/vectors/valid")
-        .join(name)
 }
 
 fn local_decoder_mission_path() -> PathBuf {
@@ -71,11 +40,7 @@ fn local_decoder_mission_path() -> PathBuf {
 }
 
 fn repeated_sequence_header_obus(count: usize) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(count * 2);
-    for _ in 0..count {
-        bytes.extend_from_slice(&[0x01, 0x08]);
-    }
-    bytes
+    [0x01, 0x08].repeat(count)
 }
 
 fn default_max_input_bytes() -> u64 {
@@ -92,23 +57,6 @@ fn default_max_obus() -> u64 {
         .max_obus()
         .max_value()
         .expect("default max_obus is finite")
-}
-
-fn temp_output(extension: &str) -> PathBuf {
-    temp_path("output", extension)
-}
-
-fn temp_dir(stem: &str) -> PathBuf {
-    let path = temp_path(stem, "dir");
-    std::fs::create_dir(&path).expect("create temporary directory");
-    path
-}
-
-fn read_dir_paths(path: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(path)
-        .expect("read temporary directory")
-        .map(|entry| entry.expect("read temporary directory entry").path())
-        .collect()
 }
 
 fn decode_hash_json(path: &Path, threads: &str, frame_delay: &str) -> serde_json::Value {
@@ -269,7 +217,7 @@ fn decode_hash_output_format_missing_input_is_operational_error() {
     let cwd = temp_dir("hash-cwd");
     assert!(!input.exists(), "temporary input unexpectedly exists");
     assert!(
-        read_dir_paths(&cwd).is_empty(),
+        read_dir_names(&cwd).is_empty(),
         "temporary cwd unexpectedly contains files"
     );
 
@@ -291,8 +239,8 @@ fn decode_hash_output_format_missing_input_is_operational_error() {
     );
     assert!(!input.exists(), "decode created the missing input path");
     assert_eq!(
-        read_dir_paths(&cwd),
-        Vec::<PathBuf>::new(),
+        read_dir_names(&cwd),
+        Vec::<String>::new(),
         "decode created an implicit output in the temporary cwd"
     );
 }
@@ -362,26 +310,6 @@ fn decode_hash_json_success_for_minimal_fixture() {
     assert_eq!(
         frame["hashes"][0]["digest_hex"],
         "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af"
-    );
-}
-
-#[test]
-fn decode_general_intra_fixture_reconstructs_full_frame() {
-    let input = conformance_vector("syn-flat-intra-64x64-q80.ivf");
-
-    let out = splot(&[
-        "decode",
-        "--json",
-        "--output-format",
-        "hash",
-        input.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(
-        json["frames"][0]["hashes"][0]["digest_hex"],
-        "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979"
     );
 }
 
@@ -738,7 +666,7 @@ fn decode_hash_json_success_creates_no_implicit_output_file() {
     );
 
     assert_eq!(out.status.code(), Some(0));
-    assert_eq!(read_dir_paths(&cwd), Vec::<PathBuf>::new());
+    assert_eq!(read_dir_names(&cwd), Vec::<String>::new());
 }
 
 #[test]

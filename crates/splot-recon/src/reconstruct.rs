@@ -11,13 +11,6 @@
 //! `CurrFrame[plane][y + i][x + j] = Clip1(CurrFrame[plane][y + i][x + j] + Residual[i][j])`.
 //!
 //! Feature tracking: `RECON-RESIDUAL-ADDITION`.
-//!
-//! Scope: this is the residual-addition step only and is independent of how the
-//! residual is produced. The § 7.14.3 secondary-transform invocation, the
-//! § 7.15.4 2D inverse transform that fills the `Residual` array, the § 7.14.4
-//! dequantization process, the DPCM adjustment, and the lossless-conformance
-//! requirement are out of scope and tracked by their own future rows. The caller
-//! supplies the prediction samples and the residual.
 
 use std::simd::num::{SimdInt as _, SimdUint as _};
 use std::simd::{Simd, cmp::SimdOrd as _};

@@ -259,26 +259,18 @@ pub(in crate::validator::tests) fn global_lcr_obu_with_ptl(
     max_tier: u32,
     max_mlayer_count: u32,
 ) -> Vec<u8> {
-    let mut bits = Bits::default();
-    bits.f(global_id, 3); // lcr_global_config_record_id
-    bits.f(1u32 << target_xlayer, 31); // lcr_xlayer_map
-    bits.bit(0); // lcr_aggregate_info_present_flag
-    bits.bit(1); // lcr_seq_profile_tier_level_info_present_flag
-    bits.bit(0); // lcr_global_payload_present_flag
-    bits.bit(0); // lcr_dependent_xlayers_flag
-    bits.bit(0); // lcr_global_atlas_id_present_flag
-    bits.f(0, 7); // lcr_global_purpose_id
-    bits.bit(0); // lcr_doh_constraint_flag
-    bits.bit(0); // lcr_enforce_tile_alignment_flag
-    bits.f(0, 3); // reserved_zero_3bits
-    bits.f(0, 5); // lcr_global_reserved_zero_5bits
-    bits.f(max_profile, 5); // lcr_seq_profile_idc
-    bits.f(max_level, 5); // lcr_max_level_idx
-    bits.bit(max_tier as u8); // lcr_tier_flag
-    bits.f(max_mlayer_count, 3); // lcr_max_mlayer_count
-    bits.f(0, 2); // lsptli_reserved_2bits
-    extensible_obu_tail(&mut bits);
-    annex_b_obu_with_header(&layer_obu_header(16, 0, 0, 31), &bits.into_bytes())
+    global_lcr_obu_agreement(
+        global_id,
+        1u32 << target_xlayer,
+        None,
+        Some(&[GlobalPtl {
+            seq_profile_idc: max_profile,
+            max_level_idx: max_level,
+            tier_flag: max_tier as u8,
+            max_mlayer_count,
+        }]),
+        false,
+    )
 }
 
 #[test]

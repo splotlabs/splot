@@ -60,16 +60,14 @@ pub struct TilePayloadBoundaryFuzzOutcome {
 /// Runs one bounded tile-payload fuzzing case.
 #[must_use]
 pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome {
-    let Some((&flags, rest)) = data.split_first() else {
-        return typed_error();
-    };
-    let Some((&payload_len_seed, rest)) = rest.split_first() else {
-        return typed_error();
-    };
-    let Some((&limit_seed, rest)) = rest.split_first() else {
-        return typed_error();
-    };
-    let Some((&detail_seed, rest)) = rest.split_first() else {
+    let &[
+        flags,
+        payload_len_seed,
+        limit_seed,
+        detail_seed,
+        ref rest @ ..,
+    ] = data
+    else {
         return typed_error();
     };
 
@@ -126,8 +124,8 @@ fn typed_error() -> TilePayloadFuzzOutcome {
     }
 }
 
-fn mutated_good_tile_payload(detail_seed: u8, bytes: &[u8]) -> Vec<u8> {
-    let mut payload = GOOD_TILE_PAYLOAD.to_vec();
+fn mutated_good_tile_payload(detail_seed: u8, bytes: &[u8]) -> [u8; 2] {
+    let mut payload = GOOD_TILE_PAYLOAD;
     let mutation_count = usize::from(detail_seed).min(MAX_GOOD_TILE_MUTATIONS);
     for chunk in bytes.chunks_exact(2).take(mutation_count) {
         let index = usize::from(chunk[0]) % payload.len();
@@ -143,9 +141,9 @@ fn fuzz_limits(seed: u8) -> DecodeLimits {
     let partition_steps = 1 + u64::from(seed & 0b0011_1111);
 
     DecodeLimits::DEFAULT
-        .with_max_tile_payload_bytes(max(tile_payload_bytes.min(MAX_TILE_PAYLOAD_BYTES as u64)))
+        .with_max_tile_payload_bytes(max(tile_payload_bytes))
         .with_max_tile_count(max(tile_count))
-        .with_max_tile_partition_steps(max(partition_steps.min(64)))
+        .with_max_tile_partition_steps(max(partition_steps))
         .with_max_luma_samples_per_frame(max(256))
 }
 

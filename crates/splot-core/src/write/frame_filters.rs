@@ -213,11 +213,7 @@ fn check_deblocking_encodable(
         if apply {
             if params.df_delta_q_present[i] {
                 let raw = i64::from(params.df_delta_q[i]) + half;
-                let max = if df_par_bits == 32 {
-                    i64::from(u32::MAX)
-                } else {
-                    (1i64 << df_par_bits) - 1
-                };
+                let max = (1i64 << df_par_bits) - 1;
                 if raw < 0 || raw > max {
                     return Err(WriteError::NonCanonicalFrameHeader { what: "df_delta_q" });
                 }
@@ -549,29 +545,13 @@ fn check_cdef_encodable(
 /// § 5.18.7.10): `Adaptive` reads `f(1)` (any value); `AlwaysOn` infers `true`; `Disabled`
 /// infers `false`.
 fn check_cdef_on_skip_txfm(value: Option<bool>, arm: CdefOnSkipTxfm) -> WriteResult<()> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    match arm {
-        CdefOnSkipTxfm::Adaptive => Ok(()),
-        CdefOnSkipTxfm::AlwaysOn => {
-            if value {
-                Ok(())
-            } else {
-                Err(WriteError::NonCanonicalFrameHeader {
-                    what: "cdef_on_skip_txfm_frame_enable",
-                })
-            }
+    match (arm, value) {
+        (CdefOnSkipTxfm::AlwaysOn, Some(false)) | (CdefOnSkipTxfm::Disabled, Some(true)) => {
+            Err(WriteError::NonCanonicalFrameHeader {
+                what: "cdef_on_skip_txfm_frame_enable",
+            })
         }
-        CdefOnSkipTxfm::Disabled => {
-            if value {
-                Err(WriteError::NonCanonicalFrameHeader {
-                    what: "cdef_on_skip_txfm_frame_enable",
-                })
-            } else {
-                Ok(())
-            }
-        }
+        _ => Ok(()),
     }
 }
 

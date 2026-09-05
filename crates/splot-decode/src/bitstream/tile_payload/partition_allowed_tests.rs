@@ -34,8 +34,8 @@ fn input(b_size: usize) -> PartitionAllowedInput {
     .unwrap()
 }
 
-fn valid_index(result: PartitionSubsize) -> Option<usize> {
-    result.valid().map(BlockSize::index)
+fn valid_index(result: Option<BlockSize>) -> Option<usize> {
+    result.map(BlockSize::index)
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn get_plane_residual_size_matches_spec_sentinel_cases() {
     );
     assert_eq!(
         get_plane_residual_size(BlockSize::new(BLOCK_4X8).unwrap(), 1, true, false).unwrap(),
-        PartitionSubsize::Invalid
+        None
     );
     assert_eq!(
         valid_index(
@@ -58,7 +58,7 @@ fn get_plane_residual_size_matches_spec_sentinel_cases() {
     );
     assert_eq!(
         get_plane_residual_size(BlockSize::new(BLOCK_64X128).unwrap(), 1, true, false).unwrap(),
-        PartitionSubsize::Invalid
+        None
     );
     assert_eq!(
         valid_index(

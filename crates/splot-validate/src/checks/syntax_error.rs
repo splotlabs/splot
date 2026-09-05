@@ -123,11 +123,7 @@ fn byte_alignment_diagnostic(
     let rule_id = match kind {
         ByteAlignmentErrorKind::ZeroBitNotZero => "byte-alignment/zero-bit-not-zero",
     };
-    located(
-        Diagnostic::error(rule_id, kind.to_string()).with_spec_section("6.2.4"),
-        offset,
-        bit_offset,
-    )
+    located_error(rule_id, kind.to_string(), "6.2.4", offset, bit_offset)
 }
 
 fn sequence_header_diagnostic(
@@ -174,11 +170,7 @@ fn sequence_header_diagnostic(
             "6.4.12",
         ),
     };
-    located(
-        Diagnostic::error(rule_id, kind.to_string()).with_spec_section(spec_section),
-        offset,
-        bit_offset,
-    )
+    located_error(rule_id, kind.to_string(), spec_section, offset, bit_offset)
 }
 
 fn tile_params_rule_id(kind: TileParamsErrorKind) -> &'static str {
@@ -208,11 +200,7 @@ fn layer_config_record_diagnostic(
     let (rule_id, spec_section) = match kind {
         LayerConfigRecordErrorKind::PayloadSizeOverflow => ("lcr/payload-size-overflow", "6.8.6"),
     };
-    located(
-        Diagnostic::error(rule_id, kind.to_string()).with_spec_section(spec_section),
-        offset,
-        bit_offset,
-    )
+    located_error(rule_id, kind.to_string(), spec_section, offset, bit_offset)
 }
 
 fn atlas_segment_diagnostic(
@@ -229,11 +217,7 @@ fn atlas_segment_diagnostic(
             ("atlas/segment-count-out-of-range", "6.9.6")
         }
     };
-    located(
-        Diagnostic::error(rule_id, kind.to_string()).with_spec_section(spec_section),
-        offset,
-        bit_offset,
-    )
+    located_error(rule_id, kind.to_string(), spec_section, offset, bit_offset)
 }
 
 fn quantizer_matrix_diagnostic(
@@ -258,11 +242,7 @@ fn padding_diagnostic(
         PaddingErrorKind::AllZeroPayload => ("padding/all-zero-payload", "5.16"),
         PaddingErrorKind::InvalidTrailingBits => ("padding/invalid-trailing-bits", "5.16"),
     };
-    located(
-        Diagnostic::error(rule_id, kind.to_string()).with_spec_section(spec_section),
-        offset,
-        bit_offset,
-    )
+    located_error(rule_id, kind.to_string(), spec_section, offset, bit_offset)
 }
 
 fn metadata_diagnostic(
@@ -277,11 +257,7 @@ fn metadata_diagnostic(
         }
         MetadataErrorKind::GroupHeaderUnderflow => ("metadata/group-header-underflow", "6.16.3"),
     };
-    located(
-        Diagnostic::error(rule_id, kind.to_string()).with_spec_section(spec_section),
-        offset,
-        bit_offset,
-    )
+    located_error(rule_id, kind.to_string(), spec_section, offset, bit_offset)
 }
 
 /// Builds the generic `bitstream/parse-error` diagnostic for an error with no

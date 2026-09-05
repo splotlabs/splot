@@ -78,7 +78,6 @@ fn get_plane_residual_size_matches_subsampled_size_table() {
                     subsampling_y == 1,
                 )
                 .unwrap()
-                .valid()
                 .map(BlockSize::index);
                 assert_eq!(
                     actual, expected,

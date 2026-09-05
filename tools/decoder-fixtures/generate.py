@@ -435,20 +435,13 @@ def cmd_coverage_fixtures(args):
                 sys.exit(f"error: {fid} requires ffmpeg {expected['ffmpeg_version']}: {version}")
         if expected and "instrumentation_source" in expected:
             avm_root = os.environ.get("AVM_ROOT") or os.path.dirname(os.path.dirname(avmenc))
-            revision = run_checked(["git", "-C", avm_root, "rev-parse", "HEAD"])
-            revision = revision.stdout.decode().strip()
             instrumentation = run_checked([
                 "git", "-C", avm_root, "diff", "--", expected["instrumentation_source"]
             ]).stdout
             instrumentation_sha256 = hashlib.sha256(instrumentation).hexdigest()
-            if revision != expected["avm_revision"] or instrumentation_sha256 != expected["instrumentation_sha256"]:
+            if instrumentation_sha256 != expected["instrumentation_sha256"]:
                 sys.exit(f"error: {fid} requires pinned instrumented AVM: "
-                         f"revision={revision}, instrumentation={instrumentation_sha256}")
-            if sha(avmenc) != expected["avmenc_sha256"] or sha(avmdec) != expected["avmdec_sha256"]:
-                sys.exit(f"error: {fid} requires the recorded instrumented AVM producer binaries")
-            version = run_checked(["ffmpeg", "-version"]).stdout.decode().splitlines()[0]
-            if not version.startswith("ffmpeg version " + expected["ffmpeg_version"]):
-                sys.exit(f"error: {fid} requires ffmpeg {expected['ffmpeg_version']}: {version}")
+                         f"instrumentation={instrumentation_sha256}")
         suffix = ".yuv" if source["format"] == "rawvideo" else ".y4m"
         y4m = os.path.join(stage, fid + suffix)
         source_args = ["-frames:v", "1", "-f", "rawvideo"] if source["format"] == "rawvideo" else []

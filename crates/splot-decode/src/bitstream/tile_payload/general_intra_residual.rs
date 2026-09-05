@@ -816,12 +816,7 @@ fn read_luma_tx_partition_type(
                 TileCdfSelector::Tx2Or3PartitionType {
                     fsc_mode,
                     is_inter,
-                    ctx: vert_or_horz_group.checked_sub(1).ok_or(
-                        GeneralIntraResidualError::TransformPartitionGeometry {
-                            table: "Size_To_Tx_Type_Group_Vert_Or_Horz",
-                            index: mi_size,
-                        },
-                    )?,
+                    ctx: vert_or_horz_group - 1,
                 },
                 symbols,
             )
@@ -1082,12 +1077,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
                 dc_category: 0,
             })
             .map_err(coeff_ctx_err)?;
-        return Ok(LumaCoeffBlock::empty(
-            DCT_DCT,
-            frame_facts
-                .lossless_for_segment(current_frame_qm_segment_id())
-                .unwrap_or(false),
-        ));
+        return Ok(LumaCoeffBlock::empty(DCT_DCT, lossless));
     }
 
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
@@ -1159,7 +1149,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         },
     )
     .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
-    let eob = start.eob_read().eob().eob();
+    let eob = start.eob_read().eob();
     let segment_id = current_frame_qm_segment_id();
     let lossless = frame_facts
         .lossless_for_segment(segment_id)
@@ -1197,8 +1187,8 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     }
     let plane_tx_type =
         staged_transform_tool_plane_tx_type(geometry, is_inter, lossless, base_config)?;
-    if use_fsc {
-        let block = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
+    let block = if use_fsc {
+        apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
             context,
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
@@ -1210,32 +1200,23 @@ fn decode_staged_transform_tool_nonzero_coeffs(
                 coeff_cdf_q_ctx,
             },
         )
-        .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
-        return Ok(LumaCoeffBlock {
-            eob,
-            quant_range: 0..0,
-            intra_ist: metadata.intra_ist,
-            cctx_type: metadata.cctx_type,
-            plane_tx_type,
-            use_tcq: false,
-            lossless,
-        }
-        .with_coeffs(arena, block.quant()));
-    }
-    let block = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
-        context,
-        work_unit.cdf_mut().tile_cdfs_mut(),
-        symbols,
-        CoeffOrdinaryStagedLosslessNonZeroInput {
-            geometry,
-            start,
-            coeff_cdf_q_ctx,
-            is_inter,
-            base_config,
-            lossless,
-        },
-    )
-    .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+        .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?
+    } else {
+        apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+            context,
+            work_unit.cdf_mut().tile_cdfs_mut(),
+            symbols,
+            CoeffOrdinaryStagedLosslessNonZeroInput {
+                geometry,
+                start,
+                coeff_cdf_q_ctx,
+                is_inter,
+                base_config,
+                lossless,
+            },
+        )
+        .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?
+    };
     Ok(LumaCoeffBlock {
         eob,
         quant_range: 0..0,
@@ -1837,7 +1818,7 @@ fn luma_transform_intra_dir(
     Ok(wide_angle_mapping(intra_dir, tx_width, tx_height, p_angle))
 }
 
-fn wide_angle_mapping(mode: usize, width: usize, height: usize, p_angle: i32) -> usize {
+pub(crate) fn wide_angle_mapping(mode: usize, width: usize, height: usize, p_angle: i32) -> usize {
     if WAIP_WH_RATIO_THRESHOLDS
         .iter()
         .any(|&(scale, threshold)| is_scaled(height, width, scale) && p_angle < threshold)

@@ -14,8 +14,8 @@ use splot_recon::{
 };
 
 use super::sink::{
-    IntraEdgeAvailability, average_luma_prediction_with, build_mrl_luma_prediction,
-    noneighbour_above, noneighbour_corner, noneighbour_left, write_intra_prediction_block,
+    IntraEdgeAvailability, build_mrl_luma_prediction, noneighbour_above, noneighbour_corner,
+    noneighbour_left, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext,
@@ -231,52 +231,30 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let width = block_size.width();
-    let height = block_size.height();
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        PlaneId::Y,
-        width * height,
-        T::default(),
-    )?;
-    predict_general_intra_luma_one_sided_above_mrl_into(
+    let prediction = build_mrl_luma_prediction(
         workspace,
-        p_angle,
-        x,
-        y,
         block_size,
-        num4_above_right,
-        primary_mrl,
-        availability,
-        bit_depth,
-        OneSidedEdgeFilter::default(),
-        &mut prediction,
+        true,
+        |workspace, secondary, prediction| {
+            predict_general_intra_luma_one_sided_above_mrl_into(
+                workspace,
+                p_angle,
+                x,
+                y,
+                block_size,
+                num4_above_right,
+                if secondary {
+                    OneSidedAboveMrl::default()
+                } else {
+                    primary_mrl
+                },
+                availability,
+                bit_depth,
+                OneSidedEdgeFilter::default(),
+                prediction,
+            )
+        },
     )?;
-    let mut secondary_prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Secondary,
-        PlaneId::Y,
-        width * height,
-        T::default(),
-    )?;
-    predict_general_intra_luma_one_sided_above_mrl_into(
-        workspace,
-        p_angle,
-        x,
-        y,
-        block_size,
-        num4_above_right,
-        OneSidedAboveMrl::default(),
-        availability,
-        bit_depth,
-        OneSidedEdgeFilter::default(),
-        &mut secondary_prediction,
-    )?;
-    let blend = average_luma_prediction_with(&mut prediction, &secondary_prediction);
-    workspace.recycle_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Secondary,
-        secondary_prediction,
-    );
-    blend?;
     write_intra_prediction_block(
         workspace,
         block,
@@ -725,53 +703,28 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let width = block_size.width();
-    let height = block_size.height();
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        PlaneId::Y,
-        width * height,
-        T::default(),
-    )?;
-    predict_general_intra_luma_one_sided_left_mrl_into(
+    let prediction = build_mrl_luma_prediction(
         workspace,
-        p_angle,
-        x,
-        y,
         block_size,
-        num4_below_left,
-        have_above,
-        mrl_index,
-        above_mrl_index,
-        have_left,
-        bit_depth,
-        OneSidedEdgeFilter::default(),
-        &mut prediction,
+        true,
+        |workspace, secondary, prediction| {
+            predict_general_intra_luma_one_sided_left_mrl_into(
+                workspace,
+                p_angle,
+                x,
+                y,
+                block_size,
+                num4_below_left,
+                have_above,
+                if secondary { 0 } else { mrl_index },
+                if secondary { 0 } else { above_mrl_index },
+                have_left,
+                bit_depth,
+                OneSidedEdgeFilter::default(),
+                prediction,
+            )
+        },
     )?;
-    let mut secondary = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Secondary,
-        PlaneId::Y,
-        width * height,
-        T::default(),
-    )?;
-    predict_general_intra_luma_one_sided_left_mrl_into(
-        workspace,
-        p_angle,
-        x,
-        y,
-        block_size,
-        num4_below_left,
-        have_above,
-        0,
-        0,
-        have_left,
-        bit_depth,
-        OneSidedEdgeFilter::default(),
-        &mut secondary,
-    )?;
-    let blend = average_luma_prediction_with(&mut prediction, &secondary);
-    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
-    blend?;
     write_intra_prediction_block(
         workspace,
         block,

@@ -306,8 +306,7 @@ impl<T: ReconSample> ExactSizeIterator for SquareIntraPredictionRows<'_, T> {}
 
 /// Computes the constant sample value for square AV2 §7.13.2.10 DC prediction.
 ///
-/// This is the no-allocation entry point for future reconstruction workspaces
-/// and encoder RDO paths that only need the scalar DC value.
+/// Computes the scalar DC value without allocating an output block.
 ///
 /// # Errors
 /// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
@@ -323,8 +322,7 @@ pub fn predict_intra_dc_square_value<T: ReconSample>(
 
 /// Computes the constant sample value for rectangular AV2 §7.13.2.10 DC prediction.
 ///
-/// This is the no-allocation entry point for future reconstruction workspaces
-/// and encoder RDO paths that only need the scalar DC value. For rectangular
+/// Computes the scalar DC value without allocating an output block. For rectangular
 /// both-edge prediction, the average uses the AV2 §7.13.3.22
 /// `resolve_divisor` / `approx_divide` path rather than ordinary division.
 ///

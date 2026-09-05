@@ -268,16 +268,10 @@ pub fn mul_fixed32_adapt(a: i32, b: i32, shift: u32) -> i32 {
 fn round_scaled_product(product: i32, adjustment: i32) -> i32 {
     if adjustment <= 0 {
         product
-    } else {
-        round_positive_scaled_product(product, adjustment as u32)
-    }
-}
-
-fn round_positive_scaled_product(product: i32, adjustment: u32) -> i32 {
-    if adjustment > 29 {
+    } else if adjustment > 29 {
         0
     } else {
-        round2_signed_i32(product, adjustment)
+        round2_signed_i32(product, adjustment as u32)
     }
 }
 

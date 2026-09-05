@@ -7,103 +7,81 @@ use super::{CoefficientCdfRowSelector, CoefficientEntropyToken, luma_negative_dc
 use crate::error::{Error, Result};
 
 /// Returns the luma tokens for the supported negative level-6 DC block.
-pub(crate) fn general_intra_64x64_luma_dc_coded_tokens() -> Result<Vec<CoefficientEntropyToken>> {
-    let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(5)
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "general coded DC coefficient tokens",
-        })?;
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::LumaTxbSkip64x64,
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::LumaEobPt1024,
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::LumaCoeffBaseLfEobDc,
-        symbol: 4,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::LumaCoeffBrLfDc,
-        symbol: 1,
-    });
-    tokens.push(luma_negative_dc_sign_token());
-    Ok(tokens)
+pub(crate) fn general_intra_64x64_luma_dc_coded_tokens() -> [CoefficientEntropyToken; 5] {
+    [
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::LumaTxbSkip64x64,
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::LumaEobPt1024,
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::LumaCoeffBaseLfEobDc,
+            symbol: 4,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::LumaCoeffBrLfDc,
+            symbol: 1,
+        },
+        luma_negative_dc_sign_token(),
+    ]
 }
 
 /// Returns the chroma-U tokens for the supported negative level-4 DC block.
-pub(crate) fn general_intra_32x32_chroma_u_dc_coded_tokens() -> Result<Vec<CoefficientEntropyToken>>
-{
-    let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(3)
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "general coded chroma U DC coefficient tokens",
-        })?;
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaUTxbSkip32x32,
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaEobPt1024,
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaCoeffBaseLfEob,
-        symbol: 3,
-    });
-    Ok(tokens)
+pub(crate) fn general_intra_32x32_chroma_u_dc_coded_tokens() -> [CoefficientEntropyToken; 3] {
+    [
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaUTxbSkip32x32,
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaEobPt1024,
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaCoeffBaseLfEob,
+            symbol: 3,
+        },
+    ]
 }
 
 /// Returns the neutral-row chroma-V tokens for the supported negative level-4 DC block.
-pub(crate) fn general_intra_32x32_chroma_v_dc_coded_tokens() -> Result<Vec<CoefficientEntropyToken>>
-{
-    let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(3)
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "general coded chroma V DC coefficient tokens",
-        })?;
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaVTxbSkipNeutral,
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaEobPt1024,
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaCoeffBaseLfEob,
-        symbol: 3,
-    });
-    Ok(tokens)
+pub(crate) fn general_intra_32x32_chroma_v_dc_coded_tokens() -> [CoefficientEntropyToken; 3] {
+    [
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaVTxbSkipNeutral,
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaEobPt1024,
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaCoeffBaseLfEob,
+            symbol: 3,
+        },
+    ]
 }
 
 /// Returns the after-coded-U chroma-V tokens for the supported negative level-4 DC block.
 pub(crate) fn general_intra_32x32_chroma_v_after_coded_u_dc_coded_tokens()
--> Result<Vec<CoefficientEntropyToken>> {
-    let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(3)
-        .map_err(|_| Error::CoefficientTokenizationAllocationFailed {
-            context: "general coded chroma V DC coefficient tokens",
-        })?;
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaVTxbSkipAfterCodedU,
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaEobPt1024,
-        symbol: 0,
-    });
-    tokens.push(CoefficientEntropyToken {
-        selector: CoefficientCdfRowSelector::ChromaCoeffBaseLfEob,
-        symbol: 3,
-    });
-    Ok(tokens)
+-> [CoefficientEntropyToken; 3] {
+    [
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaVTxbSkipAfterCodedU,
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaEobPt1024,
+            symbol: 0,
+        },
+        CoefficientEntropyToken {
+            selector: CoefficientCdfRowSelector::ChromaCoeffBaseLfEob,
+            symbol: 3,
+        },
+    ]
 }
 
 fn general_intra_64x64_luma_tokens(

@@ -19,10 +19,13 @@ use crate::{BitDepth, DecodedFrame, PixelFormat, Plane, PlaneSize, ReconSample};
 pub type Y4mResult<T> = core::result::Result<T, Y4mError>;
 
 /// Errors reported by the source-backed Y4M writer.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Y4mError {
     /// The caller supplied an invalid Y4M frame rate.
+    #[error(
+        "invalid Y4M frame rate {numerator}:{denominator}; numerator and denominator must be nonzero"
+    )]
     InvalidFrameRate {
         /// Frame-rate numerator.
         numerator: u32,
@@ -30,6 +33,7 @@ pub enum Y4mError {
         denominator: u32,
     },
     /// The decoded frame format has no repository-owned Y4M tag mapping.
+    #[error("unsupported Y4M frame format: {}-bit {pixel_format:?}", .bit_depth.bits())]
     UnsupportedFrameFormat {
         /// Decoded sample bit depth.
         bit_depth: BitDepth,
@@ -37,6 +41,11 @@ pub enum Y4mError {
         pixel_format: PixelFormat,
     },
     /// A frame did not match the stream header format.
+    #[error("Y4M stream/frame mismatch: expected {}x{} {}-bit {:?}, got {}x{} {}-bit {:?}",
+        .expected.visible_luma_size().width(), .expected.visible_luma_size().height(),
+        .expected.bit_depth().bits(), .expected.pixel_format(),
+        .actual.visible_luma_size().width(), .actual.visible_luma_size().height(),
+        .actual.bit_depth().bits(), .actual.pixel_format())]
     StreamParameterMismatch {
         /// Format committed by the stream header.
         expected: Y4mFrameFormat,
@@ -44,71 +53,18 @@ pub enum Y4mError {
         actual: Y4mFrameFormat,
     },
     /// Checked arithmetic overflowed while deriving output byte sizes.
+    #[error("arithmetic overflow while deriving {context}")]
     ArithmeticOverflow {
         /// Short description of the overflowed derivation.
         context: &'static str,
     },
     /// The caller-provided writer returned an I/O error.
+    #[error("Y4M writer I/O error: {source}")]
     Io {
         /// Original I/O error.
+        #[from]
         source: io::Error,
     },
-}
-
-impl core::fmt::Display for Y4mError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::InvalidFrameRate {
-                numerator,
-                denominator,
-            } => write!(
-                f,
-                "invalid Y4M frame rate {numerator}:{denominator}; numerator and denominator must be nonzero"
-            ),
-            Self::UnsupportedFrameFormat {
-                bit_depth,
-                pixel_format,
-            } => write!(
-                f,
-                "unsupported Y4M frame format: {}-bit {pixel_format:?}",
-                bit_depth.bits()
-            ),
-            Self::StreamParameterMismatch { expected, actual } => write!(
-                f,
-                "Y4M stream/frame mismatch: expected {}x{} {}-bit {:?}, got {}x{} {}-bit {:?}",
-                expected.visible_luma_size().width(),
-                expected.visible_luma_size().height(),
-                expected.bit_depth().bits(),
-                expected.pixel_format(),
-                actual.visible_luma_size().width(),
-                actual.visible_luma_size().height(),
-                actual.bit_depth().bits(),
-                actual.pixel_format()
-            ),
-            Self::ArithmeticOverflow { context } => {
-                write!(f, "arithmetic overflow while deriving {context}")
-            }
-            Self::Io { source } => write!(f, "Y4M writer I/O error: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for Y4mError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io { source } => Some(source),
-            Self::InvalidFrameRate { .. }
-            | Self::UnsupportedFrameFormat { .. }
-            | Self::StreamParameterMismatch { .. }
-            | Self::ArithmeticOverflow { .. } => None,
-        }
-    }
-}
-
-impl From<io::Error> for Y4mError {
-    fn from(source: io::Error) -> Self {
-        Self::Io { source }
-    }
 }
 
 /// Valid nonzero Y4M frame rate.

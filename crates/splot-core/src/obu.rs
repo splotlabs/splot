@@ -232,6 +232,7 @@ pub fn dispatch_obu_payload(
     payload: &[u8],
     payload_offset: ByteOffset,
 ) -> Result<PayloadStatus<'_, ParsedObu>> {
+    let mut reader = BitReader::new(payload, payload_offset);
     match header.obu_type {
         ObuType::Reserved0 | ObuType::Reserved(_) => Ok(PayloadStatus::Opaque(payload)),
         ObuType::TemporalDelimiter => {
@@ -239,7 +240,6 @@ pub fn dispatch_obu_payload(
             Ok(PayloadStatus::Parsed(ParsedObu::TemporalDelimiter))
         }
         ObuType::SequenceHeader => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let sequence_header = parse_sequence_header(&mut reader)?;
             if let Some(feature) = sequence_header.unimplemented_at {
                 return Ok(PayloadStatus::Unimplemented { feature, payload });
@@ -250,13 +250,11 @@ pub fn dispatch_obu_payload(
             ))))
         }
         ObuType::Msdo => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let msdo = parse_msdo(&mut reader)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::Msdo(msdo)))
         }
         ObuType::MultiFrameHeader => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let multi_frame_header = parse_multi_frame_header(&mut reader)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MultiFrameHeader(
@@ -264,7 +262,6 @@ pub fn dispatch_obu_payload(
             )))
         }
         ObuType::LayerConfigurationRecord => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let layer_config_record =
                 parse_layer_config_record(&mut reader, header.extended_layer_id)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
@@ -273,7 +270,6 @@ pub fn dispatch_obu_payload(
             )))
         }
         ObuType::AtlasSegment => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let atlas_segment = parse_atlas_segment(&mut reader)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::AtlasSegment(Box::new(
@@ -281,7 +277,6 @@ pub fn dispatch_obu_payload(
             ))))
         }
         ObuType::OperatingPointSet => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let operating_point_set =
                 parse_operating_point_set(&mut reader, header.extended_layer_id)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
@@ -290,7 +285,6 @@ pub fn dispatch_obu_payload(
             )))
         }
         ObuType::BufferRemovalTiming => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let buffer_removal_timing = parse_buffer_removal_timing(&mut reader)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::BufferRemovalTiming(
@@ -298,7 +292,6 @@ pub fn dispatch_obu_payload(
             )))
         }
         ObuType::QuantizationMatrix => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let quantizer_matrix = parse_quantizer_matrix(&mut reader)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::QuantizationMatrix(
@@ -306,7 +299,6 @@ pub fn dispatch_obu_payload(
             )))
         }
         ObuType::FilmGrain => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let film_grain = parse_film_grain(&mut reader)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::FilmGrain(Box::new(
@@ -314,7 +306,6 @@ pub fn dispatch_obu_payload(
             ))))
         }
         ObuType::ContentInterpretation => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let content_interpretation = parse_content_interpretation(&mut reader)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::ContentInterpretation(
@@ -326,7 +317,6 @@ pub fn dispatch_obu_payload(
             Ok(PayloadStatus::Parsed(ParsedObu::Padding(padding)))
         }
         ObuType::MetadataShort => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let metadata = parse_metadata_short(&mut reader, payload.len())?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MetadataShort(Box::new(
@@ -334,7 +324,6 @@ pub fn dispatch_obu_payload(
             ))))
         }
         ObuType::MetadataGroup => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let metadata = parse_metadata_group(&mut reader, header.extended_layer_id)?;
             finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MetadataGroup(Box::new(
@@ -342,7 +331,6 @@ pub fn dispatch_obu_payload(
             ))))
         }
         obu_type if obu_type.is_tile_group() => {
-            let mut reader = BitReader::new(payload, payload_offset);
             let prefix = parse_tile_group_prefix(&mut reader, obu_type, None)?;
             Ok(PayloadStatus::PrefixParsed {
                 prefix: FramePayloadPrefix::TileGroup(prefix),
@@ -353,7 +341,6 @@ pub fn dispatch_obu_payload(
         obu_type
             if obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame =>
         {
-            let mut reader = BitReader::new(payload, payload_offset);
             let prefix = parse_frame_header_prefix(&mut reader, obu_type, None)?;
             Ok(PayloadStatus::PrefixParsed {
                 prefix: FramePayloadPrefix::FrameHeader(prefix),

@@ -250,15 +250,6 @@ impl GeneralIntraChromaBlockMode {
         }
     }
 
-    const fn cfl(cfl_params: CflParams) -> Self {
-        Self::Cfl(cfl_params)
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn cfl_for_test(cfl_params: CflParams) -> Self {
-        Self::cfl(cfl_params)
-    }
-
     pub(crate) const fn coeff_uv_mode(self) -> usize {
         match self {
             Self::Prediction { coeff_uv_mode, .. } => coeff_uv_mode as usize,
@@ -338,23 +329,18 @@ impl DecodedLumaYMode {
     }
 
     fn dpcm(dpcm_mode_y: u8) -> Result<Self, IntraModeStateError> {
-        if dpcm_mode_y == 0 {
-            Ok(Self {
-                y_mode: IntraYMode::Vertical,
-                angle_delta_y: 0,
-                intra_joint_mode: IntraJointMode::try_new(DPCM_VERTICAL_JOINT_MODE)?,
-                use_dpcm_y: 1,
-                dpcm_mode_y,
-            })
+        let (y_mode, joint_mode) = if dpcm_mode_y == 0 {
+            (IntraYMode::Vertical, DPCM_VERTICAL_JOINT_MODE)
         } else {
-            Ok(Self {
-                y_mode: IntraYMode::Horizontal,
-                angle_delta_y: 0,
-                intra_joint_mode: IntraJointMode::try_new(DPCM_HORIZONTAL_JOINT_MODE)?,
-                use_dpcm_y: 1,
-                dpcm_mode_y,
-            })
-        }
+            (IntraYMode::Horizontal, DPCM_HORIZONTAL_JOINT_MODE)
+        };
+        Ok(Self {
+            y_mode,
+            angle_delta_y: 0,
+            intra_joint_mode: IntraJointMode::try_new(joint_mode)?,
+            use_dpcm_y: 1,
+            dpcm_mode_y,
+        })
     }
 }
 
@@ -382,18 +368,9 @@ impl GeneralIntraBlockModes {
         palette_y: Option<LumaPalette>,
     ) -> Self {
         Self {
-            y_mode: luma.y_mode,
-            angle_delta_y: luma.angle_delta_y,
             chroma: Some(chroma),
-            intra_joint_mode: luma.intra_joint_mode,
-            mrl: luma.mrl,
-            fsc_mode: luma.fsc_mode,
-            use_dip: luma.use_dip,
-            dip_transpose: luma.dip_transpose,
-            dip_mode: luma.dip_mode,
-            use_dpcm_y: luma.use_dpcm_y,
-            dpcm_mode_y: luma.dpcm_mode_y,
             palette_y,
+            ..Self::luma_only(luma)
         }
     }
 
@@ -411,10 +388,8 @@ impl GeneralIntraBlockModes {
     }
 
     pub(crate) fn supported_chroma_mode(&self) -> Option<SupportedChromaMode> {
-        match self.chroma {
-            Some(chroma) => chroma.supported_chroma_mode(),
-            None => None,
-        }
+        self.chroma
+            .and_then(GeneralIntraChromaBlockMode::supported_chroma_mode)
     }
 
     pub(crate) const fn coeff_uv_mode(&self) -> usize {
@@ -857,7 +832,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
                 block_n4w,
                 block_n4h,
             )?;
-            return Ok(GeneralIntraChromaBlockMode::cfl(cfl_params));
+            return Ok(GeneralIntraChromaBlockMode::Cfl(cfl_params));
         }
     }
 
@@ -1171,11 +1146,9 @@ fn read_symbol(
     selector: TileCdfSelector,
     reason: &'static str,
 ) -> Result<u8, GeneralIntraBlockModeError> {
-    let value = cdfs
-        .read_block_symbol_trace(selector, symbols)
+    cdfs.read_block_symbol_trace(selector, symbols)
         .map(splot_core::symbol::Symbol::get)
-        .map_err(|source| GeneralIntraBlockModeError::SymbolRead { reason, source })?;
-    Ok(value)
+        .map_err(|source| GeneralIntraBlockModeError::SymbolRead { reason, source })
 }
 
 fn read_literal_u8(
@@ -1199,10 +1172,9 @@ fn read_literal_u32(
     bits: u32,
     reason: &'static str,
 ) -> Result<u32, GeneralIntraBlockModeError> {
-    let value = symbols
+    symbols
         .read_literal(bits)
-        .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })?;
-    Ok(value)
+        .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })
 }
 
 const fn ceil_log2_u32(value: u32) -> u32 {

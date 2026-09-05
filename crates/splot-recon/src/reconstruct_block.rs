@@ -17,11 +17,8 @@
 //!
 //! Feature tracking: `RECON-RECONSTRUCT-TRANSFORM-BLOCK`.
 //!
-//! Scope: this is the residual-chain composition over caller-resolved transform
-//! and dequantization parameters. It produces no coefficients (the caller decodes
-//! `Quant[]`), reads no frame, segment, or tile state, performs no output
-//! scheduling, and is not wired into the runtime decode path; a decoder consumes
-//! it once its coefficient loop hands a transform block's `Quant[]` to recon.
+//! The caller supplies decoded coefficients, resolved transform and
+//! dequantization parameters, and working buffers.
 
 use crate::dequant_process::{DequantBlockParams, dequantize_block};
 use crate::inverse_transform_2d_outer::{InverseTransform2dOuter, inverse_transform_2d_outer};

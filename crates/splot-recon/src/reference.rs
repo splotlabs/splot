@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Immutable reference-frame store model for future decode and encoder reuse.
+//! Immutable reference-frame storage.
 
 use core::{iter::Enumerate, slice::Iter};
 
@@ -94,10 +94,7 @@ impl ReferenceRefreshMask {
 
     /// Iterates over selected slots in ascending slot order.
     pub const fn slots(self) -> ReferenceRefreshSlots {
-        ReferenceRefreshSlots {
-            mask: self.0,
-            next_slot: 0,
-        }
+        ReferenceRefreshSlots { mask: self.0 }
     }
 
     const fn valid_bits_for_capacity(capacity: usize) -> u32 {
@@ -113,35 +110,22 @@ impl ReferenceRefreshMask {
 #[derive(Clone, Debug)]
 pub struct ReferenceRefreshSlots {
     mask: u32,
-    next_slot: usize,
 }
 
 impl Iterator for ReferenceRefreshSlots {
     type Item = ReferenceSlot;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.next_slot < ReferenceSlot::MAX_SLOTS {
-            let index = self.next_slot;
-            self.next_slot += 1;
-
-            if (self.mask & (1u32 << index)) != 0 {
-                return Some(ReferenceSlot(index));
-            }
+        if self.mask == 0 {
+            return None;
         }
-
-        None
+        let index = self.mask.trailing_zeros() as usize;
+        self.mask &= self.mask - 1;
+        Some(ReferenceSlot(index))
     }
 }
 
 /// Fixed-capacity store of immutable frame payloads in reference slots.
-///
-/// This is a dependency-free runtime storage model for future callers that have
-/// already derived AV2 § 7.23 reference update decisions. It stores caller-owned
-/// payloads by slot and can apply already-derived refresh masks, but it does
-/// not implement byte-consuming decode, frame reconstruction,
-/// `refresh_frame_flags` parsing or inference, `RefValid`, film grain, output
-/// scheduling, motion vectors, CDFs, segment IDs, global motion state, or
-/// reference metadata.
 ///
 /// The store moves or shares payload handles and never duplicates them: it does
 /// not implement `Clone` and never requires `F: Clone` (see

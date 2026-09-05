@@ -8,13 +8,9 @@
 //! updated, an `fgm_chroma_idc` selecting the chroma format, and one
 //! [`FilmGrainModel`] (`film_grain_model()`, § 5.18.10.2) per set slot bit.
 //!
-//! This module models syntax only: it preserves every parsed field so the inspector
-//! and future frame `apply_grain` / `fgm_id` reference checks can use it; it does not
-//! synthesize grain. Reserved/out-of-range values (for example `fgm_chroma_idc > 3`,
-//! a § 6.13 conformance violation) are preserved rather than rejected so the validator
-//! can report them with offsets. Field order follows the AV2 spec and the AVM oracle
-//! `read_fgm_obu` / `read_film_grain_model` (`av2/decoder/obu_fgm.c`); no AV1 tables
-//! or code are copied.
+//! Reserved values such as `fgm_chroma_idc > 3` are retained for validator
+//! diagnostics. Field order follows the AVM oracle `read_fgm_obu` /
+//! `read_film_grain_model` (`av2/decoder/obu_fgm.c`).
 
 use crate::bitio::BitReader;
 use crate::error::Result;

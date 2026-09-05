@@ -344,25 +344,23 @@ fn check_reuse_layout(
     });
 
     let sb_shift2 = branch_sb_shift2(seq.uniform_spacing, tile.seq_sb_size, grid.sb_size);
-    let mut mi_col_starts: Vec<u32> = reused
+    let mi_col_starts = reused
         .sb_col_starts
         .iter()
         .map(|&start| start << sb_shift2)
-        .collect();
-    mi_col_starts.push(grid.mi_cols);
-    let mut mi_row_starts: Vec<u32> = reused
+        .chain(std::iter::once(grid.mi_cols));
+    let mi_row_starts = reused
         .sb_row_starts
         .iter()
         .map(|&start| start << sb_shift2)
-        .collect();
-    mi_row_starts.push(grid.mi_rows);
+        .chain(std::iter::once(grid.mi_rows));
 
     if info.tile_cols != reused.tile_cols
         || info.tile_rows != reused.tile_rows
         || info.tile_cols_log2 != reused.tile_cols_log2
         || info.tile_rows_log2 != reused.tile_rows_log2
-        || info.mi_col_starts.as_ref() != mi_col_starts.as_slice()
-        || info.mi_row_starts.as_ref() != mi_row_starts.as_slice()
+        || !info.mi_col_starts.iter().copied().eq(mi_col_starts)
+        || !info.mi_row_starts.iter().copied().eq(mi_row_starts)
     {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "reuse_tile_params",
@@ -438,33 +436,7 @@ fn check_explicit_layout(
             what: "tile_params_level",
         })?;
 
-    let layout_sb_shift2 = layout.sb_shift2.min(31);
-    let mut mi_col_starts: Vec<u32> = layout
-        .sb_col_starts
-        .iter()
-        .map(|&start| start << layout_sb_shift2)
-        .collect();
-    mi_col_starts.push(grid.mi_cols);
-    let mut mi_row_starts: Vec<u32> = layout
-        .sb_row_starts
-        .iter()
-        .map(|&start| start << layout_sb_shift2)
-        .collect();
-    mi_row_starts.push(grid.mi_rows);
-
-    if *params != layout.params
-        || info.tile_cols != layout.params.tile_cols
-        || info.tile_rows != layout.params.tile_rows
-        || info.tile_cols_log2 != layout.params.tile_cols_log2
-        || info.tile_rows_log2 != layout.params.tile_rows_log2
-        || info.mi_col_starts.as_ref() != mi_col_starts.as_slice()
-        || info.mi_row_starts.as_ref() != mi_row_starts.as_slice()
-    {
-        return Err(WriteError::NonCanonicalFrameHeader {
-            what: "tile_params_summary",
-        });
-    }
-    Ok(())
+    check_layout_summary(info, params, &layout, grid)
 }
 
 /// Validates a bridge-frame explicit layout (AV2 v1.0.0 § 5.18.7.3,
@@ -486,33 +458,7 @@ fn check_bridge_layout(
         }
     })?;
 
-    let sb_shift2 = layout.sb_shift2.min(31);
-    let mut mi_col_starts: Vec<u32> = layout
-        .sb_col_starts
-        .iter()
-        .map(|&start| start << sb_shift2)
-        .collect();
-    mi_col_starts.push(grid.mi_cols);
-    let mut mi_row_starts: Vec<u32> = layout
-        .sb_row_starts
-        .iter()
-        .map(|&start| start << sb_shift2)
-        .collect();
-    mi_row_starts.push(grid.mi_rows);
-
-    if *params != layout.params
-        || info.tile_cols != layout.params.tile_cols
-        || info.tile_rows != layout.params.tile_rows
-        || info.tile_cols_log2 != layout.params.tile_cols_log2
-        || info.tile_rows_log2 != layout.params.tile_rows_log2
-        || info.mi_col_starts.as_ref() != mi_col_starts.as_slice()
-        || info.mi_row_starts.as_ref() != mi_row_starts.as_slice()
-    {
-        return Err(WriteError::NonCanonicalFrameHeader {
-            what: "tile_params_summary",
-        });
-    }
-    Ok(())
+    check_layout_summary(info, params, &layout, grid)
 }
 
 /// Validates the trailing `context_update_tile_id` / `tile_size_bytes` fields against the
@@ -572,6 +518,39 @@ fn check_trailing_fields(
                 what: "tile_size_bytes",
             });
         }
+    }
+    Ok(())
+}
+
+fn check_layout_summary(
+    info: &TileInfo,
+    params: &TileParams,
+    layout: &crate::tile::TileLayout,
+    grid: &TileInfoGrid,
+) -> WriteResult<()> {
+    let sb_shift2 = layout.sb_shift2.min(31);
+    let mi_col_starts = layout
+        .sb_col_starts
+        .iter()
+        .map(|&start| start << sb_shift2)
+        .chain(std::iter::once(grid.mi_cols));
+    let mi_row_starts = layout
+        .sb_row_starts
+        .iter()
+        .map(|&start| start << sb_shift2)
+        .chain(std::iter::once(grid.mi_rows));
+
+    if *params != layout.params
+        || info.tile_cols != layout.params.tile_cols
+        || info.tile_rows != layout.params.tile_rows
+        || info.tile_cols_log2 != layout.params.tile_cols_log2
+        || info.tile_rows_log2 != layout.params.tile_rows_log2
+        || !info.mi_col_starts.iter().copied().eq(mi_col_starts)
+        || !info.mi_row_starts.iter().copied().eq(mi_row_starts)
+    {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "tile_params_summary",
+        });
     }
     Ok(())
 }

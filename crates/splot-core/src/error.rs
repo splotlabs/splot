@@ -7,235 +7,151 @@
 //! variants. Recognized-but-unmodeled functionality returns
 //! [`Error::Unimplemented`] rather than `todo!()`/`unimplemented!()`.
 
-use core::fmt;
-
 use thiserror::Error;
 
 use crate::span::{BitOffset, ByteOffset};
 
 /// Specific ways `trailing_bits(nbBits)` can violate AV2 § 6.2.3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum TrailingBitsErrorKind {
     /// `trailing_bits` was asked to parse zero bits.
+    #[error("nbBits must be greater than zero")]
     Empty,
     /// The required `trailing_one_bit` was not equal to `1`.
+    #[error("trailing_one_bit must be equal to 1")]
     MissingOneBit,
     /// A `trailing_zero_bit` was not equal to `0`.
+    #[error("trailing_zero_bit must be equal to 0")]
     ZeroBitNotZero,
-}
-
-impl fmt::Display for TrailingBitsErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::Empty => "nbBits must be greater than zero",
-            Self::MissingOneBit => "trailing_one_bit must be equal to 1",
-            Self::ZeroBitNotZero => "trailing_zero_bit must be equal to 0",
-        };
-        f.write_str(message)
-    }
 }
 
 /// Specific ways `byte_alignment()` can violate AV2 § 6.2.4.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ByteAlignmentErrorKind {
     /// A byte-alignment `zero_bit` was not equal to `0`.
+    #[error("zero_bit must be equal to 0")]
     ZeroBitNotZero,
 }
 
-impl fmt::Display for ByteAlignmentErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::ZeroBitNotZero => "zero_bit must be equal to 0",
-        };
-        f.write_str(message)
-    }
-}
-
 /// Specific locally decidable `sequence_header_obu()` violations from AV2 § 6.4.1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SequenceHeaderErrorKind {
     /// `seq_header_id` is not less than `MAX_SEQ_NUM`.
+    #[error("seq_header_id must be less than MAX_SEQ_NUM")]
     SeqHeaderIdOutOfRange,
     /// `chroma_format_idc` is not in Table 6.2.
+    #[error("chroma_format_idc must be less than or equal to 3")]
     ChromaFormatOutOfRange,
     /// `bit_depth_idc` is not in Table 6.3.
+    #[error("bit_depth_idc must be less than or equal to 1")]
     BitDepthOutOfRange,
     /// `seq_max_mlayer_cnt_minus_1` is greater than `max_mlayer_id`.
+    #[error("seq_max_mlayer_cnt_minus_1 must be less than or equal to max_mlayer_id")]
     SeqMaxMlayerCountOutOfRange,
     /// `seq_cropping_win_left_offset` is greater than `max_frame_width_minus_1`.
+    #[error("seq_cropping_win_left_offset must be less than or equal to max_frame_width_minus_1")]
     CropLeftOutOfRange,
     /// `seq_cropping_win_right_offset` is greater than `max_frame_width_minus_1`.
+    #[error("seq_cropping_win_right_offset must be less than or equal to max_frame_width_minus_1")]
     CropRightOutOfRange,
     /// `seq_cropping_win_top_offset` is greater than `max_frame_height_minus_1`.
+    #[error("seq_cropping_win_top_offset must be less than or equal to max_frame_height_minus_1")]
     CropTopOutOfRange,
     /// `seq_cropping_win_bottom_offset` is greater than `max_frame_height_minus_1`.
+    #[error(
+        "seq_cropping_win_bottom_offset must be less than or equal to max_frame_height_minus_1"
+    )]
     CropBottomOutOfRange,
     /// `num_units_in_decoding_tick` is zero.
+    #[error("num_units_in_decoding_tick must be greater than 0")]
     TimingNumUnitsZero,
     /// `num_units_in_display_tick` is zero (AV2 § 6.4.12).
+    #[error("num_units_in_display_tick must be greater than 0")]
     TimingDisplayTickZero,
     /// `time_scale` is zero (AV2 § 6.4.12).
+    #[error("time_scale must be greater than 0")]
     TimingTimeScaleZero,
     /// `num_ticks_per_picture_minus_1` exceeds `(1 << 32) - 2` (AV2 § 6.4.12).
+    #[error("num_ticks_per_picture_minus_1 must not exceed (1 << 32) - 2")]
     TimingNumTicksOutOfRange,
-}
-
-impl fmt::Display for SequenceHeaderErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::SeqHeaderIdOutOfRange => "seq_header_id must be less than MAX_SEQ_NUM",
-            Self::ChromaFormatOutOfRange => "chroma_format_idc must be less than or equal to 3",
-            Self::BitDepthOutOfRange => "bit_depth_idc must be less than or equal to 1",
-            Self::SeqMaxMlayerCountOutOfRange => {
-                "seq_max_mlayer_cnt_minus_1 must be less than or equal to max_mlayer_id"
-            }
-            Self::CropLeftOutOfRange => {
-                "seq_cropping_win_left_offset must be less than or equal to max_frame_width_minus_1"
-            }
-            Self::CropRightOutOfRange => {
-                "seq_cropping_win_right_offset must be less than or equal to max_frame_width_minus_1"
-            }
-            Self::CropTopOutOfRange => {
-                "seq_cropping_win_top_offset must be less than or equal to max_frame_height_minus_1"
-            }
-            Self::CropBottomOutOfRange => {
-                "seq_cropping_win_bottom_offset must be less than or equal to max_frame_height_minus_1"
-            }
-            Self::TimingNumUnitsZero => "num_units_in_decoding_tick must be greater than 0",
-            Self::TimingDisplayTickZero => "num_units_in_display_tick must be greater than 0",
-            Self::TimingTimeScaleZero => "time_scale must be greater than 0",
-            Self::TimingNumTicksOutOfRange => {
-                "num_ticks_per_picture_minus_1 must not exceed (1 << 32) - 2"
-            }
-        };
-        f.write_str(message)
-    }
 }
 
 /// Specific structural violations of `layer_config_record_obu()` (AV2 § 5.8 / § 6.8)
 /// that prevent further parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum LayerConfigRecordErrorKind {
     /// The bits parsed for `lcr_global_payload(n, sz)` exceeded the declared
     /// `sz * 8` payload bits (AV2 § 5.8.5: `RemainingLcrPayloadBits` would be
     /// negative).
+    #[error("lcr_global_payload parsed content exceeds the declared lcr_data_size * 8 bits")]
     PayloadSizeOverflow,
-}
-
-impl fmt::Display for LayerConfigRecordErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::PayloadSizeOverflow => {
-                "lcr_global_payload parsed content exceeds the declared lcr_data_size * 8 bits"
-            }
-        };
-        f.write_str(message)
-    }
 }
 
 /// Specific structural violations of `atlas_segment_info_obu()` (AV2 § 5.9 / § 6.9)
 /// that prevent further parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum AtlasSegmentErrorKind {
     /// `ats_atlas_segment_mode_idc` is greater than 4 (AV2 § 6.9, Table 6.11): no
     /// per-mode syntax is defined, so parsing cannot continue.
+    #[error("ats_atlas_segment_mode_idc must be less than or equal to 4")]
     ModeOutOfRange,
     /// A region-grid dimension (`ats_num_region_columns_minus_1` /
     /// `ats_num_region_rows_minus_1`) reaches `MAX_ATLAS_COLS` / `MAX_ATLAS_ROWS`
     /// (AV2 § 6.9.3.1), which would drive an out-of-range loop.
+    #[error("atlas region columns/rows must be less than MAX_ATLAS_COLS / MAX_ATLAS_ROWS")]
     RegionDimensionOutOfRange,
     /// A segment count (`numSegments` / `ats_num_atlas_segments_minus_1` /
     /// `ats_msi_num_atlas_segments_minus_1`) reaches `MAX_NUM_ATLAS_SEGMENTS`
     /// (AV2 § 6.9.6), which would drive an out-of-range loop.
+    #[error("atlas segment count must be less than or equal to MAX_NUM_ATLAS_SEGMENTS")]
     SegmentCountOutOfRange,
-}
-
-impl fmt::Display for AtlasSegmentErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::ModeOutOfRange => "ats_atlas_segment_mode_idc must be less than or equal to 4",
-            Self::RegionDimensionOutOfRange => {
-                "atlas region columns/rows must be less than MAX_ATLAS_COLS / MAX_ATLAS_ROWS"
-            }
-            Self::SegmentCountOutOfRange => {
-                "atlas segment count must be less than or equal to MAX_NUM_ATLAS_SEGMENTS"
-            }
-        };
-        f.write_str(message)
-    }
 }
 
 /// Specific structural violations of `padding_obu()` (AV2 § 5.16 / § 6.15) that
 /// prevent further parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum PaddingErrorKind {
     /// A non-empty padding payload is entirely zero. AV2 § 5.16 / § 6.15 require at
     /// least one non-zero byte (the `trailing_bits()` byte) when any payload is present.
+    #[error("a non-empty padding OBU payload must contain at least one non-zero byte")]
     AllZeroPayload,
     /// The bytes from the last non-zero payload byte through the payload end are not a
     /// valid `trailing_bits()` pattern (AV2 § 5.2.3 / § 6.2.3).
+    #[error("padding OBU trailing_bits() must start with trailing_one_bit followed by zeros")]
     InvalidTrailingBits,
 }
 
-impl fmt::Display for PaddingErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::AllZeroPayload => {
-                "a non-empty padding OBU payload must contain at least one non-zero byte"
-            }
-            Self::InvalidTrailingBits => {
-                "padding OBU trailing_bits() must start with trailing_one_bit followed by zeros"
-            }
-        };
-        f.write_str(message)
-    }
-}
-
 /// Locally decidable violations of AV2 § 6.17.9 global-motion state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum GlobalMotionErrorKind {
     /// `NumTotalRefs` exceeds `REFS_PER_FRAME` or the supplied map length.
+    #[error("global-motion reference count must fit REFS_PER_FRAME and ref_frame_idx")]
     ReferenceCountOutOfRange,
     /// A logical reference maps outside the modeled reference-frame buffer.
+    #[error("global-motion reference slot must exist in the modeled reference state")]
     ReferenceSlotOutOfRange,
     /// `our_ref != NumTotalRefs` selected a restricted reference (§ 6.17.9.1).
+    #[error("OrderHints[our_ref] must not equal RESTRICTED_OH")]
     OurReferenceRestricted,
     /// The selected saved `their_ref` is restricted (§ 6.17.9.1).
+    #[error("SavedOrderHints[refIdx][their_ref] must not equal RESTRICTED_OH")]
     SavedReferenceRestricted,
     /// An order hint does not fit the signed AV2 derivation domain.
+    #[error("global-motion order hints must fit the AV2 signed derivation domain")]
     OrderHintOutOfRange,
 }
 
-impl fmt::Display for GlobalMotionErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::ReferenceCountOutOfRange => {
-                "global-motion reference count must fit REFS_PER_FRAME and ref_frame_idx"
-            }
-            Self::ReferenceSlotOutOfRange => {
-                "global-motion reference slot must exist in the modeled reference state"
-            }
-            Self::OurReferenceRestricted => "OrderHints[our_ref] must not equal RESTRICTED_OH",
-            Self::SavedReferenceRestricted => {
-                "SavedOrderHints[refIdx][their_ref] must not equal RESTRICTED_OH"
-            }
-            Self::OrderHintOutOfRange => {
-                "global-motion order hints must fit the AV2 signed derivation domain"
-            }
-        };
-        f.write_str(message)
-    }
-}
-
 /// Specific caller-supplied CDF row violations for AV2 § 8.2.6 symbol decoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SymbolCdfErrorKind {
     /// The row length is not `N + 1` for a supported `N` in `2..=8`.
+    #[error("CDF length {len} is not supported; expected 3..=9")]
     UnsupportedLength {
         /// Actual row length.
         len: usize,
     },
     /// A cumulative probability entry is outside the supported AV2 coding range.
+    #[error("CDF cumulative entry {index} has value {value}, expected 1..=32767")]
     ProbabilityOutOfRange {
         /// Offending CDF index.
         index: usize,
@@ -245,6 +161,7 @@ pub enum SymbolCdfErrorKind {
     /// A cumulative probability entry is smaller than its predecessor. AV2
     /// § 8.2.6 adaptation can drive adjacent entries equal, so equal adjacent
     /// entries are accepted and only a strict decrease is rejected.
+    #[error("CDF cumulative entry {index} must not be less than entry {previous_index}")]
     DecreasingCumulative {
         /// Previous cumulative CDF index.
         previous_index: usize,
@@ -252,6 +169,7 @@ pub enum SymbolCdfErrorKind {
         index: usize,
     },
     /// `cdf[N - 1]` is not a valid `Para_Adjustment_List` row.
+    #[error("CDF adaptation-rate entry {index} has value {value}, expected 0..=124")]
     AdaptationRateOutOfRange {
         /// Offending CDF index.
         index: usize,
@@ -259,6 +177,7 @@ pub enum SymbolCdfErrorKind {
         value: i32,
     },
     /// `cdf[N]` is not in the AV2 capped use-count range `0..=32`.
+    #[error("CDF use-count entry {index} has value {value}, expected 0..=32")]
     CountOutOfRange {
         /// Offending CDF index.
         index: usize,
@@ -267,44 +186,17 @@ pub enum SymbolCdfErrorKind {
     },
 }
 
-impl fmt::Display for SymbolCdfErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnsupportedLength { len } => {
-                write!(f, "CDF length {len} is not supported; expected 3..=9")
-            }
-            Self::ProbabilityOutOfRange { index, value } => write!(
-                f,
-                "CDF cumulative entry {index} has value {value}, expected 1..=32767"
-            ),
-            Self::DecreasingCumulative {
-                previous_index,
-                index,
-            } => write!(
-                f,
-                "CDF cumulative entry {index} must not be less than entry {previous_index}"
-            ),
-            Self::AdaptationRateOutOfRange { index, value } => write!(
-                f,
-                "CDF adaptation-rate entry {index} has value {value}, expected 0..=124"
-            ),
-            Self::CountOutOfRange { index, value } => write!(
-                f,
-                "CDF use-count entry {index} has value {value}, expected 0..=32"
-            ),
-        }
-    }
-}
-
 /// Specific symbol decoder state violations for AV2 § 8.2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SymbolDecoderErrorKind {
     /// The tile payload size cannot be represented by the signed `SymbolMaxBits` state.
+    #[error("tile payload of {bytes} byte(s) is too large for SymbolMaxBits")]
     PayloadTooLarge {
         /// Payload length in bytes.
         bytes: usize,
     },
     /// `read_literal(n)` was asked to return more than 32 bits.
+    #[error("read_literal({requested}) exceeds the {max}-bit return width")]
     LiteralWidthTooLarge {
         /// Requested literal width.
         requested: u32,
@@ -312,123 +204,69 @@ pub enum SymbolDecoderErrorKind {
         max: u32,
     },
     /// `exit_symbol()` was invoked when `SymbolMaxBits < -14`.
+    #[error("SymbolMaxBits is {symbol_max_bits}, but exit_symbol() requires at least -14")]
     SymbolMaxBitsTooSmall {
         /// Current signed `SymbolMaxBits` value.
         symbol_max_bits: i64,
     },
     /// The arithmetic interval collapsed before renormalization.
+    #[error("symbol arithmetic interval collapsed")]
     InvalidArithmeticRange,
     /// The computed trailing bit position was outside the bounded tile payload.
+    #[error("trailingBitPosition {bit_position} is outside the tile payload")]
     TrailingBitOutOfRange {
         /// Relative bit position inside the tile payload.
         bit_position: u64,
     },
     /// The computed padding end position was outside the bounded tile payload.
+    #[error("paddingEndPosition {bit_position} is outside the tile payload")]
     PaddingEndOutOfRange {
         /// Relative bit position inside the tile payload.
         bit_position: u64,
     },
     /// `paddingEndPosition` was not byte-aligned.
+    #[error("paddingEndPosition {bit_position} is not byte-aligned")]
     PaddingEndNotByteAligned {
         /// Relative bit position inside the tile payload.
         bit_position: u64,
     },
     /// The required `exit_symbol()` trailing bit was not equal to `1`.
+    #[error("exit_symbol() trailing bit must be equal to 1")]
     MissingTrailingOneBit,
     /// An `exit_symbol()` padding bit after the trailing one was not equal to `0`.
+    #[error("exit_symbol() padding bits after the trailing bit must be zero")]
     NonZeroPaddingBit,
 }
 
-impl fmt::Display for SymbolDecoderErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PayloadTooLarge { bytes } => {
-                write!(
-                    f,
-                    "tile payload of {bytes} byte(s) is too large for SymbolMaxBits"
-                )
-            }
-            Self::LiteralWidthTooLarge { requested, max } => {
-                write!(
-                    f,
-                    "read_literal({requested}) exceeds the {max}-bit return width"
-                )
-            }
-            Self::SymbolMaxBitsTooSmall { symbol_max_bits } => write!(
-                f,
-                "SymbolMaxBits is {symbol_max_bits}, but exit_symbol() requires at least -14"
-            ),
-            Self::InvalidArithmeticRange => f.write_str("symbol arithmetic interval collapsed"),
-            Self::TrailingBitOutOfRange { bit_position } => write!(
-                f,
-                "trailingBitPosition {bit_position} is outside the tile payload"
-            ),
-            Self::PaddingEndOutOfRange { bit_position } => write!(
-                f,
-                "paddingEndPosition {bit_position} is outside the tile payload"
-            ),
-            Self::PaddingEndNotByteAligned { bit_position } => {
-                write!(f, "paddingEndPosition {bit_position} is not byte-aligned")
-            }
-            Self::MissingTrailingOneBit => {
-                f.write_str("exit_symbol() trailing bit must be equal to 1")
-            }
-            Self::NonZeroPaddingBit => {
-                f.write_str("exit_symbol() padding bits after the trailing bit must be zero")
-            }
-        }
-    }
-}
-
 /// Specific conformance violations of `tile_params()` (AV2 § 6.17.7.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum TileParamsErrorKind {
     /// `TileCols` exceeds `MAX_TILE_COLS`.
+    #[error("TileCols must be less than or equal to MAX_TILE_COLS")]
     TileColsOutOfRange,
     /// `TileRows` exceeds `MAX_TILE_ROWS`.
+    #[error("TileRows must be less than or equal to MAX_TILE_ROWS")]
     TileRowsOutOfRange,
-}
-
-impl fmt::Display for TileParamsErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::TileColsOutOfRange => "TileCols must be less than or equal to MAX_TILE_COLS",
-            Self::TileRowsOutOfRange => "TileRows must be less than or equal to MAX_TILE_ROWS",
-        };
-        f.write_str(message)
-    }
 }
 
 /// Specific structural violations of the metadata OBUs (AV2 § 5.17 / § 6.16) that
 /// prevent further parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum MetadataErrorKind {
     /// A metadata unit's declared payload size is too small to hold the parsed content:
     /// either `obuPayloadSize - 2 - Leb128Bytes` underflows for a short OBU (§ 5.17.2),
     /// or the child syntax would read past `metadataPayloadSize` so
     /// `remainingMuPayloadBits` would be negative (§ 6.16.1).
+    #[error("metadata unit payload size is too small for the parsed content")]
     UnitPayloadUnderflow,
     /// `metadata_unit_cnt_minus_1` is not less than 16383 (AV2 § 6.16.3).
+    #[error("metadata_unit_cnt_minus_1 must be less than 16383")]
     GroupUnitCountTooLarge,
     /// A metadata group unit's `headerRemainingBytes` would go negative: `muh_header_size`
     /// does not account for `Leb128Bytes`, the fixed header fields, and the layer maps
     /// (AV2 § 5.17.3 / § 6.16.3).
+    #[error("muh_header_size is too small for the metadata unit header fields")]
     GroupHeaderUnderflow,
-}
-
-impl fmt::Display for MetadataErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::UnitPayloadUnderflow => {
-                "metadata unit payload size is too small for the parsed content"
-            }
-            Self::GroupUnitCountTooLarge => "metadata_unit_cnt_minus_1 must be less than 16383",
-            Self::GroupHeaderUnderflow => {
-                "muh_header_size is too small for the metadata unit header fields"
-            }
-        };
-        f.write_str(message)
-    }
 }
 
 /// Errors produced while parsing AV2 bitstreams.

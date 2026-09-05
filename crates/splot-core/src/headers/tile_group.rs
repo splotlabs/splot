@@ -1,28 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Prefix-only AV2 tile-group parsing (AV2 v1.0.0 § 5.19).
+//! AV2 tile-group prefixes, structural framing, and frame-header copies (§ 5.19).
 //!
-//! This reads only the head of `tile_group_obu()` — enough to locate an optional
-//! frame header — and stops before any tile payload syntax:
-//!
-//! ```text
-//! tile_group_obu( sz ) {
-//!     is_first_tile_group                              f(1)
-//!     if ( is_first_tile_group )
-//!         frame_header_present_flag = 1
-//!     else
-//!         frame_header_present_flag                    f(1)
-//!     if ( frame_header_present_flag )
-//!         frame_header( is_first_tile_group )
-//!     ...                                              // tile payload, not parsed
-//! }
-//! ```
-//!
-//! When `is_first_tile_group` is `1`, `frame_header(1)` parses the
-//! [`FrameHeaderPrefix`]. When it is `0`, `frame_header(0)` is a `frame_header_copy()`
-//! (a bit copy of the first header), which this prefix parser does not model — it
-//! records that a header is present but does not parse it.
+//! Prefix parsing stops before tile syntax. First groups parse a frame-header
+//! prefix; subsequent groups can compare their copied header against recorded bits.
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
@@ -193,22 +175,8 @@ pub struct TileGroupStructure {
 }
 
 impl TileGroupStructure {
-    /// Builds the AV2 § 5.19 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19`,
-    /// mirror :8467-8493) structure for a single-tile first tile group (`NumTiles == 1`):
-    /// `tile_start_and_end_present_flag` is inferred `0` (the parser never reads it for a
-    /// single tile, mirror :8467-8473), `tg_start = 0`, and `tg_end = 0` (`= NumTiles - 1`).
-    /// `outcome` is [`TileGroupStructureOutcome::Complete`].
-    ///
-    /// `header_bytes` / `payload_size` are the parser's byte-accounting of a real
-    /// `tile_group_obu()` header (mirror :8523-8527) and are left `None`: the § 5.19
-    /// writers ([`write_tile_group_structure`] / [`write_tile_group_obu`]) ignore them —
-    /// they recompute the header length and take the payload length from the tile data,
-    /// so a reparse recomputes both. The round-trip is therefore semantic on the
-    /// `flag` / `tg_start` / `tg_end` syntax fields (the bits a single tile actually
-    /// writes), matching the writer's parse-context contract.
-    ///
-    /// [`write_tile_group_structure`]: crate::write::tile_group::write_tile_group_structure
-    /// [`write_tile_group_obu`]: crate::write::tile_group::write_tile_group_obu
+    /// Builds a single-tile first-group structure (§ 5.19). Header and payload
+    /// lengths stay unknown; the writer computes them from the emitted bytes.
     #[must_use]
     pub fn single_tile_first_group() -> Self {
         Self {
@@ -468,23 +436,8 @@ pub struct TileGroupFraming {
 }
 
 impl TileGroupFraming {
-    /// Builds the AV2 § 5.20.1 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-1`,
-    /// mirror :8557) framing for a single-tile tile group (the first tile group,
-    /// `TileNum 0`): one tile whose `tileSize` coded region spans the whole
-    /// `tile_group_payload()` from offset 0, with **no** `tile_size_minus_1` field (the
-    /// only tile is the last tile). This is the exact encoder-side inverse of the
-    /// parser: the result equals `parse_tile_group_framing(payload, 0, 0, _, false)`
-    /// for a `payload` of `tile_size` coded bytes, so a write (via
-    /// [`write_tile_group_payload`]) then reparse round-trips value-equal.
-    ///
-    /// `tile_size` is the coded-tile byte length; callers pass real § 8.2 coded bytes
-    /// (`>= 1`). To preserve the parser-inverse contract for the degenerate input, a
-    /// `tile_size == 0` returns the same defective framing the parser would — the
-    /// § 8.2.2 [`TileFramingDefect::ZeroSizeTile`] (which [`write_tile_group_payload`]
-    /// also rejects) — rather than a `defect: None` framing that falsely reads as
-    /// conformant.
-    ///
-    /// [`write_tile_group_payload`]: crate::write::tile_group::write_tile_group_payload
+    /// Builds the framing for one tile occupying the whole payload (§ 5.20.1).
+    /// A zero-length tile has [`TileFramingDefect::ZeroSizeTile`], matching the parser.
     #[must_use]
     pub fn single_tile(tile_size: u64) -> Self {
         let defect = (tile_size == 0).then_some(TileFramingDefect::ZeroSizeTile {
@@ -518,28 +471,9 @@ impl TileGroupFraming {
 /// bookkeeping (the `else if ( !IsBridge )` arm is skipped, mirror :8559). It records each
 /// tile's framing and stops at the first provable defect.
 ///
-/// # § 8.2 residual (checkable-without-decoding)
-///
-/// `init_symbol(tileSize)` (mirror :8607) reads `f(Min(tileSize * 8, 15))` (§ 8.2.2) and
-/// sets `SymbolMaxBits = 8 * sz - 15` (08:87). The counter only ever decreases during
-/// decoding (08:327), and § 8.2.4 requires `SymbolMaxBits >= -14` at `exit_symbol()`
-/// (08:342) — so a zero-size non-bridge tile starts at `-15`, below the floor, and can
-/// never satisfy the exit requirement regardless of content: that violation IS decidable
-/// from framing alone and is reported here as [`TileFramingDefect::ZeroSizeTile`]
-/// (bridge tiles run no `init_symbol` and are exempt). The remaining `exit_symbol()`
-/// conformance for nonzero tiles (the exact `SymbolMaxBits` at exit; the trailing
-/// one-bit at `trailingBitPosition`) depends on the symbol decoder's consumption during
-/// `decode_tile()` and stays a named residual of `AV2-5.20-TILE-GROUP-PAYLOAD`.
-///
-/// # `IsBridge` / BRU residual
-///
-/// A bridge frame's tiles read no size field; the validator path that reaches this only does
-/// so for tile-group OBU types on the intra-complete path (where `IsBridge == 0` and
-/// `use_bru == 0`), so the bridge and `BruTileActive` arms (mirror :8585) are honest-stop
-/// residuals there. `is_bridge` is still honored here so the parser models the loop exactly.
-///
-/// This never errors and never panics; an undecidable / defective region is reported via
-/// [`TileGroupFraming::defect`].
+/// Zero-size non-bridge tiles are rejected as [`TileFramingDefect::ZeroSizeTile`].
+/// Other symbol-decoder exit requirements depend on decoding the tile content.
+/// Defects are returned in [`TileGroupFraming::defect`].
 #[must_use]
 pub fn parse_tile_group_framing(
     payload: &[u8],
@@ -937,34 +871,27 @@ mod tests {
         }
         let copy_bytes = bits.into_bytes();
         let mut reader = BitReader::new(&copy_bytes, ByteOffset::new(0));
-        // The packed payload is 1 byte (8 bits) — 6 meaningful + 2 zero pad. Bits 6 and 7 of
-        // the recorded pattern are (1, 0); the zero pad makes bit 6 (recorded 1) differ, so the
-        // first decidable defect inside the available 8 bits is a mismatch at bit 6, not a
-        // truncation. Use an exact-length payload to exercise the pure truncation path.
+        // Zero padding differs at bit 6 before the recorded header ends.
         assert_eq!(
             parse_frame_header_copy(&mut reader, &recorded),
             FrameHeaderCopyOutcome::Mismatch { mismatch_bit: 6 }
         );
 
-        // Now a payload that is genuinely shorter than NumFrameHeaderBits with every
-        // available bit matching: record 20 bits, supply a copy of exactly the first 12.
         let pattern = [1u8, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0];
         let (recorded, _) = record_bits(&pattern);
         let mut bits = Bits::default();
         for &b in &pattern[..12] {
             bits.bit(b);
         }
-        let copy_bytes = bits.into_bytes(); // exactly 12 bits -> not byte aligned? 12 -> pads to 16
-        // The packed payload holds 16 bits; bits 12..16 are zero pad. Recorded bits 12,13 are
-        // (0, 0) and match the pad, bit 14 is 1 -> differs from pad 0, so a mismatch at 14.
+        let copy_bytes = bits.into_bytes(); // 12 bits padded to 16
+        // Padding matches bits 12 and 13, then differs at bit 14.
         let mut reader = BitReader::new(&copy_bytes, ByteOffset::new(0));
         assert_eq!(
             parse_frame_header_copy(&mut reader, &recorded),
             FrameHeaderCopyOutcome::Mismatch { mismatch_bit: 14 }
         );
 
-        // A truly truncated payload (exactly N bytes, fewer bits than recorded, all matching):
-        // record 20 bits, supply a payload of exactly 1 byte (8 bits) matching bits 0..8.
+        // An exact byte prefix matches throughout and then truncates.
         let mut bits = Bits::default();
         for &b in &pattern[..8] {
             bits.bit(b);
@@ -1012,7 +939,7 @@ mod tests {
     /// Builds a reader pre-positioned `prefix_bits` into a payload (simulating the
     /// is_first_tile_group [+ frame_header_present_flag] + frame_header() span the
     /// caller already consumed), with `structure_bits` appended afterward.
-    fn structure_reader(prefix_bits: u32, structure: &Bits) -> (Vec<u8>, u64) {
+    fn structure_reader(prefix_bits: u32, structure: &Bits) -> Vec<u8> {
         let mut bits = Bits::default();
         for _ in 0..prefix_bits {
             bits.bit(1); // arbitrary prefix content; only its length matters
@@ -1020,7 +947,7 @@ mod tests {
         for &b in &structure.bits {
             bits.bit(b);
         }
-        (bits.into_bytes(), u64::from(prefix_bits))
+        bits.into_bytes()
     }
 
     #[test]
@@ -1038,7 +965,7 @@ mod tests {
         // byte boundary. Prefix = 1 bit (is_first_tile_group). After the prefix bit the
         // reader is at bit 1; byte_alignment pads 7 zero bits to byte 1. headerBytes = 1.
         let structure = Bits::default(); // no structure bits before byte_alignment
-        let (data, _) = structure_reader(1, &structure);
+        let data = structure_reader(1, &structure);
         let mut data = data;
         data.resize(4, 0);
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
@@ -1062,7 +989,7 @@ mod tests {
         structure.bit(1); // tile_start_and_end_present_flag = 1
         structure.f(1, 2); // tg_start = 1
         structure.f(3, 2); // tg_end = 3
-        let (mut data, _) = structure_reader(1, &structure);
+        let mut data = structure_reader(1, &structure);
         data.resize(8, 0);
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         reader.read_bit().unwrap(); // consume the prefix bit
@@ -1082,7 +1009,7 @@ mod tests {
         // frame (0 .. NumTiles - 1), no tg_start/tg_end bits.
         let mut structure = Bits::default();
         structure.bit(0); // tile_start_and_end_present_flag = 0
-        let (mut data, _) = structure_reader(1, &structure);
+        let mut data = structure_reader(1, &structure);
         data.resize(4, 0);
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         reader.read_bit().unwrap();
@@ -1103,7 +1030,7 @@ mod tests {
         let mut s = Bits::default();
         s.bit(1); // flag = 1 (range present)
         s.bit(0); // a single leftover bit; tg_start f(2) needs two and will EOF
-        let (data, _) = structure_reader(6, &s); // 6 prefix + 1 flag + 1 = 8 bits = 1 byte
+        let data = structure_reader(6, &s); // 6 prefix + 1 flag + 1 = 8 bits = 1 byte
         let one_byte = vec![data[0]];
         let mut reader = BitReader::new(&one_byte, ByteOffset::new(0));
         for _ in 0..6 {

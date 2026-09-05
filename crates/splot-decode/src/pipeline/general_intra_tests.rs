@@ -202,10 +202,6 @@ pub(super) fn decode_eight(fixture: &[u8]) -> SharedFrame<u8> {
     frame
 }
 
-fn decode_general_intra_luma(fixture: &[u8]) -> SharedFrame<u8> {
-    decode_eight(fixture)
-}
-
 fn decode_ten(fixture: &[u8]) -> SharedFrame<u16> {
     let PipelineDecodedFrame::Ten(frame) = decode_fixture(fixture) else {
         panic!("fixture decoded as 8-bit");

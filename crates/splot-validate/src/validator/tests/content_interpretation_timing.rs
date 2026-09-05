@@ -482,22 +482,7 @@ fn ci_aspect_ratio_idc_out_of_range_is_flagged() {
 fn ci_aspect_ratio_idc_extended_marker_is_accepted() {
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 0)));
-    let mut bits = Bits::default();
-    bits.f(0, 2); // ci_scan_type_idc
-    bits.bit(0); // color description absent
-    bits.bit(0); // chroma sample position absent
-    bits.bit(1); // ci_aspect_ratio_info_present_flag
-    bits.bit(0); // timing absent
-    bits.f(0, 2); // ci_reserved_2bit
-    bits.f(255, 8); // ci_aspect_ratio_idc = 255 -> extended SAR
-    bits.uvlc(16); // ci_sar_width
-    bits.uvlc(9); // ci_sar_height
-    bits.bit(0); // obu_extension_flag
-    bits.bit(1); // trailing_one_bit
-    data.extend(annex_b_obu_with_header(
-        &layer_obu_header(24, 0, 0, 0),
-        &bits.into_bytes(),
-    ));
+    data.extend(content_interpretation_extended_sar_obu(16, 9));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         !report
@@ -515,24 +500,7 @@ pub(in crate::validator::tests) fn content_interpretation_color_obu(color_idc: u
         color_idc < 4,
         "content_interpretation_color_obu only encodes idc < 4; use content_interpretation_color_custom_obu"
     );
-    let mut bits = Bits::default();
-    bits.f(0, 2); // ci_scan_type_idc
-    bits.bit(1); // ci_color_description_present_flag
-    bits.bit(0); // ci_chroma_sample_position_present_flag
-    bits.bit(0); // ci_aspect_ratio_info_present_flag
-    bits.bit(0); // ci_timing_info_present_flag
-    bits.f(0, 2); // ci_reserved_2bit
-    bits.bit(0); // rg(2): q = 0 (terminating zero bit)
-    bits.f(color_idc, 2); // rg(2): 2-bit remainder == idc for idc < 4
-    if color_idc == 0 {
-        bits.f(1, 8); // ci_color_primaries (BT.709)
-        bits.f(1, 8); // ci_transfer_characteristics
-        bits.f(1, 8); // ci_matrix_coefficients
-    }
-    bits.bit(0); // ci_full_range_flag
-    bits.bit(0); // obu_extension_flag
-    bits.bit(1); // trailing_one_bit
-    annex_b_obu_with_header(&layer_obu_header(24, 0, 0, 0), &bits.into_bytes())
+    content_interpretation_color_custom_obu(color_idc, None, false)
 }
 
 #[test]

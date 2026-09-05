@@ -761,9 +761,6 @@ fn build_units<T: ReconSample>(
         .map_err(|_| inter_allocation!("TIP prediction units"))?;
     for local_y in (0..plan.block_h).step_by(plan.unit_size) {
         for local_x in (0..plan.block_w).step_by(plan.unit_size) {
-            if first_only && !scratch.units.is_empty() {
-                break;
-            }
             let luma_x = placed.luma_x + local_x;
             let luma_y = placed.luma_y + local_y;
             let luma_w =
@@ -802,6 +799,9 @@ fn build_units<T: ReconSample>(
                 mvs,
                 metadata: None,
             });
+            if first_only {
+                return Ok(());
+            }
         }
     }
     Ok(())
@@ -899,22 +899,7 @@ fn tip_motion_grid<T: ReconSample>(
     )
 }
 
-/// Writes the units the batch kernel did not cover, one reference borrow per
-/// batch of units so a still-filtering reference is held for as little as the
-/// § 7.2 filter phase publishing its later stripes can wait out.
-/// Publishes finished unit samples into disjoint horizontal bands of the frame.
-///
-/// On the common path every unit already carries its own samples, so
-/// publication is a pure disjoint scatter: each unit writes its own rectangle
-/// and reads none. Units tile the frame, so grouping them by luma row yields
-/// full-width bands whose rectangles are disjoint, which `rect_surfaces` proves
-/// before handing out one exclusive surface each. Walking thousands of units on
-/// one worker instead leaves the pool draining behind a § 7.10.6 output frame.
-/// How many disjoint luma bands the finished units cover, or zero when any
-/// unit still owes its prediction.
-///
-/// One band is the whole frame's worth of work in a single job, so the band
-/// path would pay for its rect partition and pool entry and win nothing.
+/// Counts completed metadata row bands, or returns zero while any unit is pending.
 fn published_band_count<T: ReconSample>(scratch: &TipReconstructScratch<T>) -> usize {
     let mut bands = 0;
     let mut last = None;

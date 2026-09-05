@@ -12,7 +12,6 @@
 //! quantization, larger sizes, real residual) is future work.
 
 use core::num::NonZeroUsize;
-use std::collections::VecDeque;
 
 use splot_parallel::WorkerPool;
 
@@ -43,9 +42,8 @@ const SUPPORTED_FRAME_DIMENSION: usize = 64;
 /// The `base_q_idx` range the minimal skip path can honestly emit: `1..=90`. Within this
 /// range the decoder's coefficient CDF q-context is `0` (matching the skip tile's coding);
 /// the skip block's all-zero residual makes the flat-128 reconstruction independent of the
-/// exact `base_q_idx`. Above 90 the q-context derivation is not yet modeled, and `0`
-/// (lossless) is excluded from this minimal tier.
-// TODO(spec: ENC-CONFIG-QP-FIELD): widen once the `get_qctx` mapping lands (co-evolving
+/// exact `base_q_idx`. Values above 90 require a different coefficient CDF context;
+/// this emitter supports only context 0. `0` (lossless) is excluded from this tier.
 const SUPPORTED_SKIP_QP: core::ops::RangeInclusive<u8> = 1..=90;
 
 /// A queued input frame with its visible samples owned, so [`Context::receive_packet`] can
@@ -131,7 +129,7 @@ pub struct Context {
     runtime: EncoderRuntimeConfig,
     pool: WorkerPool,
     state: EncoderState,
-    input_queue: VecDeque<QueuedFrame>,
+    input_queue: Option<QueuedFrame>,
 }
 
 impl Context {
@@ -147,7 +145,7 @@ impl Context {
             runtime,
             pool,
             state: EncoderState::Accepting,
-            input_queue: VecDeque::with_capacity(INPUT_QUEUE_CAPACITY),
+            input_queue: None,
         })
     }
 
@@ -190,7 +188,7 @@ impl Context {
     /// Returns the number of input frames currently queued.
     #[must_use]
     pub fn queued_input_frames(&self) -> usize {
-        self.input_queue.len()
+        usize::from(self.input_queue.is_some())
     }
 
     /// Returns the current input queue capacity in frames.
@@ -208,9 +206,9 @@ impl Context {
             return Err(self.state_error(EncoderOperation::SendFrame));
         }
 
-        if self.input_queue.len() >= INPUT_QUEUE_CAPACITY {
+        if self.input_queue.is_some() {
             return Ok(SendFrameStatus::QueueFull {
-                queued_frames: self.input_queue.len(),
+                queued_frames: self.queued_input_frames(),
                 queue_capacity: INPUT_QUEUE_CAPACITY,
             });
         }
@@ -218,14 +216,14 @@ impl Context {
         let info = frame.info();
         self.validate_frame_info(info)?;
         // splot-copy-ok: retain the visible input samples as owned buffers — the borrowed `Frame`
-        self.input_queue.push_back(QueuedFrame {
+        self.input_queue = Some(QueuedFrame {
             info,
             y: frame.y().visible_rows().flatten().copied().collect(),
             u: frame.u().visible_rows().flatten().copied().collect(),
             v: frame.v().visible_rows().flatten().copied().collect(),
         });
         Ok(SendFrameStatus::Accepted {
-            queued_frames: self.input_queue.len(),
+            queued_frames: self.queued_input_frames(),
             queue_capacity: INPUT_QUEUE_CAPACITY,
         })
     }
@@ -243,19 +241,12 @@ impl Context {
             return Ok(ReceivePacketStatus::Finished);
         }
 
-        if let Some(frame) = self.input_queue.pop_front() {
+        if let Some(frame) = self.input_queue.take() {
             match self.try_emit_supported_packet(&frame) {
                 Ok(Some(packet)) => return Ok(ReceivePacketStatus::Packet(packet)),
-                Ok(None) => {
-                    if self.state == EncoderState::Draining && self.input_queue.is_empty() {
-                        self.state = EncoderState::Finished;
-                        return Ok(ReceivePacketStatus::Finished);
-                    }
-                    return Ok(ReceivePacketStatus::NeedMoreData);
-                }
+                Ok(None) => {}
                 Err(error) => {
                     self.state = EncoderState::Failed;
-                    self.input_queue.clear();
                     return Err(error);
                 }
             }
@@ -312,18 +303,18 @@ impl Context {
     pub fn flush(&mut self) -> Result<FlushStatus> {
         match self.state {
             EncoderState::Accepting => {
-                if self.input_queue.is_empty() {
+                if self.input_queue.is_none() {
                     self.state = EncoderState::Finished;
                     Ok(FlushStatus::Finished)
                 } else {
                     self.state = EncoderState::Draining;
                     Ok(FlushStatus::Draining {
-                        queued_frames: self.input_queue.len(),
+                        queued_frames: self.queued_input_frames(),
                     })
                 }
             }
             EncoderState::Draining => Ok(FlushStatus::Draining {
-                queued_frames: self.input_queue.len(),
+                queued_frames: self.queued_input_frames(),
             }),
             EncoderState::Finished => Ok(FlushStatus::Finished),
             EncoderState::Failed => Err(self.state_error(EncoderOperation::Flush)),
@@ -367,7 +358,7 @@ impl Context {
     #[cfg(test)]
     fn enter_failed_for_test(&mut self) {
         self.state = EncoderState::Failed;
-        self.input_queue.clear();
+        self.input_queue = None;
     }
 }
 

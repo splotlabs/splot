@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Golden snapshot tests of the `splot inspect --json` output (CONF-INSPECT-SNAPSHOTS).
-//!
-//! The inspector's per-OBU JSON summary is fully deterministic for a fixed input (byte
-//! offsets, sizes, parsed fields — no paths, timestamps, or filenames), so an `insta`
-//! golden snapshot freezes the inspector's behavior: any future change to the inspect
-//! output for a committed fixture is surfaced as a snapshot diff for explicit review
-//! (`cargo insta review`). The snapshots cover a diverse set of OBU types across the
-//! committed `tests/fixtures/` corpus.
+//! Golden JSON snapshots for committed OBU fixtures (CONF-INSPECT-SNAPSHOTS).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

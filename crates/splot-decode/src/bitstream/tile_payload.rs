@@ -226,11 +226,6 @@ impl TileFrameFacts {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffFrameFacts {
-    input: TileCoeffFrameFactsInput,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TileCoeffFrameFactsInput {
     pub(crate) enable_fsc: bool,
     pub(crate) enable_intra_ist: bool,
     pub(crate) enable_inter_ist: bool,
@@ -245,13 +240,8 @@ pub(crate) struct TileCoeffFrameFactsInput {
 }
 
 impl TileCoeffFrameFacts {
-    #[must_use]
-    pub(crate) const fn new(input: TileCoeffFrameFactsInput) -> Self {
-        Self { input }
-    }
-
     const fn default_for_base_q(base_q_idx: u32) -> Self {
-        Self::new(TileCoeffFrameFactsInput {
+        Self {
             enable_fsc: false,
             enable_intra_ist: false,
             enable_inter_ist: false,
@@ -263,63 +253,63 @@ impl TileCoeffFrameFacts {
             allow_tcq: false,
             allow_parity_hiding: false,
             base_q_idx,
-        })
+        }
     }
 
     #[must_use]
     pub(crate) const fn enable_fsc(self) -> bool {
-        self.input.enable_fsc
+        self.enable_fsc
     }
 
     #[must_use]
     pub(crate) const fn enable_intra_ist(self) -> bool {
-        self.input.enable_intra_ist
+        self.enable_intra_ist
     }
 
     #[must_use]
     pub(crate) const fn enable_inter_ist(self) -> bool {
-        self.input.enable_inter_ist
+        self.enable_inter_ist
     }
 
     #[must_use]
     pub(crate) const fn enable_chroma_dctonly(self) -> bool {
-        self.input.enable_chroma_dctonly
+        self.enable_chroma_dctonly
     }
 
     #[must_use]
     pub(crate) const fn enable_cctx(self) -> bool {
-        self.input.enable_cctx
+        self.enable_cctx
     }
 
     #[must_use]
     pub(crate) const fn reduced_tx_set(self) -> usize {
-        self.input.reduced_tx_set
+        self.reduced_tx_set
     }
 
     #[must_use]
     pub(crate) const fn reduced_tx_part_set(self) -> bool {
-        self.input.reduced_tx_part_set
+        self.reduced_tx_part_set
     }
 
     #[must_use]
     pub(crate) const fn base_q_idx(self) -> u32 {
-        self.input.base_q_idx
+        self.base_q_idx
     }
 
     #[must_use]
     pub(crate) const fn allow_tcq(self) -> bool {
-        self.input.allow_tcq
+        self.allow_tcq
     }
 
     #[must_use]
     pub(crate) const fn allow_parity_hiding(self) -> bool {
-        self.input.allow_parity_hiding
+        self.allow_parity_hiding
     }
 
     #[must_use]
     pub(crate) const fn lossless_for_segment(self, segment_id: usize) -> Option<bool> {
-        if segment_id < self.input.lossless_array.len() {
-            Some(self.input.lossless_array[segment_id])
+        if segment_id < self.lossless_array.len() {
+            Some(self.lossless_array[segment_id])
         } else {
             None
         }
@@ -329,7 +319,7 @@ impl TileCoeffFrameFacts {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTilePayloadPlan<'a> {
     work_units: Vec<DecodeTileWorkUnit<'a>>,
-    frame_end: FrameEndBoundary,
+    reaches_last_tile_group: bool,
 }
 
 impl<'a> DecodeTilePayloadPlan<'a> {
@@ -344,8 +334,8 @@ impl<'a> DecodeTilePayloadPlan<'a> {
 
     #[must_use]
     #[cfg(test)]
-    pub(crate) const fn frame_end(&self) -> FrameEndBoundary {
-        self.frame_end
+    pub(crate) const fn reaches_last_tile_group(&self) -> bool {
+        self.reaches_last_tile_group
     }
 
     pub(crate) fn append_continuation(
@@ -357,13 +347,13 @@ impl<'a> DecodeTilePayloadPlan<'a> {
             .last()
             .and_then(|tile| tile.tile_num.checked_add(1));
         let actual = continuation.work_units.first().map(|tile| tile.tile_num);
-        if self.frame_end.reaches_last_tile_group || expected != actual {
+        if self.reaches_last_tile_group || expected != actual {
             return Err(TilePayloadBoundaryError::Malformed(
                 TilePayloadMalformed::NonContiguousTileGroups { expected, actual },
             ));
         }
         self.work_units.append(&mut continuation.work_units);
-        self.frame_end = continuation.frame_end;
+        self.reaches_last_tile_group = continuation.reaches_last_tile_group;
         Ok(())
     }
 }
@@ -479,25 +469,6 @@ impl SymbolInitBoundary {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct FrameEndBoundary {
-    reaches_last_tile_group: bool,
-}
-
-impl FrameEndBoundary {
-    const fn deferred(reaches_last_tile_group: bool) -> Self {
-        Self {
-            reaches_last_tile_group,
-        }
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn reaches_last_tile_group(self) -> bool {
-        self.reaches_last_tile_group
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePayloadUnsupportedReason {
     MissingTileFramingRecords,
     NonClosedLoopKey,
@@ -513,7 +484,6 @@ crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePayloadUnsupported {
     reason: TilePayloadUnsupportedReason,
-    tile_num: Option<u32>,
     byte_offset: ByteOffset,
     message: &'static str,
 }
@@ -521,13 +491,11 @@ pub(crate) struct TilePayloadUnsupported {
 impl TilePayloadUnsupported {
     fn new(
         reason: TilePayloadUnsupportedReason,
-        tile_num: Option<u32>,
         byte_offset: ByteOffset,
         message: &'static str,
     ) -> Self {
         Self {
             reason,
-            tile_num,
             byte_offset,
             message,
         }
@@ -537,12 +505,6 @@ impl TilePayloadUnsupported {
     #[cfg(test)]
     pub(crate) const fn reason(self) -> TilePayloadUnsupportedReason {
         self.reason
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn tile_num(self) -> Option<u32> {
-        self.tile_num
     }
 
     #[must_use]
@@ -618,22 +580,13 @@ impl fmt::Display for TilePayloadMalformed {
 
 impl fmt::Display for TilePayloadUnsupported {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.tile_num {
-            Some(tile_num) => write!(
-                f,
-                "{} at tile {tile_num} byte {}: {}",
-                self.reason.as_str(),
-                self.byte_offset,
-                self.message
-            ),
-            None => write!(
-                f,
-                "{} at byte {}: {}",
-                self.reason.as_str(),
-                self.byte_offset,
-                self.message
-            ),
-        }
+        write!(
+            f,
+            "{} at byte {}: {}",
+            self.reason.as_str(),
+            self.byte_offset,
+            self.message
+        )
     }
 }
 
@@ -673,14 +626,14 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         ) => {}
         (ObuType::Switch | ObuType::RasFrame, true)
         | (ObuType::ClosedLoopKey | ObuType::OpenLoopKey, false) => {
-            return Err(unsupported_boundary_without_tile(
+            return Err(unsupported_boundary(
                 TilePayloadUnsupportedReason::NonIntraFrame,
                 input.payload_base,
                 "the tile payload frame type does not match the OBU frame family.",
             ));
         }
         _ => {
-            return Err(unsupported_boundary_without_tile(
+            return Err(unsupported_boundary(
                 TilePayloadUnsupportedReason::NonClosedLoopKey,
                 input.payload_base,
                 "the OBU type is not a supported intra or inter tile-group frame.",
@@ -688,7 +641,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         }
     }
     if input.framing.tiles.is_empty() {
-        return Err(unsupported_boundary_without_tile(
+        return Err(unsupported_boundary(
             TilePayloadUnsupportedReason::MissingTileFramingRecords,
             input.payload_base,
             "tile groups without tile framing records are outside the current tile payload boundary tier.",
@@ -758,7 +711,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
     }
     Ok(DecodeTilePayloadPlan {
         work_units,
-        frame_end: FrameEndBoundary::deferred(input.frame.is_last_tile_group),
+        reaches_last_tile_group: input.frame.is_last_tile_group,
     })
 }
 
@@ -844,17 +797,12 @@ fn invalid_grid(tile_num: u32) -> TilePayloadBoundaryError {
     TilePayloadBoundaryError::Malformed(TilePayloadMalformed::InvalidTileGrid { tile_num })
 }
 
-fn unsupported_boundary_without_tile(
+fn unsupported_boundary(
     reason: TilePayloadUnsupportedReason,
     byte_offset: ByteOffset,
     message: &'static str,
 ) -> TilePayloadBoundaryError {
-    TilePayloadBoundaryError::Unsupported(TilePayloadUnsupported::new(
-        reason,
-        None,
-        byte_offset,
-        message,
-    ))
+    TilePayloadBoundaryError::Unsupported(TilePayloadUnsupported::new(reason, byte_offset, message))
 }
 
 fn checked_byte_offset(

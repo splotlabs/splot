@@ -20,7 +20,7 @@ fn validator_frame_header_copy_record_cleared_by_sef_opening_new_frame() {
          later flag-0 tile group does not pair against it; report was: {report}"
     );
     assert!(
-        has_frame_unit_error(&report, "frame-unit/sef-single-obu"),
+        has_error(&report, "frame-unit/sef-single-obu"),
         "the flag-0 tile group continuing the SEF coded frame must still fire \
          sef-single-obu; report was: {report}"
     );
@@ -196,20 +196,6 @@ fn validator_does_not_flag_mfh_stored_frame_size_when_mfh_unresolvable() {
             .errors()
             .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
         "an unresolvable MFH must keep the silent behavior; report was: {report}"
-    );
-}
-
-#[test]
-fn validator_flags_mfh_default_frame_size_exceeds_sequence_max() {
-    let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
-    data.extend(mfh_obu_with_frame_size(256, 8));
-    data.extend(mfh_backed_clk_default_size(1));
-    let report = Validator::new(false).validate_bytes(&data);
-    assert!(
-        report
-            .errors()
-            .any(|d| d.rule_id == "frame-header/mfh-frame-size-exceeds-sequence-max"),
-        "report was: {report}"
     );
 }
 

@@ -12,15 +12,9 @@
 //! - For each set level bit, `qm_is_default_flag` selects the default matrix or a
 //!   user-defined matrix parsed by the shared `user_defined_qm` helper (§ 5.4.11).
 //!
-//! `user_defined_qm` is shared syntax: per the AV2 grammar it is reached only from
-//! quantizer-matrix syntax (here via [`parse_quantizer_matrix`]), **not** as a direct
-//! `sequence_header_obu()` child call, and the same helper is reusable by future
-//! frame-level quantization syntax. The three fundamental transform shapes
-//! `Fundamental_Tx_Size[3] = { TX_8X8, TX_8X4, TX_4X8 }` are filled in AV2 2D
-//! diagonal scan order (`get_scan(txSz, TX_CLASS_2D)`, § 5.20.7.30) with `svlc()`
-//! coefficient deltas. Scan/row-column derivation follows the AV2 spec (§ 5.20.7.30,
-//! § 9 transform-size tables) and the AVM oracle `read_qm_obu` / `read_qm_data`
-//! (`av2/decoder/obu_qm.c`); no AV1 scan or transform tables are copied.
+//! User-defined matrices fill the three fundamental shapes in AV2 2D diagonal
+//! scan order (§ 5.20.7.30, § 9), following the AVM oracle `read_qm_obu` /
+//! `read_qm_data` (`av2/decoder/obu_qm.c`).
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
@@ -348,8 +342,7 @@ mod tests {
         parse_quantizer_matrix(&mut reader)
     }
 
-    /// Fills one plane in scan order with a constant `svlc(0)` delta so every
-    /// coefficient equals `start + 0 = start`. Returns the appended bit count helper.
+    /// Fills one plane with zero coefficient deltas.
     fn write_flat_plane(bits: &mut Bits, w: usize, h: usize) {
         for _ in 0..(w * h) {
             bits.svlc(0); // delta 0 keeps quant at its running value (32)

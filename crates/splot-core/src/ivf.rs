@@ -241,10 +241,11 @@ impl<'a> IvfFrameCursor<'a> {
 }
 
 /// Errors produced by the IVF container parser.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum IvfError {
     /// The input ended before a complete IVF header could be read.
+    #[error("truncated IVF header at byte {offset}: needed {needed} more byte(s)")]
     TruncatedHeader {
         /// First missing byte offset.
         offset: ByteOffset,
@@ -252,6 +253,7 @@ pub enum IvfError {
         needed: usize,
     },
     /// The first four bytes were not the IVF `DKIF` signature.
+    #[error("invalid IVF signature: expected DKIF, found 0x{:02X}{:02X}{:02X}{:02X}", .signature[0], .signature[1], .signature[2], .signature[3])]
     InvalidSignature {
         /// Offset of the signature.
         offset: ByteOffset,
@@ -259,6 +261,7 @@ pub enum IvfError {
         signature: [u8; 4],
     },
     /// The header length field was smaller than the baseline 32-byte header.
+    #[error("invalid IVF header length: {header_len} byte(s), expected at least {IVF_HEADER_SIZE}")]
     InvalidHeaderLength {
         /// Offset of the header length field.
         offset: ByteOffset,
@@ -266,6 +269,9 @@ pub enum IvfError {
         header_len: u16,
     },
     /// The input ended before a complete IVF frame header could be read.
+    #[error(
+        "truncated IVF frame {frame_index} header at byte {offset}: needed {needed} more byte(s)"
+    )]
     TruncatedFrameHeader {
         /// Zero-based frame index whose header was truncated.
         frame_index: usize,
@@ -275,6 +281,9 @@ pub enum IvfError {
         needed: usize,
     },
     /// The input ended before the declared frame payload was complete.
+    #[error(
+        "truncated IVF frame {frame_index} payload at byte {offset}: declared {size} byte(s), only {remaining} available"
+    )]
     TruncatedFramePayload {
         /// Zero-based frame index whose payload was truncated.
         frame_index: usize,
@@ -312,45 +321,6 @@ impl IvfError {
         }
     }
 }
-
-impl fmt::Display for IvfError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TruncatedHeader { offset, needed } => write!(
-                f,
-                "truncated IVF header at byte {offset}: needed {needed} more byte(s)"
-            ),
-            Self::InvalidSignature { signature, .. } => write!(
-                f,
-                "invalid IVF signature: expected DKIF, found 0x{:02X}{:02X}{:02X}{:02X}",
-                signature[0], signature[1], signature[2], signature[3]
-            ),
-            Self::InvalidHeaderLength { header_len, .. } => write!(
-                f,
-                "invalid IVF header length: {header_len} byte(s), expected at least {IVF_HEADER_SIZE}"
-            ),
-            Self::TruncatedFrameHeader {
-                frame_index,
-                offset,
-                needed,
-            } => write!(
-                f,
-                "truncated IVF frame {frame_index} header at byte {offset}: needed {needed} more byte(s)"
-            ),
-            Self::TruncatedFramePayload {
-                frame_index,
-                offset,
-                size,
-                remaining,
-            } => write!(
-                f,
-                "truncated IVF frame {frame_index} payload at byte {offset}: declared {size} byte(s), only {remaining} available"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for IvfError {}
 
 /// Non-fatal warnings produced by the IVF container parser.
 #[derive(Debug, Clone, PartialEq, Eq)]

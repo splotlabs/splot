@@ -5,17 +5,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use super::decode_general_intra_luma;
-use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
-
-struct CdefCase {
-    fixture: &'static [u8],
-    expected: CdefExpectation,
-}
-
-enum CdefExpectation {
-    Hash(&'static str),
-}
+use super::{assert_hash, assert_yuv420_frame, decode_eight};
+use splot_recon::BitDepth;
 
 const CDEF_Q130_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2sb-cdef-intra-128x64-q130.ivf"
@@ -33,48 +24,27 @@ const CDEF_UV_Q170_FIXTURE: &[u8] = include_bytes!(
 #[test]
 fn cdef_active_intra_frame_decodes_to_oracle() {
     let cases = [
-        CdefCase {
-            fixture: CDEF_Q130_FIXTURE,
-            expected: CdefExpectation::Hash(
-                "5746153715e5537ae86879a9330048331e3bdf62246fb3fdd55a372cb8299cc9",
-            ),
-        },
-        CdefCase {
-            fixture: CDEF_Q120_FIXTURE,
-            expected: CdefExpectation::Hash(
-                "5e8576f139db38fa6cf8c9d5015bf1a7b667a9255e84d1593222848728f02362",
-            ),
-        },
-        CdefCase {
-            fixture: CDEF_DEBLOCK_Q100_FIXTURE,
-            expected: CdefExpectation::Hash(
-                "2915c2a65660fa1ff35c965f16e1c59d629ffc279539bfe9f502f7a03de2d23d",
-            ),
-        },
-        CdefCase {
-            fixture: CDEF_UV_Q170_FIXTURE,
-            expected: CdefExpectation::Hash(
-                "9b11d0effa3b93e84c63306e9ac865921e33f6e098cc35fbc472cbd6096ee3e6",
-            ),
-        },
+        (
+            CDEF_Q130_FIXTURE,
+            "5746153715e5537ae86879a9330048331e3bdf62246fb3fdd55a372cb8299cc9",
+        ),
+        (
+            CDEF_Q120_FIXTURE,
+            "5e8576f139db38fa6cf8c9d5015bf1a7b667a9255e84d1593222848728f02362",
+        ),
+        (
+            CDEF_DEBLOCK_Q100_FIXTURE,
+            "2915c2a65660fa1ff35c965f16e1c59d629ffc279539bfe9f502f7a03de2d23d",
+        ),
+        (
+            CDEF_UV_Q170_FIXTURE,
+            "9b11d0effa3b93e84c63306e9ac865921e33f6e098cc35fbc472cbd6096ee3e6",
+        ),
     ];
 
-    for case in &cases {
-        assert_cdef_case(case);
+    for (fixture, expected_hash) in cases {
+        let frame = decode_eight(fixture);
+        assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
+        assert_hash(&frame, expected_hash);
     }
-}
-
-fn assert_cdef_case(case: &CdefCase) {
-    match case.expected {
-        CdefExpectation::Hash(hash) => assert_cdef_hash(case.fixture, hash),
-    }
-}
-
-fn assert_cdef_hash(fixture: &[u8], frame_hash: &str) {
-    let frame = decode_general_intra_luma(fixture);
-    assert_eq!(frame.bit_depth(), BitDepth::Eight);
-    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
-    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
-    let hash = DecodedFrameHashInput::new(&frame).compute_hash().to_hex();
-    assert_eq!(hash, frame_hash);
 }

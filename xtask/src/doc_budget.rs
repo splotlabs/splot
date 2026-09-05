@@ -44,10 +44,7 @@ struct BudgetReport {
 /// Verifies committed manual markdown stays within the documentation budget.
 pub(crate) fn check_doc_budget(root: &Path) -> Result<()> {
     let budget_path = root.join(BUDGET_PATH);
-    let budget_text = std::fs::read_to_string(&budget_path)
-        .with_context(|| format!("failed to read {}", budget_path.display()))?;
-    let budget: Budget = toml::from_str(&budget_text)
-        .with_context(|| format!("failed to parse {}", budget_path.display()))?;
+    let budget: Budget = crate::util::load_toml(&budget_path)?;
     let entries = markdown_entries(root)?;
     let report = evaluate_doc_budget(&budget, &entries);
 
@@ -93,7 +90,7 @@ fn markdown_entries(root: &Path) -> Result<Vec<MarkdownEntry>> {
             .with_context(|| format!("failed to read {}", display_path(root, &path)))?;
         entries.push(MarkdownEntry {
             path: rel.to_owned(),
-            lines: line_count(&text),
+            lines: text.lines().count(),
         });
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -154,14 +151,6 @@ fn evaluate_doc_budget(budget: &Budget, entries: &[MarkdownEntry]) -> BudgetRepo
         manual_lines,
         largest: manual,
         problems,
-    }
-}
-
-fn line_count(text: &str) -> usize {
-    if text.is_empty() {
-        0
-    } else {
-        text.lines().count()
     }
 }
 

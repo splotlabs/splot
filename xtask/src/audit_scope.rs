@@ -1055,10 +1055,7 @@ fn package_path_dependencies(
     if !manifest_path.is_file() {
         return Ok(Vec::new());
     }
-    let text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-    let value: toml::Value = toml::from_str(&text)
-        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let value: toml::Value = crate::util::load_toml(&manifest_path)?;
     let manifest_dir = root.join(member_path);
     let mut out = BTreeSet::new();
     collect_package_path_dependencies(
@@ -1302,19 +1299,7 @@ fn normalize_workspace_path(root: &Path, base: &Path, path: &str) -> Result<Stri
 }
 
 fn normalize_workspace_path_if_inside(root: &Path, base: &Path, path: &str) -> Option<String> {
-    let root = normalize_path_lexically(root);
-    let path = Path::new(path);
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    };
-    let normalized = normalize_path_lexically(&joined);
-    let relative = normalized.strip_prefix(&root).ok()?;
-    if relative.as_os_str().is_empty() {
-        return None;
-    }
-    Some(path_to_string(relative))
+    normalize_workspace_path(root, base, path).ok()
 }
 
 fn repo_relative_path(root: &Path, path: &Path) -> Option<String> {
@@ -1351,10 +1336,7 @@ fn normalize_path_lexically(path: &Path) -> PathBuf {
 fn package_name_for_member(root: &Path, member: &str) -> Result<String> {
     let manifest_path = root.join(member).join("Cargo.toml");
     if manifest_path.is_file() {
-        let text = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-        let value: toml::Value = toml::from_str(&text)
-            .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+        let value: toml::Value = crate::util::load_toml(&manifest_path)?;
         if let Some(name) = value
             .get("package")
             .and_then(|package| package.get("name"))
@@ -1480,6 +1462,7 @@ fn path_to_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::temp_root;
 
     #[test]
     fn classifies_future_workspace_members_without_hardcoded_crate_names() -> Result<()> {
@@ -2430,13 +2413,6 @@ module = "xtask/src/audit_scope.rs"
             feature_ids: Vec::new(),
             outcome: "success".to_owned(),
         }
-    }
-
-    fn temp_root(name: &str) -> Result<PathBuf> {
-        let root = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root)?;
-        Ok(root)
     }
 
     fn temp_git_repo(name: &str) -> Result<PathBuf> {

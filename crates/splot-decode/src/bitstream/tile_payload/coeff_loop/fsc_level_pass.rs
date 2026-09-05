@@ -11,7 +11,7 @@ use super::super::cdf::coeff_context::{
 };
 use super::super::cdf::{CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
-use super::NonZeroCoeffEobSymbolRead;
+use super::NonZeroCoeffEob;
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::NUM_BASE_LEVELS;
 use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk};
@@ -100,7 +100,7 @@ pub(crate) fn apply_nonzero_coeff_fsc_level_pass(
 }
 
 fn preflight_pass(
-    eob_read: NonZeroCoeffEobSymbolRead,
+    eob_read: NonZeroCoeffEob,
     block: &TransformCoeffBlockState,
     walk: &FscCoeffScanWalk,
     config: CoeffFscLevelPassConfig,
@@ -113,7 +113,7 @@ fn preflight_pass(
             config_height: config.tx_height,
         });
     }
-    let eob = eob_read.eob().eob();
+    let eob = eob_read.eob();
     if eob != walk.len() {
         return Err(CoeffFscLevelPassError::ScanEntryCountMismatch {
             eob,

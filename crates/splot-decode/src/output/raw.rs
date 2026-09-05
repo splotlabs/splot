@@ -33,7 +33,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     let output_error = Mutex::new(None);
     let decode_result = splot_parallel::ready_task_scope(|scope| {
         let mut outstanding: Option<Arc<CompletionCell<()>>> = None;
-        let decode_result = crate::pipeline::emit_materialized_frames_from_prepared(
+        let decode_result = crate::pipeline::emit_frames_from_prepared(
             bitstream,
             parsed,
             options,
@@ -104,7 +104,7 @@ pub(crate) fn discard_raw_stream_from_plan(
     plan: &DecodeStreamPlan,
     frame_delay: NonZeroUsize,
 ) -> Result<()> {
-    crate::pipeline::emit_materialized_frames_from_prepared(
+    crate::pipeline::emit_frames_from_prepared(
         bitstream,
         parsed,
         options,

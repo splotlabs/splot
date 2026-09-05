@@ -280,15 +280,11 @@ fn write_scaling_points(
 
     let mut increments: Vec<u32> = Vec::with_capacity(points.len());
     let mut prev = 0u32;
-    for (i, point) in points.iter().enumerate() {
-        let increment = if i == 0 {
-            point.value
-        } else {
-            point
-                .value
-                .checked_sub(prev)
-                .ok_or_else(|| non_canonical("non_monotonic_points"))?
-        };
+    for point in points {
+        let increment = point
+            .value
+            .checked_sub(prev)
+            .ok_or_else(|| non_canonical("non_monotonic_points"))?;
         increments.push(increment);
         prev = point.value;
     }

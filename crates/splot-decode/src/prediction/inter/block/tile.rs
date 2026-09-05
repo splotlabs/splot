@@ -139,25 +139,7 @@ impl TileWalkParams {
             core,
             reference,
             ref_frame_idx,
-            limits: self.limits,
-            mi_rows: self.mi_rows,
-            mi_cols: self.mi_cols,
-            sb_h4: self.sb_h4,
-            max_drl_bits_minus_1: self.max_drl_bits_minus_1,
-            frame_interpolation_filter: self.frame_interpolation_filter,
-            residual_tool_policy: self.residual_tool_policy,
-            num_total_refs: self.num_total_refs,
-            reference_select: self.reference_select,
-            num_same_ref_compound: self.num_same_ref_compound,
-            luma_use_tcq: self.luma_use_tcq,
-            residual_use_ddt: self.residual_use_ddt,
-            bit_depth: self.bit_depth,
-            enable_adaptive_mvd: self.enable_adaptive_mvd,
-            allow_bawp: self.allow_bawp,
-            allow_warpmv_mode: self.allow_warpmv_mode,
-            frame_is_switch: self.frame_is_switch,
-            current_order_hint: self.current_order_hint,
-            tip_ref_pair: self.tip_ref_pair,
+            params: *self,
         }
     }
 }
@@ -165,27 +147,9 @@ impl TileWalkParams {
 struct TileDecodeContext<'a, T: ReconSample> {
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
-    limits: crate::DecodeLimits,
-    mi_rows: usize,
-    mi_cols: usize,
-    sb_h4: usize,
-    max_drl_bits_minus_1: u32,
-    frame_interpolation_filter: FrameInterpolationFilter,
-    residual_tool_policy: TransformToolResidualPolicy,
-    num_total_refs: usize,
-    reference_select: bool,
-    num_same_ref_compound: u8,
     reference: &'a InterReferenceState<T>,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
     ref_frame_idx: &'a [u32],
-    bit_depth: BitDepth,
-    enable_adaptive_mvd: bool,
-    allow_bawp: bool,
-    allow_warpmv_mode: bool,
-    frame_is_switch: bool,
-    current_order_hint: u32,
-    tip_ref_pair: Option<(i8, i8)>,
+    params: TileWalkParams,
 }
 
 struct TileParser<'tile, 'payload> {
@@ -318,16 +282,16 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         let tile_offset = tile.tile_byte_span().start;
         let chroma = context.sequence.general.chroma_format_idc;
         let tile_rows = tile.mi_row_range().start as usize
-            ..(tile.mi_row_range().end as usize).min(context.mi_rows);
+            ..(tile.mi_row_range().end as usize).min(context.params.mi_rows);
         let tile_cols = tile.mi_col_range().start as usize
-            ..(tile.mi_col_range().end as usize).min(context.mi_cols);
+            ..(tile.mi_col_range().end as usize).min(context.params.mi_cols);
         parse
             .coeff_ctx
             .reset_for_tile_chroma(tile_rows.clone(), tile_cols.clone(), chroma)
             .map_err(|error| inter_tile_coeff_context_error(&error))?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core)?;
         let intrabc_state = TileIntrabcPreludeState::new_for_tile(
-            (context.mi_rows, context.mi_cols),
+            (context.params.mi_rows, context.params.mi_cols),
             tile_rows.clone(),
             tile_cols.clone(),
             context.sequence,
@@ -355,7 +319,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             tile,
             context.sequence,
             context.core,
-            context.limits,
+            context.params.limits,
             core::mem::take(&mut parse.lr_records),
         )
         .map_err(|error| {
@@ -458,18 +422,18 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         &mut self.intrabc_state,
                         &mut self.output.segment_id_state,
                         &mut self.mv_grid,
-                        context.tip_ref_pair,
+                        context.params.tip_ref_pair,
                         &mut self.y_smooth,
                         &mut self.chroma_smooth,
-                        context.sb_h4,
-                        context.mi_rows,
-                        context.mi_cols,
-                        context.max_drl_bits_minus_1,
-                        context.frame_interpolation_filter,
-                        context.residual_tool_policy,
-                        context.num_total_refs,
-                        context.reference_select,
-                        context.num_same_ref_compound,
+                        context.params.sb_h4,
+                        context.params.mi_rows,
+                        context.params.mi_cols,
+                        context.params.max_drl_bits_minus_1,
+                        context.params.frame_interpolation_filter,
+                        context.params.residual_tool_policy,
+                        context.params.num_total_refs,
+                        context.params.reference_select,
+                        context.params.num_same_ref_compound,
                         joint_modes,
                         uses_mrls,
                         use_dip,
@@ -480,16 +444,16 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         &mut self.filter_records.chroma_deblock_blocks,
                         &mut self.filter_records.tx_skip_records,
                         &mut self.residual_planes,
-                        context.luma_use_tcq,
-                        context.residual_use_ddt,
+                        context.params.luma_use_tcq,
+                        context.params.residual_use_ddt,
                         context.ref_frame_idx,
                         context.reference,
-                        context.bit_depth,
-                        context.enable_adaptive_mvd,
-                        context.allow_bawp,
-                        context.allow_warpmv_mode,
-                        context.frame_is_switch,
-                        context.current_order_hint,
+                        context.params.bit_depth,
+                        context.params.enable_adaptive_mvd,
+                        context.params.allow_bawp,
+                        context.params.allow_warpmv_mode,
+                        context.params.frame_is_switch,
+                        context.params.current_order_hint,
                         tile_offset,
                     )
                 };
@@ -502,7 +466,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     origin,
                     ReconRowEntry {
                         publication,
-                        state: Some(ReconEntryState::Resolve(Some(resolve))),
+                        state: Some(ReconEntryState::Resolve(resolve)),
                         motion: None,
                         temporal: 0..0,
                     },
@@ -608,11 +572,11 @@ impl TileResolveState {
                 temporal: frame_uses_temporal_mvs(context.core).then_some(temporal_context),
                 order_hints: temporal_context.order_hint_mv_context(),
                 drl_reorder: sequence_drl_reorder(context.sequence),
-                max_drl_bits_minus_1: context.max_drl_bits_minus_1,
+                max_drl_bits_minus_1: context.params.max_drl_bits_minus_1,
                 frame_precision: 0,
                 tile_offset,
             },
-            context.sb_h4,
+            context.params.sb_h4,
         )
     }
 }
@@ -649,44 +613,45 @@ pub(super) struct ReconRowEntry {
 }
 
 enum ReconEntryState {
-    Resolve(Option<LeafResolveRecord>),
-    Command(Option<ReconCommand>),
+    Resolve(LeafResolveRecord),
+    Command(ReconCommand),
 }
 
 impl ReconRowEntry {
     pub(super) fn command(&self) -> Option<&ReconCommand> {
         match self.state.as_ref()? {
-            ReconEntryState::Command(Some(command))
-            | ReconEntryState::Resolve(Some(
+            ReconEntryState::Command(command)
+            | ReconEntryState::Resolve(
                 LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
-            )) => Some(command),
+            ) => Some(command),
             ReconEntryState::Resolve(
-                Some(LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)) | None,
-            )
-            | ReconEntryState::Command(None) => None,
+                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_),
+            ) => None,
         }
     }
 
     pub(super) fn take_resolve(&mut self) -> Option<LeafResolveRecord> {
-        self.take_state(ReconEntryState::as_resolve)
+        match self.state.take()? {
+            ReconEntryState::Resolve(resolve) => Some(resolve),
+            state @ ReconEntryState::Command(_) => {
+                self.state = Some(state);
+                None
+            }
+        }
     }
 
     pub(super) fn store_command(&mut self, command: ReconCommand) {
-        self.state = Some(ReconEntryState::Command(Some(command)));
+        self.state = Some(ReconEntryState::Command(command));
     }
 
     pub(super) fn take_command(&mut self) -> Option<ReconCommand> {
-        self.take_state(ReconEntryState::as_command)
-    }
-
-    fn take_state<T>(
-        &mut self,
-        extract: impl FnOnce(&mut ReconEntryState) -> Option<T>,
-    ) -> Option<T> {
-        let state = self.state.as_mut()?;
-        let value = extract(state)?;
-        self.state = None;
-        Some(value)
+        match self.state.take()? {
+            ReconEntryState::Command(command) => Some(command),
+            state @ ReconEntryState::Resolve(_) => {
+                self.state = Some(state);
+                None
+            }
+        }
     }
 
     /// The § 7.22 record a non-inter luma-tree leaf stores: every covered 8x8
@@ -735,22 +700,6 @@ impl ReconRowEntry {
     ) -> Option<super::super::mc::CompoundMotionGrid> {
         let index = self.motion.take()?.get().checked_sub(1)?;
         grids.get_mut(index)?.take()
-    }
-}
-
-impl ReconEntryState {
-    fn as_resolve(&mut self) -> Option<LeafResolveRecord> {
-        match self {
-            Self::Resolve(resolve) => resolve.take(),
-            Self::Command(_) => None,
-        }
-    }
-
-    fn as_command(&mut self) -> Option<ReconCommand> {
-        match self {
-            Self::Command(command) => command.take(),
-            Self::Resolve(_) => None,
-        }
     }
 }
 
@@ -1322,12 +1271,6 @@ fn tile_unit_capacity(
     sb_rows * sb_cols + 1
 }
 
-/// Monotone count of § 8.2 parse units a tile has finished, published as the
-/// parser produces them.
-///
-/// Units are emitted in order, so a consumer can gate on the prefix it needs
-/// instead of on the whole tile. The cell is the scheduler's own watermark, so
-/// a batch waits through `Condition::watermark` rather than through a poll.
 /// The tile geometry the § 8.2 parser settles before it reads its first
 /// unit, which is everything the admission scheduler needs to lay out
 /// batches and surfaces.
@@ -1522,9 +1465,9 @@ fn reset_tile_block_decoded<T: ReconSample>(
             },
             usize::from(subsampling_x),
             usize::from(subsampling_y),
-            context.sb_h4,
-            (tile.mi_col_range().end as usize).min(context.mi_cols),
-            (tile.mi_row_range().end as usize).min(context.mi_rows),
+            context.params.sb_h4,
+            (tile.mi_col_range().end as usize).min(context.params.mi_cols),
+            (tile.mi_row_range().end as usize).min(context.params.mi_rows),
         )
         .map_err(|error| inter_tile_block_decoded_error(&error))
 }

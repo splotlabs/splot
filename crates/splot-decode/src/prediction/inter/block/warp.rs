@@ -330,19 +330,6 @@ fn read_warp_newmv_tail(
     })
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum WarpInterIntraSyntax {
-    #[default]
-    Disabled,
-    Smooth {
-        mode: InterIntraMode,
-    },
-    Wedge {
-        mode: InterIntraMode,
-        wedge_index: u8,
-    },
-}
-
 pub(crate) fn inter_mv_read_config(core: &FrameHeaderCore) -> Result<MvReadConfig> {
     let precision = core
         .inter
@@ -555,18 +542,6 @@ const WEDGE_ANGLE_DIST_TO_INDEX: [[i8; 4]; 20] = [
     [-1, 65, 66, 67],
 ];
 
-pub(crate) fn interintra_prediction_mode(
-    syntax: WarpInterIntraSyntax,
-) -> Option<InterIntraPrediction> {
-    match syntax {
-        WarpInterIntraSyntax::Disabled => None,
-        WarpInterIntraSyntax::Smooth { mode } => Some(InterIntraPrediction::SmoothMask { mode }),
-        WarpInterIntraSyntax::Wedge { mode, wedge_index } => {
-            Some(InterIntraPrediction::WedgeMask { mode, wedge_index })
-        }
-    }
-}
-
 /// Reads the AV2 section 5.20.7.15 inter-intra tail shared by the plain and warp
 /// readers: the inter-intra mode, the wedge flag, and the wedge index. Each caller
 /// keeps its own eligibility test and enable symbol and delegates once the block is
@@ -577,7 +552,7 @@ pub(super) fn read_active_inter_intra_tail(
     bsize_group: usize,
     b_size: usize,
     tile_offset: ByteOffset,
-) -> Result<WarpInterIntraSyntax> {
+) -> Result<Option<InterIntraPrediction>> {
     let mode = match cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntraMode { bsize_group }, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))?
@@ -599,12 +574,12 @@ pub(super) fn read_active_inter_intra_tail(
         false
     };
     if use_wedge {
-        Ok(WarpInterIntraSyntax::Wedge {
+        Ok(Some(InterIntraPrediction::WedgeMask {
             mode,
             wedge_index: read_wedge_mode_syntax(cdfs, symbols, tile_offset)?,
-        })
+        }))
     } else {
-        Ok(WarpInterIntraSyntax::Smooth { mode })
+        Ok(Some(InterIntraPrediction::SmoothMask { mode }))
     }
 }
 
@@ -615,9 +590,9 @@ pub(crate) fn read_warp_inter_intra_syntax(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<WarpInterIntraSyntax> {
+) -> Result<Option<InterIntraPrediction>> {
     if n4w < 2 || n4h < 2 || n4w.max(n4h) > CHUNK_64_N4 {
-        return Ok(WarpInterIntraSyntax::default());
+        return Ok(None);
     }
     let b_size = b_size.index();
     let bsize_group = SIZE_GROUP_LOOKUP[b_size];
@@ -626,7 +601,7 @@ pub(crate) fn read_warp_inter_intra_syntax(
         .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     if enabled == 0 {
-        return Ok(WarpInterIntraSyntax::default());
+        return Ok(None);
     }
 
     read_active_inter_intra_tail(cdfs, symbols, bsize_group, b_size, tile_offset)

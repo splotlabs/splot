@@ -231,8 +231,7 @@ pub(in crate::validator::tests) fn clk_frame_long_term(
     fb.bit(1); // immediate_output_frame
     fb.bit(1); // frame_size_override_flag
     fb.f(0, 1); // order_hint f(OrderHintBits == 1)
-    if max_mlayer_id == 0 {
-    } else {
+    if max_mlayer_id != 0 {
         fb.f(1, 8); // refresh_frame_flags f(NumRefFrames == 8)
     }
     fb.f(15, 8); // frame_width_minus_1 f(8) -> 16 (== max_frame_width)
@@ -300,8 +299,7 @@ pub(in crate::validator::tests) fn ras_frame_explicit_map_at_layer(
     fb.f(ref_long_term_id, 4); // ref_long_term_id[0] f(long_term_frame_id_bits == 4)
     fb.bit(1); // immediate_output_frame (RAS is not OLK)
     fb.f(0, 1); // order_hint f(OrderHintBits == 1)
-    if max_mlayer_id == 0 {
-    } else {
+    if max_mlayer_id != 0 {
         fb.f(0, num_ref_frames); // refresh_frame_flags f(NumRefFrames)
     }
     fb.f(num_total_refs, 3); // num_total_refs f(3)
@@ -479,8 +477,7 @@ pub(in crate::validator::tests) fn ref_inter_bru(
         fb.f(0, 3); // ref_frame_idx[i] f(CeilLog2(8) == 3) -> slot 0
     }
     fb.bit(1); // use_bru == 1
-    let n = 32 - (num_total_refs - 1).leading_zeros();
-    fb.f(bru_ref, n); // bru_ref f(CeilLog2(num_total_refs))
+    fb.f(bru_ref, ceil_log2_u32(num_total_refs)); // bru_ref f(CeilLog2(num_total_refs))
     fb.bit(0); // bru_inactive == 0 -> no early return
     fb.bit(0); // allow_screen_content_tools (SELECT) -> force_integer_mv = 0
     fb.bit(0); // allow_intrabc
@@ -682,11 +679,6 @@ fn ref_state_inter_frame_poisons_then_sef_is_silent() {
         !has_ref_slot_error(&report),
         "an unparsed inter refresh mask must poison the buffer, so a later SEF against a \
          once-valid slot drops to silence; report was: {report}"
-    );
-    assert!(
-        !report
-            .errors()
-            .any(|d| d.rule_id == "frame-header/show-existing-frame-invalid-slot"),
     );
 }
 

@@ -649,38 +649,6 @@ fn compute_enabled_segment(
                 }
             }
             if block.width - local_x >= 8 {
-                let uniform_classes = classes
-                    .get(class_start..class_start + 4)
-                    .and_then(|classes| <&[GdfClass; 4]>::try_from(classes).ok())
-                    .and_then(|classes| uniform_gdf_class(classes).map(|index| (classes, index)));
-                if let Some((uniform_classes, class_index)) = uniform_classes {
-                    let base_values = exact_slice(base_luma, output_start, 8)
-                        .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
-                        .copied()
-                        .ok_or_else(source_error)?;
-                    let next_base_values = exact_slice(base_luma, next_output_start, 8)
-                        .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
-                        .copied()
-                        .ok_or_else(source_error)?;
-                    let args = [base_values, next_base_values];
-                    let origin = (source_origin.0 + local_x, source_origin.1 + row);
-                    let filtered = gdf_uniform_width_rows::<8, 2>(
-                        args,
-                        source,
-                        &tap_offsets,
-                        uniform_classes,
-                        &uniform_params[class_index as usize],
-                        block,
-                        origin,
-                    )?;
-                    base_luma[output_start..output_start + 8].copy_from_slice(&filtered[0]);
-                    base_luma[next_output_start..next_output_start + 8]
-                        .copy_from_slice(&filtered[1]);
-                    local_x += 8;
-                    continue;
-                }
-            }
-            if block.width - local_x >= 8 {
                 let base_values = exact_slice(base_luma, output_start, 8)
                     .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
                     .copied()
@@ -694,14 +662,21 @@ fn compute_enabled_segment(
                     .and_then(|classes| <&[GdfClass; 4]>::try_from(classes).ok())
                     .copied()
                     .ok_or_else(geometry_error)?;
-                let filtered = gdf_width8_rows(
-                    [base_values, next_base_values],
-                    source,
-                    &tap_offsets,
-                    classes,
-                    block,
-                    (source_origin.0 + local_x, source_origin.1 + row),
-                )?;
+                let args = [base_values, next_base_values];
+                let origin = (source_origin.0 + local_x, source_origin.1 + row);
+                let filtered = if let Some(class_index) = uniform_gdf_class(&classes) {
+                    gdf_uniform_width_rows::<8, 2>(
+                        args,
+                        source,
+                        &tap_offsets,
+                        &classes,
+                        &uniform_params[class_index as usize],
+                        block,
+                        origin,
+                    )?
+                } else {
+                    gdf_width8_rows(args, source, &tap_offsets, classes, block, origin)?
+                };
                 base_luma[output_start..output_start + 8].copy_from_slice(&filtered[0]);
                 base_luma[next_output_start..next_output_start + 8].copy_from_slice(&filtered[1]);
                 local_x += 8;
@@ -1654,6 +1629,7 @@ mod wide_tests;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::{
         GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
         GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes,
@@ -1683,10 +1659,7 @@ mod tests {
     #[test]
     fn per_block_grid_selects_units_by_restoration_stripe_row() {
         let result = GdfBlockGrid::new(64, 2, 2, vec![1, 1, 0, 1]);
-        assert!(result.is_ok());
-        let Ok(grid) = result else {
-            return;
-        };
+        let grid = result.expect("valid result");
 
         assert_eq!(grid.enabled(0, 0), Some(true));
         assert_eq!(grid.enabled(0, 64), Some(true));
@@ -1697,10 +1670,7 @@ mod tests {
     #[test]
     fn per_block_grid_skips_only_fully_disabled_segments() {
         let result = GdfBlockGrid::new(64, 1, 3, vec![0, 1, 0]);
-        assert!(result.is_ok());
-        let Ok(grid) = result else {
-            return;
-        };
+        let grid = result.expect("valid result");
 
         assert_eq!(grid.any_enabled(0, 0, 64), Some(false));
         assert_eq!(grid.any_enabled(0, 64, 64), Some(true));
@@ -1711,10 +1681,7 @@ mod tests {
     #[test]
     fn per_block_grid_segment_scan_includes_partial_units() {
         let result = GdfBlockGrid::new(64, 1, 2, vec![0, 1]);
-        assert!(result.is_ok());
-        let Ok(grid) = result else {
-            return;
-        };
+        let grid = result.expect("valid result");
 
         assert_eq!(grid.any_enabled(0, 0, 64), Some(false));
         assert_eq!(grid.any_enabled(0, 60, 4), Some(false));
@@ -1893,10 +1860,7 @@ mod tests {
             &bounds,
             &stripe_block,
         );
-        assert!(stripe_result.is_ok());
-        let Ok(stripe_source) = stripe_result else {
-            return;
-        };
+        let stripe_source = stripe_result.expect("valid stripe result");
 
         for y in (0..56).step_by(4) {
             for x in (0..frame_width).step_by(4) {
@@ -1915,10 +1879,7 @@ mod tests {
                     &bounds,
                     &block,
                 );
-                assert!(local_result.is_ok());
-                let Ok(local_source) = local_result else {
-                    return;
-                };
+                let local_source = local_result.expect("valid local result");
                 let radius = GDF_READ_RADIUS as isize;
                 for sample_y in
                     block.y as isize - radius..block.y as isize + block.height as isize + radius
@@ -2002,10 +1963,7 @@ mod tests {
             lossless: true,
         }];
         let grid = LosslessBlockGrid::from_deblock_blocks(4, 4, &lossless, [&[], &[]]);
-        assert!(grid.is_ok());
-        let Ok(grid) = grid else {
-            return;
-        };
+        let grid = grid.expect("valid grid");
         let base: Vec<u16> = (0..64).collect();
         let mut output = vec![200_u8; 32];
 
@@ -2059,13 +2017,10 @@ mod tests {
         let mut source_samples = Vec::new();
         let source_result =
             GdfSource::materialize::<u16>(&mut source_samples, &curr, &curr, &bounds, &block);
-        assert!(source_result.is_ok());
-        let Ok(source) = source_result else {
-            return;
-        };
-        let Some(origin) = source.relative_position(block.x, block.y) else {
-            return;
-        };
+        let source = source_result.expect("valid source result");
+        let origin = source
+            .relative_position(block.x, block.y)
+            .expect("block origin");
         let grad_cols = block.width + 2;
         let plane = (block.height + 2) * grad_cols;
         let mut grad = Vec::new();
@@ -2094,10 +2049,7 @@ mod tests {
         assert!(fused_result.is_ok());
         assert_eq!(fused_classes, classes);
         let filtered = compute_block::<u16>(&source, &curr, &classes, block.width >> 1, block);
-        assert!(filtered.is_ok());
-        let Ok(filtered) = filtered else {
-            return;
-        };
+        let filtered = filtered.expect("valid filtered");
         assert!(filtered.iter().all(|&sample| sample <= 1023));
 
         let mut reused_source_samples = vec![u16::MAX; source.samples.len() + 8];
@@ -2108,10 +2060,7 @@ mod tests {
             &bounds,
             &block,
         );
-        assert!(reused_source.is_ok());
-        let Ok(reused_source) = reused_source else {
-            return;
-        };
+        let reused_source = reused_source.expect("valid reused source");
         assert_eq!(reused_source.samples, source.samples);
 
         let mut reused_classes = vec![GdfClass(i32::MAX); classes.len() + 4];
@@ -2137,10 +2086,7 @@ mod tests {
             block.width >> 1,
             block,
         );
-        assert!(reused_filtered.is_ok());
-        let Ok(reused_filtered) = reused_filtered else {
-            return;
-        };
+        let reused_filtered = reused_filtered.expect("valid reused filtered");
         assert_eq!(reused_filtered, filtered);
     }
 

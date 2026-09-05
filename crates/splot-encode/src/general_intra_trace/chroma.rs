@@ -26,15 +26,9 @@ use crate::partition_emission::emit_root_do_split_none;
 /// `EobU != 0` context `6`. The decoded frame isolates chroma residual: luma stays flat 128,
 /// U carries the dequantized residual, V stays flat 128.
 fn compose_general_intra_coded_chroma_u_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let u_coeffs = general_intra_32x32_chroma_u_dc_coded_tokens()?;
-    let total = modes
-        .len()
-        .checked_add(u_coeffs.len())
-        .and_then(|n| n.checked_add(4)) // do_split + luma skip + U sign + V skip
-        .ok_or(Error::BlockSymbolTraceAllocationFailed {
-            context: "general coded chroma block trace length",
-        })?;
+    let modes = compose_minimal_intra_dc_block_mode_trace();
+    let u_coeffs = general_intra_32x32_chroma_u_dc_coded_tokens();
+    let total = modes.len() + u_coeffs.len() + 4;
     let mut trace = Vec::new();
     trace
         .try_reserve_exact(total)
@@ -79,15 +73,9 @@ pub fn emit_minimal_intra_coded_chroma_ivf() -> Result<Vec<u8>> {
 /// context `0` (`EobU == 0`, since U is skipped). The decoded frame isolates V residual: luma
 /// and U stay flat 128, V carries the dequantized residual.
 fn compose_general_intra_coded_chroma_v_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let v_coeffs = general_intra_32x32_chroma_v_dc_coded_tokens()?;
-    let total = modes
-        .len()
-        .checked_add(v_coeffs.len())
-        .and_then(|n| n.checked_add(4)) // do_split + luma skip + U skip + V sign
-        .ok_or(Error::BlockSymbolTraceAllocationFailed {
-            context: "general coded chroma V block trace length",
-        })?;
+    let modes = compose_minimal_intra_dc_block_mode_trace();
+    let v_coeffs = general_intra_32x32_chroma_v_dc_coded_tokens();
+    let total = modes.len() + v_coeffs.len() + 4;
     let mut trace = Vec::new();
     trace
         .try_reserve_exact(total)
@@ -133,19 +121,11 @@ pub fn emit_minimal_intra_coded_chroma_v_ivf() -> Result<Vec<u8>> {
 /// is coded (`EobU != 0`), the V `txb_skip` uses the § 8.3.2 context `6`. This mirrors the q80
 /// fixture's all-three-planes-coded structure with sub-golomb magnitudes.
 fn compose_general_intra_all_planes_coded_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let luma = general_intra_64x64_luma_dc_coded_tokens()?;
-    let u_coeffs = general_intra_32x32_chroma_u_dc_coded_tokens()?;
-    let v_coeffs = general_intra_32x32_chroma_v_after_coded_u_dc_coded_tokens()?;
-    let total = modes
-        .len()
-        .checked_add(luma.len())
-        .and_then(|n| n.checked_add(u_coeffs.len()))
-        .and_then(|n| n.checked_add(v_coeffs.len()))
-        .and_then(|n| n.checked_add(3)) // do_split + U sign + V sign
-        .ok_or(Error::BlockSymbolTraceAllocationFailed {
-            context: "general all-planes coded block trace length",
-        })?;
+    let modes = compose_minimal_intra_dc_block_mode_trace();
+    let luma = general_intra_64x64_luma_dc_coded_tokens();
+    let u_coeffs = general_intra_32x32_chroma_u_dc_coded_tokens();
+    let v_coeffs = general_intra_32x32_chroma_v_after_coded_u_dc_coded_tokens();
+    let total = modes.len() + luma.len() + u_coeffs.len() + v_coeffs.len() + 3;
     let mut trace = Vec::new();
     trace
         .try_reserve_exact(total)

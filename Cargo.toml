@@ -13,17 +13,6 @@ members = [
     "crates/splot-cli",
     "xtask",
 ]
-default-members = [
-    "crates/splot-core",
-    "crates/splot-parallel",
-    "crates/splot-tables",
-    "crates/splot-recon",
-    "crates/splot-decode",
-    "crates/splot-validate",
-    "crates/splot-encode",
-    "crates/splot-cli",
-    "xtask",
-]
 exclude = ["fuzz"]
 resolver = "3"
 
@@ -37,7 +26,6 @@ license = "PolyForm-Noncommercial-1.0.0"
 publish = false
 
 [workspace.dependencies]
-# Internal crates (path + version so the dependency direction is explicit).
 splot-core = { path = "crates/splot-core", version = "0.0.0" }
 splot-parallel = { path = "crates/splot-parallel", version = "0.0.0" }
 splot-tables = { path = "crates/splot-tables", version = "0.0.0" }
@@ -46,7 +34,6 @@ splot-decode = { path = "crates/splot-decode", version = "0.0.0" }
 splot-validate = { path = "crates/splot-validate", version = "0.0.0" }
 splot-encode = { path = "crates/splot-encode", version = "0.0.0" }
 
-# External dependencies. Versions resolved against crates.io as of 2026-06; keep current.
 thiserror = "2"
 # Allocation-free mutex: std boxes a pthread lock on first use, which showed up
 # as ~15 allocations per decoded frame.
@@ -72,13 +59,8 @@ unsafe_code = "forbid"
 missing_docs = "warn"
 
 [workspace.lints.clippy]
-# `all` and `pedantic` are lint groups, so they must have a lower priority than
-# the individual lints below; otherwise Cargo's `lint_groups_priority` check
-# fails and the per-lint `allow`/`deny` overrides would not apply.
+# Individual overrides take precedence over lint groups.
 all = { level = "warn", priority = -1 }
-# `pedantic` is enforced workspace-wide (CI runs clippy with `-D warnings`),
-# minus the families below that are noise for a cast-heavy codec or pure
-# formatting nits. Re-evaluate the allow-list as the code matures.
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
@@ -86,9 +68,7 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
-# Allowed pedantic families. Integer casts are pervasive and deliberate in codec
-# arithmetic; `#[allow]` per-site would bury real signal. Doc-markdown and the
-# size/naming heuristics below are stylistic nits, not correctness.
+# Codec arithmetic uses deliberate integer casts.
 cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"
 cast_sign_loss = "allow"
@@ -104,35 +84,14 @@ too_many_lines = "allow"
 similar_names = "allow"
 struct_excessive_bools = "allow"
 fn_params_excessive_bools = "allow"
-# The crates deliberately split former monoliths into submodules that share a
-# crate-private helper namespace via `use super::*` (see e.g. the splot-validate
-# `context` split). Enforcing explicit imports would expand ~250 files into
-# fragile lists that break on every transitive re-export, so this glob-hub
-# pattern is allowed rather than fought.
+# Internal submodules share their parent namespace.
 wildcard_imports = "allow"
-# Pure stylistic preference (positive condition first). Enforcing it would force
-# swapping large `if !cond { .. } else { .. }` branch bodies in writer/tile code,
-# which is churn with real transcription-bug risk and no behavioral benefit.
 if_not_else = "allow"
 
-# Build profiles. `overflow-checks` is declared explicitly on every profile: `dev`
-# and `test` trap integer overflow so the test suite, fuzzers, and CI catch codec
-# arithmetic bugs, while `release` disables the checks for decode throughput
-# (measured ~5% first-frame latency on the 1080p10 reference stream; decoded
-# output is byte-identical either way). Fat cross-crate LTO with one codegen unit
-# stays OFF by default, as a build-time decision rather than a technical one.
-# SCALE-113 re-priced it on `6dc3694a2` at -1.8 to -2.3% for 1 to 10 workers,
-# 30/30 pairs, byte-exact over 3000 frames at six widths, and SCALE-116 records
-# what turning it on is worth against dav2d. It costs a local `cargo build
-# --release` 26s -> 1m49s, and `.github/workflows/ci.yml` builds the release
-# profile twice, so every PR would pay it; `cargo xtask ci` does not. Uncomment
-# both keys below to enable it.
-# `panic = "abort"` stays at its default and must: `output/raw.rs` converts a panic
-# in the raw-output task into a typed error, which aborting would turn into a crash.
+# Keep unwind enabled: output/raw.rs converts output-task panics into typed errors.
+# LTO remains off to avoid its release build-time cost.
 [profile.release]
 overflow-checks = false
-# lto = "fat"
-# codegen-units = 1
 
 [profile.dev]
 overflow-checks = true

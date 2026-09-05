@@ -31,10 +31,7 @@ pub(crate) struct CommentCounts {
 /// Checks Rust source files against the implementation-comment budget.
 pub(crate) fn check_comment_density(root: &Path) -> Result<()> {
     let budget_path = root.join(BUDGET_PATH);
-    let budget_text = std::fs::read_to_string(&budget_path)
-        .with_context(|| format!("failed to read {}", budget_path.display()))?;
-    let budget: Budget = toml::from_str(&budget_text)
-        .with_context(|| format!("failed to parse {}", budget_path.display()))?;
+    let budget: Budget = crate::util::load_toml(&budget_path)?;
 
     let files = rust_source_files(root)?;
     let mut counts = CommentCounts::default();

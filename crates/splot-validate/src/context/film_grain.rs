@@ -23,13 +23,8 @@ pub(super) struct FgmSlotRecord {
     pub(super) tlayer_id: TemporalLayerId,
 }
 
-/// Film-grain validator state (AV2 § 6.13).
-///
-/// `updated_slots_since_coded_frame` resets at each coded-frame-unit boundary (see
-/// [`ValidatorContext::reset_coded_frame_window`]) and drives the § 6.13 duplicate-slot
-/// check. The `available` array is monotonic per-slot HLS state, foundation for the
-/// deferred frame film-grain-reference checks (`apply_grain` / `fgm_id`, § 5.18.10.1 /
-/// § 7.3.8).
+/// Film-grain state (§ 6.13): duplicate updates reset at each coded-frame boundary;
+/// per-slot availability remains for frame-reference checks (§ 7.3.8).
 #[derive(Debug, Default)]
 pub(super) struct FilmGrainState {
     /// Slots (`fgm_update_flags` bits) updated by a film-grain OBU since the last
@@ -46,13 +41,7 @@ impl FilmGrainState {
     }
 }
 
-/// Returns `true` if `obu_type`'s payload begins with a `frame_header()` or
-/// `tile_group_obu()` (AV2 v1.0.0 § 5.2.1): the tile-group types, plus the SEF / TIP
-/// / bridge frames that call `frame_header( 1 )` directly.
-/// Emits `film-grain/scaling-point-not-increasing` for any scaling point whose
-/// (cumulative) value is not strictly greater than its predecessor or is not less than
-/// 256 (AV2 v1.0.0 § 6.17.10.2: for `i > 0`, `point_*_value[i] > point_*_value[i - 1]`
-/// and `< 256`).
+/// Checks ascending scaling-point values for each film-grain component (§ 6.17.10.2).
 pub(super) fn emit_scaling_point_order_diagnostics(
     channel: &str,
     points: &[FilmGrainScalingPoint],
@@ -78,49 +67,8 @@ pub(super) fn emit_scaling_point_order_diagnostics(
     }
 }
 
-/// Emits the locally-decidable § 6.17.10.1 / § 7.3.8.8 film-grain frame-reference
-/// diagnostics for a parsed `film_grain_config()` with `apply_grain == 1`: the
-/// `FilmGrainPresent[ fgm_id ] == 1` availability requirement and, when an in-band model is
-/// recorded, the three § 6.17.10.1 layer-dependency / chroma constraints
-/// (docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-10-1, lines 6020-6032):
-///
-/// - `MLayerDependencyMap[obu_mlayer_id][FgmMLayerId[fgm_id]] == 1`,
-/// - `TLayerDependencyMap[obu_mlayer_id][obu_tlayer_id][FgmTLayerId[fgm_id]] == 1`,
-/// - `FgmChromaIdc[fgm_id] == chroma_format_idc`.
-///
-/// The model's stored layer identity (`FgmMLayerId` / `FgmTLayerId`) and chroma idc
-/// (`FgmChromaIdc`) come from the § 5.14 film-grain OBU that defined the slot, recorded in
-/// [`FgmSlotRecord`] by [`ValidatorContext::record_film_grain`]. The dependency maps and
-/// `chroma_format_idc` come from the active sequence header (AV2 § 5.4.1 / § 6.4.1; § 6.8
-/// makes `lcr_chroma_format_idc` equal to the single sequence-level `chroma_format_idc`, so
-/// the sequence value is the frame's). This mirrors the § 7.3.8.7 multi-frame-header
-/// layer-dependency check (`frame-header/mfh-{m,t}layer-dependency-missing`).
-///
-/// **Scope and under-reporting (zero-false-positive discipline).**
-///
-/// - **External means.** § 7.3.8.8 allows the model to be available "by provision through
-///   external means". [`ExternalHlsSet`](crate::options::ExternalHlsSet) cannot express
-///   film-grain OBUs (only sequence headers and operating point sets), so under any
-///   `ExternalHlsMode::Provided` the model — and thus its layer identity / chroma idc — MAY
-///   be external and unknown to the validator. All of these checks therefore fire only under
-///   `ExternalHlsMode::Disabled`, where an in-band record is the authoritative model.
-/// - **Availability vs. layer-dependency.** A `None`-for-the-slot under `Disabled` is the
-///   availability defect (`frame-header/film-grain-model-unavailable`); the layer-dependency
-///   constraints reference the model's stored identity, which only exists once a film-grain
-///   OBU has defined the slot, so they are checked only when a record is present.
-/// - **Random-access-point visibility (§ 7.3.8.1).** A model available only from an earlier
-///   position is unavailable at a later random access point that drops it. `available[]` is
-///   monotonic (never reset at a random access point), so the linear availability check
-///   OVER-approximates presence — the random-access-point-unavailability direction is covered
-///   separately by the § 7.3.8.1 replay (`RapHlsKey::FilmGrain`, AV2-7.3.8-HLS-AVAILABILITY):
-///   this function returns the linearly-available `fgm_id` so the caller buffers it as a
-///   replay reference, keeping the two predicates disjoint.
-///
-/// Returns `Some(fgm_id)` when the referenced film-grain model was linearly available in-band
-/// (so the linear `frame-header/film-grain-model-unavailable` did NOT fire) — the caller
-/// buffers that slot as a § 7.3.8.1 random-access-point replay reference. `None` when no
-/// replay reference applies (no apply_grain, external-HLS provided, unresolved/unavailable
-/// slot).
+/// Checks film-grain model references against linear in-band availability. External
+/// HLS suppresses absence judgments; RAP resend requirements are checked separately.
 pub(super) fn frame_film_grain_reference_checks(
     film_grain: splot_core::headers::frame::FilmGrainConfig,
     film_grain_state: &FilmGrainState,

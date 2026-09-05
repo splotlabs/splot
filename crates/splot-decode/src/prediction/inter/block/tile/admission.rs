@@ -93,12 +93,12 @@ impl<T: ReconSample> TileCommit<T> {
                 context.ref_frame_idx,
                 context.sequence,
                 context.core,
-                context.mi_rows,
-                context.mi_cols,
-                context.current_order_hint,
-                context.luma_use_tcq,
-                context.residual_use_ddt,
-                context.bit_depth,
+                context.params.mi_rows,
+                context.params.mi_cols,
+                context.params.current_order_hint,
+                context.params.luma_use_tcq,
+                context.params.residual_use_ddt,
+                context.params.bit_depth,
             )
         })
     }
@@ -445,67 +445,65 @@ impl<T: ReconSample> TileRecon<T> {
             }
             ready
         };
-        let batch = self
-            .workers
-            .with_scratch(|scratch| -> Result<Vec<ReadyReconRow<T>>> {
-                let _quantizer_scopes = self.quantizer.install_frame();
-                let shared = deferred_recon::ReconShared {
-                    reference: &self.reference,
-                    ref_frame_idx: self.ref_frame_idx.as_slice(),
-                    temporal_context: &self.temporal,
-                    sequence: &self.sequence,
-                    core: &self.core,
-                    luma_use_tcq: self.params.luma_use_tcq,
-                    residual_use_ddt: self.params.residual_use_ddt,
-                    bit_depth: self.params.bit_depth,
-                    mi_rows: self.params.mi_rows,
-                    mi_cols: self.params.mi_cols,
-                    current_order_hint: self.params.current_order_hint,
-                };
-                Ok(ready
-                    .into_iter()
-                    .map(|mut ready| {
-                        if ready.surface.is_none() && !ready.row.superblocks.is_empty() {
-                            ready.surface = surfaces
-                                .lock()
-                                .take(ready.row.ordinal)
-                                .transpose()
-                                .ok()
-                                .flatten();
-                        }
-                        scratch.with_installed(|scratch| {
-                            if !ready.row.has_terminal_error() && !ready.row.motion_derived {
-                                mvres::derive_unit_motion(
-                                    &mut ready.row,
-                                    ready.surface.as_mut(),
-                                    scratch,
-                                    &self.motion,
-                                    &shared,
-                                );
-                            }
-                            precompute_recon_row(
-                                ready,
+        let batch = self.workers.with_scratch(|scratch| {
+            let _quantizer_scopes = self.quantizer.install_frame();
+            let shared = deferred_recon::ReconShared {
+                reference: &self.reference,
+                ref_frame_idx: self.ref_frame_idx.as_slice(),
+                temporal_context: &self.temporal,
+                sequence: &self.sequence,
+                core: &self.core,
+                luma_use_tcq: self.params.luma_use_tcq,
+                residual_use_ddt: self.params.residual_use_ddt,
+                bit_depth: self.params.bit_depth,
+                mi_rows: self.params.mi_rows,
+                mi_cols: self.params.mi_cols,
+                current_order_hint: self.params.current_order_hint,
+            };
+            ready
+                .into_iter()
+                .map(|mut ready| {
+                    if ready.surface.is_none() && !ready.row.superblocks.is_empty() {
+                        ready.surface = surfaces
+                            .lock()
+                            .take(ready.row.ordinal)
+                            .transpose()
+                            .ok()
+                            .flatten();
+                    }
+                    scratch.with_installed(|scratch| {
+                        if !ready.row.has_terminal_error() && !ready.row.motion_derived {
+                            mvres::derive_unit_motion(
+                                &mut ready.row,
+                                ready.surface.as_mut(),
                                 scratch,
-                                &self.prepass_block_decoded,
                                 &self.motion,
-                                &self.quantizer,
-                                &self.temporal,
-                                &self.reference,
-                                self.ref_frame_idx.as_slice(),
-                                &self.sequence,
-                                &self.core,
-                                self.params.sb_h4,
-                                self.params.mi_rows,
-                                self.params.mi_cols,
-                                self.params.current_order_hint,
-                                self.params.luma_use_tcq,
-                                self.params.residual_use_ddt,
-                                self.params.bit_depth,
-                            )
-                        })
+                                &shared,
+                            );
+                        }
+                        precompute_recon_row(
+                            ready,
+                            scratch,
+                            &self.prepass_block_decoded,
+                            &self.motion,
+                            &self.quantizer,
+                            &self.temporal,
+                            &self.reference,
+                            self.ref_frame_idx.as_slice(),
+                            &self.sequence,
+                            &self.core,
+                            self.params.sb_h4,
+                            self.params.mi_rows,
+                            self.params.mi_cols,
+                            self.params.current_order_hint,
+                            self.params.luma_use_tcq,
+                            self.params.residual_use_ddt,
+                            self.params.bit_depth,
+                        )
                     })
-                    .collect())
-            })?;
+                })
+                .collect()
+        });
         let mut prepared = self.prepared.lock();
         let Some(slot) = prepared.get_mut(index) else {
             return Err(invalid_inter_tile_scheduling_state());
@@ -705,13 +703,13 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
                         shared.context.ref_frame_idx,
                         shared.context.sequence,
                         shared.context.core,
-                        shared.context.sb_h4,
-                        shared.context.mi_rows,
-                        shared.context.mi_cols,
-                        shared.context.current_order_hint,
-                        shared.context.luma_use_tcq,
-                        shared.context.residual_use_ddt,
-                        shared.context.bit_depth,
+                        shared.context.params.sb_h4,
+                        shared.context.params.mi_rows,
+                        shared.context.params.mi_cols,
+                        shared.context.params.current_order_hint,
+                        shared.context.params.luma_use_tcq,
+                        shared.context.params.residual_use_ddt,
+                        shared.context.params.bit_depth,
                     ));
                 }
                 out

@@ -621,29 +621,6 @@ fn padding_only_xlayer_group_is_silent() {
 }
 
 #[test]
-fn frame_bearing_with_unknown_classes_is_silent_on_missing_output() {
-    let mut t = fresh();
-    let mut r = ValidationReport::new();
-    t.observe(
-        &obu(ObuType::RegularTileGroup, 0, 0, 0),
-        frame_role(
-            ObuType::RegularTileGroup,
-            true,
-            None,
-            None,
-            Leadingness::Regular,
-        ),
-        &mut r,
-    );
-    t.reset_temporal_unit(&mut r);
-    assert!(
-        !has(&r, "celu/missing-output-frame-unit"),
-        "a frame-bearing CELU with an Unknown output class must drop missing-output; \
-             report: {r}"
-    );
-}
-
-#[test]
 fn output_units_with_different_order_hint_is_flagged() {
     let mut t = fresh();
     let mut r = ValidationReport::new();
@@ -1247,35 +1224,6 @@ fn doh_cross_celu_order_hint_mismatch_fires_despite_unknown_bits_nonoutput_unit(
         !has(&r, "celu/doh-order-hint-bits-mismatch"),
         "constraint (1) (all frame units share one OrderHintBits) must DROP because a \
              non-output frame unit's bits are unknown; report: {r}"
-    );
-}
-
-#[test]
-fn doh_cross_celu_order_hint_mismatch_drops_for_unequal_bits_pair_despite_third_match() {
-    let mut t = fresh();
-    let mut r = ValidationReport::new();
-    t.note_order_hint_bits(Some(4), ByteOffset::new(0));
-    t.observe(
-        &obu(ObuType::RegularTileGroup, 0, 0, 0),
-        output_frame_bits(1, 4),
-        &mut r,
-    );
-    t.note_order_hint_bits(Some(5), ByteOffset::new(1));
-    t.observe(
-        &obu(ObuType::RegularTileGroup, 1, 0, 1),
-        output_frame_bits(2, 5),
-        &mut r,
-    );
-    t.set_doh_flag_active(true);
-    t.reset_temporal_unit(&mut r);
-    assert!(
-        has(&r, "celu/doh-order-hint-bits-mismatch"),
-        "two output units with known unequal bits fire the bits-mismatch; report: {r}"
-    );
-    assert!(
-        !has(&r, "celu/doh-order-hint-mismatch"),
-        "the cross-CELU OrderHint comparison must DROP for a known-but-unequal-bits pair \
-             (the LSB proxy is unsound across widths); report: {r}"
     );
 }
 

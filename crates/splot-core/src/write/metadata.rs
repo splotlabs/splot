@@ -74,12 +74,7 @@ fn write_leb128_with_len(
         return Err(WriteError::NonCanonicalMetadata { what });
     }
     for i in 0..len {
-        let shift = (7u32).saturating_mul(i as u32);
-        let group = if shift >= 32 {
-            0u8
-        } else {
-            ((value >> shift) & 0x7f) as u8
-        };
+        let group = ((u64::from(value) >> (7 * i)) & 0x7f) as u8;
         let byte = if i < len - 1 { group | 0x80 } else { group };
         writer.write_bits_u8(byte, 8)?;
     }
@@ -285,7 +280,7 @@ pub(crate) fn metadata_group_unit_passthrough_len(unit: &MetadataGroupUnit) -> u
 /// Every [`write_metadata_group_obu`] error, plus [`WriteError::NonCanonicalMetadata`] with
 /// `what == "group_passthrough_len"` when the per-unit blob lengths do not sum to exactly
 /// `passthrough.len()` (the flat blob does not match the modeled units). The split uses
-/// `checked_add` + slicing bounds, so a constructed over-large blob length rejects rather than
+/// checked slice bounds, so a constructed over-large blob length rejects rather than
 /// panicking. Never writes a bit on error.
 pub fn write_metadata_group_obu_flat(
     writer: &mut BitWriter,
@@ -294,19 +289,19 @@ pub fn write_metadata_group_obu_flat(
     passthrough: &[u8],
 ) -> WriteResult<()> {
     let mut slices: Vec<&[u8]> = Vec::with_capacity(obu.units.len());
-    let mut offset = 0usize;
+    let mut remaining = passthrough;
     for unit in &obu.units {
         let len = metadata_group_unit_passthrough_len(unit);
-        let end = offset
-            .checked_add(len)
-            .filter(|&end| end <= passthrough.len())
-            .ok_or(WriteError::NonCanonicalMetadata {
-                what: "group_passthrough_len",
-            })?;
-        slices.push(&passthrough[offset..end]);
-        offset = end;
+        let (unit_bytes, rest) =
+            remaining
+                .split_at_checked(len)
+                .ok_or(WriteError::NonCanonicalMetadata {
+                    what: "group_passthrough_len",
+                })?;
+        slices.push(unit_bytes);
+        remaining = rest;
     }
-    if offset != passthrough.len() {
+    if !remaining.is_empty() {
         return Err(WriteError::NonCanonicalMetadata {
             what: "group_passthrough_len",
         });
@@ -315,8 +310,7 @@ pub fn write_metadata_group_obu_flat(
 }
 
 /// Writes one `metadata_group_obu()` per-unit header plus its `metadata_unit()` (AV2 v1.0.0
-/// § 5.17.3), the inverse of `parse_metadata_group_unit`. The whole unit is validated and drafted
-/// into a scratch [`BitWriter`] up front, so a reject leaves the outer (group) scratch untouched.
+/// § 5.17.3), into the caller’s whole-group scratch writer.
 fn write_metadata_group_unit(
     writer: &mut BitWriter,
     unit: &MetadataGroupUnit,
@@ -330,10 +324,9 @@ fn write_metadata_group_unit(
     }
     check_canonical_metadata_type(unit.metadata_type)?;
 
-    let mut scratch = BitWriter::new();
-    scratch.write_leb128(unit.metadata_type.value())?;
-    scratch.write_bits_u8(unit.muh_header_size, 7)?;
-    scratch.write_flag(unit.muh_cancel_flag)?;
+    writer.write_leb128(unit.metadata_type.value())?;
+    writer.write_bits_u8(unit.muh_header_size, 7)?;
+    writer.write_flag(unit.muh_cancel_flag)?;
 
     if unit.muh_cancel_flag {
         if !passthrough.is_empty() {
@@ -341,11 +334,11 @@ fn write_metadata_group_unit(
                 what: "passthrough_len",
             });
         }
-        write_group_unit_cancel(&mut scratch, unit)?;
+        write_group_unit_cancel(writer, unit)?;
     } else {
-        write_group_unit_body(&mut scratch, unit, obu_xlayer_id, passthrough)?;
+        write_group_unit_body(writer, unit, obu_xlayer_id, passthrough)?;
     }
-    writer.append(&scratch)
+    Ok(())
 }
 
 /// Writes the cancelled `metadata_group_obu()` per-unit tail (AV2 v1.0.0 § 5.17.3,
@@ -510,21 +503,9 @@ fn write_layer_maps(
         return Ok(());
     }
     if obu_xlayer_id.is_global() {
-        let xlayer_map = unit.muh_xlayer_map.unwrap_or(0);
-        scratch.write_bits(xlayer_map, 32)?;
-        let mut next = 0usize;
-        for n in 0..31u32 {
-            if xlayer_map & (1 << n) != 0 {
-                let byte = unit.muh_mlayer_maps.get(next).copied().unwrap_or(0);
-                scratch.write_bits_u8(byte, 8)?;
-                next += 1;
-            }
-        }
-    } else {
-        let byte = unit.muh_mlayer_maps.first().copied().unwrap_or(0);
-        scratch.write_bits_u8(byte, 8)?;
+        scratch.write_bits(unit.muh_xlayer_map.unwrap_or(0), 32)?;
     }
-    Ok(())
+    scratch.write_le(&unit.muh_mlayer_maps)
 }
 
 /// Writes `metadata_unit(metadataPayloadSize)` (AV2 v1.0.0 § 5.17.1,

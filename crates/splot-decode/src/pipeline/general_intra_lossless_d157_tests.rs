@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_parallel::ThreadCount;
-use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
-
-use super::general_intra_tests::assert_lossless_explicit_chroma_oracle;
-use super::*;
-use crate::{DecodeContext, DecodeRuntimeConfig};
+use super::general_intra_tests::{assert_eight_bit_oracle, assert_lossless_explicit_chroma_oracle};
 
 const LOSSLESS_NONDC_LUMA_D67_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-d67-intra-64x64.ivf"
@@ -83,36 +78,7 @@ fn assert_lossless_yuv420_oracle(
     expected_hash: &str,
 ) {
     assert_eq!(fixture.len(), expected_len);
-    let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(fixture, options).expect("plan");
-    let decoded = context
-        .pool()
-        .install(|| decode_frame_from_plan(fixture, &options, &plan))
-        .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
-        panic!("fixture decoded as 10-bit");
-    };
-
-    assert_eq!(frame.bit_depth(), BitDepth::Eight);
-    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
-    assert_eq!(
-        frame.y().visible_size(),
-        PlaneSize::new(frame_size.0, frame_size.1).unwrap()
-    );
-    assert_eq!(
-        frame.u().unwrap().visible_size(),
-        PlaneSize::new(chroma_size.0, chroma_size.1).unwrap()
-    );
-    assert_eq!(
-        frame.v().unwrap().visible_size(),
-        PlaneSize::new(chroma_size.0, chroma_size.1).unwrap()
-    );
-    assert_eq!(
-        DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
-        expected_hash
-    );
+    assert_eight_bit_oracle(fixture, frame_size, chroma_size, expected_hash);
 }
 
 #[test]
@@ -137,11 +103,6 @@ fn lossless_nondc_luma_d67_and_lossless_nondc_chroma_d157_frames_decode_to_oracl
     for &(fixture, expected_len, expected_hash) in cases {
         assert_lossless_yuv420_oracle(fixture, expected_len, (64, 64), (32, 32), expected_hash);
     }
-}
-
-#[test]
-fn lossless_sdp_nondc_chroma_d157_frame_decodes_to_oracle() {
-    lossless_nondc_luma_d67_and_lossless_nondc_chroma_d157_frames_decode_to_oracle();
 }
 
 #[test]

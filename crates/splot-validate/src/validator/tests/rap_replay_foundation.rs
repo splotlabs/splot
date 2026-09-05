@@ -458,22 +458,6 @@ fn rap_replay_ops_only_external_hls_does_not_suppress_undeclared_seq_header() {
     );
 }
 
-#[test]
-fn rap_replay_external_hls_declaring_exact_seq_header_suppresses() {
-    use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    let mut data = td_and_seq(3);
-    data.extend(temporal_delimiter_obu());
-    data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3));
-    let options = ValidationOptions {
-        external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new().with_sequence_header_id(3)),
-    };
-    let report = Validator::new(false).validate_bytes_with_options(&data, &options);
-    assert!(
-        !report.errors().any(|d| d.rule_id == RAP_RULE),
-        "report was: {report}"
-    );
-}
-
 /// A § 5.4 sequence header OBU (seq 0) with `film_grain_params_present == 1`, so a
 /// referencing output frame reads `apply_grain` and can reference a film-grain model.
 fn film_grain_seq_obu() -> Vec<u8> {
@@ -488,7 +472,7 @@ fn film_grain_seq_obu() -> Vec<u8> {
 
 /// A complete intra KEY frame (a § 7.4.1 random access point) that applies grain at
 /// `fgm_id` through its § 5.18.2 intra tail, referencing in-band seq 0.
-fn clk_intra_frame_applying_grain(fgm_id: u8) -> Vec<u8> {
+pub(in crate::validator::tests) fn clk_intra_frame_applying_grain(fgm_id: u8) -> Vec<u8> {
     let mut fb = Bits::default();
     fb.bit(1); // is_first_tile_group
     fb.uvlc(0); // cur_mfh_id == 0

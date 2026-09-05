@@ -516,22 +516,11 @@ fn solve_unit(
         4 => solve_unit_sums::<4>(gradient_x, gradient_y, difference, stride, unit_x, unit_y),
         8 => solve_unit_sums::<8>(gradient_x, gradient_y, difference, stride, unit_x, unit_y),
         _ => {
-            let area = (unit_size * unit_size) as i32;
-            let mut sums = [area, area, 0, 0, 0];
-            for row in unit_y..unit_y + unit_size {
-                for col in unit_x..unit_x + unit_size {
-                    let index = row * stride + col;
-                    let u = i32::from(gradient_x[index]);
-                    let v = i32::from(gradient_y[index]);
-                    let w = i32::from(difference[index]);
-                    sums[0] += u * u;
-                    sums[1] += v * v;
-                    sums[2] += u * v;
-                    sums[3] += u * w;
-                    sums[4] += v * w;
-                }
-            }
-            [sums[0], sums[1], sums[2], sums[3], sums[4]]
+            return Err(ReconError::InvalidOptflowUnitSize {
+                unit_size,
+                width: stride,
+                height: gradient_x.len() / stride,
+            });
         }
     };
 

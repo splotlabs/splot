@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 use serde::Deserialize;
 
 use crate::git_util::{run_git, sha256_hex};
@@ -166,10 +166,7 @@ fn category_expect_consistency(label: &str, category: Category, expect: &Expect)
 pub(crate) fn check_fixtures(root: &Path) -> Result<()> {
     let fixtures_dir = root.join("tests").join("fixtures");
     let manifest_path = fixtures_dir.join("MANIFEST.toml");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-    let manifest: Manifest = toml::from_str(&manifest_text)
-        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let manifest: Manifest = crate::util::load_toml(&manifest_path)?;
 
     if manifest.fixture.is_empty() {
         bail!(

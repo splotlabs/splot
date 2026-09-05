@@ -594,7 +594,7 @@ fn render_module(section: &Section, decls: &[GeneratedTable<'_>]) -> Result<Stri
 
     for table in decls {
         let decl = table.decl;
-        let rust_name = to_screaming_snake(&decl.name);
+        let rust_name = decl.name.to_ascii_uppercase();
         let element_type = match rust_name.as_str() {
             "GDF_ALPHA" => "u16",
             "GDF_WEIGHT" => "i16",
@@ -657,12 +657,6 @@ const GENERATED_HEADER: &str = "\
 // Regenerate with `cargo xtask gen-tables`; the drift check runs in `cargo xtask ci`.
 
 ";
-
-/// Convert a spec table name (`Default_Skip_Cdf`) to a Rust `SCREAMING_SNAKE_CASE`
-/// const name (`DEFAULT_SKIP_CDF`).
-fn to_screaming_snake(name: &str) -> String {
-    name.to_ascii_uppercase()
-}
 
 /// Collapse every run of ASCII whitespace to a single space and trim the ends, so
 /// a value can be safely embedded in a single-line `///` doc comment.

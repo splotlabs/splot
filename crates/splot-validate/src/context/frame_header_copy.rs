@@ -5,16 +5,8 @@
 
 use super::*;
 
-/// A coded frame's *first* tile group's recorded header, paired with the tile-layout facts
-/// every continuation tile group of the same coded frame needs to re-derive its §5.19
-/// `tile_group_obu()` structure (AV2 § 5.18.1 / § 5.19).
-///
-/// A non-first tile group carries `frame_header_copy()` (when `frame_header_present_flag ==
-/// 1`), not a fresh `tile_info()`: its `NumTiles` / `tileBits` / `TileSizeBytes` come from
-/// the coded frame's first tile group (§5.18.1). So the record carries both the first
-/// header's bits (for the §6.17.1 copy comparison) and that header's layout facts (for the
-/// §6.18 tg-range and §5.20.1 framing checks on every continuation). Captured from the same
-/// completed first-header core that records the bits, so the two are always consistent.
+/// First-header bits and tile layout captured from the same parsed core (§ 5.18.1).
+/// Continuation tile groups reuse this layout rather than carrying fresh `tile_info()`.
 #[derive(Debug, Clone)]
 pub(super) struct FrameHeaderCopyRecord {
     /// The first tile group's recorded `frame_header()` bits (`NumFrameHeaderBits`), for the
@@ -46,39 +38,9 @@ impl FrameHeaderCopyRecord {
     }
 }
 
-/// Parses a non-first tile group's `frame_header_copy()` region and the §5.19
-/// `tile_group_obu()` structure that follows it, comparing the copy bit-for-bit against the
-/// recorded first header (AV2 § 5.18.1 / § 6.17.1) and running the same §6.18 tg-range /
-/// §5.20.1 framing checks as the first tile group (AV2 § 5.19 / § 6.18 / § 5.20.1).
-///
-/// `obu` is the non-first tile-group OBU; `recorded` is its coded frame's first tile
-/// group's record (header bits + tile layout). The function re-reads the `tile_group_obu()`
-/// prefix (`is_first_tile_group`, `frame_header_present_flag`), then handles BOTH arms:
-///
-/// - **`frame_header_present_flag == 1`** — a `frame_header_copy()` region of exactly
-///   `NumFrameHeaderBits` follows (§5.18.1). It is compared bit-for-bit and:
-///   - emits `frame-header/copy-bits-mismatch` (§ 6.17.1) at the first differing
-///     `header_bit[i]`, anchored at the precise byte+bit of that bit (not the OBU header);
-///   - emits `frame-header/copy-bits-truncated` (§ 5.18.1 / § 6.2.1) when the payload ends
-///     before all `NumFrameHeaderBits` copy bits could be read.
-/// - **`frame_header_present_flag == 0`** — NO copy region; the §5.19 structure starts
-///   right after the flag.
-///
-/// In BOTH arms, when the reader's position past the (absent or matched-or-mismatched) copy
-/// region is exact — which it always is, since `NumFrameHeaderBits` is known — the §5.19
-/// structure remainder (`tile_start_and_end_present_flag` gated on `NumTiles > 1`,
-/// `tg_start` / `tg_end`, `byte_alignment()`) and the §5.20.1 per-tile framing are parsed
-/// over the recorded first header's layout, so a malformed continuation payload fires the
-/// same `tile-group/*` and `tile-payload/*` diagnostics as the first tile group. The
-/// continuity-dependent FIRST-tile-group `tg_start == 0` clause does NOT run for a
-/// continuation (`is_first == false`). A `copy-bits-mismatch` does NOT suppress the framing
-/// checks: the bit position past the copy region is still exact (the copy is exactly
-/// `NumFrameHeaderBits` whether or not its content matches), so the structure remains
-/// decidable. After a `copy-bits-truncated` the payload has ended inside the copy region, so
-/// no structure bits remain and the framing checks do not run.
-///
-/// It is a no-op when the prefix is not the expected non-first shape, or the payload is too
-/// short even for the prefix flags (a flag/EOF the caller's segmenter has already judged).
+/// Checks a continuation header copy and its tile structure (§ 5.18.1 / § 6.17.1).
+/// A mismatched copy still has a known length, so framing checks continue; a truncated
+/// copy leaves no framing position. Missing copy regions proceed directly to § 5.19.
 pub(super) fn check_frame_header_copy(
     obu: &ObuEnvelope<'_>,
     recorded: &FrameHeaderCopyRecord,
@@ -193,50 +155,8 @@ pub(super) fn skip_bits(reader: &mut BitReader<'_>, bits: u64) -> bool {
 }
 
 impl ValidatorContext {
-    /// Records a completed first tile group's frame-header bits and, for a non-first tile
-    /// group of the same coded frame, checks its `frame_header_copy()` region bit-for-bit
-    /// (AV2 § 5.18.1 mirror :3960-3981; § 6.17.1 mirror :4296-4300).
-    ///
-    /// `frame_header(isFirst=1)` records `NumFrameHeaderBits` over `frame_header_info()`;
-    /// `frame_header(isFirst=0)` is `frame_header_copy()`, exactly that many raw
-    /// `header_bit` `f(1)` reads (§ 5.18.1). § 6.17.1 states it is "a requirement of
-    /// bitstream conformance that `header_bit[ i ]` is equal to the value of the bit at
-    /// offset `i` from the start of the frame_header structure sent with the first tile
-    /// group", so a differing bit is a defect (`frame-header/copy-bits-mismatch`) and a
-    /// payload shorter than `NumFrameHeaderBits` is a § 6.2.1 truncation
-    /// (`frame-header/copy-bits-truncated`).
-    ///
-    /// The segmenter's `boundary` is the coded-frame authority, and its record lifecycle is
-    /// driven for **any** frame-bearing OBU — a SEF / TIP / bridge frame is its own
-    /// single-OBU coded frame (§ 7.3.3) that ENDS a preceding tile coded frame in the same
-    /// triple, so its boundary must clear / poison the stale record even though it carries
-    /// no copy region of its own:
-    ///
-    /// - [`FrameBoundary::OpensNewUnit`] resets the triple's record (a new coded frame
-    ///   opened). When the OBU is a *tile-group* first whose header parsed to completion
-    ///   ([`FrameHeaderParseStatus::IntraHeaderComplete`]), its bits are re-recorded; a
-    ///   SEF / TIP / bridge first re-records nothing (no copy region).
-    /// - [`FrameBoundary::ContinuesUnit`] on a non-first *tile group*
-    ///   (`is_first_tile_group == 0`, `frame_header_present_flag == 1`) pairs against the
-    ///   triple's record and checks the copy region; a non-tile continuation has no copy.
-    /// - [`FrameBoundary::Ambiguous`] drops the pairing (the Unknown invariant) AND poisons
-    ///   the triple's record: the undecidable OBU (an unreadable `is_first_tile_group`
-    ///   delimiter, or a same-type no-delimiter TIP / bridge) may have started a new coded
-    ///   frame, so the recorded first header can no longer be trusted to pair with a later
-    ///   tile group. The record is removed so subsequent continuations stay silent until the
-    ///   next decided [`FrameBoundary::OpensNewUnit`] re-records.
-    ///
-    /// A SEF / TIP / bridge OBU opening a new coded frame in the same triple as a recorded
-    /// tile frame must therefore clear that record; otherwise a later
-    /// flag-0 tile group the segmenter routes as continuing that SEF coded frame (the
-    /// `frame-unit/sef-single-obu` case) would pair against the stale predecessor and
-    /// false-positive a `frame-header/copy-bits-*` mismatch.
-    ///
-    /// An incomplete / coverage-stopped / unresolvable first header records nothing, so a
-    /// later non-first tile group finds no record and the copy region stays unparsed (as
-    /// today). A non-first tile group whose frame had no completed first header (e.g. the
-    /// first tile group itself was truncated, or a flag-0 tile group with no preceding
-    /// first — already diagnosed by the segmenter) likewise finds no record and is silent.
+    /// Checks a continuation against its recorded first header. Ambiguous frame boundaries
+    /// discard the record until a new first header establishes the layout.
     pub(super) fn observe_frame_header_copy(
         &mut self,
         obu: &ObuEnvelope<'_>,

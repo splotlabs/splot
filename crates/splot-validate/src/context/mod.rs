@@ -151,10 +151,10 @@ pub(crate) struct ValidatorContext {
     /// OPS state, unlike the other HLS records, is explicitly resettable.
     ops: OpsAvailabilityStore,
     /// Quantizer-matrix `qm_bit_map` reset/level state (§ 6.12) plus per-level
-    /// availability foundation for future frame-reference checks (§ 7.3.8).
+    /// availability for frame-reference checks (§ 7.3.8).
     qm: QuantizerMatrixState,
     /// Film-grain `fgm_update_flags` slot state (§ 6.13) plus per-slot availability
-    /// foundation for future frame-reference checks (§ 7.3.8).
+    /// for frame-reference checks (§ 7.3.8).
     film_grain: FilmGrainState,
     /// HDR CLL / MDCV content baselines per coded-video-sequence scope, for the
     /// § 6.16.5 / § 6.16.6 "shall have the same content" checks: each record

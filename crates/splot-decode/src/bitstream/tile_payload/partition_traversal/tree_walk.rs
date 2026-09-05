@@ -9,8 +9,8 @@ use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state}
 use super::{
     BLOCK_8X32, BlockSize, ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart,
     DecodeLimitName, DecodeLimits, DecodeTileWorkUnit, GeneralIntraLeafMode, IsCflContext,
-    PartitionAllowedInput, PartitionContextInput, PartitionSubsize, PartitionTreeType,
-    PartitionType, ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
+    PartitionAllowedInput, PartitionContextInput, PartitionTreeType, PartitionType,
+    ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
     TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState, TileMiSizeState,
     TileMiSizeStateError, TilePartitionBounds, TilePartitionCall, TilePartitionContextState,
     TilePartitionFrameFacts, TilePartitionTraversalError, TileUseDipState, TileUsesMrlsState,
@@ -867,7 +867,7 @@ pub(crate) fn extended_sdp_allowed_for_child(
     let Ok(middle_size) = h_partition_midsize(call.b_size) else {
         return false;
     };
-    let Some(middle_size) = middle_size.valid() else {
+    let Some(middle_size) = middle_size else {
         return false;
     };
     let Ok(middle_width) = middle_size.width_samples() else {
@@ -1069,7 +1069,7 @@ fn updated_chroma_offset(
     if partition == PartitionType::Horz3 {
         let middle_chroma = call.b_size.index() == BLOCK_8X32 && frame.subsampling_x;
         if !middle_chroma
-            && let Some(midsize) = h_partition_midsize(call.b_size)?.valid()
+            && let Some(midsize) = h_partition_midsize(call.b_size)?
             && is_chroma_offset_for_subsize(midsize, frame)?
         {
             return Ok(true);
@@ -1091,8 +1091,8 @@ pub(crate) fn valid_subsize(
     b_size: BlockSize,
 ) -> Result<BlockSize, TilePartitionTraversalError> {
     match partition_subsize(partition, b_size)? {
-        PartitionSubsize::Valid(sub_size) => Ok(sub_size),
-        PartitionSubsize::Invalid => Err(TilePartitionTraversalError::InvalidPartitionSubsize {
+        Some(sub_size) => Ok(sub_size),
+        None => Err(TilePartitionTraversalError::InvalidPartitionSubsize {
             partition,
             b_size: b_size.index(),
         }),

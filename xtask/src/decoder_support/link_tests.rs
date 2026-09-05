@@ -3,40 +3,6 @@
 
 use super::*;
 
-const SAMPLE: &str = r#"
-matrix_version = 1
-last_reviewed = "2026-06-13"
-
-[[row]]
-id = "dec-b-row"
-name = "B row"
-feature_id = ""
-spec_sections = ["7.1"]
-parser_source = "crates/splot-core/src/stream.rs"
-decode_module = "crates/splot-decode/src/context.rs"
-tier = "tier-0"
-status = "todo"
-self_contained_tests = []
-diagnostics = ["decode/unsupported"]
-local_reference_evidence = ["AVM commit f6f0b9c89 raw hash metadata"]
-notes = "planned"
-
-[[row]]
-id = "dec-a-row"
-name = "A row"
-feature_id = "DEC-A-ROW"
-spec_sections = []
-parser_source = "crates/splot-core/src/obu.rs"
-decode_module = "crates/splot-decode/src/context.rs"
-tier = "tier-1"
-status = "supported"
-self_contained_tests = ["cargo test -p xtask decoder_support"]
-fixtures = ["tests/conformance/vectors/valid/syn-key-intra-64x64.ivf"]
-diagnostics = []
-local_reference_evidence = []
-notes = "done"
-"#;
-
 const LINKED_FEATURE_ID: &str = "DOC-DETERMINISTIC-FRAME-HASH-CONTRACT";
 const LINKED_EVIDENCE_ID: &str = "lref-sample";
 const LINKED_FIXTURE_PATH: &str = "tests/decoder-reference/input.ivf";

@@ -20,13 +20,6 @@
 //! adjusted operating size is derived as `1 << Min(log2, 5)` (the
 //! `Adjusted_Tx_Size` cap) and the original size as `1 << log2` (the
 //! `Tx_Width` / `Tx_Height` of `txSz`), so no conversion tables are needed.
-//!
-//! Out of scope (caller's responsibility or a future row): the
-//! `get_transform_1d_type` derivation of `rowType` / `colType` (which needs
-//! `PlaneTxType`, the `Transform_1d_Type` table, and the `enable_inter_ddt` /
-//! `use_intrabc` / `is_inter` flags), the `Transform_Shift` lookup, the § 7.15.3
-//! secondary transform, the § 7.14.4 dequantization process, residual addition,
-//! and runtime decode wiring.
 
 #[cfg(test)]
 use crate::inverse_transform_2d::inverse_transform_2d;
@@ -71,7 +64,7 @@ pub enum DpcmDirection {
 /// The adjusted operating size is `1 << Min(log2, 5)` and the original residual
 /// size is `1 << log2`. `row_type` / `col_type` / `row_shift` / `col_shift` are
 /// the caller-resolved § 7.15.4.1 selections (the caller derives `rowType` /
-/// `colType` via `get_transform_1d_type`, out of scope here). When `lossless`
+/// `colType` via `get_transform_1d_type`). When `lossless`
 /// without IDTX the Walsh-Hadamard core requires a 4x4 block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InverseTransform2dOuter {

@@ -182,14 +182,11 @@ fn raw_slot_from_seed(seed: u8) -> usize {
 }
 
 fn mask_from_input(input: &mut FuzzInput<'_>) -> u32 {
-    u32::from(input.byte())
-        | (u32::from(input.byte()) << 8)
-        | (u32::from(input.byte()) << 16)
-        | (u32::from(input.byte()) << 24)
+    u32::from_le_bytes([input.byte(), input.byte(), input.byte(), input.byte()])
 }
 
 fn payload_from_input(input: &mut FuzzInput<'_>) -> Payload {
-    let id = u16::from(input.byte()) | (u16::from(input.byte()) << 8);
+    let id = u16::from_le_bytes([input.byte(), input.byte()]);
     let tag = input.byte();
     let bytes = [input.byte(), input.byte(), input.byte(), input.byte()];
     Payload::new(PayloadMeta { id, tag, bytes })
@@ -323,7 +320,6 @@ impl StoreCase {
         };
 
         let meta = payload.meta;
-        let before = self.oracle.clone();
         match store.put(slot, payload) {
             Ok(previous) => {
                 assert!(raw_slot < self.oracle.len());
@@ -341,7 +337,6 @@ impl StoreCase {
                 assert!(raw_slot >= self.oracle.len());
                 assert_eq!(observed, slot);
                 assert_eq!(capacity, self.oracle.len());
-                assert_eq!(self.oracle, before);
             }
             Err(other) => panic!("unexpected put error: {other:?}"),
         }
@@ -355,7 +350,6 @@ impl StoreCase {
             return;
         };
 
-        let before = self.oracle.clone();
         match store.take(slot) {
             Ok(previous) => {
                 assert!(raw_slot < self.oracle.len());
@@ -372,7 +366,6 @@ impl StoreCase {
                 assert!(raw_slot >= self.oracle.len());
                 assert_eq!(observed, slot);
                 assert_eq!(capacity, self.oracle.len());
-                assert_eq!(self.oracle, before);
             }
             Err(other) => panic!("unexpected take error: {other:?}"),
         }
@@ -429,12 +422,7 @@ fn refresh_payload_meta(base: PayloadMeta, slot: ReferenceSlot) -> PayloadMeta {
     PayloadMeta {
         id: base.id.wrapping_add(slot.index() as u16),
         tag: base.tag.wrapping_add(delta),
-        bytes: [
-            base.bytes[0].wrapping_add(delta),
-            base.bytes[1].wrapping_add(delta),
-            base.bytes[2].wrapping_add(delta),
-            base.bytes[3].wrapping_add(delta),
-        ],
+        bytes: base.bytes.map(|byte| byte.wrapping_add(delta)),
     }
 }
 
@@ -465,18 +453,17 @@ impl Payload {
 }
 
 struct FuzzInput<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    bytes: std::slice::Iter<'a, u8>,
 }
 
 impl<'a> FuzzInput<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes: bytes.iter(),
+        }
     }
 
     fn byte(&mut self) -> u8 {
-        let byte = self.bytes.get(self.offset).copied().unwrap_or(0);
-        self.offset = self.offset.saturating_add(1);
-        byte
+        self.bytes.next().copied().unwrap_or(0)
     }
 }

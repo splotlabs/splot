@@ -29,10 +29,9 @@ use splot_recon::math::{clip3, round2_i32};
 mod compound_average;
 mod optflow;
 mod refinemv;
-pub(crate) mod sink;
 pub(crate) use optflow::CompoundMotionGrid;
 use optflow::{CompoundAverageOutput, MotionCell};
-pub(crate) use sink::WorkspaceSink;
+pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
     let sub_x = pixel_format.subsampling_x() as u32;
@@ -237,7 +236,6 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         blend: CompoundBlend,
     ) -> Self {
         Self {
-            rect,
             prediction: InterPrediction::CompoundAverage {
                 reference0,
                 reference1,
@@ -247,13 +245,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
                 optflow_distances: None,
                 warp_params: [None, None],
             },
-            interp,
-            has_chroma: true,
-            sub8x8_chroma: false,
-            use_refinemv: false,
-            search_refinemv: false,
-            refinemv_switchable: false,
-            optflow_sad_threshold: None,
+            ..Self::single(reference0, rect, mv0, interp)
         }
     }
     pub(crate) const fn single_warp(
@@ -264,19 +256,12 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         warp_params: [i32; 6],
     ) -> Self {
         Self {
-            rect,
             prediction: InterPrediction::SingleWarp {
                 reference,
                 mv,
                 warp_params,
             },
-            interp,
-            has_chroma: true,
-            sub8x8_chroma: false,
-            use_refinemv: false,
-            search_refinemv: false,
-            refinemv_switchable: false,
-            optflow_sad_threshold: None,
+            ..Self::single(reference, rect, mv, interp)
         }
     }
     pub(crate) const fn with_chroma(mut self, has_chroma: bool) -> Self {
@@ -912,7 +897,7 @@ fn predict_plane<T: ReconSample>(
         predicted.resize(len, 0);
         let result: Result<()> = (|| {
             subpel_predict_block_into(&view, &params, &mut predicted)?;
-            sink::write_u16_rect(sink, plane, target, &predicted, params.w)?;
+            sink.write_u16_rect(plane, target, &predicted, params.w)?;
             Ok(())
         })();
         slot.set(Some(predicted));
@@ -2409,14 +2394,6 @@ fn ext_warp_unit_bounds(
     let last_x = ((end_x >> 10) + 4).clamp(0, scaling.last_x);
     let last_y = ((end_y >> 10) + 4).clamp(0, scaling.last_y);
     (first_x, first_y, last_x, last_y)
-}
-
-pub(crate) fn intrabc_predict_fractional_luma_into<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    target: PlaneRect,
-    scaling: super::mv_scaling::PlaneScaling,
-) -> Result<()> {
-    intrabc_predict_subpel_plane_into(workspace, PlaneId::Y, target, scaling)
 }
 
 pub(crate) fn intrabc_copy_plane_into<T: ReconSample>(

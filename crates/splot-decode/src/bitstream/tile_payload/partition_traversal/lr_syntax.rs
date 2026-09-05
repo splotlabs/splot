@@ -389,11 +389,11 @@ pub(super) fn read_wiener_ns_unit_filter(
     symbols: &mut SymbolDecoder<'_>,
     state: &mut WienerNsUnitFilterState,
 ) -> Result<[i16; WIENER_NS_CHROMA_COEFFS], TilePartitionTraversalError> {
-    let merged = read_wiener_ns_raw_literal(symbols, 1)? != 0;
+    let merged = symbols.read_literal(1)? != 0;
     let previous_bank_size = state.bank_size[plane];
     let mut ref_from_last = 0usize;
     while ref_from_last < previous_bank_size.saturating_sub(1) {
-        let use_bank = read_wiener_ns_raw_literal(symbols, 1)? != 0;
+        let use_bank = symbols.read_literal(1)? != 0;
         if use_bank {
             break;
         }
@@ -594,7 +594,7 @@ fn read_wiener_ns_4part_wref(
             base: usize::from(k),
             offset: 0,
         })?;
-    let literal = usize::try_from(read_wiener_ns_raw_literal(symbols, bits)?).map_err(|_| {
+    let literal = usize::try_from(symbols.read_literal(bits)?).map_err(|_| {
         TilePartitionTraversalError::CoordinateOverflow {
             coordinate: "wiener_ns_4part_literal",
             base: usize::from(k),
@@ -611,14 +611,6 @@ fn read_wiener_ns_4part_wref(
     let symbol = checked_add("wiener_ns_4part_symbol", literal, offset)?;
     let n = checked_shl("wiener_ns_4part_range", 1, nsymb_bits)?;
     inverse_recenter_finite_nonneg(n, ref_symb, symbol)
-}
-
-fn read_wiener_ns_raw_literal(
-    symbols: &mut SymbolDecoder<'_>,
-    bits: u32,
-) -> Result<u32, TilePartitionTraversalError> {
-    let value = symbols.read_literal(bits)?;
-    Ok(value)
 }
 
 fn inverse_recenter_finite_nonneg(

@@ -7,6 +7,7 @@ use splot_core::tables::conversion::{
     MI_HEIGHT_LOG2, MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE,
 };
 
+use super::util::checked_context;
 use super::{
     DO_EXT_PARTITION_CONTEXTS, DO_SPLIT_CONTEXTS, DO_SPLIT_PLANE_CONTEXTS,
     DO_SQUARE_SPLIT_CONTEXTS, DO_UNEVEN_4WAY_PARTITION_CONTEXTS, RECT_TYPE_CONTEXTS, TileCdfArray,
@@ -477,15 +478,7 @@ fn partition_context(
     max_exclusive: usize,
 ) -> Result<usize, TileCdfError> {
     let ctx = adj_size * 4 + ctx1 * 2 + ctx2;
-    if ctx >= max_exclusive {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array,
-            index_name: "ctx",
-            actual: ctx,
-            max_exclusive,
-        });
-    }
-    Ok(ctx)
+    checked_context(array, "ctx", ctx, max_exclusive)
 }
 
 #[cfg(test)]

@@ -42,23 +42,6 @@ const REF_MV_BANK_SIZE: usize = 4;
 const MAX_SMVP_AXIS_MI: usize = 16;
 const MI_SIZE: i32 = 4;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BlockWidthType {
-    Width4,
-    Width8,
-    Others,
-}
-
-impl BlockWidthType {
-    const fn from_bw4(bw4: usize) -> Self {
-        match bw4 {
-            1 => Self::Width4,
-            2 => Self::Width8,
-            _ => Self::Others,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RmbCandBounds {
     mi_row: i32,
     mi_col: i32,
@@ -395,9 +378,8 @@ impl AboveRowScan {
 
     fn resolve_sb_border(&mut self, geometry: &SpatialScanGeometry) {
         let bw4 = geometry.n4w;
-        let width_type = BlockWidthType::from_bw4(bw4);
         self.step8 = step8_above_row_column(geometry);
-        if width_type == BlockWidthType::Others {
+        if !matches!(bw4, 1 | 2) {
             self.step10 = sb_border_above_col(geometry, 0);
         }
         if bw4 <= MAX_SMVP_AXIS_MI {
@@ -415,7 +397,7 @@ impl AboveRowScan {
         let col = geometry.mi_col;
         let bw4 = geometry.n4w;
         self.step8 = tile_above_col(geometry, col.checked_add(bw4.saturating_sub(1)));
-        if BlockWidthType::from_bw4(bw4) != BlockWidthType::Width4 {
+        if bw4 != 1 {
             self.step10 = tile_above_col(geometry, Some(col));
         }
         if bw4 <= MAX_SMVP_AXIS_MI

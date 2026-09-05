@@ -824,35 +824,6 @@ fn tile_grid_ranges_are_arithmetic_safe_at_maximum_frame_size() {
 }
 
 #[test]
-fn warp_interintra_smooth_mode_builds_smooth_mask() {
-    let prediction =
-        super::warp::interintra_prediction_mode(super::warp::WarpInterIntraSyntax::Smooth {
-            mode: InterIntraMode::Smooth,
-        });
-
-    assert_eq!(
-        prediction,
-        Some(InterIntraPrediction::SmoothMask {
-            mode: InterIntraMode::Smooth
-        })
-    );
-}
-
-#[test]
-fn warp_interintra_wedge_mode_keeps_its_index() {
-    assert_eq!(
-        super::warp::interintra_prediction_mode(super::warp::WarpInterIntraSyntax::Wedge {
-            mode: InterIntraMode::Horizontal,
-            wedge_index: 17,
-        }),
-        Some(InterIntraPrediction::WedgeMask {
-            mode: InterIntraMode::Horizontal,
-            wedge_index: 17,
-        })
-    );
-}
-
-#[test]
 fn regular_interintra_syntax_precedes_drl() -> TestResult {
     let bsize_group = super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8];
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
@@ -899,9 +870,9 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
 
     assert_eq!(
         interintra,
-        super::warp::WarpInterIntraSyntax::Smooth {
+        Some(InterIntraPrediction::SmoothMask {
             mode: InterIntraMode::Smooth,
-        }
+        })
     );
     assert_eq!(drl, 0);
     Ok(())
@@ -962,10 +933,10 @@ fn regular_interintra_wedge_syntax_couples_index_to_wedge() -> TestResult {
 
     assert_eq!(
         interintra,
-        super::warp::WarpInterIntraSyntax::Wedge {
+        Some(InterIntraPrediction::WedgeMask {
             mode: InterIntraMode::Horizontal,
             wedge_index: 0,
-        }
+        })
     );
     assert_eq!(drl, 0);
     Ok(())

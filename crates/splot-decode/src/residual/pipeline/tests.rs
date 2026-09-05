@@ -24,7 +24,6 @@ struct Case {
     bit_depth: BitDepth,
     plane: PlaneId,
     expected_tx_log2: (u32, u32),
-    expect_chroma: bool,
 }
 
 #[test]
@@ -36,7 +35,6 @@ fn plans_square_and_rectangular_residual_planes() {
             bit_depth: BitDepth::Eight,
             plane: PlaneId::Y,
             expected_tx_log2: (6, 6),
-            expect_chroma: true,
         },
         Case {
             label: "square chroma-u 10-bit",
@@ -44,7 +42,6 @@ fn plans_square_and_rectangular_residual_planes() {
             bit_depth: BitDepth::Ten,
             plane: PlaneId::U,
             expected_tx_log2: (5, 5),
-            expect_chroma: true,
         },
         Case {
             label: "square chroma-v dependency",
@@ -52,7 +49,6 @@ fn plans_square_and_rectangular_residual_planes() {
             bit_depth: BitDepth::Eight,
             plane: PlaneId::V,
             expected_tx_log2: (5, 5),
-            expect_chroma: true,
         },
         Case {
             label: "rect luma",
@@ -60,7 +56,6 @@ fn plans_square_and_rectangular_residual_planes() {
             bit_depth: BitDepth::Eight,
             plane: PlaneId::Y,
             expected_tx_log2: (6, 5),
-            expect_chroma: true,
         },
         Case {
             label: "rect chroma-u",
@@ -68,7 +63,6 @@ fn plans_square_and_rectangular_residual_planes() {
             bit_depth: BitDepth::Ten,
             plane: PlaneId::U,
             expected_tx_log2: (5, 4),
-            expect_chroma: true,
         },
         Case {
             label: "rect chroma-v dependency",
@@ -76,7 +70,6 @@ fn plans_square_and_rectangular_residual_planes() {
             bit_depth: BitDepth::Eight,
             plane: PlaneId::V,
             expected_tx_log2: (5, 4),
-            expect_chroma: true,
         },
     ];
 
@@ -310,11 +303,11 @@ fn mrl_chunk_rows_use_transform_local_superblock_boundary() {
 
     assert_eq!(luma.len(), 2);
     let mrl_state = |plane: ResidualPlanePlan| match plane.reconstruction {
-        ResidualReconstructionPlan::LumaRectMiddleMrl {
+        ResidualReconstructionPlan::Luma(RectLumaPlan::MiddleMrl {
             above_mrl_index,
             is_sb_boundary,
             ..
-        } => (plane.y, above_mrl_index, is_sb_boundary),
+        }) => (plane.y, above_mrl_index, is_sb_boundary),
         other => panic!("unexpected reconstruction plan: {other:?}"),
     };
     assert_eq!(mrl_state(luma[0]), (128, 0, true));
@@ -645,14 +638,9 @@ fn max_residual_plan_capacity_reuses_storage_after_invalid_geometry() {
     assert_eq!(after_error.planes.as_ptr(), storage);
 }
 
-std::thread_local! {
-    static FAILED_RESIDUAL_PLAN_ALLOCATION: std::cell::RefCell<Vec<Vec<u8>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
 #[test]
 fn residual_plan_storage_allocation_is_fallible() {
-    RecycledVec::take(&FAILED_RESIDUAL_PLAN_ALLOCATION, usize::MAX)
+    GeneralIntraResidualPlan::take(usize::MAX)
         .expect_err("an impossible capacity must fail without allocating");
 }
 
@@ -940,10 +928,10 @@ fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
 
     assert_eq!(
         unit.reconstruction,
-        ResidualReconstructionPlan::LumaRectSmooth {
+        ResidualReconstructionPlan::Luma(RectLumaPlan::Smooth {
             mode: SupportedNonDcLumaMode::Smooth,
             use_tcq: false,
-        }
+        })
     );
 }
 
@@ -1181,24 +1169,24 @@ fn active_mrl_directional_plan_uses_transform_unit_wide_angle_mapping() {
 
         assert_eq!(
             plan_for(4, 8).unit_directional_replan(luma_context),
-            ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
+            ResidualReconstructionPlan::Luma(RectLumaPlan::OneSidedLeftMrl {
                 p_angle: 230,
                 mrl_index: 2,
                 above_mrl_index: 0,
                 is_sb_boundary: true,
                 secondary_mrl,
                 use_tcq: true,
-            }
+            })
         );
         assert_eq!(
             plan_for(8, 8).unit_directional_replan(luma_context),
-            ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
+            ResidualReconstructionPlan::Luma(RectLumaPlan::OneSidedAboveMrl {
                 p_angle: 50,
                 mrl_index: 2,
                 above_mrl_index: 0,
                 secondary_mrl,
                 use_tcq: true,
-            }
+            })
         );
     }
 }
@@ -1226,13 +1214,13 @@ fn left_mrl_replan_preserves_superblock_boundary_above_line() {
 
     assert_eq!(
         plane.unit_directional_replan(luma_context),
-        ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
+        ResidualReconstructionPlan::Luma(RectLumaPlan::OneSidedAboveMrl {
             p_angle: 30,
             mrl_index: 1,
             above_mrl_index: 0,
             secondary_mrl: true,
             use_tcq: false,
-        }
+        })
     );
 }
 
@@ -1268,14 +1256,14 @@ fn interior_middle_mrl_unit_uses_local_above_line() {
 
     assert_eq!(
         unit.unit_directional_replan(luma_context),
-        ResidualReconstructionPlan::LumaRectMiddleMrl {
+        ResidualReconstructionPlan::Luma(RectLumaPlan::MiddleMrl {
             p_angle: 135,
             mrl_index: 3,
             above_mrl_index: 3,
             is_sb_boundary: false,
             secondary_mrl: true,
             use_tcq: false,
-        }
+        })
     );
 }
 
@@ -1299,26 +1287,14 @@ fn mrl_directional_plane(
 
 fn assert_case(case: Case) {
     let ctx = ctx(case.rect, case.bit_depth);
-    let plan = if case.rect.width4() == case.rect.height4() {
-        GeneralIntraResidualPlan::rect(
-            ctx,
-            RectLumaPlan::Dc { use_tcq: true },
-            Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
-            false,
-            None,
-            false,
-        )
-    } else {
-        GeneralIntraResidualPlan::rect(
-            ctx,
-            RectLumaPlan::Dc { use_tcq: true },
-            case.expect_chroma
-                .then_some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
-            false,
-            None,
-            false,
-        )
-    }
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx,
+        RectLumaPlan::Dc { use_tcq: true },
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
+        false,
+        None,
+        false,
+    )
     .unwrap_or_else(|error| panic!("{}: {error}", case.label));
     let plane = plan
         .plane_plan(case.plane)

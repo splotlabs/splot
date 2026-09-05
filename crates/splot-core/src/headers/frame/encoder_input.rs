@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Encoder writer-input constructors for the § 5.4.1 sequence-derived views.
+//! Minimal intra writer-input constructors and stream assembly.
 //!
-//! The § 5.18.2 / § 5.20.1 frame-header + tile-group writers
-//! ([`crate::write::write_frame_header_core`], [`crate::write::write_tile_group_obu`])
-//! take parsed [`CoreSeqView`] / [`CoreSeqInterView`] models. These public constructors
-//! let `splot-encode` build a minimal-intra view without a parsed [`SequenceHeader`]
-//! (the maintainer-approved writer bridge). They live in their own module so the large
-//! frame-header parser ([`super::info`]) does not grow with encoder surface; the views
-//! are `#[non_exhaustive]` with crate-private fields, which a within-crate constructor
-//! may still build.
-//!
-//! [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
+//! Builds sequence/frame models for the AV2 § 5.4.1 and § 5.18.2 writers, and wraps
+//! caller-supplied tile data in Annex B OBUs or a single-picture IVF container.
 
 use crate::bitio::BitReader;
 use crate::headers::frame::size::ceil_log2;
@@ -32,18 +24,7 @@ use crate::write::{
 };
 
 impl CoreSeqInterView {
-    /// Builds the all-disabled § 5.4.6 inter-config view a minimal intra sequence
-    /// header signals (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-6`): every
-    /// inter tool off and every motion mode disabled. The § 5.18.2 intra control region
-    /// never reads these — an intra frame skips the inter tail — so this is the inert
-    /// inter state a frame-header writer needs to invert `parse_frame_header_core` for a
-    /// minimal intra frame.
-    ///
-    /// This is the public encoder writer-input constructor for the otherwise
-    /// `#[non_exhaustive]`, crate-private-field [`CoreSeqInterView`]; it lets
-    /// `splot-encode` build a [`CoreSeqView`] without a parsed [`SequenceHeader`].
-    ///
-    /// [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
+    /// Builds an inter view with inter-only tools disabled for the minimal intra writer.
     #[must_use]
     pub fn new_minimal_intra() -> Self {
         Self {
@@ -68,35 +49,8 @@ impl CoreSeqInterView {
 }
 
 impl CoreSeqView {
-    /// Builds the AV2 § 5.4.1 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1`)
-    /// sequence-derived view a minimal intra frame needs, the public encoder
-    /// writer-input constructor for the otherwise `#[non_exhaustive]`,
-    /// crate-private-field [`CoreSeqView`]. It lets `splot-encode` drive the
-    /// `write_tile_group_obu` / `write_frame_header_core` writers without a parsed
-    /// [`SequenceHeader`] (the alternative [`CoreSeqView::from_sequence`] input).
-    ///
-    /// Every sequence tool an intra frame does not use is disabled: no reference-frame
-    /// state (§ 5.4.6 inter view all-off via [`CoreSeqInterView::new_minimal_intra`]),
-    /// no segmentation/tiles/loop-filters/restoration/CCSO, no film grain. 8-bit YUV420,
-    /// 3 planes. The configurable inputs are the § 5.4.1 frame-size maxima
-    /// (`max_frame_width` / `max_frame_height`); `frame_width_bits` / `frame_height_bits`
-    /// are derived from them via `ceil_log2`, so any in-range maxima can write an
-    /// overridden frame size, not just those that fit 12 bits.
-    ///
-    /// This is the **non-single-picture** view (`single_picture_header_flag == false`):
-    /// it is the exact shape the test `base_seq` helper builds, so the existing
-    /// frame-header round-trip suite regresses it (`base_seq()` delegates here). The
-    /// single-picture variant infers a different sequence shape (§ 5.4.6 `OrderHintBits
-    /// = 0` / `NumRefFrames = 2`, § 5.4.1 SCC `SELECT` force fields, § 5.4.10
-    /// `(enable_avg_cdf, avg_cdf_type) = (true, 1)`) across four § 5.4.1 config parsers
-    /// and is a later, separately round-trip-verified constructor.
-    ///
-    /// Returns `None` if either maximum is outside `1..=65536`: § 5.4.1
-    /// `frame_*_bits_minus_1` is `f(4)`, so `frame_*_bits` is `1..=16` and a real
-    /// sequence header can only describe maxima up to `2^16` — a wider/zero maximum has
-    /// no valid sequence header to invert.
-    ///
-    /// [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
+    /// Builds the non-single-picture intra view for the supplied maximum dimensions.
+    /// Returns `None` outside `1..=65536`, the § 5.4.1 dimension signaling range.
     #[must_use]
     pub fn new_minimal_intra(max_frame_width: u32, max_frame_height: u32) -> Option<Self> {
         use crate::headers::sequence::{CdefOnSkipTxfm, LevelIdx, SuperblockSize, Tier};
@@ -185,27 +139,8 @@ impl CoreSeqView {
         })
     }
 
-    /// Builds the **single-picture** (`single_picture_header_flag == true`) variant of
-    /// [`CoreSeqView::new_minimal_intra`]: the § 5.4.1
-    /// (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-1`) sequence-derived view a
-    /// single-picture minimal-intra frame needs, the input to
-    /// [`build_minimal_intra_clk_core`] / the frozen-tier intra frame-header writer.
-    ///
-    /// It is the non-single view ([`CoreSeqView::new_minimal_intra`]) with exactly the eight
-    /// § 5.4.x inferences a single-picture sequence header forces, which a non-single header
-    /// signals differently (every other tool stays disabled, a legal single-picture choice):
-    ///
-    /// - `single_picture_header_flag` (top-level + § 5.18.10 filter + CCSO mirrors): `true`.
-    /// - § 5.4.6 `OrderHintBits = 0` (`#s-5-4-6` line 832): the frame `order_hint` is
-    ///   `f(OrderHintBits)` = `f(0)`, i.e. **omitted** from the frame header.
-    /// - § 5.4.6 `NumRefFrames = 2` (`#s-5-4-6` line 870).
-    /// - § 5.4.7 `seq_force_screen_content_tools = SELECT_SCREEN_CONTENT_TOOLS = 2`
-    ///   and `seq_force_integer_mv = SELECT_INTEGER_MV = 2` (`#s-5-4-7` lines 1074/1076):
-    ///   the frame reads an explicit `allow_screen_content_tools` bit.
-    /// - § 5.4.8 `(enable_avg_cdf, avg_cdf_type) = (true, 1)` (`#s-5-4-8`).
-    /// - § 5.4.1 `monotonic_output_order_flag = true` (the single-picture general branch).
-    ///
-    /// Returns `None` on the same out-of-range maxima as [`CoreSeqView::new_minimal_intra`].
+    /// Builds the single-picture intra sequence view with the § 5.4 inferences applied.
+    /// Returns `None` when either maximum dimension is outside `1..=65536`.
     #[must_use]
     pub fn new_minimal_intra_single_picture(
         max_frame_width: u32,
@@ -381,12 +316,6 @@ pub enum MinimalIntraTileGroupError {
 /// last tile reads no size field, so `tile_data` is the byte-aligned trailing region of the
 /// payload.
 ///
-/// This is the public encoder writer-input bridge end-point: it connects the header
-/// assembler to the tile-group writer, so `splot-encode` can emit a first tile-group payload
-/// from coded tile bytes without a parsed [`SequenceHeader`].
-///
-/// [`SequenceHeader`]: crate::headers::sequence::SequenceHeader
-///
 /// # Errors
 /// Returns [`MinimalIntraTileGroupError::Core`] if the matched frame-header core cannot be
 /// assembled, or [`MinimalIntraTileGroupError::Write`] if the § 5.19 tile-group payload cannot
@@ -432,11 +361,6 @@ fn encode_minimal_intra_clk_tile_group_obu_impl(
 /// `OBU_TEMPORAL_DELIMITER` do, § 5.2.2). `tile_data` is the § 8.2 coded tile bytes (`>= 1`);
 /// an empty slice is rejected by the inner assembler.
 ///
-/// This is the public encoder writer-input bridge end-point that emits a complete,
-/// self-delimiting OBU. A temporal-delimiter + sequence-header OBU and a full Annex B / IVF
-/// stream around it are later bricks; this is a single frame OBU, not yet a decodable
-/// temporal unit.
-///
 /// # Errors
 /// Returns [`MinimalIntraTileGroupError::Core`] if the matched frame-header core cannot be
 /// assembled, or [`MinimalIntraTileGroupError::Write`] if the tile-group payload or the
@@ -476,12 +400,8 @@ fn encode_minimal_intra_clk_annexb_obu_impl(
 /// `OBU_MSDO` are the two types that infer the global xlayer (§ 5.2.2). The canonical encoding
 /// is the two bytes `[0x01, 0x08]`.
 ///
-/// This is a public encoder writer-input primitive: a later brick concatenates it with the
-/// sequence-header and frame OBUs into a temporal unit and an IVF stream.
-///
 /// # Errors
-/// Returns [`WriteError`] if the Annex B OBU framing cannot be serialized. (Unreachable for
-/// the fixed two-byte temporal-delimiter encoding; the `Result` honors the no-panic policy.)
+/// Returns [`WriteError`] if the Annex B OBU framing cannot be serialized.
 pub fn encode_temporal_delimiter_obu() -> Result<Vec<u8>, WriteError> {
     let header = ObuHeader {
         has_header_extension: false,
@@ -509,7 +429,7 @@ const MINIMAL_INTRA_SEQUENCE_HEADER_PAYLOAD: [u8; 11] = [
 /// Error assembling the canonical minimal-intra sequence header
 /// ([`build_minimal_intra_sequence_header`] / [`encode_minimal_intra_sequence_header_obu`]):
 /// the canonical body either failed to parse or failed to serialize. Both arms are
-/// unreachable for the fixed canonical body; they exist only to honor the no-panic policy.
+/// returned if parsing or serializing the canonical body fails.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum MinimalIntraSequenceHeaderError {
@@ -560,15 +480,10 @@ fn minimal_intra_sequence_header_payload() -> Result<Vec<u8>, MinimalIntraSequen
 /// [`build_minimal_intra_sequence_header`]. The result reproduces the committed conformance
 /// vector's sequence-header OBU byte-for-byte.
 ///
-/// This is the second of the two OBUs the decoder's minimal-tier IVF frame requires (after
-/// the temporal delimiter, before the frame OBU). Assembling the three into a temporal unit
-/// and an IVF stream — with the frame OBU made consistent with this sequence header — is a
-/// later brick.
-///
 /// # Errors
 /// Returns [`MinimalIntraSequenceHeaderError::Parse`] if the canonical payload does not parse,
 /// or [`MinimalIntraSequenceHeaderError::Write`] if the payload or Annex B OBU wrapper cannot
-/// be serialized. (Both are unreachable for the fixed canonical body.)
+/// be serialized.
 pub fn encode_minimal_intra_sequence_header_obu() -> Result<Vec<u8>, MinimalIntraSequenceHeaderError>
 {
     let payload = minimal_intra_sequence_header_payload()?;
@@ -605,49 +520,31 @@ pub enum MinimalIntraIvfError {
     Ivf(#[from] std::io::Error),
 }
 
-/// Assembles the canonical minimal-intra 64x64 single-picture intra temporal unit as a
-/// complete IVF stream: the AV2 Annex B temporal unit — `OBU_TEMPORAL_DELIMITER`,
-/// `OBU_SEQUENCE_HEADER`, then the `OBU_CLOSED_LOOP_KEY` frame OBU, in the order the
-/// decoder's minimal tier requires — inside one `AV02` 64x64 IVF frame
-/// ([`write_ivf_header`] / [`write_ivf_frame`]).
-///
-/// The three OBUs are consistent: the frame OBU's frame header parses against this sequence
-/// header (both describe the frozen 64x64 single-picture `Block64x64` tier — verified field
-/// by field). `tile_data` is the § 8.2 coded bytes of the one 64x64 tile (`>= 1`); an empty
-/// slice is rejected by the inner frame assembler.
-///
-/// This is the encoder writer-input bridge's container end-point: it emits a structurally
-/// valid IVF whose OBUs and headers are consistent. It is **not** yet a hash-exact match to
-/// the committed conformance vector — `tile_data` is a caller input, so a complete
-/// spec-conformant coded tile (and thus a decode-hash match) is a later brick.
+/// Wraps caller-supplied coded tile data in a minimal 64x64 single-picture IVF stream.
+/// Uses the frozen-tier base quantizer and emits temporal delimiter, sequence, and frame OBUs.
 ///
 /// # Errors
-/// Returns a [`MinimalIntraIvfError`] if any of the three OBUs cannot be assembled (e.g. an
-/// empty `tile_data` rejected by the inner frame assembler) or the IVF container cannot be
-/// written.
+/// Returns [`MinimalIntraIvfError`] if OBU assembly or IVF writing fails, including empty tile data.
 pub fn encode_minimal_intra_clk_ivf(tile_data: &[u8]) -> Result<Vec<u8>, MinimalIntraIvfError> {
-    encode_minimal_intra_clk_ivf_impl(FROZEN_TIER_BASE_Q_IDX, tile_data)
+    encode_minimal_intra_clk_ivf_with_base_q_idx(FROZEN_TIER_BASE_Q_IDX, tile_data)
 }
 
-/// Like [`encode_minimal_intra_clk_ivf`] but with a caller-chosen `base_q_idx`, for the
-/// general intra path whose coded tile bytes are entropy-coded at the coefficient CDF
-/// q-context the decoder derives from `base_q_idx` (`base_q_idx <= 90` → q-context 0). Only
-/// the `base_q_idx` bits of the frame header differ from the frozen tier; the container is
-/// otherwise identical. `base_q_idx` must be nonzero (a zero value is rejected by the inner
-/// frame-header assembler as [`MinimalIntraCoreError::LosslessBaseQIdx`]).
-///
-/// This pairs with a coded `tile_data` whose symbols match `base_q_idx`'s q-context to emit a
-/// decodable stream; the cross-crate decode oracle that proves it is a later brick.
+/// Like [`encode_minimal_intra_clk_ivf`] with a caller-selected nonzero quantizer.
+/// The tile symbols must use the coefficient CDF context selected by `base_q_idx`.
 ///
 /// # Errors
-/// Returns a [`MinimalIntraIvfError`] if any of the three OBUs cannot be assembled — including
-/// a `base_q_idx == 0` rejected as [`MinimalIntraCoreError::LosslessBaseQIdx`] or an empty
-/// `tile_data` — or the IVF container cannot be written.
+/// Returns [`MinimalIntraIvfError`] on zero quantizer, empty tile data, or assembly failure.
 pub fn encode_minimal_intra_clk_ivf_with_base_q_idx(
     base_q_idx: u8,
     tile_data: &[u8],
 ) -> Result<Vec<u8>, MinimalIntraIvfError> {
-    encode_minimal_intra_clk_ivf_impl(base_q_idx, tile_data)
+    let temporal_unit =
+        encode_minimal_intra_clk_temporal_unit_with_base_q_idx(base_q_idx, tile_data)?;
+
+    let mut ivf = Vec::new();
+    write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1))?;
+    write_ivf_frame(&mut ivf, 0, &temporal_unit)?;
+    Ok(ivf)
 }
 
 /// Assembles the canonical minimal-intra 64x64 single-picture intra **temporal unit** (one coded
@@ -675,19 +572,6 @@ pub fn encode_minimal_intra_clk_temporal_unit_with_base_q_idx(
         base_q_idx, tile_data,
     )?);
     Ok(temporal_unit)
-}
-
-fn encode_minimal_intra_clk_ivf_impl(
-    base_q_idx: u8,
-    tile_data: &[u8],
-) -> Result<Vec<u8>, MinimalIntraIvfError> {
-    let temporal_unit =
-        encode_minimal_intra_clk_temporal_unit_with_base_q_idx(base_q_idx, tile_data)?;
-
-    let mut ivf = Vec::new();
-    write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1))?;
-    write_ivf_frame(&mut ivf, 0, &temporal_unit)?;
-    Ok(ivf)
 }
 
 #[cfg(test)]

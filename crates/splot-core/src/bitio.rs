@@ -193,18 +193,6 @@ impl<'a> BitReader<'a> {
         Ok(())
     }
 
-    /// Reads an AV2 `f(n)` field, treating `n == 0` as reading no bits (value `0`).
-    ///
-    /// This mirrors the AV2 convention that an `f(0)` syntax element is absent and
-    /// consumes no bits; for `n >= 1` it delegates to [`read_bits`](Self::read_bits).
-    ///
-    /// # Errors
-    /// Returns [`Error::BitWidthTooLarge`] if `n > 32`, or [`Error::UnexpectedEof`]
-    /// if fewer than `n` bits remain. `n == 0` never errors.
-    pub(crate) fn read_f(&mut self, n: u32) -> Result<u32> {
-        self.read_bits(n)
-    }
-
     /// Reads `n` bits (MSB-first) into a `u8`.
     ///
     /// # Errors

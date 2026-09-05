@@ -258,24 +258,7 @@ pub(super) fn subpel_copy_compound_average_u16_into<T: ReconSample>(
     let Some(x) = subpel_direct_copy_x(reference, params) else {
         return Ok(false);
     };
-    if output_stride < params.w {
-        return Err(ReconError::StrideTooSmall {
-            stride_samples: output_stride,
-            storage_width: params.w,
-        });
-    }
-    let output_len = (params.h - 1)
-        .checked_mul(output_stride)
-        .and_then(|len| len.checked_add(params.w))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "strided compound prediction sample count",
-        })?;
-    if output.len() < output_len {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: output_len,
-            actual: output.len(),
-        });
-    }
+    validate_compound_output(params, output, output_stride)?;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let forward = i32::from(cwp_weight);
     let backward = 16 - forward;

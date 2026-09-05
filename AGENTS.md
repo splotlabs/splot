@@ -121,8 +121,7 @@ Generated status markdown is not committed; render it on demand.
 - Use strong types at public boundaries.
 - Public items and crates have docs.
 - Every `.rs` file starts with the PolyForm SPDX header.
-- Rust source files target <=1000 physical lines; hard cap is 2500 unless
-  `xtask/src/source_lines.rs` records an allowance.
+- Rust source files target <=1000 physical lines; hard cap is 2500.
 - `unsafe_code = "forbid"` workspace-wide.
 
 ## AV2 and Diagnostics

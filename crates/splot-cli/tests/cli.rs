@@ -6,23 +6,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+use common::{splot, temp_input};
+
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures")
         .join(name)
-}
-
-fn splot(args: &[&str]) -> Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args(args)
-        .output()
-        .expect("failed to run the splot binary")
 }
 
 fn validate(fixture_name: &str, extra: &[&str]) -> Output {
@@ -48,24 +41,6 @@ fn inspect_json(path: &Path) -> serde_json::Value {
         String::from_utf8_lossy(&out.stderr)
     );
     serde_json::from_slice(&out.stdout).expect("inspect output is valid JSON")
-}
-
-fn temp_path(stem: &str, extension: &str) -> PathBuf {
-    let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time is after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "splot-cli-test-{stem}-{}-{nanos}-{id}.{extension}",
-        std::process::id()
-    ))
-}
-
-fn temp_input(extension: &str, data: &[u8]) -> PathBuf {
-    let path = temp_path("input", extension);
-    std::fs::write(&path, data).expect("write temporary input");
-    path
 }
 
 fn ivf_stream(payloads: &[&[u8]]) -> Vec<u8> {

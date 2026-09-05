@@ -1,52 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Reference-frame buffer state model (AV2 v1.0.0 § 7.23).
+//! Per-extended-layer reference state (AV2 § 7.23,
+//! `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23`).
 //!
-//! The validator tracks the § 7.23 *Reference frame update process* state per
-//! extended layer from each completed frame's parsed `refresh_frame_flags`,
-//! `OrderHint`, and dimensions, so reference-state-gated frame-header decisions and
-//! § 6/§ 7 checks become reachable. This is **validator-derived** state — the
-//! bitstream does not declare reference-frame buffers out of band (they are written
-//! only by the § 7.23 process at the end of each decoded frame), so the tracker is
-//! the single in-band source of truth and never consults external HLS.
-//!
-//! # § 7.23 update semantics (mirror `07-decoding-process.md#s-7-23`, :14095-14124)
-//!
-//! "For each value of i from 0 to NUM_REF_FRAMES - 1, the following applies if bit i
-//! of refresh_frame_flags is equal to 1": slot `i` is overwritten with the current
-//! frame's facts. `RefValid[ i ]` is set to `(FrameType == KEY_FRAME || FrameType ==
-//! SWITCH_FRAME) ? first : 1`, where `first` is `1` only for the *lowest* refreshed
-//! slot and `0` thereafter (so a key/switch frame leaves only its lowest refreshed
-//! slot valid, invalidating the rest it touches). `RefOrderHint[ i ] = OrderHint`,
-//! `RefFrameWidth[ i ] = FrameWidth`, `RefFrameHeight[ i ] = FrameHeight`. The validator
-//! additionally retains the order-hint LSB, base quantizer, output flags, frame kind,
-//! long-term id, and distinct-frame counter needed by later frame-header derivations.
-//! Pixel data, motion fields, CDFs, grain, CCSO, and the other reconstruction-only § 7.23
-//! arrays remain outside validation state.
-//!
-//! # Resets (grounded, never guessed)
-//!
-//! - **New CVS / CLK reset** (`OBU_CLOSED_LOOP_KEY && FirstPictureInTU`): § 5.18.2
-//!   (mirror `05-syntax-structures.md` :4449-4455) sets `RefValid[ i ] = 0` for every
-//!   `i` in `0..NumRefFrames` *before* `refresh_frame_flags` is applied. The tracker
-//!   models this as the slots becoming [`SlotState::ProvenInvalid`]; the CLK's own
-//!   refresh mask (`refresh_frame_flags = allFrames` for `max_mlayer_id == 0`, mirror
-//!   :4431-4433) then re-validates per § 7.23 with the key-frame `first` rule.
-//! - **A mid-stream join** (the validator starts inside the bitstream at a random
-//!   access point) begins with every slot [`SlotState::Unknown`], so an early
-//!   reference against an unestablished slot stays Unknown (no false positive) until a
-//!   grounded reset establishes the buffer. This is the random-access-replay soundness
-//!   property: the tracker is all-poisoned until the first grounded reset it observes.
-//!
-//! # Honest poisoning
-//!
-//! When a frame's refresh effect is **not grounded** — for example a bridge header that
-//! stops before completion, a truncation, an `Unknown`-classed frame, or an
-//! [`FrameBoundary::Ambiguous`] coded-frame boundary — the mask could refresh *any* slot,
-//! so **all** slots are poisoned to
-//! [`SlotState::Unknown`]. Per-slot `Unknown` is the resting state; the tracker never
-//! guesses which slots an unparsed mask touched.
+//! Refreshes store parsed frame facts; key/switch frames validate only the lowest
+//! refreshed slot. A CLK at the start of a temporal unit first invalidates the
+//! active slots (§ 5.18.2, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
+//! Mid-stream joins begin with unknown slots. An incomplete or ambiguous frame
+//! poisons every slot because its refresh mask is unknown. Only proven-invalid
+//! references produce findings; external HLS cannot establish reference buffers.
 
 use splot_core::headers::frame::{FrameReferenceStateView, FrameType};
 use splot_core::types::ExtendedLayerId;
@@ -73,11 +36,11 @@ pub(crate) enum SlotState {
     /// parsed frame re-validated it (§ 5.18.2 :4449-4455 / § 7.23). A reference against a
     /// proven-invalid slot is a decidable conformance defect.
     ProvenInvalid,
-    /// `RefValid[ i ] == 1` is **proven**, with the § 7.23 stored facts this phase models.
+    /// `RefValid[ i ] == 1` is proven, with the stored § 7.23 facts.
     Valid(SlotFacts),
 }
 
-/// The § 7.23 stored facts for a proven-valid slot that this phase models.
+/// The § 7.23 facts needed for reference parsing and conformance checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SlotFacts {
     /// `RefOrderHint[ i ]` (§ 7.23).
@@ -109,16 +72,7 @@ pub(crate) struct SlotFacts {
     pub(crate) long_term_id: Option<u32>,
 }
 
-/// One extended layer's `NUM_REF_FRAMES`-slot reference-frame buffer state.
-///
-/// Scoping decision (per § 7.23 / § 7.3.6): the § 7.23 process runs once per decoded
-/// frame in that frame's decoding context, and the validator's coded-video-sequence /
-/// CELU model is keyed per **extended layer** (`obu_xlayer_id`) — the granularity at
-/// which a CLK starts a new CVS and resets the reference buffers (§ 7.3.6). So the
-/// reference buffer is modeled per extended layer, matching the existing CVS-epoch and
-/// `frame_header_copy_record` keying. (Embedded/temporal layers select *which* slots a
-/// frame references within that buffer via the inter syntax; the buffer itself is one per
-/// extended layer.)
+/// One extended layer's reference buffer, matching its CVS reset scope (§ 7.3.6).
 #[derive(Debug, Clone)]
 struct LayerReferenceState {
     /// The `NUM_REF_FRAMES` slots. Initialized all-[`SlotState::Unknown`] (a fresh /

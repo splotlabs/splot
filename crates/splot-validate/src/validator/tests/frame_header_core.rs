@@ -729,13 +729,7 @@ fn validator_flags_sef_grain_seed_short_one_bit_as_trailing_bits_defect() {
 #[test]
 fn validator_sef_trailing_bits_silent_on_conformant_sef() {
     let mut grain_free = td_and_frame_core_seq(FrameCoreSeq::base());
-    let mut gf = Bits::default();
-    gf.uvlc(0); // cur_mfh_id == 0
-    gf.uvlc(0); // seq_header_id_in_frame_header
-    gf.f(0, 3); // frame_to_show_map_idx
-    gf.bit(1); // derive_sef_order_hint == 1 -> no sef_order_hint
-    gf.bit(1); // trailing_one_bit
-    grain_free.extend(annex_b_obu(REGULAR_SEF_HEADER, &gf.into_bytes()));
+    grain_free.extend(conformant_sef_same_triple());
     let report = Validator::new(false).validate_bytes(&grain_free);
     assert!(
         !report
@@ -750,16 +744,7 @@ fn validator_sef_trailing_bits_silent_on_conformant_sef() {
         ..FrameCoreSeq::base()
     };
     let mut with_grain = td_and_frame_core_seq(seq);
-    let mut wg = Bits::default();
-    wg.uvlc(0); // cur_mfh_id == 0
-    wg.uvlc(0); // seq_header_id_in_frame_header
-    wg.f(0, 3); // frame_to_show_map_idx
-    wg.bit(1); // derive_sef_order_hint == 1
-    wg.bit(1); // apply_grain = 1
-    wg.f(0, 3); // fgm_id = 0
-    wg.f(0xABCD, 16); // grain_seed (full 16 bits)
-    wg.bit(1); // §5.2.3 trailing_one_bit
-    with_grain.extend(annex_b_obu(REGULAR_SEF_HEADER, &wg.into_bytes()));
+    with_grain.extend(sef_with_applied_grain(0));
     let report = Validator::new(false).validate_bytes(&with_grain);
     assert!(
         !report

@@ -323,31 +323,6 @@ pub struct LcrEmbeddedLayer {
     pub max_expected_height: Option<u32>,
 }
 
-/// Shared context threaded into `lcr_xlayer_info()` parsing: the atlas-presence flags
-/// that select the else-branch atlas reference (AV2 § 5.8.6) and per-embedded-layer
-/// atlas fields (AV2 § 5.8.8).
-struct XlayerAtlasContext {
-    /// `isGlobal` argument: `true` for `lcr_global_payload()`, `false` for
-    /// `lcr_local_info()`.
-    is_global: bool,
-    /// `lcr_global_atlas_id_present_flag` from `lcr_global_info()`.
-    global_atlas_id_present: bool,
-    /// `lcr_local_atlas_id_present_flag[xId]` from `lcr_local_info()`.
-    local_atlas_id_present: bool,
-}
-
-impl XlayerAtlasContext {
-    /// `atlasSegmentPresent` per AV2 § 5.8.8: the global flag for a global record,
-    /// otherwise the per-xlayer local flag.
-    const fn atlas_segment_present(&self) -> bool {
-        if self.is_global {
-            self.global_atlas_id_present
-        } else {
-            self.local_atlas_id_present
-        }
-    }
-}
-
 /// Parses `layer_config_record_obu()` (AV2 v1.0.0 § 5.8) for an OBU whose header
 /// carries `xlayer_id`.
 ///
@@ -483,12 +458,7 @@ fn parse_lcr_local_info(
     };
     let reserved_zero_5bits = reader.read_bits_u8(5)?;
 
-    let context = XlayerAtlasContext {
-        is_global: false,
-        global_atlas_id_present: false,
-        local_atlas_id_present,
-    };
-    let xlayer_info = parse_lcr_xlayer_info(reader, &context)?;
+    let xlayer_info = parse_lcr_xlayer_info(reader, false, local_atlas_id_present)?;
 
     Ok(LcrLocalInfo {
         xlayer_id: xlayer_id.get(),
@@ -549,12 +519,7 @@ fn parse_lcr_global_payload(
         None
     };
 
-    let context = XlayerAtlasContext {
-        is_global: true,
-        global_atlas_id_present,
-        local_atlas_id_present: false,
-    };
-    let xlayer_info = parse_lcr_xlayer_info(reader, &context)?;
+    let xlayer_info = parse_lcr_xlayer_info(reader, true, global_atlas_id_present)?;
 
     let parsed_bits = reader.consumed_bits().saturating_sub(start_bits);
     let total_bits = u64::from(data_size).saturating_mul(8);
@@ -596,7 +561,8 @@ fn parse_lcr_global_payload(
 /// Parses `lcr_xlayer_info(isGlobal, xId)` (AV2 v1.0.0 § 5.8.6).
 fn parse_lcr_xlayer_info(
     reader: &mut BitReader<'_>,
-    context: &XlayerAtlasContext,
+    is_global: bool,
+    atlas_segment_present: bool,
 ) -> Result<LcrXlayerInfo> {
     let rep_info_present = reader.read_flag()?;
     let xlayer_purpose_present = reader.read_flag()?;
@@ -622,8 +588,14 @@ fn parse_lcr_xlayer_info(
     reader.byte_align_zero()?;
 
     let (embedded_layer_info, xlayer_atlas) = if embedded_layer_info_present {
-        (Some(parse_lcr_embedded_layer_info(reader, context)?), None)
-    } else if context.is_global && context.global_atlas_id_present {
+        (
+            Some(parse_lcr_embedded_layer_info(
+                reader,
+                atlas_segment_present,
+            )?),
+            None,
+        )
+    } else if is_global && atlas_segment_present {
         let atlas = LcrXlayerAtlasRef {
             atlas_segment_id: reader.read_bits_u8(8)?,
             priority_order: reader.read_bits_u8(8)?,
@@ -700,10 +672,9 @@ fn parse_lcr_xlayer_color_info(reader: &mut BitReader<'_>) -> Result<LcrXlayerCo
 /// Parses `lcr_embedded_layer_info(isGlobal, xId)` (AV2 v1.0.0 § 5.8.8).
 fn parse_lcr_embedded_layer_info(
     reader: &mut BitReader<'_>,
-    context: &XlayerAtlasContext,
+    atlas_segment_present: bool,
 ) -> Result<LcrEmbeddedLayerInfo> {
     let mlayer_map = reader.read_bits_u8(8)?;
-    let atlas_segment_present = context.atlas_segment_present();
 
     let mut layers = Vec::new();
     for j in 0u8..8 {

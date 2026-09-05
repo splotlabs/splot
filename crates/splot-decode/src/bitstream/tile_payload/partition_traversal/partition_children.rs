@@ -176,12 +176,10 @@ fn middle_partition_size(
     partition: PartitionType,
     b_size: BlockSize,
 ) -> Result<BlockSize, TilePartitionTraversalError> {
-    h_partition_midsize(b_size)?.valid().ok_or(
-        TilePartitionTraversalError::InvalidPartitionSubsize {
-            partition,
-            b_size: b_size.index(),
-        },
-    )
+    h_partition_midsize(b_size)?.ok_or(TilePartitionTraversalError::InvalidPartitionSubsize {
+        partition,
+        b_size: b_size.index(),
+    })
 }
 
 fn push_two_way_children(

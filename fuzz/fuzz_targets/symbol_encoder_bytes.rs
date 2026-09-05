@@ -36,7 +36,7 @@ fuzz_target!(|data: &[u8]| {
         .with_max_operations(MAX_ENCODER_OPERATIONS);
     let mut encoder = SymbolEncoder::with_config(config);
     let mut expected = Vec::new();
-    let mut cursor = ByteCursor::new(rest);
+    let mut cursor = rest.iter().copied();
     let op_count = 1 + usize::from(*op_count_seed % MAX_OPS as u8);
 
     for _ in 0..op_count {
@@ -157,7 +157,7 @@ enum Op {
     },
 }
 
-fn literal_value(bits: u32, cursor: &mut ByteCursor<'_>) -> u32 {
+fn literal_value(bits: u32, cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -> u32 {
     if bits == 0 {
         return 0;
     }
@@ -173,7 +173,7 @@ fn literal_value(bits: u32, cursor: &mut ByteCursor<'_>) -> u32 {
     }
 }
 
-fn cdf_row(n: usize, cursor: &mut ByteCursor<'_>) -> Vec<i32> {
+fn cdf_row(n: usize, cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -> Vec<i32> {
     let shape = cursor.next().unwrap_or(0) % 4;
     let mut row = Vec::with_capacity(n + 1);
     match shape {
@@ -191,7 +191,7 @@ fn cdf_row(n: usize, cursor: &mut ByteCursor<'_>) -> Vec<i32> {
     row
 }
 
-fn malformed_cdf(cursor: &mut ByteCursor<'_>) -> Vec<i32> {
+fn malformed_cdf(cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -> Vec<i32> {
     match cursor.next().unwrap_or(0) % 5 {
         0 => vec![1, 0],
         1 => vec![0, 0, 0],
@@ -201,26 +201,8 @@ fn malformed_cdf(cursor: &mut ByteCursor<'_>) -> Vec<i32> {
     }
 }
 
-fn next_u16(cursor: &mut ByteCursor<'_>) -> u16 {
+fn next_u16(cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -> u16 {
     let hi = u16::from(cursor.next().unwrap_or(0));
     let lo = u16::from(cursor.next().unwrap_or(0));
     (hi << 8) | lo
-}
-
-#[derive(Debug)]
-struct ByteCursor<'a> {
-    bytes: &'a [u8],
-    index: usize,
-}
-
-impl<'a> ByteCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, index: 0 }
-    }
-
-    fn next(&mut self) -> Option<u8> {
-        let byte = self.bytes.get(self.index).copied()?;
-        self.index += 1;
-        Some(byte)
-    }
 }

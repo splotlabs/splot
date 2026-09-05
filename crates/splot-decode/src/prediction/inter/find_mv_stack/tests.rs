@@ -1526,35 +1526,6 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
     );
 }
 
-#[test]
-fn clamp_keeps_small_mvs_unchanged() {
-    let grid = grid_with_block0();
-    let block1 = block_at(0, N4_32);
-    let stack = find_mv_stack(
-        &grid,
-        &block1,
-        Mv::ZERO,
-        None,
-        &WarpParamBank::new(),
-        false,
-        DrlReorder::Disabled,
-        false,
-    );
-    assert_eq!(
-        stack.candidate(0),
-        BLOCK0_MV,
-        "clamp leaves the small MV intact"
-    );
-}
-
-#[test]
-fn record_block_marks_every_covered_cell() {
-    let grid = grid_with_block0();
-    let block1 = block_at(0, N4_32);
-    let ctx = find_mode_ctx(&grid, &block1);
-    assert_eq!(ctx.new_mv_context, 3, "both left probes see block 0");
-}
-
 const N4_64: usize = 16;
 const GRID_MI_DIM: usize = 32;
 

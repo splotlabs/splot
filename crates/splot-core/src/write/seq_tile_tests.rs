@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 mod tests {
@@ -27,60 +26,11 @@ mod tests {
         }
     }
 
-
     /// Appends a still-picture `sequence_header_obu()` up to (but not including)
     /// `sequence_tile_config()`, field-for-field with the parser. `seq_level_idx` selects
     /// the level (single-picture headers never code `seq_tier`). 16x8 frame, BLOCK_64X64.
     fn push_still_picture_header_until_tile(bits: &mut Bits, seq_level_idx: u32) {
-        bits.uvlc(0); // seq_header_id
-        bits.f(0, 5); // seq_profile_idc
-        bits.bit(1); // single_picture_header_flag
-        bits.f(seq_level_idx, 5); // seq_level_idx (single picture -> no seq_tier)
-        bits.uvlc(0); // chroma_format_idc = CHROMA_FORMAT_420
-        bits.uvlc(0); // bit_depth_idc
-        bits.f(3, 4); // frame_width_bits_minus_1
-        bits.f(3, 4); // frame_height_bits_minus_1
-        bits.f(15, 4); // max_frame_width_minus_1 -> 16
-        bits.f(7, 4); // max_frame_height_minus_1 -> 8
-        bits.bit(0); // seq_cropping_window_present_flag
-        bits.bit(0); // use_256x256_superblock
-        bits.bit(0); // use_128x128_superblock -> seqSbSize = BLOCK_64X64
-        bits.bit(0); // enable_sdp
-        bits.bit(0); // enable_ext_partitions
-        bits.bit(0); // reduce_pb_aspect_ratio
-        bits.bit(0); // enable_ext_seg -> MaxSegments = 8
-        bits.bit(0); // seq_seg_info_present_flag
-        bits.bit(0); // enable_dip
-        bits.bit(0); // enable_intra_edge_filter
-        bits.bit(0); // enable_mrls
-        bits.bit(0); // enable_cfl_intra
-        bits.f(0, 2); // cfl_ds_filter_index
-        bits.bit(0); // enable_mhccp
-        bits.bit(0); // enable_ibp
-        bits.bit(0); // enable_refmvbank
-        bits.bit(1); // disable_drl_reorder -> DRL_REORDER_DISABLED
-        bits.bit(0); // seq_max_bvp_drl_bits_minus_1 = ns(3) -> 0
-        bits.bit(0); // allow_frame_max_bvp_drl_bits
-        bits.bit(0); // enable_bawp
-        bits.bit(0); // enable_fsc
-        bits.bit(0); // enable_idtx_intra
-        bits.bit(0); // enable_intra_ist
-        bits.bit(0); // enable_inter_ist
-        bits.bit(0); // enable_chroma_dctonly
-        bits.bit(0); // reduced_tx_part_set
-        bits.bit(0); // enable_cctx
-        bits.bit(0); // enable_tcq
-        bits.bit(0); // enable_parity_hiding
-        bits.bit(0); // separate_uv_delta_q
-        bits.bit(1); // equal_ac_dc_q -> skip y/uv dc delta reads
-        bits.f(0, 5); // base_uv_ac_delta_q
-        bits.bit(0); // uv_ac_delta_q_enabled
-        bits.bit(0); // disable_loopfilters_across_tiles
-        bits.bit(0); // enable_cdef
-        bits.bit(0); // enable_gdf
-        bits.bit(0); // enable_restoration
-        bits.bit(0); // enable_ccso
-        bits.f(0, 2); // df_par_bits_minus_2
+        push_still_picture_header_until_tile_dims(bits, 15, 7, 4, 4, seq_level_idx);
     }
 
     fn parse_header(bytes: &[u8]) -> SequenceHeader {
@@ -101,7 +51,6 @@ mod tests {
         assert_eq!(&reparsed, header, "parse(write(h)) != h");
         assert_eq!(write_header(&reparsed), bytes, "write not idempotent");
     }
-
 
     #[test]
     fn full_still_picture_header_no_tile_byte_exact() {
@@ -184,12 +133,12 @@ mod tests {
 
     /// 256-wide still-picture header (max_frame_width_minus_1 = 255 needs 8 width bits).
     fn push_still_picture_header_until_tile_wide(bits: &mut Bits) {
-        push_still_picture_header_until_tile_dims(bits, 255, 7, 8, 4);
+        push_still_picture_header_until_tile_dims(bits, 255, 7, 8, 4, 0);
     }
 
     /// 128-wide still-picture header (max_frame_width_minus_1 = 127 needs 7 width bits).
     fn push_still_picture_header_until_tile_128wide(bits: &mut Bits) {
-        push_still_picture_header_until_tile_dims(bits, 127, 7, 7, 4);
+        push_still_picture_header_until_tile_dims(bits, 127, 7, 7, 4, 0);
     }
 
     /// Generalized still-picture prefix with explicit frame dimensions. `w_minus_1` /
@@ -201,11 +150,12 @@ mod tests {
         h_minus_1: u32,
         w_bits: u32,
         h_bits: u32,
+        seq_level_idx: u32,
     ) {
         bits.uvlc(0); // seq_header_id
         bits.f(0, 5); // seq_profile_idc
         bits.bit(1); // single_picture_header_flag
-        bits.f(0, 5); // seq_level_idx
+        bits.f(seq_level_idx, 5); // seq_level_idx
         bits.uvlc(0); // chroma_format_idc
         bits.uvlc(0); // bit_depth_idc
         bits.f(w_bits - 1, 4); // frame_width_bits_minus_1
@@ -252,7 +202,6 @@ mod tests {
         bits.bit(0); // enable_ccso
         bits.f(0, 2); // df_par_bits_minus_2
     }
-
 
     #[test]
     fn reserved_level_tile_residual_is_unwritable() {
@@ -401,7 +350,6 @@ mod tests {
         assert_filter_roundtrip(&c, false, SuperblockSize::Block128x128);
     }
 
-
     fn parse_tile(bytes: &[u8], input: TileParamsInput) -> SequenceTileConfig {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));
         parse_sequence_tile_config(&mut reader, input).unwrap()
@@ -529,12 +477,6 @@ mod tests {
         assert_tile_roundtrip(&c, input);
     }
 
-    /// Drift guard for the locally-duplicated `Tile_Width_Scaling_Factor` /
-    /// `Tile_Area_Scaling_Factor` tables (`seq_tile.rs`). The tables are copied from the
-    /// (private) parser copies in `crate::tile`; this test makes a single-entry typo in
-    /// either local copy a guaranteed round-trip failure, so the duplication cannot drift
-    /// silently.
-    ///
     /// The frame is sized so BOTH tables are *load-bearing* at every `(tier, level)`: at a
     /// 32768x32768 frame with 64x64 superblocks, `sbCols == sbRows == 512`, so
     /// `minLog2TileCols = tile_log2(width_sf*16, 512) >= 1` (width-table-driven) and
@@ -585,7 +527,6 @@ mod tests {
             }
         }
     }
-
 
     fn full_no_tile_header() -> SequenceHeader {
         let mut bits = Bits::default();
@@ -779,20 +720,5 @@ mod tests {
             }
         );
         assert_eq!(writer.bit_len(), 0);
-    }
-
-
-    #[test]
-    fn writer_never_panics_on_truncated_fixtures() {
-        let mut bits = Bits::default();
-        push_still_picture_header_until_tile(&mut bits, 0);
-        bits.bit(0);
-        bits.bit(0);
-        let full = bits.into_bytes();
-        let mut reader = BitReader::new(&full, ByteOffset::new(0));
-        if let Ok(header) = parse_sequence_header(&mut reader) {
-            let mut writer = BitWriter::new();
-            let _ = write_sequence_header(&mut writer, &header);
-        }
     }
 }

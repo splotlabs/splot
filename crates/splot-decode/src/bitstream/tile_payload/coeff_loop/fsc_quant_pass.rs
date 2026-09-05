@@ -29,7 +29,7 @@ use super::quant_state::{
 use super::read_quant::{
     CoeffReadQuantConfig, CoeffReadQuantError, CoeffReadQuantInput, CoeffReadQuantState,
 };
-use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk, walk_fsc_coeff_scan};
+use super::scan_walk::{FscCoeffScanWalk, walk_fsc_coeff_scan};
 use super::{AllZeroCoeffBlockInput, CoeffLoopContextError, commit_nonzero_coeff_context};
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
@@ -127,9 +127,13 @@ pub(crate) fn apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
     let (level_walk, mut block) = level_pass.into_parts();
     checked_fsc_sign_walk(&block, &level_walk, facts.level_config)
         .map_err(CoeffFscQuantPassError::from)?;
-    let mut interleaved = FscInterleavedQuantPass::new();
-    interleaved.run(cdfs, symbols, &mut block, &level_walk, facts.level_config)?;
-    let quant_state = interleaved.finish();
+    let quant_state = apply_interleaved_fsc_quant_pass(
+        cdfs,
+        symbols,
+        &mut block,
+        &level_walk,
+        facts.level_config,
+    )?;
     commit_nonzero_coeff_context(state, facts.context, &quant_state)
         .map_err(CoeffFscQuantPassError::ContextUpdate)?;
     Ok(block)
@@ -254,13 +258,7 @@ fn fsc_branch_tx_size_facts(
             tx_width: adjusted_tx_width,
             tx_height: adjusted_tx_height,
         },
-        context: AllZeroCoeffBlockInput {
-            plane: block.plane,
-            x4: block.x4,
-            y4: block.y4,
-            w4: block.w4,
-            h4: block.h4,
-        },
+        context: block,
     })
 }
 
@@ -284,57 +282,31 @@ fn validate_fsc_block_geometry(
     Ok(())
 }
 
-struct FscInterleavedQuantPass {
-    read_quant_state: CoeffReadQuantState,
-    quant_state: CoeffQuantStateAccumulator,
-}
-
-impl FscInterleavedQuantPass {
-    const fn new() -> Self {
-        Self {
-            read_quant_state: CoeffReadQuantState::new(CoeffReadQuantConfig {
-                is_hidden: false,
-                allow_tcq: false,
-                hr_level_avg: 0,
-            }),
-            quant_state: CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
-                is_hidden: false,
-                sum_abs1: 0,
-                use_tcq: false,
-                lossless: false,
-            }),
-        }
-    }
-
-    fn run(
-        &mut self,
-        cdfs: &mut TileCdfSubset,
-        symbols: &mut SymbolDecoder<'_>,
-        block: &mut TransformCoeffBlockState,
-        walk: &FscCoeffScanWalk,
-        config: CoeffFscLevelPassConfig,
-    ) -> Result<(), CoeffFscQuantPassError> {
-        for (index, entry) in walk.entries().enumerate() {
-            self.step(cdfs, symbols, block, index, entry, config)?;
-        }
-        Ok(())
-    }
-
-    fn step(
-        &mut self,
-        cdfs: &mut TileCdfSubset,
-        symbols: &mut SymbolDecoder<'_>,
-        block: &mut TransformCoeffBlockState,
-        index: usize,
-        entry: CoeffScanEntry,
-        config: CoeffFscLevelPassConfig,
-    ) -> Result<(), CoeffFscQuantPassError> {
+fn apply_interleaved_fsc_quant_pass(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    block: &mut TransformCoeffBlockState,
+    walk: &FscCoeffScanWalk,
+    config: CoeffFscLevelPassConfig,
+) -> Result<NonZeroCoeffQuantState, CoeffFscQuantPassError> {
+    let mut read_quant_state = CoeffReadQuantState::new(CoeffReadQuantConfig {
+        is_hidden: false,
+        allow_tcq: false,
+        hr_level_avg: 0,
+    });
+    let mut quant_state = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
+        is_hidden: false,
+        sum_abs1: 0,
+        use_tcq: false,
+        lossless: false,
+    });
+    for (index, entry) in walk.entries().enumerate() {
         let sign_input = derive_fsc_sign_input(entry, block, config)?;
         let sign = read_fsc_sign_symbol(cdfs, symbols, sign_input)?;
         if sign_input.level != 0 {
-            block.set_quant_sign(entry.row(), entry.col(), quant_sign_value(sign.sign()))?;
+            block.set_quant_sign(entry.row(), entry.col(), quant_sign_value(sign))?;
         }
-        let read_quant = self.read_quant_state.read_one(
+        let read_quant = read_quant_state.read_one(
             symbols,
             index,
             CoeffReadQuantInput {
@@ -343,16 +315,10 @@ impl FscInterleavedQuantPass {
                 max_level: FSC_MAX_LEVEL,
             },
         )?;
-        let write = self
-            .quant_state
-            .apply_entry(index, entry, sign.sign(), read_quant)?;
+        let write = quant_state.apply_entry(index, entry, sign, read_quant)?;
         block.set_quant(write.entry().pos(), write.quant())?;
-        Ok(())
     }
-
-    fn finish(self) -> NonZeroCoeffQuantState {
-        NonZeroCoeffQuantState::from_accumulator(self.quant_state)
-    }
+    Ok(NonZeroCoeffQuantState::from_accumulator(quant_state))
 }
 
 #[cfg(test)]

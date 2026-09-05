@@ -9,18 +9,7 @@ use super::*;
 /// (output) and reads `order_hint` — giving the CELU tracker a decidable output class
 /// and OrderHint. Built like `clk_frame_decidable` but layered.
 pub(in crate::validator::tests) fn celu_output_clk_at(xlayer: u8, order_hint: u8) -> Vec<u8> {
-    let mut fb = Bits::default();
-    fb.bit(1); // is_first_tile_group
-    fb.uvlc(0); // cur_mfh_id == 0
-    fb.uvlc(0); // seq_header_id_in_frame_header -> seq 0
-    fb.bit(1); // immediate_output_frame == 1 (output)
-    fb.bit(0); // frame_size_override_flag
-    fb.f(u32::from(order_hint), 1); // order_hint f(OrderHintBits == 1)
-    fb.bit(0); // allow_screen_content_tools
-    fb.bit(0); // allow_intrabc
-    fb.bit(0); // disable_cdf_update
-    intra_structure_tail(&mut fb, 0);
-    annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &fb.into_bytes())
+    celu_output_clk_ref(xlayer, 0, 1, u32::from(order_hint))
 }
 
 #[test]
@@ -92,8 +81,7 @@ fn celu_doh_cross_celu_order_hint_mismatch_without_flag_is_silent() {
 /// A full intra output CLK at `xlayer` (mlayer 0) referencing `seq_header_id`, whose
 /// active sequence header has `OrderHintBits == order_hint_bits`, carrying `order_hint`
 /// as `f(order_hint_bits)`. Like [`celu_output_clk_at`] but parameterised so a frame can
-/// reference a sequence header with a different OrderHintBits (Finding B) or an absent
-/// sequence header (Finding A).
+/// reference a sequence header with different OrderHintBits or an absent header.
 pub(in crate::validator::tests) fn celu_output_clk_ref(
     xlayer: u8,
     seq_header_id: u32,

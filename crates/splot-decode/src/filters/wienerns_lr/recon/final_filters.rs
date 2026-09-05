@@ -40,9 +40,6 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
-    #[cfg(test)]
-    static LR_OUTPUT_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
-        const { std::cell::Cell::new(None) };
 }
 
 fn with_wiener_ns_chroma_scratch<T: ReconSample, R>(
@@ -245,21 +242,6 @@ fn with_lr_source_scratch<T: ReconSample, R>(f: impl FnOnce(&mut LrSourceScratch
         let result = f(&mut scratch);
         if scratch.is_bounded() {
             slot.set(Some(scratch));
-        }
-        result
-    })
-}
-
-#[cfg(test)]
-fn with_lr_output_scratch<T: ReconSample, R>(f: impl FnOnce(&mut Vec<T>) -> R) -> R {
-    LR_OUTPUT_SCRATCH.with(|slot| {
-        let mut output = slot
-            .take()
-            .and_then(|output| output.downcast::<Vec<T>>().ok())
-            .unwrap_or_default();
-        let result = f(&mut output);
-        if output.capacity() <= MAX_RETAINED_LR_SCRATCH_ELEMENTS {
-            slot.set(Some(output));
         }
         result
     })
@@ -628,47 +610,6 @@ pub(crate) fn lr_initializations(
         } else {
             StripeInitialization::CopyAll
         }
-    })
-}
-
-/// Runs one loop-restoration block filter over its own destination rows.
-///
-/// No LR block reads the post-LR stripe, so `u16` storage hands the filter the
-/// destination rectangle itself and pays no staging copy. Narrower storage
-/// still stages, because the stripe always holds `u16`.
-#[cfg(test)]
-fn filter_lr_block_into<T: ReconSample>(
-    plane: &mut StripePlane,
-    block: &WienerNsLrSourceBlock,
-    filter: impl FnOnce(&mut [T], usize) -> Result<()>,
-) -> Result<()> {
-    let (destination, stride) = lr_block_destination(plane, block)?;
-    if let Some(output) = T::from_u16_slice_mut(destination) {
-        return filter(output, stride);
-    }
-    let sample_count = block
-        .width
-        .checked_mul(block.height)
-        .ok_or_else(super::lr_pipeline_state_error)?;
-    with_lr_output_scratch(|staged: &mut Vec<T>| {
-        staged.clear();
-        staged.resize(sample_count, T::default());
-        filter(staged, block.width)?;
-        for (row, samples) in staged.chunks_exact(block.width).enumerate() {
-            let start = row
-                .checked_mul(stride)
-                .ok_or_else(super::lr_pipeline_state_error)?;
-            let end = start
-                .checked_add(block.width)
-                .ok_or_else(super::lr_pipeline_state_error)?;
-            let row = destination
-                .get_mut(start..end)
-                .ok_or_else(super::lr_pipeline_state_error)?;
-            for (slot, sample) in row.iter_mut().zip(samples) {
-                *slot = sample.to_u16();
-            }
-        }
-        Ok(())
     })
 }
 
@@ -1192,10 +1133,6 @@ impl StripeChain<'_> {
             self.luma_width,
             self.luma_height,
         )?;
-        let sample_count = block
-            .width
-            .checked_mul(block.height)
-            .ok_or_else(super::lr_pipeline_state_error)?;
         let bounds = crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, 0, 0);
         let block_x = usize_to_isize_recon(block.x, "PC-Wiener block x")
             .map_err(|_| super::lr_pipeline_state_error())?;
@@ -1231,7 +1168,6 @@ impl StripeChain<'_> {
                 qindex,
                 PC_WIENER_FULL_CLASSES,
                 filter_set_index,
-                sample_count,
                 cell_subclasses,
             )?;
             let params = PcWienerFilter {
@@ -1497,7 +1433,6 @@ impl StripeChain<'_> {
                     qindex,
                     num_classes,
                     filter_set_index,
-                    sample_count,
                     cell_subclasses,
                 )?)
             } else {
@@ -1662,17 +1597,8 @@ impl StripeChain<'_> {
         qindex: u32,
         num_classes: usize,
         filter_set_index: usize,
-        sample_count: usize,
         cell_subclasses: &'a mut Vec<usize>,
     ) -> Result<&'a [usize]> {
-        if sample_count
-            != block
-                .width
-                .checked_mul(block.height)
-                .ok_or_else(super::lr_pipeline_state_error)?
-        {
-            return Err(super::lr_pipeline_state_error());
-        }
         let cell_cols = block.width.div_ceil(MI_SIZE).max(1);
         let cell_rows = block.height.div_ceil(MI_SIZE).max(1);
         let Some(tx_skip_grid) = self.tx_skip_grid else {

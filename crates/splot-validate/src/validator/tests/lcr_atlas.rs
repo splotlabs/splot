@@ -796,11 +796,7 @@ pub(in crate::validator::tests) fn local_ops_obu_with_delays(
 /// `seq_header_id` directly (`cur_mfh_id == 0`), confirming activation and starting
 /// a new coded video sequence for the layer (§ 7.3.6).
 pub(in crate::validator::tests) fn clk_frame_for_xlayer(xlayer: u8, seq_header_id: u32) -> Vec<u8> {
-    let mut bits = Bits::default();
-    bits.bit(1); // is_first_tile_group
-    bits.uvlc(0); // cur_mfh_id == 0
-    bits.uvlc(seq_header_id); // seq_header_id_in_frame_header
-    annex_b_obu_with_header(&layer_obu_header(4, 0, 0, xlayer), &bits.into_bytes())
+    frame_obu_direct_seq_ref_layer(4, 0, 0, xlayer, seq_header_id)
 }
 
 pub(in crate::validator::tests) fn decoder_model_warning_count(

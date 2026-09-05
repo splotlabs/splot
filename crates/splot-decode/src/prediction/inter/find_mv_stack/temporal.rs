@@ -264,9 +264,9 @@ impl TemporalMotionField {
         let layout = self.layout();
         let metadata = self.metadata();
         let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
-        let cells = match &self.storage {
+        let cells = match self.storage {
             TemporalMotionStorage::Contiguous(cells) => cells,
-            TemporalMotionStorage::Bands(bands) => return bands.clone(),
+            TemporalMotionStorage::Bands(bands) => return bands,
         };
         cells
             .chunks(stride)
@@ -966,21 +966,9 @@ impl TemporalMvContext {
         Self {
             current_order_hint: 0,
             ref_order_hints: Vec::new(),
-            field: ProjectedTemporalMotionField {
-                width8: 0,
-                height8: 0,
-                cells: Vec::new(),
-            },
-            projection_scratch: ProjectedTemporalMotionField {
-                width8: 0,
-                height8: 0,
-                cells: Vec::new(),
-            },
-            average_scratch: ProjectedTemporalMotionField {
-                width8: 0,
-                height8: 0,
-                cells: Vec::new(),
-            },
+            field: ProjectedTemporalMotionField::default(),
+            projection_scratch: ProjectedTemporalMotionField::default(),
+            average_scratch: ProjectedTemporalMotionField::default(),
             trajectories: None,
             trajectory_scratch: None,
             tip: None,
@@ -1000,15 +988,9 @@ impl TemporalMvContext {
         let mut field = ProjectedTemporalMotionField::new(mi_rows, mi_cols)?;
         field.set(y8, x8, mv, references.ref_offset, true);
         Some(Self {
-            current_order_hint: 0,
-            ref_order_hints: Vec::new(),
             field,
-            projection_scratch: ProjectedTemporalMotionField::new(0, 0)?,
-            average_scratch: ProjectedTemporalMotionField::new(0, 0)?,
-            trajectories: None,
-            trajectory_scratch: None,
             tip: Some(references),
-            banded: None,
+            ..Self::empty()
         })
     }
 
@@ -1088,15 +1070,11 @@ impl TemporalMvContext {
         let (mi_rows, mi_cols) = mi_dimensions;
         self.field.reset(mi_rows, mi_cols)?;
         self.ref_order_hints.clear();
-        self.ref_order_hints
-            .extend(ref_frame_idx.iter().map(|&slot| {
-                ref_valid
-                    .get(slot as usize)
-                    .copied()
-                    .filter(|valid| *valid)
-                    .and_then(|_| ref_order_hint.get(slot as usize).copied())
-                    .filter(|&hint| hint != u32::MAX)
-            }));
+        self.ref_order_hints.extend(
+            ref_frame_idx
+                .iter()
+                .map(|&slot| reference_order_hint(slot, ref_valid, ref_order_hint)),
+        );
         let mut ref_motion_metadata =
             crate::reference::buffer::RefSlots::<Option<TemporalMotionFieldMetadata>>::default();
         ref_motion_metadata.extend_within(
@@ -1121,12 +1099,22 @@ impl TemporalMvContext {
             &ref_motion_layouts,
         );
         let mut trajectories = if config.enable_trajectory {
-            let mut trajectories = match self
+            let trajectories = match self
                 .trajectories
                 .take()
                 .or_else(|| self.trajectory_scratch.take())
             {
-                Some(trajectories) => trajectories,
+                Some(mut trajectories) => {
+                    trajectories
+                        .reset(
+                            mi_dimensions,
+                            self.ref_order_hints.len(),
+                            config.step,
+                            config.unit_size8,
+                        )
+                        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+                    trajectories
+                }
                 None => TrajectoryState::new(
                     mi_dimensions,
                     self.ref_order_hints.len(),
@@ -1135,14 +1123,6 @@ impl TemporalMvContext {
                 )
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?,
             };
-            trajectories
-                .reset(
-                    mi_dimensions,
-                    self.ref_order_hints.len(),
-                    config.step,
-                    config.unit_size8,
-                )
-                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
             Some(trajectories)
         } else {
             self.trajectory_scratch = self.trajectories.take();
@@ -1221,15 +1201,11 @@ impl TemporalMvContext {
         self.field.height8 = target_layout.height8();
         self.field.cells.clear();
         self.ref_order_hints.clear();
-        self.ref_order_hints
-            .extend(ref_frame_idx.iter().map(|&slot| {
-                ref_valid
-                    .get(slot as usize)
-                    .copied()
-                    .filter(|valid| *valid)
-                    .and_then(|_| ref_order_hint.get(slot as usize).copied())
-                    .filter(|&hint| hint != u32::MAX)
-            }));
+        self.ref_order_hints.extend(
+            ref_frame_idx
+                .iter()
+                .map(|&slot| reference_order_hint(slot, ref_valid, ref_order_hint)),
+        );
         let projections = projection_queue(
             mi_dimensions,
             current_order_hint,
@@ -1509,6 +1485,15 @@ impl TemporalMvContext {
     }
 }
 
+fn reference_order_hint(slot: u32, ref_valid: &[bool], ref_order_hint: &[u32]) -> Option<u32> {
+    ref_valid
+        .get(slot as usize)
+        .copied()
+        .filter(|valid| *valid)
+        .and_then(|_| ref_order_hint.get(slot as usize).copied())
+        .filter(|&hint| hint != u32::MAX)
+}
+
 pub(crate) fn reference_order_hints(
     ref_frame_idx: &[u32],
     ref_valid: &[bool],
@@ -1516,14 +1501,7 @@ pub(crate) fn reference_order_hints(
 ) -> Vec<Option<u32>> {
     ref_frame_idx
         .iter()
-        .map(|&slot| {
-            ref_valid
-                .get(slot as usize)
-                .copied()
-                .filter(|valid| *valid)
-                .and_then(|_| ref_order_hint.get(slot as usize).copied())
-                .filter(|&hint| hint != u32::MAX)
-        })
+        .map(|&slot| reference_order_hint(slot, ref_valid, ref_order_hint))
         .collect()
 }
 

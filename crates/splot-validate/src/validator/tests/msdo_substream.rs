@@ -46,30 +46,15 @@ pub(in crate::validator::tests) fn seq_header_payload_ptl(
     tier_high: bool,
     monotonic: bool,
 ) -> Vec<u8> {
-    let mut bits = Bits::default();
-    bits.uvlc(seq_header_id);
-    bits.f(profile_idc, 5); // seq_profile_idc
-    bits.bit(0); // single_picture_header_flag
-    bits.f(level_idx, 5); // seq_level_idx
-    if level_idx > 3 {
-        bits.bit(u8::from(tier_high)); // seq_tier (signaled only for level > 3)
-    }
-    bits.uvlc(0); // chroma_format_idc
-    bits.uvlc(0); // bit_depth_idc
-    bits.f(0, 3); // seq_lcr_id
-    bits.bit(0); // still_picture
-    bits.f(0, 2); // max_tlayer_id = 0
-    bits.f(0, 3); // max_mlayer_id = 0
-    bits.bit(u8::from(monotonic)); // monotonic_output_order_flag
-    bits.f(3, 4); // frame_width_bits_minus_1
-    bits.f(3, 4); // frame_height_bits_minus_1
-    bits.f(15, 4); // max_frame_width_minus_1
-    bits.f(7, 4); // max_frame_height_minus_1
-    bits.bit(0); // seq_cropping_window_present_flag
-    bits.bit(0); // seq_initial_display_delay_present_flag
-    bits.bit(0); // decoder_model_info_present_flag
-    append_non_single_child_configs(&mut bits);
-    bits.into_bytes()
+    seq_header_payload_lcr_ref(
+        seq_header_id,
+        profile_idc,
+        level_idx,
+        tier_high,
+        monotonic,
+        0,
+        0,
+    )
 }
 
 /// A sequence-header OBU on `xlayer` carrying [`seq_header_payload_ptl`].
@@ -467,7 +452,7 @@ pub(in crate::validator::tests) fn msdo_identity_stream(units: &[(bool, Vec<u8>)
     let mut data = Vec::new();
     for (make_rap, msdo) in units {
         data.extend(temporal_delimiter_obu());
-        data.extend(msdo.clone());
+        data.extend_from_slice(msdo);
         if *make_rap {
             data.extend(annex_b_obu(0x10, &[])); // CLK on xlayer 0
         }

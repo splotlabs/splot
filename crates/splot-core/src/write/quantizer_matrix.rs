@@ -79,10 +79,8 @@ pub fn write_quantizer_matrix(writer: &mut BitWriter, qm: &QuantizerMatrixObu) -
         return Err(non_canonical("num_planes"));
     }
 
-    let set_bits: Vec<u8> = (0..NUM_CUSTOM_QMS)
-        .filter(|&level| qm.qm_bit_map & (1u16 << level) != 0)
-        .collect();
-    if qm.levels.len() != set_bits.len() {
+    let set_bits = (0..NUM_CUSTOM_QMS).filter(|&level| qm.qm_bit_map & (1u16 << level) != 0);
+    if qm.levels.len() != set_bits.clone().count() {
         return Err(non_canonical("level_count"));
     }
 
@@ -90,7 +88,7 @@ pub fn write_quantizer_matrix(writer: &mut BitWriter, qm: &QuantizerMatrixObu) -
     scratch.write_bits(u32::from(qm.qm_bit_map), QM_BIT_MAP_BITS)?;
     scratch.write_flag(qm.chroma_info_present)?;
 
-    for (level, &bit) in qm.levels.iter().zip(&set_bits) {
+    for (level, bit) in qm.levels.iter().zip(set_bits) {
         if level.level != bit {
             return Err(non_canonical("level_index"));
         }

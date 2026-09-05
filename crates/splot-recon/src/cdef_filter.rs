@@ -29,8 +29,7 @@
 //! sample I/O stay with the caller — it passes the resolved 8x8 luma block, the
 //! center value, the fetched directional neighbours, and the strength / damping
 //! scalars, exactly as the other `splot-recon` primitives take caller-resolved
-//! spec-derived values. It does not read frame, segment, or tile state or wire into
-//! the runtime decode path.
+//! spec-derived values. It does not read frame, segment, or tile state.
 //!
 //! Feature tracking: `RECON-CDEF-FILTER`.
 
@@ -575,17 +574,16 @@ fn cdef_output_row<const W: usize>(
 #[inline(always)]
 fn cdef_primary_rows<'a, const W: usize>(
     pad: &'a [u16; CDEF_PADDED_AREA],
-    row_offset: usize,
     starts: &CdefPrimaryStarts,
 ) -> Option<[[&'a [u16; W]; 2]; 2]> {
     Some([
         [
-            cdef_padded_row(pad, starts[0][0] + row_offset)?,
-            cdef_padded_row(pad, starts[0][1] + row_offset)?,
+            cdef_padded_row(pad, starts[0][0])?,
+            cdef_padded_row(pad, starts[0][1])?,
         ],
         [
-            cdef_padded_row(pad, starts[1][0] + row_offset)?,
-            cdef_padded_row(pad, starts[1][1] + row_offset)?,
+            cdef_padded_row(pad, starts[1][0])?,
+            cdef_padded_row(pad, starts[1][1])?,
         ],
     ])
 }
@@ -594,28 +592,27 @@ fn cdef_primary_rows<'a, const W: usize>(
 #[inline(always)]
 fn cdef_secondary_rows<'a, const W: usize>(
     pad: &'a [u16; CDEF_PADDED_AREA],
-    row_offset: usize,
     starts: &CdefSecondaryStarts,
 ) -> Option<[[[&'a [u16; W]; 2]; 2]; 2]> {
     Some([
         [
             [
-                cdef_padded_row(pad, starts[0][0][0] + row_offset)?,
-                cdef_padded_row(pad, starts[0][0][1] + row_offset)?,
+                cdef_padded_row(pad, starts[0][0][0])?,
+                cdef_padded_row(pad, starts[0][0][1])?,
             ],
             [
-                cdef_padded_row(pad, starts[0][1][0] + row_offset)?,
-                cdef_padded_row(pad, starts[0][1][1] + row_offset)?,
+                cdef_padded_row(pad, starts[0][1][0])?,
+                cdef_padded_row(pad, starts[0][1][1])?,
             ],
         ],
         [
             [
-                cdef_padded_row(pad, starts[1][0][0] + row_offset)?,
-                cdef_padded_row(pad, starts[1][0][1] + row_offset)?,
+                cdef_padded_row(pad, starts[1][0][0])?,
+                cdef_padded_row(pad, starts[1][0][1])?,
             ],
             [
-                cdef_padded_row(pad, starts[1][1][0] + row_offset)?,
-                cdef_padded_row(pad, starts[1][1][1] + row_offset)?,
+                cdef_padded_row(pad, starts[1][1][0])?,
+                cdef_padded_row(pad, starts[1][1][1])?,
             ],
         ],
     ])
@@ -821,12 +818,12 @@ fn cdef_filter_block_interior_rows_paired<
         let center = cdef_pair::<W, V>(center_rows[0], center_rows[1]);
         let filtered = if filter.pri_str != 0 && filter.sec_str != 0 {
             let pri_rows = [
-                cdef_primary_rows::<W>(pad, 0, &row_starts[row].0)?,
-                cdef_primary_rows::<W>(pad, 0, &row_starts[next_row].0)?,
+                cdef_primary_rows::<W>(pad, &row_starts[row].0)?,
+                cdef_primary_rows::<W>(pad, &row_starts[next_row].0)?,
             ];
             let sec_rows = [
-                cdef_secondary_rows::<W>(pad, 0, &row_starts[row].1)?,
-                cdef_secondary_rows::<W>(pad, 0, &row_starts[next_row].1)?,
+                cdef_secondary_rows::<W>(pad, &row_starts[row].1)?,
+                cdef_secondary_rows::<W>(pad, &row_starts[next_row].1)?,
             ];
             cdef_filter_full_rows_paired::<W, V, HAS_UNAVAILABLE>(
                 &center,
@@ -841,8 +838,8 @@ fn cdef_filter_block_interior_rows_paired<
             )
         } else if filter.pri_str != 0 {
             let pri_rows = [
-                cdef_primary_rows::<W>(pad, 0, &row_starts[row].0)?,
-                cdef_primary_rows::<W>(pad, 0, &row_starts[next_row].0)?,
+                cdef_primary_rows::<W>(pad, &row_starts[row].0)?,
+                cdef_primary_rows::<W>(pad, &row_starts[next_row].0)?,
             ];
             let pri_data: [[[u16; V]; 2]; 2] = core::array::from_fn(|tap| {
                 core::array::from_fn(|sign| {
@@ -854,8 +851,8 @@ fn cdef_filter_block_interior_rows_paired<
             cdef_filter_primary_row_simd(&center, &pri_refs, pri_taps, filter.pri_str, pri_adj)
         } else if filter.sec_str != 0 {
             let sec_rows = [
-                cdef_secondary_rows::<W>(pad, 0, &row_starts[row].1)?,
-                cdef_secondary_rows::<W>(pad, 0, &row_starts[next_row].1)?,
+                cdef_secondary_rows::<W>(pad, &row_starts[row].1)?,
+                cdef_secondary_rows::<W>(pad, &row_starts[next_row].1)?,
             ];
             let sec_data: [[[[u16; V]; 2]; 2]; 2] = core::array::from_fn(|tap| {
                 core::array::from_fn(|sign| {
@@ -877,10 +874,6 @@ fn cdef_filter_block_interior_rows_paired<
         }
     }
     Some(())
-}
-
-fn cdef_relative_offsets(dir: usize) -> (CdefPrimaryOffsets, CdefSecondaryOffsets) {
-    CDEF_RELATIVE_OFFSETS[dir & 7]
 }
 
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block written to a strided output.
@@ -1029,7 +1022,7 @@ pub fn cdef_filter_block_interior(
     let w = w.min(8);
     let h = h.min(8);
 
-    let (pri_rel, sec_rel) = cdef_relative_offsets(filter.dir);
+    let (pri_rel, sec_rel) = CDEF_RELATIVE_OFFSETS[filter.dir & 7];
     if cdef_filter_block_padded_to_valid_stride::<false>(pad, w, h, filter, out, w) {
         return;
     }

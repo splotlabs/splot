@@ -407,714 +407,24 @@ pub(crate) struct BlockCdfRows {
 }
 
 macro_rules! checked_block_row {
-    ($rows:expr, $index:expr, $index_name:literal, $array:expr, $get:ident) => {{
+    ($rows:expr, $index:expr, $index_name:literal, $array:expr) => {{
         let max_exclusive = $rows.len();
-        $rows.$get($index).ok_or(TileCdfError::SelectorOutOfRange {
-            array: $array,
-            index_name: $index_name,
-            actual: $index,
-            max_exclusive,
-        })
+        $rows
+            .get_mut($index)
+            .ok_or(TileCdfError::SelectorOutOfRange {
+                array: $array,
+                index_name: $index_name,
+                actual: $index,
+                max_exclusive,
+            })
     }};
 }
 
 macro_rules! block_row_slice {
-    ($rows:expr, $index:expr, $index_name:literal, $array:expr, $get:ident, $as_slice:ident) => {{
-        let row = checked_block_row!($rows, $index, $index_name, $array, $get)?;
-        Ok(row.$as_slice())
+    ($rows:expr, $index:expr, $index_name:literal, $array:expr) => {{
+        let row = checked_block_row!($rows, $index, $index_name, $array)?;
+        Ok(row.as_mut_slice())
     }};
-}
-
-macro_rules! block_cdf_row {
-    ($self:ident, $selector:ident, $get:ident, $as_slice:ident, $delegate:ident) => {
-        match $selector {
-            TileCdfSelector::UseDpcmY => Ok($self.use_dpcm_y.$as_slice()),
-            TileCdfSelector::DpcmModeY => Ok($self.dpcm_mode_y.$as_slice()),
-            TileCdfSelector::UseDpcmUv => Ok($self.use_dpcm_uv.$as_slice()),
-            TileCdfSelector::DpcmModeUv => Ok($self.dpcm_mode_uv.$as_slice()),
-            TileCdfSelector::YModeSet => Ok($self.y_mode_set.$as_slice()),
-            TileCdfSelector::YModeIndex { ctx } => block_row_slice!(
-                $self.y_mode_index,
-                ctx,
-                "ctx",
-                TileCdfArray::YModeIndex,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::YModeOffset { ctx } => block_row_slice!(
-                $self.y_mode_offset,
-                ctx,
-                "ctx",
-                TileCdfArray::YModeOffset,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx,
-                plane_type,
-                tx_size,
-                ctx,
-            } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
-                let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
-                let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
-                block_row_slice!(
-                    $self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size],
-                    ctx,
-                    "ctx",
-                    TileCdfArray::TxbSkip,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::UvModeCflNotAllowed { ctx } => block_row_slice!(
-                $self.uv_mode_cfl_not_allowed,
-                ctx,
-                "ctx",
-                TileCdfArray::UvModeCflNotAllowed,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::IsCfl { ctx } => block_row_slice!(
-                $self.is_cfl,
-                ctx,
-                "ctx",
-                TileCdfArray::IsCfl,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::CflIndex => Ok($self.cfl_index.$as_slice()),
-            TileCdfSelector::CflSign => Ok($self.cfl_sign.$as_slice()),
-            TileCdfSelector::CflAlpha { ctx } => block_row_slice!(
-                $self.cfl_alpha,
-                ctx,
-                "ctx",
-                TileCdfArray::CflAlpha,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::CflMhccp => Ok($self.cfl_mhccp.$as_slice()),
-            TileCdfSelector::CflMhDir { size_group } => block_row_slice!(
-                $self.cfl_mh_dir,
-                size_group,
-                "size_group",
-                TileCdfArray::CflMhDir,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::UseDip { ctx } => block_row_slice!(
-                $self.use_dip,
-                ctx,
-                "ctx",
-                TileCdfArray::UseDip,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::DipMode => Ok($self.dip_mode.$as_slice()),
-            TileCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx,
-                ctx,
-            } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::VTxbSkip, coeff_cdf_q_ctx)?;
-                block_row_slice!(
-                    $self.v_txb_skip[coeff_cdf_q_ctx],
-                    ctx,
-                    "ctx",
-                    TileCdfArray::VTxbSkip,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
-                Ok($self.eob_extra[coeff_cdf_q_ctx].$as_slice())
-            }
-            TileCdfSelector::EobPt {
-                size,
-                coeff_cdf_q_ctx,
-                eob_ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::EobPt, coeff_cdf_q_ctx)?;
-                let c = checked_eob_plane_ctx(eob_ctx)?;
-                Ok(match size {
-                    EobPtSize::Pt16 => $self.eob_pt_16[q][c].$as_slice(),
-                    EobPtSize::Pt32 => $self.eob_pt_32[q][c].$as_slice(),
-                    EobPtSize::Pt64 => $self.eob_pt_64[q][c].$as_slice(),
-                    EobPtSize::Pt128 => $self.eob_pt_128[q][c].$as_slice(),
-                    EobPtSize::Pt256 => $self.eob_pt_256[q][c].$as_slice(),
-                    EobPtSize::Pt512 => $self.eob_pt_512[q][c].$as_slice(),
-                    EobPtSize::Pt1024 => $self.eob_pt_1024[q][c].$as_slice(),
-                })
-            }
-            TileCdfSelector::DcSign {
-                coeff_cdf_q_ctx,
-                plane_type,
-                group,
-                ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
-                let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
-                let group = checked_dc_sign_group(group)?;
-                block_row_slice!(
-                    $self.dc_sign[q][plane_type][group],
-                    ctx,
-                    "ctx",
-                    TileCdfArray::DcSign,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::IsInter { ctx } => block_row_slice!(
-                $self.is_inter,
-                ctx,
-                "ctx",
-                TileCdfArray::IsInter,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::SkipMode { ctx } => block_row_slice!(
-                $self.skip_mode,
-                ctx,
-                "ctx",
-                TileCdfArray::SkipMode,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::Skip { ctx } => {
-                block_row_slice!($self.skip, ctx, "ctx", TileCdfArray::Skip, $get, $as_slice)
-            }
-            TileCdfSelector::SingleMode { ctx } => block_row_slice!(
-                $self.single_mode,
-                ctx,
-                "ctx",
-                TileCdfArray::SingleMode,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::IsWarp { ctx } => block_row_slice!(
-                $self.is_warp,
-                ctx,
-                "ctx",
-                TileCdfArray::IsWarp,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::WarpMv => Ok($self.warp_mv.$as_slice()),
-            TileCdfSelector::WarpIdx { ctx } => block_row_slice!(
-                $self.warp_idx,
-                ctx,
-                "ctx",
-                TileCdfArray::WarpIdx,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::WarpWithMvd => Ok($self.warp_with_mvd.$as_slice()),
-            TileCdfSelector::WarpPrecision { block_size } => block_row_slice!(
-                $self.warp_precision,
-                block_size,
-                "block_size",
-                TileCdfArray::WarpPrecision,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::WarpDeltaParamLow { index_type } => block_row_slice!(
-                $self.warp_delta_param_low,
-                index_type,
-                "index_type",
-                TileCdfArray::WarpDeltaParamLow,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::WarpDeltaParamHigh { index_type } => block_row_slice!(
-                $self.warp_delta_param_high,
-                index_type,
-                "index_type",
-                TileCdfArray::WarpDeltaParamHigh,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::WarpDeltaParamSign => Ok($self.warp_delta_param_sign.$as_slice()),
-            TileCdfSelector::WarpInterIntra { bsize_group } => block_row_slice!(
-                $self.warp_inter_intra,
-                bsize_group,
-                "bsize_group",
-                TileCdfArray::WarpInterIntra,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::InterIntra { bsize_group } => block_row_slice!(
-                $self.inter_intra,
-                bsize_group,
-                "bsize_group",
-                TileCdfArray::InterIntra,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::InterIntraMode { bsize_group } => block_row_slice!(
-                $self.inter_intra_mode,
-                bsize_group,
-                "bsize_group",
-                TileCdfArray::InterIntraMode,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::WedgeInterIntra => Ok($self.wedge_inter_intra.$as_slice()),
-            TileCdfSelector::WedgeQuad => Ok($self.wedge_quad.$as_slice()),
-            TileCdfSelector::WedgeAngle { quad } => block_row_slice!(
-                $self.wedge_angle,
-                quad,
-                "quad",
-                TileCdfArray::WedgeAngle,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::WedgeDist1 => Ok($self.wedge_dist1.$as_slice()),
-            TileCdfSelector::WedgeDist2 => Ok($self.wedge_dist2.$as_slice()),
-            TileCdfSelector::DrlMode { idx, ctx } => {
-                let bank =
-                    checked_block_row!($self.drl_mode, idx, "idx", TileCdfArray::DrlMode, $get)?;
-                block_row_slice!(bank, ctx, "ctx", TileCdfArray::DrlMode, $get, $as_slice)
-            }
-            TileCdfSelector::SkipDrlMode { idx } => block_row_slice!(
-                $self.skip_drl_mode,
-                idx,
-                "idx",
-                TileCdfArray::SkipDrlMode,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::TipMode { ctx } => block_row_slice!(
-                $self.tip_mode,
-                ctx,
-                "ctx",
-                TileCdfArray::TipMode,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::TipPredMode => Ok($self.tip_pred_mode.$as_slice()),
-            TileCdfSelector::TipDrlMode { idx } => block_row_slice!(
-                $self.tip_drl_mode,
-                idx,
-                "idx",
-                TileCdfArray::TipDrlMode,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::SingleRef { ctx, ref_idx } => {
-                let bank = checked_block_row!(
-                    $self.single_ref,
-                    ctx,
-                    "ctx",
-                    TileCdfArray::SingleRef,
-                    $get
-                )?;
-                block_row_slice!(
-                    bank,
-                    ref_idx,
-                    "ref",
-                    TileCdfArray::SingleRef,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::CompMode { ctx } => block_row_slice!(
-                $self.comp_mode,
-                ctx,
-                "ctx",
-                TileCdfArray::CompMode,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::IsJoint { ctx } => block_row_slice!(
-                $self.is_joint,
-                ctx,
-                "ctx",
-                TileCdfArray::IsJoint,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::JmvdScaleMode => Ok($self.jmvd_scale_mode.$as_slice()),
-            TileCdfSelector::JmvdAdaptiveScaleMode => {
-                Ok($self.jmvd_adaptive_scale_mode.$as_slice())
-            }
-            TileCdfSelector::CompoundModeNonJoint { ctx } => block_row_slice!(
-                $self.compound_mode_non_joint,
-                ctx,
-                "ctx",
-                TileCdfArray::CompoundModeNonJoint,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::CompoundModeSameRefs { ctx } => block_row_slice!(
-                $self.compound_mode_same_refs,
-                ctx,
-                "ctx",
-                TileCdfArray::CompoundModeSameRefs,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::CompoundType => Ok($self.compound_type.$as_slice()),
-            TileCdfSelector::CompGroupIdx { ctx } => block_row_slice!(
-                $self.comp_group_idx,
-                ctx,
-                "ctx",
-                TileCdfArray::CompGroupIdx,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::CwpIdx { idx } => block_row_slice!(
-                $self.cwp_idx,
-                idx,
-                "idx",
-                TileCdfArray::CwpIdx,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::CompRef0 { ctx, ref_idx } => {
-                let bank =
-                    checked_block_row!($self.comp_ref0, ctx, "ctx", TileCdfArray::CompRef0, $get)?;
-                block_row_slice!(
-                    bank,
-                    ref_idx,
-                    "ref",
-                    TileCdfArray::CompRef0,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::CompRef1 {
-                ctx,
-                bit_type,
-                ref_idx,
-            } => {
-                let bank =
-                    checked_block_row!($self.comp_ref1, ctx, "ctx", TileCdfArray::CompRef1, $get)?;
-                let bit_bank =
-                    checked_block_row!(bank, bit_type, "bit_type", TileCdfArray::CompRef1, $get)?;
-                block_row_slice!(
-                    bit_bank,
-                    ref_idx,
-                    "ref",
-                    TileCdfArray::CompRef1,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::ReadMv(selector) => $self.read_mv.$delegate(selector),
-            TileCdfSelector::InterpFilter { ctx } => block_row_slice!(
-                $self.interp_filter,
-                ctx,
-                "ctx",
-                TileCdfArray::InterpFilter,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::UseBawp => Ok($self.use_bawp.$as_slice()),
-            TileCdfSelector::UseBawpChroma => Ok($self.use_bawp_chroma.$as_slice()),
-            TileCdfSelector::UseAmvd { index, ctx } => {
-                let bank = checked_block_row!(
-                    $self.use_amvd,
-                    index,
-                    "index",
-                    TileCdfArray::UseAmvd,
-                    $get
-                )?;
-                block_row_slice!(bank, ctx, "ctx", TileCdfArray::UseAmvd, $get, $as_slice)
-            }
-            TileCdfSelector::UseOptflow { ctx } => block_row_slice!(
-                $self.use_optflow,
-                ctx,
-                "ctx",
-                TileCdfArray::UseOptflow,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::UseRefinemv { ctx } => block_row_slice!(
-                $self.use_refinemv,
-                ctx,
-                "ctx",
-                TileCdfArray::UseRefinemv,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::UseExtendWarp { ctx } => block_row_slice!(
-                $self.use_extend_warp,
-                ctx,
-                "ctx",
-                TileCdfArray::UseExtendWarp,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::UseLocalWarp { ctx } => block_row_slice!(
-                $self.use_local_warp,
-                ctx,
-                "ctx",
-                TileCdfArray::UseLocalWarp,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::UseMostProbablePrecision { ctx } => block_row_slice!(
-                $self.use_most_probable_precision,
-                ctx,
-                "ctx",
-                TileCdfArray::UseMostProbablePrecision,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::PbMvPrecision { ctx, frame_ctx } => {
-                let bank = checked_block_row!(
-                    $self.pb_mv_precision,
-                    ctx,
-                    "ctx",
-                    TileCdfArray::PbMvPrecision,
-                    $get
-                )?;
-                block_row_slice!(
-                    bank,
-                    frame_ctx,
-                    "frame_ctx",
-                    TileCdfArray::PbMvPrecision,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::ExplicitBawp { ctx } => block_row_slice!(
-                $self.explicit_bawp,
-                ctx,
-                "ctx",
-                TileCdfArray::ExplicitBawp,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::ExplicitBawpScale => Ok($self.explicit_bawp_scale.$as_slice()),
-            TileCdfSelector::UseWienerNs => Ok($self.use_wiener_ns.$as_slice()),
-            TileCdfSelector::UsePcWiener => Ok($self.use_pc_wiener.$as_slice()),
-            TileCdfSelector::FlexRestorationType { tool, plane } => {
-                let bank = checked_block_row!(
-                    $self.flex_restoration_type,
-                    tool,
-                    "tool",
-                    TileCdfArray::FlexRestorationType,
-                    $get
-                )?;
-                block_row_slice!(
-                    bank,
-                    plane,
-                    "plane",
-                    TileCdfArray::FlexRestorationType,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::WienerNsLength { plane_ctx } => block_row_slice!(
-                $self.wiener_ns_length,
-                plane_ctx,
-                "plane_ctx",
-                TileCdfArray::WienerNsLength,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::WienerNsUvSym => Ok($self.wiener_ns_uv_sym.$as_slice()),
-            TileCdfSelector::WienerNsBase => Ok($self.wiener_ns_base.$as_slice()),
-            TileCdfSelector::IsLongSideDct { is_inter } => block_row_slice!(
-                $self.is_long_side_dct,
-                is_inter,
-                "is_inter",
-                TileCdfArray::IsLongSideDct,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::IntraTxTypeLong { tx_size_sqr } => block_row_slice!(
-                $self.intra_tx_type_long,
-                tx_size_sqr,
-                "tx_size_sqr",
-                TileCdfArray::IntraTxTypeLong,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => {
-                let eob_row = checked_block_row!(
-                    $self.inter_tx_type_long,
-                    ctx,
-                    "ctx",
-                    TileCdfArray::InterTxTypeLong,
-                    $get
-                )?;
-                block_row_slice!(
-                    eob_row,
-                    tx_size_sqr,
-                    "tx_size_sqr",
-                    TileCdfArray::InterTxTypeLong,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr } => {
-                let ctx_row = checked_block_row!(
-                    $self.inter_tx_type_set1,
-                    ctx,
-                    "ctx",
-                    TileCdfArray::InterTxTypeSet1,
-                    $get
-                )?;
-                block_row_slice!(
-                    ctx_row,
-                    tx_size_sqr,
-                    "tx_size_sqr",
-                    TileCdfArray::InterTxTypeSet1,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::InterTxTypeSet2 { ctx } => block_row_slice!(
-                $self.inter_tx_type_set2,
-                ctx,
-                "ctx",
-                TileCdfArray::InterTxTypeSet2,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::InterTxTypeIndexSet1 { ctx } => block_row_slice!(
-                $self.inter_tx_type_index_set1,
-                ctx,
-                "ctx",
-                TileCdfArray::InterTxTypeIndexSet1,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::InterTxTypeIndexSet2 { ctx } => block_row_slice!(
-                $self.inter_tx_type_index_set2,
-                ctx,
-                "ctx",
-                TileCdfArray::InterTxTypeIndexSet2,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::InterTxTypeOffsetSet1 { ctx } => block_row_slice!(
-                $self.inter_tx_type_offset_set1,
-                ctx,
-                "ctx",
-                TileCdfArray::InterTxTypeOffsetSet1,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::InterTxTypeOffsetSet2 { ctx } => block_row_slice!(
-                $self.inter_tx_type_offset_set2,
-                ctx,
-                "ctx",
-                TileCdfArray::InterTxTypeOffsetSet2,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr } => {
-                let ctx_row = checked_block_row!(
-                    $self.inter_tx_type_set3,
-                    ctx,
-                    "ctx",
-                    TileCdfArray::InterTxTypeSet3,
-                    $get
-                )?;
-                block_row_slice!(
-                    ctx_row,
-                    tx_size_sqr,
-                    "tx_size_sqr",
-                    TileCdfArray::InterTxTypeSet3,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr } => {
-                let ctx_row = checked_block_row!(
-                    $self.inter_tx_type_set4,
-                    ctx,
-                    "ctx",
-                    TileCdfArray::InterTxTypeSet4,
-                    $get
-                )?;
-                block_row_slice!(
-                    ctx_row,
-                    tx_size_sqr,
-                    "tx_size_sqr",
-                    TileCdfArray::InterTxTypeSet4,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => block_row_slice!(
-                $self.intra_tx_type_set1,
-                tx_size_sqr,
-                "tx_size_sqr",
-                TileCdfArray::IntraTxTypeSet1,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => block_row_slice!(
-                $self.intra_tx_type_set2,
-                tx_size_sqr,
-                "tx_size_sqr",
-                TileCdfArray::IntraTxTypeSet2,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::SecTxType {
-                is_inter,
-                tx_size_sqr,
-            } => {
-                let is_inter = checked_sec_tx_is_inter(is_inter)?;
-                block_row_slice!(
-                    $self.sec_tx_type[is_inter],
-                    tx_size_sqr,
-                    "tx_size_sqr",
-                    TileCdfArray::SecTxType,
-                    $get,
-                    $as_slice
-                )
-            }
-            TileCdfSelector::MostProbableStxSet => Ok($self.most_probable_stx_set.$as_slice()),
-            TileCdfSelector::MostProbableStxSetAdst => {
-                Ok($self.most_probable_stx_set_adst.$as_slice())
-            }
-            TileCdfSelector::CctxType => Ok($self.cctx_type.$as_slice()),
-            TileCdfSelector::PaletteYMode => Ok($self.palette_y_mode.$as_slice()),
-            TileCdfSelector::PaletteYSize => Ok($self.palette_y_size.$as_slice()),
-            TileCdfSelector::IdentityRowY { ctx } => block_row_slice!(
-                $self.identity_row_y,
-                ctx,
-                "ctx",
-                TileCdfArray::IdentityRowY,
-                $get,
-                $as_slice
-            ),
-            TileCdfSelector::PaletteYColorIndex { palette_size, ctx } => {
-                let ctx = checked_context(
-                    TileCdfArray::PaletteYColorIndex,
-                    "ctx",
-                    ctx,
-                    PALETTE_COLOR_CONTEXTS,
-                )?;
-                match palette_size {
-                    2 => Ok($self.palette_size_2_y_color[ctx].$as_slice()),
-                    3 => Ok($self.palette_size_3_y_color[ctx].$as_slice()),
-                    4 => Ok($self.palette_size_4_y_color[ctx].$as_slice()),
-                    5 => Ok($self.palette_size_5_y_color[ctx].$as_slice()),
-                    6 => Ok($self.palette_size_6_y_color[ctx].$as_slice()),
-                    7 => Ok($self.palette_size_7_y_color[ctx].$as_slice()),
-                    8 => Ok($self.palette_size_8_y_color[ctx].$as_slice()),
-                    _ => Err(TileCdfError::SelectorOutOfRange {
-                        array: TileCdfArray::PaletteYColorIndex,
-                        index_name: "palette_size",
-                        actual: palette_size,
-                        max_exclusive: 9,
-                    }),
-                }
-            }
-            TileCdfSelector::Coeff(selector) => $self.coeff.$delegate(selector),
-            _ => Err(TileCdfError::UnexpectedSelector),
-        }
-    };
 }
 
 macro_rules! block_cdf_count_rows {
@@ -1371,7 +681,459 @@ impl BlockCdfRows {
         &mut self,
         selector: TileCdfSelector,
     ) -> Result<&mut [u16], TileCdfError> {
-        block_cdf_row!(self, selector, get_mut, as_mut_slice, row_mut)
+        match selector {
+            TileCdfSelector::UseDpcmY => Ok(self.use_dpcm_y.as_mut_slice()),
+            TileCdfSelector::DpcmModeY => Ok(self.dpcm_mode_y.as_mut_slice()),
+            TileCdfSelector::UseDpcmUv => Ok(self.use_dpcm_uv.as_mut_slice()),
+            TileCdfSelector::DpcmModeUv => Ok(self.dpcm_mode_uv.as_mut_slice()),
+            TileCdfSelector::YModeSet => Ok(self.y_mode_set.as_mut_slice()),
+            TileCdfSelector::YModeIndex { ctx } => {
+                block_row_slice!(self.y_mode_index, ctx, "ctx", TileCdfArray::YModeIndex)
+            }
+            TileCdfSelector::YModeOffset { ctx } => {
+                block_row_slice!(self.y_mode_offset, ctx, "ctx", TileCdfArray::YModeOffset)
+            }
+            TileCdfSelector::TxbSkip {
+                coeff_cdf_q_ctx,
+                plane_type,
+                tx_size,
+                ctx,
+            } => {
+                let coeff_cdf_q_ctx =
+                    checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
+                let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
+                let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
+                block_row_slice!(
+                    self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size],
+                    ctx,
+                    "ctx",
+                    TileCdfArray::TxbSkip
+                )
+            }
+            TileCdfSelector::UvModeCflNotAllowed { ctx } => block_row_slice!(
+                self.uv_mode_cfl_not_allowed,
+                ctx,
+                "ctx",
+                TileCdfArray::UvModeCflNotAllowed
+            ),
+            TileCdfSelector::IsCfl { ctx } => {
+                block_row_slice!(self.is_cfl, ctx, "ctx", TileCdfArray::IsCfl)
+            }
+            TileCdfSelector::CflIndex => Ok(self.cfl_index.as_mut_slice()),
+            TileCdfSelector::CflSign => Ok(self.cfl_sign.as_mut_slice()),
+            TileCdfSelector::CflAlpha { ctx } => {
+                block_row_slice!(self.cfl_alpha, ctx, "ctx", TileCdfArray::CflAlpha)
+            }
+            TileCdfSelector::CflMhccp => Ok(self.cfl_mhccp.as_mut_slice()),
+            TileCdfSelector::CflMhDir { size_group } => block_row_slice!(
+                self.cfl_mh_dir,
+                size_group,
+                "size_group",
+                TileCdfArray::CflMhDir
+            ),
+            TileCdfSelector::UseDip { ctx } => {
+                block_row_slice!(self.use_dip, ctx, "ctx", TileCdfArray::UseDip)
+            }
+            TileCdfSelector::DipMode => Ok(self.dip_mode.as_mut_slice()),
+            TileCdfSelector::VTxbSkip {
+                coeff_cdf_q_ctx,
+                ctx,
+            } => {
+                let coeff_cdf_q_ctx =
+                    checked_coeff_cdf_q_context(TileCdfArray::VTxbSkip, coeff_cdf_q_ctx)?;
+                block_row_slice!(
+                    self.v_txb_skip[coeff_cdf_q_ctx],
+                    ctx,
+                    "ctx",
+                    TileCdfArray::VTxbSkip
+                )
+            }
+            TileCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
+                let coeff_cdf_q_ctx =
+                    checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
+                Ok(self.eob_extra[coeff_cdf_q_ctx].as_mut_slice())
+            }
+            TileCdfSelector::EobPt {
+                size,
+                coeff_cdf_q_ctx,
+                eob_ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::EobPt, coeff_cdf_q_ctx)?;
+                let c = checked_eob_plane_ctx(eob_ctx)?;
+                Ok(match size {
+                    EobPtSize::Pt16 => self.eob_pt_16[q][c].as_mut_slice(),
+                    EobPtSize::Pt32 => self.eob_pt_32[q][c].as_mut_slice(),
+                    EobPtSize::Pt64 => self.eob_pt_64[q][c].as_mut_slice(),
+                    EobPtSize::Pt128 => self.eob_pt_128[q][c].as_mut_slice(),
+                    EobPtSize::Pt256 => self.eob_pt_256[q][c].as_mut_slice(),
+                    EobPtSize::Pt512 => self.eob_pt_512[q][c].as_mut_slice(),
+                    EobPtSize::Pt1024 => self.eob_pt_1024[q][c].as_mut_slice(),
+                })
+            }
+            TileCdfSelector::DcSign {
+                coeff_cdf_q_ctx,
+                plane_type,
+                group,
+                ctx,
+            } => {
+                let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
+                let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
+                let group = checked_dc_sign_group(group)?;
+                block_row_slice!(
+                    self.dc_sign[q][plane_type][group],
+                    ctx,
+                    "ctx",
+                    TileCdfArray::DcSign
+                )
+            }
+            TileCdfSelector::IsInter { ctx } => {
+                block_row_slice!(self.is_inter, ctx, "ctx", TileCdfArray::IsInter)
+            }
+            TileCdfSelector::SkipMode { ctx } => {
+                block_row_slice!(self.skip_mode, ctx, "ctx", TileCdfArray::SkipMode)
+            }
+            TileCdfSelector::Skip { ctx } => {
+                block_row_slice!(self.skip, ctx, "ctx", TileCdfArray::Skip)
+            }
+            TileCdfSelector::SingleMode { ctx } => {
+                block_row_slice!(self.single_mode, ctx, "ctx", TileCdfArray::SingleMode)
+            }
+            TileCdfSelector::IsWarp { ctx } => {
+                block_row_slice!(self.is_warp, ctx, "ctx", TileCdfArray::IsWarp)
+            }
+            TileCdfSelector::WarpMv => Ok(self.warp_mv.as_mut_slice()),
+            TileCdfSelector::WarpIdx { ctx } => {
+                block_row_slice!(self.warp_idx, ctx, "ctx", TileCdfArray::WarpIdx)
+            }
+            TileCdfSelector::WarpWithMvd => Ok(self.warp_with_mvd.as_mut_slice()),
+            TileCdfSelector::WarpPrecision { block_size } => block_row_slice!(
+                self.warp_precision,
+                block_size,
+                "block_size",
+                TileCdfArray::WarpPrecision
+            ),
+            TileCdfSelector::WarpDeltaParamLow { index_type } => block_row_slice!(
+                self.warp_delta_param_low,
+                index_type,
+                "index_type",
+                TileCdfArray::WarpDeltaParamLow
+            ),
+            TileCdfSelector::WarpDeltaParamHigh { index_type } => block_row_slice!(
+                self.warp_delta_param_high,
+                index_type,
+                "index_type",
+                TileCdfArray::WarpDeltaParamHigh
+            ),
+            TileCdfSelector::WarpDeltaParamSign => Ok(self.warp_delta_param_sign.as_mut_slice()),
+            TileCdfSelector::WarpInterIntra { bsize_group } => block_row_slice!(
+                self.warp_inter_intra,
+                bsize_group,
+                "bsize_group",
+                TileCdfArray::WarpInterIntra
+            ),
+            TileCdfSelector::InterIntra { bsize_group } => block_row_slice!(
+                self.inter_intra,
+                bsize_group,
+                "bsize_group",
+                TileCdfArray::InterIntra
+            ),
+            TileCdfSelector::InterIntraMode { bsize_group } => block_row_slice!(
+                self.inter_intra_mode,
+                bsize_group,
+                "bsize_group",
+                TileCdfArray::InterIntraMode
+            ),
+            TileCdfSelector::WedgeInterIntra => Ok(self.wedge_inter_intra.as_mut_slice()),
+            TileCdfSelector::WedgeQuad => Ok(self.wedge_quad.as_mut_slice()),
+            TileCdfSelector::WedgeAngle { quad } => {
+                block_row_slice!(self.wedge_angle, quad, "quad", TileCdfArray::WedgeAngle)
+            }
+            TileCdfSelector::WedgeDist1 => Ok(self.wedge_dist1.as_mut_slice()),
+            TileCdfSelector::WedgeDist2 => Ok(self.wedge_dist2.as_mut_slice()),
+            TileCdfSelector::DrlMode { idx, ctx } => {
+                let bank = checked_block_row!(self.drl_mode, idx, "idx", TileCdfArray::DrlMode)?;
+                block_row_slice!(bank, ctx, "ctx", TileCdfArray::DrlMode)
+            }
+            TileCdfSelector::SkipDrlMode { idx } => {
+                block_row_slice!(self.skip_drl_mode, idx, "idx", TileCdfArray::SkipDrlMode)
+            }
+            TileCdfSelector::TipMode { ctx } => {
+                block_row_slice!(self.tip_mode, ctx, "ctx", TileCdfArray::TipMode)
+            }
+            TileCdfSelector::TipPredMode => Ok(self.tip_pred_mode.as_mut_slice()),
+            TileCdfSelector::TipDrlMode { idx } => {
+                block_row_slice!(self.tip_drl_mode, idx, "idx", TileCdfArray::TipDrlMode)
+            }
+            TileCdfSelector::SingleRef { ctx, ref_idx } => {
+                let bank =
+                    checked_block_row!(self.single_ref, ctx, "ctx", TileCdfArray::SingleRef)?;
+                block_row_slice!(bank, ref_idx, "ref", TileCdfArray::SingleRef)
+            }
+            TileCdfSelector::CompMode { ctx } => {
+                block_row_slice!(self.comp_mode, ctx, "ctx", TileCdfArray::CompMode)
+            }
+            TileCdfSelector::IsJoint { ctx } => {
+                block_row_slice!(self.is_joint, ctx, "ctx", TileCdfArray::IsJoint)
+            }
+            TileCdfSelector::JmvdScaleMode => Ok(self.jmvd_scale_mode.as_mut_slice()),
+            TileCdfSelector::JmvdAdaptiveScaleMode => {
+                Ok(self.jmvd_adaptive_scale_mode.as_mut_slice())
+            }
+            TileCdfSelector::CompoundModeNonJoint { ctx } => block_row_slice!(
+                self.compound_mode_non_joint,
+                ctx,
+                "ctx",
+                TileCdfArray::CompoundModeNonJoint
+            ),
+            TileCdfSelector::CompoundModeSameRefs { ctx } => block_row_slice!(
+                self.compound_mode_same_refs,
+                ctx,
+                "ctx",
+                TileCdfArray::CompoundModeSameRefs
+            ),
+            TileCdfSelector::CompoundType => Ok(self.compound_type.as_mut_slice()),
+            TileCdfSelector::CompGroupIdx { ctx } => {
+                block_row_slice!(self.comp_group_idx, ctx, "ctx", TileCdfArray::CompGroupIdx)
+            }
+            TileCdfSelector::CwpIdx { idx } => {
+                block_row_slice!(self.cwp_idx, idx, "idx", TileCdfArray::CwpIdx)
+            }
+            TileCdfSelector::CompRef0 { ctx, ref_idx } => {
+                let bank = checked_block_row!(self.comp_ref0, ctx, "ctx", TileCdfArray::CompRef0)?;
+                block_row_slice!(bank, ref_idx, "ref", TileCdfArray::CompRef0)
+            }
+            TileCdfSelector::CompRef1 {
+                ctx,
+                bit_type,
+                ref_idx,
+            } => {
+                let bank = checked_block_row!(self.comp_ref1, ctx, "ctx", TileCdfArray::CompRef1)?;
+                let bit_bank =
+                    checked_block_row!(bank, bit_type, "bit_type", TileCdfArray::CompRef1)?;
+                block_row_slice!(bit_bank, ref_idx, "ref", TileCdfArray::CompRef1)
+            }
+            TileCdfSelector::ReadMv(selector) => self.read_mv.row_mut(selector),
+            TileCdfSelector::InterpFilter { ctx } => {
+                block_row_slice!(self.interp_filter, ctx, "ctx", TileCdfArray::InterpFilter)
+            }
+            TileCdfSelector::UseBawp => Ok(self.use_bawp.as_mut_slice()),
+            TileCdfSelector::UseBawpChroma => Ok(self.use_bawp_chroma.as_mut_slice()),
+            TileCdfSelector::UseAmvd { index, ctx } => {
+                let bank =
+                    checked_block_row!(self.use_amvd, index, "index", TileCdfArray::UseAmvd)?;
+                block_row_slice!(bank, ctx, "ctx", TileCdfArray::UseAmvd)
+            }
+            TileCdfSelector::UseOptflow { ctx } => {
+                block_row_slice!(self.use_optflow, ctx, "ctx", TileCdfArray::UseOptflow)
+            }
+            TileCdfSelector::UseRefinemv { ctx } => {
+                block_row_slice!(self.use_refinemv, ctx, "ctx", TileCdfArray::UseRefinemv)
+            }
+            TileCdfSelector::UseExtendWarp { ctx } => block_row_slice!(
+                self.use_extend_warp,
+                ctx,
+                "ctx",
+                TileCdfArray::UseExtendWarp
+            ),
+            TileCdfSelector::UseLocalWarp { ctx } => {
+                block_row_slice!(self.use_local_warp, ctx, "ctx", TileCdfArray::UseLocalWarp)
+            }
+            TileCdfSelector::UseMostProbablePrecision { ctx } => block_row_slice!(
+                self.use_most_probable_precision,
+                ctx,
+                "ctx",
+                TileCdfArray::UseMostProbablePrecision
+            ),
+            TileCdfSelector::PbMvPrecision { ctx, frame_ctx } => {
+                let bank = checked_block_row!(
+                    self.pb_mv_precision,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::PbMvPrecision
+                )?;
+                block_row_slice!(bank, frame_ctx, "frame_ctx", TileCdfArray::PbMvPrecision)
+            }
+            TileCdfSelector::ExplicitBawp { ctx } => {
+                block_row_slice!(self.explicit_bawp, ctx, "ctx", TileCdfArray::ExplicitBawp)
+            }
+            TileCdfSelector::ExplicitBawpScale => Ok(self.explicit_bawp_scale.as_mut_slice()),
+            TileCdfSelector::UseWienerNs => Ok(self.use_wiener_ns.as_mut_slice()),
+            TileCdfSelector::UsePcWiener => Ok(self.use_pc_wiener.as_mut_slice()),
+            TileCdfSelector::FlexRestorationType { tool, plane } => {
+                let bank = checked_block_row!(
+                    self.flex_restoration_type,
+                    tool,
+                    "tool",
+                    TileCdfArray::FlexRestorationType
+                )?;
+                block_row_slice!(bank, plane, "plane", TileCdfArray::FlexRestorationType)
+            }
+            TileCdfSelector::WienerNsLength { plane_ctx } => block_row_slice!(
+                self.wiener_ns_length,
+                plane_ctx,
+                "plane_ctx",
+                TileCdfArray::WienerNsLength
+            ),
+            TileCdfSelector::WienerNsUvSym => Ok(self.wiener_ns_uv_sym.as_mut_slice()),
+            TileCdfSelector::WienerNsBase => Ok(self.wiener_ns_base.as_mut_slice()),
+            TileCdfSelector::IsLongSideDct { is_inter } => block_row_slice!(
+                self.is_long_side_dct,
+                is_inter,
+                "is_inter",
+                TileCdfArray::IsLongSideDct
+            ),
+            TileCdfSelector::IntraTxTypeLong { tx_size_sqr } => block_row_slice!(
+                self.intra_tx_type_long,
+                tx_size_sqr,
+                "tx_size_sqr",
+                TileCdfArray::IntraTxTypeLong
+            ),
+            TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr } => {
+                let eob_row = checked_block_row!(
+                    self.inter_tx_type_long,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::InterTxTypeLong
+                )?;
+                block_row_slice!(
+                    eob_row,
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::InterTxTypeLong
+                )
+            }
+            TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr } => {
+                let ctx_row = checked_block_row!(
+                    self.inter_tx_type_set1,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::InterTxTypeSet1
+                )?;
+                block_row_slice!(
+                    ctx_row,
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::InterTxTypeSet1
+                )
+            }
+            TileCdfSelector::InterTxTypeSet2 { ctx } => block_row_slice!(
+                self.inter_tx_type_set2,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeSet2
+            ),
+            TileCdfSelector::InterTxTypeIndexSet1 { ctx } => block_row_slice!(
+                self.inter_tx_type_index_set1,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeIndexSet1
+            ),
+            TileCdfSelector::InterTxTypeIndexSet2 { ctx } => block_row_slice!(
+                self.inter_tx_type_index_set2,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeIndexSet2
+            ),
+            TileCdfSelector::InterTxTypeOffsetSet1 { ctx } => block_row_slice!(
+                self.inter_tx_type_offset_set1,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeOffsetSet1
+            ),
+            TileCdfSelector::InterTxTypeOffsetSet2 { ctx } => block_row_slice!(
+                self.inter_tx_type_offset_set2,
+                ctx,
+                "ctx",
+                TileCdfArray::InterTxTypeOffsetSet2
+            ),
+            TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr } => {
+                let ctx_row = checked_block_row!(
+                    self.inter_tx_type_set3,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::InterTxTypeSet3
+                )?;
+                block_row_slice!(
+                    ctx_row,
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::InterTxTypeSet3
+                )
+            }
+            TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr } => {
+                let ctx_row = checked_block_row!(
+                    self.inter_tx_type_set4,
+                    ctx,
+                    "ctx",
+                    TileCdfArray::InterTxTypeSet4
+                )?;
+                block_row_slice!(
+                    ctx_row,
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::InterTxTypeSet4
+                )
+            }
+            TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => block_row_slice!(
+                self.intra_tx_type_set1,
+                tx_size_sqr,
+                "tx_size_sqr",
+                TileCdfArray::IntraTxTypeSet1
+            ),
+            TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => block_row_slice!(
+                self.intra_tx_type_set2,
+                tx_size_sqr,
+                "tx_size_sqr",
+                TileCdfArray::IntraTxTypeSet2
+            ),
+            TileCdfSelector::SecTxType {
+                is_inter,
+                tx_size_sqr,
+            } => {
+                let is_inter = checked_sec_tx_is_inter(is_inter)?;
+                block_row_slice!(
+                    self.sec_tx_type[is_inter],
+                    tx_size_sqr,
+                    "tx_size_sqr",
+                    TileCdfArray::SecTxType
+                )
+            }
+            TileCdfSelector::MostProbableStxSet => Ok(self.most_probable_stx_set.as_mut_slice()),
+            TileCdfSelector::MostProbableStxSetAdst => {
+                Ok(self.most_probable_stx_set_adst.as_mut_slice())
+            }
+            TileCdfSelector::CctxType => Ok(self.cctx_type.as_mut_slice()),
+            TileCdfSelector::PaletteYMode => Ok(self.palette_y_mode.as_mut_slice()),
+            TileCdfSelector::PaletteYSize => Ok(self.palette_y_size.as_mut_slice()),
+            TileCdfSelector::IdentityRowY { ctx } => {
+                block_row_slice!(self.identity_row_y, ctx, "ctx", TileCdfArray::IdentityRowY)
+            }
+            TileCdfSelector::PaletteYColorIndex { palette_size, ctx } => {
+                let ctx = checked_context(
+                    TileCdfArray::PaletteYColorIndex,
+                    "ctx",
+                    ctx,
+                    PALETTE_COLOR_CONTEXTS,
+                )?;
+                match palette_size {
+                    2 => Ok(self.palette_size_2_y_color[ctx].as_mut_slice()),
+                    3 => Ok(self.palette_size_3_y_color[ctx].as_mut_slice()),
+                    4 => Ok(self.palette_size_4_y_color[ctx].as_mut_slice()),
+                    5 => Ok(self.palette_size_5_y_color[ctx].as_mut_slice()),
+                    6 => Ok(self.palette_size_6_y_color[ctx].as_mut_slice()),
+                    7 => Ok(self.palette_size_7_y_color[ctx].as_mut_slice()),
+                    8 => Ok(self.palette_size_8_y_color[ctx].as_mut_slice()),
+                    _ => Err(TileCdfError::SelectorOutOfRange {
+                        array: TileCdfArray::PaletteYColorIndex,
+                        index_name: "palette_size",
+                        actual: palette_size,
+                        max_exclusive: 9,
+                    }),
+                }
+            }
+            TileCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
+            _ => Err(TileCdfError::UnexpectedSelector),
+        }
     }
 
     pub(crate) fn avg_from_tile(&mut self, tile_num: u32, tile: &Self, num_log2: u8) {

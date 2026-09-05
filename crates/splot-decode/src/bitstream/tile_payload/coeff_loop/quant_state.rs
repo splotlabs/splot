@@ -5,8 +5,6 @@
 //!
 //! Feature tracking: `DECODE-COEFF-QUANT-STATE-WRITE`.
 
-use std::num::TryFromIntError;
-
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::scan_walk::CoeffScanEntry;
 use super::sign_symbol::CoeffSignRead;
@@ -165,10 +163,10 @@ impl CoeffQuantStateAccumulator {
             });
         }
 
-        let signed_quant = signed_quant(index, quant, sign)?;
+        let magnitude = quant as i32;
         Ok(CoeffQuantStateWrite {
             entry,
-            quant: signed_quant,
+            quant: if sign { -magnitude } else { magnitude },
         })
     }
 }
@@ -210,25 +208,6 @@ fn checked_mul_sub(
         .checked_mul(mul)
         .and_then(|value| value.checked_sub(sub))
         .ok_or(CoeffQuantStateWriteError::QuantOverflow { index, operation })
-}
-
-fn signed_quant(index: usize, quant: u32, sign: bool) -> Result<i32, CoeffQuantStateWriteError> {
-    let magnitude = i32::try_from(quant).map_err(|_: TryFromIntError| {
-        CoeffQuantStateWriteError::QuantOverflow {
-            index,
-            operation: "u32 to i32 quant conversion",
-        }
-    })?;
-    if sign {
-        magnitude
-            .checked_neg()
-            .ok_or(CoeffQuantStateWriteError::QuantOverflow {
-                index,
-                operation: "signed quant negation",
-            })
-    } else {
-        Ok(magnitude)
-    }
 }
 
 #[cfg(test)]

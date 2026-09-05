@@ -16,7 +16,6 @@ use splot_core::annexb::parse_annex_b_obus_partial_at;
 use splot_core::span::ByteOffset;
 use splot_core::stream_reader::{ReaderError, StreamUnit, TemporalUnitReader};
 
-use crate::checks::default_checks;
 use crate::context::ValidatorContext;
 use crate::diagnostic::ValidationReport;
 use crate::options::ValidationOptions;
@@ -82,7 +81,6 @@ fn run_stream<R: Read>(
     options: &ValidationOptions,
 ) -> Result<ValidationReport, StreamValidateError> {
     let mut report = ValidationReport::new();
-    let checks = default_checks();
     let mut context = ValidatorContext::default();
 
     let mut annexb_terminal_error = None;
@@ -95,7 +93,7 @@ fn run_stream<R: Read>(
             Ok(Some(StreamUnit::AnnexBObu { offset, bytes })) => {
                 let parsed = parse_annex_b_obus_partial_at(bytes, offset);
                 for obu in &parsed.obus {
-                    process_obu(&mut context, checks, obu, options, &mut report);
+                    process_obu(&mut context, obu, options, &mut report);
                 }
                 if let Some(error) = parsed.error {
                     annexb_terminal_error = Some(error);
@@ -108,7 +106,7 @@ fn run_stream<R: Read>(
             })) => {
                 let parsed = parse_annex_b_obus_partial_at(payload, payload_offset);
                 for obu in &parsed.obus {
-                    process_obu(&mut context, checks, obu, options, &mut report);
+                    process_obu(&mut context, obu, options, &mut report);
                 }
                 if let Some(error) = &parsed.error {
                     report.push(parse_error_diagnostic(error));

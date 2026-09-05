@@ -106,6 +106,17 @@ fn record_block_clips_to_the_grid() {
 }
 
 #[test]
+fn palette_cache_interleaves_neighbors_preserves_repeats_and_keeps_tail() {
+    let mut state = TileLumaPaletteState::new_for_tile(0..4, 0..4, SB_N4).unwrap();
+    let above = LumaPalette::from_size_symbol(Symbol::new(2), [7, 11, 19, 23, 0, 0, 0, 0]);
+    let left = LumaPalette::from_size_symbol(Symbol::new(0), [11, 17, 0, 0, 0, 0, 0, 0]);
+    state.record_block(0, 1, 1, 1, Some(above));
+    state.record_block(1, 0, 1, 1, Some(left));
+    let (cache, len) = state.palette_cache(1, 1);
+    assert_eq!(&cache[..len], &[7, 11, 11, 17, 19, 23]);
+}
+
+#[test]
 fn luma_palette_grid_stores_one_palette_per_block() {
     let mut state = TileLumaPaletteState::new_for_tile(0..4, 0..4, SB_N4).unwrap();
     let palette = LumaPalette::from_size_symbol(Symbol::new(1), [7, 11, 19, 0, 0, 0, 0, 0]);

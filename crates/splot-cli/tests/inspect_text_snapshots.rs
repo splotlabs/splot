@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Golden snapshot tests of the `splot inspect` HUMAN (text) output
-//! (CONF-CLI-SNAPSHOT-COVERAGE).
-//!
-//! [`inspect_snapshots`](super) freezes the `--json` surface; this suite freezes
-//! the complementary text surfaces — the default per-OBU dump and the `--headers`
-//! header-only dump — which had no snapshot coverage. The text output is
-//! deterministic for a fixed input (OBU index, byte offset, size, type, layer ids,
-//! and the payload-length line in the default mode; no paths, timestamps, or
-//! filenames), so any future change to the human dump for a committed fixture
-//! surfaces as a reviewable snapshot diff (`cargo insta review`).
+//! Golden default and header-only text output (CONF-CLI-SNAPSHOT-COVERAGE).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

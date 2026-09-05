@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Backward-compatibility snapshots of the validator-stream subcommands'
-//! `--help` — `validate`, `inspect`, and `explain` (CONF-CLI-SNAPSHOT-COVERAGE).
-//!
-//! `--help` is rendered from the static clap command definition, so it is fully
-//! deterministic and carries no version string. Freezing it as an `insta` golden
-//! makes every change to those subcommands' argument surface — a new flag, a
-//! renamed flag, a changed help string, a reordered option — show up as a
-//! reviewable snapshot diff (`cargo insta review`). This is the public-surface
-//! tripwire for the validator productization work: additive flags update these
-//! snapshots intentionally; an accidental or breaking surface change is caught
-//! here. The top-level `splot --help` is deliberately NOT snapshotted so this
-//! validator-stream test stays decoupled from the `decode` subcommand wording
-//! the decoder stream owns.
+//! Snapshots of validate, inspect and explain help (CONF-CLI-SNAPSHOT-COVERAGE).
+//! Top-level help is excluded because decoder wording changes independently.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

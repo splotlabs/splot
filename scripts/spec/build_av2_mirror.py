@@ -219,7 +219,7 @@ def plan_segments(lines: list[str], headings: list[Heading]) -> list[Segment]:
         if top.kind == "num":
             num = int(top.number)
             if num in SUBSPLIT_CHAPTERS:
-                segments.extend(_split_chapter_9(lines, top, start, end, headings))
+                segments.extend(_split_chapter_9(top, start, end, headings))
                 continue
             rel = f"{num:02d}-{slugify(top.title)}.md"
             title = f"§ {num}. {top.title}"
@@ -239,7 +239,7 @@ def plan_segments(lines: list[str], headings: list[Heading]) -> list[Segment]:
 
 
 def _split_chapter_9(
-    lines: list[str], top: Heading, start: int, end: int, headings: list[Heading]
+    top: Heading, start: int, end: int, headings: list[Heading]
 ) -> list[Segment]:
     """Sub-split §9 into one file per level-2 subsection (plus an overview)."""
     subs = [
@@ -351,7 +351,7 @@ def assert_roundtrip(segments: list[Segment], rendered: dict[str, str], raw_line
         )
 
 
-def render_index(segments: list[Segment], headings: list[Heading], seg_of: dict[int, Segment]) -> str:
+def render_index(headings: list[Heading], seg_of: dict[int, Segment]) -> str:
     out: list[str] = []
     out.append("# AV2 v1.0.0 specification — section index")
     out.append("")
@@ -538,7 +538,7 @@ def main() -> int:
         "copyright": args.copyright,
     }
 
-    index_md = render_index(segments, headings, seg_of)
+    index_md = render_index(headings, seg_of)
     readme_md = render_readme(meta)
     provenance_toml = render_provenance(meta, attachment)
 
@@ -560,9 +560,7 @@ def main() -> int:
         shutil.rmtree(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    files: dict[str, str] = {}
-    for rel, text in rendered.items():
-        files[rel] = text
+    files = rendered.copy()
     files["index.md"] = index_md + "\n" if not index_md.endswith("\n") else index_md
     files["README.md"] = readme_md
     files["provenance.toml"] = provenance_toml
@@ -587,9 +585,8 @@ def main() -> int:
     checksum_lines = [f"{checksums[rel]}  {rel}" for rel in sorted(checksums)]
     (outdir / "CHECKSUMS").write_text("\n".join(checksum_lines) + "\n", encoding="utf-8")
 
-    section_count = sum(1 for _ in headings)
     print(
-        f"mirror: {len(files)} content files + CHECKSUMS, {section_count} sections, "
+        f"mirror: {len(files)} content files + CHECKSUMS, {len(headings)} sections, "
         f"{len(raw_lines)} raw lines — round-trip OK"
     )
     return 0

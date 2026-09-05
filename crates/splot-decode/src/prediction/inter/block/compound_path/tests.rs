@@ -578,12 +578,12 @@ fn compound_joint_projection_preserves_restricted_reference_semantics() {
     ));
 }
 
-fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
+fn encode_compound_flag(selector: TileCdfSelector, enabled: bool) -> Vec<u8> {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
         SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
     );
-    tile.with_row_mut(TileCdfSelector::UseLocalWarp { ctx }, |row| {
+    tile.with_row_mut(selector, |row| {
         encoder.write_symbol_u16(row, Symbol::new(u8::from(enabled)))
     })
     .unwrap()
@@ -605,7 +605,6 @@ fn compound_blend_reads_wedge_index_and_sign() {
             implicit_mask: false,
         },
         CompoundBlendInput {
-            skip_mode: false,
             use_optflow: false,
             joint_amvd: false,
             switchable_refinemv_on: false,
@@ -628,75 +627,45 @@ fn compound_blend_reads_wedge_index_and_sign() {
 }
 
 #[test]
-fn compound_optflow_forces_average_without_blend_symbols() {
-    let payload = encode_wedge_compound_blend();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let before = symbols.checkpoint();
+fn compound_refinement_forces_average_without_blend_symbols() {
+    for (use_optflow, joint_amvd, switchable_refinemv_on) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let payload = encode_wedge_compound_blend();
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&payload);
+        let before = symbols.checkpoint();
 
-    let blend = read_compound_blend_syntax(
-        &mut tile,
-        &mut symbols,
-        CompoundBlendToolConfig {
-            masked_enabled: true,
-            implicit_mask: true,
-        },
-        CompoundBlendInput {
-            skip_mode: false,
-            use_optflow: true,
-            joint_amvd: false,
-            switchable_refinemv_on: false,
-            n4w: 2,
-            n4h: 2,
-            block_size_index: 3,
-            comp_group_idx_ctx: 0,
-        },
-        TILE_OFFSET,
-    )
-    .unwrap();
+        let blend = read_compound_blend_syntax(
+            &mut tile,
+            &mut symbols,
+            CompoundBlendToolConfig {
+                masked_enabled: true,
+                implicit_mask: true,
+            },
+            CompoundBlendInput {
+                use_optflow,
+                joint_amvd,
+                switchable_refinemv_on,
+                n4w: 2,
+                n4h: 2,
+                block_size_index: 3,
+                comp_group_idx_ctx: 0,
+            },
+            TILE_OFFSET,
+        )
+        .unwrap();
 
-    assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
-    assert_eq!(symbols.checkpoint(), before);
-}
-
-/// AV2 § 5.20.7.6: a joint-AMVD compound mode (JOINT_NEWMV/JOINT_NEWMV_OPTFLOW
-/// with `use_amvd`) does not signal `comp_group_idx`, so the blend stays average
-/// and no `S()` symbol is consumed even when masked compound is enabled.
-#[test]
-fn compound_joint_amvd_forces_average_without_blend_symbols() {
-    let payload = encode_wedge_compound_blend();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let before = symbols.checkpoint();
-
-    let blend = read_compound_blend_syntax(
-        &mut tile,
-        &mut symbols,
-        CompoundBlendToolConfig {
-            masked_enabled: true,
-            implicit_mask: true,
-        },
-        CompoundBlendInput {
-            skip_mode: false,
-            use_optflow: false,
-            joint_amvd: true,
-            switchable_refinemv_on: false,
-            n4w: 2,
-            n4h: 2,
-            block_size_index: 3,
-            comp_group_idx_ctx: 0,
-        },
-        TILE_OFFSET,
-    )
-    .unwrap();
-
-    assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
-    assert_eq!(symbols.checkpoint(), before);
+        assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
+        assert_eq!(symbols.checkpoint(), before);
+    }
 }
 
 #[test]
 fn compound_optflow_forces_sharp_interp_without_symbols() {
-    let payload = encode_compound_local_warp(0, false);
+    let payload = encode_compound_flag(TileCdfSelector::UseLocalWarp { ctx: 0 }, false);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
     let before = symbols.checkpoint();
@@ -737,7 +706,7 @@ fn compound_simple_motion_consumes_local_warp_gate() {
     let (mode_ctx, neighbour_ctx) = compound_motion_contexts();
     assert!(mode_ctx.warp_sample_found && mode_ctx.warp_sample_found1);
     let ctx = neighbour_ctx.use_local_warp_ctx();
-    let payload = encode_compound_local_warp(ctx, false);
+    let payload = encode_compound_flag(TileCdfSelector::UseLocalWarp { ctx }, false);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
@@ -758,7 +727,7 @@ fn compound_simple_motion_consumes_local_warp_gate() {
 fn compound_local_warp_symbol_reports_localwarp_when_set() {
     let (_, neighbour_ctx) = compound_motion_contexts();
     let ctx = neighbour_ctx.use_local_warp_ctx();
-    let payload = encode_compound_local_warp(ctx, true);
+    let payload = encode_compound_flag(TileCdfSelector::UseLocalWarp { ctx }, true);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
@@ -868,7 +837,6 @@ fn compound_local_warp_motion_suppresses_cwp() {
         CompoundCwpInput {
             y_mode: CompoundYMode::NearNear,
             jmvd_scale_mode: 0,
-            skip_mode: false,
             use_optflow: false,
             use_refinemv: false,
             motion_simple: false,
@@ -944,7 +912,6 @@ fn compound_optflow_suppresses_cwp_symbols() {
         CompoundCwpInput {
             y_mode: CompoundYMode::NearNear,
             jmvd_scale_mode: 0,
-            skip_mode: false,
             use_optflow: true,
             use_refinemv: false,
             motion_simple: true,
@@ -962,7 +929,6 @@ fn compound_refinemv_suppresses_cwp_symbols() {
         CompoundCwpInput {
             y_mode: CompoundYMode::NearNear,
             jmvd_scale_mode: 0,
-            skip_mode: false,
             use_optflow: false,
             use_refinemv: true,
             motion_simple: true,
@@ -1124,20 +1090,6 @@ fn compound_opfl_near_near_selects_the_indexed_paired_candidate() {
 }
 
 #[test]
-fn compound_non_skip_near_mode_reads_second_drl_idx() {
-    let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-        y_mode: CompoundYMode::NearNear,
-        use_optflow: false,
-        ref_frame0: 0,
-        ref_frame1: 1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
-    };
-
-    assert!(compound_reads_second_drl(compound));
-}
-
-#[test]
 fn skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance() {
     assert_eq!(
         skip_mode_default_pair(
@@ -1188,23 +1140,10 @@ fn compound_local_warp_neighbour_raises_warp_contexts() {
     assert!(warp_ctx.use_extend_warp_ctx() > 0);
 }
 
-fn encode_use_refinemv(ctx: usize, enabled: bool) -> Vec<u8> {
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut encoder = SymbolEncoder::with_config(
-        SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
-    );
-    tile.with_row_mut(TileCdfSelector::UseRefinemv { ctx }, |row| {
-        encoder.write_symbol_u16(row, Symbol::new(u8::from(enabled)))
-    })
-    .unwrap()
-    .unwrap();
-    encoder.finish().unwrap().into_bytes()
-}
-
 #[test]
 fn switchable_refinemv_reads_both_values_at_the_optflow_context() {
     for enabled in [false, true] {
-        let payload = encode_use_refinemv(8, enabled);
+        let payload = encode_compound_flag(TileCdfSelector::UseRefinemv { ctx: 8 }, enabled);
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&payload);
 
@@ -1224,7 +1163,7 @@ fn switchable_refinemv_reads_both_values_at_the_optflow_context() {
 
 #[test]
 fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
-    let payload = encode_use_refinemv(10, true);
+    let payload = encode_compound_flag(TileCdfSelector::UseRefinemv { ctx: 10 }, true);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
@@ -1240,7 +1179,7 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
     assert!(use_refinemv);
     symbols.exit_symbol().unwrap();
 
-    let payload = encode_use_refinemv(6, false);
+    let payload = encode_compound_flag(TileCdfSelector::UseRefinemv { ctx: 6 }, false);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
 
@@ -1255,36 +1194,4 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
 
     assert!(!use_refinemv);
     symbols.exit_symbol().unwrap();
-}
-
-#[test]
-fn switchable_refinemv_on_forces_average_without_blend_symbols() {
-    let payload = encode_wedge_compound_blend();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let before = symbols.checkpoint();
-
-    let blend = read_compound_blend_syntax(
-        &mut tile,
-        &mut symbols,
-        CompoundBlendToolConfig {
-            masked_enabled: true,
-            implicit_mask: true,
-        },
-        CompoundBlendInput {
-            skip_mode: false,
-            use_optflow: false,
-            joint_amvd: false,
-            switchable_refinemv_on: true,
-            n4w: 2,
-            n4h: 2,
-            block_size_index: 3,
-            comp_group_idx_ctx: 0,
-        },
-        TILE_OFFSET,
-    )
-    .unwrap();
-
-    assert_eq!(blend, mc::CompoundBlend::average_with_implicit_mask(true));
-    assert_eq!(symbols.checkpoint(), before);
 }

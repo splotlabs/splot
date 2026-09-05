@@ -208,49 +208,31 @@ pub(crate) fn read_compound_mode_syntax(
             .map_err(|error| compound_symbol_read_error(error, tile_offset))
     };
 
-    if pair.0 == pair.1 {
+    let y_mode = if pair.0 == pair.1 {
         let compound_mode = read_symbol(TileCdfSelector::CompoundModeSameRefs {
             ctx: new_mv_context,
         })?;
-        let y_mode = match compound_mode {
+        match compound_mode {
             COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
             1 => CompoundYMode::NearNew,
             COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV => CompoundYMode::GlobalGlobal,
             // The four-symbol § 5.20.7.6 alphabet leaves only NewNew (3).
             _ => CompoundYMode::NewNew,
-        };
-        return Ok(CompoundBlockSyntax {
-            y_mode,
-            use_optflow: false,
-            ref_frame0: pair.0,
-            ref_frame1: pair.1,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
-        });
-    }
-
-    let is_joint = read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })?;
-    if is_joint != 0 {
-        return Ok(CompoundBlockSyntax {
-            y_mode: CompoundYMode::JointNew,
-            use_optflow: false,
-            ref_frame0: pair.0,
-            ref_frame1: pair.1,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
-        });
-    }
-
-    let compound_mode = read_symbol(TileCdfSelector::CompoundModeNonJoint {
-        ctx: new_mv_context,
-    })?;
-    let y_mode = match compound_mode {
-        COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
-        COMPOUND_MODE_NEAR_NEWMV => CompoundYMode::NearNew,
-        COMPOUND_MODE_NEW_NEARMV => CompoundYMode::NewNear,
-        COMPOUND_MODE_NEW_NEWMV => CompoundYMode::NewNew,
-        // The five-symbol § 5.20.7.6 alphabet leaves only GlobalGlobal (3).
-        _ => CompoundYMode::GlobalGlobal,
+        }
+    } else if read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })? != 0 {
+        CompoundYMode::JointNew
+    } else {
+        let compound_mode = read_symbol(TileCdfSelector::CompoundModeNonJoint {
+            ctx: new_mv_context,
+        })?;
+        match compound_mode {
+            COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
+            COMPOUND_MODE_NEAR_NEWMV => CompoundYMode::NearNew,
+            COMPOUND_MODE_NEW_NEARMV => CompoundYMode::NewNear,
+            COMPOUND_MODE_NEW_NEWMV => CompoundYMode::NewNew,
+            // The five-symbol § 5.20.7.6 alphabet leaves only GlobalGlobal (3).
+            _ => CompoundYMode::GlobalGlobal,
+        }
     };
 
     Ok(CompoundBlockSyntax {

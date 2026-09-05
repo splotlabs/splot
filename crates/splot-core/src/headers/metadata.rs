@@ -195,8 +195,7 @@ pub struct MetadataTemporalPointInfo {
     pub frame_presentation_time: u32,
 }
 
-/// `metadata_decoded_frame_hash()` payload (AV2 v1.0.0 § 5.17.12). The hash values are
-/// parsed but never verified against decoded pixels (no decoder exists).
+/// `metadata_decoded_frame_hash()` payload (AV2 v1.0.0 § 5.17.12).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataDecodedFrameHash {
     /// `hash_type` (`f(4)`).
@@ -453,25 +452,20 @@ pub fn parse_metadata_short(
     let (metadata_type_value, metadata_type_leb128_bytes) = read_leb128_bytes(reader)?;
     let metadata_type = MetadataType::from_value(metadata_type_value);
 
-    if muh_cancel_flag {
-        return Ok(MetadataShortObu {
-            metadata_is_suffix,
-            muh_layer_idc,
-            muh_cancel_flag,
-            muh_persistence_idc,
+    let unit = if muh_cancel_flag {
+        None
+    } else {
+        let metadata_payload_size = obu_payload_size
+            .checked_sub(2)
+            .and_then(|value| value.checked_sub(usize::from(metadata_type_leb128_bytes)))
+            .ok_or_else(|| metadata_error(reader, MetadataErrorKind::UnitPayloadUnderflow))?;
+        let mut unit_reader = reader.take_bytes(metadata_payload_size)?;
+        Some(parse_metadata_unit(
+            &mut unit_reader,
+            metadata_payload_size,
             metadata_type,
-            metadata_type_leb128_bytes,
-            unit: None,
-        });
-    }
-
-    let metadata_payload_size = obu_payload_size
-        .checked_sub(2)
-        .and_then(|value| value.checked_sub(usize::from(metadata_type_leb128_bytes)))
-        .ok_or_else(|| metadata_error(reader, MetadataErrorKind::UnitPayloadUnderflow))?;
-
-    let mut unit_reader = reader.take_bytes(metadata_payload_size)?;
-    let unit = parse_metadata_unit(&mut unit_reader, metadata_payload_size, metadata_type)?;
+        )?)
+    };
 
     Ok(MetadataShortObu {
         metadata_is_suffix,
@@ -480,7 +474,7 @@ pub fn parse_metadata_short(
         muh_persistence_idc,
         metadata_type,
         metadata_type_leb128_bytes,
-        unit: Some(unit),
+        unit,
     })
 }
 
@@ -931,10 +925,9 @@ mod tests {
 
     use crate::test_bits::Bits;
 
-    fn short_reader(payload: &[u8]) -> (MetadataShortObu, usize) {
+    fn short_reader(payload: &[u8]) -> MetadataShortObu {
         let mut reader = BitReader::new(payload, ByteOffset::new(0));
-        let parsed = parse_metadata_short(&mut reader, payload.len()).unwrap();
-        (parsed, payload.len())
+        parse_metadata_short(&mut reader, payload.len()).unwrap()
     }
 
     /// Builds a `metadata_short_obu()` payload: the 1-byte header, a 1-byte
@@ -951,7 +944,7 @@ mod tests {
     #[test]
     fn short_header_fields_decode() {
         let payload = [0b1010_1011u8, 0x04, 0x80];
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         assert!(parsed.metadata_is_suffix);
         assert_eq!(parsed.muh_layer_idc, 2);
         assert!(parsed.muh_cancel_flag);
@@ -965,7 +958,7 @@ mod tests {
     fn short_hdr_cll_parses() {
         let unit = [0x12, 0x34, 0x56, 0x78];
         let payload = short_payload(SHORT_HEADER, 1, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let unit = parsed.unit.unwrap();
         assert_eq!(unit.payload_size, 4);
         assert_eq!(
@@ -986,7 +979,7 @@ mod tests {
         unit.extend_from_slice(&1_000_000u32.to_be_bytes());
         unit.extend_from_slice(&5u32.to_be_bytes());
         let payload = short_payload(SHORT_HEADER, 2, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::HdrMdcv(mdcv) = parsed.unit.unwrap().payload else {
             panic!("expected HdrMdcv");
         };
@@ -1002,7 +995,7 @@ mod tests {
     fn short_itut_t35_without_extension() {
         let unit = [0x01, 0xAA, 0xBB, 0xCC];
         let payload = short_payload(SHORT_HEADER, 3, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::ItutT35(t35) = parsed.unit.unwrap().payload else {
             panic!("expected ItutT35");
         };
@@ -1015,7 +1008,7 @@ mod tests {
     fn short_itut_t35_with_extension_byte() {
         let unit = [0xFF, 0x42, 0xAA, 0xBB];
         let payload = short_payload(SHORT_HEADER, 3, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::ItutT35(t35) = parsed.unit.unwrap().payload else {
             panic!("expected ItutT35");
         };
@@ -1051,7 +1044,7 @@ mod tests {
         bits.f(0, 5); // time_offset_length == 0
         let unit = bits.into_bytes();
         let payload = short_payload(SHORT_HEADER, 4, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::Timecode(tc) = parsed.unit.unwrap().payload else {
             panic!("expected Timecode");
         };
@@ -1079,7 +1072,7 @@ mod tests {
         bits.f(0b1010, 4); // time_offset_value
         let unit = bits.into_bytes();
         let payload = short_payload(SHORT_HEADER, 4, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::Timecode(tc) = parsed.unit.unwrap().payload else {
             panic!("expected Timecode");
         };
@@ -1094,7 +1087,7 @@ mod tests {
     #[test]
     fn short_scan_type_parses() {
         let payload = short_payload(SHORT_HEADER, 8, &[0x63]);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::ScanType(scan) = parsed.unit.unwrap().payload else {
             panic!("expected ScanType");
         };
@@ -1106,7 +1099,7 @@ mod tests {
     #[test]
     fn short_temporal_point_info_parses() {
         let payload = short_payload(SHORT_HEADER, 9, &[0xAC, 0x02, 0x00]);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::TemporalPointInfo(tpi) = parsed.unit.unwrap().payload else {
             panic!("expected TemporalPointInfo");
         };
@@ -1120,7 +1113,7 @@ mod tests {
             unit.extend_from_slice(&[plane; 16]);
         }
         let payload = short_payload(SHORT_HEADER, 5, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::DecodedFrameHash(hash) = parsed.unit.unwrap().payload else {
             panic!("expected DecodedFrameHash");
         };
@@ -1135,7 +1128,7 @@ mod tests {
         let mut unit = vec![0b0000_0000u8];
         unit.extend_from_slice(&[0xAB; 16]);
         let payload = short_payload(SHORT_HEADER, 5, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::DecodedFrameHash(hash) = parsed.unit.unwrap().payload else {
             panic!("expected DecodedFrameHash");
         };
@@ -1147,7 +1140,7 @@ mod tests {
     #[test]
     fn short_icc_profile_summarizes_length() {
         let payload = short_payload(SHORT_HEADER, 7, &[0u8; 12]);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         assert_eq!(
             parsed.unit.unwrap().payload,
             MetadataPayload::IccProfile(MetadataIccProfile { payload_len: 12 })
@@ -1159,7 +1152,7 @@ mod tests {
         let mut unit = vec![0u8; 16]; // uuid
         unit.extend_from_slice(&[0xCD; 5]); // 5 user data bytes
         let payload = short_payload(SHORT_HEADER, 10, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::UserDataUnregistered(udu) = parsed.unit.unwrap().payload else {
             panic!("expected UserDataUnregistered");
         };
@@ -1188,7 +1181,7 @@ mod tests {
         bits.bit(0); // banding_hints_flag = 0 -> no detail
         let unit = bits.into_bytes();
         let payload = short_payload(SHORT_HEADER, 6, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::BandingHints(banding) = parsed.unit.unwrap().payload else {
             panic!("expected BandingHints");
         };
@@ -1215,7 +1208,7 @@ mod tests {
         bits.bit(0); // banding_in_band_unit_present[1][0]
         let unit = bits.into_bytes();
         let payload = short_payload(SHORT_HEADER, 6, &unit);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         let MetadataPayload::BandingHints(banding) = parsed.unit.unwrap().payload else {
             panic!("expected BandingHints");
         };
@@ -1231,7 +1224,7 @@ mod tests {
     #[test]
     fn short_unknown_metadata_type_is_raw() {
         let payload = short_payload(SHORT_HEADER, 0, &[0xDE, 0xAD, 0xBE]);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         assert_eq!(parsed.metadata_type, MetadataType::Reserved(0));
         assert_eq!(
             parsed.unit.unwrap().payload,
@@ -1242,7 +1235,7 @@ mod tests {
     #[test]
     fn short_high_reserved_metadata_type_is_raw() {
         let payload = short_payload(SHORT_HEADER, 100, &[0x00, 0x00]);
-        let (parsed, _) = short_reader(&payload);
+        let parsed = short_reader(&payload);
         assert_eq!(parsed.metadata_type, MetadataType::Reserved(100));
         assert!(matches!(
             parsed.unit.unwrap().payload,

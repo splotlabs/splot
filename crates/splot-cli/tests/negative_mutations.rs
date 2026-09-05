@@ -39,34 +39,28 @@ use std::path::{Path, PathBuf};
 use splot_validate::Validator;
 
 /// A documented, deterministic in-memory mutation of a committed seed's bytes.
-enum Mutation {
-    /// Overwrite the byte at `offset` — which MUST currently equal `from` — with
-    /// `to`. Pinning the expected original byte (`from`) makes the mutation
-    /// self-validating: if a regenerated seed shifts the byte layout, the row
-    /// fails with a clear "seed layout drifted" message instead of silently
-    /// mutating the wrong byte (or panicking on an out-of-range index).
-    SetByte { offset: usize, from: u8, to: u8 },
+struct Mutation {
+    offset: usize,
+    from: u8,
+    to: u8,
 }
 
 impl Mutation {
     /// Applies the mutation to a clone of `seed`, returning the mutated bytes.
     fn apply(&self, seed: &[u8], what: &str) -> Vec<u8> {
         let mut bytes = seed.to_vec();
-        match *self {
-            Mutation::SetByte { offset, from, to } => {
-                assert!(
-                    offset < bytes.len(),
-                    "mutation offset {offset} ({what}) is past the {}-byte seed; the seed layout changed",
-                    bytes.len()
-                );
-                assert_eq!(
-                    bytes[offset], from,
-                    "mutation offset {offset} ({what}) holds 0x{:02x}, expected 0x{from:02x}; the seed layout drifted",
-                    bytes[offset]
-                );
-                bytes[offset] = to;
-            }
-        }
+        let Self { offset, from, to } = *self;
+        assert!(
+            offset < bytes.len(),
+            "mutation offset {offset} ({what}) is past the {}-byte seed; the seed layout changed",
+            bytes.len()
+        );
+        assert_eq!(
+            bytes[offset], from,
+            "mutation offset {offset} ({what}) holds 0x{:02x}, expected 0x{from:02x}; the seed layout drifted",
+            bytes[offset]
+        );
+        bytes[offset] = to;
         bytes
     }
 }
@@ -104,7 +98,7 @@ const MUTATIONS: &[MutationCase] = &[
     MutationCase {
         seed: "vectors/valid/syn-key-intra-64x64.ivf",
         what: "byte 6: shrink IVF header_len below the 32-byte baseline (0x20=32 -> 0x1F=31)",
-        mutation: Mutation::SetByte {
+        mutation: Mutation {
             offset: 6,
             from: 0x20,
             to: 0x1F,
@@ -114,7 +108,7 @@ const MUTATIONS: &[MutationCase] = &[
     MutationCase {
         seed: "vectors/valid/syn-key-intra-64x64.ivf",
         what: "byte 59: inflate OBU #2 obu_size LEB128 (0x50=80 -> 0x7F=127) past end of input",
-        mutation: Mutation::SetByte {
+        mutation: Mutation {
             offset: 59,
             from: 0x50,
             to: 0x7F,
@@ -130,7 +124,7 @@ const MUTATIONS: &[MutationCase] = &[
     MutationCase {
         seed: "vectors/valid/syn-key-intra-64x64.ivf",
         what: "byte 60: set OBU_CLOSED_LOOP_KEY obu_tlayer_id to 1 (0x10 -> 0x11)",
-        mutation: Mutation::SetByte {
+        mutation: Mutation {
             offset: 60,
             from: 0x10,
             to: 0x11,
@@ -140,7 +134,7 @@ const MUTATIONS: &[MutationCase] = &[
     MutationCase {
         seed: "vectors/valid/syn-key-intra-64x64.ivf",
         what: "byte 47: set OBU_SEQUENCE_HEADER obu_tlayer_id to 1 (0x04 -> 0x05)",
-        mutation: Mutation::SetByte {
+        mutation: Mutation {
             offset: 47,
             from: 0x04,
             to: 0x05,

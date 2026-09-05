@@ -443,9 +443,11 @@ impl ValidatorContext {
                 self.hls
                     .clear_global_lcr_extras(info.global_config_record_id);
                 for ptl in &info.seq_ptl_infos {
-                    self.hls.record_global_lcr_ptl(
-                        info.global_config_record_id,
-                        ExtendedLayerId::from_bits(ptl.xlayer_id),
+                    self.hls.global_lcr_ptl.insert(
+                        (
+                            info.global_config_record_id,
+                            ExtendedLayerId::from_bits(ptl.xlayer_id),
+                        ),
                         LcrPtlSnapshot {
                             seq_profile_idc: ptl.seq_profile_idc.get(),
                             max_level_idx: ptl.max_level_idx,
@@ -458,9 +460,8 @@ impl ValidatorContext {
                 for payload in &info.payloads {
                     let xlayer_id = ExtendedLayerId::from_bits(payload.xlayer_id);
                     if let Some(embedded) = &payload.xlayer_info.embedded_layer_info {
-                        self.hls.record_global_lcr_embedded(
-                            info.global_config_record_id,
-                            xlayer_id,
+                        self.hls.global_lcr_embedded.insert(
+                            (info.global_config_record_id, xlayer_id),
                             LcrEmbeddedMaps {
                                 mlayer_map: embedded.mlayer_map,
                                 tlayer_maps: embedded
@@ -484,9 +485,8 @@ impl ValidatorContext {
                         );
                     }
                     if let Some(rep_info) = &payload.xlayer_info.rep_info {
-                        self.hls.record_global_lcr_rep_info(
-                            info.global_config_record_id,
-                            xlayer_id,
+                        self.hls.global_lcr_rep_info.insert(
+                            (info.global_config_record_id, xlayer_id),
                             rep_info_snapshot(rep_info, obu.offset),
                         );
                     }
@@ -561,9 +561,8 @@ impl ValidatorContext {
                 self.hls.clear_local_lcr_embedded(xlayer, info.local_id);
                 self.hls.clear_local_lcr_extras(xlayer, info.local_id);
                 if let Some(embedded) = &info.xlayer_info.embedded_layer_info {
-                    self.hls.record_local_lcr_embedded(
-                        xlayer,
-                        info.local_id,
+                    self.hls.local_lcr_embedded.insert(
+                        (xlayer, info.local_id),
                         LcrEmbeddedMaps {
                             mlayer_map: embedded.mlayer_map,
                             tlayer_maps: embedded
@@ -587,9 +586,8 @@ impl ValidatorContext {
                     );
                 }
                 if let Some(ptl) = &info.seq_ptl_info {
-                    self.hls.record_local_lcr_ptl(
-                        xlayer,
-                        info.local_id,
+                    self.hls.local_lcr_ptl.insert(
+                        (xlayer, info.local_id),
                         LcrPtlSnapshot {
                             seq_profile_idc: ptl.seq_profile_idc.get(),
                             max_level_idx: ptl.max_level_idx,
@@ -600,9 +598,8 @@ impl ValidatorContext {
                     );
                 }
                 if let Some(rep_info) = &info.xlayer_info.rep_info {
-                    self.hls.record_local_lcr_rep_info(
-                        xlayer,
-                        info.local_id,
+                    self.hls.local_lcr_rep_info.insert(
+                        (xlayer, info.local_id),
                         rep_info_snapshot(rep_info, obu.offset),
                     );
                 }

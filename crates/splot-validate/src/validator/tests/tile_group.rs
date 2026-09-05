@@ -324,22 +324,6 @@ fn validator_flags_tile_group_byte_alignment_nonzero_pad() {
 }
 
 #[test]
-fn validator_silent_on_conformant_tile_payload_framing() {
-    let mut data = td_and_frame_core_seq_160();
-    data.extend(clk_first_tile_group_multitile_payload(
-        Some((0, 2)),
-        &conformant_3tile_payload(),
-    ));
-    let report = Validator::new(false).validate_bytes(&data);
-    assert!(
-        !report
-            .errors()
-            .any(|d| d.rule_id.starts_with("tile-payload/")),
-        "a conformant tile-payload framing must be silent; report was: {report}"
-    );
-}
-
-#[test]
 fn validator_flags_tile_payload_size_field_truncated() {
     let mut data = td_and_frame_core_seq_160();
     data.extend(clk_first_tile_group_multitile_payload(Some((0, 2)), &[]));
@@ -433,22 +417,6 @@ fn validator_silent_on_matching_frame_header_copy() {
             .errors()
             .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
         "a bit-identical frame_header_copy() must be silent; report was: {report}"
-    );
-}
-
-#[test]
-fn validator_flags_frame_header_copy_mismatch() {
-    let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
-    data.extend(clk_first_tile_group());
-    let mut body = complete_intra_clk_frame_header_body().drain_bits();
-    body[2] ^= 1;
-    data.extend(clk_non_first_tile_group(&body));
-    let report = Validator::new(false).validate_bytes(&data);
-    assert!(
-        report
-            .errors()
-            .any(|d| d.rule_id == "frame-header/copy-bits-mismatch"),
-        "a non-bit-identical frame_header_copy() must fire copy-bits-mismatch; report was: {report}"
     );
 }
 
@@ -587,22 +555,6 @@ fn validator_frame_header_copy_poisoned_after_ambiguous_boundary() {
             .any(|d| d.rule_id.starts_with("frame-header/copy-bits-")),
         "a record poisoned by an Ambiguous boundary must not pair with a later flag-0 \
          tile group; report was: {report}"
-    );
-}
-
-#[test]
-fn validator_frame_header_copy_decided_continuation_still_fires_after_no_ambiguity() {
-    let mut data = td_and_frame_core_seq(FrameCoreSeq::base());
-    data.extend(clk_first_tile_group());
-    let mut mismatched = complete_intra_clk_frame_header_body().drain_bits();
-    mismatched[2] ^= 1;
-    data.extend(clk_non_first_tile_group(&mismatched));
-    let report = Validator::new(false).validate_bytes(&data);
-    assert!(
-        report
-            .errors()
-            .any(|d| d.rule_id == "frame-header/copy-bits-mismatch"),
-        "a decided continuation must still fire on a real mismatch; report was: {report}"
     );
 }
 

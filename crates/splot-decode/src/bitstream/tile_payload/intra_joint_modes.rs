@@ -344,30 +344,17 @@ impl TileLumaPaletteState {
         let left = c.checked_sub(1).and_then(|col| self.palette_at(r, col));
         let mut cache = [0u16; 2 * PALETTE_MAX_SIZE];
         let mut len = 0usize;
-        let mut above_idx = 0usize;
-        let mut left_idx = 0usize;
-        let mut above_remaining = above.map_or(0, LumaPalette::size);
-        let mut left_remaining = left.map_or(0, LumaPalette::size);
+        let above_len = above.map_or(0, LumaPalette::size);
+        let left_len = left.map_or(0, LumaPalette::size);
         let above_colors = above.map_or([0; PALETTE_MAX_SIZE], LumaPalette::colors);
         let left_colors = left.map_or([0; PALETTE_MAX_SIZE], LumaPalette::colors);
-
-        while above_remaining > 0 && left_remaining > 0 {
-            push_palette_cache(&mut cache, &mut len, above_colors[above_idx]);
-            above_idx += 1;
-            above_remaining -= 1;
-            push_palette_cache(&mut cache, &mut len, left_colors[left_idx]);
-            left_idx += 1;
-            left_remaining -= 1;
-        }
-        while above_remaining > 0 {
-            push_palette_cache(&mut cache, &mut len, above_colors[above_idx]);
-            above_idx += 1;
-            above_remaining -= 1;
-        }
-        while left_remaining > 0 {
-            push_palette_cache(&mut cache, &mut len, left_colors[left_idx]);
-            left_idx += 1;
-            left_remaining -= 1;
+        for index in 0..above_len.max(left_len) {
+            if index < above_len {
+                push_palette_cache(&mut cache, &mut len, above_colors[index]);
+            }
+            if index < left_len {
+                push_palette_cache(&mut cache, &mut len, left_colors[index]);
+            }
         }
         (cache, len)
     }
@@ -575,8 +562,6 @@ impl TileUseDipState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileSegmentIdState {
-    origin_row: usize,
-    origin_col: usize,
     grid: MiGrid<u8>,
     predicted: MiGrid<u8>,
 }
@@ -591,15 +576,12 @@ impl TileSegmentIdState {
         let grid = mi_grid_new!(TileSegmentIdStateError, 0u8, rows, cols, Ok(()))?;
         let predicted = mi_grid_new!(TileSegmentIdStateError, 0u8, rows, cols, Ok(()))?;
         Ok(Self {
-            origin_row: mi_rows.start,
-            origin_col: mi_cols.start,
-            grid,
-            predicted,
+            grid: grid.with_origin(mi_rows.start, mi_cols.start),
+            predicted: predicted.with_origin(mi_rows.start, mi_cols.start),
         })
     }
 
     pub(crate) fn cell(&self, r: usize, c: usize) -> Option<u8> {
-        let (r, c) = self.local_position(r, c)?;
         self.grid.cell(r, c)
     }
 
@@ -611,20 +593,17 @@ impl TileSegmentIdState {
         n4h: usize,
         segment_id: u8,
     ) {
-        let Some(position) = self.local_position(r, c) else {
-            return;
-        };
-        self.grid.record_block(position, (n4w, n4h), segment_id);
+        self.grid.record_block((r, c), (n4w, n4h), segment_id);
     }
 
     pub(crate) fn predicted_context(&self, r: usize, c: usize) -> usize {
         let above = r
             .checked_sub(1)
-            .and_then(|r| self.cell_in(&self.predicted, r, c))
+            .and_then(|r| self.predicted.cell(r, c))
             .unwrap_or(0);
         let left = c
             .checked_sub(1)
-            .and_then(|c| self.cell_in(&self.predicted, r, c))
+            .and_then(|c| self.predicted.cell(r, c))
             .unwrap_or(0);
         usize::from(above) + usize::from(left)
     }
@@ -637,23 +616,8 @@ impl TileSegmentIdState {
         n4h: usize,
         predicted: bool,
     ) {
-        let Some(position) = self.local_position(r, c) else {
-            return;
-        };
         self.predicted
-            .record_block(position, (n4w, n4h), u8::from(predicted));
-    }
-
-    fn cell_in(&self, grid: &MiGrid<u8>, r: usize, c: usize) -> Option<u8> {
-        let (r, c) = self.local_position(r, c)?;
-        grid.cell(r, c)
-    }
-
-    fn local_position(&self, r: usize, c: usize) -> Option<(usize, usize)> {
-        Some((
-            r.checked_sub(self.origin_row)?,
-            c.checked_sub(self.origin_col)?,
-        ))
+            .record_block((r, c), (n4w, n4h), u8::from(predicted));
     }
 
     pub(crate) fn predictor_and_ctx(
@@ -741,18 +705,19 @@ impl FrameSegmentIdMap {
         let rows = tile
             .grid
             .rows
-            .min(self.mi_rows.saturating_sub(tile.origin_row));
+            .min(self.mi_rows.saturating_sub(tile.grid.origin_row));
         let cols = tile
             .grid
             .cols
-            .min(self.mi_cols.saturating_sub(tile.origin_col));
+            .min(self.mi_cols.saturating_sub(tile.grid.origin_col));
         for local_row in 0..rows {
             let source = local_row.saturating_mul(tile.grid.cols);
             let target = tile
+                .grid
                 .origin_row
                 .saturating_add(local_row)
                 .saturating_mul(self.mi_cols)
-                .saturating_add(tile.origin_col);
+                .saturating_add(tile.grid.origin_col);
             let (Some(source), Some(target)) = (
                 tile.grid.cells.get(source..source.saturating_add(cols)),
                 self.cells.get_mut(target..target.saturating_add(cols)),
@@ -943,19 +908,7 @@ pub(crate) struct TileUvCflState {
 
 impl TileUvCflState {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileUvCflStateError> {
-        let grid = MiGrid::new_for_tile(
-            0..mi_rows,
-            0..mi_cols,
-            0,
-            |mi_rows, mi_cols| TileUvCflStateError::EmptyDimensions { mi_rows, mi_cols },
-            |operation, left, right| TileUvCflStateError::ArithmeticOverflow {
-                operation,
-                left,
-                right,
-            },
-            |source| TileUvCflStateError::Allocation { source },
-            Ok(()),
-        )?;
+        let grid = mi_grid_new_for_tile!(TileUvCflStateError, 0, 0..mi_rows, 0..mi_cols, Ok(()))?;
         Ok(Self { grid })
     }
 
@@ -1103,18 +1056,12 @@ pub(crate) struct TileIntraYModeState {
 
 impl TileIntraYModeState {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileIntraYModeStateError> {
-        let grid = MiGrid::new_for_tile(
+        let grid = mi_grid_new_for_tile!(
+            TileIntraYModeStateError,
+            None::<TileIntraYModeFacts>,
             0..mi_rows,
             0..mi_cols,
-            None::<TileIntraYModeFacts>,
-            |mi_rows, mi_cols| TileIntraYModeStateError::EmptyDimensions { mi_rows, mi_cols },
-            |operation, left, right| TileIntraYModeStateError::ArithmeticOverflow {
-                operation,
-                left,
-                right,
-            },
-            |source| TileIntraYModeStateError::Allocation { source },
-            Ok(()),
+            Ok(())
         )?;
         Ok(Self { grid })
     }

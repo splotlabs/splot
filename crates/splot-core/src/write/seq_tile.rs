@@ -39,6 +39,7 @@
 //! (`SequenceHeader::unimplemented_at`) cannot be re-emitted at all and is rejected with
 //! [`WriteError::UnwritableSequenceHeader`].
 
+use super::seq_config::check_field_width;
 #[cfg(test)]
 use crate::headers::sequence::Tier;
 use crate::headers::sequence::{
@@ -62,16 +63,6 @@ use crate::write::seq_header::{check_general_encodable, write_sequence_header_ge
 /// (AV2 v1.0.0 § 5.18.7.3: `if (seq_level_idx != 31)`). Duplicated locally because the
 /// parser's copy in [`crate::tile`] is private.
 const NO_LEVEL_IDX: u8 = 31;
-
-/// Returns `Ok(())` if `value` fits in `width_bits`, else [`WriteError::ValueTooWide`].
-fn check_field_width(value: u64, width_bits: u32) -> WriteResult<()> {
-    let fits = width_bits >= 64 || value < (1u64 << width_bits);
-    if fits {
-        Ok(())
-    } else {
-        Err(WriteError::ValueTooWide { value, width_bits })
-    }
-}
 
 /// Writes `sequence_filter_config()` (AV2 v1.0.0 § 5.4.10,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-10`), the exact inverse of

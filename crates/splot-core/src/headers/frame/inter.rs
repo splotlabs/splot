@@ -1,68 +1,18 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! State-aware parsing of the non-intra `frame_header_info()` control region
-//! (AV2 v1.0.0 § 5.18.2, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
+//! State-aware non-intra frame-header control parsing (AV2 v1.0.0 § 5.18.2,
+//! `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
 //!
-//! This is the inter / switch / TIP / bridge counterpart of the intra control region in
-//! [`super::info`]. On the non-bridge path it begins after the output-control flags
-//! (`immediate_output_frame` / `implicit_output_frame`); on the bridge path the caller
-//! enters with `is_bridge == true` just after `bridge_frame_ref_idx`. It parses the
-//! reference-control region — primary-reference signaling (`signal_primary_ref_frame`,
-//! `disable_cross_frame_cdf_init`, `primary_ref_frame`), the bridge
-//! `bridge_frame_overwrite_flag`, the per-arm `refresh_frame_flags`, the explicit
-//! reference map (`frame_explicit_ref_frame_map`, `num_total_refs`, `ref_frame_idx[i]`),
-//! the reference-state-grounded frame sizes (`frame_size_with_refs()` § 5.18.4.3,
-//! `frame_size_with_bridge()` § 5.18.4.2), the BRU triple (`use_bru` / `bru_ref` /
-//! `bru_inactive`), `use_ref_frame_mvs` / `tmvp_sample_step_minus_1`, the TIP block,
-//! `frame_opfl_refine_type()` (§ 5.18.3.2), `screen_content_params()` / `intrabc_params()`,
-//! the `max_drl_bits_minus_1` override, the MV precision, `read_interpolation_filter()`
-//! (§ 5.18.5.1), the `frame_enabled_motion_modes` loop, and — on the ordinary inter /
-//! switch path — `disable_cdf_update` (mirror :5041) immediately before the shared tail —
-//! exactly per the mirror, gated on the parsed sequence configuration and the modeled
-//! reference state.
-//!
-//! Per-block bit alignment is anchored on a few § 3 / Table 6.5 constants that select read
-//! widths and presence: [`PRIMARY_REF_NONE`] / [`PRIMARY_REF_CHOOSE`] (the inferred
-//! primary-reference values), [`REFINE_AUTO`] / [`REFINE_SWITCHABLE`] (the
-//! `frame_opfl_refine_type()` arm and its `opfl_refine_all` gate), and
-//! [`MAX_REF_MV_STACK_SIZE`] / [`MOTION_MODES`] / [`INTERINTRA`] (the `ns(n)` / loop
-//! bounds). A wrong constant silently mis-positions every following field.
-//!
-//! ## Stop taxonomy
-//!
-//! [`parse_inter_control_into`] fills a caller-owned [`InterControl`] carrying every
-//! exactly-determined field plus the terminal [`InterStop`]. The variants are all
-//! **coverage** stops, never
-//! truncations:
-//! - [`InterStop::ReachedSharedTail`] — the control region parsed through every modeled
-//!   field, including `disable_cdf_update`, up to the shared `tile_info()` (mirror :5183);
-//!   the caller continues into the shared structure cluster.
-//! - [`InterStop::BruInactiveOrBridgeReturn`] / [`InterStop::TipAsOutputReturn`] — the
-//!   `bru_inactive` / `IsBridge` (mirror :4971/:5045) or TIP-as-output (mirror :4945) arm
-//!   selects its terminal tail. The caller models the TIP tail; BRU/bridge still stops on
-//!   reference-derived quantization state.
-//! - [`InterStop::UnmodeledDerivation`] — a derivation needing unmodeled syntax
-//!   (`get_ref_frames()` for the implicit reference map).
-//! - [`InterStop::PoisonedReferenceState`] — see *Honest poisoning* below.
-//!
-//! ## Honest poisoning
-//!
-//! Many § 5.18.2 inter derivations consume per-slot reference facts the validator models
-//! in [`super::FrameReferenceStateView`] (`RefValid[]`, `RefOrderHint[]`, dims). Where a
-//! derivation that affects **bit positions** needs a slot the model has not proven valid
-//! (an `Unknown` / `ProvenInvalid` slot, or no modeled buffer at all), the parser stops
-//! honestly with [`InterStop::PoisonedReferenceState`] — the facts parsed up to that
-//! branch are preserved on the returned [`InterControl`]. Derivations the model cannot
-//! perform without unmodeled syntax (`get_ref_frames()` for the implicit reference map,
-//! `get_past_future_cur_ref_lists()`) stop with [`InterStop::UnmodeledDerivation`].
-//!
-//! The parser never guesses a bit position: a stop is taken *before* the first read whose
-//! width or presence depends on an unavailable derivation.
+//! Parses reference selection, frame size, BRU/TIP, motion controls, and CDF flags.
+//! [`InterStop`] identifies the selected terminal/shared tail or missing state.
+//! [`parse_inter_control_into`] updates caller-owned state so modeled fields survive EOF.
+//! A missing reference fact stops parsing before any read whose presence or width
+//! depends on that fact.
 
 use crate::bitio::BitReader;
 use crate::error::Result;
-use crate::headers::frame::config::{parse_intrabc_params, parse_screen_content_params_full};
+use crate::headers::frame::config::{parse_intrabc_params_full, parse_screen_content_params_full};
 use crate::headers::frame::filtering::{InterpolationFilter, read_interpolation_filter};
 use crate::headers::frame::get_ref_frames::{
     GetRefFrames, GetRefFramesInput, RESTRICTED_OH, RefIdxBuf, RefSlot, get_ref_frames,
@@ -222,14 +172,8 @@ pub enum InterStop {
     /// / `IsBridge` were not set (so the early-return arm at mirror :4971/:5045 is not
     /// taken). The caller continues into the shared tail.
     ReachedSharedTail,
-    /// `bru_inactive` or `IsBridge` was set, so the control region took the early-return arm
-    /// (mirror :4971/:5045). On this non-intra path the arm's `base_q_idx = RefBaseQIdx[refIdx]` /
-    /// `DeltaQ` are reference-derived (no-bit) values this phase does not thread, so the parse
-    /// stops at the start of that arm with the facts preserved. (`tile_info()` reads zero bits for
-    /// a bridge, and `film_grain_config()` reads zero bits here because `immediate_output_frame ==
-    /// 0` on this path forces `apply_grain == 0`; they do NOT need reference-frame dims. The
-    /// single-picture-bridge `FrameIsIntra` path, where `immediate_output_frame == 1` makes the
-    /// grain tail non-trivial, is handled separately by `parse_single_picture_bridge_tail`.)
+    /// BRU inactivity or a bridge selects the early-return tail (§ 5.18.2).
+    /// The caller completes that tail when its reference-derived state is available.
     BruInactiveOrBridgeReturn,
     /// `TipFrameMode == TIP_FRAME_AS_OUTPUT`, so the control region selects the TIP-output
     /// terminal tail (mirror :4945-5031). The caller continues with its quantization,
@@ -571,13 +515,13 @@ fn read_inter_refresh_frame_flags(
         }
         if seq.enable_short_refresh_frame_flags {
             return if reader.read_flag()? {
-                let idx = reader.read_f(ceil_log2(seq.num_ref_frames))?;
+                let idx = reader.read_bits(ceil_log2(seq.num_ref_frames))?;
                 Ok(Some(1u32.wrapping_shl(idx)))
             } else {
                 Ok(Some(0))
             };
         }
-        return Ok(Some(reader.read_f(seq.num_ref_frames)?));
+        return Ok(Some(reader.read_bits(seq.num_ref_frames)?));
     }
 
     if ctx.obu_type == ObuType::RasFrame && seq.max_mlayer_id == 0 {
@@ -592,19 +536,19 @@ fn read_inter_refresh_frame_flags(
     }
 
     if ctx.frame_type == FrameType::Switch {
-        return Ok(Some(reader.read_f(seq.num_ref_frames)?));
+        return Ok(Some(reader.read_bits(seq.num_ref_frames)?));
     }
 
     if seq.enable_short_refresh_frame_flags {
         let has = reader.read_flag()?;
         if has {
-            let frame_to_refresh = reader.read_f(ceil_log2(seq.num_ref_frames))?;
+            let frame_to_refresh = reader.read_bits(ceil_log2(seq.num_ref_frames))?;
             return Ok(Some(1u32.wrapping_shl(frame_to_refresh)));
         }
         return Ok(Some(0));
     }
 
-    Ok(Some(reader.read_f(seq.num_ref_frames)?))
+    Ok(Some(reader.read_bits(seq.num_ref_frames)?))
 }
 
 /// Parses the `!FrameIsIntra` reference-control region (AV2 § 5.18.2 mirror :4577-5181),
@@ -649,7 +593,7 @@ fn parse_inter_reference_region(
         let idx = if ctx.is_bridge {
             ctx.bridge_frame_ref_idx.unwrap_or(0)
         } else if explicit_ref_frame_map {
-            reader.read_f(ref_idx_bits)?
+            reader.read_bits(ref_idx_bits)?
         } else {
             break;
         };
@@ -721,7 +665,7 @@ fn parse_inter_reference_region(
         control.use_bru = Some(use_bru);
         if use_bru {
             let n = ceil_log2(num_total_refs);
-            control.bru_ref = Some(reader.read_f(n)?); // bru_ref f(n)
+            control.bru_ref = Some(reader.read_bits(n)?); // bru_ref f(n)
             control.bru_inactive = Some(reader.read_flag()?); // bru_inactive f(1)
         } else {
             control.bru_inactive = Some(false);
@@ -842,11 +786,14 @@ fn parse_inter_reference_region(
         seq.seq_force_integer_mv,
     )?;
     control.allow_screen_content_tools = Some(scc.allow_screen_content_tools);
-    control.allow_intrabc = Some(parse_intrabc_params(
-        reader,
-        false, // FrameIsIntra == false on the inter path
-        seq.allow_frame_max_bvp_drl_bits,
-    )?);
+    control.allow_intrabc = Some(
+        parse_intrabc_params_full(
+            reader,
+            false, // FrameIsIntra == false on the inter path
+            seq.allow_frame_max_bvp_drl_bits,
+        )?
+        .allow_intrabc,
+    );
 
     let mut max_drl_bits_minus_1 = seq.seq_max_drl_bits_minus_1;
     if seq.allow_frame_max_drl_bits {
@@ -970,24 +917,10 @@ fn parse_frame_size_with_refs(
     Ok(Some(FrameSize::new(w, h)))
 }
 
-/// Derives the implicit reference map via `get_ref_frames()` (AV2 § 7.7), gated to the
-/// **at-most-one-valid-reference** case the modeled reference state can resolve EXACTLY.
-///
-/// § 7.7 ranks distinct references by a score built from `RefBaseQIdx`, `RefMLayerId`,
-/// `RefTLayerId`, `RefCounter`, the per-frame `AllowedFrames`, and the layer-dependency maps —
-/// state [`FrameReferenceStateView`] does not (yet) model beyond `RefValid` / `RefOrderHint` /
-/// dims. When the modeled view proves **at most one** `RefValid` slot, the score / sort / drop
-/// / restricted-append machinery is irrelevant: the result is `NumTotalRefs = Min(NRanked,
-/// ActiveNumRefFrames)` over a single distinct reference, i.e. `ref_frame_idx = [theSlot]`
-/// (one valid slot) or the empty map (none). That outcome is independent of every unmodeled
-/// score input, so building a [`GetRefFramesInput`] with deterministic single-layer defaults
-/// (each valid slot a distinct `RefCounter`, `AllowedFrames = -1`, layers depend) yields the
-/// EXACT § 7.7 answer — this is the real ranking, not a hardcoded `[0]`.
-///
-/// Returns `Some(GetRefFrames)` when the gate holds (`<= 1` proven-valid slot AND the view
-/// models `RefValid`), else `None` (the caller stops with [`InterStop::UnmodeledDerivation`] —
-/// a richer reference state needs the unmodeled scoring inputs). `check_res` is the § 7.7
-/// `checkRes` input (`false` for the first call mirror :4607, `true` for the second :4647).
+/// Derives the implicit map via AV2 § 7.7 with single-layer dependency defaults.
+/// Multiple valid slots require complete quantizer, order-hint, and dimension slices
+/// (and frame dimensions for `check_res`). At most one valid slot needs no ranking score.
+/// Returns `None` when required state is unavailable.
 fn derive_implicit_ref_map(
     seq: &InterSeqView,
     ctx: &InterFrameContext,
@@ -1358,54 +1291,33 @@ mod tests {
     }
 
     #[test]
-    fn opfl_refine_auto_switchable_skips_opfl_refine_all() {
-        let mut bits = Bits::default();
-        opfl_refine_prefix(&mut bits);
-        bits.bit(1); // opfl_refine_type = 1 (REFINE_SWITCHABLE) -> NO opfl_refine_all
-        opfl_refine_tail(&mut bits);
-        let data = bits.into_bytes();
-        let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let mut seq = inter_seq();
-        seq.enable_opfl_refine = REFINE_AUTO;
-        let ctx = inter_ctx();
-        let rs = FrameReferenceStateView::unknown();
-        let mut control = InterControl::default();
-        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
-        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
-        assert_eq!(control.opfl_refine_type, Some(REFINE_SWITCHABLE));
-        assert_eq!(control.allow_intrabc, Some(false));
-        assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
-        assert_eq!(
-            control.interpolation_filter,
-            Some(InterpolationFilter::Switchable)
-        );
-        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
-    }
-
-    #[test]
-    fn opfl_refine_auto_non_switchable_reads_opfl_refine_all() {
-        let mut bits = Bits::default();
-        opfl_refine_prefix(&mut bits);
-        bits.bit(0); // opfl_refine_type = 0 (REFINE_NONE) -> opfl_refine_all IS read
-        bits.bit(0); // opfl_refine_all f(1)
-        opfl_refine_tail(&mut bits);
-        let data = bits.into_bytes();
-        let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let mut seq = inter_seq();
-        seq.enable_opfl_refine = REFINE_AUTO;
-        let ctx = inter_ctx();
-        let rs = FrameReferenceStateView::unknown();
-        let mut control = InterControl::default();
-        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
-        assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
-        assert_eq!(control.opfl_refine_type, Some(REFINE_NONE));
-        assert_eq!(control.allow_intrabc, Some(false));
-        assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
-        assert_eq!(
-            control.interpolation_filter,
-            Some(InterpolationFilter::Switchable)
-        );
-        assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    fn opfl_refine_auto_preserves_following_bit_alignment() {
+        for (switchable, expected) in [(1, REFINE_SWITCHABLE), (0, REFINE_NONE)] {
+            let mut bits = Bits::default();
+            opfl_refine_prefix(&mut bits);
+            bits.bit(switchable);
+            if switchable == 0 {
+                bits.bit(0); // opfl_refine_all
+            }
+            opfl_refine_tail(&mut bits);
+            let data = bits.into_bytes();
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            let mut seq = inter_seq();
+            seq.enable_opfl_refine = REFINE_AUTO;
+            let ctx = inter_ctx();
+            let rs = FrameReferenceStateView::unknown();
+            let mut control = InterControl::default();
+            parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
+            assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
+            assert_eq!(control.opfl_refine_type, Some(expected));
+            assert_eq!(control.allow_intrabc, Some(false));
+            assert_eq!(control.mv_precision, Some(MvPrecision::HalfPel));
+            assert_eq!(
+                control.interpolation_filter,
+                Some(InterpolationFilter::Switchable)
+            );
+            assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+        }
     }
 
     #[test]
@@ -1505,26 +1417,29 @@ mod tests {
     /// stop (the § 7.7 ranking needs the unmodeled RefBaseQIdx / RefCounter / layer scoring).
     #[test]
     fn inter_implicit_map_two_valid_slots_stops_unmodeled() {
-        let mut bits = Bits::default();
-        bits.bit(0); // signal_primary_ref_frame
-        bits.bit(0); // disable_cross_frame_cdf_init
-        bits.f(0, 8); // refresh_frame_flags f(8)
-        let data = bits.into_bytes();
-        let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let mut seq = inter_seq();
-        seq.explicit_ref_frame_map = false;
-        let ctx = inter_ctx();
-        let mut ref_valid = [false; NUM_REF_FRAMES];
-        ref_valid[0] = true;
-        ref_valid[2] = true;
-        let ref_oh = [0u32; NUM_REF_FRAMES];
-        let ref_w = [64u32; NUM_REF_FRAMES];
-        let ref_h = [64u32; NUM_REF_FRAMES];
-        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
-        let mut control = InterControl::default();
-        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
-        assert_eq!(control.num_total_refs, None);
-        assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
+        for (second_slot, order_hint) in [(2, 0), (1, 10)] {
+            let mut bits = Bits::default();
+            bits.bit(0); // signal_primary_ref_frame
+            bits.bit(0); // disable_cross_frame_cdf_init
+            bits.f(0, 8); // refresh_frame_flags f(8)
+            let data = bits.into_bytes();
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            let mut seq = inter_seq();
+            seq.explicit_ref_frame_map = false;
+            let mut ctx = inter_ctx();
+            ctx.order_hint = Some(order_hint);
+            let mut ref_valid = [false; NUM_REF_FRAMES];
+            ref_valid[0] = true;
+            ref_valid[second_slot] = true;
+            let ref_oh = [0u32; NUM_REF_FRAMES];
+            let ref_w = [64u32; NUM_REF_FRAMES];
+            let ref_h = [64u32; NUM_REF_FRAMES];
+            let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+            let mut control = InterControl::default();
+            parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
+            assert_eq!(control.num_total_refs, None);
+            assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
+        }
     }
 
     /// AV2 § 7.7 — with `RefBaseQIdx` modeled, the implicit map over TWO valid slots is
@@ -1572,34 +1487,6 @@ mod tests {
         assert_eq!(control.num_total_refs, Some(2));
         assert_eq!(control.ref_frame_idx, vec![0, 1]);
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
-    }
-
-    /// AV2 § 7.7 — even with TWO valid slots, a `from_slots` view (no `RefBaseQIdx`) STAYS
-    /// an honest `UnmodeledDerivation` stop: the `from_slots_with_base_q_idx` constructor is
-    /// the ONLY way to lift the gate, so the historical callers are unaffected.
-    #[test]
-    fn inter_implicit_map_two_valid_slots_without_base_q_idx_stops_unmodeled() {
-        let mut bits = Bits::default();
-        bits.bit(0); // signal_primary_ref_frame
-        bits.bit(0); // disable_cross_frame_cdf_init
-        bits.f(0, 8); // refresh_frame_flags f(8)
-        let data = bits.into_bytes();
-        let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let mut seq = inter_seq();
-        seq.explicit_ref_frame_map = false;
-        let mut ctx = inter_ctx();
-        ctx.order_hint = Some(10);
-        let mut ref_valid = [false; NUM_REF_FRAMES];
-        ref_valid[0] = true;
-        ref_valid[1] = true;
-        let ref_oh = [0u32; NUM_REF_FRAMES];
-        let ref_w = [64u32; NUM_REF_FRAMES];
-        let ref_h = [64u32; NUM_REF_FRAMES];
-        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
-        let mut control = InterControl::default();
-        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
-        assert_eq!(control.num_total_refs, None);
-        assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
     }
 
     /// AV2 § 7.7 — INCOMPLETE ranking inputs over TWO valid slots STAY an honest
@@ -2131,6 +2018,44 @@ mod tests {
         );
     }
 
+    fn fixture_sequence_and_inter_obu(
+        data: &[u8],
+    ) -> (
+        crate::headers::sequence::SequenceHeader,
+        crate::annexb::ObuEnvelope<'_>,
+    ) {
+        use crate::headers::sequence::SequenceHeader;
+        use crate::obu::{ParsedObu, PayloadStatus};
+        use crate::stream::{ParsedBitstream, parse_bitstream_partial};
+
+        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(data) else {
+            panic!("fixture is an IVF container");
+        };
+        let mut seq_header: Option<SequenceHeader> = None;
+        let mut inter_obu: Option<crate::annexb::ObuEnvelope<'_>> = None;
+        for frame in &ivf.frames {
+            for obu in &frame.obus {
+                match obu.header.obu_type {
+                    ObuType::SequenceHeader => {
+                        if let Ok(PayloadStatus::Parsed(ParsedObu::SequenceHeader(sh))) =
+                            obu.payload_status()
+                        {
+                            seq_header = Some(*sh);
+                        }
+                    }
+                    ObuType::RegularTileGroup if inter_obu.is_none() => {
+                        inter_obu = Some(*obu);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (
+            seq_header.expect("fixture has a sequence header"),
+            inter_obu.expect("fixture has a regular tile group (inter) frame"),
+        )
+    }
+
     /// AV2 § 7.7 + § 5.18.2 — drive the REAL `syn-key-inter-64x64` fixture's inter frame
     /// through `parse_frame_header_core` with the post-key reference state, and prove the
     /// implicit reference map (`get_ref_frames()`) now advances the parser PAST
@@ -2152,40 +2077,11 @@ mod tests {
         use crate::headers::frame::info::{
             FrameHeaderParseInput, FrameHeaderParseMode, parse_frame_header_core,
         };
-        use crate::headers::sequence::SequenceHeader;
-        use crate::obu::{ParsedObu, PayloadStatus};
-        use crate::stream::{ParsedBitstream, parse_bitstream_partial};
 
         let data = include_bytes!(
             "../../../../../tests/conformance/vectors/valid/syn-key-inter-64x64.ivf"
         );
-        let parsed = parse_bitstream_partial(data);
-        let ParsedBitstream::Ivf(ivf) = parsed else {
-            panic!("fixture is an IVF container");
-        };
-
-        // Collect every OBU across the IVF frame payloads, in stream order.
-        let mut seq_header: Option<SequenceHeader> = None;
-        let mut inter_obu: Option<crate::annexb::ObuEnvelope<'_>> = None;
-        for frame in &ivf.frames {
-            for obu in &frame.obus {
-                match obu.header.obu_type {
-                    ObuType::SequenceHeader => {
-                        if let Ok(PayloadStatus::Parsed(ParsedObu::SequenceHeader(sh))) =
-                            obu.payload_status()
-                        {
-                            seq_header = Some(*sh);
-                        }
-                    }
-                    ObuType::RegularTileGroup if inter_obu.is_none() => {
-                        inter_obu = Some(*obu);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let seq_header = seq_header.expect("fixture has a sequence header");
-        let inter_obu = inter_obu.expect("fixture has a regular tile group (inter) frame");
+        let (seq_header, inter_obu) = fixture_sequence_and_inter_obu(data);
 
         let mut ref_valid = [false; NUM_REF_FRAMES];
         let mut ref_oh = [0u32; NUM_REF_FRAMES];
@@ -2238,37 +2134,11 @@ mod tests {
         use crate::headers::frame::info::{
             FrameHeaderParseInput, FrameHeaderParseMode, parse_frame_header_core,
         };
-        use crate::headers::sequence::SequenceHeader;
-        use crate::obu::{ParsedObu, PayloadStatus};
-        use crate::stream::{ParsedBitstream, parse_bitstream_partial};
 
         let data = include_bytes!(
             "../../../../../tests/conformance/vectors/valid/syn-key-inter-64x64.ivf"
         );
-        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(data) else {
-            panic!("fixture is an IVF container");
-        };
-        let mut seq_header: Option<SequenceHeader> = None;
-        let mut inter_obu: Option<crate::annexb::ObuEnvelope<'_>> = None;
-        for frame in &ivf.frames {
-            for obu in &frame.obus {
-                match obu.header.obu_type {
-                    ObuType::SequenceHeader => {
-                        if let Ok(PayloadStatus::Parsed(ParsedObu::SequenceHeader(sh))) =
-                            obu.payload_status()
-                        {
-                            seq_header = Some(*sh);
-                        }
-                    }
-                    ObuType::RegularTileGroup if inter_obu.is_none() => {
-                        inter_obu = Some(*obu);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let seq_header = seq_header.unwrap();
-        let inter_obu = inter_obu.unwrap();
+        let (seq_header, inter_obu) = fixture_sequence_and_inter_obu(data);
 
         // Two valid slots: the § 7.7 ranking now depends on the unmodeled scoring inputs.
         let mut ref_valid = [false; NUM_REF_FRAMES];
@@ -2327,37 +2197,11 @@ mod tests {
             parse_frame_header_core,
         };
         use crate::headers::frame::tail::TxMode;
-        use crate::headers::sequence::SequenceHeader;
-        use crate::obu::{ParsedObu, PayloadStatus};
-        use crate::stream::{ParsedBitstream, parse_bitstream_partial};
 
         let data = include_bytes!(
             "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
         );
-        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(data) else {
-            panic!("fixture is an IVF container");
-        };
-        let mut seq_header: Option<SequenceHeader> = None;
-        let mut inter_obu: Option<crate::annexb::ObuEnvelope<'_>> = None;
-        for frame in &ivf.frames {
-            for obu in &frame.obus {
-                match obu.header.obu_type {
-                    ObuType::SequenceHeader => {
-                        if let Ok(PayloadStatus::Parsed(ParsedObu::SequenceHeader(sh))) =
-                            obu.payload_status()
-                        {
-                            seq_header = Some(*sh);
-                        }
-                    }
-                    ObuType::RegularTileGroup if inter_obu.is_none() => {
-                        inter_obu = Some(*obu);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let seq_header = seq_header.expect("fixture has a sequence header");
-        let inter_obu = inter_obu.expect("fixture has a regular tile group (inter) frame");
+        let (seq_header, inter_obu) = fixture_sequence_and_inter_obu(data);
 
         let mut ref_valid = [false; NUM_REF_FRAMES];
         let mut ref_oh = [0u32; NUM_REF_FRAMES];

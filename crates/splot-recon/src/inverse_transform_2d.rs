@@ -24,12 +24,6 @@
 //! internally. The rescale parity and identity scales use the *original* log2
 //! dimensions, exactly as the spec specifies, so transforms with a 64-sample
 //! dimension (whose adjusted parity differs) rescale correctly.
-//!
-//! The § 7.15.4 outer process — the `Adjusted_Tx_Size` lookup itself, the
-//! `Transform_Shift` / `get_transform_1d_type` derivations, the `Lossless &&
-//! IDTX` bit-shift shortcut, the DPCM cumulative sum, and the adjusted-size
-//! sample duplication — is out of scope and tracked by its own future row, as
-//! are dequantization, the secondary transform, and residual addition.
 
 use crate::inverse_transform::{
     ColumnPass, InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,

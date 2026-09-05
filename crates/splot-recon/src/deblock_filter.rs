@@ -32,7 +32,7 @@
 //! caller — it passes the resolved widths, weights, level, thresholds, sample
 //! lines, and tables as scalars/slices, exactly as the other `splot-recon`
 //! primitives take caller-resolved spec-derived values. It does not read frame,
-//! segment, or tile state or wire into the runtime decode path.
+//! segment, or tile state.
 
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
@@ -1707,15 +1707,6 @@ mod tests {
         assert_eq!(
             deblock_filter_choice(&line, &line, &choice(8, 50, 100, 8, 8)).unwrap(),
             0
-        );
-    }
-
-    #[test]
-    fn filter_choice_width_three_flat_returns_three() {
-        let line = [128u16; 17];
-        assert_eq!(
-            deblock_filter_choice(&line, &line, &choice(8, 10, 2000, 3, 3)).unwrap(),
-            3
         );
     }
 

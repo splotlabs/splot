@@ -6,8 +6,7 @@
 //! Computes the order in which transform coefficients are scanned for a `w * h`
 //! transform block ([`05-syntax-structures.md`](../../../docs/spec/av2/1.0.0/05-syntax-structures.md)
 //! `#s-5-20-7-30`). The coefficient decode loop (§ 5.20.7) and the § 7.14.4
-//! coefficient placement consume this order; both will call it once the loop is
-//! wired. It is a pure permutation of `0..w*h`:
+//! coefficient placement consume this permutation of `0..w*h`:
 //!
 //! - `TX_CLASS_VERT`: row-major raster order (identity).
 //! - `TX_CLASS_HORIZ`: column-major (transpose) order.
@@ -16,7 +15,7 @@
 //!
 //! Like the rest of `splot-recon`, the block shape is caller-resolved: callers
 //! pass `w = Min(Tx_Width[txSz], 32)` and `h = Min(Tx_Height[txSz], 32)` rather
-//! than a `txSz` enum (`splot-recon` cannot reach `splot-core`'s § 9.2 tables).
+//! than a `txSz` enum.
 //!
 //! It also provides [`tx_class`], the AV2 `get_tx_class` mapping from a
 //! `PlaneTxType` to its [`TransformClass`] (the class then selects the scan via

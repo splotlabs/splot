@@ -131,7 +131,7 @@ fn live_eob_read_uses_selected_cdfs_and_literal_refinement() {
     )
     .unwrap();
 
-    assert_eq!(read.eob().eob(), 8);
+    assert_eq!(read.eob(), 8);
     assert_eq!(symbols.symbol_count(), 3);
     assert_eq!(tile, expected_tile);
     assert!(symbols.finish().is_ok());
@@ -155,7 +155,7 @@ fn live_eob_read_honors_disabled_cdf_updates() {
     )
     .unwrap();
 
-    assert_eq!(read.eob().eob(), 8);
+    assert_eq!(read.eob(), 8);
     assert_eq!(symbols.symbol_count(), 3);
     assert_eq!(tile, before);
 }

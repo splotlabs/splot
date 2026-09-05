@@ -227,10 +227,7 @@ fn seed_conformance(root: &Path, conformance: &[Seed]) -> Result<()> {
 /// Returns `prefix` concatenated with `body` (the seed = leading config bytes
 /// then the bitstream).
 fn prefixed(prefix: &[u8], body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(prefix.len() + body.len());
-    out.extend_from_slice(prefix);
-    out.extend_from_slice(body);
-    out
+    [prefix, body].concat()
 }
 
 /// Wraps `data` in a minimal 32-byte IVF header plus one 12-byte frame header so

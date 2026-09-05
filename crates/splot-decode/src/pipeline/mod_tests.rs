@@ -70,7 +70,8 @@ fn unsupported_reason<T>(result: Result<T>) -> Option<&'static str> {
 }
 
 #[test]
-fn every_output_adapter_rejects_invalid_frame_effects_in_the_shared_pipeline() {
+fn every_output_adapter_rejects_invalid_frame_effects_in_the_shared_pipeline()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut bytes = OUTPUT_EFFECT_CI_FIXTURE.to_vec();
     let payload_offset = match parse_bitstream_partial(&bytes) {
         ParsedBitstream::Ivf(ivf) => ivf
@@ -81,16 +82,9 @@ fn every_output_adapter_rejects_invalid_frame_effects_in_the_shared_pipeline() {
             .and_then(|obu| usize::try_from(obu.payload_offset().get()).ok()),
         ParsedBitstream::AnnexB(_) => None,
     };
-    assert!(payload_offset.is_some());
-    let Some(payload_offset) = payload_offset else {
-        return;
-    };
+    let payload_offset = payload_offset.ok_or("fixture lacks content interpretation")?;
     bytes[payload_offset] |= 0b01;
-    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)));
-    assert!(context.is_ok());
-    let Ok(context) = context else {
-        return;
-    };
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
 
     let results = [
         (
@@ -116,6 +110,7 @@ fn every_output_adapter_rejects_invalid_frame_effects_in_the_shared_pipeline() {
             "{adapter} output bypassed the shared effect validation"
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -196,12 +191,9 @@ fn in_band_long_term_prelude_does_not_cross_temporal_unit_boundary() {
 }
 
 #[test]
-fn continuation_prefix_locates_structure_with_and_without_header_copy() {
-    let recorded = recorded_header(0xa0, 4);
-    assert!(recorded.is_ok());
-    let Ok(recorded) = recorded else {
-        return;
-    };
+fn continuation_prefix_locates_structure_with_and_without_header_copy()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let recorded = recorded_header(0xa0, 4)?;
     let no_copy = [0x02, OBU_CLOSED_LOOP_KEY, 0x00];
     let no_copy_envelope = annexb_obus(&no_copy)[0];
     assert!(matches!(
@@ -215,27 +207,22 @@ fn continuation_prefix_locates_structure_with_and_without_header_copy() {
         continuation_structure_start_bits(matching_copy_envelope, &recorded),
         Ok(6)
     ));
+    Ok(())
 }
 
 #[test]
-fn continuation_prefix_rejects_mismatch_and_eof_in_header_copy() {
-    let one_bit_header = recorded_header(0x80, 1);
-    assert!(one_bit_header.is_ok());
-    let Ok(one_bit_header) = one_bit_header else {
-        return;
-    };
+fn continuation_prefix_rejects_mismatch_and_eof_in_header_copy()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let one_bit_header = recorded_header(0x80, 1)?;
     let mismatch = [0x02, OBU_CLOSED_LOOP_KEY, 0x40];
     let mismatch_envelope = annexb_obus(&mismatch)[0];
     assert!(continuation_structure_start_bits(mismatch_envelope, &one_bit_header).is_err());
 
-    let byte_header = recorded_header(0x80, 8);
-    assert!(byte_header.is_ok());
-    let Ok(byte_header) = byte_header else {
-        return;
-    };
+    let byte_header = recorded_header(0x80, 8)?;
     let truncated = [0x02, OBU_CLOSED_LOOP_KEY, 0x60];
     let truncated_envelope = annexb_obus(&truncated)[0];
     assert!(continuation_structure_start_bits(truncated_envelope, &byte_header).is_err());
+    Ok(())
 }
 
 #[test]
@@ -291,7 +278,8 @@ fn empty_ivf_decodes_to_empty_frame_set() -> std::result::Result<(), Box<dyn std
 }
 
 #[test]
-fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf() {
+fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let reserved_0 = [0x02, 0x00, 0x80];
     let reserved_26 = [0x02, OBU_RESERVED_26, 0x80];
     let payload = [
@@ -304,15 +292,11 @@ fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf() {
     .concat();
 
     let options = DecodeOptions::default();
-    let annex_b = prepare_byte_stream(&payload, &options);
-    assert!(annex_b.is_ok());
-    let Ok(annex_b) = annex_b else {
-        return;
-    };
+    let annex_b = prepare_byte_stream(&payload, &options)?;
     assert_eq!(annex_b.plan().obu_count(), 5);
     assert!(matches!(annex_b.parsed(), FlatParsedBitstream::AnnexB(_)));
     let FlatParsedBitstream::AnnexB(annex_b) = annex_b.parsed() else {
-        return;
+        return Err("unexpected prepared bitstream format".into());
     };
     assert_eq!(annex_b.obus.len(), 3);
     assert!(
@@ -323,26 +307,13 @@ fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf() {
     );
 
     let mut ivf_bytes = Vec::new();
-    let header_result =
-        write_ivf_header(&mut ivf_bytes, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1));
-    assert!(header_result.is_ok());
-    if header_result.is_err() {
-        return;
-    }
-    let frame_result = write_ivf_frame(&mut ivf_bytes, 0, &payload);
-    assert!(frame_result.is_ok());
-    if frame_result.is_err() {
-        return;
-    }
-    let ivf = prepare_byte_stream(&ivf_bytes, &options);
-    assert!(ivf.is_ok());
-    let Ok(ivf) = ivf else {
-        return;
-    };
+    write_ivf_header(&mut ivf_bytes, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1))?;
+    write_ivf_frame(&mut ivf_bytes, 0, &payload)?;
+    let ivf = prepare_byte_stream(&ivf_bytes, &options)?;
     assert_eq!(ivf.plan().obu_count(), 5);
     assert!(matches!(ivf.parsed(), FlatParsedBitstream::Ivf(_)));
     let FlatParsedBitstream::Ivf(ivf) = ivf.parsed() else {
-        return;
+        return Err("unexpected prepared bitstream format".into());
     };
     assert_eq!(ivf.frames.len(), 1);
     assert_eq!(ivf.frame_obus(&ivf.frames[0]).len(), 3);
@@ -351,10 +322,12 @@ fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf() {
             .iter()
             .all(|obu| !obu.header.obu_type.is_reserved())
     );
+    Ok(())
 }
 
 #[test]
-fn leading_frame_unit_allows_ops_before_sequence() {
+fn leading_frame_unit_allows_ops_before_sequence()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_OPERATING_POINT_SET).as_slice(),
@@ -365,11 +338,7 @@ fn leading_frame_unit_allows_ops_before_sequence() {
     .concat();
     let obus = annexb_obus(&bytes);
 
-    let leading = require_leading_frame_unit(&obus);
-    assert!(leading.is_ok());
-    let Ok(([td, sequence, key], frame_unit_len)) = leading else {
-        return;
-    };
+    let ([td, sequence, key], frame_unit_len) = require_leading_frame_unit(&obus)?;
 
     assert_eq!(td.header.obu_type, ObuType::TemporalDelimiter);
     assert_eq!(sequence.header.obu_type, ObuType::SequenceHeader);
@@ -377,6 +346,7 @@ fn leading_frame_unit_allows_ops_before_sequence() {
     assert_eq!(frame_unit_len, 4);
     assert_eq!(leading_record_inter_frame_unit_start(0, 4, &obus), Some(4));
     assert!(require_leading_ivf_obu_order(&obus).is_ok());
+    Ok(())
 }
 
 #[test]
@@ -398,7 +368,8 @@ fn inter_frame_unit_order_accepts_regular_tip_with_optional_film_grain() {
 }
 
 #[test]
-fn leading_frame_unit_allows_film_grain_before_key_and_inter() {
+fn leading_frame_unit_allows_film_grain_before_key_and_inter()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_OPERATING_POINT_SET).as_slice(),
@@ -411,19 +382,11 @@ fn leading_frame_unit_allows_film_grain_before_key_and_inter() {
     .concat();
     let obus = annexb_obus(&bytes);
 
-    let leading = require_leading_frame_unit(&obus);
-    assert!(leading.is_ok());
-    let Ok(([td, sequence, key], frame_unit_len)) = leading else {
-        return;
-    };
+    let ([td, sequence, key], frame_unit_len) = require_leading_frame_unit(&obus)?;
 
     assert_eq!(td.header.obu_type, ObuType::TemporalDelimiter);
     assert_eq!(sequence.header.obu_type, ObuType::SequenceHeader);
-    let leading_prefix_result = leading_prefix_obus(&obus);
-    assert!(leading_prefix_result.is_ok());
-    let Ok(leading_prefix) = leading_prefix_result else {
-        return;
-    };
+    let leading_prefix = leading_prefix_obus(&obus)?;
     assert_eq!(leading_prefix.len(), 4);
     assert_eq!(leading_prefix[2].offset, sequence.offset);
     assert_eq!(leading_prefix[3].header.obu_type, ObuType::FilmGrain);
@@ -431,10 +394,12 @@ fn leading_frame_unit_allows_film_grain_before_key_and_inter() {
     assert_eq!(frame_unit_len, 5);
     assert_eq!(leading_record_inter_frame_unit_start(0, 6, &obus), Some(5));
     assert!(require_leading_ivf_obu_order(&obus).is_ok());
+    Ok(())
 }
 
 #[test]
-fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter() {
+fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
         obu(OBU_SEQUENCE_HEADER).as_slice(),
@@ -446,11 +411,7 @@ fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter() {
     ]
     .concat();
     let obus = annexb_obus(&bytes);
-    let leading = require_leading_frame_unit(&obus);
-    assert!(leading.is_ok());
-    let Ok((_, frame_unit_len)) = leading else {
-        return;
-    };
+    let (_, frame_unit_len) = require_leading_frame_unit(&obus)?;
     let mut next_unvalidated = frame_unit_len;
 
     assert_eq!(frame_unit_len, 3);
@@ -461,4 +422,5 @@ fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter() {
     assert_eq!(next_unvalidated, 5);
     assert!(require_following_annexb_obu_order_through(&obus, &mut next_unvalidated, 6).is_ok());
     assert_eq!(next_unvalidated, 7);
+    Ok(())
 }

@@ -1551,28 +1551,32 @@ fn multiref_fixture_decodes_three_frames_bit_exact() {
 }
 
 #[test]
-fn multiref_fixture_decodes_when_two_frame_units_share_one_ivf_record() {
-    let repacked = repack_multiref_last_two_frames_into_one_ivf_record();
+fn multiref_fixture_decodes_repacked_frame_units() {
     let original = decode_fixture(MULTIREF_FIXTURE);
-    let grouped = decode_fixture(&repacked);
+    for repacked in [
+        repack_multiref_last_two_frames_into_one_ivf_record(),
+        repack_multiref_first_inter_into_leading_ivf_record(),
+    ] {
+        let grouped = decode_fixture(&repacked);
 
-    assert_eq!(grouped.len(), original.len());
-    for (index, (actual, expected)) in grouped.iter().zip(original.iter()).enumerate() {
-        assert_eq!(
-            actual.frame().y().samples(),
-            expected.frame().y().samples(),
-            "repacked frame {index} luma"
-        );
-        assert_eq!(
-            actual.frame().u().unwrap().samples(),
-            expected.frame().u().unwrap().samples(),
-            "repacked frame {index} U"
-        );
-        assert_eq!(
-            actual.frame().v().unwrap().samples(),
-            expected.frame().v().unwrap().samples(),
-            "repacked frame {index} V"
-        );
+        assert_eq!(grouped.len(), original.len());
+        for (index, (actual, expected)) in grouped.iter().zip(original.iter()).enumerate() {
+            assert_eq!(
+                actual.frame().y().samples(),
+                expected.frame().y().samples(),
+                "repacked frame {index} luma"
+            );
+            assert_eq!(
+                actual.frame().u().unwrap().samples(),
+                expected.frame().u().unwrap().samples(),
+                "repacked frame {index} U"
+            );
+            assert_eq!(
+                actual.frame().v().unwrap().samples(),
+                expected.frame().v().unwrap().samples(),
+                "repacked frame {index} V"
+            );
+        }
     }
 }
 
@@ -1585,32 +1589,6 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
         panic!("record-leading tile group must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
-}
-
-#[test]
-fn multiref_runtime_decodes_first_inter_from_leading_ivf_record() {
-    let repacked = repack_multiref_first_inter_into_leading_ivf_record();
-    let original = decode_fixture(MULTIREF_FIXTURE);
-    let grouped = decode_fixture(&repacked);
-
-    assert_eq!(grouped.len(), original.len());
-    for (index, (actual, expected)) in grouped.iter().zip(original.iter()).enumerate() {
-        assert_eq!(
-            actual.frame().y().samples(),
-            expected.frame().y().samples(),
-            "repacked frame {index} luma"
-        );
-        assert_eq!(
-            actual.frame().u().unwrap().samples(),
-            expected.frame().u().unwrap().samples(),
-            "repacked frame {index} U"
-        );
-        assert_eq!(
-            actual.frame().v().unwrap().samples(),
-            expected.frame().v().unwrap().samples(),
-            "repacked frame {index} V"
-        );
-    }
 }
 
 #[test]

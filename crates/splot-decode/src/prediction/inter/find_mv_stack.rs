@@ -275,7 +275,7 @@ fn mode_ctx_match_newmv(
         if cell.ref_frame0 == block.ref_frame0 {
             return Some(cell.newmv_for_list0());
         }
-        if cell.ref_frame1 == Some(block.ref_frame0) && cell.ref_frame0 != block.ref_frame0 {
+        if cell.ref_frame1 == Some(block.ref_frame0) {
             return Some(cell.newmv_for_list1());
         }
         return None;
@@ -1584,8 +1584,7 @@ fn scan_compound_mv_stack_probe(
             let Some(tip_refs) = temporal.tip_references() else {
                 return;
             };
-            if cell.flags.ref_frame0 != TIP_REF_FRAME
-                || cell.flags.ref_frame1.is_some()
+            if cell.flags.ref_frame1.is_some()
                 || (tip_refs.past_ref, tip_refs.future_ref) != (block.ref_frame0, ref_frame1)
             {
                 return;

@@ -149,8 +149,7 @@ pub(in crate::validator::tests) fn lcr_msdo_stream(
 ) -> Vec<u8> {
     let global = global_lcr_obu_agreement(global_id, global_xlayer_map, agg, ptls, global_doh);
     let headers_and_frames = {
-        let mut d = Vec::new();
-        d.extend(global.clone());
+        let mut d = global;
         d.extend(seq_header_obu_lcr_ref(0, 0, 0, true, global_id));
         d.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0
         d.extend(seq_header_obu_lcr_ref(1, 1, 0, true, global_id));
@@ -595,7 +594,7 @@ fn cmvs_boundary_set_mismatch_is_flagged() {
         false,
         &[(0, 0, 0, 0), (1, 0, 0, 0)],
     ));
-    data.extend(global.clone());
+    data.extend_from_slice(&global);
     data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 -> opens CMVS
     data.extend(temporal_delimiter_obu()); // temporal unit 2 (no MSDO)
@@ -620,7 +619,7 @@ fn cmvs_boundary_set_no_mismatch_when_clk_carries_msdo() {
         false,
         &[(0, 0, 0, 0), (1, 0, 0, 0)],
     ));
-    data.extend(global.clone());
+    data.extend_from_slice(&global);
     data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1));
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
     data.extend(temporal_delimiter_obu()); // TU2: carries an MSDO
@@ -674,7 +673,7 @@ fn cmvs_boundary_set_silent_when_activated_global_lcr_only_earlier_not_in_bounda
         false,
         &[(0, 0, 0, 0), (1, 0, 0, 0)],
     ));
-    data.extend(global.clone());
+    data.extend_from_slice(&global);
     data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // xlayer 0 activates global LCR 1
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 -> opens CMVS
     data.extend(temporal_delimiter_obu()); // TU2: boundary — global LCR present but unactivated here

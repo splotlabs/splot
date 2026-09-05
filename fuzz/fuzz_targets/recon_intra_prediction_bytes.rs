@@ -79,16 +79,13 @@ fn run_direct_dc_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth: BitD
         return;
     };
     let rect_stride = output_stride(input, rect_size.width());
-    let edges = dc_edges(edge_selector, &left[..left_len], &above[..above_len]);
     let _ = predict_intra_dc_rect_into(bit_depth, rect_size, edges, &mut rect_output, rect_stride);
 
-    let edges = dc_edges(edge_selector, &left[..left_len], &above[..above_len]);
     let _ = predict_intra_dc_subsampled_rect_value(bit_depth, rect_size, edges);
     let Some(mut subsampled_output) = output_buffer::<T>(input, rect_size, bit_depth) else {
         return;
     };
     let subsampled_stride = output_stride(input, rect_size.width());
-    let edges = dc_edges(edge_selector, &left[..left_len], &above[..above_len]);
     let _ = predict_intra_dc_subsampled_rect_into(
         bit_depth,
         rect_size,
@@ -107,14 +104,12 @@ fn run_direct_dc_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth: BitD
     };
     let square_edges = dc_edges(edge_selector, &square_left, &square_above);
     let _ = predict_intra_dc_square_value(bit_depth, square_size, square_edges);
-    let square_edges = dc_edges(edge_selector, &square_left, &square_above);
     let _ = predict_intra_dc_square(bit_depth, square_size, square_edges);
 
     let Some(mut square_output) = output_buffer::<T>(input, square_size.into(), bit_depth) else {
         return;
     };
     let square_stride = output_stride(input, square_size.side_len());
-    let square_edges = dc_edges(edge_selector, &square_left, &square_above);
     let _ = predict_intra_dc_square_into(
         bit_depth,
         square_size,
@@ -190,7 +185,7 @@ fn run_direct_cardinal_case<T: ReconSample>(input: &mut FuzzInput<'_>, bit_depth
     let left_len = maybe_short_len(size.height(), selector & 0b0000_0001 != 0);
     let above_len = maybe_short_len(size.width(), selector & 0b0000_0010 != 0);
     let direction = cardinal_direction(selector);
-    let edges = cardinal_edges(selector, &left[..left_len], &above[..above_len]);
+    let edges = directional_edges(selector, 2, &left[..left_len], &above[..above_len]);
     let stride = output_stride(input, size.width());
     let _ = predict_intra_cardinal_directional_rect_into(
         bit_depth,
@@ -255,7 +250,7 @@ fn run_direct_directional_angle_case<T: ReconSample>(
 
     let left_len = maybe_short_len(edge_len, selector & 0b0000_0010 != 0);
     let above_len = maybe_short_len(edge_len, selector & 0b0000_0100 != 0);
-    let edges = directional_angle_edges(selector, &left[..left_len], &above[..above_len]);
+    let edges = directional_edges(selector, 3, &left[..left_len], &above[..above_len]);
     let stride = output_stride(input, size.width());
     let angle = directional_angle(selector);
     let _ = predict_intra_directional_angle_rect_into(
@@ -475,22 +470,6 @@ fn dc_edges<'a, T: ReconSample>(
     }
 }
 
-fn cardinal_edges<'a, T: ReconSample>(
-    selector: u8,
-    left: &'a [T],
-    above: &'a [T],
-) -> IntraDirectionalAngleEdges<'a, T> {
-    directional_edges(selector, 2, left, above)
-}
-
-fn directional_angle_edges<'a, T: ReconSample>(
-    selector: u8,
-    left: &'a [T],
-    above: &'a [T],
-) -> IntraDirectionalAngleEdges<'a, T> {
-    directional_edges(selector, 3, left, above)
-}
-
 fn directional_edges<'a, T: ReconSample>(
     selector: u8,
     shift: u8,
@@ -525,12 +504,7 @@ fn output_buffer<T: ReconSample>(
 ) -> Option<Vec<T>> {
     let stride = size.width() + usize::from(input.byte()) % (MAX_STRIDE_PADDING + 1);
     let required = row_strided_len(size, stride);
-    let mut samples = Vec::new();
-    samples.try_reserve_exact(required).ok()?;
-    for _ in 0..required {
-        samples.push(sample_from_input::<T>(input, bit_depth)?);
-    }
-    Some(samples)
+    samples_from_input(input, required, bit_depth)
 }
 
 fn row_strided_len(size: IntraRectBlockSize, stride: usize) -> usize {
@@ -635,18 +609,17 @@ fn plane_from_input(input: &mut FuzzInput<'_>) -> PlaneId {
 }
 
 struct FuzzInput<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    bytes: std::slice::Iter<'a, u8>,
 }
 
 impl<'a> FuzzInput<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes: bytes.iter(),
+        }
     }
 
     fn byte(&mut self) -> u8 {
-        let byte = self.bytes.get(self.offset).copied().unwrap_or(0);
-        self.offset = self.offset.saturating_add(1);
-        byte
+        self.bytes.next().copied().unwrap_or(0)
     }
 }

@@ -48,7 +48,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         angle: IntraMiddleDirectionalAngle,
     ) -> Result<()> {
         let (target, rect, bit_depth) = self.intra_rect_target(plane, x, y, size)?;
-        target.predict_intra_middle_directional_angle_rect(rect, size, angle, bit_depth, plane)
+        target.predict_intra_middle_directional_angle_rect(rect, size, angle, bit_depth)
     }
 }
 
@@ -120,7 +120,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         size: IntraRectBlockSize,
         angle: IntraMiddleDirectionalAngle,
         bit_depth: BitDepth,
-        plane: PlaneId,
     ) -> Result<()> {
         self.ensure_rect(rect)?;
         let left = self.middle_directional_angle_edge_samples(
@@ -138,8 +137,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
         let output_start = self.sample_index(rect.x(), rect.y())?;
         let stride_samples = self.stride_samples();
-        if matches!(plane, PlaneId::Y) {
-            let (left_idif, above_idif) = extend_middle_idif_edges(&left, &above)?;
+        if matches!(self.plane, PlaneId::Y) {
+            let left_idif = extend_one_idif_edge(&left)?;
+            let above_idif = extend_one_idif_edge(&above)?;
             predict_intra_middle_directional_angle_rect_idif_into(
                 bit_depth,
                 size,
@@ -174,10 +174,6 @@ fn directional_angle_edge_len(size: IntraRectBlockSize) -> Result<usize> {
         .ok_or(ReconError::ArithmeticOverflow {
             context: "workspace directional angle prepared edge length",
         })
-}
-
-fn extend_middle_idif_edges<T: ReconSample>(left: &[T], above: &[T]) -> Result<(Vec<T>, Vec<T>)> {
-    Ok((extend_one_idif_edge(left)?, extend_one_idif_edge(above)?))
 }
 
 fn extend_one_sided_idif_edge<T: ReconSample>(corner: T, edge: &[T]) -> Result<Vec<T>> {

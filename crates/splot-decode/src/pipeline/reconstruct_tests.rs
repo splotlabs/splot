@@ -488,16 +488,8 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
     assert!(ibp_is_observable);
 }
 
-/// §7.13.2 ZONE-1 MULTI-REFERENCE-LINE GUARD — a D45 (`shift == 0`, the IDIF
-/// reduces to the copy `AboveRow[base]`) 4x4 zone-1 leaf at interior `(8, 8)` with
-/// `MrlIndex == 2`. The §7.13.2.1 above row is read from `CurrFrame[y - 1 -
-/// aboveMrlIndex] == CurrFrame[5]` (`aboveMrlIndex == MrlIndex == 2`, not a
-/// superblock-row boundary), NOT the immediate `CurrFrame[y - 1] == CurrFrame[7]`.
-/// Row 5 carries an ASCENDING pattern and rows 6/7 a DISTINCT constant (`200`), so a
-/// read of the adjacent line would copy `200` while the offset-line read copies the
-/// ascending values — making the reference-line offset observable. With D45 the
-/// projection `base = (i + 1 + MrlIndex) + j` so `pred[i][j] == AboveRow[i + 3 + j]`
-/// at the offset row.
+/// §7.13.2.1: MRL 2 at (8, 8) reads ascending row 5; adjacent rows 6/7
+/// contain 200. D45 copies `AboveRow[i + 3 + j]`, exposing the row offset.
 #[test]
 fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
     let mut ws =
@@ -846,7 +838,7 @@ fn zone2_mrl_synthesizes_both_missing_edges() {
         false,
         false,
         None,
-        MiddleEdgeAvailability {
+        IntraEdgeAvailability {
             above: false,
             left: false,
         },
@@ -861,15 +853,8 @@ fn zone2_mrl_synthesizes_both_missing_edges() {
     assert_eq!(actual, [128; 16]);
 }
 
-/// §7.13.2.8 ZONE-2 TWO-SIDED GUARD — a non-canonical `pAngle == 132` middle leaf
-/// over an 8x8 block at interior (8, 8) with a REAL, NON-FLAT above row + left
-/// column + DISTINCT diagonal corner, the §7.13.2.7 edge filter a NO-OP
-/// (`TwoSidedMiddleEdgeFilters` of defaults). The z2 IDIF reads the above edge
-/// (`base_x >= -1`) and falls to the left edge otherwise; the expected samples are
-/// the VERBATIM AVM `av2_highbd_dr_prediction_z2_idif_c` output (`dx =
-/// dr_intra_derivative[180 - 132] == 56`, `dy = dr_intra_derivative[132 - 90] ==
-/// 73`). The asymmetric above/left/corner make a swapped above↔left branch, a wrong
-/// `(dx, dy)`, or a corner mix-up observable — a flat block would MASK them.
+/// §7.13.2.8: pinned AVM `av2_highbd_dr_prediction_z2_idif_c` samples for
+/// pAngle 132 (`dx=56`, `dy=73`), with asymmetric edges and corner, no edge filter.
 #[test]
 fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
     let mut ws =
@@ -922,7 +907,7 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
         None,
         None,
         BitDepth::Eight,
-        MiddleEdgeAvailability {
+        IntraEdgeAvailability {
             above: true,
             left: true,
         },
@@ -972,7 +957,7 @@ fn zone2_top_row_left_edge_filter_matches_avm_z2_idif() {
         None,
         None,
         BitDepth::Eight,
-        MiddleEdgeAvailability {
+        IntraEdgeAvailability {
             above: false,
             left: true,
         },
@@ -1070,7 +1055,7 @@ fn d135_neighbour_masks_unavailable_tile_above_edge() {
             false,
             None,
             BitDepth::Eight,
-            MiddleEdgeAvailability {
+            IntraEdgeAvailability {
                 above: false,
                 left: true,
             },
@@ -1093,16 +1078,9 @@ fn d135_neighbour_masks_unavailable_tile_above_edge() {
     );
 }
 
-/// §7.13.2.1 ZONE-3 CORNER GUARD — a D203 (`pAngle == 203`) zone-3 8x8 leaf at an
-/// INTERIOR position (8, 8) with `have_above == true`. The §7.13.2.1 corner
-/// `LeftCol[-1]` must be the DIAGONAL above-left `CurrFrame[y - 1][x - 1] =
-/// (7, 7)`, NOT the left-column top `CurrFrame[y][x - 1] = (7, 8)`. The DISTINCT
-/// corner (`200`) vs the left column (`50..120`) makes the choice observable: the
-/// expected top row is the VERBATIM AVM `av2_highbd_dr_prediction_z3_idif_c` output
-/// reading the diagonal corner (`dy = dr_intra_derivative[270 - 203] == 24`, the
-/// 4-tap IDIF, no edge filter). Reading the column top instead would give `row0[0]
-/// == 53` not `39`. This pins the zone-3 corner fix (the prior code read `(x - 1,
-/// y)`, correct only for the frame-top `have_above == false` leaf).
+/// §7.13.2.1: D203 reads corner (7, 7), value 200, rather than column top
+/// (7, 8). Pinned AVM `av2_highbd_dr_prediction_z3_idif_c` output uses dy=24
+/// and the unfiltered 4-tap IDIF; the wrong corner yields 53 instead of 39.
 #[test]
 fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
     let mut ws =
@@ -1162,18 +1140,10 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
     assert_eq!(row0, [39, 48, 61, 65, 69, 72, 76, 80]);
 }
 
-/// §7.13.2 ZONE-3 MULTI-REFERENCE-LINE DIAGNOSTIC — a D203 (`dy ==
-/// dr_intra_derivative[270 - 203] == 24`) 8x8 zone-3 leaf at interior `(16, 16)`
-/// with `MrlIndex == 1`. The §7.13.2.1 left column is read from the offset column
-/// `CurrFrame[..][x - 1 - MrlIndex] == 14`, the corner from `CurrFrame[y - 1][14]`.
-/// The expected samples are computed INLINE from the VERBATIM AVM
-/// `av2_highbd_dr_prediction_z3_idif_c` over the same prepared edge, where `y_c ==
-/// dy * (1 + MrlIndex + c)`, `base == (y_c >> 6) + r`, `shift == (y_c >> 1) & 0x1F`,
-/// the 4-tap `Dr_Interp_Filter`, and the clamp `maxBase == w + h - 1 +
-/// (MrlIndex << 1) == 17`. This pins the zone-3 MRL geometry and edge independently
-/// of any partial-frame reconstruction; a primitive that read the immediate column
-/// (15), the wrong base shift, or the wrong maxBase would diverge from the reference.
-/// `FILTER` is the §7.13.2.8 `Dr_Interp_Filter` table.
+/// §7.13.2.1: MRL 1 at (16, 16) reads column 14 and corner (14, 15).
+/// The independent AVM `av2_highbd_dr_prediction_z3_idif_c` calculation uses
+/// dy=24, `y_c=dy*(1+MrlIndex+c)`, `base=(y_c>>6)+r`, `shift=(y_c>>1)&0x1F`,
+/// and `maxBase=w+h-1+(MrlIndex<<1)=17`. FILTER is §7.13.2.8 Dr_Interp_Filter.
 #[test]
 fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
     const FILTER: [[i32; 4]; 32] = [
@@ -1324,7 +1294,7 @@ fn zone2_mrl_middle_left_edge_synthesizes_left_from_above() {
         false,
         false,
         None,
-        MiddleEdgeAvailability {
+        IntraEdgeAvailability {
             above: true,
             left: false,
         },
@@ -1384,7 +1354,7 @@ fn two_sided_middle_mrl_clamps_bottom_edge_extension() {
             false,
             false,
             None,
-            MiddleEdgeAvailability::new(true, true),
+            IntraEdgeAvailability::new(true, true),
             BitDepth::Eight,
         )
         .unwrap();
@@ -1439,7 +1409,7 @@ fn chroma_middle_prediction_clamps_bottom_edge_extension() {
             None,
             None,
             BitDepth::Eight,
-            MiddleEdgeAvailability::new(true, true),
+            IntraEdgeAvailability::new(true, true),
             TwoSidedMiddleEdgeFilters {
                 above: OneSidedEdgeFilter::default(),
                 left: OneSidedEdgeFilter::default(),
@@ -1458,12 +1428,8 @@ fn chroma_middle_prediction_clamps_bottom_edge_extension() {
     }
 }
 
-/// STRIDE/TRANSPOSE GUARD — V_PRED over a NON-SQUARE 64x32 (`W == 64`,
-/// `H == 32`) block with a REAL, NON-FLAT above row. §7.13.2.8 V_PRED copies the
-/// 64-wide above row into every one of the 32 rows; a width/height swap or a
-/// `stride == height`-instead-of-`width` bug would corrupt the layout and fail.
-/// The asymmetric edge is the key: a flat block (the mission-stream all-68 oracle) would
-/// MASK a transpose.
+/// §7.13.2.8: V_PRED copies a varying 64-wide above row into 32 rows,
+/// exposing swapped dimensions or a stride of height instead of width.
 #[test]
 fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
     let mut ws =
@@ -1501,10 +1467,7 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
     }
 }
 
-/// STRIDE/TRANSPOSE GUARD — H_PRED over a NON-SQUARE 32x64 (`W == 32`,
-/// `H == 64`) block with a REAL, NON-FLAT left column. §7.13.2.8 H_PRED fills
-/// each of the 64 rows with one of the 64 left samples; a width/height swap would
-/// read past the 64-tall left column or mis-stride and fail.
+/// §7.13.2.8: H_PRED fills a 32x64 block from a varying 64-tall left column.
 #[test]
 fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
     let mut ws =
@@ -1542,14 +1505,8 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
     }
 }
 
-/// §7.13.2.1 NO-ABOVE FALLBACK GUARD — the mission-stream MI(64,0) case: a NON-SQUARE
-/// 64x32 V_PRED block at the frame TOP (`y == 0`, `haveAbove == 0`) with a
-/// NON-FLAT reconstructed left column. §7.13.2.1 synthesizes
-/// `AboveRow[i] = CurrFrame[plane][y][x-1]` — the block's top-left left neighbour
-/// (`left[0]`), repeated across the whole synthesized above row — so the V_PRED
-/// copy is a FLAT block equal to `left[0]`, NOT `left[i]`. A non-flat left column
-/// proves the fallback reads ONLY `left[0]` (a bug reading `left[i]` row-wise
-/// would produce a vertical gradient and fail).
+/// §7.13.2.1: without an above row, V_PRED fills 64x32 with `left[0]`.
+/// A varying left column distinguishes that fallback from copying `left[i]`.
 #[test]
 fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
     let mut ws =
@@ -1763,10 +1720,8 @@ fn zone3_d203_top_left_synthesizes_no_neighbour_left_fallback() {
     }
 }
 
-/// §7.13.2.1 NO-LEFT FALLBACK GUARD — the symmetric H_PRED case at the frame
-/// LEFT edge (`x == 0`, `haveLeft == 0`) with a NON-FLAT reconstructed above row.
-/// §7.13.2.1 synthesizes `LeftCol[i] = CurrFrame[plane][y-1][x]` (`above[0]`),
-/// so the H_PRED copy is FLAT equal to `above[0]`, NOT `above[j]`.
+/// §7.13.2.1: without a left column, H_PRED fills 32x64 with `above[0]`.
+/// A varying above row distinguishes that fallback from copying `above[j]`.
 #[test]
 fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
     let mut ws =
@@ -1978,14 +1933,8 @@ fn ref_paeth(left: i32, above: i32, top_left: i32) -> u8 {
     u8::try_from(v).unwrap()
 }
 
-/// STRIDE / CORNER GUARD — §7.13.2.2 PAETH over a NON-SQUARE 8x16 (`W == 8`,
-/// `H == 16`) block with a REAL, NON-FLAT above row, a REAL, NON-FLAT left
-/// column, AND a DISTINCT corner `AboveRow[-1] = CurrFrame[plane][y-1][x-1]`.
-/// Paeth genuinely depends on all three (`base = AboveRow[j] + LeftCol[i] -
-/// AboveRow[-1]`), so a width/height swap, a wrong stride, or reading the corner
-/// from the above row / left column instead of `CurrFrame[y-1][x-1]` would
-/// corrupt the output and fail. The asymmetric edges are the key: the flat
-/// mission-stream oracle (all `68`) would MASK every one of those mix-ups.
+/// §7.13.2.2: Paeth over 8x16 with asymmetric edges and a distinct diagonal
+/// corner checks stride, orientation and corner selection against ref_paeth.
 #[test]
 fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
     let mut ws =
@@ -2058,15 +2007,10 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
     }
 }
 
-/// FRAME-EDGE FALLBACK GUARD — §7.13.2.1 `haveAbove == 0 && haveLeft == 1` PAETH
-/// over an 8x16 block at the TOP frame edge (`y == 0`, so there is no above row)
-/// with `x > 0` (a real, NON-FLAT reconstructed left column). The §7.13.2.1
-/// reference build synthesizes every `AboveRow[j]` and the corner `AboveRow[-1]`
-/// from `CurrFrame[plane][y][x-1] == left[0]`, so the Paeth reference is
-/// `ref_paeth(left[i], left[0], left[0])` for each row. An ASYMMETRIC left column
-/// (`left[0] != left[i]`) is load-bearing: a flat column would mask reading the
-/// wrong synthesized above/corner value. Matches AVM `av2_build_intra_predictors_high`
-/// (`above_row[i] = above_row[-1] = left_ref[0]` when `n_top_px == 0`).
+/// §7.13.2.1: at the frame top, Paeth synthesizes above and corner from
+/// `left[0]`, yielding `ref_paeth(left[i], left[0], left[0])` over 8x16.
+/// Matches AVM `av2_build_intra_predictors_high`: when `n_top_px==0`,
+/// `above_row[i]=above_row[-1]=left_ref[0]`. The left column varies.
 #[test]
 fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
     let mut ws =
@@ -2104,18 +2048,10 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
     }
 }
 
-/// RESIDUAL-ADD GUARD — §7.13.2.2 PAETH over a NON-SQUARE 8x16 block with REAL,
-/// NON-FLAT above row / left column / DISTINCT corner (so the Paeth prediction is
-/// itself NON-FLAT), carrying a NON-`all_zero` `ADST_ADST` residual with several
-/// asymmetric coefficients. The reconstructed output must equal the §7.14.3
-/// `Clip1(paethPred + inverse-transform(residual))` — proven by independently
-/// computing the Paeth prediction (the verbatim `ref_paeth` over the laid edges)
-/// and reconstructing the SAME residual onto it through the shared
-/// `reconstruct_general_intra_coeff_block_rect_with_prediction_into` (the §7.14.3 helper every
-/// residual path uses). A path that dropped the residual (writing the bare
-/// prediction) or added it onto the wrong predictor would diverge from this
-/// reference; the asymmetric coeffs + non-flat prediction make any such mix-up
-/// observable (a flat prediction or DC-only residual would MASK it).
+/// §7.13.2.2 / §7.14.3: Paeth over 8x16 with asymmetric edges, corner and
+/// ADST_ADST coefficients must equal Clip1(prediction + inverse transform).
+/// Expected prediction uses independent ref_paeth; residual application uses
+/// reconstruct_general_intra_coeff_block_rect_with_prediction_into.
 #[test]
 fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     let mut ws =

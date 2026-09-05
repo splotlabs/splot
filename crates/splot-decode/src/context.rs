@@ -161,6 +161,7 @@ impl DecodeContext {
                 prepared.plan(),
                 self.frame_delay,
                 |_| Ok(()),
+                |_| Ok(()),
             )
         })
     }

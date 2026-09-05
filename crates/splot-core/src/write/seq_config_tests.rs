@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -19,7 +18,6 @@ mod tests {
     fn reader(bytes: &[u8]) -> BitReader<'_> {
         BitReader::new(bytes, ByteOffset::new(0))
     }
-
 
     fn parse_partition(bytes: &[u8], mono: bool, single: bool) -> SequencePartitionConfig {
         parse_sequence_partition_config(&mut reader(bytes), mono, single).unwrap()
@@ -209,7 +207,6 @@ mod tests {
         assert_eq!(w.bit_len(), 0);
     }
 
-
     fn parse_segment(bytes: &[u8]) -> SequenceSegmentConfig {
         parse_sequence_segment_config(&mut reader(bytes)).unwrap()
     }
@@ -328,7 +325,6 @@ mod tests {
         assert_eq!(w.bit_len(), 0);
     }
 
-
     fn parse_intra(bytes: &[u8], mono: bool) -> SequenceIntraConfig {
         parse_sequence_intra_config(&mut reader(bytes), mono).unwrap()
     }
@@ -396,7 +392,6 @@ mod tests {
         ));
         assert_eq!(w.bit_len(), 0);
     }
-
 
     fn parse_inter(bytes: &[u8], single: bool) -> SequenceInterConfig {
         parse_sequence_inter_config(&mut reader(bytes), single).unwrap()
@@ -486,38 +481,7 @@ mod tests {
 
     #[test]
     fn inter_full_branch_inferred_num_ref_frames() {
-        let mut bits = Bits::default();
-        for _ in 0..4 {
-            bits.bit(0); // motion modes off
-        }
-        bits.bit(0); // enable_masked_compound
-        bits.bit(0); // enable_ref_frame_mvs (false -> no reduced bit)
-        bits.f(0, 4); // order_hint_bits_minus_1 = 0 -> 1
-        bits.bit(0); // enable_refmvbank
-        bits.bit(1); // disable_drl_reorder -> Disabled
-        bits.bit(0); // explicit_ref_frame_map
-        bits.bit(0); // explicit_num_ref_frames = 0 -> NumRefFrames 8
-        bits.f(0, 3); // long_term_frame_id_bits
-        bits.ns(0, MAX_REF_MV_STACK_SIZE - 1);
-        bits.bit(0); // allow_frame_max_drl_bits
-        bits.ns(0, MAX_REF_BV_STACK_SIZE - 1);
-        bits.bit(0); // allow_frame_max_bvp_drl_bits
-        bits.f(0, 2); // num_same_ref_compound
-        bits.bit(0); // enable_tip (false -> no tip sub-bits)
-        bits.bit(0); // enable_mv_traj
-        bits.bit(0); // enable_bawp
-        bits.bit(0); // enable_cwp
-        bits.bit(0); // enable_imp_msk_bld
-        bits.bit(0); // enable_df_sub_pu (EnableTipOutput false -> no tip_explicit_qp)
-        bits.f(0, 2); // enable_opfl_refine
-        bits.bit(0); // enable_refinemv (enable_tip false -> no tip_refinemv)
-        bits.bit(0); // enable_bru
-        bits.bit(0); // enable_adaptive_mvd
-        bits.bit(0); // enable_mvd_sign_derive
-        bits.bit(0); // enable_flex_mvres
-        bits.bit(0); // enable_global_motion
-        bits.bit(0); // enable_short_refresh_frame_flags
-        let config = parse_inter(&bits.into_bytes(), false);
+        let config = parse_inter(&inter_full_zero_fixture(), false);
         assert_eq!(config.num_ref_frames, 8);
         assert_eq!(config.order_hint_bits, 1);
         assert_inter_roundtrip(&config, false);
@@ -677,7 +641,6 @@ mod tests {
         bits.into_bytes()
     }
 
-
     fn parse_scc(bytes: &[u8], single: bool) -> SequenceSccConfig {
         parse_sequence_scc_config(&mut reader(bytes), single).unwrap()
     }
@@ -783,7 +746,6 @@ mod tests {
         ));
         assert_eq!(w.bit_len(), 0);
     }
-
 
     fn parse_tq(bytes: &[u8], mono: bool, single: bool) -> SequenceTqEntropyConfig {
         parse_sequence_transform_quant_entropy_config(&mut reader(bytes), mono, single).unwrap()
@@ -959,9 +921,6 @@ mod tests {
     fn tq_rejects_uv_dc_not_mirrored_when_equal_acdc() {
         let mut config = parse_tq(&tq_equal_fixture(), false, false);
         config.base_uv_dc_delta_q = config.base_uv_ac_delta_q.wrapping_add(1) & 0x1F;
-        if config.base_uv_dc_delta_q == config.base_uv_ac_delta_q {
-            config.base_uv_dc_delta_q = (config.base_uv_ac_delta_q + 2) & 0x1F;
-        }
         let mut w = BitWriter::new();
         assert!(matches!(
             write_sequence_transform_quant_entropy_config(&mut w, &config, false, false),
@@ -1108,7 +1067,7 @@ mod proptests {
         /// Every parser-reachable partition config round-trips and is byte-stable.
         #[test]
         fn roundtrip_partition(
-            bytes in proptest::collection::vec(any::<u8>(), 0..4),
+            bytes in proptest::collection::vec(any::<u8>(), 0..8),
             mono in any::<bool>(),
             single in any::<bool>(),
         ) {
@@ -1125,20 +1084,6 @@ mod proptests {
             }
         }
 
-        /// The partition writer never panics on a parsed model.
-        #[test]
-        fn partition_never_panics(
-            bytes in proptest::collection::vec(any::<u8>(), 0..8),
-            mono in any::<bool>(),
-            single in any::<bool>(),
-        ) {
-            if let Ok(config) = parse_sequence_partition_config(&mut reader(&bytes), mono, single) {
-                let mut w = BitWriter::new();
-                let _ = write_sequence_partition_config(&mut w, &config, mono, single);
-            }
-        }
-
-
         #[test]
         fn roundtrip_segment(bytes in proptest::collection::vec(any::<u8>(), 0..16)) {
             if let Ok(config) = parse_sequence_segment_config(&mut reader(&bytes)) {
@@ -1152,15 +1097,6 @@ mod proptests {
                 prop_assert_eq!(w2.into_bytes(), out);
             }
         }
-
-        #[test]
-        fn segment_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..16)) {
-            if let Ok(config) = parse_sequence_segment_config(&mut reader(&bytes)) {
-                let mut w = BitWriter::new();
-                let _ = write_sequence_segment_config(&mut w, &config);
-            }
-        }
-
 
         #[test]
         fn roundtrip_intra(
@@ -1180,18 +1116,6 @@ mod proptests {
         }
 
         #[test]
-        fn intra_never_panics(
-            bytes in proptest::collection::vec(any::<u8>(), 0..4),
-            mono in any::<bool>(),
-        ) {
-            if let Ok(config) = parse_sequence_intra_config(&mut reader(&bytes), mono) {
-                let mut w = BitWriter::new();
-                let _ = write_sequence_intra_config(&mut w, &config, mono);
-            }
-        }
-
-
-        #[test]
         fn roundtrip_inter(
             bytes in proptest::collection::vec(any::<u8>(), 0..16),
             single in any::<bool>(),
@@ -1209,18 +1133,6 @@ mod proptests {
         }
 
         #[test]
-        fn inter_never_panics(
-            bytes in proptest::collection::vec(any::<u8>(), 0..16),
-            single in any::<bool>(),
-        ) {
-            if let Ok(config) = parse_sequence_inter_config(&mut reader(&bytes), single) {
-                let mut w = BitWriter::new();
-                let _ = write_sequence_inter_config(&mut w, &config, single);
-            }
-        }
-
-
-        #[test]
         fn roundtrip_scc(
             bytes in proptest::collection::vec(any::<u8>(), 0..4),
             single in any::<bool>(),
@@ -1236,18 +1148,6 @@ mod proptests {
                 prop_assert_eq!(w2.into_bytes(), out);
             }
         }
-
-        #[test]
-        fn scc_never_panics(
-            bytes in proptest::collection::vec(any::<u8>(), 0..4),
-            single in any::<bool>(),
-        ) {
-            if let Ok(config) = parse_sequence_scc_config(&mut reader(&bytes), single) {
-                let mut w = BitWriter::new();
-                let _ = write_sequence_scc_config(&mut w, &config, single);
-            }
-        }
-
 
         #[test]
         fn roundtrip_tq(
@@ -1276,18 +1176,5 @@ mod proptests {
             }
         }
 
-        #[test]
-        fn tq_never_panics(
-            bytes in proptest::collection::vec(any::<u8>(), 0..12),
-            mono in any::<bool>(),
-            single in any::<bool>(),
-        ) {
-            if let Ok(config) =
-                parse_sequence_transform_quant_entropy_config(&mut reader(&bytes), mono, single)
-            {
-                let mut w = BitWriter::new();
-                let _ = write_sequence_transform_quant_entropy_config(&mut w, &config, mono, single);
-            }
-        }
     }
 }

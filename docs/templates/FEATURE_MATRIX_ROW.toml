@@ -15,7 +15,6 @@ sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/example.rs"
 change_id = "change-id"
-tracking_issue = ""
 owner = "core"
 risk = "unknown"
 notes = "Short status note."

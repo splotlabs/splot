@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod proptests {
@@ -126,7 +125,6 @@ mod proptests {
     }
 }
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod payload_proptests {
@@ -134,23 +132,7 @@ mod payload_proptests {
     use crate::headers::tile_group::{TileFraming, parse_tile_group_framing};
     use proptest::prelude::*;
 
-    /// Builds a conformant `tile_group_payload()` region for `tile_sizes` (last is the remainder
-    /// tile) using `tile_size_bytes`, with deterministic per-tile data bytes.
-    fn build_region(tile_sizes: &[u64], tile_size_bytes: u32) -> Vec<u8> {
-        let mut region = Vec::new();
-        let last = tile_sizes.len() - 1;
-        for (i, &size) in tile_sizes.iter().enumerate() {
-            if i != last {
-                for j in 0..tile_size_bytes {
-                    region.push((((size - 1) >> (j * 8)) & 0xFF) as u8);
-                }
-            }
-            for b in 0..size {
-                region.push(((i as u64 * 37 + b) & 0xFF) as u8);
-            }
-        }
-        region
-    }
+    use super::payload_tests::build_region;
 
     proptest! {
         /// Every conformant framing round-trips: build a region from arbitrary in-range tile sizes,

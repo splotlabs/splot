@@ -301,7 +301,7 @@ fn derived_annex_b_tile_payload_preserves_tile_offsets_and_boundary() {
     assert_eq!(unit.mi_row_range(), 0..8);
     assert_eq!(unit.mi_col_range(), 0..16);
     assert_first_work_unit_cdf_update(&plan, CdfUpdateMode::Enabled);
-    assert!(plan.frame_end().reaches_last_tile_group());
+    assert!(plan.reaches_last_tile_group());
 }
 
 #[test]

@@ -112,7 +112,7 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
     start: &NonZeroCoeffBlockStart,
     scan: &'a [u16],
 ) -> Result<NonZeroCoeffScanWalk<'a>, CoeffLoopContextError> {
-    let eob = start.eob_read().eob().eob();
+    let eob = start.eob_read().eob();
     if eob == 0 {
         return Err(CoeffLoopContextError::InvalidScanWalkEob { eob });
     }
@@ -148,7 +148,7 @@ pub(crate) fn walk_fsc_coeff_scan(
     seg_eob: usize,
     scan: &'static [u16],
 ) -> Result<FscCoeffScanWalk, CoeffLoopContextError> {
-    let eob = start.eob_read().eob().eob();
+    let eob = start.eob_read().eob();
     if eob == 0 {
         return Err(CoeffLoopContextError::InvalidScanWalkEob { eob });
     }

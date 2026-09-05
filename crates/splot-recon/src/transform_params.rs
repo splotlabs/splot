@@ -13,15 +13,6 @@
 //! [`InverseTransform2dOuter::resolve`](crate::InverseTransform2dOuter::resolve)
 //! constructor.
 //!
-//! Like the rest of `splot-recon`, transform shape is keyed by the original
-//! (unadjusted) `(log2W, log2H)` base-2 log dimensions rather than a `txSz`
-//! enum: `splot-recon` cannot depend on `splot-core`'s § 9.2 conversion tables
-//! (the one-way dependency rule), so callers resolve `txSz`-derived values and
-//! pass the log2 dimensions, exactly as
-//! [`InverseTransform2dOuter`](crate::InverseTransform2dOuter) already does. The
-//! spec `Tx_Width_Log2` / `Tx_Height_Log2` tables prove `(log2W, log2H)`
-//! uniquely identifies every `TX_SIZES_ALL` ordinal, so the lookup is exact.
-//!
 //! Feature tracking: `RECON-TRANSFORM-SHIFT-LOOKUP`,
 //! `RECON-GET-TRANSFORM-1D-TYPE`, `RECON-DPCM-DIRECTION`.
 
@@ -67,8 +58,7 @@ const TRANSFORM_SHIFT: [(u8, u8); 25] = [
 /// AV2 § 9 `(Tx_Width_Log2[txSz], Tx_Height_Log2[txSz])` per transform-size
 /// ordinal, parallel to [`TRANSFORM_SHIFT`] (same `txSz` index). Mirrored from
 /// the generated `all_tables.h` § 9.2 values (`Tx_Width_Log2` / `Tx_Height_Log2`),
-/// which `splot-recon` cannot reach through `splot-core`. Used only to key the
-/// shift lookup by the original `(log2W, log2H)` shape; the
+/// keyed by the original `(log2W, log2H)` shape; the
 /// `tx_size_log2_dims_keys_are_distinct` test pins the uniqueness invariant the
 /// search relies on, and the spot-check tests pin individual values against the
 /// spec.

@@ -603,18 +603,7 @@ impl TileIntrabcPreludeState {
     }
 
     fn facts_at(&self, row: usize, col: usize) -> Option<IntrabcBlockFacts> {
-        if row < self.origin_row
-            || col < self.origin_col
-            || row >= self.origin_row.saturating_add(self.tile_rows)
-            || col >= self.origin_col.saturating_add(self.tile_cols)
-        {
-            return None;
-        }
-        self.facts_at_index(
-            row.checked_sub(self.origin_row)?
-                .checked_mul(self.tile_cols)?
-                .checked_add(col.checked_sub(self.origin_col)?)?,
-        )
+        self.facts_at_index(self.index(row, col).ok()?)
     }
 
     fn facts_at_index(&self, index: usize) -> Option<IntrabcBlockFacts> {

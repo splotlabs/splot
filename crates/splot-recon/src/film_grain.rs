@@ -16,8 +16,8 @@ const LUMA_GRAIN_HEIGHT: usize = 73;
 const LUMA_GRAIN_BASE: usize = 3;
 const MAX_AR_COEFFICIENTS: usize = 24;
 
-struct ActiveFilmGrain {
-    model: FilmGrainModel,
+struct ActiveFilmGrain<'a> {
+    model: &'a FilmGrainModel,
     grain_seed: u16,
 }
 
@@ -32,16 +32,13 @@ pub fn apply_film_grain<T: ReconSample>(
     model: &FilmGrainModel,
     grain_seed: u16,
 ) -> Result<DecodedFrame<T>> {
-    let grain = ActiveFilmGrain {
-        model: model.clone(),
-        grain_seed,
-    };
+    let grain = ActiveFilmGrain { model, grain_seed };
     apply_grain(frame, &grain)
 }
 
 fn apply_grain<T: ReconSample>(
     frame: &DecodedFrame<T>,
-    grain: &ActiveFilmGrain,
+    grain: &ActiveFilmGrain<'_>,
 ) -> Result<DecodedFrame<T>> {
     let visible = frame.visible_luma_rect();
     let width = visible.width();
@@ -139,7 +136,7 @@ fn synthesize_into<T: ReconSample>(
     sub_y: usize,
     bit_depth: u8,
     num_planes: usize,
-    grain: &ActiveFilmGrain,
+    grain: &ActiveFilmGrain<'_>,
 ) -> Result<()> {
     let grain_min = -(1_i32 << (bit_depth - 1));
     let grain_max = (1_i32 << (bit_depth - 1)) - 1;
@@ -161,14 +158,14 @@ struct GrainTemplates {
 }
 
 fn generate_grain(
-    grain: &ActiveFilmGrain,
+    grain: &ActiveFilmGrain<'_>,
     sub_x: usize,
     sub_y: usize,
     bit_depth: u8,
     grain_min: i32,
     grain_max: i32,
 ) -> GrainTemplates {
-    let model = &grain.model;
+    let model = grain.model;
     let mut rng = GrainRng::new(grain.grain_seed);
     let shift = 12 - bit_depth + model.grain_scale_shift;
     let mut luma = vec![0; LUMA_GRAIN_WIDTH * LUMA_GRAIN_HEIGHT];
@@ -237,7 +234,7 @@ fn apply_luma_ar(model: &FilmGrainModel, luma: &mut [i32], grain_min: i32, grain
                 sum += luma[source] * coeff;
             }
             let sample = luma[index] + round2(sum, shift);
-            luma[index] = clip3(sample, grain_min, grain_max);
+            luma[index] = sample.clamp(grain_min, grain_max);
         }
     }
 }
@@ -303,8 +300,8 @@ fn apply_chroma_ar(
                 sum_cb += average * luma_coeff_cb;
                 sum_cr += average * luma_coeff_cr;
             }
-            cb[index] = clip3(cb[index] + round2(sum_cb, shift), grain_min, grain_max);
-            cr[index] = clip3(cr[index] + round2(sum_cr, shift), grain_min, grain_max);
+            cb[index] = (cb[index] + round2(sum_cb, shift)).clamp(grain_min, grain_max);
+            cr[index] = (cr[index] + round2(sum_cr, shift)).clamp(grain_min, grain_max);
         }
     }
 }
@@ -325,17 +322,16 @@ fn ar_neighbor_offsets(lag: u8, stride: usize) -> ([isize; MAX_AR_COEFFICIENTS],
     (offsets, count)
 }
 
-fn scaling_luts(grain: &ActiveFilmGrain, num_planes: usize) -> Vec<[i32; 256]> {
+fn scaling_luts(grain: &ActiveFilmGrain<'_>, num_planes: usize) -> Vec<[i32; 256]> {
     let mut luts = vec![[0; 256]; num_planes];
     for (plane, lut) in luts.iter_mut().enumerate() {
-        let points = scaling_points_for_plane(grain, plane);
+        let points = scaling_points_for_plane(grain.model, plane);
         init_scaling_lut(points, lut);
     }
     luts
 }
 
-fn scaling_points_for_plane(grain: &ActiveFilmGrain, plane: usize) -> &[FilmGrainScalingPoint] {
-    let model = &grain.model;
+fn scaling_points_for_plane(model: &FilmGrainModel, plane: usize) -> &[FilmGrainScalingPoint] {
     if plane == 0 || model.chroma_scaling_from_luma {
         &model.point_y
     } else if plane == 1 {
@@ -387,7 +383,7 @@ fn build_noise_image(
     sub_x: usize,
     sub_y: usize,
     num_planes: usize,
-    grain: &ActiveFilmGrain,
+    grain: &ActiveFilmGrain<'_>,
     templates: &GrainTemplates,
     grain_min: i32,
     grain_max: i32,
@@ -443,11 +439,11 @@ fn build_noise_image(
                         } else {
                             round2(old * 17 + sample * 27, 5)
                         };
-                        sample = clip3(sample, grain_min, grain_max);
+                        sample = sample.clamp(grain_min, grain_max);
                     } else if plane_sub_y == 1 && stripe_row < 1 {
                         let old =
                             stripes[luma_num - 1].get(plane, stripe_row + (luma_size >> 1), col);
-                        sample = clip3(round2(old * 23 + sample * 22, 5), grain_min, grain_max);
+                        sample = round2(old * 23 + sample * 22, 5).clamp(grain_min, grain_max);
                     }
                 }
                 planes[plane][row * plane_widths[plane] + col] = sample;
@@ -512,7 +508,7 @@ fn fill_stripe(
     sub_y: usize,
     num_planes: usize,
     luma_size: usize,
-    grain: &ActiveFilmGrain,
+    grain: &ActiveFilmGrain<'_>,
     templates: &GrainTemplates,
     grain_min: i32,
     grain_max: i32,
@@ -553,7 +549,7 @@ fn fill_stripe_plane(
     sub_x: usize,
     sub_y: usize,
     luma_size: usize,
-    grain: &ActiveFilmGrain,
+    grain: &ActiveFilmGrain<'_>,
     templates: &GrainTemplates,
     grain_min: i32,
     grain_max: i32,
@@ -608,10 +604,10 @@ fn fill_stripe_plane(
                     } else {
                         round2(old * 17 + sample * 27, 5)
                     };
-                    sample = clip3(sample, grain_min, grain_max);
+                    sample = sample.clamp(grain_min, grain_max);
                 } else if plane_sub_x == 1 && col == 0 {
                     let old = stripe.get(plane, row, dst_col);
-                    sample = clip3(round2(old * 23 + sample * 22, 5), grain_min, grain_max);
+                    sample = round2(old * 23 + sample * 22, 5).clamp(grain_min, grain_max);
                 }
             }
             stripe.set(plane, row, dst_col, sample);
@@ -638,7 +634,7 @@ fn add_noise_to_samples<T: ReconSample>(
     sub_y: usize,
     bit_depth: u8,
     num_planes: usize,
-    grain: &ActiveFilmGrain,
+    grain: &ActiveFilmGrain<'_>,
     scaling: &[[i32; 256]],
     noise: &NoiseImage,
 ) -> Result<()> {
@@ -675,7 +671,7 @@ fn add_noise_to_samples<T: ReconSample>(
                 let scaled = scale_lut(&scaling[0], orig, bit_depth);
                 let noise_sample = noise.planes[0][row * noise.widths[0] + col];
                 let delta = round2(scaled * noise_sample, scaling_shift);
-                y.set(index, clip3(orig + delta, min_value, max_luma) as u16)?;
+                y.set(index, (orig + delta).clamp(min_value, max_luma) as u16)?;
             }
         }
     }
@@ -696,11 +692,11 @@ fn add_chroma_noise<T: ReconSample>(
     max_chroma: i32,
     min_value: i32,
     scaling_shift: u8,
-    grain: &ActiveFilmGrain,
+    grain: &ActiveFilmGrain<'_>,
     scaling: &[[i32; 256]],
     noise: &NoiseImage,
 ) -> Result<()> {
-    let model = &grain.model;
+    let model = grain.model;
     let sample_max = (1_i32 << bit_depth) - 1;
     for row in 0..chroma_height {
         for col in 0..chroma_width {
@@ -732,7 +728,7 @@ fn add_chroma_noise<T: ReconSample>(
                     scale_lut(&scaling[1], merged, bit_depth) * noise.planes[1][index],
                     scaling_shift,
                 );
-                u.set(index, clip3(orig + delta, min_value, max_chroma) as u16)?;
+                u.set(index, (orig + delta).clamp(min_value, max_chroma) as u16)?;
             }
             if model.num_cr_points > 0 || model.chroma_scaling_from_luma {
                 let orig = v.get(index);
@@ -750,7 +746,7 @@ fn add_chroma_noise<T: ReconSample>(
                     scale_lut(&scaling[2], merged, bit_depth) * noise.planes[2][index],
                     scaling_shift,
                 );
-                v.set(index, clip3(orig + delta, min_value, max_chroma) as u16)?;
+                v.set(index, (orig + delta).clamp(min_value, max_chroma) as u16)?;
             }
         }
     }
@@ -773,14 +769,11 @@ fn chroma_merged_sample(
     }
     let combined = average_luma * (i32::from(luma_mult.unwrap_or(128)) - 128)
         + orig * (i32::from(mult.unwrap_or(128)) - 128);
-    clip3(
-        (combined >> 6) + ((i32::from(offset.unwrap_or(256)) - 256) << (bit_depth - 8)),
-        0,
-        sample_max,
-    )
+    ((combined >> 6) + ((i32::from(offset.unwrap_or(256)) - 256) << (bit_depth - 8)))
+        .clamp(0, sample_max)
 }
 
-fn output_ranges(grain: &ActiveFilmGrain, bit_depth: u8) -> (i32, i32, i32) {
+fn output_ranges(grain: &ActiveFilmGrain<'_>, bit_depth: u8) -> (i32, i32, i32) {
     if grain.model.clip_to_restricted_range {
         let min_value = 16 << (bit_depth - 8);
         let max_luma = 235 << (bit_depth - 8);
@@ -799,11 +792,7 @@ fn output_ranges(grain: &ActiveFilmGrain, bit_depth: u8) -> (i32, i32, i32) {
 fn stripe_count(height: usize, luma_size: usize) -> usize {
     let step = luma_size >> 1;
     let half_height = height.div_ceil(2);
-    if half_height == 0 {
-        0
-    } else {
-        half_height.div_ceil(step)
-    }
+    half_height.div_ceil(step)
 }
 
 fn plane_axis_lengths(length: usize, subsampling: usize) -> [usize; 3] {
@@ -827,10 +816,6 @@ fn round2(value: i32, shift: u8) -> i32 {
     } else {
         (value + (1_i32 << (shift - 1))) >> shift
     }
-}
-
-fn clip3(value: i32, low: i32, high: i32) -> i32 {
-    value.clamp(low, high)
 }
 
 struct GrainRng {

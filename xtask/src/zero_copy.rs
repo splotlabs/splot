@@ -287,8 +287,8 @@ const ZEROCOPY_LAYOUT_DERIVES: &[&str] = &[
 ];
 
 /// Returns whether `block` (joined attribute text) contains a `derive(...)` listing
-/// any `zerocopy` layout trait.
-fn derive_has_zerocopy_layout(block: &str) -> bool {
+/// any of the requested traits.
+fn derive_has(block: &str, traits: &[&str]) -> bool {
     let mut rest = block;
     while let Some(pos) = rest.find("derive(") {
         let after = &rest[pos + "derive(".len()..];
@@ -312,7 +312,7 @@ fn derive_has_zerocopy_layout(block: &str) -> bool {
             .split(|c: char| c == ',' || c.is_whitespace())
             .any(|token| {
                 let token = token.rsplit("::").next().unwrap_or(token);
-                ZEROCOPY_LAYOUT_DERIVES.contains(&token)
+                traits.contains(&token)
             });
         if found {
             return true;
@@ -445,7 +445,7 @@ pub(crate) fn evaluate_zero_copy_policy(
         if is_clone_scan_src(&line.path) {
             if let Some(name) = declared_type_name(text)
                 && MEDIA_TYPE_NAMES.contains(&name)
-                && derive_has_clone(&attribute_block_above(sources, i))
+                && derive_has(&attribute_block_above(sources, i), &["Clone"])
             {
                 violations.push(format!(
                     "{where_at}: `Clone` derive on media-storage type `{name}`; remove it (borrow a view or share via `SharedFrame` instead)"
@@ -454,7 +454,7 @@ pub(crate) fn evaluate_zero_copy_policy(
             if is_zerocopy_approved_src(&line.path)
                 && let Some(name) = declared_type_name(text)
                 && is_fully_public_type_decl(text)
-                && derive_has_zerocopy_layout(&attribute_block_above(sources, i))
+                && derive_has(&attribute_block_above(sources, i), ZEROCOPY_LAYOUT_DERIVES)
             {
                 violations.push(format!(
                     "{where_at}: public type `{name}` derives zerocopy layout traits; wire-view structs must be private (never a public API)"
@@ -573,40 +573,6 @@ fn attribute_block_above(sources: &[ZcSourceLine], i: usize) -> String {
     }
     lines.reverse();
     lines.join("\n")
-}
-
-/// Returns whether `block` (joined attribute text) contains a `derive(...)` that
-/// lists `Clone` (or a fully-qualified `…::Clone`) as a derived trait. Robust to
-/// multi-line derives and ignores unrelated text.
-fn derive_has_clone(block: &str) -> bool {
-    let mut rest = block;
-    while let Some(pos) = rest.find("derive(") {
-        let after = &rest[pos + "derive(".len()..];
-        let mut depth = 1i32;
-        let mut end = after.len();
-        for (k, c) in after.char_indices() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = k;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let inner = &after[..end];
-        let has_clone = inner
-            .split(|c: char| c == ',' || c.is_whitespace())
-            .any(|token| token == "Clone" || token.ends_with("::Clone"));
-        if has_clone {
-            return true;
-        }
-        rest = after.get(end..).unwrap_or("");
-    }
-    false
 }
 
 /// If `text` is an `impl Clone for <Type>` line, returns the target type name.

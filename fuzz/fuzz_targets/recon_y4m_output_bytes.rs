@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 #![no_main]
 
-use std::io::{self, Write};
+#[path = "../support/output.rs"]
+mod output;
+use output::FailAfterBytes;
 
 use libfuzzer_sys::fuzz_target;
 use splot_recon::{
@@ -241,48 +243,17 @@ const fn alternate_pixel_format(pixel_format: PixelFormat) -> PixelFormat {
 }
 
 struct FuzzInput<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    bytes: std::slice::Iter<'a, u8>,
 }
 
 impl<'a> FuzzInput<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes: bytes.iter(),
+        }
     }
 
     fn byte(&mut self) -> u8 {
-        let byte = self.bytes.get(self.offset).copied().unwrap_or(0);
-        self.offset = self.offset.saturating_add(1);
-        byte
-    }
-}
-
-#[derive(Debug)]
-struct FailAfterBytes {
-    bytes_written: usize,
-    max_bytes: usize,
-}
-
-impl FailAfterBytes {
-    const fn new(max_bytes: usize) -> Self {
-        Self {
-            bytes_written: 0,
-            max_bytes,
-        }
-    }
-}
-
-impl Write for FailAfterBytes {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.bytes_written >= self.max_bytes {
-            return Err(io::Error::other("fuzz writer byte budget exhausted"));
-        }
-        let allowed = (self.max_bytes - self.bytes_written).min(buf.len());
-        self.bytes_written += allowed;
-        Ok(allowed)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        self.bytes.next().copied().unwrap_or(0)
     }
 }

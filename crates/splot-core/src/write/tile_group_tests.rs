@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -12,7 +11,7 @@ mod tests {
 
     /// Builds a `Complete` structure with the given fields and `None` parse-context artifacts (the
     /// writer ignores `header_bytes` / `payload_size`).
-    fn structure(flag: bool, tg_start: u32, tg_end: u32) -> TileGroupStructure {
+    pub(super) fn structure(flag: bool, tg_start: u32, tg_end: u32) -> TileGroupStructure {
         TileGroupStructure {
             tile_start_and_end_present_flag: flag,
             tg_start,
@@ -189,7 +188,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod payload_tests {
@@ -199,16 +197,14 @@ mod payload_tests {
     /// Encodes `tile_size_minus_1` as a `tile_size_bytes`-byte little-endian `le(n)` field
     /// (§ 4.11.5), the way a conformant tile group writes its tile size.
     fn le_size_field(tile_size_minus_1: u64, tile_size_bytes: u32) -> Vec<u8> {
-        (0..tile_size_bytes)
-            .map(|i| ((tile_size_minus_1 >> (i * 8)) & 0xFF) as u8)
-            .collect()
+        tile_size_minus_1.to_le_bytes()[..tile_size_bytes as usize].to_vec()
     }
 
     /// Builds a conformant `tile_group_payload()` region for `tile_sizes` (in tile order; the LAST
     /// is the remainder tile with no size field), using `tile_size_bytes` for the size fields. Each
     /// tile's coded bytes are filled with a per-tile marker so the round-trip can be checked
     /// byte-exactly. Returns the region bytes.
-    fn build_region(tile_sizes: &[u64], tile_size_bytes: u32) -> Vec<u8> {
+    pub(super) fn build_region(tile_sizes: &[u64], tile_size_bytes: u32) -> Vec<u8> {
         let mut region = Vec::new();
         let last = tile_sizes.len() - 1;
         for (i, &size) in tile_sizes.iter().enumerate() {
@@ -482,7 +478,6 @@ mod payload_tests {
         );
         assert_eq!(writer.bit_len(), 0);
     }
-
 
     #[test]
     fn rejects_writer_not_byte_aligned() {

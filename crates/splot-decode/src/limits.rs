@@ -279,29 +279,14 @@ impl DecodeLimits {
         left: u64,
         right: u64,
     ) -> DecodeLimitResult<DecodeLimitCheck> {
-        self.ensure_checked_arithmetic(
-            name,
-            left,
-            right,
-            DecodeLimitOp::Mul,
-            left.checked_mul(right),
-        )
-    }
-
-    fn ensure_checked_arithmetic(
-        self,
-        name: DecodeLimitName,
-        left: u64,
-        right: u64,
-        op: DecodeLimitOp,
-        actual: Option<u64>,
-    ) -> DecodeLimitResult<DecodeLimitCheck> {
-        let actual = actual.ok_or(DecodeLimitError::ArithmeticOverflow {
-            name,
-            op,
-            left,
-            right,
-        })?;
+        let actual = left
+            .checked_mul(right)
+            .ok_or(DecodeLimitError::ArithmeticOverflow {
+                name,
+                op: DecodeLimitOp::Mul,
+                left,
+                right,
+            })?;
         self.ensure(name, actual)
     }
 

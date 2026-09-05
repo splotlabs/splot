@@ -280,19 +280,16 @@ fn rect(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
 }
 
 struct FuzzInput<'a> {
-    data: &'a [u8],
-    pos: usize,
+    bytes: std::slice::Iter<'a, u8>,
 }
 
 impl<'a> FuzzInput<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self { bytes: data.iter() }
     }
 
     fn byte(&mut self) -> u8 {
-        let byte = self.data.get(self.pos).copied().unwrap_or(0);
-        self.pos = self.pos.saturating_add(1);
-        byte
+        self.bytes.next().copied().unwrap_or(0)
     }
 
     fn bounded_usize(&mut self, max_inclusive: usize) -> usize {

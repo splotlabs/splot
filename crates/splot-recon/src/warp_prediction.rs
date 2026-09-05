@@ -134,7 +134,6 @@ impl PreparedWarpPrediction {
     }
 }
 
-/// Runs the AV2 § 7.13.3.19 block-warp convolution for one single-reference 8x8
 /// AV2 § 3 `EXT_WARP_TAPS`.
 const EXT_WARP_TAPS: usize = 6;
 /// AV2 § 3 `EXT_WARP_ROUND_BITS` = `WARPEDMODEL_PREC_BITS - EXT_WARP_PHASES_LOG2`.
@@ -353,7 +352,8 @@ fn ext_warp_predict_scaled<T: ReconSample>(
     Ok(out)
 }
 
-/// prediction section and returns row-major samples after the final `Clip1`.
+/// Runs AV2 § 7.13.3.19 block-warp convolution for one 8x8 section, returning
+/// row-major unclipped predictors.
 ///
 /// The caller supplies an already-derived affine warp model and the current-plane
 /// top-left coordinate of the 8x8 section. This function computes the section

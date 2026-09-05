@@ -5,11 +5,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::PathBuf;
-use std::process::Output;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+mod common;
+use common::{splot, temp_path};
 
 const FIRST: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
@@ -19,25 +16,6 @@ const CROPPED_SECOND: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-crop-intra-64x64-q80.ivf");
 const CROPPED_TRANSITION: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-2seq-crop-intra-64x64.obu");
-
-fn splot(args: &[&str]) -> Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args(args)
-        .output()
-        .expect("failed to run the splot binary")
-}
-
-fn temp_path(stem: &str, extension: &str) -> PathBuf {
-    let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time is after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "splot-sequence-transition-cli-{stem}-{}-{nanos}-{id}.{extension}",
-        std::process::id()
-    ))
-}
 
 fn repeated_sequence_ivf(second: &[u8]) -> Vec<u8> {
     let mut bytes = FIRST[..32].to_vec();

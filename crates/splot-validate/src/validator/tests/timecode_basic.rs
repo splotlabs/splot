@@ -24,15 +24,9 @@ fn metadata_timecode_seconds_out_of_range_is_flagged() {
     );
 }
 
-/// The short-form `metadata_short_obu()` first byte for a non-cancel timecode unit
-/// with `muh_layer_idc = LAYER_GLOBAL (1)`: `metadata_is_suffix 0`, `muh_layer_idc
-/// 1` (`f(3)`), `muh_cancel_flag 0`, `muh_persistence_idc 0` -> `0b0_001_0_000`.
-/// LAYER_GLOBAL on a global (`obu_xlayer_id == GLOBAL_XLAYER_ID`) OBU derives to
-/// `HdrAssociation::Universal` ("The metadata applies to all layers", § 6.16.3), so
-/// the n_frames bound pairs with every in-scope content interpretation — the
-/// "global timecode describes every layer" intent these helpers model. (A
-/// LAYER_UNSPECIFIED 0x00 first byte would leave the targeting unspecified, which
-/// the n_frames bound now compares NOTHING against — finding 4.)
+/// Prefix, non-cancel timecode with `LAYER_GLOBAL` targeting (`0b0_001_0_000`).
+/// On a global OBU this applies to all layers (§ 6.16.3), so the n_frames bound
+/// pairs with every in-scope content interpretation.
 pub(in crate::validator::tests) const TIMECODE_SHORT_LAYER_GLOBAL: u8 = 0x10;
 
 /// Builds a full-timestamp `metadata_timecode()` short OBU payload (LAYER_GLOBAL)

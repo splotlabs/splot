@@ -9,7 +9,7 @@
 //! The caller resolves § 7.20.2 source-sample selection, frame/restoration-unit
 //! traversal, and the `LrTxSkip` grid storage. The primitives derive the
 //! skip-filter class and apply the fixed § 9.8 filter selected by the caller;
-//! they do not store `FilterClass` or wire runtime decode output.
+//! they do not store `FilterClass`.
 //!
 //! Feature tracking: `RECON-PC-WIENER-CLASSIFICATION`.
 
@@ -1627,13 +1627,8 @@ pub fn pc_wiener_filter_block_padded_u16_into<T: ReconSample>(
     let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
     if !setup.source_is_valid {
         let packed_params = PcWienerFilter {
-            width: params.width,
-            height: params.height,
             output_stride: params.width,
-            bit_depth: params.bit_depth,
-            filter_set_index: params.filter_set_index,
-            subclass_block_size: params.subclass_block_size,
-            subclasses: params.subclasses,
+            ..*params
         };
         let mut staged = vec![T::default(); setup.sample_count];
         pc_wiener_filter_block_padded(&mut staged, &packed_params, source)?;

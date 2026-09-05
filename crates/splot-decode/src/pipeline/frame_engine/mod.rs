@@ -12,10 +12,6 @@
 //! temporal-MV banks, skip-mode, segmentation, CfL enable). Below the setup, the
 //! partition walk, per-block engine ([`crate::prediction::inter::block`]), coeff /
 //! residual decode, inverse transform, loop filters, and output are shared.
-//!
-//! The migration is a strangler fig: inter frames route through `decode_frame`
-//! first (this module), then intra frames join, then the tiered "minimal"
-//! allowlist dispatch is retired clause by clause behind op-local markers.
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::FrameHeaderCore;

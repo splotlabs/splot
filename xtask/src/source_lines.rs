@@ -3,7 +3,6 @@
 
 //! Source-file size budget check.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
@@ -13,15 +12,6 @@ use crate::git_util::run_git;
 
 const SOFT_LINE_LIMIT: usize = 1_000;
 const HARD_LINE_LIMIT: usize = 2_500;
-
-#[derive(Debug, Clone, Copy)]
-struct SourceLineAllowance {
-    path: &'static str,
-    max_lines: usize,
-    reason: &'static str,
-}
-
-const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceFileLineCount {
@@ -33,7 +23,6 @@ struct SourceFileLineCount {
 struct SourceLineReport {
     soft_warnings: Vec<SourceFileLineCount>,
     hard_violations: Vec<SourceFileLineCount>,
-    allowance_problems: Vec<String>,
 }
 
 /// Checks Rust source files against the source-line budget.
@@ -50,14 +39,13 @@ pub(crate) fn check_source_lines(root: &Path) -> Result<()> {
         });
     }
 
-    let report = evaluate_source_lines(&counts, HARD_LINE_ALLOWANCES);
+    let report = evaluate_source_lines(&counts);
     emit_report(&report);
 
-    if !report.hard_violations.is_empty() || !report.allowance_problems.is_empty() {
+    if !report.hard_violations.is_empty() {
         bail!(
-            "check-source-lines: {} hard violation(s), {} allowance problem(s)",
-            report.hard_violations.len(),
-            report.allowance_problems.len()
+            "check-source-lines: {} hard violation(s)",
+            report.hard_violations.len()
         );
     }
 
@@ -93,119 +81,40 @@ fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub(crate) fn physical_line_count(text: &str) -> usize {
-    if text.is_empty() {
-        0
-    } else {
-        #[allow(clippy::naive_bytecount)]
-        let newlines = text.as_bytes().iter().filter(|&&b| b == b'\n').count();
-        newlines + usize::from(!text.ends_with('\n'))
-    }
+    text.lines().count()
 }
 
-fn evaluate_source_lines(
-    files: &[SourceFileLineCount],
-    allowances: &[SourceLineAllowance],
-) -> SourceLineReport {
+fn evaluate_source_lines(files: &[SourceFileLineCount]) -> SourceLineReport {
     let mut report = SourceLineReport::default();
-    let files = files
-        .iter()
-        .map(|file| SourceFileLineCount {
+    for file in files {
+        let file = SourceFileLineCount {
             path: normalize_source_path(&file.path),
             lines: file.lines,
-        })
-        .collect::<Vec<_>>();
-    let line_counts = files
-        .iter()
-        .map(|file| (file.path.as_str(), file.lines))
-        .collect::<BTreeMap<_, _>>();
-    let mut allowance_paths = BTreeSet::new();
-    let mut duplicate_allowances = BTreeSet::new();
-
-    for allowance in allowances {
-        if !allowance_paths.insert(allowance.path) {
-            duplicate_allowances.insert(allowance.path);
-        }
-        match line_counts.get(allowance.path).copied() {
-            Some(lines) if lines > allowance.max_lines => {
-                report.hard_violations.push(SourceFileLineCount {
-                    path: allowance.path.to_owned(),
-                    lines,
-                });
-            }
-            Some(lines) if lines <= HARD_LINE_LIMIT => {
-                report.allowance_problems.push(format!(
-                    "{} is allowlisted but now has {lines} line(s), at or below the hard cap {HARD_LINE_LIMIT}",
-                    allowance.path
-                ));
-            }
-            Some(_) => {}
-            None => report.allowance_problems.push(format!(
-                "{} is allowlisted but is not a tracked Rust source file",
-                allowance.path
-            )),
-        }
-    }
-
-    for path in duplicate_allowances {
-        report
-            .allowance_problems
-            .push(format!("{path} has duplicate source-line allowances"));
-    }
-
-    for file in &files {
+        };
         if file.lines > SOFT_LINE_LIMIT {
             report.soft_warnings.push(file.clone());
         }
-        if file.lines > HARD_LINE_LIMIT && !allowance_paths.contains(file.path.as_str()) {
-            report.hard_violations.push(file.clone());
+        if file.lines > HARD_LINE_LIMIT {
+            report.hard_violations.push(file);
         }
     }
-
     report.soft_warnings.sort_by(|a, b| a.path.cmp(&b.path));
     report.hard_violations.sort_by(|a, b| a.path.cmp(&b.path));
-    report.allowance_problems.sort();
     report
 }
 
 fn emit_report(report: &SourceLineReport) {
     for warning in &report.soft_warnings {
-        if let Some(allowance) = HARD_LINE_ALLOWANCES
-            .iter()
-            .find(|allowance| allowance.path == warning.path)
-        {
-            eprintln!(
-                "source-line advisory: {} has {} line(s), above soft limit {SOFT_LINE_LIMIT}; hard-cap allowance up to {} line(s): {}",
-                warning.path, warning.lines, allowance.max_lines, allowance.reason
-            );
-        } else {
-            eprintln!(
-                "source-line advisory: {} has {} line(s), above soft limit {SOFT_LINE_LIMIT}",
-                warning.path, warning.lines
-            );
-        }
+        eprintln!(
+            "source-line advisory: {} has {} line(s), above soft limit {SOFT_LINE_LIMIT}",
+            warning.path, warning.lines
+        );
     }
     for violation in &report.hard_violations {
         eprintln!(
-            "source-line hard violation: {} has {} line(s), above {}",
-            violation.path,
-            violation.lines,
-            hard_violation_limit_label(&violation.path, HARD_LINE_ALLOWANCES)
+            "source-line hard violation: {} has {} line(s), above hard cap {HARD_LINE_LIMIT}",
+            violation.path, violation.lines
         );
-    }
-    for problem in &report.allowance_problems {
-        eprintln!("source-line allowance problem: {problem}");
-    }
-}
-
-fn hard_violation_limit_label(path: &str, allowances: &[SourceLineAllowance]) -> String {
-    let path = normalize_source_path(path);
-    if let Some(allowance) = allowances
-        .iter()
-        .find(|allowance| allowance.path == path.as_str())
-    {
-        format!("allowance cap {}", allowance.max_lines)
-    } else {
-        format!("hard cap {HARD_LINE_LIMIT}")
     }
 }
 
@@ -230,106 +139,28 @@ mod tests {
 
     #[test]
     fn soft_warning_does_not_create_hard_violation() {
-        let report = evaluate_source_lines(&[file("src/lib.rs", SOFT_LINE_LIMIT + 1)], &[]);
+        let report = evaluate_source_lines(&[file("src/lib.rs", SOFT_LINE_LIMIT + 1)]);
         assert_eq!(report.soft_warnings, vec![file("src/lib.rs", 1_001)]);
         assert!(report.hard_violations.is_empty());
-        assert!(report.allowance_problems.is_empty());
     }
 
     #[test]
-    fn hard_cap_fails_without_allowance() {
-        let report = evaluate_source_lines(&[file("src/lib.rs", HARD_LINE_LIMIT + 1)], &[]);
+    fn hard_cap_fails() {
+        let report = evaluate_source_lines(&[file("src/lib.rs", HARD_LINE_LIMIT + 1)]);
         assert_eq!(report.hard_violations, vec![file("src/lib.rs", 2_501)]);
-        assert!(report.allowance_problems.is_empty());
     }
 
     #[test]
-    fn allowance_tolerates_existing_file_but_caps_growth() {
-        let allowances = &[SourceLineAllowance {
-            path: "src/large.rs",
-            max_lines: 3_000,
-            reason: "fixture",
-        }];
-        let tolerated = evaluate_source_lines(&[file("src/large.rs", 3_000)], allowances);
-        assert!(tolerated.hard_violations.is_empty());
-        assert!(tolerated.allowance_problems.is_empty());
-
-        let grown = evaluate_source_lines(&[file("src/large.rs", 3_001)], allowances);
-        assert_eq!(grown.hard_violations, vec![file("src/large.rs", 3_001)]);
-    }
-
-    #[test]
-    fn allowance_lookup_normalizes_backslash_paths() {
-        let allowance = SourceLineAllowance {
-            path: "crates/foo/src/large.rs",
-            max_lines: 2_700,
-            reason: "fixture",
-        };
-        let allowances = [allowance];
-        let windows_path = allowance.path.replace('/', "\\");
-        let report =
-            evaluate_source_lines(&[file(&windows_path, allowance.max_lines)], &allowances);
-
-        assert!(report.hard_violations.is_empty());
-        assert!(report.allowance_problems.is_empty());
+    fn limits_are_inclusive_and_paths_are_normalized() {
+        let report = evaluate_source_lines(&[
+            file("src/soft.rs", SOFT_LINE_LIMIT),
+            file(r"src\hard.rs", HARD_LINE_LIMIT),
+        ]);
         assert_eq!(
             report.soft_warnings,
-            vec![file(allowance.path, allowance.max_lines)]
+            vec![file("src/hard.rs", HARD_LINE_LIMIT)]
         );
-        assert_eq!(
-            hard_violation_limit_label(&windows_path, &allowances),
-            format!("allowance cap {}", allowance.max_lines)
-        );
-    }
-
-    #[test]
-    fn allowance_hygiene_flags_missing_duplicate_and_obsolete_entries() {
-        let allowances = &[
-            SourceLineAllowance {
-                path: "src/missing.rs",
-                max_lines: 3_000,
-                reason: "missing",
-            },
-            SourceLineAllowance {
-                path: "src/small.rs",
-                max_lines: 3_000,
-                reason: "obsolete",
-            },
-            SourceLineAllowance {
-                path: "src/small.rs",
-                max_lines: 3_000,
-                reason: "duplicate",
-            },
-        ];
-        let report = evaluate_source_lines(&[file("src/small.rs", HARD_LINE_LIMIT)], allowances);
         assert!(report.hard_violations.is_empty());
-        assert_eq!(
-            report.allowance_problems,
-            vec![
-                "src/missing.rs is allowlisted but is not a tracked Rust source file",
-                "src/small.rs has duplicate source-line allowances",
-                "src/small.rs is allowlisted but now has 2500 line(s), at or below the hard cap 2500",
-                "src/small.rs is allowlisted but now has 2500 line(s), at or below the hard cap 2500",
-            ]
-        );
-    }
-
-    #[test]
-    fn hard_violation_limit_label_names_allowance_caps() {
-        let allowance = SourceLineAllowance {
-            path: "crates/foo/src/large.rs",
-            max_lines: 2_700,
-            reason: "fixture",
-        };
-        let allowances = [allowance];
-        assert_eq!(
-            hard_violation_limit_label(allowance.path, &allowances),
-            format!("allowance cap {}", allowance.max_lines)
-        );
-        assert_eq!(
-            hard_violation_limit_label("src/lib.rs", &allowances),
-            "hard cap 2500".to_owned()
-        );
     }
 
     #[test]

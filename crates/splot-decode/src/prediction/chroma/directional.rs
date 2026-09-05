@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Chroma directional / cardinal / smooth intra reconstructors for the runtime
-//! tier.
-//!
-//! This is the chroma half of the general-intra reconstruction handoff: it
-//! dispatches the resolved § 5.20.5.3 `UVMode` and reconstructs each chroma
-//! transform block over the § 7.13.2.1 prediction edges read from the
-//! partially-built frame. The luma reconstructors and shared edge / fallback
-//! helpers stay in the parent [`super`] module and are reached through
-//! `use super::*`.
+//! Chroma intra mode dispatch over AV2 § 7.13.2.1 prediction edges.
 //!
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
@@ -60,7 +52,9 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             availability,
             bit_depth,
         ),
-        SupportedChromaMode::Smooth => reconstruct_general_intra_chroma_smooth_into(
+        SupportedChromaMode::Smooth
+        | SupportedChromaMode::SmoothVertical
+        | SupportedChromaMode::SmoothHorizontal => reconstruct_general_intra_chroma_smooth_into(
             workspace,
             block,
             plane_id,
@@ -69,37 +63,11 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             log2_width,
             log2_height,
             qindex,
-            IntraSmoothMode::Smooth,
-            num4_above_right,
-            num4_below_left,
-            availability,
-            bit_depth,
-        ),
-        SupportedChromaMode::SmoothVertical => reconstruct_general_intra_chroma_smooth_into(
-            workspace,
-            block,
-            plane_id,
-            x,
-            y,
-            log2_width,
-            log2_height,
-            qindex,
-            IntraSmoothMode::SmoothVertical,
-            num4_above_right,
-            num4_below_left,
-            availability,
-            bit_depth,
-        ),
-        SupportedChromaMode::SmoothHorizontal => reconstruct_general_intra_chroma_smooth_into(
-            workspace,
-            block,
-            plane_id,
-            x,
-            y,
-            log2_width,
-            log2_height,
-            qindex,
-            IntraSmoothMode::SmoothHorizontal,
+            match mode {
+                SupportedChromaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
+                SupportedChromaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
+                _ => IntraSmoothMode::Smooth,
+            },
             num4_above_right,
             num4_below_left,
             availability,
@@ -145,10 +113,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 false,
                 None,
                 bit_depth,
-                MiddleEdgeAvailability {
-                    above: availability.above,
-                    left: availability.left,
-                },
+                availability,
             )
         }
         SupportedChromaMode::D113Follow | SupportedChromaMode::D113 => {
@@ -164,10 +129,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 false,
                 None,
                 bit_depth,
-                MiddleEdgeAvailability {
-                    above: availability.above,
-                    left: availability.left,
-                },
+                availability,
             )
         }
         SupportedChromaMode::D157 if x == 0 && y == 0 => {
@@ -196,10 +158,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 false,
                 None,
                 bit_depth,
-                MiddleEdgeAvailability {
-                    above: availability.above,
-                    left: availability.left,
-                },
+                availability,
             )
         }
         SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical => {
@@ -207,24 +166,6 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 workspace,
                 block,
                 IntraCardinalDirection::Vertical,
-                plane_id,
-                x,
-                y,
-                log2_width,
-                log2_height,
-                qindex,
-                false,
-                None,
-                dpcm,
-                availability,
-                bit_depth,
-            )
-        }
-        SupportedChromaMode::HorizontalFollow => {
-            reconstruct_general_intra_cardinal_neighbour_block_into(
-                workspace,
-                block,
-                IntraCardinalDirection::Horizontal,
                 plane_id,
                 x,
                 y,
@@ -252,22 +193,24 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
                 bit_depth,
             )
         }
-        SupportedChromaMode::Horizontal => reconstruct_general_intra_cardinal_neighbour_block_into(
-            workspace,
-            block,
-            IntraCardinalDirection::Horizontal,
-            plane_id,
-            x,
-            y,
-            log2_width,
-            log2_height,
-            qindex,
-            false,
-            None,
-            dpcm,
-            availability,
-            bit_depth,
-        ),
+        SupportedChromaMode::HorizontalFollow | SupportedChromaMode::Horizontal => {
+            reconstruct_general_intra_cardinal_neighbour_block_into(
+                workspace,
+                block,
+                IntraCardinalDirection::Horizontal,
+                plane_id,
+                x,
+                y,
+                log2_width,
+                log2_height,
+                qindex,
+                false,
+                None,
+                dpcm,
+                availability,
+                bit_depth,
+            )
+        }
         SupportedChromaMode::D45Follow
         | SupportedChromaMode::D45
         | SupportedChromaMode::D67Follow

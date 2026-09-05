@@ -169,27 +169,33 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
     let have_left = left.is_some_and(|samples| !samples.is_empty());
     let have_above = above.is_some_and(|samples| !samples.is_empty());
     let above_right_sentinel = if above_len >= width {
-        resolve_smooth_above_right_sentinel(
+        resolve_smooth_sentinel(
             workspace,
-            plane_id,
-            x,
-            y,
-            width,
-            have_above,
-            num4_above_right,
+            SmoothSentinelRequest {
+                plane_id,
+                x,
+                y,
+                side: width,
+                have_edge: have_above,
+                extension: num4_above_right,
+                kind: SmoothSentinelKind::AboveRight,
+            },
         )?
     } else {
         None
     };
     let bottom_left_sentinel = if left_len >= height {
-        resolve_smooth_bottom_left_sentinel(
+        resolve_smooth_sentinel(
             workspace,
-            plane_id,
-            x,
-            y,
-            height,
-            have_left,
-            num4_below_left,
+            SmoothSentinelRequest {
+                plane_id,
+                x,
+                y,
+                side: height,
+                have_edge: have_left,
+                extension: num4_below_left,
+                kind: SmoothSentinelKind::BottomLeft,
+            },
         )?
     } else {
         None
@@ -252,52 +258,6 @@ fn build_smooth_edges<T: ReconSample>(
         left[height] = sentinel;
     }
     (left, above)
-}
-
-fn resolve_smooth_above_right_sentinel<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    plane_id: PlaneId,
-    x: usize,
-    y: usize,
-    side: usize,
-    have_above: bool,
-    num4_above_right: usize,
-) -> core::result::Result<Option<T>, GeneralIntraResidualError> {
-    resolve_smooth_sentinel(
-        workspace,
-        SmoothSentinelRequest {
-            plane_id,
-            x,
-            y,
-            side,
-            have_edge: have_above,
-            extension: num4_above_right,
-            kind: SmoothSentinelKind::AboveRight,
-        },
-    )
-}
-
-fn resolve_smooth_bottom_left_sentinel<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    plane_id: PlaneId,
-    x: usize,
-    y: usize,
-    height: usize,
-    have_left: bool,
-    num4_below_left: usize,
-) -> core::result::Result<Option<T>, GeneralIntraResidualError> {
-    resolve_smooth_sentinel(
-        workspace,
-        SmoothSentinelRequest {
-            plane_id,
-            x,
-            y,
-            side: height,
-            have_edge: have_left,
-            extension: num4_below_left,
-            kind: SmoothSentinelKind::BottomLeft,
-        },
-    )
 }
 
 #[derive(Clone, Copy)]

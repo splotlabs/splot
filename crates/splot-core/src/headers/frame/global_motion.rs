@@ -1,58 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The AV2 § 5.18.9 `global_motion_params()` **inter arm**
-//! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-9`, mirror :7776-7931) and its
-//! subexp decode chain (§ 5.18.9.2-.6, mirror :7988-8142).
+//! AV2 § 5.18.9 global-motion parameters and subexponential decoding
+//! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-9`).
 //!
-//! On the intra path `global_motion_params()` returns before any bit read (mirror :7792,
-//! `FrameIsIntra || !enable_global_motion`) — that no-bit arm is recorded by
-//! [`super::tail`]. This module models the **inter arm**, which sits in the § 5.18.2
-//! shared tail after `reduced_tx_set` (mirror :5337-5339), before `film_grain_config()`:
-//!
-//! ```text
-//! global_motion_params( ) {
-//!     for ref ... { GmType[ref] = IDENTITY; gm_params[ref] = identity warp }   // no bits
-//!     if ( FrameIsIntra || !enable_global_motion ) return                       // intra/disabled
-//!     use_global_motion                                                  f(1)
-//!     if ( !use_global_motion ) return
-//!     baseParams = Default_Warp_Params; baseDistance = 1                         // no bits
-//!     if ( FrameType == SWITCH_FRAME ) our_ref = NumTotalRefs                    // no bits
-//!     else                            our_ref                            ns(NumTotalRefs + 1)
-//!     if ( our_ref != NumTotalRefs ) {
-//!         refIdx = ref_frame_idx[ our_ref ]
-//!         if ( RefNumTotalRefs[ refIdx ] > 0 ) {                                 // CROSS-FRAME
-//!             their_ref                                                  ns(RefNumTotalRefs[refIdx])
-//!             baseParams = SavedGmParams[ refIdx ][ their_ref ]                  // CROSS-FRAME
-//!             baseDistance = get_relative_dist(...)                              // CROSS-FRAME
-//!         }
-//!     }
-//!     for ( ref = 0; ref < NumTotalRefs; ref++ ) {
-//!         dist = get_relative_dist(OrderHint, OrderHints[ ref ])                 // CROSS-FRAME
-//!         if ( dist == 0 || OrderHints[ ref ] == RESTRICTED_OH ) { identity }    // no bits
-//!         else {
-//!             PrevGmParams[ ref ] = scale_warp_model(baseParams, baseDistance, dist)
-//!             is_global                                                  f(1)
-//!             if ( is_global ) { is_rot_zoom f(1); type = is_rot_zoom ? ROTZOOM : AFFINE }
-//!             else type = IDENTITY
-//!             if ( type >= ROTZOOM ) { read_global_param(ref, 2/3 [/4/5] /0/1) }
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! ## Cross-frame state
-//!
-//! The decoder threads § 7.23 `RefNumTotalRefs`, `SavedOrderHints`, `SavedGmParams`, and
-//! current/reference order hints through [`GlobalMotionReferenceState`], so the production
-//! path parses every reference model. Callers that intentionally do not model a reference
-//! buffer may omit that view; they retain the historical [`GlobalMotionStop`] coverage
-//! boundary without guessing bit presence or widths.
-//!
-//! ## § 6.17.9 conformance
-//!
-//! Both § 6.17.9.1 restricted-order-hint clauses are typed errors when the reference view is
-//! present. The arithmetic § 6.17.9.3-.5 ranges are encoded by the subexp chain and tests.
+//! [`GlobalMotionReferenceState`] supplies the retained warp predictors and order hints.
+//! When omitted, [`GlobalMotionStop`] records the first state-dependent boundary.
+//! With reference state present, restricted order hints produce typed conformance errors.
 
 use crate::bitio::BitReader;
 use crate::error::{GlobalMotionErrorKind, Result};
@@ -296,17 +250,7 @@ pub fn parse_global_motion_params(
 ) -> Result<GlobalMotionParams> {
     let mut references = [GlobalMotionRef::identity(); REFS_PER_FRAME];
 
-    if input.frame_is_intra || !input.enable_global_motion {
-        return Ok(GlobalMotionParams {
-            use_global_motion: false,
-            our_ref: None,
-            stop: None,
-            references,
-        });
-    }
-
-    let use_global_motion = reader.read_flag()?;
-    if !use_global_motion {
+    if input.frame_is_intra || !input.enable_global_motion || !reader.read_flag()? {
         return Ok(GlobalMotionParams {
             use_global_motion: false,
             our_ref: None,
@@ -692,7 +636,7 @@ pub fn decode_subexp(reader: &mut BitReader<'_>, num_syms: i32, k: u32) -> Resul
             i = i.saturating_add(1);
             mk = mk.saturating_add(a);
         } else {
-            let bits = reader.read_f(b2)?;
+            let bits = reader.read_bits(b2)?;
             return i32::try_from(bits.saturating_add(mk))
                 .map_err(|_| invalid_subexp_value(reader));
         }

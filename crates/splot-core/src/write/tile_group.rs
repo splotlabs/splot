@@ -459,15 +459,11 @@ pub fn write_tile_group_continuation_obu(
     if !writer.is_byte_aligned() {
         return Err(WriteError::WriterNotByteAligned);
     }
-    let recorded = match (frame_header_present_flag, recorded) {
-        (true, Some(recorded)) => Some(recorded),
-        (false, None) => None,
-        _ => {
-            return Err(WriteError::NonCanonicalTileGroup {
-                what: "frame_header_copy_gate",
-            });
-        }
-    };
+    if frame_header_present_flag != recorded.is_some() {
+        return Err(WriteError::NonCanonicalTileGroup {
+            what: "frame_header_copy_gate",
+        });
+    }
     if let Some(recorded) = recorded
         && recorded.num_frame_header_bits() == 0
     {

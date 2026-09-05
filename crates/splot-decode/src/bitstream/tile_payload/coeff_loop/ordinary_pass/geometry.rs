@@ -8,6 +8,8 @@ use splot_core::tables::conversion::{
 };
 use splot_recon::{ReconError, TransformClass, coefficient_scan_slice};
 
+use crate::bitstream::tile_payload::general_intra_residual::wide_angle_mapping;
+
 use super::super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::super::cdf::{TileCdfSelector, TileCdfSubset};
 use super::super::super::coeff_state::{TileCoeffContextState, TransformCoeffBlockState};
@@ -23,17 +25,11 @@ const DCT_DCT: usize = 0;
 const IDTX: usize = 9;
 const TX_4X4: usize = 0;
 const V_PRED: usize = 1;
-const D45_PRED: usize = 3;
-const D203_PRED: usize = 7;
 const D67_PRED: usize = 8;
 const TX_TYPES: usize = 16;
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
 const ANGLE_STEP: i32 = 3;
-const WAIP_WH_RATIO_2_THRES: i32 = 61;
-const WAIP_WH_RATIO_4_THRES: i32 = 73;
-const WAIP_WH_RATIO_8_THRES: i32 = 82;
-const WAIP_WH_RATIO_16_THRES: i32 = 86;
 const TX_SET_DCTONLY: usize = 0;
 const TX_SET_WIDE_64: usize = 1;
 const TX_SET_HIGH_64: usize = 2;
@@ -125,7 +121,7 @@ impl CoeffOrdinaryBranchModeToTxfmBaseConfig {
         is_inter: bool,
     ) -> Result<CoeffOrdinaryBranchTxSizeDimensionsBaseConfig, CoeffOrdinaryBranchError> {
         Ok(CoeffOrdinaryBranchTxSizeDimensionsBaseConfig {
-            plane_tx_type: mode_to_txfm_plane_tx_type(geometry, is_inter, self)?,
+            plane_tx_type: resolve_mode_to_txfm_plane_tx_type(geometry, is_inter, self)?,
             parity_hiding: self.parity_hiding,
             use_tcq: self.use_tcq,
         })
@@ -394,14 +390,6 @@ pub(crate) fn resolve_mode_to_txfm_plane_tx_type(
     is_inter: bool,
     config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
 ) -> Result<usize, CoeffOrdinaryBranchError> {
-    mode_to_txfm_plane_tx_type(geometry, is_inter, config)
-}
-
-fn mode_to_txfm_plane_tx_type(
-    geometry: CoeffOrdinaryTxSizeGeometryConfig,
-    is_inter: bool,
-    config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
-) -> Result<usize, CoeffOrdinaryBranchError> {
     if geometry.plane == 0 {
         return luma_tx_type(config.luma_tx_type);
     }
@@ -515,28 +503,6 @@ fn directional_uv_mode(
         tx_height,
         p_angle,
     ))
-}
-
-fn wide_angle_mapping(mode: usize, width: usize, height: usize, p_angle: i32) -> usize {
-    if is_scaled(height, width, 2) && p_angle < WAIP_WH_RATIO_2_THRES
-        || is_scaled(height, width, 4) && p_angle < WAIP_WH_RATIO_4_THRES
-        || is_scaled(height, width, 8) && p_angle < WAIP_WH_RATIO_8_THRES
-        || is_scaled(height, width, 16) && p_angle < WAIP_WH_RATIO_16_THRES
-    {
-        D203_PRED
-    } else if is_scaled(width, height, 2) && p_angle > 270 - WAIP_WH_RATIO_2_THRES
-        || is_scaled(width, height, 4) && p_angle > 270 - WAIP_WH_RATIO_4_THRES
-        || is_scaled(width, height, 8) && p_angle > 270 - WAIP_WH_RATIO_8_THRES
-        || is_scaled(width, height, 16) && p_angle > 270 - WAIP_WH_RATIO_16_THRES
-    {
-        D45_PRED
-    } else {
-        mode
-    }
-}
-
-const fn is_scaled(value: usize, base: usize, factor: usize) -> bool {
-    matches!(base.checked_mul(factor), Some(scaled) if scaled == value)
 }
 
 fn adjusted_tx_size_dimensions(

@@ -18,13 +18,6 @@
 //!
 //! Feature tracking: `RECON-INVERSE-TRANSFORM-1D`,
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`.
-//!
-//! Scope: the § 7.15.3 secondary transform and the § 7.15.4 2D inverse transform
-//! that orchestrates row/column passes (including the `Transform_Shift`,
-//! `get_transform_1d_type`, and `get_identity_scale` derivations, the DPCM
-//! cumulative sum, and adjusted-size sample duplication) are out of scope and
-//! tracked by their own future rows. The caller supplies the already-derived 1D
-//! transform type, scale, shift, and `colTx` flag.
 
 use std::simd::{Simd, cmp::SimdOrd as _};
 
@@ -373,29 +366,6 @@ fn kernel_transform<const N: usize>(
     }
 }
 
-/// AV2 § 4.8 `Round2(x, n)`: `n == 0` returns `x`, else `(x + (1 << (n - 1))) >> n`
-/// with arithmetic (sign-extending) shift.
-///
-/// For `1 <= n < 64` this uses the floor-shift identity
-/// `Round2(x, n) == ((x >> (n - 1)) + 1) >> 1`: writing `x = q * 2^(n-1) + r`
-/// with `0 <= r < 2^(n-1)`, both sides equal `floor((q + 1) / 2)`. The `+ 1`
-/// cannot overflow because every caller bounds `|value|` at `2^62` (kernel
-/// accumulators stay below `2^43`; the identity transform's product is at most
-/// `|i32::MIN| * |i32::MIN| = 2^62`), so `(value >> (n - 1)) + 1 <= 2^62 + 1`.
-/// A `shift` at or above the `i64` width saturates to the arithmetic-shift
-/// limit instead of shifting out of range.
-#[cfg(test)]
-fn round2(value: i64, shift: u8) -> i64 {
-    if shift == 0 {
-        return value;
-    }
-    let shift = u32::from(shift);
-    if shift >= i64::BITS {
-        return value >> (i64::BITS - 1);
-    }
-    ((value >> (shift - 1)) + 1) >> 1
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -572,41 +542,6 @@ mod tests {
         ((i128::from(value) + (1i128 << (shift - 1))) >> shift) as i64
     }
 
-    #[test]
-    fn round2_shift_identity_matches_wide_reference() {
-        let values = [
-            0i64,
-            1,
-            -1,
-            2,
-            -2,
-            3,
-            -3,
-            7,
-            -7,
-            1017,
-            -1017,
-            123_456_789,
-            -123_456_789,
-            i64::from(i32::MAX),
-            i64::from(i32::MIN),
-            (1i64 << 43) - 1,
-            -(1i64 << 43),
-            (1i64 << 62) - 12_345,
-            1i64 << 62,
-            -(1i64 << 62),
-        ];
-        for &value in &values {
-            for shift in 1..=63u8 {
-                assert_eq!(
-                    round2(value, shift),
-                    round2_reference(value, shift),
-                    "round2({value}, {shift})"
-                );
-            }
-        }
-    }
-
     fn reference_kernel_sum(
         src: &[i32],
         tx_type: InverseTransform1dType,
@@ -694,16 +629,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn round2_matches_spec_and_is_total_for_large_shift() {
-        assert_eq!(round2(0, 0), 0);
-        assert_eq!(round2(7, 0), 7);
-        assert_eq!(round2(6, 2), 2); // (6 + 2) >> 2
-        assert_eq!(round2(-6, 2), -1); // (-6 + 2) >> 2 = -4 >> 2
-        assert_eq!(round2(1_000, 64), 0);
-        assert_eq!(round2(-1_000, 200), -1);
     }
 
     #[test]

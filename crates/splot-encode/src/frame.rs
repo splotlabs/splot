@@ -322,7 +322,7 @@ impl<'a> Frame<'a> {
     }
 }
 
-/// Explicit retained input frame handle for future lookahead.
+/// Shared ownership of a validated encoder input frame.
 #[derive(Debug)]
 pub struct RetainedFrame {
     info: FrameInfo,

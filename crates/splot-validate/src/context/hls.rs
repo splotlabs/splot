@@ -5,19 +5,8 @@
 
 use super::*;
 
-/// Availability of in-band HLS objects, for the § 7.3.8 reference checks.
-///
-/// Sequence-header availability (§ 7.3.8.6), multi-frame-header availability
-/// (§ 7.3.8.7), layer-configuration-record availability (§ 7.3.8.3), and local
-/// atlas-segment availability (§ 7.3.8.4) are modeled. MSDO / OPS availability records
-/// and the global atlas reference (§ 7.3.8.4 uses "can be available", not a hard
-/// requirement) remain deferred.
-///
-/// The store is kept **monotonic** (entries are never removed): an object included
-/// earlier in the bitstream stays available, so the validator never falsely reports
-/// it unavailable. AV2 § 7.3.8.1's "HLS OBUs must be resent at each random access
-/// point" requirement needs random-access state to model and is intentionally not
-/// enforced (a sound-over-complete false negative).
+/// In-band HLS availability for § 7.3.8 reference checks. RAP resend requirements
+/// are tracked separately by `RapReplayTracker`; redefinitions replace stored details.
 #[derive(Debug, Default)]
 pub(super) struct HlsAvailabilityStore {
     /// `seq_header_id` values of sequence headers seen in-band so far (§ 7.3.8.6).
@@ -114,8 +103,7 @@ impl HlsAvailabilityStore {
 
     /// Returns the in-band multi-frame-header record for `mfhId`, if available.
     ///
-    /// External multi-frame-header availability is not modeled (`ValidationOptions`
-    /// declares only external sequence headers); it remains future work.
+    /// External multi-frame-header availability is not modeled.
     pub(super) fn multi_frame_header(&self, id: MfhId) -> Option<&MultiFrameHeaderRecord> {
         self.multi_frame_headers.get(&id.get())
     }
@@ -165,47 +153,6 @@ impl HlsAvailabilityStore {
         self.local_lcr_embedded.remove(&(xlayer, local_id));
     }
 
-    /// Records a global LCR payload's § 5.8.8 embedded-layer maps for extended layer
-    /// `xlayer` (§ 6.8.9 agreement checks).
-    pub(super) fn record_global_lcr_embedded(
-        &mut self,
-        global_id: u8,
-        xlayer: ExtendedLayerId,
-        maps: LcrEmbeddedMaps,
-    ) {
-        self.global_lcr_embedded.insert((global_id, xlayer), maps);
-    }
-
-    /// Returns the available global LCR's § 5.8.8 embedded-layer maps for
-    /// `(global_id, xlayer)`, if signalled.
-    pub(super) fn global_lcr_embedded(
-        &self,
-        global_id: u8,
-        xlayer: ExtendedLayerId,
-    ) -> Option<&LcrEmbeddedMaps> {
-        self.global_lcr_embedded.get(&(global_id, xlayer))
-    }
-
-    /// Records a local LCR's § 5.8.8 embedded-layer maps (§ 6.8.9 agreement checks).
-    pub(super) fn record_local_lcr_embedded(
-        &mut self,
-        xlayer: ExtendedLayerId,
-        local_id: u8,
-        maps: LcrEmbeddedMaps,
-    ) {
-        self.local_lcr_embedded.insert((xlayer, local_id), maps);
-    }
-
-    /// Returns the available local LCR's § 5.8.8 embedded-layer maps for
-    /// `(xlayer, local_id)`, if signalled.
-    pub(super) fn local_lcr_embedded(
-        &self,
-        xlayer: ExtendedLayerId,
-        local_id: u8,
-    ) -> Option<&LcrEmbeddedMaps> {
-        self.local_lcr_embedded.get(&(xlayer, local_id))
-    }
-
     /// Drops the stored § 6.8.5 PTL and § 6.8.8 rep-info snapshots of the local LCR
     /// `(xlayer, local_id)` before re-recording a redefinition, mirroring
     /// [`Self::clear_local_lcr_embedded`] — a re-sent record that drops the PTL or
@@ -222,88 +169,6 @@ impl HlsAvailabilityStore {
         self.global_lcr_ptl.retain(|(id, _), _| *id != global_id);
         self.global_lcr_rep_info
             .retain(|(id, _), _| *id != global_id);
-    }
-
-    /// Records a local LCR's § 5.8.4 PTL declared maxima (§ 6.8.5 ceiling checks).
-    pub(super) fn record_local_lcr_ptl(
-        &mut self,
-        xlayer: ExtendedLayerId,
-        local_id: u8,
-        ptl: LcrPtlSnapshot,
-    ) {
-        self.local_lcr_ptl.insert((xlayer, local_id), ptl);
-    }
-
-    /// Returns the available local LCR's § 5.8.4 PTL declared maxima for
-    /// `(xlayer, local_id)`, if signalled.
-    pub(super) fn local_lcr_ptl(
-        &self,
-        xlayer: ExtendedLayerId,
-        local_id: u8,
-    ) -> Option<&LcrPtlSnapshot> {
-        self.local_lcr_ptl.get(&(xlayer, local_id))
-    }
-
-    /// Records a global LCR's § 5.8.4 PTL declared maxima for extended layer `xlayer`
-    /// (§ 6.8.5 ceiling checks).
-    pub(super) fn record_global_lcr_ptl(
-        &mut self,
-        global_id: u8,
-        xlayer: ExtendedLayerId,
-        ptl: LcrPtlSnapshot,
-    ) {
-        self.global_lcr_ptl.insert((global_id, xlayer), ptl);
-    }
-
-    /// Returns the available global LCR's § 5.8.4 PTL declared maxima for
-    /// `(global_id, xlayer)`, if signalled.
-    pub(super) fn global_lcr_ptl(
-        &self,
-        global_id: u8,
-        xlayer: ExtendedLayerId,
-    ) -> Option<&LcrPtlSnapshot> {
-        self.global_lcr_ptl.get(&(global_id, xlayer))
-    }
-
-    /// Records a local LCR's § 5.8.7 rep info (§ 6.8.8 equality checks).
-    pub(super) fn record_local_lcr_rep_info(
-        &mut self,
-        xlayer: ExtendedLayerId,
-        local_id: u8,
-        rep: LcrRepInfoSnapshot,
-    ) {
-        self.local_lcr_rep_info.insert((xlayer, local_id), rep);
-    }
-
-    /// Returns the available local LCR's § 5.8.7 rep info for `(xlayer, local_id)`, if
-    /// signalled.
-    pub(super) fn local_lcr_rep_info(
-        &self,
-        xlayer: ExtendedLayerId,
-        local_id: u8,
-    ) -> Option<&LcrRepInfoSnapshot> {
-        self.local_lcr_rep_info.get(&(xlayer, local_id))
-    }
-
-    /// Records a global LCR payload's § 5.8.7 rep info for extended layer `xlayer`
-    /// (§ 6.8.8 equality checks).
-    pub(super) fn record_global_lcr_rep_info(
-        &mut self,
-        global_id: u8,
-        xlayer: ExtendedLayerId,
-        rep: LcrRepInfoSnapshot,
-    ) {
-        self.global_lcr_rep_info.insert((global_id, xlayer), rep);
-    }
-
-    /// Returns the available global LCR's § 5.8.7 rep info for `(global_id, xlayer)`, if
-    /// signalled.
-    pub(super) fn global_lcr_rep_info(
-        &self,
-        global_id: u8,
-        xlayer: ExtendedLayerId,
-    ) -> Option<&LcrRepInfoSnapshot> {
-        self.global_lcr_rep_info.get(&(global_id, xlayer))
     }
 
     /// Records a local atlas segment OBU (by `obu_xlayer_id` and `atlas_segment_id`)

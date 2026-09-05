@@ -15,9 +15,7 @@ use super::base_level_pass::{
 };
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{CoeffMaxLevelConfig, derive_coeff_max_level};
-use super::quant_pass::{
-    CoeffQuantPassConfig, CoeffQuantPassError, validate_coeff_quant_pass_config,
-};
+use super::quant_pass::{CoeffQuantPassError, validate_coeff_quant_pass_config};
 use super::quant_state::{
     CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState,
     apply_derived_nonzero_coeff_quant_state_step,
@@ -152,7 +150,7 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         w4: sign_config.w4,
         h4: sign_config.h4,
     };
-    let quant_config = CoeffQuantPassConfig {
+    let quant_config = CoeffQuantStateConfig {
         is_hidden: first_pass.is_hidden(),
         sum_abs1: first_pass.sum_abs1(),
         use_tcq: base_config.use_tcq,
@@ -231,7 +229,7 @@ struct InterleavedSignQuantPassInput<'a> {
     walk: &'a NonZeroCoeffScanWalk<'a>,
     sign_config: CoeffSignSourceDeriveConfig<'a>,
     max_level_config: CoeffMaxLevelConfig,
-    config: CoeffQuantPassConfig,
+    config: CoeffQuantStateConfig,
 }
 
 fn apply_interleaved_sign_and_quant_pass(
@@ -253,12 +251,7 @@ fn apply_interleaved_sign_and_quant_pass(
         allow_tcq: config.use_tcq,
         hr_level_avg: 0,
     });
-    let mut quant_state = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
-        is_hidden: config.is_hidden,
-        sum_abs1: config.sum_abs1,
-        use_tcq: config.use_tcq,
-        lossless: config.lossless,
-    });
+    let mut quant_state = CoeffQuantStateAccumulator::new(config);
 
     for (index, entry) in walk.entries().enumerate() {
         let level = block.level_at(entry.row(), entry.col())?;
