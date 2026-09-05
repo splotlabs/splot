@@ -545,6 +545,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|error| deblock_prepare_error(&error))?,
             None => None,
         };
+        let retired;
         if setup.stripe_ranges().len() > 1 && splot_parallel::on_worker_pool() {
             if let Some(sections) = sections.as_mut() {
                 sections
@@ -625,6 +626,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
             }
             setup.stripe_outcomes = slots;
+            retired = retire_source(source);
             if let Some(error) = failure {
                 return Err(error);
             }
@@ -649,14 +651,30 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )?;
                 setup.publish(filtered)?;
             }
+            drop(lease);
+            retired = retire_source(source);
         }
         if let Some(mut sections) = sections {
             sections.release_grids(&mut setup.filter_records.deblock_grids);
             sections.finish();
         }
+        setup.filter_records.retired_planes = retired;
         let frame = setup.finish(publish)?;
         Ok(frame)
     }
+}
+
+/// Keeps a filtered frame's reconstruction buffers for the next frame's walk.
+///
+/// The filter phase is the last reader of the frame it filtered, so this is
+/// where those buffers become free again.
+fn retire_source<T: ReconSample>(
+    source: crate::filters::source::DeblockedSource<T>,
+) -> splot_recon::RetiredFramePlanes {
+    source
+        .into_workspace()
+        .map(|workspace| T::retire_planes(workspace.into_plane_samples()))
+        .unwrap_or_default()
 }
 
 impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {

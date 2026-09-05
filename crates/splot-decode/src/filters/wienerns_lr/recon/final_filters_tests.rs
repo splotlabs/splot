@@ -369,6 +369,34 @@ fn final_filter_sink_8bit<T: splot_recon::ReconSample>() -> WienerNsLrReconSink<
 }
 
 #[test]
+fn a_filtered_frame_retires_its_reconstruction_buffers() {
+    let mut core = switchable_core();
+    core.deblocking_filter_params = None;
+    let workspace = deblock_workspace();
+    let samples = workspace.samples(PlaneId::Y).unwrap().as_ptr();
+
+    let (_frame, records) =
+        WienerNsLrReconSink::for_final_filtering(workspace, 64, 32, BitDepth::Eight)
+            .into_filtered_frame(
+                Arc::new(core),
+                false,
+                crate::filters::deblock::DeblockQuantDeltas::ZERO,
+                None,
+                None,
+                core::convert::identity,
+            )
+            .unwrap();
+
+    let mut retired = records.retired_planes;
+    let kept = <u8 as splot_recon::ReconSample>::reclaim_planes(&mut retired).take(PlaneId::Y);
+    assert_eq!(
+        kept.as_ptr(),
+        samples,
+        "the next frame walks into the filtered frame's reconstruction buffer"
+    );
+}
+
+#[test]
 fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
     use splot_parallel::{ThreadCount, WorkerPool};
 

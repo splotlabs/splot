@@ -41,6 +41,11 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) stripes: FilterStripeLists,
     /// The deblock grid vectors, borrowed and handed back the same way.
     pub(crate) deblock_grids: crate::filters::deblock::DeblockGridStorage,
+    /// The reconstruction workspace's sample buffers, on their way to the next
+    /// frame's walk: the filter phase is the last reader of the frame it
+    /// filtered, and these records already run from the phase to the decoder's
+    /// scratch and back out with the next frame.
+    pub(crate) retired_planes: splot_recon::RetiredFramePlanes,
 }
 
 /// The per-stripe lists one frame's filter phase works through.

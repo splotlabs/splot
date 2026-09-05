@@ -128,11 +128,34 @@ pub struct FramePlaneSamples<T: ReconSample> {
 }
 
 impl<T: ReconSample> FramePlaneSamples<T> {
+    /// Collects one frame's plane buffers, absent chroma included.
+    #[must_use]
+    pub fn new(y: Vec<T>, u: Option<Vec<T>>, v: Option<Vec<T>>) -> Self {
+        Self {
+            planes: [y, u.unwrap_or_default(), v.unwrap_or_default()],
+        }
+    }
+
     /// Takes the buffer kept for `plane`, leaving nothing behind.
     #[must_use]
     pub fn take(&mut self, plane: PlaneId) -> Vec<T> {
         core::mem::take(&mut self.planes[plane.index()])
     }
+}
+
+/// One frame's retired plane buffers, in whichever storage depth it decoded to.
+///
+/// The pipeline hands buffers between frames through channels that do not carry
+/// the sample type, so the depth travels with the buffers.
+#[derive(Debug, Default)]
+pub enum RetiredFramePlanes {
+    /// No frame has handed its buffers over yet.
+    #[default]
+    None,
+    /// Eight-bit sample storage.
+    Eight(FramePlaneSamples<u8>),
+    /// Ten-bit sample storage.
+    Ten(FramePlaneSamples<u16>),
 }
 
 /// Immutable decoded output frame made of owned planes.

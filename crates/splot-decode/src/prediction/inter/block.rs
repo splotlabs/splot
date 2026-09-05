@@ -213,6 +213,11 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         core::mem::take(&mut self.frame_filter_records)
     }
 
+    /// Takes back the plane buffers the last frame's filter phase retired.
+    pub(crate) fn reclaim_retired_planes(&mut self) -> splot_recon::FramePlaneSamples<T> {
+        T::reclaim_planes(&mut self.frame_filter_records.retired_planes)
+    }
+
     pub(crate) fn recycle_frame_filter_records(
         &mut self,
         records: crate::filters::wienerns_lr::FrameFilterRecords,

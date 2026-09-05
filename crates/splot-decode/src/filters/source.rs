@@ -96,6 +96,20 @@ impl<T: ReconSample> DeblockedSource<T> {
         source
     }
 
+    /// Takes the reconstructed workspace back when no lease is outstanding.
+    ///
+    /// The filter phase is the last reader of the frame it filtered, so this is
+    /// where its sample buffers become the next frame's.
+    pub(crate) fn into_workspace(self) -> Option<CurrentFrameWorkspace<T>> {
+        let mut storage = ManuallyDrop::new(Arc::into_inner(self.storage)?);
+        let workspace = unsafe { ManuallyDrop::take(&mut storage.workspace) }; // SAFETY: this was the final owning handle, so no view can read the samples, and the storage is not dropped, so `Drop` cannot take twice.
+        #[cfg(test)]
+        if let Some(recycled) = storage.recycled.take() {
+            recycled.store(true, Ordering::SeqCst);
+        }
+        Some(workspace)
+    }
+
     pub(crate) fn info(&self) -> splot_recon::DecodedFrameInfo {
         self.storage.info
     }

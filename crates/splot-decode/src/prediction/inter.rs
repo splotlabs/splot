@@ -153,6 +153,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference,
         bit_depth,
         geometry,
+        &mut scratch.reclaim_retired_planes(),
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let InterBlockDecodeOutput {

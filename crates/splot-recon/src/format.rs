@@ -212,6 +212,12 @@ pub trait ReconSample: private::Sealed + Copy + Default + Send + Sync + 'static 
     /// `u16`; `None` for narrower storage types.
     fn u16_slice_mut(samples: &mut [Self]) -> Option<&mut [u16]>;
 
+    /// Tags a frame's retired plane buffers with this storage depth.
+    fn retire_planes(samples: crate::FramePlaneSamples<Self>) -> crate::RetiredFramePlanes;
+
+    /// Takes back buffers of this storage depth, leaving any of another depth.
+    fn reclaim_planes(retired: &mut crate::RetiredFramePlanes) -> crate::FramePlaneSamples<Self>;
+
     /// Reinterprets mutable `u16` storage as this sample type when it is `u16`,
     /// letting a filter write its samples straight into a `u16` plane without a
     /// staging buffer; `None` for narrower storage types.
@@ -229,6 +235,19 @@ pub trait ReconSample: private::Sealed + Copy + Default + Send + Sync + 'static 
 impl ReconSample for u8 {
     const TYPE_NAME: &'static str = "u8";
     const MAX_VALUE: u16 = u8::MAX as u16;
+
+    fn retire_planes(samples: crate::FramePlaneSamples<Self>) -> crate::RetiredFramePlanes {
+        crate::RetiredFramePlanes::Eight(samples)
+    }
+
+    fn reclaim_planes(retired: &mut crate::RetiredFramePlanes) -> crate::FramePlaneSamples<Self> {
+        match core::mem::take(retired) {
+            crate::RetiredFramePlanes::Eight(samples) => samples,
+            crate::RetiredFramePlanes::None | crate::RetiredFramePlanes::Ten(_) => {
+                crate::FramePlaneSamples::default()
+            }
+        }
+    }
 
     fn to_u16(self) -> u16 {
         u16::from(self)
@@ -265,6 +284,19 @@ impl ReconSample for u8 {
 impl ReconSample for u16 {
     const TYPE_NAME: &'static str = "u16";
     const MAX_VALUE: u16 = u16::MAX;
+
+    fn retire_planes(samples: crate::FramePlaneSamples<Self>) -> crate::RetiredFramePlanes {
+        crate::RetiredFramePlanes::Ten(samples)
+    }
+
+    fn reclaim_planes(retired: &mut crate::RetiredFramePlanes) -> crate::FramePlaneSamples<Self> {
+        match core::mem::take(retired) {
+            crate::RetiredFramePlanes::Ten(samples) => samples,
+            crate::RetiredFramePlanes::None | crate::RetiredFramePlanes::Eight(_) => {
+                crate::FramePlaneSamples::default()
+            }
+        }
+    }
 
     fn to_u16(self) -> u16 {
         self

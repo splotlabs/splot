@@ -154,6 +154,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
+    recycled: &mut splot_recon::FramePlaneSamples<T>,
 ) -> Result<InterWalkPrologue<'payload, T>> {
     let offset = frame_envelope.offset;
     let initial_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?;
@@ -202,7 +203,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let interpolation_filter = inter
         .interpolation_filter
         .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
-    let workspace = CurrentFrameWorkspace::<T>::new_recycled(geometry.info())?; // pooled buffer keeps the previous frame's samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
+    let workspace = CurrentFrameWorkspace::<T>::new_recycled_from(geometry.info(), recycled)?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let quantization = core.quantization_params.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_base_q",
@@ -337,7 +338,7 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
 /// pass fails.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn parse_inter_frame_prologue<'payload, T: ReconSample>(
-    records: FrameFilterRecords,
+    mut records: FrameFilterRecords,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &'payload [u8],
@@ -369,6 +370,7 @@ pub(crate) fn parse_inter_frame_prologue<'payload, T: ReconSample>(
         &reference,
         bit_depth,
         geometry,
+        &mut T::reclaim_planes(&mut records.retired_planes),
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let quantizer = FrameQuantizerSnapshot::capture();

@@ -1076,6 +1076,16 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         Ok(output)
     }
 
+    /// Hands this workspace's sample buffers to the next frame that needs them.
+    #[must_use]
+    pub fn into_plane_samples(self) -> FramePlaneSamples<T> {
+        FramePlaneSamples::new(
+            self.y.samples,
+            self.u.map(|plane| plane.samples),
+            self.v.map(|plane| plane.samples),
+        )
+    }
+
     /// Returns all backing samples for `plane`, including padding if present.
     ///
     /// # Errors
