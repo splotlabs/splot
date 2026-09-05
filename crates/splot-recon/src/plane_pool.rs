@@ -40,18 +40,11 @@ fn take<T>(spares: &Mutex<Vec<Vec<T>>>, samples: usize) -> Vec<T> {
     let Ok(mut spares) = spares.lock() else {
         return Vec::new();
     };
-    let mut best = None;
-    for (index, spare) in spares.iter().enumerate() {
-        if spare.capacity() < samples {
-            continue;
-        }
-        if spare.len() == samples {
-            best = Some(index);
-            break;
-        }
-        best = best.or(Some(index));
-    }
-    best.map_or_else(Vec::new, |index| spares.swap_remove(index))
+    spares
+        .iter()
+        .position(|spare| spare.len() == samples)
+        .or_else(|| spares.iter().position(|spare| spare.capacity() >= samples))
+        .map_or_else(Vec::new, |index| spares.swap_remove(index))
 }
 
 /// Offers `buffer` back, keeping it only while there is room.
@@ -79,11 +72,9 @@ fn recycle<T>(spares: &Mutex<Vec<Vec<T>>>, buffer: Vec<T>) {
 pub fn release_plane_spares() {
     if let Ok(mut spares) = EIGHT_BIT_SPARES.lock() {
         spares.clear();
-        spares.shrink_to_fit();
     }
     if let Ok(mut spares) = TEN_BIT_SPARES.lock() {
         spares.clear();
-        spares.shrink_to_fit();
     }
 }
 

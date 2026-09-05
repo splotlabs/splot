@@ -33,41 +33,19 @@ thread_local! {
 pub(crate) fn take_pooled_vec<T: Send + 'static>(cells: usize) -> Vec<T> {
     POOLED_VECS
         .try_with(|slots| {
-            let mut spares = slots.borrow_mut();
-            let mut best: Option<(usize, usize)> = None;
-            for (index, spare) in spares.iter_mut().enumerate() {
-                let Some(capacity) = spare
-                    .as_mut()
-                    .and_then(|any| any.downcast_mut::<Vec<T>>())
-                    .map(|spare| spare.capacity())
-                    .filter(|capacity| *capacity > 0)
-                else {
-                    continue;
-                };
-                let better =
-                    best.is_none_or(|(_, best)| match (best >= cells, capacity >= cells) {
-                        // Prefer the smallest that fits; failing that, the largest.
-                        (true, true) => capacity < best,
-                        (false, true) => true,
-                        (true, false) => false,
-                        (false, false) => capacity > best,
-                    });
-                if better {
-                    best = Some((index, capacity));
-                }
-            }
-            let mut taken = Vec::new();
-            if let Some((index, _)) = best
-                && let Some(spare) = spares
-                    .get_mut(index)
-                    .and_then(|slot| slot.as_mut())
-                    .and_then(|any| any.downcast_mut::<Vec<T>>())
-            {
-                std::mem::swap(&mut taken, spare);
-            }
-            taken
+            slots
+                .borrow_mut()
+                .iter_mut()
+                .filter_map(|slot| slot.as_mut()?.downcast_mut::<Vec<T>>())
+                .filter(|spare| spare.capacity() > 0)
+                .min_by_key(|spare| match spare.capacity() {
+                    capacity if capacity >= cells => (0, capacity),
+                    capacity => (1, usize::MAX - capacity),
+                })
+                .map(core::mem::take)
+                .unwrap_or_default()
         })
-        .unwrap_or_else(|_| Vec::new())
+        .unwrap_or_default()
 }
 
 /// Offers `cells` back to this thread's spare set.

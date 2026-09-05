@@ -145,10 +145,7 @@ impl<T: Copy + Send + 'static> MiGrid<T> {
         allocation: impl FnOnce(TryReserveError) -> E,
         preallocate_check: Result<(), E>,
     ) -> Result<Self, E> {
-        let cells = row_range
-            .len()
-            .checked_mul(col_range.len())
-            .unwrap_or_default();
+        let cells = row_range.len().saturating_mul(col_range.len());
         Self::build(
             row_range,
             col_range,

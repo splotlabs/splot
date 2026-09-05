@@ -75,7 +75,6 @@ where
     let height8 = mi_rows.div_ceil(2);
     let cells = width8.checked_mul(height8)?;
     let mut grid = crate::support::reusable_scratch::take_pooled_vec::<T>(cells);
-    grid.clear();
     grid.try_reserve_exact(cells).ok()?;
     grid.resize(cells, T::default());
     Some((width8, height8, grid))
