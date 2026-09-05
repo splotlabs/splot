@@ -3,26 +3,11 @@
 
 //! Duplicate-code budget gate (`cargo xtask check-duplication`).
 //!
-//! Enforces the committed *production*-duplication ceiling in
-//! `tools/dupehound/budget.toml` against the deletable-line count reported by
-//! [`dupehound`](https://github.com/Rafaelpta/dupehound). The gate fails only
-//! when the measured count *exceeds* the ceiling, so production duplication can
-//! never silently regress; the ceiling is ratcheted down whenever a duplicate
-//! cluster is removed. The complementary per-PR ratchet
-//! (`dupehound check --diff <base>`) lives in `.github/workflows/ci.yml`.
+//! Checks production duplicate lines against `tools/dupehound/budget.toml`.
+//! Test bodies and source test-module files are excluded.
 //!
-//! This is a **ratchet, not a zero mandate**. Real codebases carry legitimate
-//! duplication — deliberately-explicit per-scenario tests, intentional
-//! parser/writer decoupling, `&self`/`&mut self` accessor pairs. The goal is to
-//! *prevent new* duplication (the PR ratchet) and *reduce* the production
-//! duplication that hurts maintainability (this budget), never to force a zero
-//! that would require deleting intentional code. The scope excludes test bodies
-//! and source test-module files — see `check_duplication`.
-//!
-//! Like the other external-tool checks (`typos`, `cargo-machete`, `cargo-deny`),
-//! this follows the run-if-present policy: it is mandatory in CI (the workflow
-//! installs `dupehound`) and skipped locally with an install hint when the
-//! binary is absent, so a fresh checkout can still run `cargo xtask ci`.
+//! CI installs the pinned `dupehound` version. Local runs skip the check with
+//! an installation hint when the binary is absent.
 
 use std::path::Path;
 use std::process::Command;

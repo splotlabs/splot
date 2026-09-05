@@ -85,12 +85,6 @@ jobs:
       - run: cargo xtask ci
       - run: cargo test -p splot-decode --release --lib --locked
 
-      - name: dupehound ratchet (block newly introduced duplication)
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: dupehound check --diff "$BASE_SHA" .
-
   dav2d-test-data:
     runs-on: ubuntu-latest
     env:

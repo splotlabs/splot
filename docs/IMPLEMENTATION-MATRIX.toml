@@ -12133,7 +12133,7 @@ module = "xtask/src/dupehound.rs"
 change_id = "dupehound-duplication-gate"
 owner = "automation"
 risk = "low"
-notes = "check-duplication compares dupehound deletable-line counts with tools/dupehound/budget.toml. CI also checks PR diffs for new duplication. The default scan excludes test bodies; the external CLI is required in CI and skipped locally with an install hint when unavailable."
+notes = "check-duplication compares dupehound deletable-line counts with tools/dupehound/budget.toml. The default scan excludes test bodies; the external CLI is required in CI and skipped locally with an install hint when unavailable."
 
 [feature.status]
 mapped = "done"
