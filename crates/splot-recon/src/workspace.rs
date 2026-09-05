@@ -19,7 +19,7 @@ use crate::intra_dc_math::validate_sample_type;
 use crate::intra_directional::predict_intra_cardinal_directional_rect_into;
 use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
 use crate::{
-    BitDepth, DecodedFrame, DecodedFrameInfo, FrameMut, FramePlanes, FrameRef,
+    BitDepth, DecodedFrame, DecodedFrameInfo, FrameMut, FramePlaneSamples, FramePlanes, FrameRef,
     IntraCardinalDirection, IntraDirectionalAngleEdge, IntraPaethEdge, IntraRectBlockSize,
     IntraSmoothEdge, IntraSmoothMode, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect, PlaneRef,
     PlaneSize, ReconError, ReconSample, Result,
@@ -939,10 +939,24 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     }
 
     pub(crate) fn with_fill(info: DecodedFrameInfo, fill: Option<T>) -> Result<Self> {
+        Self::with_planes(info, fill, &mut FramePlaneSamples::default())
+    }
+
+    fn with_planes(
+        info: DecodedFrameInfo,
+        fill: Option<T>,
+        recycled: &mut FramePlaneSamples<T>,
+    ) -> Result<Self> {
         validate_sample_type::<T>(info.bit_depth())?;
         let luma_size = info.coded_luma_size();
         let luma_rect = info.visible_luma_rect();
-        let y = CurrentFramePlane::new(PlaneId::Y, luma_size, luma_rect, fill)?;
+        let y = CurrentFramePlane::new(
+            PlaneId::Y,
+            luma_size,
+            luma_rect,
+            fill,
+            recycled.take(PlaneId::Y),
+        )?;
         let (u, v) = match chroma_plane_geometry(info.pixel_format(), luma_size, luma_rect)? {
             None => (None, None),
             Some((storage_size, visible_rect)) => (
@@ -951,12 +965,14 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                     storage_size,
                     visible_rect,
                     fill,
+                    recycled.take(PlaneId::U),
                 )?),
                 Some(CurrentFramePlane::new(
                     PlaneId::V,
                     storage_size,
                     visible_rect,
                     fill,
+                    recycled.take(PlaneId::V),
                 )?),
             ),
         };
@@ -1370,6 +1386,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         storage_size: PlaneSize,
         visible_rect: PlaneRect,
         fill: Option<T>,
+        mut samples: Vec<T>,
     ) -> Result<Self> {
         visible_rect.ensure_within(storage_size).map_err(|_| {
             ReconError::WorkspaceRectOutOfBounds {
@@ -1391,14 +1408,20 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             },
         )?;
 
-        let mut samples: Vec<T> = Vec::new();
+        samples.truncate(required_samples);
         samples
             .try_reserve_exact(required_samples.saturating_sub(samples.len()))
             .map_err(|_| ReconError::WorkspaceAllocationFailed {
                 plane,
                 context: "sample buffer",
             })?;
+        let recycled = samples.len();
         samples.resize(required_samples, fill.unwrap_or_default());
+        if let Some(fill) = fill {
+            // A recycled buffer still holds the last frame's samples, which
+            // `resize` only overwrites past the end of what it kept.
+            samples[..recycled.min(required_samples)].fill(fill);
+        }
 
         Ok(Self {
             plane,

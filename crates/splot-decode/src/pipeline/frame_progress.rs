@@ -402,8 +402,12 @@ impl<T: ReconSample> FrameProgress<T> {
     /// # Errors
     ///
     /// Returns the workspace allocation's own diagnostic.
-    pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
-        let workspace = DirectWorkspace::new(CurrentFrameWorkspace::new_recycled(info)?); // every row is published by a filter stripe before any consumer may read past the watermark
+    pub(crate) fn recycled(
+        info: DecodedFrameInfo,
+        recycled: &mut splot_recon::FramePlaneSamples<T>,
+    ) -> Result<Self> {
+        let workspace =
+            DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?); // every row is published by a filter stripe before any consumer may read past the watermark
         Ok(Self {
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
@@ -412,6 +416,11 @@ impl<T: ReconSample> FrameProgress<T> {
             luma_height: info.coded_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
+        Self::recycled(info, &mut splot_recon::FramePlaneSamples::default())
     }
 
     /// Publishes the terminal watermark of a filter phase that ended.

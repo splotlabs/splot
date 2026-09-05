@@ -116,6 +116,25 @@ impl<T: ReconSample> FramePlanes<T> {
     }
 }
 
+/// The sample buffers of one frame's planes, kept for the next frame's.
+///
+/// A frame that no reference slot holds any more still owns three sizeable
+/// allocations. Handing them over here lets the frame that takes its place in
+/// the slot reuse them instead of asking the allocator for the same bytes
+/// again, which is what dav2d's picture pool does for the same lifetime.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct FramePlaneSamples<T: ReconSample> {
+    planes: [Vec<T>; 3],
+}
+
+impl<T: ReconSample> FramePlaneSamples<T> {
+    /// Takes the buffer kept for `plane`, leaving nothing behind.
+    #[must_use]
+    pub fn take(&mut self, plane: PlaneId) -> Vec<T> {
+        core::mem::take(&mut self.planes[plane.index()])
+    }
+}
+
 /// Immutable decoded output frame made of owned planes.
 ///
 /// Does not implement `Clone`: it owns the frame's sample storage. Borrow it as a
@@ -169,6 +188,19 @@ impl<T: ReconSample> DecodedFrame<T> {
         }
 
         Ok(Self { info, planes })
+    }
+
+    /// Hands this frame's sample buffers to the frame that replaces it.
+    #[must_use]
+    pub fn into_plane_samples(self) -> FramePlaneSamples<T> {
+        let FramePlanes { y, u, v } = self.planes;
+        FramePlaneSamples {
+            planes: [
+                y.into_samples(),
+                u.map(Plane::into_samples).unwrap_or_default(),
+                v.map(Plane::into_samples).unwrap_or_default(),
+            ],
+        }
     }
 
     /// Returns the decoded output frame metadata.
@@ -272,6 +304,15 @@ impl<T: ReconSample> SharedFrame<T> {
     /// Borrows the shared frame as an immutable [`FrameRef`] without copying.
     pub fn as_frame_ref(&self) -> FrameRef<'_, T> {
         self.inner.as_frame_ref()
+    }
+
+    /// Takes the frame back when this is its last handle.
+    ///
+    /// Returns `None` while any other handle is still sharing the storage, so a
+    /// caller reclaiming a frame's buffers cannot take them from a live reader.
+    #[must_use]
+    pub fn into_frame(self) -> Option<DecodedFrame<T>> {
+        Arc::into_inner(self.inner)
     }
 
     /// Returns the number of live handles sharing this frame storage.

@@ -132,6 +132,12 @@ impl<V> CompletionCell<V> {
         self.value.get()
     }
 
+    /// Takes the completed value, or `None` when nothing was ever published.
+    #[must_use]
+    pub fn into_inner(self) -> Option<V> {
+        self.value.into_inner()
+    }
+
     /// Reports whether the cell is set.
     #[must_use]
     pub fn is_set(&self) -> bool {

@@ -43,7 +43,10 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
     ) -> Result<Self> {
         let progress = match progress {
             Some(progress) => progress,
-            None => Arc::new(crate::pipeline::frame_progress::FrameProgress::new(info)?),
+            None => Arc::new(crate::pipeline::frame_progress::FrameProgress::recycled(
+                info,
+                &mut splot_recon::FramePlaneSamples::default(),
+            )?),
         };
         if !progress.begin(ranges) {
             return Err(lr_pipeline_state_error());

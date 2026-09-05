@@ -130,6 +130,46 @@ fn intra_prediction_scratch_is_task_local_and_reusable() {
 }
 
 #[test]
+fn a_recycled_workspace_decodes_into_the_retired_frame_buffers() {
+    let info = yuv420_info(8, 8);
+    let frame = CurrentFrameWorkspace::<u8>::new(info, 3)
+        .unwrap()
+        .freeze()
+        .unwrap();
+    let planes = [PlaneId::Y, PlaneId::U, PlaneId::V]
+        .map(|plane| frame.plane(plane).unwrap().samples().as_ptr());
+    let mut retired = frame.into_plane_samples();
+
+    let recycled = CurrentFrameWorkspace::<u8>::new_recycled_from(info, &mut retired).unwrap();
+
+    for (plane, samples) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().zip(planes) {
+        assert_eq!(
+            recycled.plane(plane).unwrap().samples().as_ptr(),
+            samples,
+            "{plane:?} must reuse the retired frame's buffer"
+        );
+    }
+}
+
+#[test]
+fn a_filled_workspace_overwrites_a_recycled_buffer_whole() {
+    let info = monochrome_info(BitDepth::Eight, 4, 4);
+    let mut retired = CurrentFrameWorkspace::<u8>::new(info, 3)
+        .unwrap()
+        .freeze()
+        .unwrap()
+        .into_plane_samples();
+
+    let filled = CurrentFrameWorkspace::<u8>::new(info, 7).unwrap();
+    let recycled = CurrentFrameWorkspace::<u8>::with_planes(info, Some(7), &mut retired).unwrap();
+
+    assert_eq!(
+        recycled.samples(PlaneId::Y).unwrap(),
+        filled.samples(PlaneId::Y).unwrap()
+    );
+}
+
+#[test]
 fn rectangular_surfaces_write_stacked_row_bands_independently() {
     let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(8, 8), 3).unwrap();
     let surfaces = workspace

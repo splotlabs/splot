@@ -152,8 +152,9 @@ pub(crate) fn emit_materialized_frames_from_prepared(
     .map(drop)
 }
 
-/// Retires the settled frames nothing owns any more, subtracting their bytes
-/// from the live-frame accounting.
+/// Retires the settled frames nothing owns any more, keeping their sample
+/// buffers for the frames that take their reference slots and subtracting their
+/// bytes from the live-frame accounting.
 ///
 /// A frame with any remaining owner or shared sample handle is skipped: its
 /// planes stay alive whatever the driver releases, and subtracting the bytes
@@ -166,7 +167,7 @@ fn reclaim_unowned_frames(
     reference: &reference_buffer::RuntimeReferenceBuffer,
     scheduler: &OutputScheduler,
     emission: &output_schedule::EmissionQueue,
-    ring: &inflight::InflightRing,
+    ring: &mut inflight::InflightRing,
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
     for frame_index in 0..frames.len() {
@@ -195,7 +196,7 @@ fn reclaim_unowned_frames(
                     "decode pipeline live-frame byte accounting underflowed",
                 )
             })?;
-        drop(frame);
+        ring.keep_frame_planes(frame.frame);
     }
     Ok(())
 }

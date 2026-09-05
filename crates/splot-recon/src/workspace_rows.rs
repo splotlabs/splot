@@ -50,6 +50,22 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         Self::with_fill(info, None)
     }
 
+    /// Creates the target of [`Self::copy_rows_into`] over the sample buffers a
+    /// retired frame handed back, without initializing its samples.
+    ///
+    /// Buffers the geometry cannot use are dropped and replaced, so a stream
+    /// that changes frame size costs one allocation rather than a wrong frame.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] if the sample type cannot represent the frame bit
+    /// depth, geometry arithmetic overflows, or plane allocation fails.
+    pub fn new_recycled_from(
+        info: DecodedFrameInfo,
+        recycled: &mut crate::FramePlaneSamples<T>,
+    ) -> Result<Self> {
+        Self::with_planes(info, None, recycled)
+    }
+
     /// Copies the completed luma rows and their matching chroma rows into
     /// another workspace of the same geometry.
     ///

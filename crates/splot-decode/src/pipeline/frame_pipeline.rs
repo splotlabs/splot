@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
-use splot_recon::{BitDepth, ReconSample};
+use splot_recon::BitDepth;
 
 use crate::Result;
 use crate::error::DecodeError;
@@ -258,7 +258,7 @@ type PendingTipProducts<T> = (
 );
 
 /// Reserves the pending frame and product handles published by one TIP job.
-pub(super) fn reserve_tip_output<T: ReconSample>(
+pub(super) fn reserve_tip_output<T: super::inflight::SpareFramePlanes>(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     bit_depth: BitDepth,
