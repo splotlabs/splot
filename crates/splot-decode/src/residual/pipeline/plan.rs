@@ -10,7 +10,7 @@ use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
 use super::{
     CHROMA_PLANES, CHUNK_64_N4, GeneralIntraResidualPlan, IDTX, RectChromaPlan, RectLumaPlan,
-    RecycledVec, ResidualPlanError, ResidualPlanePlan, ResidualReconstructionPlan,
+    ResidualPlanError, ResidualPlanePlan, ResidualReconstructionPlan,
 };
 
 // AV2 § 9.2 caps a block axis at 64 4x4 units
@@ -26,14 +26,37 @@ std::thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn take_residual_plane_plans(
-    plane: PlaneId,
-) -> core::result::Result<RecycledVec<ResidualPlanePlan>, ResidualPlanError> {
-    RecycledVec::take(&RESIDUAL_PLANE_PLANS, MAX_RESIDUAL_PLANES)
-        .map_err(|_| ResidualPlanError::Allocation { plane })
+const MAX_RECYCLED_LISTS: usize = 16;
+
+impl Drop for GeneralIntraResidualPlan {
+    fn drop(&mut self) {
+        let mut planes = core::mem::take(&mut self.planes);
+        planes.clear();
+        if planes.capacity() == 0 {
+            return;
+        }
+        RESIDUAL_PLANE_PLANS.with(|pool| {
+            if let Ok(mut pool) = pool.try_borrow_mut()
+                && pool.len() < MAX_RECYCLED_LISTS
+            {
+                pool.push(planes);
+            }
+        });
+    }
 }
 
 impl GeneralIntraResidualPlan {
+    pub(super) fn take(
+        capacity: usize,
+    ) -> core::result::Result<Self, std::collections::TryReserveError> {
+        let mut planes = RESIDUAL_PLANE_PLANS
+            .with(|pool| pool.try_borrow_mut().ok().and_then(|mut pool| pool.pop()))
+            .unwrap_or_default();
+        planes.clear();
+        planes.try_reserve(capacity)?;
+        Ok(Self { planes })
+    }
+
     pub(crate) fn rect(
         block_ctx: BlockCtx,
         luma_plan: RectLumaPlan,
@@ -42,7 +65,8 @@ impl GeneralIntraResidualPlan {
         luma_lossless_tx_size: Option<usize>,
         lossless: bool,
     ) -> core::result::Result<Self, ResidualPlanError> {
-        let mut planes = take_residual_plane_plans(PlaneId::Y)?;
+        let mut plan = Self::take(MAX_RESIDUAL_PLANES)
+            .map_err(|_| ResidualPlanError::Allocation { plane: PlaneId::Y })?;
         let chroma_reconstruction = chroma_plan.map(chroma_reconstruction);
         let luma_reconstruction = match luma_plan {
             RectLumaPlan::Palette { palette, use_tcq } => {
@@ -134,7 +158,7 @@ impl GeneralIntraResidualPlan {
             }
         };
         push_ordered_planes(
-            &mut planes,
+            &mut plan.planes,
             block_ctx,
             luma_reconstruction,
             chroma_reconstruction,
@@ -142,7 +166,7 @@ impl GeneralIntraResidualPlan {
             luma_lossless_tx_size,
             lossless,
         )?;
-        Ok(Self { planes })
+        Ok(plan)
     }
 
     pub(crate) fn chroma(
@@ -151,7 +175,8 @@ impl GeneralIntraResidualPlan {
         lossless_luma_fsc: bool,
     ) -> core::result::Result<Self, ResidualPlanError> {
         let reconstruction = chroma_reconstruction(chroma_plan);
-        let mut planes = take_residual_plane_plans(PlaneId::U)?;
+        let mut plan = Self::take(MAX_RESIDUAL_PLANES)
+            .map_err(|_| ResidualPlanError::Allocation { plane: PlaneId::U })?;
         let chroma_block = block_ctx.plane_block(PlaneId::U);
         let chroma = chroma_plans(
             block_ctx,
@@ -161,12 +186,12 @@ impl GeneralIntraResidualPlan {
             false,
             false,
         )?;
-        planes.extend(if lossless_luma_fsc {
+        plan.planes.extend(if lossless_luma_fsc {
             chroma.map(|plane| plane.with_reconstruction_tx_type(IDTX))
         } else {
             chroma
         });
-        Ok(Self { planes })
+        Ok(plan)
     }
 
     pub(crate) fn chroma_tx(&self) -> Option<usize> {

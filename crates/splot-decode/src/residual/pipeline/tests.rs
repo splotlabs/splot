@@ -645,14 +645,9 @@ fn max_residual_plan_capacity_reuses_storage_after_invalid_geometry() {
     assert_eq!(after_error.planes.as_ptr(), storage);
 }
 
-std::thread_local! {
-    static FAILED_RESIDUAL_PLAN_ALLOCATION: std::cell::RefCell<Vec<Vec<u8>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
 #[test]
 fn residual_plan_storage_allocation_is_fallible() {
-    RecycledVec::take(&FAILED_RESIDUAL_PLAN_ALLOCATION, usize::MAX)
+    GeneralIntraResidualPlan::take(usize::MAX)
         .expect_err("an impossible capacity must fail without allocating");
 }
 

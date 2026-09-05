@@ -5,11 +5,6 @@
 
 use splot_recon::{DpcmDirection, IntraCardinalDirection, PlaneId};
 
-use core::fmt;
-use core::ops::{Deref, DerefMut};
-use std::cell::RefCell;
-use std::thread::LocalKey;
-
 use crate::bitstream::tile_payload::{
     CflParams, LumaPalette, SupportedChromaMode, SupportedNonDcLumaMode,
 };
@@ -47,84 +42,9 @@ const TX_4X4: usize = 0;
 const DCT_DCT: usize = 0;
 const IDTX: usize = 9;
 
-/// Lists retained per recycler. A single slot served only the most recently
-/// retired list, and several of these are alive at once while a block's planes
-/// are parsed, so nearly every one still allocated.
-const MAX_RECYCLED_LISTS: usize = 16;
-
-struct RecycledVec<T: 'static> {
-    entries: Vec<T>,
-    recycler: &'static LocalKey<RefCell<Vec<Vec<T>>>>,
-}
-
-impl<T> RecycledVec<T> {
-    fn take(
-        recycler: &'static LocalKey<RefCell<Vec<Vec<T>>>>,
-        capacity: usize,
-    ) -> core::result::Result<Self, std::collections::TryReserveError> {
-        let mut entries = recycler
-            .with(|pool| pool.try_borrow_mut().ok().and_then(|mut pool| pool.pop()))
-            .unwrap_or_default();
-        entries.clear();
-        entries.try_reserve(capacity)?;
-        Ok(Self { entries, recycler })
-    }
-}
-
-impl<T> fmt::Debug for RecycledVec<T>
-where
-    T: fmt::Debug,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.entries.fmt(formatter)
-    }
-}
-
-impl<T> PartialEq for RecycledVec<T>
-where
-    T: PartialEq,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.entries == other.entries
-    }
-}
-
-impl<T> Eq for RecycledVec<T> where T: Eq {}
-
-impl<T> Deref for RecycledVec<T> {
-    type Target = Vec<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.entries
-    }
-}
-
-impl<T> DerefMut for RecycledVec<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.entries
-    }
-}
-
-impl<T> Drop for RecycledVec<T> {
-    fn drop(&mut self) {
-        let mut entries = core::mem::take(&mut self.entries);
-        entries.clear();
-        if entries.capacity() == 0 {
-            return;
-        }
-        self.recycler.with(|pool| {
-            if let Ok(mut pool) = pool.try_borrow_mut()
-                && pool.len() < MAX_RECYCLED_LISTS
-            {
-                pool.push(entries);
-            }
-        });
-    }
-}
-
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraResidualPlan {
-    planes: RecycledVec<ResidualPlanePlan>,
+    planes: Vec<ResidualPlanePlan>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

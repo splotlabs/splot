@@ -1,24 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Pluggable conformance checks run against parsed OBUs.
+//! Stateless conformance checks over individual OBUs.
 //!
-//! Each [`Check`] enforces one constraint and emits structured [`Diagnostic`]s.
-//! This module owns the [`Check`] trait, the [`default_checks`] registry, and the
-//! shared `emit` / `finish_payload_or_emit` helpers; the checks themselves live in
-//! namespace submodules:
-//!
-//! - `obu` — generic OBU-header and reserved-OBU-type checks.
-//! - `sequence` — `OBU_SEQUENCE_HEADER` syntax and tile-params constraints.
-//! - `hls` — high-level-syntax OBUs (MSDO, MFH, LCR, atlas, OPS, BRT, QM, film
-//!   grain, content interpretation).
-//! - `metadata` — metadata OBU syntax and per-unit semantics.
-//! - `padding` — `OBU_PADDING` syntax.
-//! - `layers` — § 6.2.2 OBU-header layer-id constraints.
-//!
-//! Error-kind → diagnostic mapping lives in `syntax_error`. OBU ordering and
-//! sequence/frame-level conformance are future work.
-// TODO(spec: AV2-7.3-OBU-ORDERING): add OBU-ordering checks.
+//! Stateful ordering and sequence/frame checks live in the internal `context` module.
 
 mod hls;
 mod layers;
@@ -48,14 +33,8 @@ pub trait Check {
     fn run(&self, obu: &ObuEnvelope<'_>, report: &mut ValidationReport);
 }
 
-/// The default check registry, in execution order.
-///
-/// Every check is a zero-sized stateless unit struct, so the registry is a
-/// `'static` slice of trait-object references with no per-validation heap
-/// allocation; the (zero-sized) check values and their vtables live in
-/// read-only static memory. A `const` (rather than `static`) avoids a `Sync`
-/// bound on the `Check` trait — the slice is a compile-time value, not shared
-/// mutable state.
+// Stateless unit structs need no per-validation allocation. A const slice avoids
+// requiring Sync on the public Check trait.
 const DEFAULT_CHECKS: &[&dyn Check] = &[
     &obu::ReservedObuType,
     &obu::ReservedObuAllZeroPayload,
@@ -120,20 +99,8 @@ fn finish_payload_or_emit(
     }
 }
 
-/// Runs a single-OBU payload syntax check with the shared parse-then-validate scaffold.
-///
-/// When `obu` is of `obu_type`, this reads its payload, parses it with `parse`, runs the
-/// locally decidable `check` semantics on a successful parse, and validates the § 5.2.1
-/// payload tail (`extensible` selects whether an `obu_extension_flag` precedes
-/// `trailing_bits()`). A parse error is mapped through [`syntax_error_diagnostic`],
-/// falling back to the generic [`payload_parse_error_diagnostic`] tagged with
-/// `spec_section`.
-///
-/// This is the shared scaffold for the payload checks whose only per-OBU variation is the
-/// parser, the extensibility flag, and the post-parse semantics. Checks that diverge from
-/// this shape — a pre-parse header check (`OBU_MSDO`), a conditional tail (sequence
-/// header), multiple OBU types (metadata), or no payload reader (`OBU_PADDING`) — stay
-/// hand-written.
+/// Parses a matching OBU, runs its semantics, and validates the § 5.2.1 payload tail.
+/// `extensible` selects whether `obu_extension_flag` precedes `trailing_bits()`.
 fn run_payload_syntax_check<P>(
     obu: &ObuEnvelope<'_>,
     report: &mut ValidationReport,

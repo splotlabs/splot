@@ -13,13 +13,10 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
 
-# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR branch) so CI
-# spends its minutes on the latest commit instead of stale ones.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# All jobs only read the tree; deny the default read/write GITHUB_TOKEN.
 permissions:
   contents: read
 
@@ -32,8 +29,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # rustup honors rust-toolchain.toml; this installs the pinned nightly
-      # together with its rustfmt and clippy components.
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
@@ -48,8 +43,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-v2-
 
-      # Prebuilt binaries for the external-tool checks — far faster than
-      # `cargo install`, and the same binaries `cargo xtask ci` runs locally.
       - name: Install typos and cargo-machete
         uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
@@ -61,8 +54,7 @@ jobs:
           path: ~/.cargo/bin/dupehound
           key: ${{ runner.os }}-dupehound-0.1.2
 
-      # Duplicate-code detector (https://github.com/Rafaelpta/dupehound). Pinned so
-      # the budget count is reproducible; the same binary `cargo xtask ci` runs.
+      # Pin the detector so duplicate counts stay reproducible.
       - name: Install dupehound
         run: |
           if command -v dupehound >/dev/null 2>&1 && [ "$(dupehound --version)" = "dupehound 0.1.2" ]; then
@@ -90,42 +82,9 @@ jobs:
             cargo xtask check-conventional-commits "$PUSH_COMMIT_RANGE"
           fi
 
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --all-targets --locked
-      # Release disables overflow checks and enables fat LTO, so run decoder
-      # unit tests under the production code-generation profile as well.
+      - run: cargo xtask ci
       - run: cargo test -p splot-decode --release --lib --locked
-      # `--all-targets` skips doctests, so run them explicitly.
-      - run: cargo test --doc --workspace --locked
-      - run: cargo doc --workspace --no-deps --locked
-        env:
-          RUSTDOCFLAGS: -D warnings
-      - run: typos
-      - run: cargo machete --with-metadata
-      - run: cargo xtask check-license-headers
-      - run: cargo xtask check-source-lines
-      - run: cargo xtask check-comment-density
-      - run: cargo xtask check-ai-slop
-      - run: cargo xtask check-dependency-direction
-      - run: cargo xtask check-concurrency-policy
-      - run: cargo xtask check-spec-mirror
-      - run: cargo xtask check-feature-status
-      - run: cargo xtask check-diagnostic-registry
-      # Stable-toolchain drift gate: the fuzz-smoke job's `cargo fuzz list` only
-      # sees registered [[bin]] targets, so an unregistered fuzz_targets/*.rs
-      # file would be fuzzed by neither job without this check.
-      - run: cargo xtask check-fuzz-targets
-      - run: cargo xtask check-fixtures
-      # Absolute duplicate-code budget (tools/dupehound/budget.toml ceiling).
-      - run: cargo xtask check-duplication
-      # Manual documentation budget and generated-status markdown ban.
-      - run: cargo xtask check-doc-budget
 
-      # PR ratchet: fail when this PR's diff duplicates existing code. The base
-      # SHA is bound through env (workflow-injection hygiene) and compared via
-      # merge-base; full history is available because checkout uses fetch-depth 0.
-      # Push events skip this (no PR base); the budget gate above still runs.
       - name: dupehound ratchet (block newly introduced duplication)
         if: github.event_name == 'pull_request'
         env:
@@ -217,9 +176,7 @@ jobs:
           print(f"verified all {len(entries)} upstream AVM streams")
           PY
 
-  # Supply-chain policy. The deterministic checks (bans, licenses, sources) gate the
-  # merge; the advisory DB is informational because it changes without a repo diff,
-  # so a newly published advisory must not retroactively fail an unrelated PR.
+  # Advisories are informational because the database changes independently of PRs.
   supply-chain:
     runs-on: ubuntu-latest
     steps:
@@ -227,7 +184,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Deterministic policy — gates the merge.
       - name: cargo-deny (bans, licenses, sources)
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -235,7 +191,6 @@ jobs:
           command: check bans licenses sources
           arguments: --all-features
 
-      # Advisory DB — informational; changes without a repo diff, must not gate.
       - name: cargo-deny (advisories)
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         continue-on-error: true
@@ -244,13 +199,6 @@ jobs:
           command: check advisories
           arguments: --all-features
 
-  # Enumerate the registered fuzz targets once so the per-target smoke matrix
-  # stays in lock step with the [[bin]] set (cargo xtask check-fuzz-targets gates
-  # that those equal fuzz_targets/*.rs). Parse fuzz/Cargo.toml with a real TOML
-  # reader (Python tomllib) so every valid [[bin]] entry is captured the same way
-  # the xtask drift gate sees it, regardless of spacing/indentation/comments — no
-  # nightly toolchain or cargo-fuzz needed just to list names. The matrix is
-  # derived, never hardcoded, so a new target is picked up with no workflow edit.
   fuzz-list:
     runs-on: ubuntu-latest
     outputs:
@@ -272,26 +220,6 @@ jobs:
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "Fuzz targets: $targets"
 
-  # Blocking smoke fuzz: catch newly-introduced panics at PR time. Each registered
-  # target runs as its own matrix leg, in parallel, for a per-target slice — so the
-  # smoke's wall-clock is one target's slice, not the sum of all of them. Tracked
-  # fuzzed surfaces: parse_obu (read_leb128 / read_obu_header / parse_annex_b_obus),
-  # parse_ivf (IVF container), parse_bitstream (container auto-detect + envelope
-  # parsing), symbol_decoder_bytes (AV2 §8.2 symbol decoder),
-  # tile_payload_decode_bytes (minimal tile-payload frontier), validate_bytes
-  # (full validator + payload parsers, the highest-coverage target),
-  # decode_plan_bytes (raw byte planner),
-  # decode_runtime_hash_bytes (minimal runtime hash byte API),
-  # decode_runtime_raw_bytes (minimal runtime raw byte API),
-  # decode_runtime_y4m_bytes (minimal runtime Y4M byte API),
-  # recon_frame_hash_bytes (decoded-frame hash serialization),
-  # recon_frame_plane_types_bytes (decoded-frame/plane type model),
-  # recon_reference_frame_store_bytes (reference-frame store API),
-  # recon_y4m_output_bytes (Y4M output serialization), and
-  # recon_intra_prediction_bytes (intra prediction/workspace primitives),
-  # encoder_frame_input_views_bytes (encoder borrowed input views), and
-  # roundtrip_obu_bytes (typed OBU writer roundtrips).
-  # cargo-fuzz needs a nightly toolchain (ASan + coverage are nightly-only).
   fuzz:
     needs: fuzz-list
     runs-on: ubuntu-latest
@@ -304,8 +232,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # `cargo xtask seed-fuzz-corpus` (below) builds with the repo's pinned
-      # toolchain; install it alongside the rolling nightly that cargo-fuzz needs.
+      # Corpus generation uses the pinned toolchain; fuzzing uses rolling nightly.
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
@@ -317,7 +244,6 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      # Speeds up the (otherwise slow) instrumented build across runs.
       - name: Cache fuzz build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -325,18 +251,10 @@ jobs:
           key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-fuzz-
 
-      # The curated corpus seeds are produced by `cargo xtask seed-fuzz-corpus`
-      # (Rust, unit-tested in the `ci` job) instead of inline shell/Python: it
-      # reads the committed fixtures and conformance vectors and writes
-      # byte-identical seeds. See xtask/src/seed_fuzz_corpus.rs.
       - name: Seed every target's corpus from curated fixtures
         run: cargo xtask seed-fuzz-corpus
 
-      # Force the gnu target. install-action has no cargo-fuzz, so it falls back to
-      # a musl-built binary whose default target is musl — and AddressSanitizer
-      # cannot link a static musl libc. Building for gnu (the host) keeps ASan working.
-      # One matrix leg per target: bash -e fails this leg on a crash, and the
-      # aggregating fuzz-smoke job (below) stays red unless every leg is green.
+      # Force GNU: AddressSanitizer cannot link the static musl default.
       - name: Fuzz this target (per-target smoke)
         env:
           FUZZ_TARGET: ${{ matrix.target }}
@@ -351,9 +269,7 @@ jobs:
           path: fuzz/artifacts/**
           if-no-files-found: ignore
 
-  # Single stable status check: green iff every fuzz matrix leg passed. Branch
-  # protection requires this `fuzz-smoke` job, whose name stays fixed even as
-  # targets are added to / removed from the dynamically-enumerated matrix above.
+  # Stable branch-protection check across changes to the fuzz target matrix.
   fuzz-smoke:
     needs: [fuzz-list, fuzz]
     if: always()
@@ -371,12 +287,6 @@ jobs:
           fi
           echo "All fuzz targets passed."
 
-  # Coverage gate. Publishes the workspace summary + lcov artifact and blocks the
-  # merge on >= 90% line coverage for splot-validate (the crate whose diagnostics are
-  # the product); other crates are excluded via --ignore-filename-regex.
-  # llvm-tools-preview is not in the pinned toolchain's components, so install it here
-  # rather than in rust-toolchain.toml (keeps the default toolchain lean for everyone
-  # else).
   coverage:
     runs-on: ubuntu-latest
     steps:
@@ -400,14 +310,10 @@ jobs:
           cargo llvm-cov --workspace --all-features --locked --no-report
           cargo llvm-cov report --summary-only
           cargo llvm-cov report --lcov --output-path lcov.info
-      # Exclusion is by name (kept in sync with SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX
-      # in xtask): extend the regex when adding a workspace crate that should not
-      # gate here, or it joins the threshold scope.
+      # Keep the exclusion in sync with SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX in xtask.
       - name: Gate splot-validate line coverage (>= 90%)
         run: cargo llvm-cov report --fail-under-lines 90 --ignore-filename-regex 'crates/splot-(core|parallel|recon|decode|encode|cli)/|(^|/)xtask/|(^|/)fuzz/'
 
-      # TODO: upload lcov.info to Codecov once a token is configured (the
-      # splot-validate line-coverage threshold is now enforced above).
       - name: Upload lcov artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -428,9 +334,5 @@ jobs:
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
 
-      # Deterministic decode instruction-count (callgrind Ir) regression gate.
-      # Ir baselines live in tests/perf/baseline.toml; re-bless intentional
-      # changes with `cargo xtask perf --bless`. Runner-independent (Ir, not
-      # wall-clock), single-threaded, so counts are reproducible.
       - name: Decode Ir regression gate
         run: cargo xtask perf

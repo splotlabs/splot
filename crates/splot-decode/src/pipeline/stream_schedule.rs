@@ -106,26 +106,7 @@ pub(crate) fn following_inter_envelope<'a>(
             next_unvalidated_following_ivf_record,
             ivf_frame_index,
         )?;
-        let inter_envelope = obus[position];
-        require_inter_frame_obu(inter_envelope, "missing_inter_frame_obu")?;
-        if let Some(start) = prefix_after_previous_inter_frame(position, obus) {
-            return Ok((&obus[start..position], inter_envelope));
-        }
-        if let Some(start) = leading_record_inter_frame_unit_start(ivf_frame_index, position, obus)
-        {
-            return Ok((&obus[start..position], inter_envelope));
-        }
-        let Some(td_index) = obus[..position]
-            .iter()
-            .rposition(|envelope| envelope.header.obu_type == ObuType::TemporalDelimiter)
-        else {
-            return Err(unsupported_at(
-                "missing_inter_temporal_delimiter",
-                candidate.offset(),
-                missing_capability_message!("inter.ivf_frame_unit_order"),
-            ));
-        };
-        return Ok((&obus[td_index..position], inter_envelope));
+        return inter_frame_envelope(obus, position, ivf_frame_index);
     }
     Err(unsupported_at(
         "missing_inter_ivf_obu",
@@ -150,12 +131,20 @@ pub(super) fn following_annexb_inter_envelope<'a>(
         ));
     };
     require_following_annexb_obu_order_through(obus, next_unvalidated_following_obu, position)?;
+    inter_frame_envelope(obus, position, 0)
+}
+
+fn inter_frame_envelope<'a>(
+    obus: &'a [ObuEnvelope<'a>],
+    position: usize,
+    record_index: usize,
+) -> Result<(&'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
     let inter_envelope = obus[position];
     require_inter_frame_obu(inter_envelope, "missing_inter_frame_obu")?;
     if let Some(start) = prefix_after_previous_inter_frame(position, obus) {
         return Ok((&obus[start..position], inter_envelope));
     }
-    if let Some(start) = leading_record_inter_frame_unit_start(0, position, obus) {
+    if let Some(start) = leading_record_inter_frame_unit_start(record_index, position, obus) {
         return Ok((&obus[start..position], inter_envelope));
     }
     let Some(td_index) = obus[..position]
@@ -164,7 +153,7 @@ pub(super) fn following_annexb_inter_envelope<'a>(
     else {
         return Err(unsupported_at(
             "missing_inter_temporal_delimiter",
-            candidate.offset(),
+            inter_envelope.offset,
             missing_capability_message!("inter.ivf_frame_unit_order"),
         ));
     };
