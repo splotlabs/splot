@@ -693,7 +693,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
 ) -> Result<CompoundMotionGrid> {
     refinemv_candidates.clear();
     refinemv_candidates
-        .try_reserve_exact(unit_count.saturating_sub(refinemv_candidates.capacity()))
+        .try_reserve_exact(unit_count)
         .map_err(|_| ReconError::ArithmeticOverflow {
             context: "TIP refine-MV candidate list",
         })?;

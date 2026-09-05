@@ -177,7 +177,7 @@ pub(super) fn build_mi_grid(
     let mut cells = core::mem::take(&mut storage.cells);
     cells.clear();
     cells
-        .try_reserve_exact(count.saturating_sub(cells.capacity()))
+        .try_reserve_exact(count)
         .map_err(|_| DeblockError::Allocation {
             plane: splot_recon::PlaneId::Y,
             context: "deblock MI grid",
@@ -186,7 +186,7 @@ pub(super) fn build_mi_grid(
     let mut candidates = core::mem::take(&mut storage.candidates);
     candidates.clear();
     candidates
-        .try_reserve_exact(count.saturating_sub(candidates.capacity()))
+        .try_reserve_exact(count)
         .map_err(|_| DeblockError::Allocation {
             plane: splot_recon::PlaneId::Y,
             context: "deblock MI grid",

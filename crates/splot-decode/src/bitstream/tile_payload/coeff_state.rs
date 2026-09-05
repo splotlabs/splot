@@ -673,7 +673,7 @@ fn zero_plane_lines<T: Default>(
 
 fn zero_line<T: Default>(values: &mut Vec<T>, len: usize) -> Result<(), TileCoeffStateError> {
     values.clear();
-    values.try_reserve_exact(len.saturating_sub(values.capacity()))?;
+    values.try_reserve_exact(len)?;
     values.resize_with(len, T::default);
     Ok(())
 }

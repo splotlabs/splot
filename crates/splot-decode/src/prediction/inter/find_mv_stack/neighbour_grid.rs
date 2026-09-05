@@ -299,9 +299,7 @@ fn reset_grid_planes(
     planes.flags.clear();
     planes.motion.clear();
     planes.leaves.clear();
-    planes
-        .flags
-        .try_reserve_exact(cells.saturating_sub(planes.flags.capacity()))?;
+    planes.flags.try_reserve_exact(cells)?;
     planes.flags.resize(cells, None);
     Ok(())
 }
