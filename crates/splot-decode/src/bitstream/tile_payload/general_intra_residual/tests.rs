@@ -140,39 +140,46 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
 
 #[test]
 fn reconstruct_into_reuses_rectangular_u16_output_storage() {
-    let mut quant = vec![0; 32];
-    quant[0] = 1;
-    let block = LumaCoeffBlock {
-        eob: 1,
-        quant_range: 0..quant.len(),
-        intra_ist: None,
-        cctx_type: None,
-        plane_tx_type: DCT_DCT,
-        use_tcq: false,
-        lossless: false,
-    };
-    let prediction = vec![301u16; 32];
-    let mut out = Vec::with_capacity(32);
-    out.push(7);
+    let mut out = vec![u16::MAX; 64];
     let allocation = out.as_ptr();
-
-    reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        block.view(&quant),
-        &prediction,
-        &mut out,
-        80,
-        PlaneId::Y,
-        2,
-        3,
-        false,
-        None,
-        None,
-        BitDepth::Ten,
-    )
-    .unwrap();
-
-    assert_eq!(out, vec![302; 32]);
-    assert_eq!(out.as_ptr(), allocation);
+    for (log2_width, log2_height) in [(2, 3), (2, 3), (2, 2), (3, 3), (2, 3)] {
+        let samples = 1 << (log2_width + log2_height);
+        let mut quant = vec![0; samples];
+        quant[0] = 1;
+        let block = LumaCoeffBlock {
+            eob: 1,
+            quant_range: 0..quant.len(),
+            intra_ist: None,
+            cctx_type: None,
+            plane_tx_type: DCT_DCT,
+            use_tcq: false,
+            lossless: false,
+        };
+        let prediction = vec![301u16; samples];
+        let mut expected = Vec::new();
+        out.fill(u16::MAX);
+        for output in [&mut expected, &mut out] {
+            reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+                block.view(&quant),
+                &prediction,
+                output,
+                80,
+                PlaneId::Y,
+                log2_width,
+                log2_height,
+                false,
+                None,
+                None,
+                BitDepth::Ten,
+            )
+            .unwrap();
+        }
+        assert_eq!(out, expected);
+        if (log2_width, log2_height) == (2, 3) {
+            assert_eq!(out, vec![302; 32]);
+        }
+        assert_eq!(out.as_ptr(), allocation);
+    }
 }
 
 #[test]

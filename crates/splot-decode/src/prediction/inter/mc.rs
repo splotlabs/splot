@@ -629,8 +629,9 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
     let sample_count =
         compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
     let mut samples = RecycledMcSamples::take();
-    samples.clear();
-    samples.resize(sample_count, T::default());
+    if samples.len() < sample_count {
+        samples.resize(sample_count, T::default());
+    }
     let metadata = predict_compound_from_grid(sink, block, motion, offset, &mut samples)?;
     Ok(CompoundBlockOutput { metadata, samples })
 }

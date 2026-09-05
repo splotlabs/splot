@@ -495,12 +495,11 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         let conditions = row
             .checked_sub(1)
             .and_then(|previous| self.frontier_done.get(previous))
-            .map(|previous| vec![Condition::completion(previous)])
-            .unwrap_or_default();
+            .map(Condition::completion);
         let frame = Arc::clone(self);
         admit.submit(
             self.batch_key(batch, 3),
-            &conditions,
+            conditions.as_slice(),
             splot_parallel::Job::Inline(FrameTask::Frontier {
                 frame: T::scheduled_frame_ref(frame),
                 row,
@@ -864,17 +863,14 @@ pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send +
     'job: 'scope,
 {
     let (gate, done) = lane.reserve_filter();
-    let conditions = gate
-        .as_deref()
-        .map(|gate| vec![Condition::completion(gate)])
-        .unwrap_or_default();
+    let conditions = gate.as_deref().map(Condition::completion);
     let order_base = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
         .saturating_mul(ORDER_KEY_FRAME_STRIDE);
     scheduler.submit(
         scope,
         order_base + u64::from(u32::MAX),
-        &conditions,
+        conditions.as_slice(),
         boxed_task(move |admit| {
             finish.run_finish(walked, Some(admit));
             let _ = done.set(());
