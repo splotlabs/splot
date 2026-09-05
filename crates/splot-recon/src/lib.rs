@@ -44,7 +44,7 @@ mod optflow;
 mod pc_wiener;
 mod plane;
 mod plane_pool;
-pub use plane_pool::release_plane_spares;
+pub use plane_pool::PlanePool;
 mod reconstruct;
 mod reconstruct_block;
 mod reference;

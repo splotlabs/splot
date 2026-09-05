@@ -187,8 +187,10 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         tile,
         temporal_context,
         frame_filter_records: _,
+        planes,
     } = scratch;
-    let tile = tile.unwrap_or_default();
+    let mut tile = tile.unwrap_or_default();
+    tile.planes = planes;
     let mut temporal = temporal_context.unwrap_or_else(TemporalMvContext::empty);
     let temporal_plan =
         prelude.begin_scheduled(&mut temporal, &core, ref_frame_idx.as_slice(), &reference)?;

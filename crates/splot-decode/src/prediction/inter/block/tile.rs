@@ -957,6 +957,8 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     workers: InterReconScratchPool<T>,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
     batches: admission::BatchRowSlots<T>,
+    /// The decode's plane pool, for the sealed copy the frontier opens.
+    pub(in crate::prediction::inter) planes: Option<std::sync::Arc<splot_recon::PlanePool>>,
 }
 
 impl<T: ReconSample> TileDecodeScratch<T> {
@@ -972,6 +974,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             workers: workers.take_reusable(),
             surfaces,
             batches: admission::BatchRowSlots::default(),
+            planes: None,
         }
     }
 }
@@ -1574,6 +1577,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         mut workers,
         surfaces: mut recycled_surfaces,
         mut batches,
+        planes,
     } = scratch;
     workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -1733,6 +1737,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
 
     Ok((
         TileDecodeScratch {
+            planes,
             parse: parse_state,
             surface_source: spent_surface_source,
             ordered,

@@ -15,7 +15,7 @@ use crate::test_support::decoded_frame;
 
 #[test]
 fn a_retired_frame_leaves_its_sample_buffers_in_the_ring() {
-    let mut ring = InflightRing::new(nz(1));
+    let mut ring = InflightRing::new(nz(1), test_plane_pool());
     let frame = decoded_frame(4, 4);
     let samples = frame
         .plane(splot_recon::PlaneId::Y)
@@ -55,7 +55,7 @@ fn a_slot_another_owner_still_holds_is_not_the_driver_s_to_retire() {
 
 #[test]
 fn every_retired_frame_of_a_deep_ring_leaves_its_buffers_behind() {
-    let mut ring = InflightRing::new(nz(3));
+    let mut ring = InflightRing::new(nz(3), test_plane_pool());
     for _ in 0..3 {
         ring.keep_frame_planes(PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(
             SharedFrame::new(decoded_frame(4, 4)),
@@ -71,7 +71,7 @@ fn every_retired_frame_of_a_deep_ring_leaves_its_buffers_behind() {
 
 #[test]
 fn a_frame_a_reader_still_holds_keeps_its_own_sample_buffers() {
-    let mut ring = InflightRing::new(nz(1));
+    let mut ring = InflightRing::new(nz(1), test_plane_pool());
     let frame = SharedFrame::new(decoded_frame(4, 4));
     let reader = frame.share();
 
@@ -81,6 +81,10 @@ fn a_frame_a_reader_still_holds_keeps_its_own_sample_buffers() {
 
     assert!(u8::spares(&mut ring).is_empty());
     drop(reader);
+}
+
+fn test_plane_pool() -> Arc<splot_recon::PlanePool> {
+    Arc::new(splot_recon::PlanePool::new())
 }
 
 fn nz(value: usize) -> NonZeroUsize {
@@ -289,7 +293,7 @@ fn pending_slot_geometry_matches_the_published_frame() {
 fn ring_admission_harvests_the_oldest_entry_first() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(3));
+    let mut ring = InflightRing::new(nz(3), test_plane_pool());
 
     let (first, first_report) = pending_entry(&mut ring, 0);
     let (second, second_report) = pending_entry(&mut ring, 1);
@@ -314,7 +318,7 @@ fn ring_admission_harvests_the_oldest_entry_first() {
 fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(2));
+    let mut ring = InflightRing::new(nz(2), test_plane_pool());
 
     let (first, first_report) = pending_entry(&mut ring, 0);
     first.complete(SharedFrame::new(decoded_frame(4, 4)));
@@ -346,7 +350,7 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
 fn a_depth_of_one_never_keeps_a_frame_in_flight() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(NonZeroUsize::MIN);
+    let mut ring = InflightRing::new(NonZeroUsize::MIN, test_plane_pool());
 
     ring.reserve(&mut eight, &mut ten);
 
@@ -358,7 +362,7 @@ fn a_depth_of_one_never_keeps_a_frame_in_flight() {
 fn the_lowest_indexed_filter_failure_outranks_later_ones() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(4));
+    let mut ring = InflightRing::new(nz(4), test_plane_pool());
 
     for (frame_index, reason) in [(2usize, "later_failure"), (1usize, "earlier_failure")] {
         let (writer, mut report) = pending_entry(&mut ring, frame_index);
@@ -381,7 +385,7 @@ fn the_lowest_indexed_filter_failure_outranks_later_ones() {
 fn harvesting_recycles_filter_records_into_the_matching_scratch() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(2));
+    let mut ring = InflightRing::new(nz(2), test_plane_pool());
 
     let (writer, mut report) = pending_entry(&mut ring, 0);
     let mut records = FrameFilterRecords::default();
@@ -415,7 +419,7 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
 fn failed_finish_reports_its_error_before_harvest() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(2));
+    let mut ring = InflightRing::new(nz(2), test_plane_pool());
     let frame = decoded_frame(4, 4);
     let (_slot, finish) =
         reserve_pending_slot(frame.info(), PipelineFrameSlot::Eight, &mut ring, 0)

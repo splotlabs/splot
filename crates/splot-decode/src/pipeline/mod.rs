@@ -373,9 +373,12 @@ pub(crate) fn decode_key_frame(
     let core = parse_frame_core(frame_envelope, sequence)?;
     let admission = splot_parallel::AdmissionScheduler::new();
     let decoded = splot_parallel::ready_task_scope(|scope| {
+        let planes = std::sync::Arc::new(splot_recon::PlanePool::new());
         let mut scratch_eight = inter::InterDecodeScratch::default();
         let mut scratch_ten = inter::InterDecodeScratch::default();
-        let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN);
+        scratch_eight.set_plane_pool(&planes);
+        scratch_ten.set_plane_pool(&planes);
+        let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, planes);
         let mut lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity());
         let decoded = decode_key_frame_with_effects(
             &mut scratch_eight,
@@ -590,9 +593,12 @@ fn drive_frames<'job, 'scope>(
 where
     'job: 'scope,
 {
+    let planes = std::sync::Arc::new(splot_recon::PlanePool::new());
     let mut decode_scratch_eight = inter::InterDecodeScratch::default();
     let mut decode_scratch_ten = inter::InterDecodeScratch::default();
-    let mut ring = inflight::InflightRing::new(frame_delay);
+    decode_scratch_eight.set_plane_pool(&planes);
+    decode_scratch_ten.set_plane_pool(&planes);
+    let mut ring = inflight::InflightRing::new(frame_delay, planes);
     let decoded = decode_frames_in_order(
         parsed,
         bytes,

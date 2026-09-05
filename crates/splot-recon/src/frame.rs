@@ -122,18 +122,52 @@ impl<T: ReconSample> FramePlanes<T> {
 /// allocations. Handing them over here lets the frame that takes its place in
 /// the slot reuse them instead of asking the allocator for the same bytes
 /// again, which is what dav2d's picture pool does for the same lifetime.
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 pub struct FramePlaneSamples<T: ReconSample> {
     planes: [Vec<T>; 3],
+    pool: Option<std::sync::Arc<crate::PlanePool>>,
 }
 
+/// The pool a set returns its storage to is not part of its value.
+impl<T: ReconSample + PartialEq> PartialEq for FramePlaneSamples<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.planes == other.planes
+    }
+}
+
+impl<T: ReconSample + Eq> Eq for FramePlaneSamples<T> {}
+
 impl<T: ReconSample> FramePlaneSamples<T> {
+    /// Creates an empty set whose storage returns to `pool` once a workspace
+    /// built from it retires.
+    #[must_use]
+    pub fn pooled(pool: &std::sync::Arc<crate::PlanePool>) -> Self {
+        Self {
+            planes: [const { Vec::new() }; 3],
+            pool: Some(std::sync::Arc::clone(pool)),
+        }
+    }
+
+    /// The pool a workspace built from this set retires into.
+    #[must_use]
+    pub fn pool(&self) -> Option<&std::sync::Arc<crate::PlanePool>> {
+        self.pool.as_ref()
+    }
+
     /// Collects one frame's plane buffers, absent chroma included.
     #[must_use]
     pub fn new(y: Vec<T>, u: Option<Vec<T>>, v: Option<Vec<T>>) -> Self {
         Self {
             planes: [y, u.unwrap_or_default(), v.unwrap_or_default()],
+            pool: None,
         }
+    }
+
+    /// Names the pool this set's storage returns to.
+    #[must_use]
+    pub fn with_pool(mut self, pool: Option<&std::sync::Arc<crate::PlanePool>>) -> Self {
+        self.pool = pool.map(std::sync::Arc::clone);
+        self
     }
 
     /// Takes the buffer kept for `plane`, leaving nothing behind.
@@ -217,12 +251,14 @@ impl<T: ReconSample> DecodedFrame<T> {
     #[must_use]
     pub fn into_plane_samples(self) -> FramePlaneSamples<T> {
         let FramePlanes { y, u, v } = self.planes;
+        let pool = y.pool().cloned();
         FramePlaneSamples {
             planes: [
                 y.into_samples(),
                 u.map(Plane::into_samples).unwrap_or_default(),
                 v.map(Plane::into_samples).unwrap_or_default(),
             ],
+            pool,
         }
     }
 

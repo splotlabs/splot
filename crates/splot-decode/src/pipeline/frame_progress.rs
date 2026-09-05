@@ -376,6 +376,9 @@ impl<'a, T: ReconSample> PublishedStorage<'a, T> {
 
 /// One pending frame's filtered workspace and its published-row watermark.
 pub(crate) struct FrameProgress<T: ReconSample> {
+    /// The decode's plane pool, carried so every frame can hand it back to the
+    /// scratch it is scheduled with.
+    planes: Option<std::sync::Arc<splot_recon::PlanePool>>,
     workspace: RwLock<Option<DirectWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
     published_luma_rows: WatermarkCell,
@@ -391,6 +394,12 @@ impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
 }
 
 impl<T: ReconSample> FrameProgress<T> {
+    /// The decode's plane pool, which every frame reads back from its progress
+    /// rather than inheriting down a chain of defaultable scratch objects.
+    pub(crate) fn planes(&self) -> Option<&std::sync::Arc<splot_recon::PlanePool>> {
+        self.planes.as_ref()
+    }
+
     /// Opens the filtered workspace one pending frame's filter phase publishes
     /// into, before that phase is handed to a worker.
     ///
@@ -401,9 +410,11 @@ impl<T: ReconSample> FrameProgress<T> {
         info: DecodedFrameInfo,
         recycled: &mut splot_recon::FramePlaneSamples<T>,
     ) -> Result<Self> {
+        let planes = recycled.pool().cloned();
         let workspace =
             DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?); // every row is published by a filter stripe before any consumer may read past the watermark
         Ok(Self {
+            planes,
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
             published_luma_rows: WatermarkCell::new(),

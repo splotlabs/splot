@@ -13,6 +13,7 @@
 
 use core::mem;
 use core::ops::Range;
+use std::sync::Arc;
 
 use crate::intra_basic::predict_paeth_sample;
 use crate::intra_dc_math::validate_sample_type;
@@ -938,12 +939,15 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         validate_sample_type::<T>(info.bit_depth())?;
         let luma_size = info.coded_luma_size();
         let luma_rect = info.visible_luma_rect();
+        let pool = recycled.pool().map(Arc::clone);
+        let pool = pool.as_ref();
         let y = CurrentFramePlane::new(
             PlaneId::Y,
             luma_size,
             luma_rect,
             fill,
             recycled.take(PlaneId::Y),
+            pool,
         )?;
         let (u, v) = match chroma_plane_geometry(info.pixel_format(), luma_size, luma_rect)? {
             None => (None, None),
@@ -954,6 +958,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                     visible_rect,
                     fill,
                     recycled.take(PlaneId::U),
+                    pool,
                 )?),
                 Some(CurrentFramePlane::new(
                     PlaneId::V,
@@ -961,6 +966,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                     visible_rect,
                     fill,
                     recycled.take(PlaneId::V),
+                    pool,
                 )?),
             ),
         };
@@ -1067,11 +1073,13 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Hands this workspace's sample buffers to the next frame that needs them.
     #[must_use]
     pub fn into_plane_samples(mut self) -> FramePlaneSamples<T> {
+        let pool = self.y.pool.clone();
         FramePlaneSamples::new(
             mem::take(&mut self.y.samples),
             self.u.as_mut().map(|plane| mem::take(&mut plane.samples)),
             self.v.as_mut().map(|plane| mem::take(&mut plane.samples)),
         )
+        .with_pool(pool.as_ref())
     }
 
     /// Returns all backing samples for `plane`, including padding if present.
@@ -1370,19 +1378,34 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
 /// Does not implement `Clone`: it owns the plane sample buffer (see
 /// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct CurrentFramePlane<T: ReconSample> {
     plane: PlaneId,
     storage_size: PlaneSize,
     visible_rect: PlaneRect,
     samples: Vec<T>,
+    pool: Option<Arc<crate::PlanePool>>,
 }
+
+/// The pool a plane retires into is not part of its value.
+impl<T: ReconSample + PartialEq> PartialEq for CurrentFramePlane<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.plane == other.plane
+            && self.storage_size == other.storage_size
+            && self.visible_rect == other.visible_rect
+            && self.samples == other.samples
+    }
+}
+
+impl<T: ReconSample + Eq> Eq for CurrentFramePlane<T> {}
 
 /// Returns a retired workspace plane's storage to the pool the next workspace
 /// of this depth takes from.
 impl<T: ReconSample> Drop for CurrentFramePlane<T> {
     fn drop(&mut self) {
-        T::recycle_plane_buffer(mem::take(&mut self.samples));
+        if let Some(pool) = self.pool.take() {
+            pool.recycle(mem::take(&mut self.samples));
+        }
     }
 }
 
@@ -1393,6 +1416,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         visible_rect: PlaneRect,
         fill: Option<T>,
         mut samples: Vec<T>,
+        pool: Option<&Arc<crate::PlanePool>>,
     ) -> Result<Self> {
         visible_rect.ensure_within(storage_size).map_err(|_| {
             ReconError::WorkspaceRectOutOfBounds {
@@ -1414,11 +1438,13 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             },
         )?;
 
-        if samples.capacity() < required_samples {
+        if let Some(pool) = pool
+            && samples.capacity() < required_samples
+        {
             // A buffer too small for this frame would be reallocated anyway, so
             // it goes back to the pool and a frame-sized spare comes out.
-            T::recycle_plane_buffer(mem::take(&mut samples));
-            samples = T::take_plane_buffer(required_samples);
+            pool.recycle(mem::take(&mut samples));
+            samples = pool.take(required_samples);
         }
         samples.truncate(required_samples);
         samples
@@ -1436,6 +1462,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         }
 
         Ok(Self {
+            pool: pool.map(Arc::clone),
             plane,
             storage_size,
             visible_rect,
@@ -1707,12 +1734,14 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
     fn freeze(mut self) -> Result<Plane<T>> {
         let stride_samples = self.stride_samples();
+        let pool = self.pool.take();
         Plane::from_vec(
             self.storage_size,
             stride_samples,
             self.visible_rect,
             mem::take(&mut self.samples),
         )
+        .map(|plane| plane.with_pool(pool.as_ref()))
     }
 
     /// Clamps a write/fill `rect` to the in-frame storage extent.
