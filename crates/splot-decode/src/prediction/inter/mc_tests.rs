@@ -809,6 +809,63 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
 }
 
 #[test]
+fn deferred_compound_prediction_reuses_poisoned_high_water_buffer() {
+    for format in [
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+    ] {
+        for use_optflow in [false, true] {
+            McScratch::empty().with_installed(|| {
+                let reference0 = flat_frame_with_format(format, 16, 16, 40, 90, 120);
+                let reference1 = flat_frame_with_format(format, 16, 16, 80, 110, 140);
+                let mut workspace = workspace_with_format(format, 16, 16);
+                let offset = ByteOffset::new(0);
+                let mut retained = None;
+                for size in [16, 8, 16] {
+                    let rect = McBlockRect::from_luma_rect(0, 0, size, size);
+                    let block = InterBlockParams::compound_average(
+                        ReferenceSamples::settled(&reference0),
+                        ReferenceSamples::settled(&reference1),
+                        rect,
+                        Mv::ZERO,
+                        Mv::ZERO,
+                        InterpolationFilter::EightTap,
+                        CompoundBlend::default(),
+                    )
+                    .with_optflow_distances(use_optflow.then_some([1, -1]))
+                    .into_compound()
+                    .expect("compound block");
+                    let sink = WorkspaceSink::Frame(&mut workspace);
+                    let motion = compound_block_motion_grid(&sink, block, Some(8), offset)
+                        .expect("motion grid");
+                    assert_eq!(motion.is_some(), use_optflow);
+                    let mut output = predict_compound_average_block(&sink, block, motion, offset)
+                        .expect("reused compound prediction");
+                    let storage = (output.samples.as_ptr(), output.samples.len());
+                    if let Some(retained) = retained {
+                        assert_eq!(storage, retained);
+                    }
+                    retained = Some(storage);
+                    let mut start = 0;
+                    for ((plane, sub_x, sub_y), expected) in
+                        mc_planes(format).into_iter().zip([60, 100, 130])
+                    {
+                        let end = start
+                            + compound_plane_sample_count(rect, plane, sub_x, sub_y)
+                                .expect("plane sample count");
+                        assert!(output.samples[start..end].iter().all(|&v| v == expected));
+                        start = end;
+                    }
+                    assert!(output.samples[start..].iter().all(|&v| v == u8::MAX));
+                    output.samples.fill(u8::MAX);
+                }
+            });
+        }
+    }
+}
+
+#[test]
 fn deferred_compound_prediction_matches_direct_publication() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);

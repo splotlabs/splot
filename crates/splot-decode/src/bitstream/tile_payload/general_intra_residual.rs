@@ -1993,7 +1993,6 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             actual: quant.len(),
         });
     }
-    out.clear();
     out.resize(setup.samples, T::default());
     with_residual_scratch(|scratch| {
         let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
