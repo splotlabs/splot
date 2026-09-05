@@ -130,7 +130,7 @@ mod tests {
         assert!(header.is_fully_parsed());
         let tile = header.tile.as_ref().unwrap();
         assert!(tile.params.unwrap().uniform_spacing);
-        assert_eq!(tile.seq_sb_col_starts, vec![0]);
+        assert_eq!(tile.seq_sb_col_starts.as_ref(), [0].as_slice());
         let written = write_header(&header);
         assert_eq!(written, data, "uniform single-tile header not byte-exact");
         assert_header_roundtrip(&header);
@@ -154,7 +154,7 @@ mod tests {
         let params = tile.params.unwrap();
         assert!(params.uniform_spacing);
         assert_eq!(params.tile_cols, 2);
-        assert_eq!(tile.seq_sb_col_starts, vec![0, 2]);
+        assert_eq!(tile.seq_sb_col_starts.as_ref(), [0, 2].as_slice());
         let written = write_header(&header);
         assert_eq!(written, data, "uniform two-column header not byte-exact");
         assert_header_roundtrip(&header);
@@ -176,7 +176,7 @@ mod tests {
         let params = tile.params.unwrap();
         assert!(!params.uniform_spacing);
         assert_eq!(params.tile_cols, 2);
-        assert_eq!(tile.seq_sb_col_starts, vec![0, 1]);
+        assert_eq!(tile.seq_sb_col_starts.as_ref(), [0, 1].as_slice());
         let written = write_header(&header);
         assert_eq!(written, data, "non-uniform two-column header not byte-exact");
         assert_header_roundtrip(&header);
@@ -458,7 +458,7 @@ mod tests {
         let params = c.params.unwrap();
         assert!(params.uniform_spacing);
         assert_eq!(params.tile_cols, 8);
-        assert_eq!(c.seq_sb_col_starts, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(c.seq_sb_col_starts.as_ref(), [0, 1, 2, 3, 4, 5, 6, 7].as_slice());
         assert_eq!(
             write_tile(&c, input),
             data,
@@ -481,7 +481,7 @@ mod tests {
         let c = parse_tile(&data, input);
         let params = c.params.unwrap();
         assert!(!params.uniform_spacing);
-        assert_eq!(c.seq_sb_col_starts, vec![0, 2, 3]);
+        assert_eq!(c.seq_sb_col_starts.as_ref(), [0, 2, 3].as_slice());
         assert_eq!(params.tile_cols, 3);
         assert_eq!(
             write_tile(&c, input),
@@ -501,7 +501,7 @@ mod tests {
         bits.bit(0); // ns(2) width_in_sbs_minus_1 = 0
         let data = bits.into_bytes();
         let c = parse_tile(&data, input);
-        assert_eq!(c.seq_sb_col_starts, vec![0, 1]);
+        assert_eq!(c.seq_sb_col_starts.as_ref(), [0, 1].as_slice());
         assert_eq!(write_tile(&c, input), data);
         assert_tile_roundtrip(&c, input);
     }
@@ -524,7 +524,7 @@ mod tests {
         let params = c.params.unwrap();
         assert!(params.uniform_spacing);
         assert_eq!(params.tile_rows, 2);
-        assert_eq!(c.seq_sb_row_starts, vec![0, 2]);
+        assert_eq!(c.seq_sb_row_starts.as_ref(), [0, 2].as_slice());
         assert_eq!(write_tile(&c, input), data);
         assert_tile_roundtrip(&c, input);
     }
@@ -702,8 +702,8 @@ mod tests {
             seq_tile_info_present_flag: true,
             allow_tile_info_change: Some(false),
             params: None,
-            seq_sb_col_starts: Vec::new(),
-            seq_sb_row_starts: Vec::new(),
+            seq_sb_col_starts: std::sync::Arc::from(Vec::new()),
+            seq_sb_row_starts: std::sync::Arc::from(Vec::new()),
         };
         let mut writer = BitWriter::new();
         let err = write_sequence_tile_config(&mut writer, &bad, input).unwrap_err();
@@ -741,7 +741,7 @@ mod tests {
         bits.bit(0); // non-uniform
         bits.bit(0); // ns(2) -> 0
         let mut c = parse_tile(&bits.into_bytes(), input);
-        c.seq_sb_col_starts = vec![0, 0]; // duplicate start -> size 0 tile, invalid
+        c.seq_sb_col_starts = std::sync::Arc::from(vec![0, 0]); // duplicate start -> size 0 tile, invalid
         let mut writer = BitWriter::new();
         let err = write_sequence_tile_config(&mut writer, &c, input).unwrap_err();
         assert!(matches!(

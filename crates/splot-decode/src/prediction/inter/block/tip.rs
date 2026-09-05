@@ -50,7 +50,7 @@ struct TipUnit {
     rect: mc::McBlockRect,
     has_chroma: bool,
     mvs: [Mv; 2],
-    metadata: Option<Box<mc::CompoundBlockMetadata>>,
+    metadata: Option<mc::CompoundBlockMetadata>,
 }
 
 #[derive(Clone, Copy)]
@@ -165,7 +165,26 @@ impl<T: ReconSample> TipHeldReferences<'_, T> {
 #[derive(Debug, Default)]
 pub(super) struct TipReconstructScratch<T: ReconSample> {
     units: Vec<TipUnit>,
+    /// The per-unit refine-MV candidates a batch's motion grid holds.
+    ///
+    /// One batch grid is live at a time, so the list travels into the grid and
+    /// comes back here as each unit is published.
+    grid_candidates: Vec<[Mv; 2]>,
     output_samples: Vec<T>,
+    bands: Vec<PublishedBand>,
+    band_rects: Vec<splot_recon::PlaneRect>,
+}
+
+/// One published row band and the run of units that fill it.
+///
+/// A band collects the units that share its top row, and those are consecutive
+/// by construction, so the run is a range rather than a list of its own.
+#[derive(Clone, Copy, Debug)]
+struct PublishedBand {
+    top: usize,
+    bottom: usize,
+    first_unit: usize,
+    units: usize,
 }
 
 const fn tip_uses_two_references(weight: i16) -> bool {
@@ -345,7 +364,7 @@ fn compute_parallel_outputs<T: ReconSample>(
             if prediction.optflow_distances.is_some() {
                 unit.mvs = tip_temporal_mvs(true, unit.mvs, metadata.stored_mvs_at_origin()?);
             }
-            unit.metadata = Some(Box::new(metadata));
+            unit.metadata = Some(metadata);
             Ok(())
         })
 }
@@ -847,7 +866,7 @@ pub(super) fn motion<T: ReconSample>(
 
 /// Builds the optical-flow motion grid the block's units share.
 fn tip_motion_grid<T: ReconSample>(
-    scratch: &TipReconstructScratch<T>,
+    scratch: &mut TipReconstructScratch<T>,
     plan: &TipBlockPlan,
     sink: &mc::WorkspaceSink<'_, '_, T>,
     reference: &InterReferenceState<T>,
@@ -876,6 +895,7 @@ fn tip_motion_grid<T: ReconSample>(
             (unit.rect, unit.mvs)
         },
         tile_offset,
+        core::mem::take(&mut scratch.grid_candidates),
     )
 }
 
@@ -918,58 +938,97 @@ fn publish_units_by_band<T: ReconSample>(
 ) -> Result<()> {
     let height = workspace.info().coded_luma_size().height();
     let width = workspace.info().coded_luma_size().width();
-    let mut bands: Vec<(usize, usize)> = Vec::new();
-    let mut members: Vec<Vec<usize>> = Vec::new();
-    for (index, unit) in scratch.units.iter().enumerate() {
+    let TipReconstructScratch {
+        units,
+        output_samples,
+        bands,
+        band_rects,
+        grid_candidates: _,
+    } = scratch;
+    bands.clear();
+    band_rects.clear();
+    for (index, unit) in units.iter().enumerate() {
         let Some(metadata) = unit.metadata.as_ref() else {
             return Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into());
         };
         let (_, y, _, h) = metadata.luma_rect();
         let end = y.saturating_add(h).min(height);
         if let Some(last) = bands.last_mut()
-            && last.0 == y
+            && last.top == y
         {
-            last.1 = last.1.max(end);
-            if let Some(group) = members.last_mut() {
-                group.push(index);
-            }
+            last.bottom = last.bottom.max(end);
+            last.units = last.units.saturating_add(1);
             continue;
         }
-        bands.push((y, end));
-        members.push(vec![index]);
+        bands.push(PublishedBand {
+            top: y,
+            bottom: end,
+            first_unit: index,
+            units: 1,
+        });
     }
     if bands.is_empty() {
         return Ok(());
     }
-    let rects = bands
-        .iter()
-        .map(|(start, end)| splot_recon::PlaneRect::new(0, *start, width, end - start))
-        .collect::<splot_recon::Result<Vec<_>>>()?;
-    let surfaces = workspace.rect_surfaces(&rects)?;
-    let chunks: Vec<&[T]> = scratch.output_samples.chunks_exact(output_stride).collect();
-    let units = &scratch.units;
+    for band in bands.iter() {
+        band_rects.push(splot_recon::PlaneRect::new(
+            0,
+            band.top,
+            width,
+            band.bottom - band.top,
+        )?);
+    }
+    let surfaces = workspace.rect_surfaces(band_rects)?;
     surfaces
         .into_par_iter()
-        .zip(members.into_par_iter())
-        .try_for_each(|(mut surface, group)| -> Result<()> {
+        .zip(bands.par_iter())
+        .try_for_each(|(mut surface, band)| -> Result<()> {
             let mut sink = mc::WorkspaceSink::Rect(&mut surface);
-            for index in group {
-                let metadata = units[index]
+            let members = units
+                .get(band.first_unit..band.first_unit.saturating_add(band.units))
+                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+            for (offset, unit) in members.iter().enumerate() {
+                let metadata = unit
                     .metadata
                     .as_ref()
                     .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-                let samples = chunks.get(index).ok_or(ReconError::BufferLengthMismatch {
-                    expected: output_stride,
-                    actual: 0,
-                })?;
+                let start = band
+                    .first_unit
+                    .saturating_add(offset)
+                    .saturating_mul(output_stride);
+                let samples = output_samples
+                    .get(start..start.saturating_add(output_stride))
+                    .ok_or(ReconError::BufferLengthMismatch {
+                        expected: output_stride,
+                        actual: 0,
+                    })?;
                 metadata.publish(samples, &mut sink)?;
             }
             Ok(())
         })?;
-    for unit in &mut scratch.units {
-        unit.metadata = None;
-    }
+    release_unit_metadata(scratch);
     Ok(())
+}
+
+/// Keeps the largest candidate list a published unit hands back.
+///
+/// The list came from the scratch and returns to it, so the next batch's motion
+/// grid is filled into the same allocation.
+fn keep_candidates(best: &mut Vec<[Mv; 2]>, candidates: Vec<[Mv; 2]>) {
+    if candidates.capacity() > best.capacity() {
+        *best = candidates;
+    }
+}
+
+/// Clears every unit's metadata, keeping the batch grid's candidate list.
+fn release_unit_metadata<T: ReconSample>(scratch: &mut TipReconstructScratch<T>) {
+    let mut best = core::mem::take(&mut scratch.grid_candidates);
+    for unit in &mut scratch.units {
+        if let Some(mut metadata) = unit.metadata.take() {
+            keep_candidates(&mut best, metadata.take_grid_candidates());
+        }
+    }
+    scratch.grid_candidates = best;
 }
 
 fn publish_unit_outputs<T: ReconSample>(
@@ -987,6 +1046,7 @@ fn publish_unit_outputs<T: ReconSample>(
     {
         return publish_units_by_band(scratch, workspace, output_stride);
     }
+    let mut best_candidates = core::mem::take(&mut scratch.grid_candidates);
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     let mut units_per_hold = scratch.units.len().max(1);
     if scratch.units.iter().any(|unit| unit.metadata.is_none()) && !plan.hold(reference)?.settled()
@@ -1004,7 +1064,7 @@ fn publish_unit_outputs<T: ReconSample>(
             .map(|held| held.prediction(&plan.plan))
             .transpose()?;
         for unit in batch {
-            if let Some(metadata) = unit.metadata.take() {
+            if let Some(mut metadata) = unit.metadata.take() {
                 let samples = output_chunks
                     .next()
                     .ok_or(ReconError::BufferLengthMismatch {
@@ -1012,6 +1072,7 @@ fn publish_unit_outputs<T: ReconSample>(
                         actual: 0,
                     })?;
                 metadata.publish(samples, sink)?;
+                keep_candidates(&mut best_candidates, metadata.take_grid_candidates());
                 continue;
             }
             let params = prediction
@@ -1029,6 +1090,7 @@ fn publish_unit_outputs<T: ReconSample>(
             }
         }
     }
+    scratch.grid_candidates = best_candidates;
     Ok(())
 }
 
@@ -1056,6 +1118,7 @@ pub(super) fn predict<T: ReconSample>(
     grid: Option<mc::CompoundMotionGrid>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
+    residual_coeffs: &[i32],
     temporal: &TemporalMvContext,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1096,7 +1159,7 @@ pub(super) fn predict<T: ReconSample>(
         resize_output_samples(&mut scratch.output_samples, arena_len)?;
     }
     let mut grid = grid;
-    let batch_metadata = if batched_output {
+    let mut batch_metadata = if batched_output {
         let held = plan.hold(reference)?;
         Some(compute_batched_output(
             sink,
@@ -1122,8 +1185,10 @@ pub(super) fn predict<T: ReconSample>(
             tile_offset,
         )?;
     }
-    if let Some(metadata) = batch_metadata.as_ref() {
+    if let Some(metadata) = batch_metadata.as_mut() {
         metadata.publish(&scratch.output_samples, sink)?;
+        let candidates = metadata.take_grid_candidates();
+        keep_candidates(&mut scratch.grid_candidates, candidates);
     } else {
         publish_unit_outputs(
             scratch,
@@ -1142,6 +1207,7 @@ pub(super) fn predict<T: ReconSample>(
             sink,
             residual,
             residual_blocks,
+            residual_coeffs,
             qindex,
             luma_use_tcq,
             residual_use_ddt,
@@ -1151,6 +1217,14 @@ pub(super) fn predict<T: ReconSample>(
     }
     Ok(())
 }
+
+/// Luma rows per § 7.10.6 TIP-as-output prediction band.
+///
+/// The whole frame is one TIP block, so predicting it in one pass sized the
+/// compound scratch at frame scale. Banding keeps that scratch bounded; 64 is a
+/// multiple of both prediction unit sizes and of chroma subsampling, so a band
+/// boundary never splits a unit.
+const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     decode_scratch: &mut super::InterDecodeScratch<T>,
@@ -1222,15 +1296,16 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             plane: splot_recon::PlaneId::Y,
             context: "TIP-output motion field",
         })?;
-    let placed = PlacedInterBlock {
+    let band_h = TIP_OUTPUT_BAND_LUMA_ROWS.min(height);
+    let mut placed = PlacedInterBlock {
         luma_x: 0,
         luma_y: 0,
         luma_w: width,
-        luma_h: height,
+        luma_h: band_h,
         chroma_luma_x: 0,
         chroma_luma_y: 0,
         chroma_luma_w: width,
-        chroma_luma_h: height,
+        chroma_luma_h: band_h,
         predict_chroma: sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
         sub8x8_chroma: false,
         interintra_chroma: false,
@@ -1255,36 +1330,46 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let mut residual_scratch = InterResidualReconScratch::default();
     let mut temporal_records = Vec::new();
     let mut sink = mc::WorkspaceSink::Frame(&mut workspace);
-    let grid = motion(
-        &mut scratch,
-        &mut temporal_records,
-        &sink,
-        &placed,
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-        offset,
-    )?;
-    predict(
-        &mut scratch,
-        &mut residual_scratch,
-        &mut sink,
-        grid,
-        &placed,
-        &[],
-        temporal,
-        sequence,
-        core,
-        ref_frame_idx,
-        reference,
-        0,
-        false,
-        false,
-        bit_depth,
-        offset,
-    )?;
+    let mut band_y = 0;
+    while band_y < height {
+        let rows = band_h.min(height - band_y);
+        placed.luma_y = band_y;
+        placed.luma_h = rows;
+        placed.chroma_luma_y = band_y;
+        placed.chroma_luma_h = rows;
+        let grid = motion(
+            &mut scratch,
+            &mut temporal_records,
+            &sink,
+            &placed,
+            temporal,
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+            offset,
+        )?;
+        predict(
+            &mut scratch,
+            &mut residual_scratch,
+            &mut sink,
+            grid,
+            &placed,
+            &[],
+            &[],
+            temporal,
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+            0,
+            false,
+            false,
+            bit_depth,
+            offset,
+        )?;
+        band_y += rows;
+    }
     super::temporal::commit_temporal_motion_blocks(&mut motion_field, &temporal_records);
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
@@ -1307,7 +1392,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             seq_quant.base_uv_ac_delta_q,
             core.tile_info
                 .as_ref()
-                .map(|tile| (tile.mi_col_starts.as_slice(), tile.mi_row_starts.as_slice())),
+                .map(|tile| (tile.mi_col_starts.as_ref(), tile.mi_row_starts.as_ref())),
             sequence
                 .filter
                 .is_some_and(|filter| filter.disable_loopfilters_across_tiles),

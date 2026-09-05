@@ -265,10 +265,16 @@ fn with_lr_output_scratch<T: ReconSample, R>(f: impl FnOnce(&mut Vec<T>) -> R) -
     })
 }
 
-fn luma_lr_frame_coeffs(
-    plane: &LrPlaneParams,
-    num_classes: usize,
-) -> Result<Vec<[i16; WIENER_NS_LUMA_COEFFS]>> {
+/// The frame filter bank's coefficients, one entry per class.
+///
+/// The bank holds at most sixteen classes, so the whole set
+/// travels inline rather than in a list the caller allocates per stripe.
+type LrFrameCoeffs = splot_core::tile::InlineVec<
+    [i16; WIENER_NS_LUMA_COEFFS],
+    { splot_core::headers::frame::MAX_WIENER_NS_CLASSES },
+>;
+
+fn luma_lr_frame_coeffs(plane: &LrPlaneParams, num_classes: usize) -> Result<LrFrameCoeffs> {
     if num_classes == 0 {
         return Err(super::lr_pipeline_state_error());
     }
@@ -278,14 +284,16 @@ fn luma_lr_frame_coeffs(
     if bank.classes.len() != num_classes {
         return Err(super::lr_pipeline_state_error());
     }
-    let mut coeffs = Vec::with_capacity(num_classes);
+    let mut coeffs = LrFrameCoeffs::default();
     for class in &bank.classes {
         let coeff: [i16; WIENER_NS_LUMA_COEFFS] = class
             .coeffs
-            .as_slice()
+            .as_ref()
             .try_into()
             .map_err(|_| super::lr_pipeline_state_error())?;
-        coeffs.push(coeff);
+        coeffs
+            .push(coeff)
+            .ok_or_else(super::lr_pipeline_state_error)?;
     }
     Ok(coeffs)
 }
@@ -307,12 +315,12 @@ fn chroma_lr_frame_coeffs(plane: &LrPlaneParams) -> Result<[i16; WIENER_NS_CHROM
     let Some(bank) = plane.frame_filter_bank.as_ref() else {
         return Err(super::lr_pipeline_state_error());
     };
-    let [class] = bank.classes.as_slice() else {
+    let [class] = bank.classes.as_ref() else {
         return Err(super::lr_pipeline_state_error());
     };
     class
         .coeffs
-        .as_slice()
+        .as_ref()
         .try_into()
         .map_err(|_| super::lr_pipeline_state_error())
 }

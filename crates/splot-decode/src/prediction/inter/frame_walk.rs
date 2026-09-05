@@ -154,6 +154,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
+    recycled: &mut splot_recon::FramePlaneSamples<T>,
 ) -> Result<InterWalkPrologue<'payload, T>> {
     let offset = frame_envelope.offset;
     let initial_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?;
@@ -202,7 +203,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let interpolation_filter = inter
         .interpolation_filter
         .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
-    let workspace = CurrentFrameWorkspace::<T>::new_recycled(geometry.info())?; // pooled buffer keeps the previous frame's samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
+    let workspace = CurrentFrameWorkspace::<T>::new_recycled_from(geometry.info(), recycled)?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let quantization = core.quantization_params.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_base_q",
@@ -336,12 +337,12 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
 /// Returns the walk's own diagnostic when the header, tile plan, or entropy
 /// pass fails.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn parse_inter_frame<T: ReconSample>(
-    records: FrameFilterRecords,
+pub(crate) fn parse_inter_frame_prologue<'payload, T: ReconSample>(
+    mut records: FrameFilterRecords,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &[u8],
-    frame_envelope: ObuEnvelope<'_>,
+    bytes: &'payload [u8],
+    frame_envelope: ObuEnvelope<'payload>,
     core: FrameHeaderCore,
     sequence: &Arc<SequenceHeader>,
     options: &DecodeOptions,
@@ -350,8 +351,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     geometry: FrameDecodeGeometry,
     motion: &MotionFieldHandle,
     parse_progress: &Arc<super::ParseProgress>,
-    publish_early: impl FnOnce(InterWalkEarly<T>),
-) -> Result<DeferredInterWalk<T>> {
+) -> Result<(InterWalkEarly<T>, PendingInterWalk<'payload, T>)> {
     let InterWalkPrologue {
         mut tile_plan,
         workspace,
@@ -370,6 +370,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         &reference,
         bit_depth,
         geometry,
+        &mut T::reclaim_planes(&mut records.retired_planes),
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let quantizer = FrameQuantizerSnapshot::capture();
@@ -399,7 +400,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     )?;
     let core = Arc::new(core);
     let reference = Arc::new(reference);
-    publish_early(InterWalkEarly {
+    let early = InterWalkEarly {
         core: Arc::clone(&core),
         motion: motion.clone(),
         workspace,
@@ -412,28 +413,88 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         params,
         prelude,
         motion_field,
-    });
-    let parse = match parse_inter_frame_blocks(
-        tile,
-        records,
-        sequence,
-        &core,
-        ref_frame_idx.as_slice(),
-        &reference,
-        parse_progress,
-        parse_setup,
-    ) {
-        Ok(parse) => parse,
-        Err(error) => {
-            parse_progress.fail();
-            return Err(error);
-        }
     };
-    Ok(DeferredInterWalk {
-        parse,
+    let pending = PendingInterWalk {
+        tile_plan,
+        records,
+        core,
+        sequence: Arc::clone(sequence),
+        reference,
+        ref_frame_idx,
         parse_progress: Arc::clone(parse_progress),
-        marker: core::marker::PhantomData,
-    })
+        parse_setup,
+        quantizer_deltas,
+    };
+    Ok((early, pending))
+}
+
+/// The § 8.2 pass one inter frame still owes once its prologue has settled.
+///
+/// Splitting the walk here lets the driver build the frame's admission
+/// batches from the published prologue before the pass reads its first unit,
+/// so the batches exist -- and can claim units -- while the pass runs. The
+/// pass owns everything it reads, so it runs as its own job on any worker.
+pub(crate) struct PendingInterWalk<'payload, T: ReconSample> {
+    tile_plan: DecodeTilePayloadPlan<'payload>,
+    records: FrameFilterRecords,
+    core: Arc<FrameHeaderCore>,
+    sequence: Arc<SequenceHeader>,
+    reference: Arc<InterReferenceState<T>>,
+    ref_frame_idx: RefIdxBuf,
+    parse_progress: Arc<super::ParseProgress>,
+    parse_setup: block::InterParseSetup,
+    quantizer_deltas: QuantizerDeltas,
+}
+
+impl<T: ReconSample> PendingInterWalk<'_, T> {
+    /// Runs the owed entropy pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns the pass's own diagnostic when the tile plan or entropy pass
+    /// fails.
+    pub(crate) fn run(self) -> Result<DeferredInterWalk<T>> {
+        let Self {
+            mut tile_plan,
+            records,
+            core,
+            sequence,
+            reference,
+            ref_frame_idx,
+            parse_progress,
+            parse_setup,
+            quantizer_deltas,
+        } = self;
+        let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
+        let tile_count = tile_plan.work_units().len();
+        let [tile] = tile_plan.work_units_mut() else {
+            parse_progress.fail();
+            return Err(
+                DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
+            );
+        };
+        let parse = match parse_inter_frame_blocks(
+            tile,
+            records,
+            &sequence,
+            &core,
+            ref_frame_idx.as_slice(),
+            &reference,
+            &parse_progress,
+            parse_setup,
+        ) {
+            Ok(parse) => parse,
+            Err(error) => {
+                parse_progress.fail();
+                return Err(error);
+            }
+        };
+        Ok(DeferredInterWalk {
+            parse,
+            parse_progress,
+            marker: core::marker::PhantomData,
+        })
+    }
 }
 
 impl<T: ReconSample> DeferredInterWalk<T> {

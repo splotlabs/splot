@@ -37,11 +37,40 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) tx_skip_records: Vec<WienerNsLrTxSkipTransformRecord>,
     pub(crate) lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
+    /// The per-stripe lists the filter phase borrows and hands back.
+    pub(crate) stripes: FilterStripeLists,
+    /// The deblock grid vectors, borrowed and handed back the same way.
+    pub(crate) deblock_grids: crate::filters::deblock::DeblockGridStorage,
+    /// The reconstruction workspace's sample buffers, on their way to the next
+    /// frame's walk: the filter phase is the last reader of the frame it
+    /// filtered, and these records already run from the phase to the decoder's
+    /// scratch and back out with the next frame.
+    pub(crate) retired_planes: splot_recon::RetiredFramePlanes,
+}
+
+/// The per-stripe lists one frame's filter phase works through.
+///
+/// The phase borrows them from the records and hands them back when it
+/// finishes, so they ride the same channel to the decoder's scratch and a
+/// steady-state frame opens its filter setup without allocating.
+#[derive(Default)]
+pub(crate) struct FilterStripeLists {
+    pub(crate) ranges: Vec<(usize, usize)>,
+    pub(crate) lifecycles: Vec<recon::StripeLifecycle>,
+    pub(crate) outcomes: Vec<Option<crate::Result<()>>>,
 }
 
 impl FrameFilterRecords {
     /// Moves every record out of `other` and onto the end of these lists.
     pub(crate) fn append(&mut self, other: &mut Self) {
+        self.deblock_blocks
+            .reserve_exact(other.deblock_blocks.len());
+        self.tx_skip_records
+            .reserve_exact(other.tx_skip_records.len());
+        self.lr_source_blocks
+            .reserve_exact(other.lr_source_blocks.len());
+        self.lr_unit_filters
+            .reserve_exact(other.lr_unit_filters.len());
         self.deblock_blocks.append(&mut other.deblock_blocks);
         self.chroma_deblock_blocks
             .append(&mut other.chroma_deblock_blocks);

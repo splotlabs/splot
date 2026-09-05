@@ -293,7 +293,9 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
     gate.note_tip(&block, &mut bounds);
 
     assert_eq!(bounds.needs[1], 582);
-    assert_eq!(gate.conditions(&bounds).len(), 2);
+    let mut conditions = Vec::new();
+    gate.conditions(&bounds, &mut conditions);
+    assert_eq!(conditions.len(), 2);
 }
 
 /// The luma row `splot-recon`'s § 7.13.3.19 block warp reads last, over every

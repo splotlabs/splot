@@ -145,8 +145,8 @@ fn selectable_large_frame_fixture() -> (SequenceHeader, FrameHeaderCore) {
     let (sequence, mut core) = selectable_fixture();
     core.frame_size = Some(FrameSize::new(128, 128));
     let tile_info = core.tile_info.as_mut().unwrap();
-    tile_info.mi_col_starts = vec![0, 32];
-    tile_info.mi_row_starts = vec![0, 32];
+    tile_info.mi_col_starts = splot_core::tile::TileStarts::from_iter_checked([0, 32]).unwrap();
+    tile_info.mi_row_starts = splot_core::tile::TileStarts::from_iter_checked([0, 32]).unwrap();
     (sequence, core)
 }
 
@@ -759,8 +759,8 @@ fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
     let (_, mut core) = selectable_fixture();
     core.frame_size = Some(FrameSize::new(10, 10));
     let tile_info = core.tile_info.as_mut().unwrap();
-    tile_info.mi_col_starts = vec![0, 4];
-    tile_info.mi_row_starts = vec![0, 4];
+    tile_info.mi_col_starts = splot_core::tile::TileStarts::from_iter_checked([0, 4]).unwrap();
+    tile_info.mi_row_starts = splot_core::tile::TileStarts::from_iter_checked([0, 4]).unwrap();
     let block = IntrabcBlockContext::new(2, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 2);
     let info = IntrabcInfo {
@@ -783,8 +783,8 @@ fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
 fn intrabc_geometry_rejects_source_outside_current_tile() {
     let (_, mut core) = selectable_large_frame_fixture();
     let tile_info = core.tile_info.as_mut().unwrap();
-    tile_info.mi_col_starts = vec![0, 4, 8];
-    tile_info.mi_row_starts = vec![0, 8];
+    tile_info.mi_col_starts = splot_core::tile::TileStarts::from_iter_checked([0, 4, 8]).unwrap();
+    tile_info.mi_row_starts = splot_core::tile::TileStarts::from_iter_checked([0, 8]).unwrap();
     let block = IntrabcBlockContext::new(4, 4, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
@@ -862,8 +862,8 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
     let (_, mut core) = selectable_fixture();
     core.frame_size = Some(FrameSize::new(10, 10));
     let tile_info = core.tile_info.as_mut().unwrap();
-    tile_info.mi_col_starts = vec![0, 4];
-    tile_info.mi_row_starts = vec![0, 4];
+    tile_info.mi_col_starts = splot_core::tile::TileStarts::from_iter_checked([0, 4]).unwrap();
+    tile_info.mi_row_starts = splot_core::tile::TileStarts::from_iter_checked([0, 4]).unwrap();
     let block = IntrabcBlockContext::new(2, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
@@ -889,8 +889,8 @@ fn intrabc_geometry_rejects_off_frame_top_left_block() {
     let (_, mut core) = selectable_fixture();
     core.frame_size = Some(FrameSize::new(10, 10));
     let tile_info = core.tile_info.as_mut().unwrap();
-    tile_info.mi_col_starts = vec![0, 4];
-    tile_info.mi_row_starts = vec![0, 4];
+    tile_info.mi_col_starts = splot_core::tile::TileStarts::from_iter_checked([0, 4]).unwrap();
+    tile_info.mi_row_starts = splot_core::tile::TileStarts::from_iter_checked([0, 4]).unwrap();
     let block = IntrabcBlockContext::new(4, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {

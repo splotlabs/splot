@@ -13,8 +13,8 @@ use splot_recon::{
 
 use super::super::coeff_loop::max_level::CoeffTransformClass;
 use super::{
-    ADST_ADST, D67_PRED, D157_PRED, DCT_DCT, GeneralIntraResidualError, H_PRED, IST_4X4_HEIGHT,
-    IST_8X8_HEIGHT, IST_8X8_HEIGHT_RED, LumaCoeffBlock, LumaTransformTypeContext, SMOOTH_H_PRED,
+    ADST_ADST, CoeffBlock, D67_PRED, D157_PRED, DCT_DCT, GeneralIntraResidualError, H_PRED,
+    IST_4X4_HEIGHT, IST_8X8_HEIGHT, IST_8X8_HEIGHT_RED, LumaTransformTypeContext, SMOOTH_H_PRED,
     current_quantizer_deltas, intra_secondary_transform_kernel, intra_secondary_transform_mode,
     invalid_reconstruction_state, invalid_reconstruction_state_error, resolve_block_qm,
 };
@@ -27,7 +27,7 @@ pub(super) struct ReconstructBlockSetup {
 }
 
 pub(super) fn resolve_secondary_inverse_transform(
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     log2_width: u32,
     log2_height: u32,
     bit_depth: BitDepth,
@@ -90,7 +90,7 @@ pub(super) fn resolve_secondary_inverse_transform(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T: ReconSample>(
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,
     qindex: u32,
@@ -118,7 +118,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
         (plane_id, dpcm, None)
     };
     super::reconstruct_general_intra_block_rect_with_prediction_core(
-        &block.quant,
+        block.quant,
         prediction,
         out,
         qindex,
@@ -150,7 +150,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     prediction: &[T],
     plane_id: PlaneId,
     x: usize,
@@ -204,7 +204,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         super::with_residual_scratch(|scratch| {
             let dequant = &mut scratch.dequant[..setup.adjusted];
-            dequantize_block(&setup.params, &block.quant, dequant)?;
+            dequantize_block(&setup.params, block.quant, dequant)?;
             if let Some(secondary) = secondary.as_ref() {
                 secondary_inverse_transform(dequant, secondary)?;
             }
@@ -220,7 +220,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -265,7 +265,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     }
     super::with_residual_scratch(|scratch| {
         let dequant = &mut scratch.dequant[..setup.adjusted];
-        dequantize_block(&setup.params, &block.quant, dequant)?;
+        dequantize_block(&setup.params, block.quant, dequant)?;
         if let Some(secondary) = secondary.as_ref() {
             secondary_inverse_transform(dequant, secondary)?;
         }
@@ -380,7 +380,7 @@ pub(super) fn reconstruct_block_setup(
 }
 
 pub(super) fn dequantize_coeff_block(
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     params: &DequantBlockParams,
     out: &mut [i32],
 ) -> Result<(), GeneralIntraResidualError> {
@@ -394,7 +394,7 @@ pub(super) fn dequantize_coeff_block(
             actual: block.quant.len(),
         });
     }
-    dequantize_block(params, &block.quant, out)?;
+    dequantize_block(params, block.quant, out)?;
     Ok(())
 }
 

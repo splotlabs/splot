@@ -10,7 +10,7 @@ use core::num::NonZeroUsize;
 use splot_parallel::CompletionCell;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::bitstream::byte_stream::FlatParsedBitstream;
 use crate::error::Result;
@@ -19,6 +19,7 @@ use crate::hash_report::{
 };
 use crate::pipeline::PipelineDecodedFrame;
 use crate::{DecodeOptions, DecodeStreamPlan};
+use parking_lot::Mutex;
 
 pub(crate) fn decode_hash_report_from_plan(
     bytes: &[u8],
@@ -84,10 +85,7 @@ fn decode_hash_frames_pipelined(
                 outstanding.push_back(Arc::clone(&hashed_done));
                 scope.spawn(move |_| {
                     let hashed = hash_pipeline_frame(&ready, index);
-                    completed
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(hashed);
+                    completed.lock().push(hashed);
                     let _ = hashed_done.set(());
                 });
                 while outstanding.len() > outstanding_capacity
@@ -100,9 +98,7 @@ fn decode_hash_frames_pipelined(
         )
     })??;
 
-    let mut completed = completed
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut completed = completed.into_inner();
     completed.sort_unstable_by_key(|frame| frame.output_index);
     Ok(completed)
 }

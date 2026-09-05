@@ -7,11 +7,11 @@
 )]
 
 use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
-use std::mem::{ManuallyDrop, MaybeUninit};
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone, Copy)]
 struct DeblockedPlaneStorage<T> {
@@ -30,7 +30,7 @@ pub(crate) struct DeblockedSource<T: ReconSample> {
 }
 
 struct DeblockedStorage<T: ReconSample> {
-    workspace: ManuallyDrop<CurrentFrameWorkspace<T>>,
+    workspace: Option<CurrentFrameWorkspace<T>>,
     info: splot_recon::DecodedFrameInfo,
     planes: [Option<DeblockedPlaneStorage<T>>; 3],
     #[cfg(test)]
@@ -74,7 +74,7 @@ impl<T: ReconSample> DeblockedSource<T> {
         }
         Self {
             storage: Arc::new(DeblockedStorage {
-                workspace: ManuallyDrop::new(workspace),
+                workspace: Some(workspace),
                 info,
                 planes,
                 #[cfg(test)]
@@ -94,6 +94,14 @@ impl<T: ReconSample> DeblockedSource<T> {
             storage.recycled = Some(recycled);
         }
         source
+    }
+
+    /// Takes the reconstructed workspace back when no lease is outstanding.
+    ///
+    /// The filter phase is the last reader of the frame it filtered, so this is
+    /// where its sample buffers become the next frame's.
+    pub(crate) fn into_workspace(self) -> Option<CurrentFrameWorkspace<T>> {
+        Arc::into_inner(self.storage)?.workspace.take()
     }
 
     pub(crate) fn info(&self) -> splot_recon::DecodedFrameInfo {
@@ -285,13 +293,9 @@ impl<T: ReconSample> DeblockedStorage<T> {
     }
 }
 
-/// Recycles the workspace after the final owning `Arc` is gone.
+#[cfg(test)]
 impl<T: ReconSample> Drop for DeblockedStorage<T> {
     fn drop(&mut self) {
-        unsafe {
-            ManuallyDrop::take(&mut self.workspace).recycle_planes();
-        } // SAFETY: the final owning Arc has exclusive workspace access.
-        #[cfg(test)]
         if let Some(recycled) = &self.recycled {
             recycled.store(true, Ordering::SeqCst);
         }
@@ -317,48 +321,6 @@ impl<T: ReconSample> DeblockedReadLease<T> {
     }
 }
 
-/// Fewest stripe sample buffers retained, and the floor the pool-width bound
-/// never drops below.
-const MIN_RETAINED_STRIPE_BUFFERS: usize = 128;
-/// Stripe sample buffers retained per worker: a wide pool has that many more
-/// stripe chains in flight, each holding its own copy.
-const RETAINED_STRIPE_BUFFERS_PER_WORKER: usize = 16;
-
-/// Retains one worker's share per worker, with [`MIN_RETAINED_STRIPE_BUFFERS`]
-/// as the floor.
-/// Scales per worker only on a pool thread; off-pool callers get the floor.
-fn max_retained_stripe_buffers() -> usize {
-    splot_parallel::current_pool_width()
-        .saturating_mul(RETAINED_STRIPE_BUFFERS_PER_WORKER)
-        .max(MIN_RETAINED_STRIPE_BUFFERS)
-}
-static STRIPE_SAMPLE_BUFFERS: Mutex<Vec<Vec<u16>>> = Mutex::new(Vec::new());
-
-fn lock_stripe_sample_buffers() -> MutexGuard<'static, Vec<Vec<u16>>> {
-    STRIPE_SAMPLE_BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn select_buffer_index<I>(capacities: I, sample_count: usize, pool_is_full: bool) -> Option<usize>
-where
-    I: IntoIterator<Item = (usize, usize)>,
-{
-    let mut fitting: Option<(usize, usize)> = None;
-    let mut fallback: Option<(usize, usize)> = None;
-    for (index, capacity) in capacities {
-        if capacity >= sample_count {
-            if fitting.is_none_or(|(_, best_capacity)| capacity < best_capacity) {
-                fitting = Some((index, capacity));
-            }
-        } else if pool_is_full && fallback.is_none_or(|(_, best_capacity)| capacity > best_capacity)
-        {
-            fallback = Some((index, capacity));
-        }
-    }
-    fitting.or(fallback).map(|(index, _)| index)
-}
-
 /// Why a stripe/window copy failed: inconsistent geometry, or storage that
 /// could not be reserved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -376,48 +338,61 @@ impl StripeCopyError {
     }
 }
 
+/// Staging buffers one worker's filter stage keeps between stripes.
+///
+/// dav2d gives each worker a task context whose scratch is sized once and
+/// reused for the life of the decode. A stripe that cannot be filtered straight
+/// into the published frame stages its rows here instead, and hands the buffer
+/// back when the stripe's planes drop. The slot count is the most a single
+/// stripe holds at once -- three planes for the stripe itself and three for the
+/// fringe rows the GDF read radius needs -- so it is a fixed context, not a
+/// store that grows with the stream.
+const STRIPE_STAGING_SLOTS: usize = 6;
+
+std::thread_local! {
+    static STRIPE_STAGING: core::cell::RefCell<[Vec<u16>; STRIPE_STAGING_SLOTS]> =
+        const { core::cell::RefCell::new([const { Vec::new() }; STRIPE_STAGING_SLOTS]) };
+}
+
+/// Takes this worker's largest free staging buffer, or a fresh one.
 fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
-    let mut buffers = lock_stripe_sample_buffers();
-    let mut buffer = take_stripe_sample_buffer_from_pool(&mut buffers, sample_count);
-    drop(buffers);
+    let mut buffer = STRIPE_STAGING.with(|slots| {
+        slots
+            .try_borrow_mut()
+            .ok()
+            .map_or_else(Vec::new, |mut slots| {
+                slots
+                    .iter_mut()
+                    .max_by_key(|slot| slot.capacity())
+                    .map(core::mem::take)
+                    .unwrap_or_default()
+            })
+    });
     buffer.clear();
+    // Counted from the cleared length, not from the capacity: a reused buffer
+    // that already holds some of the request would otherwise be grown short of
+    // it, and the staged write reads `sample_count` spare slots.
     buffer
         .try_reserve_exact(sample_count)
         .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
     Ok(buffer)
 }
 
-fn take_stripe_sample_buffer_from_pool(
-    buffers: &mut Vec<Vec<u16>>,
-    sample_count: usize,
-) -> Vec<u16> {
-    let pool_is_full = buffers.len() >= max_retained_stripe_buffers();
-    let index = select_buffer_index(
-        buffers
-            .iter()
-            .enumerate()
-            .map(|(index, buffer)| (index, buffer.capacity())),
-        sample_count,
-        pool_is_full,
-    );
-    index
-        .map(|index| buffers.swap_remove(index))
-        .unwrap_or_default()
-}
-
-fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
+/// Returns a spent staging buffer to this worker's context.
+fn give_stripe_sample_buffer(buffer: Vec<u16>) {
     if buffer.capacity() == 0 {
         return;
     }
-    buffer.clear();
-    let mut buffers = lock_stripe_sample_buffers();
-    recycle_stripe_sample_buffer_into_pool(&mut buffers, buffer);
-}
-
-fn recycle_stripe_sample_buffer_into_pool(buffers: &mut Vec<Vec<u16>>, buffer: Vec<u16>) {
-    if buffers.len() < max_retained_stripe_buffers() && buffers.try_reserve(1).is_ok() {
-        buffers.push(buffer);
-    }
+    STRIPE_STAGING.with(|slots| {
+        if let Ok(mut slots) = slots.try_borrow_mut()
+            && let Some(slot) = slots
+                .iter_mut()
+                .min_by_key(|slot| slot.capacity())
+                .filter(|slot| slot.capacity() < buffer.capacity())
+        {
+            *slot = buffer;
+        }
+    });
 }
 
 /// A frame plane backed by one contiguous row span.
@@ -618,7 +593,7 @@ fn window_bounds(
 }
 
 enum StripeOwner {
-    Owned(Vec<u16>),
+    Owned(#[allow(dead_code, reason = "keeps borrowed stripe samples alive")] Vec<u16>),
     DirectU16 {
         _target: crate::pipeline::frame_progress::DirectPlaneTarget,
     },
@@ -635,6 +610,18 @@ struct StripeSamples {
 
 // SAFETY: the `Send` owner keeps the cached pointer's allocation alive.
 unsafe impl Send for StripeSamples {}
+
+impl Drop for StripeSamples {
+    fn drop(&mut self) {
+        if let StripeOwner::Owned(buffer)
+        | StripeOwner::DirectU8 {
+            staging: buffer, ..
+        } = &mut self.owner
+        {
+            give_stripe_sample_buffer(core::mem::take(buffer));
+        }
+    }
+}
 
 impl StripeSamples {
     fn owned(mut samples: Vec<u16>) -> Self {
@@ -701,7 +688,7 @@ impl StripeSamples {
                 .ok_or(StripeCopyError::Geometry)
         })();
         if let Err(error) = initialized {
-            recycle_stripe_sample_buffer(staging);
+            drop(staging);
             return Err(error);
         }
         unsafe { staging.set_len(sample_count) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; every in-bounds spare slot is initialized without a `&mut [u16]` before this non-panicking call, errors recycle and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
@@ -726,7 +713,7 @@ impl StripeSamples {
             .ok_or(StripeCopyError::Geometry)
             .and_then(|destination| write_uninit_u16(destination, source));
         if let Err(error) = initialized {
-            recycle_stripe_sample_buffer(staging);
+            drop(staging);
             return Err(error);
         }
         unsafe { staging.set_len(source.len()) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; the equal-length helper initialized every in-bounds spare slot without a `&mut [u16]` before this non-panicking call, errors recycle and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
@@ -787,20 +774,6 @@ fn write_uninit_u16(
         destination.write(source);
     }
     Ok(())
-}
-
-impl Drop for StripeSamples {
-    fn drop(&mut self) {
-        match &mut self.owner {
-            StripeOwner::Owned(samples) => {
-                recycle_stripe_sample_buffer(core::mem::take(samples));
-            }
-            StripeOwner::DirectU8 { staging, .. } => {
-                recycle_stripe_sample_buffer(core::mem::take(staging));
-            }
-            StripeOwner::DirectU16 { .. } => {}
-        }
-    }
 }
 
 pub(crate) struct StripePlane {
@@ -954,7 +927,7 @@ impl StripePlane {
                 {
                     for y in origin_y..end_y {
                         let Some(row) = source.row(y) else {
-                            recycle_stripe_sample_buffer(samples);
+                            drop(samples);
                             return Err(geometry);
                         };
                         if let Some(row) = T::u16_slice(row) {
@@ -965,7 +938,7 @@ impl StripePlane {
                     }
                 }
                 if samples.len() != sample_count {
-                    recycle_stripe_sample_buffer(samples);
+                    drop(samples);
                     return Err(geometry);
                 }
                 return Ok(Self {

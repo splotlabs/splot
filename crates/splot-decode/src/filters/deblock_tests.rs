@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use super::grid::DeblockGridStorage;
 use super::*;
 use crate::test_support::{yuv420_workspace, yuv420_workspace_with};
 
@@ -113,6 +114,8 @@ fn deblock_through_live_source<T: ReconSample>(
         tile_info,
         disable_loopfilters_across_tiles,
         quant_deltas,
+        (1, 1),
+        &mut DeblockGridStorage::default(),
     )?
     else {
         return Ok(());
@@ -197,6 +200,8 @@ fn one_row_advance_matches_the_whole_frame_deblock() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+        (1, 1),
+        &mut DeblockGridStorage::default(),
     )
     .unwrap()
     .unwrap();
@@ -285,8 +290,8 @@ fn two_by_two_tile_info() -> TileInfo {
             covers_cols: true,
             covers_rows: true,
         }),
-        seq_sb_col_starts: Vec::new(),
-        seq_sb_row_starts: Vec::new(),
+        seq_sb_col_starts: std::sync::Arc::from(Vec::new()),
+        seq_sb_row_starts: std::sync::Arc::from(Vec::new()),
         seq_sb_size: SuperblockSize::Block64x64,
         use_256x256_superblock: false,
         use_128x128_superblock: false,
@@ -338,6 +343,8 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+        (1, 1),
+        &mut DeblockGridStorage::default(),
     )
     .unwrap()
     .unwrap();
@@ -384,6 +391,8 @@ fn contiguous_source_deblock_matches_workspace_while_an_older_lease_is_live() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+        (1, 1),
+        &mut DeblockGridStorage::default(),
     )
     .unwrap()
     .unwrap();
@@ -433,6 +442,8 @@ fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+        (1, 1),
+        &mut DeblockGridStorage::default(),
     )
     .unwrap()
     .unwrap();
@@ -455,6 +466,7 @@ fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
         Arc::new(core),
         false,
         DeblockQuantDeltas::ZERO,
+        (1, 1),
     )
     .unwrap()
     .unwrap();
@@ -497,6 +509,8 @@ fn incremental_deblock_enforces_frontiers_and_leases_exact_window() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+        (1, 1),
+        &mut DeblockGridStorage::default(),
     )
     .unwrap()
     .unwrap();
@@ -549,6 +563,8 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
         None,
         false,
         DeblockQuantDeltas::ZERO,
+        (1, 1),
+        &mut DeblockGridStorage::default(),
     )
     .unwrap()
     .unwrap();
@@ -572,8 +588,8 @@ fn incremental_deblock_matches_tile_boundary_rules() {
     let blocks = deblock_blocks(mi_rows, mi_cols);
     let params = filter([true; 4]);
     let tile_info = two_by_two_tile_info();
-    assert_eq!(tile_info.mi_col_starts, [0, 16, 32]);
-    assert_eq!(tile_info.mi_row_starts, [0, 16, 32]);
+    assert_eq!(tile_info.mi_col_starts.as_ref(), [0, 16, 32].as_slice());
+    assert_eq!(tile_info.mi_row_starts.as_ref(), [0, 16, 32].as_slice());
 
     for disable_loopfilters_across_tiles in [false, true] {
         let make_workspace = || {
@@ -604,6 +620,8 @@ fn incremental_deblock_matches_tile_boundary_rules() {
             Some(&tile_info),
             disable_loopfilters_across_tiles,
             DeblockQuantDeltas::ZERO,
+            (1, 1),
+            &mut DeblockGridStorage::default(),
         )
         .unwrap()
         .unwrap();
@@ -904,7 +922,7 @@ fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
         block(1, 1, 2, 3, Some(DeblockSubPuSize::square(8))),
         block(1, 3, 3, 3, None),
     ];
-    let storage = build_mi_grid(&blocks, 4, 6).unwrap();
+    let storage = build_mi_grid(&blocks, 4, 6, &mut DeblockGridStorage::default()).unwrap();
     let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
 
     for (plane, sub_x, sub_y) in [(0, 0, 0), (1, 1, 1)] {
@@ -1334,7 +1352,7 @@ fn mi_grid_covers_decoded_blocks() {
         skip: false,
         lossless: true,
     }];
-    let storage = build_mi_grid(&blocks, 16, 16).unwrap();
+    let storage = build_mi_grid(&blocks, 16, 16, &mut DeblockGridStorage::default()).unwrap();
     let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
     assert!(grid.get_edge(0, 0).is_some(), "top-left MI is covered");
     assert!(
@@ -1408,11 +1426,21 @@ fn inherited_chroma_residual_transform_retains_prediction_metadata() {
         skip: false,
         lossless: false,
     };
-    let base = build_mi_grid(&luma, 8, 8).unwrap();
+    let base = build_mi_grid(&luma, 8, 8, &mut DeblockGridStorage::default()).unwrap();
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, metadata);
     chroma.push(0, transform);
-    let storage = overlay_mi_grid(&base, &chroma, 0, 8, 8).unwrap();
+    let storage = overlay_mi_grid(
+        &base,
+        &chroma,
+        0,
+        8,
+        8,
+        1,
+        1,
+        &mut DeblockGridStorage::default().chroma[0],
+    )
+    .unwrap();
     let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
 
     let inherited = grid.get_edge(1, 3).unwrap();
@@ -1463,10 +1491,20 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
         skip: false,
         lossless: true,
     };
-    let base = build_mi_grid(&luma, 8, 8).unwrap();
+    let base = build_mi_grid(&luma, 8, 8, &mut DeblockGridStorage::default()).unwrap();
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, ordinary);
-    let storage = overlay_mi_grid(&base, &chroma, 0, 8, 8).unwrap();
+    let storage = overlay_mi_grid(
+        &base,
+        &chroma,
+        0,
+        8,
+        8,
+        1,
+        1,
+        &mut DeblockGridStorage::default().chroma[0],
+    )
+    .unwrap();
     let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
 
     let info = grid.get_edge(1, 3).unwrap();
@@ -1510,10 +1548,20 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     assert!(!record.chroma_transform_only);
 
     let luma = deblock_blocks(16, 16);
-    let base = build_mi_grid(&luma, 16, 16).unwrap();
+    let base = build_mi_grid(&luma, 16, 16, &mut DeblockGridStorage::default()).unwrap();
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, record);
-    let storage = overlay_mi_grid(&base, &chroma, 0, 16, 16).unwrap();
+    let storage = overlay_mi_grid(
+        &base,
+        &chroma,
+        0,
+        16,
+        16,
+        1,
+        1,
+        &mut DeblockGridStorage::default().chroma[0],
+    )
+    .unwrap();
     let grid = MiGrid::new(&base, Some(&storage), &luma, &chroma);
     let info = grid.get_edge(6, 4).unwrap();
     let chroma_prediction = info.prediction(1);
@@ -1791,6 +1839,8 @@ fn contiguous_source_plane_parallel_pass_matches_serial_output() {
             None,
             false,
             DeblockQuantDeltas::ZERO,
+            (1, 1),
+            &mut DeblockGridStorage::default(),
         )
         .unwrap()
         .unwrap();

@@ -6,18 +6,18 @@
 #![allow(clippy::expect_used)]
 
 use super::{
-    DeblockedSource, FramePlane, StripeOutputPlane, StripePlane, lock_stripe_sample_buffers,
-    recycle_stripe_sample_buffer, recycle_stripe_sample_buffer_into_pool, select_buffer_index,
-    take_stripe_sample_buffer, take_stripe_sample_buffer_from_pool, window_bounds,
+    DeblockedSource, FramePlane, StripeOutputPlane, StripePlane, take_stripe_sample_buffer,
+    window_bounds,
 };
+use parking_lot::Mutex;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
     PlaneRect, PlaneSize,
 };
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(miri))]
-use std::sync::{Barrier, Mutex};
+use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u16> {
     workspace_with_format(width, height, PixelFormat::Yuv420)
@@ -172,12 +172,29 @@ fn multiple_immutable_leases_keep_the_source_alive_until_the_last_drop() {
         16
     );
 
-    drop(source);
+    assert!(source.into_workspace().is_none());
     assert!(!recycled.load(Ordering::SeqCst));
     drop(first);
     assert!(!recycled.load(Ordering::SeqCst));
     drop(middle);
     assert!(recycled.load(Ordering::SeqCst));
+}
+
+#[test]
+fn unleased_source_returns_the_original_workspace_storage() {
+    let original = workspace(16, 65);
+    let samples = original.plane(PlaneId::Y).expect("luma").samples().as_ptr();
+    let recovered = DeblockedSource::new(original)
+        .into_workspace()
+        .expect("unleased workspace");
+    assert_eq!(
+        recovered
+            .plane(PlaneId::Y)
+            .expect("luma")
+            .samples()
+            .as_ptr(),
+        samples
+    );
 }
 
 #[test]
@@ -244,9 +261,7 @@ fn deblocked_source_keeps_read_leases_disjoint_from_later_writes() {
                         .iter()
                         .copied()
                         .sum::<u16>();
-                    *reader_sum
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sum);
+                    *reader_sum.lock() = Some(sum);
                 });
                 ready.wait();
                 source
@@ -257,39 +272,11 @@ fn deblocked_source_keeps_read_leases_disjoint_from_later_writes() {
             })
             .expect("ready task scope");
         });
-        read_sum
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .expect("reader result")
+        read_sum.lock().expect("reader result")
     };
 
     let expected = (0..16).map(|x| (15 * 17 + x * 3) & 255).sum::<usize>() as u16;
     assert_eq!(actual, expected);
-}
-
-#[test]
-fn stripe_cache_selection_uses_fresh_storage_until_full() {
-    let capacities = [(0, 32), (1, 128), (2, 256)];
-
-    assert_eq!(select_buffer_index(capacities, 96, false), Some(1));
-    assert_eq!(select_buffer_index(capacities, 512, false), None);
-    assert_eq!(select_buffer_index(capacities, 512, true), Some(2));
-}
-
-#[test]
-fn stripe_pool_reuses_returned_allocation_while_exclusively_locked() {
-    let sample_count = 8_196;
-    let mut buffers = lock_stripe_sample_buffers();
-    buffers.clear();
-    let first = Vec::<u16>::with_capacity(sample_count);
-    let allocation = first.as_ptr();
-
-    recycle_stripe_sample_buffer_into_pool(&mut buffers, first);
-    let second = take_stripe_sample_buffer_from_pool(&mut buffers, sample_count);
-
-    assert_eq!(second.len(), 0);
-    assert_eq!(second.as_ptr(), allocation);
-    recycle_stripe_sample_buffer_into_pool(&mut buffers, second);
 }
 
 #[test]
@@ -419,7 +406,7 @@ fn partial_u8_source_failure_recycles_length_zero_staging() {
 
     let staging = take_stripe_sample_buffer(sample_count).expect("recycled failed staging");
     assert_eq!(staging.len(), 0);
-    recycle_stripe_sample_buffer(staging);
+    drop(staging);
 }
 
 #[test]
@@ -515,7 +502,14 @@ fn completed_direct_u8_and_staged_fallback_planes_publish_together() {
     y.finish_direct().expect("luma flush");
     v.finish_direct().expect("V flush");
     u.finish_direct().expect("direct U completion");
+    let staging = y.samples().as_ptr();
     drop((y, u, v, target));
+    assert!(super::STRIPE_STAGING.with(|slots| {
+        slots
+            .borrow()
+            .iter()
+            .any(|buffer| buffer.as_ptr() == staging)
+    }));
     assert!(lease.submit());
 
     let frame = progress

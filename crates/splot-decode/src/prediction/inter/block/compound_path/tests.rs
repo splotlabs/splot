@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use crate::reference::buffer::RefSlots;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 
@@ -160,7 +161,7 @@ fn compound_ref_contexts_keep_invalid_reference_count_fail_closed() {
 #[test]
 fn compound_ref_distance_signs_cover_every_valid_reference_count() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![9, 11, 10, 10, 10, 10, 10];
+    reference.ref_order_hint = RefSlots::from_iter_checked([9, 11, 10, 10, 10, 10, 10]).unwrap();
     let ref_frame_idx = [0, 1, 2, 3, 4, 5, 6];
     let expected = [true, false, true, true, true, true, true];
 
@@ -174,7 +175,8 @@ fn compound_ref_distance_signs_cover_every_valid_reference_count() {
 #[test]
 fn compound_ref_distance_signs_preserve_wide_order_hints() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![0x7fff_fffe, 0x8000_0002, u32::MAX];
+    reference.ref_order_hint =
+        RefSlots::from_iter_checked([0x7fff_fffe, 0x8000_0002, u32::MAX]).unwrap();
 
     assert_eq!(
         compound_ref_distance_signs(&[0, 1, 2], &reference, 0x8000_0000, 3).unwrap(),
@@ -245,7 +247,7 @@ fn compound_reference_tools_keep_missing_frame_size_typed() {
 #[test]
 fn compound_reference_order_hint_covers_every_valid_reference_index() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![9, 11, 13, 15, 17, 19, 21];
+    reference.ref_order_hint = RefSlots::from_iter_checked([9, 11, 13, 15, 17, 19, 21]).unwrap();
     let ref_frame_idx = [0, 1, 2, 3, 4, 5, 6];
 
     for (ref_frame, expected) in reference.ref_order_hint.iter().copied().enumerate() {
@@ -259,7 +261,7 @@ fn compound_reference_order_hint_covers_every_valid_reference_index() {
 #[test]
 fn compound_reference_order_hint_keeps_reference_list_bounds_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![9];
+    reference.ref_order_hint = RefSlots::from_iter_checked([9]).unwrap();
     let error = compound_reference_order_hint(&reference, &[0], 1).unwrap_err();
 
     assert!(matches!(
@@ -305,7 +307,7 @@ fn skip_mode_reference_pair_rejects_out_of_range_state_as_malformed_syntax() {
 #[test]
 fn compound_reference_order_hint_keeps_negative_reference_index_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![9];
+    reference.ref_order_hint = RefSlots::from_iter_checked([9]).unwrap();
     let error = compound_reference_order_hint(&reference, &[0], -1).unwrap_err();
 
     assert!(matches!(
@@ -322,7 +324,7 @@ fn compound_reference_order_hint_keeps_negative_reference_index_fail_closed() {
 #[test]
 fn compound_reference_order_hint_keeps_slot_conversion_and_bounds_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![9];
+    reference.ref_order_hint = RefSlots::from_iter_checked([9]).unwrap();
     let error = compound_reference_order_hint(&reference, &[u32::MAX], 0).unwrap_err();
     let expected_slot = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
 
@@ -441,9 +443,10 @@ fn compound_reference_facts_keep_missing_height_fail_closed() {
 #[test]
 fn compound_reference_facts_map_the_full_order_hint_domain() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![u32::MAX, i32::MAX as u32 + 1];
-    reference.ref_frame_width = vec![64, 64];
-    reference.ref_frame_height = vec![64, 64];
+    reference.ref_order_hint =
+        RefSlots::from_iter_checked([u32::MAX, i32::MAX as u32 + 1]).unwrap();
+    reference.ref_frame_width = RefSlots::from_iter_checked([64, 64]).unwrap();
+    reference.ref_frame_height = RefSlots::from_iter_checked([64, 64]).unwrap();
 
     assert_eq!(
         compound_reference_facts(&reference, &[0, 1], 0)
@@ -468,9 +471,9 @@ fn compound_sized_reference_facts_reject_restricted_references() {
         crate::prediction::inter::tests::parse_inter_core_for_validation(fixture).unwrap();
     let frame_size = core.frame_size.unwrap();
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![0, 0];
-    reference.ref_frame_width = vec![frame_size.width; 2];
-    reference.ref_frame_height = vec![frame_size.height; 2];
+    reference.ref_order_hint = RefSlots::from_iter_checked([0, 0]).unwrap();
+    reference.ref_frame_width = RefSlots::from_iter_checked([frame_size.width; 2]).unwrap();
+    reference.ref_frame_height = RefSlots::from_iter_checked([frame_size.height; 2]).unwrap();
     let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
         y_mode: CompoundYMode::NearNear,
         use_optflow: false,
@@ -495,7 +498,8 @@ fn compound_sized_reference_facts_reject_restricted_references() {
 #[test]
 fn compound_reference_order_hint_maps_the_full_relative_distance_domain() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![u32::MAX, i32::MAX as u32 + 1];
+    reference.ref_order_hint =
+        RefSlots::from_iter_checked([u32::MAX, i32::MAX as u32 + 1]).unwrap();
 
     assert_eq!(
         compound_reference_order_hint(&reference, &[0, 1], 0).unwrap(),
@@ -530,7 +534,7 @@ fn compound_current_order_hint_preserves_the_full_domain() {
 #[test]
 fn compound_furthest_future_ref_excludes_restricted_references() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![u32::MAX, 15];
+    reference.ref_order_hint = RefSlots::from_iter_checked([u32::MAX, 15]).unwrap();
 
     assert_eq!(
         compound_furthest_future_ref(&reference, &[0, 1], CompoundOrderHint::current(10), 2)
@@ -542,7 +546,8 @@ fn compound_furthest_future_ref_excludes_restricted_references() {
 #[test]
 fn compound_furthest_future_ref_ranks_by_raw_order_hint() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_order_hint = vec![i32::MAX as u32 + 128, i32::MAX as u32 + 129];
+    reference.ref_order_hint =
+        RefSlots::from_iter_checked([i32::MAX as u32 + 128, i32::MAX as u32 + 129]).unwrap();
 
     assert_eq!(
         compound_furthest_future_ref(

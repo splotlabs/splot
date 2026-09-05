@@ -281,6 +281,7 @@ impl InterReconCommand {
         block_decoded: &TileBlockDecodedState,
         motion: Option<mc::CompoundMotionGrid>,
         residual_blocks: &[InterResidualBlock],
+        residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
         tip_scratch: &mut TipReconstructScratch<T>,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
@@ -295,6 +296,7 @@ impl InterReconCommand {
                 motion,
                 &self.placed,
                 residual_blocks,
+                residual_coeffs,
                 shared.temporal_context,
                 shared.sequence,
                 shared.core,
@@ -315,6 +317,7 @@ impl InterReconCommand {
                 workspace,
                 &self.placed,
                 residual_blocks,
+                residual_coeffs,
                 motion,
                 use_refinemv,
                 refinemv_switchable,
@@ -334,6 +337,7 @@ impl InterReconCommand {
                     residual_scratch,
                     &self.placed,
                     residual_blocks,
+                    residual_coeffs,
                     motion,
                     use_refinemv,
                     refinemv_switchable,
@@ -356,6 +360,7 @@ impl InterReconCommand {
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
+        residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
         tip_scratch: &mut TipReconstructScratch<T>,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
@@ -367,6 +372,7 @@ impl InterReconCommand {
             block_decoded,
             motion,
             residual_blocks,
+            residual_coeffs,
             shared,
             tip_scratch,
             interintra_scratch,
@@ -396,10 +402,13 @@ impl<T: ReconSample> InterReconScratch<T> {
         &mut self,
         command: super::intrabc::IntrabcReconCommand,
         residual_blocks: &[InterResidualBlock],
+        residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
         let Self { residual, mc, .. } = self;
-        mc.with_installed(|| command.reconstruct(residual, residual_blocks, workspace))
+        mc.with_installed(|| {
+            command.reconstruct(residual, residual_blocks, residual_coeffs, workspace)
+        })
     }
 
     /// Derives one command's motion into `temporal_records`, writing no sample.
@@ -415,6 +424,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     }
 
     /// Reconstructs one command from the grid its motion half derived.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct_from_motion(
         &mut self,
         command: &InterReconCommand,
@@ -422,6 +432,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         block_decoded: &TileBlockDecodedState,
         motion: Option<mc::CompoundMotionGrid>,
         residual_blocks: &[InterResidualBlock],
+        residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         let Self {
@@ -437,6 +448,7 @@ impl<T: ReconSample> InterReconScratch<T> {
                 block_decoded,
                 motion,
                 residual_blocks,
+                residual_coeffs,
                 shared,
                 tip,
                 interintra,
@@ -453,6 +465,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
+        residual_coeffs: &[i32],
         temporal_context: &TemporalMvContext,
         reference: &InterReferenceState<T>,
         ref_frame_idx: &[u32],
@@ -478,6 +491,7 @@ impl<T: ReconSample> InterReconScratch<T> {
                 block_decoded,
                 temporal_records,
                 residual_blocks,
+                residual_coeffs,
                 &ReconShared {
                     reference,
                     ref_frame_idx,
@@ -507,6 +521,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         motion: &MotionFieldUnits,
         ordinal: usize,
         residual_blocks: &[InterResidualBlock],
+        residual_coeffs: &[i32],
         temporal_context: &TemporalMvContext,
         reference: &InterReferenceState<T>,
         ref_frame_idx: &[u32],
@@ -527,6 +542,7 @@ impl<T: ReconSample> InterReconScratch<T> {
             block_decoded,
             &mut temporal,
             residual_blocks,
+            residual_coeffs,
             temporal_context,
             reference,
             ref_frame_idx,
@@ -795,7 +811,7 @@ mod tests {
             cctx_pair_delta: 0,
             coeffs: LumaCoeffBlock {
                 eob: 0,
-                quant: Vec::new(),
+                quant_range: 0..0,
                 intra_ist: None,
                 cctx_type: None,
                 plane_tx_type: 0,

@@ -24,8 +24,7 @@ use super::sink::{
     noneighbour_left, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
-    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
-    SupportedDirectionalLumaMode,
+    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
 };
 use crate::pipeline::general_intra::RecycledIntraSamples;
 
@@ -83,7 +82,7 @@ impl MiddleEdgeAvailability {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     mode: SupportedDirectionalLumaMode,
     plane_id: PlaneId,
     x: usize,
@@ -172,7 +171,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     p_angle: u16,
     plane_id: PlaneId,
     x: usize,
@@ -315,7 +314,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     p_angle: u16,
     x: usize,
     y: usize,
@@ -639,7 +638,7 @@ fn build_two_sided_middle_idif_edge<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     direction: IntraCardinalDirection,
     plane_id: PlaneId,
     x: usize,

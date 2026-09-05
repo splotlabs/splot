@@ -111,15 +111,36 @@ enum TilePartitionStackEntry {
     ExtendedSdpChromaBlock(TilePartitionCall),
 }
 
+/// The § 7.17 loop-restoration record lists one tile fills.
+///
+/// They live on the decoder's tile parse state and travel through the cursor,
+/// so a steady-state tile records into the lists the last one left behind.
+#[derive(Default)]
+pub(crate) struct LrTileRecords {
+    pub(crate) active_source_blocks: Vec<WienerNsLrSourceBlock>,
+    pub(crate) unit_filters: Vec<WienerNsLrUnitFilter>,
+}
+
 impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
     pub(crate) fn new(
         work_unit: &DecodeTileWorkUnit<'payload>,
         frame: TilePartitionFrameFacts,
         limits: DecodeLimits,
+        lr_records: LrTileRecords,
     ) -> Result<Self, TilePartitionTraversalError> {
         ensure_supported_traversal_frame(frame)?;
         let symbols = symbol_decoder_for_work_unit(work_unit)?;
-        let lr_activity = WienerNsLrUnitActivity::default();
+        let LrTileRecords {
+            mut active_source_blocks,
+            mut unit_filters,
+        } = lr_records;
+        active_source_blocks.clear();
+        unit_filters.clear();
+        let lr_activity = WienerNsLrUnitActivity {
+            active_source_blocks,
+            unit_filters,
+            ..Default::default()
+        };
         let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
         let tile_rows = work_unit.mi_row_range().start as usize
             ..(work_unit.mi_row_range().end as usize).min(frame.mi_rows);
@@ -550,8 +571,13 @@ mod row_cursor_tests {
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
         let mut superblocks = Vec::new();
-        let mut cursor =
-            GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT).unwrap();
+        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+            &work,
+            frame,
+            DecodeLimits::DEFAULT,
+            LrTileRecords::default(),
+        )
+        .unwrap();
         loop {
             let superblock = cursor
                 .decode_next_superblock_with_publication(
@@ -585,8 +611,13 @@ mod row_cursor_tests {
         let frame = frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor =
-            GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT).unwrap();
+        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+            &work,
+            frame,
+            DecodeLimits::DEFAULT,
+            LrTileRecords::default(),
+        )
+        .unwrap();
         let mut calls = 0;
         let mut published = Vec::new();
 
@@ -626,8 +657,13 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor =
-            GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT).unwrap();
+        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+            &work,
+            frame,
+            DecodeLimits::DEFAULT,
+            LrTileRecords::default(),
+        )
+        .unwrap();
         let mut parts = Vec::new();
         let mut published = 0;
 
@@ -679,8 +715,13 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor =
-            GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT).unwrap();
+        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+            &work,
+            frame,
+            DecodeLimits::DEFAULT,
+            LrTileRecords::default(),
+        )
+        .unwrap();
         let mut parts = Vec::new();
 
         cursor
@@ -724,8 +765,13 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor =
-            GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT).unwrap();
+        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+            &work,
+            frame,
+            DecodeLimits::DEFAULT,
+            LrTileRecords::default(),
+        )
+        .unwrap();
         let mut leaf_calls = 0;
         let mut published = 0;
 

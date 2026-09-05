@@ -266,12 +266,8 @@ pub(crate) fn parse_inter_shared_tail(
     };
     let lr_reference_filter_counts =
         lr_reference_filter_counts(reference_state, &control.ref_frame_idx, lr_num_total_refs);
-    let lr_reference_filter_taps = lr_reference_filter_entries(
-        reference_state,
-        &control.ref_frame_idx,
-        lr_num_total_refs,
-        lr_reference_filter_counts,
-    );
+    let lr_reference_filter_taps =
+        lr_reference_filter_entries(reference_state, &control.ref_frame_idx, lr_num_total_refs);
     let lr_params = match parse_lr_params_for_inter(
         reader,
         coded_lossless,
@@ -280,7 +276,11 @@ pub(crate) fn parse_inter_shared_tail(
         lr_geometry,
         lr_num_total_refs,
         lr_reference_filter_counts,
-        &lr_reference_filter_taps,
+        &[
+            &lr_reference_filter_taps[0],
+            &lr_reference_filter_taps[1],
+            &lr_reference_filter_taps[2],
+        ],
         LrTemporalReferenceView::new(
             &control.ref_frame_idx,
             reference_state.lr_frame_filter_class_counts,
@@ -367,17 +367,25 @@ fn derived_primary_is_none(
 /// same-plane entry then the opposite-plane entry (05:17790-17817). The list
 /// order MUST match [`lr_reference_filter_counts`] — the match index selects
 /// by position.
+/// One plane's ordered § 5.18 reference-filter entries.
+///
+/// Luma takes one per retained class of every valid reference, so the list is
+/// bounded by the sequence's sixteen reference slots (AV2 § 5.5.2) times the
+/// sixteen classes a bank holds; chroma takes two per reference.
+type LrReferenceFilterEntries<'a> = crate::tile::InlineVec<
+    Option<&'a [i16]>,
+    {
+        crate::headers::sequence::MAX_REF_FRAMES
+            * crate::headers::frame::restoration::MAX_WIENER_NS_CLASSES
+    },
+>;
+
 fn lr_reference_filter_entries<'a>(
     reference_state: &FrameReferenceStateView<'a>,
     ref_frame_idx: &[u32],
     num_total_refs: u32,
-    capacities: [usize; 3],
-) -> [Vec<Option<&'a [i16]>>; 3] {
-    let mut entries: [Vec<Option<&'a [i16]>>; 3] = [
-        Vec::with_capacity(capacities[0]),
-        Vec::with_capacity(capacities[1]),
-        Vec::with_capacity(capacities[2]),
-    ];
+) -> [LrReferenceFilterEntries<'a>; 3] {
+    let mut entries: [LrReferenceFilterEntries<'a>; 3] = Default::default();
     let (Some(slot_taps), Some(slot_counts)) = (
         reference_state.lr_frame_filter_taps,
         reference_state.lr_frame_filter_class_counts,
@@ -398,12 +406,20 @@ fn lr_reference_filter_entries<'a>(
         };
         let planes = planes.as_deref();
         for class in 0..usize::from(counts[0]) {
-            entries[0].push(planes.and_then(|p| p[0].get(class)).map(Vec::as_slice));
+            let _ = entries[0].push(
+                planes
+                    .and_then(|p| p[0].get(class))
+                    .map(std::sync::Arc::as_ref),
+            );
         }
         for (plane, checks) in [(1usize, [1usize, 2usize]), (2, [2, 1])] {
             for check in checks {
                 if counts[check] > 0 {
-                    entries[plane].push(planes.and_then(|p| p[check].first()).map(Vec::as_slice));
+                    let _ = entries[plane].push(
+                        planes
+                            .and_then(|p| p[check].first())
+                            .map(std::sync::Arc::as_ref),
+                    );
                 }
             }
         }
@@ -646,7 +662,7 @@ mod tests {
         let refs = [0u32];
 
         let counts = lr_reference_filter_counts(&state, &refs, 1);
-        let entries = lr_reference_filter_entries(&state, &refs, 1, counts);
+        let entries = lr_reference_filter_entries(&state, &refs, 1);
 
         assert_eq!(counts[0], 1);
         assert_eq!(entries[0].len(), 1);

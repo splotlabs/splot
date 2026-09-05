@@ -81,7 +81,7 @@ fn tip_context(
 }
 
 #[test]
-fn whole_field_reuses_published_band_cells() {
+fn whole_field_round_trips_published_band_cells() {
     let mut field = TemporalMotionField::new(4, 4).unwrap();
     field.set_reference_metadata(true, (16, 16), &[Some(0)]);
     *field.cell_mut(0, 0).unwrap() = TemporalMotionCell {
@@ -94,17 +94,10 @@ fn whole_field_reuses_published_band_cells() {
     let layout = field.layout();
     let metadata = field.metadata();
     let expected = field.cell(0, 0);
-    let bands = field
-        .into_bands()
-        .into_iter()
-        .map(Arc::new)
-        .collect::<Vec<_>>();
-    let first_band_cells = bands[0].cells.as_ptr();
-
+    let bands = field.into_bands();
     let rebuilt = TemporalMotionField::from_bands(layout, &metadata, bands).unwrap();
 
     assert_eq!(rebuilt.cell(0, 0), expected);
-    assert_eq!(rebuilt.row(0).unwrap().as_ptr(), first_band_cells);
 }
 
 #[test]

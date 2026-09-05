@@ -163,8 +163,8 @@ mod tests {
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
-        view.seq_sb_col_starts = vec![0, 2];
-        view.seq_sb_row_starts = vec![0, 2];
+        view.seq_sb_col_starts = std::sync::Arc::from(vec![0, 2]);
+        view.seq_sb_row_starts = std::sync::Arc::from(vec![0, 2]);
         let mut bits = Bits::default();
         bits.f(2, 2).f(1, 2);
         let info = parse(&view, &bits.into_bytes(), FrameSize::new(256, 256), false, false);
@@ -269,8 +269,8 @@ mod tests {
             tile_rows: 1,
             tile_cols_log2: 0,
             tile_rows_log2: 0,
-            mi_col_starts: vec![0, 4],
-            mi_row_starts: vec![0, 2],
+            mi_col_starts: crate::tile::TileStarts::from_iter_checked([0, 4]).unwrap(),
+            mi_row_starts: crate::tile::TileStarts::from_iter_checked([0, 2]).unwrap(),
             context_update_tile_id: 0,
             tile_size_bytes: None,
             tile_params: None,
@@ -383,8 +383,8 @@ mod tests {
             tile_rows: 1,
             tile_cols_log2: 2,
             tile_rows_log2: 0,
-            mi_col_starts: vec![0, 48, 16, 64],
-            mi_row_starts: vec![0, 64],
+            mi_col_starts: crate::tile::TileStarts::from_iter_checked([0, 48, 16, 64]).unwrap(),
+            mi_row_starts: crate::tile::TileStarts::from_iter_checked([0, 64]).unwrap(),
             context_update_tile_id: 0,
             tile_size_bytes: Some(1),
             tile_params: explicit.tile_params,
@@ -411,7 +411,7 @@ mod tests {
         );
         assert!(!base.tile_params.as_ref().unwrap().uniform_spacing);
         let info = TileInfo {
-            mi_col_starts: vec![80, 32],
+            mi_col_starts: crate::tile::TileStarts::from_iter_checked([80, 32]).unwrap(),
             ..base
         };
         let err = reject(&info, &base_view(), FrameSize::new(128, 8), false, false);
@@ -433,8 +433,8 @@ mod tests {
             tile_rows: 4,
             tile_cols_log2: 20,
             tile_rows_log2: 20, // sum 40 > 32
-            mi_col_starts: vec![0, 16, 32, 48, 64],
-            mi_row_starts: vec![0, 16, 32, 48, 64],
+            mi_col_starts: crate::tile::TileStarts::from_iter_checked([0, 16, 32, 48, 64]).unwrap(),
+            mi_row_starts: crate::tile::TileStarts::from_iter_checked([0, 16, 32, 48, 64]).unwrap(),
             context_update_tile_id: 0,
             tile_size_bytes: Some(1),
             tile_params: None,

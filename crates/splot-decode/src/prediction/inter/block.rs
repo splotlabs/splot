@@ -180,7 +180,10 @@ impl InterFilterInputs {
 
 #[derive(Default)]
 pub(crate) struct InterDecodeScratch<T: ReconSample> {
-    tile: tile::TileDecodeScratch<T>,
+    /// Held in an `Option` so taking it for a frame leaves nothing behind:
+    /// `TileDecodeScratch`'s `Default` reserves a whole reconstruction scratch,
+    /// which a placeholder would build and discard on every frame.
+    tile: Option<tile::TileDecodeScratch<T>>,
     temporal_context: Option<TemporalMvContext>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
 }
@@ -197,7 +200,7 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         tile: tile::TileDecodeScratch<T>,
     ) -> Self {
         Self {
-            tile,
+            tile: Some(tile),
             temporal_context: None,
             frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
         }
@@ -208,6 +211,11 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         &mut self,
     ) -> crate::filters::wienerns_lr::FrameFilterRecords {
         core::mem::take(&mut self.frame_filter_records)
+    }
+
+    /// Takes back the plane buffers the last frame's filter phase retired.
+    pub(crate) fn reclaim_retired_planes(&mut self) -> splot_recon::FramePlaneSamples<T> {
+        T::reclaim_planes(&mut self.frame_filter_records.retired_planes)
     }
 
     pub(crate) fn recycle_frame_filter_records(
@@ -529,7 +537,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ref_frame_idx,
         reference,
     )?;
-    let tile_scratch = core::mem::take(&mut scratch.tile);
+    let tile_scratch = scratch.tile.take().unwrap_or_default();
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
         tile_scratch,
         &mut records,
@@ -546,7 +554,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     )?;
-    scratch.tile = tile_scratch;
+    scratch.tile = Some(tile_scratch);
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
     let ccso_grid = walked.ccso_state.into_grid()?;
     let filter_inputs = InterFilterInputs {
@@ -714,7 +722,7 @@ fn scheduled_motion_field_inputs(
                 field
                     .as_ref()
                     .and_then(MotionFieldHandle::metadata)
-                    .map(|metadata| metadata.as_ref().clone())
+                    .cloned()
             })
             .collect(),
         fields
@@ -1063,6 +1071,7 @@ fn decode_block<T: ReconSample>(
     coeff_ctx: &mut TileCoeffContextState,
     residual_scratch: &mut InterResidualParseScratch,
     residual_blocks: &mut Vec<InterResidualBlock>,
+    residual_arena: &mut Vec<i32>,
     gdf_state: &mut GdfState,
     cdef_state: &mut CdefState,
     ccso_state: &mut CcsoState,
@@ -1091,6 +1100,7 @@ fn decode_block<T: ReconSample>(
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    arena: &mut crate::residual::pipeline::ResidualPlaneArena,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     ref_frame_idx: &[u32],
@@ -1329,6 +1339,7 @@ fn decode_block<T: ReconSample>(
                     coeff_ctx,
                     residual_scratch,
                     residual_blocks,
+                    residual_arena,
                     sequence,
                     core,
                     frontier,
@@ -1419,6 +1430,8 @@ fn decode_block<T: ReconSample>(
             deblock_blocks,
             chroma_deblock_blocks,
             tx_skip_records,
+            arena,
+            residual_arena,
             block_qindex,
             luma_use_tcq,
             residual_tool_policy,
@@ -1523,6 +1536,7 @@ fn decode_block<T: ReconSample>(
             coeff_ctx,
             residual_scratch,
             residual_blocks,
+            residual_arena,
             sequence,
             core,
             frontier,
@@ -1590,6 +1604,7 @@ fn decode_block<T: ReconSample>(
             coeff_ctx,
             residual_scratch,
             residual_blocks,
+            residual_arena,
             sequence,
             core,
             frontier,
@@ -1721,6 +1736,7 @@ fn decode_block<T: ReconSample>(
                 coeff_ctx,
                 residual_scratch,
                 residual_blocks,
+                residual_arena,
                 sequence,
                 core,
                 frontier,
@@ -1975,6 +1991,7 @@ fn decode_block<T: ReconSample>(
             coeff_ctx,
             residual_scratch,
             residual_blocks,
+            residual_arena,
             sequence,
             core,
             frontier,

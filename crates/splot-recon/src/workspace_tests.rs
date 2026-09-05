@@ -130,34 +130,80 @@ fn intra_prediction_scratch_is_task_local_and_reusable() {
 }
 
 #[test]
-fn rectangular_surfaces_write_adjacent_column_tiles_independently() {
+fn a_recycled_workspace_decodes_into_the_retired_frame_buffers() {
+    let info = yuv420_info(8, 8);
+    let frame = CurrentFrameWorkspace::<u8>::new(info, 3)
+        .unwrap()
+        .freeze()
+        .unwrap();
+    let planes = [PlaneId::Y, PlaneId::U, PlaneId::V]
+        .map(|plane| frame.plane(plane).unwrap().samples().as_ptr());
+    let mut retired = frame.into_plane_samples();
+
+    let recycled = CurrentFrameWorkspace::<u8>::new_recycled_from(info, &mut retired).unwrap();
+
+    for (plane, samples) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().zip(planes) {
+        assert_eq!(
+            recycled.plane(plane).unwrap().samples().as_ptr(),
+            samples,
+            "{plane:?} must reuse the retired frame's buffer"
+        );
+    }
+}
+
+#[test]
+fn a_filled_workspace_overwrites_a_recycled_buffer_whole() {
+    let info = monochrome_info(BitDepth::Eight, 4, 4);
+    let mut retired = CurrentFrameWorkspace::<u8>::new(info, 3)
+        .unwrap()
+        .freeze()
+        .unwrap()
+        .into_plane_samples();
+
+    let filled = CurrentFrameWorkspace::<u8>::new(info, 7).unwrap();
+    let recycled = CurrentFrameWorkspace::<u8>::with_planes(info, Some(7), &mut retired).unwrap();
+
+    assert_eq!(
+        recycled.samples(PlaneId::Y).unwrap(),
+        filled.samples(PlaneId::Y).unwrap()
+    );
+}
+
+#[test]
+fn rectangular_surfaces_write_stacked_row_bands_independently() {
     let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(8, 8), 3).unwrap();
     let surfaces = workspace
-        .rect_surfaces(&[rect(0, 0, 4, 8), rect(4, 0, 4, 8)])
+        .rect_surfaces(&[rect(0, 0, 8, 4), rect(0, 4, 8, 4)])
         .unwrap();
 
-    for (index, mut tile) in surfaces.into_iter().enumerate() {
+    for (index, mut band) in surfaces.into_iter().enumerate() {
         let value = 7 + index as u8;
-        let luma = tile.luma_rect();
-        let mut surface = CurrentFrameSurface::Rect(&mut tile);
+        let luma = band.luma_rect();
+        let mut surface = CurrentFrameSurface::Rect(&mut band);
         surface
-            .write_rect(PlaneId::Y, luma, &[value; 32], 4)
+            .write_rect(PlaneId::Y, luma, &[value; 32], 8)
             .unwrap();
         surface
-            .write_rect(PlaneId::U, rect(index * 2, 0, 2, 4), &[value; 8], 2)
+            .write_rect(PlaneId::U, rect(0, index * 2, 4, 2), &[value; 8], 4)
             .unwrap();
         surface
-            .add_constant_residual_rect_block(PlaneId::Y, luma.x(), luma.y(), rect_block(2, 3), 1)
+            .add_constant_residual_rect_block(PlaneId::Y, luma.x(), luma.y(), rect_block(3, 2), 1)
             .unwrap();
     }
 
-    for row in workspace.rect_rows(PlaneId::Y, rect(0, 0, 8, 8)).unwrap() {
-        assert_eq!(&row[..4], &[8; 4]);
-        assert_eq!(&row[4..], &[9; 4]);
+    for (y, row) in workspace
+        .rect_rows(PlaneId::Y, rect(0, 0, 8, 8))
+        .unwrap()
+        .enumerate()
+    {
+        assert_eq!(row, &[if y < 4 { 8 } else { 9 }; 8][..]);
     }
-    for row in workspace.rect_rows(PlaneId::U, rect(0, 0, 4, 4)).unwrap() {
-        assert_eq!(&row[..2], &[7; 2]);
-        assert_eq!(&row[2..], &[8; 2]);
+    for (y, row) in workspace
+        .rect_rows(PlaneId::U, rect(0, 0, 4, 4))
+        .unwrap()
+        .enumerate()
+    {
+        assert_eq!(row, &[if y < 2 { 7 } else { 8 }; 4][..]);
     }
 }
 
@@ -207,12 +253,18 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
     );
 
     let mut split = workspace.rect_surfaces(&[rect(0, 0, 5, 4)]).unwrap();
-    assert!(
-        CurrentFrameSurface::Rect(&mut split[0])
-            .with_contiguous_u8_rect_mut(PlaneId::Y, target, |_, _| Ok(()))
-            .unwrap()
-            .is_none()
-    );
+    let written = CurrentFrameSurface::Rect(&mut split[0])
+        .with_contiguous_u8_rect_mut(PlaneId::Y, target, |samples, stride| {
+            samples[0] = 30;
+            samples[stride] = 40;
+            Ok(2)
+        })
+        .unwrap();
+    assert_eq!(written, Some(2));
+    drop(split);
+    let samples = workspace.samples(PlaneId::Y).unwrap();
+    assert_eq!(samples[6], 30);
+    assert_eq!(samples[11], 40);
 }
 
 #[test]
@@ -221,34 +273,43 @@ fn rectangular_surface_publishes_only_its_owned_region() {
     let mut shadow = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
     let mut output = CurrentFrameWorkspace::<u8>::new(info, 3).unwrap();
     let mut surfaces = shadow
-        .rect_surfaces(&[rect(0, 0, 4, 8), rect(4, 0, 4, 8)])
+        .rect_surfaces(&[rect(0, 0, 8, 4), rect(0, 4, 8, 4)])
         .unwrap();
     {
         let mut source = CurrentFrameSurface::Rect(&mut surfaces[1]);
         source
-            .write_rect(PlaneId::Y, rect(4, 0, 4, 8), &[9; 32], 4)
+            .write_rect(PlaneId::Y, rect(0, 4, 8, 4), &[9; 32], 8)
             .unwrap();
         source
-            .write_rect(PlaneId::U, rect(2, 0, 2, 4), &[7; 8], 2)
+            .write_rect(PlaneId::U, rect(0, 2, 4, 2), &[7; 8], 4)
             .unwrap();
         source
-            .write_rect(PlaneId::V, rect(2, 0, 2, 4), &[8; 8], 2)
+            .write_rect(PlaneId::V, rect(0, 2, 4, 2), &[8; 8], 4)
             .unwrap();
     }
 
     surfaces[1].publish_into(&mut output).unwrap();
 
-    for row in output.rect_rows(PlaneId::Y, rect(0, 0, 8, 8)).unwrap() {
-        assert_eq!(&row[..4], &[3; 4]);
-        assert_eq!(&row[4..], &[9; 4]);
+    for (y, row) in output
+        .rect_rows(PlaneId::Y, rect(0, 0, 8, 8))
+        .unwrap()
+        .enumerate()
+    {
+        assert_eq!(row, &[if y < 4 { 3 } else { 9 }; 8][..]);
     }
-    for row in output.rect_rows(PlaneId::U, rect(0, 0, 4, 4)).unwrap() {
-        assert_eq!(&row[..2], &[3; 2]);
-        assert_eq!(&row[2..], &[7; 2]);
+    for (y, row) in output
+        .rect_rows(PlaneId::U, rect(0, 0, 4, 4))
+        .unwrap()
+        .enumerate()
+    {
+        assert_eq!(row, &[if y < 2 { 3 } else { 7 }; 4][..]);
     }
-    for row in output.rect_rows(PlaneId::V, rect(0, 0, 4, 4)).unwrap() {
-        assert_eq!(&row[..2], &[3; 2]);
-        assert_eq!(&row[2..], &[8; 2]);
+    for (y, row) in output
+        .rect_rows(PlaneId::V, rect(0, 0, 4, 4))
+        .unwrap()
+        .enumerate()
+    {
+        assert_eq!(row, &[if y < 2 { 3 } else { 8 }; 4][..]);
     }
 }
 
@@ -283,34 +344,10 @@ fn owned_rectangular_surface_round_trips_without_borrowing_the_frame() {
 }
 
 #[test]
-fn rectangular_surface_rejects_cross_tile_access_before_writing() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
-    let mut surfaces = workspace
-        .rect_surfaces(&[rect(0, 0, 4, 4), rect(4, 0, 4, 4)])
-        .unwrap();
-    {
-        let mut surface = CurrentFrameSurface::Rect(&mut surfaces[0]);
-        assert!(matches!(
-            surface.write_rect(PlaneId::Y, rect(3, 0, 2, 1), &[9; 2], 2),
-            Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
-        ));
-    }
-    drop(surfaces);
-    assert!(
-        workspace
-            .samples(PlaneId::Y)
-            .unwrap()
-            .iter()
-            .all(|&sample| sample == 3)
-    );
-}
-
-#[test]
 fn rectangular_surface_reports_plane_global_sample_index() {
     let mut workspace =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
-    let mut surfaces = workspace.rect_surfaces(&[rect(4, 1, 2, 2)]).unwrap();
+    let mut surfaces = workspace.rect_surfaces(&[rect(0, 1, 8, 2)]).unwrap();
     let mut surface = CurrentFrameSurface::Rect(&mut surfaces[0]);
 
     assert!(matches!(
@@ -322,6 +359,18 @@ fn rectangular_surface_reports_plane_global_sample_index() {
             max: 255,
         })
     ));
+    assert!(matches!(
+        surface.write_rect(PlaneId::Y, rect(0, 2, 1, 2), &[9; 2], 1),
+        Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
+    ));
+    drop(surfaces);
+    assert!(
+        workspace
+            .samples(PlaneId::Y)
+            .unwrap()
+            .iter()
+            .all(|&sample| sample == 3)
+    );
 }
 
 #[test]
@@ -329,8 +378,12 @@ fn rectangular_surface_partition_rejects_overlap() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 0).unwrap();
     assert!(matches!(
-        workspace.rect_surfaces(&[rect(0, 0, 5, 4), rect(4, 0, 4, 4)]),
-        Err(ReconError::WorkspaceRectSurfacesOverlap { .. })
+        workspace.rect_surfaces(&[rect(0, 0, 4, 4)]),
+        Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
+    ));
+    assert!(matches!(
+        workspace.rect_surfaces(&[rect(0, 0, 8, 3), rect(0, 2, 8, 2)]),
+        Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
     ));
 }
 

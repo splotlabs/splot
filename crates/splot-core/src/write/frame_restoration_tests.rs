@@ -76,7 +76,7 @@ mod tests {
     ) -> LrParams {
         LrParams {
             uses_lr,
-            planes,
+            planes: crate::tile::InlineVec::from_iter_checked(planes).expect("test planes fit"),
             loop_restoration_size,
         }
     }
@@ -115,7 +115,7 @@ mod tests {
             let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
             let params = LrParams {
                 uses_lr: false,
-                planes: Vec::new(),
+                planes: crate::tile::InlineVec::default(),
                 loop_restoration_size: default_restoration_size(geometry),
             };
             let mut writer = BitWriter::new();
@@ -136,7 +136,7 @@ mod tests {
         bad[0] += 1;
         let params = LrParams {
             uses_lr: false,
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
             loop_restoration_size: bad,
         };
         let mut writer = BitWriter::new();
@@ -292,21 +292,21 @@ mod tests {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {
             uses_lr: false,
-            planes: vec![LrPlaneParams {
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([LrPlaneParams {
                 restoration_type: FrameRestorationType::None,
                 frame_filters_on: false,
                 num_filter_classes: None,
                 frame_filter_bank: Some(WienerNsFrameFilterBank {
-                    classes: vec![WienerNsFrameFilterClass {
+                    classes: crate::tile::InlineVec::<_, 16>::from_iter_checked([WienerNsFrameFilterClass {
                         match_index: 0,
                         merged: true,
                         ref_bank: 0,
                         subset: None,
                         wiener_ns_uv_sym: false,
-                        coeffs: vec![0; 16],
-                    }],
+                        coeffs: std::sync::Arc::from(vec![0; 16]),
+                    }]).expect("fits"),
                 }),
-            }],
+            }]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
         };
         let mut writer = BitWriter::new();
@@ -324,12 +324,12 @@ mod tests {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {
             uses_lr: false,
-            planes: vec![LrPlaneParams {
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([LrPlaneParams {
                 restoration_type: FrameRestorationType::None,
                 frame_filters_on: false,
                 num_filter_classes: None,
                 frame_filter_bank: None,
-            }],
+            }]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
         };
         let mut writer = BitWriter::new();
@@ -381,7 +381,7 @@ mod tests {
         };
         let params = LrParams {
             uses_lr: false,
-            planes: vec![
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
@@ -400,7 +400,7 @@ mod tests {
                     num_filter_classes: None,
                     frame_filter_bank: None,
                 },
-            ],
+            ]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
         };
         let mut writer = BitWriter::new();
@@ -479,7 +479,7 @@ mod tests {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {
             uses_lr: false,
-            planes: vec![
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
@@ -498,7 +498,7 @@ mod tests {
                     num_filter_classes: None,
                     frame_filter_bank: None,
                 },
-            ],
+            ]).expect("fits"),
             loop_restoration_size: [64, 32, 16],
         };
         let mut writer = BitWriter::new();
@@ -533,7 +533,7 @@ mod tests {
             view.enable_ccso = enable;
             let params = CcsoParams {
                 ccso_frame_flag: None,
-                planes: Vec::new(),
+                planes: crate::tile::InlineVec::default(),
             };
             let mut writer = BitWriter::new();
             write_ccso_params(&mut writer, &params, coded_lossless, 3, &view).unwrap();
@@ -692,7 +692,7 @@ mod tests {
         view.enable_ccso = false;
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -710,7 +710,7 @@ mod tests {
         view.single_picture_header_flag = true;
         let params = CcsoParams {
             ccso_frame_flag: Some(false),
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -726,7 +726,7 @@ mod tests {
     fn ccso_missing_frame_flag_is_rejected() {
         let params = CcsoParams {
             ccso_frame_flag: None,
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -742,7 +742,7 @@ mod tests {
     fn ccso_num_planes_mismatch_is_rejected() {
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -760,7 +760,7 @@ mod tests {
         plane.ccso_scale_idx = Some(1);
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -778,7 +778,7 @@ mod tests {
         plane.ccso_max_band_log2 = None;
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -796,7 +796,7 @@ mod tests {
         plane.ccso_scale_idx = Some(4); // f(2) domain is 0..=3
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -813,7 +813,7 @@ mod tests {
         let plane = ccso_bo_plane(0, vec![0, 1]);
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -830,7 +830,7 @@ mod tests {
         let plane = ccso_bo_plane(0, vec![8]); // tu(7) max is 7
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -848,7 +848,7 @@ mod tests {
         plane.ccso_quant_idx = Some(1); // bo_only infers 0
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -880,7 +880,12 @@ mod tests {
     fn ccso_frame_disabled_with_planes_is_rejected() {
         let params = CcsoParams {
             ccso_frame_flag: Some(false),
-            planes: vec![ccso_off_plane(); 3],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([
+                ccso_off_plane(),
+                ccso_off_plane(),
+                ccso_off_plane(),
+            ])
+            .expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -903,7 +908,7 @@ mod tests {
             }
             let params = CcsoParams {
                 ccso_frame_flag: Some(true),
-                planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+                planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
             };
             let mut writer = BitWriter::new();
             assert!(matches!(
@@ -922,7 +927,7 @@ mod tests {
         plane.ccso_quant_idx = Some(4); // f(2) domain is 0..=3
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -940,7 +945,7 @@ mod tests {
         plane.ccso_ext_filter = Some(8); // f(3) domain is 0..=7
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -961,7 +966,7 @@ mod tests {
         plane.ccso_edge_clf = Some(true);
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
@@ -978,7 +983,7 @@ mod tests {
         let plane = ccso_bo_plane(8, vec![0]);
         let params = CcsoParams {
             ccso_frame_flag: Some(true),
-            planes: vec![plane, ccso_off_plane(), ccso_off_plane()],
+            planes: crate::tile::InlineVec::<_, 3>::from_iter_checked([plane, ccso_off_plane(), ccso_off_plane()]).expect("fits"),
         };
         let mut writer = BitWriter::new();
         assert!(matches!(

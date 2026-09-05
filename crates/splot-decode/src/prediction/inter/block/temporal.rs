@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use splot_recon::ReconSample;
 
 use super::super::find_mv_stack::{TemporalMotionBand, TemporalMotionBlock, TemporalMotionField};
 use super::super::{InterReferenceState, MotionFieldHandle, Mv};
+use parking_lot::Mutex;
 
 pub(super) fn block_ref_within_temporal_distance<T: ReconSample>(
     reference: &InterReferenceState<T>,
@@ -180,10 +180,7 @@ impl MotionFieldUnits {
         let Some(band) = self.bands.get(ordinal / self.units_per_row) else {
             return;
         };
-        let mut field = band
-            .field
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut field = band.field.lock();
         if let Some(field) = field.as_mut() {
             for &record in records {
                 field.record_block(record);
@@ -230,11 +227,7 @@ impl MotionFieldUnits {
             return;
         };
         if band.owed.fetch_sub(1, Ordering::AcqRel) == 1
-            && let Some(field) = band
-                .field
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
+            && let Some(field) = band.field.lock().take()
         {
             handle.publish_band(band_index, field);
         }
@@ -248,14 +241,11 @@ impl MotionFieldUnits {
     pub(super) fn into_field(self) -> TemporalMotionField {
         self.field
             .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .unwrap_or_else(TemporalMotionField::empty)
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, Option<TemporalMotionField>> {
-        self.field
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn locked(&self) -> parking_lot::MutexGuard<'_, Option<TemporalMotionField>> {
+        self.field.lock()
     }
 
     fn publish_empty_bands(&self) {
@@ -264,11 +254,7 @@ impl MotionFieldUnits {
         };
         for (index, band) in self.bands.iter().enumerate() {
             if band.owed.load(Ordering::Acquire) == 0
-                && let Some(field) = band
-                    .field
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
+                && let Some(field) = band.field.lock().take()
             {
                 handle.publish_band(index, field);
             }

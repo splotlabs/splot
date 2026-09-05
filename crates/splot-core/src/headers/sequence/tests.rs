@@ -844,8 +844,8 @@ fn sequence_header_composite_parses_tile_params() {
     assert!(params.uniform_spacing);
     assert_eq!(params.tile_cols, 1);
     assert_eq!(params.tile_rows, 1);
-    assert_eq!(tile.seq_sb_col_starts, vec![0]);
-    assert_eq!(tile.seq_sb_row_starts, vec![0]);
+    assert_eq!(tile.seq_sb_col_starts.as_ref(), [0].as_slice());
+    assert_eq!(tile.seq_sb_row_starts.as_ref(), [0].as_slice());
     assert_eq!(header.film_grain_params_present, Some(false));
 }
 
@@ -876,8 +876,8 @@ fn sequence_tile_config_records_non_uniform_start_arrays() {
     assert_eq!(params.tile_rows, 1);
     assert_eq!(params.sb_cols, 2);
     assert_eq!(params.sb_rows, 1);
-    assert_eq!(tile.seq_sb_col_starts, vec![0, 1]);
-    assert_eq!(tile.seq_sb_row_starts, vec![0]);
+    assert_eq!(tile.seq_sb_col_starts.as_ref(), [0, 1].as_slice());
+    assert_eq!(tile.seq_sb_row_starts.as_ref(), [0].as_slice());
 }
 
 #[test]

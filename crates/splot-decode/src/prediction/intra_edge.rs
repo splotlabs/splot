@@ -16,6 +16,7 @@ use crate::bitstream::tile_payload::GeneralIntraResidualError;
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
 
+#[derive(Default)]
 pub(crate) struct TileSmoothGrid {
     origin_row: usize,
     origin_col: usize,
@@ -29,23 +30,38 @@ pub(crate) type TileYSmoothGrid = TileSmoothGrid;
 pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
 
 impl TileSmoothGrid {
+    /// A grid laid out for one tile, for tests that want a fresh one.
+    #[cfg(test)]
     pub(crate) fn new_for_tile(
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
     ) -> Result<Self, TileGridConstructionError> {
+        let mut grid = Self::default();
+        grid.reset_for_tile(mi_rows, mi_cols)?;
+        Ok(grid)
+    }
+
+    /// Lays this grid out for another tile, keeping its cells.
+    ///
+    /// The decoder holds one grid per plane group for the life of the stream,
+    /// so a steady-state tile clears the cells the last one left rather than
+    /// sizing new ones.
+    pub(crate) fn reset_for_tile(
+        &mut self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+    ) -> Result<(), TileGridConstructionError> {
         let (rows, cols, cell_count) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
-        let mut cells = Vec::new();
-        cells
+        self.cells.clear();
+        self.cells
             .try_reserve_exact(cell_count)
             .map_err(|_| TileGridConstructionError::Allocation)?;
-        cells.resize(cell_count, false);
-        Ok(Self {
-            origin_row: mi_rows.start,
-            origin_col: mi_cols.start,
-            mi_rows: rows,
-            mi_cols: cols,
-            cells,
-        })
+        self.cells.resize(cell_count, false);
+        self.origin_row = mi_rows.start;
+        self.origin_col = mi_cols.start;
+        self.mi_rows = rows;
+        self.mi_cols = cols;
+        Ok(())
     }
 
     pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {

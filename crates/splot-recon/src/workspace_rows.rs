@@ -27,7 +27,6 @@
 //! `INFRA-DECODE-PARALLEL-STAGES`.
 
 use core::ops::Range;
-use core::slice;
 
 use super::owned_rect::OwnedFrameRectRows;
 use super::{CurrentFramePlane, CurrentFrameWorkspace, block_rect};
@@ -49,6 +48,22 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// depth, geometry arithmetic overflows, or plane allocation fails.
     pub fn new_recycled(info: DecodedFrameInfo) -> Result<Self> {
         Self::with_fill(info, None)
+    }
+
+    /// Creates the target of [`Self::copy_rows_into`] over the sample buffers a
+    /// retired frame handed back, without initializing its samples.
+    ///
+    /// Buffers the geometry cannot use are dropped and replaced, so a stream
+    /// that changes frame size costs one allocation rather than a wrong frame.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] if the sample type cannot represent the frame bit
+    /// depth, geometry arithmetic overflows, or plane allocation fails.
+    pub fn new_recycled_from(
+        info: DecodedFrameInfo,
+        recycled: &mut crate::FramePlaneSamples<T>,
+    ) -> Result<Self> {
+        Self::with_planes(info, None, recycled)
     }
 
     /// Copies the completed luma rows and their matching chroma rows into
@@ -123,8 +138,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 pub enum WorkspaceRectRows<'a, T: ReconSample> {
     /// Rows backed by conventional stride-based plane storage.
     Strided(PlaneRefRows<'a, T>),
-    /// Rows backed by individually partitioned rectangle slices.
-    Sliced(CurrentFrameRectRows<'a, T>),
     /// Rows backed by tightly packed caller-owned rectangle storage.
     Owned(OwnedFrameRectRows<'a, T>),
 }
@@ -133,7 +146,6 @@ macro_rules! delegate_rect_rows {
     ($rows:expr, $method:ident) => {
         match $rows {
             WorkspaceRectRows::Strided(rows) => rows.$method(),
-            WorkspaceRectRows::Sliced(rows) => rows.$method(),
             WorkspaceRectRows::Owned(rows) => rows.$method(),
         }
     };
@@ -159,29 +171,6 @@ impl<'a, T: ReconSample> Iterator for WorkspaceRectRows<'a, T> {
 }
 
 impl<T: ReconSample> ExactSizeIterator for WorkspaceRectRows<'_, T> {}
-
-/// Iterator over rows borrowed from one rectangular surface.
-#[derive(Debug)]
-pub struct CurrentFrameRectRows<'a, T: ReconSample> {
-    pub(super) rows: slice::Iter<'a, &'a mut [T]>,
-    pub(super) x: usize,
-    pub(super) width: usize,
-}
-
-impl<'a, T: ReconSample> Iterator for CurrentFrameRectRows<'a, T> {
-    type Item = &'a [T];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let row = self.rows.next()?;
-        Some(&row[self.x..self.x + self.width])
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.rows.size_hint()
-    }
-}
-
-impl<T: ReconSample> ExactSizeIterator for CurrentFrameRectRows<'_, T> {}
 
 /// Exclusive mutable rows of one wholly in-frame current-frame rectangle.
 ///

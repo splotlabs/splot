@@ -12,9 +12,10 @@
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrame, PlaneId, ReconSample};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::Result;
+use parking_lot::Mutex;
 
 const MI_SIZE: usize = 4;
 
@@ -28,19 +29,24 @@ const MI_SIZE: usize = 4;
 /// [`FrameProgress`]: crate::pipeline::frame_progress::FrameProgress
 struct FilteredFrameSink<'a, 'job, T: ReconSample> {
     progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-    admit: Option<&'a dyn splot_parallel::Admit<'job>>,
+    admit: Option<&'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>>,
 }
 
 impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
     fn open(
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&'a dyn splot_parallel::Admit<'job>>,
+        admit: Option<
+            &'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        >,
         info: splot_recon::DecodedFrameInfo,
         ranges: &[(usize, usize)],
     ) -> Result<Self> {
         let progress = match progress {
             Some(progress) => progress,
-            None => Arc::new(crate::pipeline::frame_progress::FrameProgress::new(info)?),
+            None => Arc::new(crate::pipeline::frame_progress::FrameProgress::recycled(
+                info,
+                &mut splot_recon::FramePlaneSamples::default(),
+            )?),
         };
         if !progress.begin(ranges) {
             return Err(lr_pipeline_state_error());
@@ -156,6 +162,8 @@ pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
     filter_records: super::FrameFilterRecords,
     sink: FilteredFrameSink<'progress, 'job, T>,
     stripe_state: Mutex<Vec<StripeLifecycle>>,
+    /// Each stripe's filter outcome, borrowed from the records with the rest.
+    stripe_outcomes: Vec<Option<crate::Result<()>>>,
     deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
 }
 
@@ -178,8 +186,9 @@ pub(crate) struct OwnedFilterFinish<T: ReconSample> {
     setup: Arc<OwnedFilterSetup<'static, 'static, T>>,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum StripeLifecycle {
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub(crate) enum StripeLifecycle {
+    #[default]
     Pending,
     Claimed,
     Submitted,
@@ -341,7 +350,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&'progress dyn splot_parallel::Admit<'job>>,
+        admit: Option<
+            &'progress dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        >,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
         Option<CurrentFrameWorkspace<T>>,
@@ -373,7 +384,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&'progress dyn splot_parallel::Admit<'job>>,
+        admit: Option<
+            &'progress dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        >,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
         Option<CurrentFrameWorkspace<T>>,
@@ -415,7 +428,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
         let (lr_source_blocks, lr_plane_ends) =
             final_filters::coalesced_lr_source_rows_all(lr_source_blocks);
-        let ranges = crate::filters::gdf::stripe_ranges(&core, self.luma_height)?;
+        let mut stripes = core::mem::take(&mut self.filter_records.stripes);
+        let mut ranges = core::mem::take(&mut stripes.ranges);
+        crate::filters::gdf::stripe_ranges_into(&core, self.luma_height, &mut ranges)?;
+        let mut stripe_lifecycles = core::mem::take(&mut stripes.lifecycles);
         let info = self.info;
         let pixel_format = info.pixel_format();
         let subsampling = (
@@ -479,7 +495,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 ranges,
                 filter_records,
                 sink,
-                stripe_state: Mutex::new(vec![StripeLifecycle::Pending; stripe_count]),
+                stripe_state: Mutex::new({
+                    stripe_lifecycles.clear();
+                    stripe_lifecycles.resize(stripe_count, StripeLifecycle::Pending);
+                    stripe_lifecycles
+                }),
+                stripe_outcomes: core::mem::take(&mut stripes.outcomes),
                 deblock_records: Mutex::new(None),
             },
             workspace,
@@ -493,10 +514,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&dyn splot_parallel::Admit<'_>>,
+        admit: Option<&dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>>,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
-        let (setup, workspace) =
+        let (mut setup, workspace) =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress, admit)?;
         let mut workspace = workspace.ok_or_else(lr_pipeline_state_error)?;
         let mi_rows = setup.mi_rows;
@@ -512,10 +533,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 setup.core.tile_info.as_ref(),
                 disable_loopfilters_across_tiles,
                 deblock_quant_deltas,
+                {
+                    let format = workspace.info().pixel_format();
+                    (
+                        usize::from(format.subsampling_x()),
+                        usize::from(format.subsampling_y()),
+                    )
+                },
+                &mut setup.filter_records.deblock_grids,
             )
             .map_err(|error| deblock_prepare_error(&error))?,
             None => None,
         };
+        let retired;
         if setup.stripe_ranges().len() > 1 && splot_parallel::on_worker_pool() {
             if let Some(sections) = sections.as_mut() {
                 sections
@@ -526,9 +556,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             if sections.is_none() && !source.publish_final_rows(setup.luma_height) {
                 return Err(lr_pipeline_state_error());
             }
-            let mut slots: Vec<Option<Result<()>>> =
-                (0..setup.stripe_ranges().len()).map(|_| None).collect();
+            let mut slots = core::mem::take(&mut setup.stripe_outcomes);
+            slots.clear();
+            slots.resize_with(setup.stripe_ranges().len(), || None);
             let mut owed: Option<crate::error::DecodeError> = None;
+            let alone = splot_parallel::current_pool_width() <= 1;
             let scheduled = splot_parallel::ready_task_scope(|scope| {
                 for ((stripe, range), slot) in
                     setup.stripe_ranges().iter().enumerate().zip(&mut slots)
@@ -564,13 +596,21 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         },
                     };
                     let setup = &setup;
-                    scope.spawn(move |_| {
+                    if alone {
                         *slot = Some(
                             setup
                                 .run_borrowed_lease(stripe, &lease)
                                 .and_then(|filtered| setup.publish(filtered)),
                         );
-                    });
+                    } else {
+                        scope.spawn(move |_| {
+                            *slot = Some(
+                                setup
+                                    .run_borrowed_lease(stripe, &lease)
+                                    .and_then(|filtered| setup.publish(filtered)),
+                            );
+                        });
+                    }
                 }
             });
             if let Some(error) = owed {
@@ -578,8 +618,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }
             let missing = lr_pipeline_state_error;
             scheduled.map_err(|_| missing())?;
-            for slot in slots {
-                slot.unwrap_or_else(|| Err(missing()))?;
+            let mut failure = None;
+            for slot in slots.drain(..) {
+                if let Err(error) = slot.unwrap_or_else(|| Err(missing())) {
+                    failure = Some(error);
+                    break;
+                }
+            }
+            setup.stripe_outcomes = slots;
+            retired = retire_source(source);
+            if let Some(error) = failure {
+                return Err(error);
             }
         } else {
             let mut source = crate::filters::source::DeblockedSource::new(workspace);
@@ -602,13 +651,30 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )?;
                 setup.publish(filtered)?;
             }
+            drop(lease);
+            retired = retire_source(source);
         }
-        if let Some(sections) = sections {
+        if let Some(mut sections) = sections {
+            sections.release_grids(&mut setup.filter_records.deblock_grids);
             sections.finish();
         }
+        setup.filter_records.retired_planes = retired;
         let frame = setup.finish(publish)?;
         Ok(frame)
     }
+}
+
+/// Keeps a filtered frame's reconstruction buffers for the next frame's walk.
+///
+/// The filter phase is the last reader of the frame it filtered, so this is
+/// where those buffers become free again.
+fn retire_source<T: ReconSample>(
+    source: crate::filters::source::DeblockedSource<T>,
+) -> splot_recon::RetiredFramePlanes {
+    source
+        .into_workspace()
+        .map(|workspace| T::retire_planes(workspace.into_plane_samples()))
+        .unwrap_or_default()
 }
 
 impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
@@ -715,10 +781,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         &self,
         records: crate::filters::deblock::OwnedDeblockRecords,
     ) -> Result<()> {
-        let mut slot = self
-            .deblock_records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = self.deblock_records.lock();
         if slot.is_some() {
             return Err(lr_pipeline_state_error());
         }
@@ -762,10 +825,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             chain.validate_filter_stripe(PlaneId::V, plane)?;
         }
         {
-            let mut state = self
-                .stripe_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.stripe_state.lock();
             let Some(lifecycle) = state.get_mut(stripe.stripe) else {
                 return Err(lr_pipeline_state_error());
             };
@@ -782,10 +842,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .ranges
             .get(stripe)
             .ok_or_else(lr_pipeline_state_error)?;
-        let mut state = self
-            .stripe_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.stripe_state.lock();
         let lifecycle = state.get_mut(stripe).ok_or_else(lr_pipeline_state_error)?;
         if *lifecycle != StripeLifecycle::Pending {
             return Err(lr_pipeline_state_error());
@@ -807,7 +864,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         self.core
             .tile_info
             .as_ref()
-            .map(|tile| (tile.mi_row_starts.as_slice(), tile.mi_col_starts.as_slice()))
+            .map(|tile| (tile.mi_row_starts.as_ref(), tile.mi_col_starts.as_ref()))
     }
 
     fn cdef_ccso_range<'d>(
@@ -1015,7 +1072,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let complete = self
             .stripe_state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .all(|lifecycle| *lifecycle == StripeLifecycle::Submitted);
         if !complete {
@@ -1023,22 +1079,17 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         }
         self.filter_records.lr_source_blocks = self.lr_source_blocks;
         self.filter_records.lr_unit_filters = self.lr_unit_filters;
-        let has_restored_deblock = self
-            .deblock_records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some();
+        self.filter_records.stripes.ranges = core::mem::take(&mut self.ranges);
+        self.filter_records.stripes.lifecycles = core::mem::take(self.stripe_state.get_mut());
+        self.filter_records.stripes.outcomes = core::mem::take(&mut self.stripe_outcomes);
+        let has_restored_deblock = self.deblock_records.lock().is_some();
         if has_restored_deblock
             && (!self.filter_records.deblock_blocks.is_empty()
                 || !self.filter_records.chroma_deblock_blocks.is_empty())
         {
             return Err(lr_pipeline_state_error());
         }
-        if let Some(records) = self
-            .deblock_records
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
+        if let Some(records) = self.deblock_records.into_inner() {
             self.filter_records.deblock_blocks = records.blocks;
             self.filter_records.chroma_deblock_blocks = records.chroma;
         }

@@ -10,11 +10,14 @@ use super::{
     Mv, MvBlockContext, NeighbourCell, NeighbourMvGrid, RelativeProbe, TIP_REF_FRAME,
     warp_sub_mv_at,
 };
+use band::BandCells;
+pub(crate) use band::TemporalMotionBand;
 use selection::projection_queue;
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
 use trajectory::{OwnedTrajectoryBand, OwnedTrajectoryFields, TrajectoryBand, TrajectoryState};
 
+mod band;
 mod selection;
 mod trajectory;
 
@@ -52,9 +55,21 @@ impl Default for TemporalMotionCell {
     }
 }
 
+/// The order hints one motion field carries, one per reference slot.
+///
+/// A sequence bounds the slot count at
+/// [`splot_core::headers::sequence::MAX_REF_FRAMES`], so the list is inline and
+/// a field's metadata costs no allocation to build or to hand to a band.
+pub(crate) type RefOrderHints =
+    splot_core::tile::InlineVec<Option<u32>, { splot_core::headers::sequence::MAX_REF_FRAMES }>;
+
+fn empty_ref_order_hints() -> RefOrderHints {
+    RefOrderHints::default()
+}
+
 fn allocate_temporal_grid<T>(mi_rows: usize, mi_cols: usize) -> Option<(usize, usize, Vec<T>)>
 where
-    T: Clone + Default,
+    T: Clone + Default + Send + 'static,
 {
     let width8 = mi_cols.div_ceil(2);
     let height8 = mi_rows.div_ceil(2);
@@ -81,13 +96,13 @@ pub(crate) struct TemporalMotionField {
     pending_ref_hints: Option<Vec<[u32; 2]>>,
     is_inter: bool,
     frame_size: Option<(usize, usize)>,
-    ref_order_hints: Vec<Option<u32>>,
+    ref_order_hints: RefOrderHints,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TemporalMotionStorage {
     Contiguous(Vec<TemporalMotionCell>),
-    Bands(Vec<Arc<TemporalMotionBand>>),
+    Bands(Vec<TemporalMotionBand>),
 }
 
 /// Fixed geometry of one frame's motion-field publication.
@@ -137,56 +152,7 @@ impl MotionFieldLayout {
 pub(crate) struct TemporalMotionFieldMetadata {
     is_inter: bool,
     frame_size: Option<(usize, usize)>,
-    ref_order_hints: Arc<[Option<u32>]>,
-}
-
-/// One immutable full-width source superblock row of temporal motion.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TemporalMotionBand {
-    layout: MotionFieldLayout,
-    metadata: TemporalMotionFieldMetadata,
-    row_base8: usize,
-    cells: Vec<TemporalMotionCell>,
-}
-
-impl TemporalMotionBand {
-    pub(crate) fn row_end8(&self) -> usize {
-        self.row_base8
-            .saturating_add(self.cells.len().div_ceil(self.layout.width8.max(1)))
-            .min(self.layout.height8)
-    }
-
-    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
-        let row = y8.checked_sub(self.row_base8)?;
-        let start = row.checked_mul(self.layout.width8)?;
-        self.cells
-            .get(start..start.checked_add(self.layout.width8)?)
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    pub(crate) fn record_block(&mut self, block: TemporalMotionBlock) {
-        let row_base8 = self.row_base8;
-        let row_end8 = self.row_end8();
-        let width8 = self.layout.width8;
-        let resolved = resolve_block_refs(block.ref_order_hints, &self.metadata.ref_order_hints);
-        visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
-            let Some(row) = y8.checked_sub(row_base8) else {
-                return;
-            };
-            let Some(index) = row
-                .checked_mul(width8)
-                .and_then(|base| base.checked_add(x8))
-            else {
-                return;
-            };
-            if y8 >= row_base8
-                && let Some(target) = self.cells.get_mut(index)
-            {
-                *target = resolve_temporal_refs(cell, hints, &resolved);
-            }
-        });
-    }
+    ref_order_hints: RefOrderHints,
 }
 
 impl TemporalMotionField {
@@ -199,7 +165,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter: false,
             frame_size: None,
-            ref_order_hints: Vec::new(),
+            ref_order_hints: empty_ref_order_hints(),
         }
     }
 
@@ -215,7 +181,7 @@ impl TemporalMotionField {
             pending_ref_hints: Some(pending_ref_hints),
             is_inter: false,
             frame_size: None,
-            ref_order_hints: Vec::new(),
+            ref_order_hints: empty_ref_order_hints(),
         })
     }
 
@@ -227,11 +193,8 @@ impl TemporalMotionField {
         ref_order_hints: &[Option<u32>],
     ) -> Option<Self> {
         let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
-        let mut owned_ref_order_hints = Vec::new();
-        owned_ref_order_hints
-            .try_reserve_exact(ref_order_hints.len())
-            .ok()?;
-        owned_ref_order_hints.extend_from_slice(ref_order_hints);
+        let mut owned_ref_order_hints = RefOrderHints::default();
+        owned_ref_order_hints.extend_within(ref_order_hints.iter().copied());
         Some(Self {
             width8,
             height8,
@@ -253,7 +216,9 @@ impl TemporalMotionField {
     ) {
         self.is_inter = is_inter;
         self.frame_size = Some(frame_size);
-        self.ref_order_hints = ref_order_hints.to_vec();
+        self.ref_order_hints = RefOrderHints::default();
+        self.ref_order_hints
+            .extend_within(ref_order_hints.iter().copied());
         if let Some(pending) = self.pending_ref_hints.take()
             && let TemporalMotionStorage::Contiguous(cells) = &mut self.storage
         {
@@ -290,19 +255,18 @@ impl TemporalMotionField {
         TemporalMotionFieldMetadata {
             is_inter: self.is_inter,
             frame_size: self.frame_size,
-            ref_order_hints: Arc::from(self.ref_order_hints.as_slice()),
+            ref_order_hints: self.ref_order_hints,
         }
     }
 
+    /// This field's cells split into bands the caller then fills in.
     pub(crate) fn into_bands(self) -> Vec<TemporalMotionBand> {
-        if let TemporalMotionStorage::Bands(bands) = self.storage {
-            return bands.into_iter().map(Arc::unwrap_or_clone).collect();
-        }
         let layout = self.layout();
         let metadata = self.metadata();
         let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
-        let TemporalMotionStorage::Contiguous(cells) = self.storage else {
-            return Vec::new();
+        let cells = match &self.storage {
+            TemporalMotionStorage::Contiguous(cells) => cells,
+            TemporalMotionStorage::Bands(bands) => return bands.clone(),
         };
         cells
             .chunks(stride)
@@ -311,20 +275,61 @@ impl TemporalMotionField {
                 layout,
                 metadata: metadata.clone(),
                 row_base8: index.saturating_mul(layout.band_rows8),
-                cells: cells.to_vec(),
+                cells: BandCells {
+                    owned: cells.to_vec(),
+                    shared: None,
+                },
             })
             .collect()
+    }
+
+    /// This settled field's cells split into bands that share its storage.
+    ///
+    /// A published field is never written again, so its bands are windows into
+    /// it rather than copies of it.
+    pub(crate) fn shared_bands(field: &Arc<Self>, mut sink: impl FnMut(TemporalMotionBand)) {
+        let layout = field.layout();
+        let metadata = field.metadata();
+        let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
+        let TemporalMotionStorage::Contiguous(cells) = &field.storage else {
+            if let TemporalMotionStorage::Bands(bands) = &field.storage {
+                bands.iter().cloned().for_each(sink);
+            }
+            return;
+        };
+        for (index, chunk) in cells.chunks(stride).enumerate() {
+            let start = index.saturating_mul(stride);
+            sink(TemporalMotionBand {
+                layout,
+                metadata: metadata.clone(),
+                row_base8: index.saturating_mul(layout.band_rows8),
+                cells: BandCells {
+                    owned: Vec::new(),
+                    shared: Some((Arc::clone(field), start..start + chunk.len())),
+                },
+            });
+        }
+    }
+
+    fn contiguous_cells(&self) -> &[TemporalMotionCell] {
+        match &self.storage {
+            TemporalMotionStorage::Contiguous(cells) => cells,
+            TemporalMotionStorage::Bands(_) => &[],
+        }
     }
 
     pub(crate) fn from_bands(
         layout: MotionFieldLayout,
         metadata: &TemporalMotionFieldMetadata,
-        bands: Vec<Arc<TemporalMotionBand>>,
+        bands: Vec<TemporalMotionBand>,
     ) -> Option<Self> {
-        let cells = bands
-            .iter()
-            .try_fold(0usize, |cells, band| cells.checked_add(band.cells.len()))?;
-        (cells == layout.width8.checked_mul(layout.height8)?).then(|| Self {
+        let cells = bands.iter().try_fold(0usize, |cells, band| {
+            cells.checked_add(band.cells.cells().len())
+        })?;
+        if cells != layout.width8.checked_mul(layout.height8)? {
+            return None;
+        }
+        Some(Self {
             width8: layout.width8,
             height8: layout.height8,
             band_rows8: layout.band_rows8,
@@ -332,7 +337,7 @@ impl TemporalMotionField {
             pending_ref_hints: None,
             is_inter: metadata.is_inter,
             frame_size: metadata.frame_size,
-            ref_order_hints: metadata.ref_order_hints.to_vec(),
+            ref_order_hints: metadata.ref_order_hints,
         })
     }
 
@@ -616,6 +621,7 @@ impl ProjectedTemporalMotionField {
         })
     }
 
+    /// Resizes and clears the field while retaining its allocation.
     fn reset(&mut self, mi_rows: usize, mi_cols: usize) -> crate::Result<()> {
         self.width8 = mi_cols.div_ceil(2);
         self.height8 = mi_rows.div_ceil(2);
@@ -758,25 +764,28 @@ impl TemporalBandPlan {
         self.layout.rows8(index)
     }
 
-    pub(crate) fn requirements(&self, index: usize) -> Vec<(usize, usize)> {
-        let mut requirements = Vec::new();
+    /// Collects the reference bands this band's projection reads into `out`.
+    ///
+    /// Into a caller's buffer, because the list is read once and dropped, and
+    /// the callers ask per unit.
+    pub(crate) fn requirements(&self, index: usize, out: &mut Vec<(usize, usize)>) {
+        out.clear();
         for projection in &self.projections {
             if index >= projection.source_layout.band_count() {
                 continue;
             }
             let requirement = (projection.slot, index);
-            if !requirements.contains(&requirement) {
-                requirements.push(requirement);
+            if !out.contains(&requirement) {
+                out.push(requirement);
             }
         }
-        requirements
     }
 
     pub(crate) fn project(
         &self,
         context: &TemporalMvContext,
         index: usize,
-        mut source_band: impl FnMut(usize, usize) -> Option<Arc<TemporalMotionBand>>,
+        mut source_band: impl FnMut(usize, usize) -> Option<TemporalMotionBand>,
     ) -> crate::Result<()> {
         let rows = self.rows8(index);
         if rows.is_empty() {
@@ -835,7 +844,7 @@ impl TemporalBandPlan {
             };
             project_temporal_motion_field(
                 &projection.source,
-                source.as_ref(),
+                &source,
                 rows.clone(),
                 self.config.step,
                 self.config.unit_size8,
@@ -867,7 +876,7 @@ impl TemporalBandPlan {
         }
         let result = TemporalBandResult {
             row_base8: rows.start,
-            field: field.cells,
+            field: core::mem::take(&mut field.cells),
             trajectories: trajectories.map(OwnedTrajectoryBand::finish),
         };
         let banded = context
@@ -1088,14 +1097,20 @@ impl TemporalMvContext {
                     .and_then(|_| ref_order_hint.get(slot as usize).copied())
                     .filter(|&hint| hint != u32::MAX)
             }));
-        let ref_motion_metadata = ref_motion_fields
-            .iter()
-            .map(|field| field.as_ref().map(|field| field.metadata()))
-            .collect::<Vec<_>>();
-        let ref_motion_layouts = ref_motion_fields
-            .iter()
-            .map(|field| field.as_ref().map(|field| field.layout()))
-            .collect::<Vec<_>>();
+        let mut ref_motion_metadata =
+            crate::reference::buffer::RefSlots::<Option<TemporalMotionFieldMetadata>>::default();
+        ref_motion_metadata.extend_within(
+            ref_motion_fields
+                .iter()
+                .map(|field| field.as_ref().map(|field| field.metadata())),
+        );
+        let mut ref_motion_layouts =
+            crate::reference::buffer::RefSlots::<Option<MotionFieldLayout>>::default();
+        ref_motion_layouts.extend_within(
+            ref_motion_fields
+                .iter()
+                .map(|field| field.as_ref().map(|field| field.layout())),
+        );
         let projections = projection_queue(
             mi_dimensions,
             current_order_hint,
@@ -1133,8 +1148,10 @@ impl TemporalMvContext {
             self.trajectory_scratch = self.trajectories.take();
             None
         };
-        let mut prepared = Vec::with_capacity(projections.len());
-        for projection in projections {
+        // An `Option` is `Default` whatever it holds, so the bounded list is
+        // inline even though a projection borrows its source field.
+        let mut prepared = PreparedProjections::default();
+        for projection in projections.iter().copied() {
             let slot = *ref_frame_idx
                 .get(projection.ref_index)
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
@@ -1163,10 +1180,12 @@ impl TemporalMvContext {
                 &self.ref_order_hints,
             )
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-            prepared.push(PreparedTemporalProjection {
-                source,
-                field: source_field,
-            });
+            prepared
+                .push(Some(PreparedTemporalProjection {
+                    source,
+                    field: source_field,
+                }))
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         }
         run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field);
         if let Some(trajectories) = trajectories.as_mut() {
@@ -1221,7 +1240,7 @@ impl TemporalMvContext {
             ref_motion_layouts,
         );
         let mut prepared = Vec::with_capacity(projections.len());
-        for projection in projections {
+        for projection in projections.iter().copied() {
             let slot = usize::try_from(*ref_frame_idx.get(projection.ref_index)?).ok()?;
             let source_order_hint = self
                 .ref_order_hints
@@ -1513,7 +1532,9 @@ pub(crate) fn tip_reference_pair_from_hints(
     ref_order_hints: &[Option<u32>],
 ) -> Option<TipReferencePair> {
     let current = i32::try_from(current_order_hint).ok()?;
-    let sorted = sorted_reference_hints(ref_order_hints);
+    let mut sorted_buffer = [(0usize, 0i32); MAX_SORTED_REFS];
+    let sorted_len = sorted_reference_hints(ref_order_hints, &mut sorted_buffer);
+    let sorted = &sorted_buffer[..sorted_len];
     let past_index = sorted
         .iter()
         .rposition(|&(_, hint)| super::super::get_relative_dist(hint, current) < 0)?;
@@ -1543,21 +1564,33 @@ pub(crate) fn tip_reference_pair_from_hints(
     })
 }
 
-fn sorted_reference_hints(ref_order_hints: &[Option<u32>]) -> Vec<(usize, i32)> {
-    let mut sorted = ref_order_hints
-        .iter()
-        .copied()
-        .enumerate()
-        .filter_map(|(index, hint)| Some((index, i32::try_from(hint?).ok()?)))
-        .collect::<Vec<_>>();
-    for i in 0..sorted.len() {
-        for j in i + 1..sorted.len() {
-            if super::super::get_relative_dist(sorted[j].1, sorted[i].1) < 0 {
-                sorted.swap(i, j);
+/// Reference slots AV2 § 6.8.2 `NUM_REF_FRAMES` allows, so the sort fits a
+/// caller's array and needs no heap.
+const MAX_SORTED_REFS: usize = 8;
+
+fn sorted_reference_hints(
+    ref_order_hints: &[Option<u32>],
+    out: &mut [(usize, i32); MAX_SORTED_REFS],
+) -> usize {
+    let mut len = 0;
+    for (index, hint) in ref_order_hints.iter().copied().enumerate() {
+        if len == MAX_SORTED_REFS {
+            break;
+        }
+        let Some(hint) = hint.and_then(|hint| i32::try_from(hint).ok()) else {
+            continue;
+        };
+        out[len] = (index, hint);
+        len = len.saturating_add(1);
+    }
+    for i in 0..len {
+        for j in i + 1..len {
+            if super::super::get_relative_dist(out[j].1, out[i].1) < 0 {
+                out.swap(i, j);
             }
         }
     }
-    sorted
+    len
 }
 
 fn prepare_tip_field(
@@ -1826,7 +1859,7 @@ fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usi
 /// run in. An installed pool runs the same band tasks at every worker count;
 /// direct callers outside the owned pool replay those bands in place.
 fn run_band_projections(
-    prepared: &[PreparedTemporalProjection<'_>],
+    prepared: &[Option<PreparedTemporalProjection<'_>>],
     config: TemporalProjectionConfig,
     trajectories: Option<&mut TrajectoryState>,
     field: &mut ProjectedTemporalMotionField,
@@ -1834,7 +1867,7 @@ fn run_band_projections(
     let band_rows = projection_band_rows(field.height8, config);
     let run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
         let rows8 = band.row_base..band.row_base + band_rows;
-        for prepared in prepared {
+        for prepared in prepared.iter().flatten() {
             project_temporal_motion_field(
                 &prepared.source,
                 prepared.field,
@@ -1851,13 +1884,21 @@ fn run_band_projections(
     let mut trajectory_slots = trajectory_bands
         .as_deref_mut()
         .map_or_else(Vec::new, |bands| bands.iter_mut().map(Some).collect());
-    let scheduled = splot_parallel::ready_task_scope(|scope| {
+    let scheduled = if splot_parallel::current_pool_width() <= 1 {
         for (index, band) in field_bands.iter_mut().enumerate() {
             let rows = trajectory_slots.get_mut(index).and_then(Option::take);
-            let run = &run;
-            scope.spawn(move |_| run(band, rows));
+            run(band, rows);
         }
-    });
+        Ok(())
+    } else {
+        splot_parallel::ready_task_scope(|scope| {
+            for (index, band) in field_bands.iter_mut().enumerate() {
+                let rows = trajectory_slots.get_mut(index).and_then(Option::take);
+                let run = &run;
+                scope.spawn(move |_| run(band, rows));
+            }
+        })
+    };
     if scheduled.is_err() {
         for (index, band) in field_bands.iter_mut().enumerate() {
             run(
@@ -1908,7 +1949,12 @@ fn project_whole_temporal_motion_field(
         source: source_info,
         field: source,
     });
-    run_band_projections(prepared.as_slice(), config, trajectories, output);
+    run_band_projections(
+        core::slice::from_ref(&prepared),
+        config,
+        trajectories,
+        output,
+    );
 }
 
 /// One unit-aligned row band of a projected motion field.
@@ -1937,6 +1983,12 @@ impl ProjectedTemporalMotionField {
 
 /// One queued AV2 § 7.9.3 motion-field projection with its per-source preamble
 /// resolved once, so the scan can be replayed band by band.
+/// One frame's prepared projections, bounded like the queue that names them.
+type PreparedProjections<'a> = splot_core::tile::InlineVec<
+    Option<PreparedTemporalProjection<'a>>,
+    { selection::MFMV_STACK_SIZE },
+>;
+
 struct PreparedTemporalProjection<'a> {
     source: TemporalProjectionSource,
     field: &'a TemporalMotionField,
@@ -1950,7 +2002,9 @@ struct TemporalProjectionSource {
     target_ref: Option<usize>,
     target_order_hint: Option<u32>,
     source_to_current: i32,
-    target_cache: Vec<Option<(u32, Option<usize>, i32)>>,
+    /// One entry per reference slot, so it sits inline rather than in a vector
+    /// built for every projection of every frame.
+    target_cache: [Option<(u32, Option<usize>, i32)>; MAX_SORTED_REFS],
 }
 
 impl TemporalProjectionSource {
@@ -1979,19 +2033,20 @@ impl TemporalProjectionSource {
             target_order_hint: target_ref
                 .and_then(|target| ref_order_hints.get(target).copied().flatten()),
             source_to_current: super::super::get_relative_dist(source_hint, current_hint),
-            target_cache: source
-                .ref_order_hints
-                .iter()
-                .map(|&hint| {
-                    let hint = hint?;
-                    let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
-                    Some((
-                        hint,
-                        mapped_reference(source_order_hint, hint, ref_order_hints),
-                        super::super::get_relative_dist(source_hint, target_hint),
-                    ))
-                })
-                .collect(),
+            target_cache: {
+                let mut cache = [const { None }; MAX_SORTED_REFS];
+                for (slot, &hint) in cache.iter_mut().zip(source.ref_order_hints.iter()) {
+                    *slot = hint.map(|hint| {
+                        let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
+                        (
+                            hint,
+                            mapped_reference(source_order_hint, hint, ref_order_hints),
+                            super::super::get_relative_dist(source_hint, target_hint),
+                        )
+                    });
+                }
+                cache
+            },
         })
     }
 }
@@ -2150,16 +2205,6 @@ impl TemporalMotionRows for TemporalMotionField {
             }
             TemporalMotionStorage::Bands(bands) => bands.get(y8 / self.band_rows8.max(1))?.row(y8),
         }
-    }
-}
-
-impl TemporalMotionRows for TemporalMotionBand {
-    fn dimensions8(&self) -> (usize, usize) {
-        (self.layout.width8(), self.layout.height8())
-    }
-
-    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
-        TemporalMotionBand::row(self, y8)
     }
 }
 

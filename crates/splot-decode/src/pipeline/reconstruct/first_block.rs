@@ -16,8 +16,7 @@ use super::sink::{
     write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
-    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
-    SupportedDirectionalLumaMode,
+    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
 };
 use crate::pipeline::general_intra::RecycledIntraSamples;
 
@@ -26,7 +25,7 @@ const MI_SIZE: usize = 4;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     dip_mode: u8,
     dip_transpose: bool,
     x: usize,
@@ -318,7 +317,7 @@ fn paeth_reference_edges_into<T: ReconSample>(
 pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,

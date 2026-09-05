@@ -160,19 +160,19 @@ fn loop_restoration_records_rebase_each_tile_once_in_append_order() {
     append_lr_records(
         &mut blocks,
         &mut filters,
-        vec![
+        &mut vec![
             lr_source_block(None, 1),
             lr_source_block(Some(0), 2),
             lr_source_block(Some(1), 3),
         ],
-        vec![lr_unit_filter(1), lr_unit_filter(2)],
+        &mut vec![lr_unit_filter(1), lr_unit_filter(2)],
     )
     .unwrap();
     append_lr_records(
         &mut blocks,
         &mut filters,
-        vec![lr_source_block(Some(0), 4)],
-        vec![lr_unit_filter(3)],
+        &mut vec![lr_source_block(Some(0), 4)],
+        &mut vec![lr_unit_filter(3)],
     )
     .unwrap();
 
@@ -202,8 +202,8 @@ fn invalid_loop_restoration_index_is_typed_and_fail_atomic() {
     let error = append_lr_records(
         &mut blocks,
         &mut filters,
-        vec![lr_source_block(Some(1), 1)],
-        vec![lr_unit_filter(1)],
+        &mut vec![lr_source_block(Some(1), 1)],
+        &mut vec![lr_unit_filter(1)],
     )
     .unwrap_err();
 
@@ -270,12 +270,11 @@ fn surface_scratch(
     info: splot_recon::DecodedFrameInfo,
     rects: &[splot_recon::PlaneRect],
 ) -> splot_recon::Result<TileDecodeScratch<u8>> {
-    let mut surfaces = rects
+    let surfaces = rects
         .iter()
         .copied()
         .map(|rect| splot_recon::OwnedFrameRect::new(info, rect, 0))
         .collect::<splot_recon::Result<Vec<_>>>()?;
-    surfaces.reverse();
     Ok(TileDecodeScratch {
         surfaces,
         ..TileDecodeScratch::default()
@@ -283,46 +282,82 @@ fn surface_scratch(
 }
 
 fn drain_surface_layout(
-    scratch: &mut TileDecodeScratch<u8>,
+    scratch: TileDecodeScratch<u8>,
     info: splot_recon::DecodedFrameInfo,
     rects: &[splot_recon::PlaneRect],
 ) -> splot_recon::Result<Vec<splot_recon::PlaneRect>> {
-    scratch.clear_incompatible_surface_layout(info, rects);
-    rects
-        .iter()
-        .copied()
-        .map(|rect| {
-            scratch
-                .take_surface(info, rect)
-                .map(|surface| surface.luma_rect())
-        })
-        .collect()
+    let mut source = super::admission::SurfaceSource::new(info, rects.to_vec(), scratch.surfaces);
+    let mut handed = Vec::new();
+    for unit in 0..rects.len() {
+        let Some(surface) = source.take(unit) else {
+            break;
+        };
+        handed.push(surface?.luma_rect());
+    }
+    Ok(handed)
 }
 
 #[test]
-fn complete_recycled_surface_layout_drains_in_raster_order()
+fn the_surface_source_hands_out_every_rect_in_raster_order()
 -> core::result::Result<(), Box<dyn std::error::Error>> {
     let workspace = crate::test_support::yuv420_workspace(256, 16, 0);
     let info = workspace.info();
     let rects = superblock_luma_rects(&(0..4), &(0..64), &workspace, 32)?;
-    let mut scratch = surface_scratch(info, &rects)?;
+    let scratch = surface_scratch(info, &rects)?;
 
-    assert_eq!(drain_surface_layout(&mut scratch, info, &rects)?, rects);
-    assert!(scratch.surfaces.is_empty());
+    assert_eq!(drain_surface_layout(scratch, info, &rects)?, rects);
     Ok(())
 }
 
 #[test]
-fn incompatible_recycled_surface_layout_is_cleared_whole()
+fn a_returned_surface_is_retargeted_rather_than_reallocated()
+-> core::result::Result<(), Box<dyn std::error::Error>> {
+    let workspace = crate::test_support::yuv420_workspace(256, 32, 0);
+    let info = workspace.info();
+    let rects = superblock_luma_rects(&(0..8), &(0..64), &workspace, 32)?;
+    let equal_sized: Vec<_> = rects
+        .iter()
+        .copied()
+        .filter(|rect| rect.width() == rects[0].width() && rect.height() == rects[0].height())
+        .collect();
+    assert!(equal_sized.len() >= 2, "need two same-shaped superblocks");
+
+    let mut source =
+        super::admission::SurfaceSource::<u8>::new(info, equal_sized.clone(), Vec::new());
+    let first = source.take(0).ok_or("a first surface")??;
+    assert_eq!(first.luma_rect(), equal_sized[0]);
+    source.give(first);
+    assert_eq!(source.free_len(), 1);
+
+    let second = source.take(1).ok_or("a second surface")??;
+
+    assert_eq!(second.luma_rect(), equal_sized[1]);
+    assert_eq!(
+        source.free_len(),
+        0,
+        "the returned surface must be retargeted and reused, not left behind"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_stale_recycled_surface_layout_is_laid_out_over()
 -> core::result::Result<(), Box<dyn std::error::Error>> {
     let workspace = crate::test_support::yuv420_workspace(256, 32, 0);
     let info = workspace.info();
     let rects = superblock_luma_rects(&(0..4), &(0..64), &workspace, 32)?;
     let stale_rects = superblock_luma_rects(&(4..8), &(0..64), &workspace, 32)?;
-    let mut scratch = surface_scratch(info, &stale_rects)?;
+    let scratch = surface_scratch(info, &stale_rects)?;
+    let mut source = super::admission::SurfaceSource::new(info, rects.clone(), scratch.surfaces);
 
-    scratch.clear_incompatible_surface_layout(info, &rects);
+    for unit in 0..rects.len() {
+        source.take(unit).ok_or("a surface")??;
+    }
 
-    assert!(scratch.surfaces.is_empty());
+    assert_eq!(
+        source.free_len(),
+        0,
+        "every stale surface must be reshaped into the new layout, not replaced"
+    );
     Ok(())
 }

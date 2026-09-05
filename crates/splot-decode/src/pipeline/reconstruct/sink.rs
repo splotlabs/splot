@@ -13,7 +13,7 @@ use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSi
 #[cfg(test)]
 use crate::Result;
 use crate::bitstream::tile_payload::{
-    GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
+    CoeffBlock, GeneralIntraResidualError, LumaPalette, LumaTransformTypeContext,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
@@ -60,7 +60,7 @@ pub(crate) fn new_general_intra_workspace<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -112,7 +112,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     palette: LumaPalette,
     color_map: &[u8],
     x: usize,
@@ -177,7 +177,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     sink: &mut crate::prediction::inter::mc::WorkspaceSink<'_, '_, T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -277,7 +277,7 @@ pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     prediction: Vec<T>,
     plane_id: PlaneId,
     x: usize,
@@ -316,7 +316,7 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn commit_intra_prediction<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     prediction: &[T],
     plane_id: PlaneId,
     x: usize,

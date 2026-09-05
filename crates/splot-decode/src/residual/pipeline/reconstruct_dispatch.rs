@@ -186,7 +186,7 @@ impl ResidualPlanePlan {
         self,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
-        coeffs: &crate::bitstream::tile_payload::LumaCoeffBlock,
+        coeffs: crate::bitstream::tile_payload::CoeffBlock<'_>,
         block_decoded: &TileBlockDecodedState,
         palette_color_map: Option<&[u8]>,
         qindex: u32,

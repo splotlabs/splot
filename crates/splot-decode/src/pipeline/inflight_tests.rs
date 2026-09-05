@@ -13,6 +13,46 @@ use splot_recon::{ReferenceFrameStore, ReferenceSlot};
 use crate::prediction::inter::InterReferenceState;
 use crate::test_support::decoded_frame;
 
+#[test]
+fn a_retired_frame_leaves_its_sample_buffers_in_the_ring() {
+    let mut ring = InflightRing::new(nz(1));
+    let frame = decoded_frame(4, 4);
+    let samples = frame
+        .plane(splot_recon::PlaneId::Y)
+        .expect("luma plane")
+        .samples()
+        .as_ptr();
+
+    ring.keep_frame_planes(PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(
+        SharedFrame::new(frame),
+    )));
+
+    let kept = u8::spare(&mut ring).take(splot_recon::PlaneId::Y);
+    assert_eq!(
+        kept.as_ptr(),
+        samples,
+        "the next frame decodes into the retired frame's buffer"
+    );
+}
+
+#[test]
+fn a_frame_a_reader_still_holds_keeps_its_own_sample_buffers() {
+    let mut ring = InflightRing::new(nz(1));
+    let frame = SharedFrame::new(decoded_frame(4, 4));
+    let reader = frame.share();
+
+    ring.keep_frame_planes(PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(
+        frame,
+    )));
+
+    assert!(
+        u8::spare(&mut ring)
+            .take(splot_recon::PlaneId::Y)
+            .is_empty()
+    );
+    drop(reader);
+}
+
 fn nz(value: usize) -> NonZeroUsize {
     NonZeroUsize::new(value).unwrap()
 }

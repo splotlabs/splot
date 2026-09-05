@@ -52,6 +52,7 @@ mod tile;
 
 pub use bitstream::stream_plan;
 pub use context::DecodeContext;
+use core::fmt;
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,
     DecodeOutputErrorDetails, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
@@ -72,8 +73,6 @@ pub use stream_plan::{
     DecodePlannedObuRole, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamInput,
     DecodeStreamPlan, DecodeUnsupportedReason, DecodeUnsupportedStructure,
 };
-
-use core::fmt;
 
 mod limits;
 

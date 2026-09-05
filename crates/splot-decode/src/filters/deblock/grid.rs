@@ -45,7 +45,15 @@ pub(super) struct MiGridStorage {
 
 pub(super) struct ChromaMiGridStorage {
     pub(super) fully_covered: bool,
+    /// One cell per chroma mode-info unit, not per luma one. A chroma deblock
+    /// record covers a chroma-aligned luma extent, so a luma-resolution grid
+    /// stored each block index `1 << (sub_x + sub_y)` times over.
     pub(super) cells: Vec<ChromaMiCell>,
+    pub(super) cell_cols: usize,
+    pub(super) sub_x: usize,
+    pub(super) sub_y: usize,
+    /// Edge flags stay at luma resolution: a vertical edge at luma column `c`
+    /// is distinct from the one at `c - 1`, which `is_candidate` reads.
     pub(super) candidates: Vec<u8>,
 }
 
@@ -88,7 +96,10 @@ impl MiGrid<'_> {
     pub(super) fn get_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
         let index = row * self.base.mi_cols + col;
         let base = self.base.cells.get(index)?;
-        let chroma = self.chroma.and_then(|grid| grid.cells.get(index));
+        let chroma = self.chroma.and_then(|grid| {
+            grid.cells
+                .get((row >> grid.sub_y) * grid.cell_cols + (col >> grid.sub_x))
+        });
         let block = match chroma.map(|cell| cell.overlay) {
             Some(overlay) if overlay != NO_BLOCK_INDEX => {
                 self.overlay_blocks.get(overlay as usize)?
@@ -143,70 +154,27 @@ impl MiGrid<'_> {
     }
 }
 
-/// Fewest deblock grids retained between frames, and the floor the pool-width
-/// bound never drops below.
-const MIN_RETAINED_DEBLOCK_GRIDS: usize = 4;
-
-/// Retains one grid per worker so a wide pool does not reallocate the grids its
-/// extra workers need, with [`MIN_RETAINED_DEBLOCK_GRIDS`] as the floor.
-/// Scales per worker only on a pool thread; off-pool callers get the floor.
-fn max_retained_deblock_grids() -> usize {
-    splot_parallel::current_pool_width().max(MIN_RETAINED_DEBLOCK_GRIDS)
-}
-const MAX_RETAINED_DEBLOCK_CELLS: usize = 1 << 22;
-static RETAINED_DEBLOCK_GRIDS: std::sync::Mutex<Vec<(Vec<MiCell>, Vec<u8>)>> =
-    std::sync::Mutex::new(Vec::new());
-static RETAINED_CHROMA_DEBLOCK_GRIDS: std::sync::Mutex<Vec<(Vec<ChromaMiCell>, Vec<u8>)>> =
-    std::sync::Mutex::new(Vec::new());
-
-fn take_deblock_grid_scratch<C>(
-    pool: &std::sync::Mutex<Vec<(Vec<C>, Vec<u8>)>>,
-) -> (Vec<C>, Vec<u8>) {
-    pool.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .pop()
-        .unwrap_or_default()
-}
-
-fn recycle_deblock_grid_scratch<C>(
-    pool: &std::sync::Mutex<Vec<(Vec<C>, Vec<u8>)>>,
-    mut cells: Vec<C>,
-    mut candidates: Vec<u8>,
-) {
-    if cells.capacity() == 0 || cells.capacity() > MAX_RETAINED_DEBLOCK_CELLS {
-        return;
-    }
-    let mut retained = pool
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if retained.len() < max_retained_deblock_grids() {
-        cells.clear();
-        candidates.clear();
-        retained.push((cells, candidates));
-    }
-}
-
-impl MiGridStorage {
-    pub(super) fn recycle(self) {
-        recycle_deblock_grid_scratch(&RETAINED_DEBLOCK_GRIDS, self.cells, self.candidates);
-    }
-}
-
-impl ChromaMiGridStorage {
-    pub(super) fn recycle(self) {
-        recycle_deblock_grid_scratch(&RETAINED_CHROMA_DEBLOCK_GRIDS, self.cells, self.candidates);
-    }
+/// The six grid vectors one frame's deblock fills.
+///
+/// They travel on the frame filter records, so the next frame lays its grids
+/// out over the ones the last frame left rather than sizing new ones.
+#[derive(Default)]
+pub(crate) struct DeblockGridStorage {
+    pub(super) cells: Vec<MiCell>,
+    pub(super) candidates: Vec<u8>,
+    pub(super) chroma: [(Vec<ChromaMiCell>, Vec<u8>); 2],
 }
 
 pub(super) fn build_mi_grid(
     blocks: &[DeblockBlock],
     mi_rows: usize,
     mi_cols: usize,
+    storage: &mut DeblockGridStorage,
 ) -> Result<MiGridStorage, DeblockError> {
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
-    let (mut cells, mut candidates) = take_deblock_grid_scratch(&RETAINED_DEBLOCK_GRIDS);
+    let mut cells = core::mem::take(&mut storage.cells);
     cells.clear();
     cells
         .try_reserve_exact(count)
@@ -215,6 +183,7 @@ pub(super) fn build_mi_grid(
             context: "deblock MI grid",
         })?;
     cells.resize(count, MiCell::default());
+    let mut candidates = core::mem::take(&mut storage.candidates);
     candidates.clear();
     candidates
         .try_reserve_exact(count)
@@ -251,34 +220,47 @@ pub(super) fn build_mi_grid(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn overlay_mi_grid(
     base: &MiGridStorage,
     blocks: &ChromaDeblockRecords,
     plane: usize,
     mi_rows: usize,
     mi_cols: usize,
+    sub_x: usize,
+    sub_y: usize,
+    storage: &mut (Vec<ChromaMiCell>, Vec<u8>),
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let plane_id = match plane {
         0 => splot_recon::PlaneId::U,
         1 => splot_recon::PlaneId::V,
         _ => return Err(DeblockError::Workspace),
     };
+    let cell_cols = mi_cols.div_ceil(1 << sub_x);
     let count = mi_rows
-        .checked_mul(mi_cols)
+        .div_ceil(1 << sub_y)
+        .checked_mul(cell_cols)
         .ok_or(DeblockError::Workspace)?;
-    let (mut cells, mut candidates) = take_deblock_grid_scratch(&RETAINED_CHROMA_DEBLOCK_GRIDS);
+    let mut cells = core::mem::take(&mut storage.0);
     cells.clear();
-    cells
-        .try_reserve_exact(count)
-        .map_err(|_| DeblockError::Allocation {
-            plane: plane_id,
-            context: "chroma deblock MI grid",
-        })?;
+    if cells.capacity() < count {
+        cells
+            .try_reserve_exact(count)
+            .map_err(|_| DeblockError::Allocation {
+                plane: plane_id,
+                context: "chroma deblock MI grid",
+            })?;
+    }
     cells.resize(count, ChromaMiCell::default());
-    candidates.clone_from(&base.candidates);
+    let mut candidates = core::mem::take(&mut storage.1);
+    candidates.clear();
+    candidates.extend_from_slice(&base.candidates);
     let mut grid = ChromaMiGridStorage {
         fully_covered: base.fully_covered,
         cells,
+        cell_cols,
+        sub_x,
+        sub_y,
         candidates,
     };
     for (block_index, block) in blocks
@@ -286,12 +268,14 @@ pub(super) fn overlay_mi_grid(
         .filter(|(_, block)| !block.chroma_transform_only)
     {
         let block_index = mi_block_index(block_index)?;
-        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
+        for (start, end) in block_chroma_spans(block, mi_rows, mi_cols, cell_cols, sub_x, sub_y) {
             if let Some(cells) = grid.cells.get_mut(start..end) {
                 for cell in cells {
                     cell.overlay = block_index;
                 }
             }
+        }
+        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
             if let Some(candidates) = grid.candidates.get_mut(start..end) {
                 for candidate in candidates {
                     *candidate |= COVERED_CANDIDATE;
@@ -305,7 +289,7 @@ pub(super) fn overlay_mi_grid(
         .filter(|(_, block)| block.chroma_transform_only)
     {
         let block_index = mi_block_index(block_index)?;
-        for (start, end) in block_row_spans(block, mi_rows, mi_cols) {
+        for (start, end) in block_chroma_spans(block, mi_rows, mi_cols, cell_cols, sub_x, sub_y) {
             if let Some(cells) = grid.cells.get_mut(start..end) {
                 for cell in cells {
                     cell.chroma_transform = block_index;
@@ -321,6 +305,26 @@ pub(super) fn overlay_mi_grid(
             .all(|candidate| candidate & COVERED_CANDIDATE != 0);
     }
     Ok(grid)
+}
+
+/// The chroma-resolution cell spans one block covers, one per chroma row.
+fn block_chroma_spans(
+    block: &DeblockBlock,
+    mi_rows: usize,
+    mi_cols: usize,
+    cell_cols: usize,
+    sub_x: usize,
+    sub_y: usize,
+) -> impl Iterator<Item = (usize, usize)> {
+    let row_end = block.r.saturating_add(block.n4h).min(mi_rows);
+    let col_end = block.c.saturating_add(block.n4w).min(mi_cols);
+    let col_start = block.c.min(col_end);
+    let chroma_col_start = col_start >> sub_x;
+    let chroma_col_end = col_end.div_ceil(1 << sub_x);
+    (block.r >> sub_y..row_end.div_ceil(1 << sub_y)).map(move |chroma_row| {
+        let base = chroma_row * cell_cols;
+        (base + chroma_col_start, base + chroma_col_end)
+    })
 }
 
 fn block_row_spans(

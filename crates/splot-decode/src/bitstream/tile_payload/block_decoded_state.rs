@@ -25,7 +25,7 @@ use std::collections::TryReserveError;
 
 const MAX_PLANES: usize = 3;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct TileBlockDecodedState {
     subsampling_x: usize,
     subsampling_y: usize,
@@ -36,14 +36,67 @@ pub(crate) struct TileBlockDecodedState {
     planes: [PlaneGrid; MAX_PLANES],
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Debug, Eq, PartialEq, Default)]
 struct PlaneGrid {
     width: usize,
     height: usize,
     cells: Vec<bool>,
 }
 
+impl Clone for PlaneGrid {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            cells: self.cells.clone(),
+        }
+    }
+
+    /// Copies into the cells this grid already holds.
+    ///
+    /// The decoder keeps a grid per tile for the life of the stream, so the
+    /// copy the commit reads is written over the previous tile's rather than
+    /// allocating one of its own.
+    fn clone_from(&mut self, source: &Self) {
+        self.width = source.width;
+        self.height = source.height;
+        self.cells.clone_from(&source.cells);
+    }
+}
+
+/// Written by hand so `clone_from` reaches the plane grids' own.
+///
+/// `#[derive(Clone)]` generates only `clone`, leaving `clone_from` to replace
+/// the destination wholesale -- which allocates three plane grids on a
+/// destination that already had them.
+impl Clone for TileBlockDecodedState {
+    fn clone(&self) -> Self {
+        Self {
+            subsampling_x: self.subsampling_x,
+            subsampling_y: self.subsampling_y,
+            num_planes: self.num_planes,
+            sb_size4: self.sb_size4,
+            mi_col_end: self.mi_col_end,
+            mi_row_end: self.mi_row_end,
+            planes: self.planes.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.subsampling_x = source.subsampling_x;
+        self.subsampling_y = source.subsampling_y;
+        self.num_planes = source.num_planes;
+        self.sb_size4 = source.sb_size4;
+        self.mi_col_end = source.mi_col_end;
+        self.mi_row_end = source.mi_row_end;
+        for (plane, source) in self.planes.iter_mut().zip(&source.planes) {
+            plane.clone_from(source);
+        }
+    }
+}
+
 impl TileBlockDecodedState {
+    #[cfg(test)]
     pub(crate) fn new(
         num_planes: usize,
         subsampling_x: usize,
@@ -52,6 +105,28 @@ impl TileBlockDecodedState {
         mi_col_end: usize,
         mi_row_end: usize,
     ) -> Result<Self, TileBlockDecodedStateError> {
+        let mut state = Self::default();
+        state.reset(
+            num_planes,
+            subsampling_x,
+            subsampling_y,
+            sb_size4,
+            mi_col_end,
+            mi_row_end,
+        )?;
+        Ok(state)
+    }
+
+    /// Lays this state out for another tile, keeping the plane grids.
+    pub(crate) fn reset(
+        &mut self,
+        num_planes: usize,
+        subsampling_x: usize,
+        subsampling_y: usize,
+        sb_size4: usize,
+        mi_col_end: usize,
+        mi_row_end: usize,
+    ) -> Result<(), TileBlockDecodedStateError> {
         if num_planes == 0 || num_planes > MAX_PLANES {
             return Err(TileBlockDecodedStateError::InvalidPlanes { num_planes });
         }
@@ -70,8 +145,7 @@ impl TileBlockDecodedState {
                 value: subsampling_y,
             });
         }
-        let mut planes: [PlaneGrid; MAX_PLANES] = Default::default();
-        for (plane, grid) in planes.iter_mut().enumerate().take(num_planes) {
+        for (plane, grid) in self.planes.iter_mut().enumerate().take(num_planes) {
             let (sub_x, sub_y) = plane_subsampling(plane, subsampling_x, subsampling_y);
             let width = (sb_size4
                 .checked_mul(2)
@@ -85,10 +159,13 @@ impl TileBlockDecodedState {
             let cells_len = width
                 .checked_mul(height)
                 .ok_or(TileBlockDecodedStateError::Overflow)?;
-            let mut cells = Vec::new();
-            cells
-                .try_reserve_exact(cells_len)
-                .map_err(|source| TileBlockDecodedStateError::Allocation { source })?;
+            let mut cells = core::mem::take(&mut grid.cells);
+            cells.clear();
+            if cells.capacity() < cells_len {
+                cells
+                    .try_reserve_exact(cells_len)
+                    .map_err(|source| TileBlockDecodedStateError::Allocation { source })?;
+            }
             cells.resize(cells_len, false);
             *grid = PlaneGrid {
                 width,
@@ -96,15 +173,13 @@ impl TileBlockDecodedState {
                 cells,
             };
         }
-        Ok(Self {
-            subsampling_x,
-            subsampling_y,
-            num_planes,
-            sb_size4,
-            mi_col_end,
-            mi_row_end,
-            planes,
-        })
+        self.subsampling_x = subsampling_x;
+        self.subsampling_y = subsampling_y;
+        self.num_planes = num_planes;
+        self.sb_size4 = sb_size4;
+        self.mi_col_end = mi_col_end;
+        self.mi_row_end = mi_row_end;
+        Ok(())
     }
 
     pub(crate) const fn num_planes(&self) -> usize {

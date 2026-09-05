@@ -3,8 +3,9 @@
 
 //! Pool-scoped event state for pipeline-driver waits.
 
+use parking_lot::{Condvar, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{OnceLock, Weak};
 
 /// One decoder pool's generation and condition variable.
 ///
@@ -44,7 +45,7 @@ impl PoolProgressEvent {
 
     pub(crate) fn notify(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self.state.lock();
         self.cond.notify_all();
         drop(state);
     }
@@ -68,7 +69,7 @@ impl PoolProgressEvent {
     }
 
     fn wait_if_unchanged_inner(&self, observed: u64, setup: impl FnOnce()) {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self.state.lock();
         if self.generation() != observed {
             return;
         }
@@ -78,10 +79,8 @@ impl PoolProgressEvent {
         }
         #[cfg(test)]
         self.parked_waiters.fetch_add(1, Ordering::Release);
-        let state = self
-            .cond
-            .wait(state)
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = state;
+        self.cond.wait(&mut state);
         #[cfg(test)]
         self.parked_waiters.fetch_sub(1, Ordering::Release);
         drop(state);
@@ -94,7 +93,7 @@ impl PoolProgressEvent {
 
     #[cfg(test)]
     fn spurious_notify(&self) {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self.state.lock();
         self.cond.notify_all();
         drop(state);
     }
@@ -133,8 +132,7 @@ impl PoolProgressBindings {
         let mut additional = self
             .additional
             .get_or_init(|| Mutex::new(Vec::new()))
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+            .lock();
         additional.retain(|bound| bound.strong_count() != 0);
         if !additional.iter().any(|bound| bound.ptr_eq(binding)) {
             additional.push(Weak::clone(binding));
@@ -149,16 +147,13 @@ impl PoolProgressBindings {
         let Some(additional) = self.additional.get() else {
             return;
         };
-        additional
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|bound| {
-                let Some(progress) = bound.upgrade() else {
-                    return false;
-                };
-                progress.notify();
-                true
-            });
+        additional.lock().retain(|bound| {
+            let Some(progress) = bound.upgrade() else {
+                return false;
+            };
+            progress.notify();
+            true
+        });
     }
 }
 

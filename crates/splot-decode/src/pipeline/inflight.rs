@@ -25,7 +25,7 @@
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use splot_parallel::{CompletionCell, Condition, TaskScope};
 use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
@@ -37,6 +37,7 @@ use crate::error::{DecodeError, Result};
 use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::prediction::inter::InterDecodeScratch;
 use crate::prediction::inter::reference::HeldFrameSamples;
+use parking_lot::Mutex;
 
 /// The one-shot value a decoded-frame slot publishes.
 enum SlotValue<T: ReconSample> {
@@ -84,9 +85,12 @@ impl<T: ReconSample> RefFrameSlot<T> {
     /// # Errors
     ///
     /// Returns the filtered-workspace allocation's own diagnostic.
-    pub(crate) fn pending(info: DecodedFrameInfo) -> Result<(Self, FrameSlotWriter<T>)> {
+    pub(crate) fn pending_recycled(
+        info: DecodedFrameInfo,
+        recycled: &mut splot_recon::FramePlaneSamples<T>,
+    ) -> Result<(Self, FrameSlotWriter<T>)> {
         let cell = Arc::new(CompletionCell::new());
-        let progress = Arc::new(FrameProgress::new(info)?);
+        let progress = Arc::new(FrameProgress::recycled(info, recycled)?);
         let writer = FrameSlotWriter {
             cell: Arc::clone(&cell),
             progress: Arc::clone(&progress),
@@ -98,6 +102,20 @@ impl<T: ReconSample> RefFrameSlot<T> {
             info,
         };
         Ok((slot, writer))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending(info: DecodedFrameInfo) -> Result<(Self, FrameSlotWriter<T>)> {
+        Self::pending_recycled(info, &mut splot_recon::FramePlaneSamples::default())
+    }
+
+    /// Takes the published frame when this is the last handle to both the slot
+    /// and its samples, so its buffers can outlive it.
+    fn into_frame(self) -> Option<DecodedFrame<T>> {
+        match Arc::into_inner(self.cell)?.into_inner()? {
+            SlotValue::Ready(frame) => frame.into_frame(),
+            SlotValue::Failed => None,
+        }
     }
 
     /// Returns a second handle to the same completion slot without copying
@@ -369,6 +387,29 @@ pub(crate) struct InflightRing {
     capacity: usize,
     entries: VecDeque<InflightEntry>,
     failure: Option<(usize, DecodeError)>,
+    spare_eight: splot_recon::FramePlaneSamples<u8>,
+    spare_ten: splot_recon::FramePlaneSamples<u16>,
+}
+
+/// Routes a frame's retired sample buffers to the ring slot of its sample type.
+///
+/// One frame retires for every frame the ring admits, so the single slot per
+/// type is the whole cycle: the frame taking a reference slot's place decodes
+/// into the buffers the frame leaving it gave up.
+pub(crate) trait SpareFramePlanes: ReconSample {
+    fn spare(ring: &mut InflightRing) -> &mut splot_recon::FramePlaneSamples<Self>;
+}
+
+impl SpareFramePlanes for u8 {
+    fn spare(ring: &mut InflightRing) -> &mut splot_recon::FramePlaneSamples<Self> {
+        &mut ring.spare_eight
+    }
+}
+
+impl SpareFramePlanes for u16 {
+    fn spare(ring: &mut InflightRing) -> &mut splot_recon::FramePlaneSamples<Self> {
+        &mut ring.spare_ten
+    }
 }
 
 impl InflightRing {
@@ -378,6 +419,27 @@ impl InflightRing {
             capacity: depth.get(),
             entries: VecDeque::new(),
             failure: None,
+            spare_eight: splot_recon::FramePlaneSamples::default(),
+            spare_ten: splot_recon::FramePlaneSamples::default(),
+        }
+    }
+
+    /// Keeps a retired frame's sample buffers for the frame that replaces it.
+    ///
+    /// A frame still shared by any reader keeps its own buffers: the samples
+    /// are only taken when this handle is the last one holding them.
+    pub(crate) fn keep_frame_planes(&mut self, slot: PipelineFrameSlot) {
+        match slot {
+            PipelineFrameSlot::Eight(slot) => {
+                if let Some(frame) = slot.into_frame() {
+                    self.spare_eight = frame.into_plane_samples();
+                }
+            }
+            PipelineFrameSlot::Ten(slot) => {
+                if let Some(frame) = slot.into_frame() {
+                    self.spare_ten = frame.into_plane_samples();
+                }
+            }
         }
     }
 
@@ -432,7 +494,7 @@ impl InflightRing {
         };
         let _ = entry.slot.wait_settled();
         let report = entry.report.wait_with_pool_assist();
-        let mut outcome = report.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut outcome = report.lock();
         if let Some(records) = outcome.records.take() {
             match entry.slot {
                 PipelineFrameSlot::Eight(_) => eight.recycle_frame_filter_records(records),
@@ -469,11 +531,14 @@ impl InflightRing {
 /// A deferred phase hands its single-use writer to the freeze, so the slot
 /// settles before the frame's published row prefix closes; a freeze the phase
 /// never reaches drops the writer instead, settling the slot as failed.
-pub(super) fn settle_walk_stage<'job, 'scope, T: ReconSample + Send + 'static>(
+pub(super) fn settle_walk_stage<'job, 'scope, T: SpareFramePlanes + Send + 'static>(
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
     scope: &TaskScope<'_, 'scope>,
-    scheduler: &'scope splot_parallel::AdmissionScheduler<'job>,
+    scheduler: &'scope splot_parallel::AdmissionScheduler<
+        'job,
+        crate::pipeline::frame_pipeline::FrameTask,
+    >,
     lane: &mut super::frame_pipeline::ReconAdmissionLane,
     ring: &mut InflightRing,
     frame_index: usize,
@@ -512,13 +577,13 @@ pub(crate) struct PendingFinish<T: ReconSample> {
 /// # Errors
 ///
 /// Returns the filtered-workspace allocation's own diagnostic.
-pub(crate) fn reserve_pending_slot<T: ReconSample>(
+pub(crate) fn reserve_pending_slot<T: SpareFramePlanes>(
     info: DecodedFrameInfo,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
     ring: &mut InflightRing,
     frame_index: usize,
 ) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
-    let (slot, writer) = RefFrameSlot::pending(info)?;
+    let (slot, writer) = RefFrameSlot::pending_recycled(info, T::spare(ring))?;
     let progress = Arc::clone(&writer.progress);
     let report = Arc::new(CompletionCell::new());
     ring.push(InflightEntry {
@@ -561,7 +626,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     pub(crate) fn run_finish(
         self,
         walked: WalkedFrame<T>,
-        admit: Option<&dyn splot_parallel::Admit<'_>>,
+        admit: Option<&dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>>,
     ) {
         let Self {
             writer,

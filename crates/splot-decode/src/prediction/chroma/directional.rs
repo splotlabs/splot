@@ -20,7 +20,7 @@ use splot_recon::{
 };
 
 use crate::bitstream::tile_payload::{
-    GeneralIntraResidualError, LumaCoeffBlock, SupportedChromaMode, SupportedDirectionalLumaMode,
+    CoeffBlock, GeneralIntraResidualError, SupportedChromaMode, SupportedDirectionalLumaMode,
 };
 
 use crate::pipeline::reconstruct::*;
@@ -29,7 +29,7 @@ use crate::pipeline::reconstruct::*;
 pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -323,7 +323,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     mode: SupportedDirectionalLumaMode,
     plane_id: PlaneId,
     x: usize,
@@ -351,7 +351,7 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -390,7 +390,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,
     y: usize,

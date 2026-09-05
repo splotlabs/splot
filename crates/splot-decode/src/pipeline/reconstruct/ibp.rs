@@ -16,7 +16,7 @@ use super::one_sided::{
 use super::sink::IntraEdgeAvailability;
 use super::sink::write_intra_prediction_block;
 use crate::bitstream::tile_payload::{
-    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
+    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -29,7 +29,7 @@ pub(crate) struct IbpSecondary {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
+    block: CoeffBlock<'_>,
     p_angle: u16,
     plane_id: PlaneId,
     x: usize,

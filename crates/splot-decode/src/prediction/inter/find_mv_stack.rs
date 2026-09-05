@@ -78,7 +78,6 @@ const MV_BORDER: i32 = 128;
 const MI_SIZE: i32 = 4;
 mod derived;
 mod extra_search;
-mod mv_grid_pool;
 mod neighbour_grid;
 mod temporal;
 mod warp_bank;

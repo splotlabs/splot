@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Default)]
 struct AdmitCounter(AtomicUsize);
 
-impl<'job> splot_parallel::Admit<'job> for AdmitCounter {
+impl<'job> splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>
+    for AdmitCounter
+{
     fn admit_ready(&self) -> usize {
         self.0.fetch_add(1, Ordering::SeqCst);
         0
@@ -24,20 +26,31 @@ impl<'job> splot_parallel::Admit<'job> for AdmitCounter {
         &self,
         _order_key: u64,
         _conditions: &[splot_parallel::Condition<'_>],
-        job: splot_parallel::Job<'job>,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
         drop(job);
     }
 
-    fn spawn_ready(&self, job: splot_parallel::Job<'job>) {
+    fn spawn_ready(
+        &self,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         drop(job);
     }
 
-    fn submit_ready_batch(&self, _order_key: u64, jobs: Vec<splot_parallel::Job<'job>>) {
+    fn submit_ready_batch(
+        &self,
+        _order_key: u64,
+        jobs: Vec<splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>>,
+    ) {
         drop(jobs);
     }
 
-    fn continue_ready(&self, _order_key: u64, job: splot_parallel::Job<'job>) {
+    fn continue_ready(
+        &self,
+        _order_key: u64,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         drop(job);
     }
 }
@@ -267,6 +280,8 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         None,
         false,
         crate::filters::deblock::DeblockQuantDeltas::ZERO,
+        (1, 1),
+        &mut crate::filters::deblock::DeblockGridStorage::default(),
     )
     .unwrap()
     .unwrap();
@@ -351,6 +366,34 @@ fn final_filter_sink_8bit<T: splot_recon::ReconSample>() -> WienerNsLrReconSink<
         128,
         BitDepth::Eight,
     )
+}
+
+#[test]
+fn a_filtered_frame_retires_its_reconstruction_buffers() {
+    let mut core = switchable_core();
+    core.deblocking_filter_params = None;
+    let workspace = deblock_workspace();
+    let samples = workspace.samples(PlaneId::Y).unwrap().as_ptr();
+
+    let (_frame, records) =
+        WienerNsLrReconSink::for_final_filtering(workspace, 64, 32, BitDepth::Eight)
+            .into_filtered_frame(
+                Arc::new(core),
+                false,
+                crate::filters::deblock::DeblockQuantDeltas::ZERO,
+                None,
+                None,
+                core::convert::identity,
+            )
+            .unwrap();
+
+    let mut retired = records.retired_planes;
+    let kept = <u8 as splot_recon::ReconSample>::reclaim_planes(&mut retired).take(PlaneId::Y);
+    assert_eq!(
+        kept.as_ptr(),
+        samples,
+        "the next frame walks into the filtered frame's reconstruction buffer"
+    );
 }
 
 #[test]
@@ -643,7 +686,7 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
     let (mut setup, workspace) = sink
         .into_owned_filter_setup(Arc::new(core), false, Some(progress), None)
         .unwrap();
-    let workspace = workspace.unwrap();
+    assert!(workspace.is_some());
 
     assert!(
         setup
@@ -660,7 +703,6 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
             .as_ref()
             .is_some_and(|grid| grid.plane_sample_lossless(PlaneId::Y, 0, 0, 0, 0))
     );
-    workspace.recycle_planes();
     Ok(())
 }
 

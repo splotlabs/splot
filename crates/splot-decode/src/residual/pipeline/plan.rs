@@ -22,8 +22,8 @@ pub(super) const MAX_DEFERRED_CHROMA_PLANES: usize = MAX_RESIDUAL_CHUNKS * CHROM
 pub(super) const MAX_RESIDUAL_PLANES: usize = MAX_RESIDUAL_CHUNKS + MAX_DEFERRED_CHROMA_PLANES;
 
 std::thread_local! {
-    static RESIDUAL_PLANE_PLANS: std::cell::Cell<Option<Vec<ResidualPlanePlan>>> =
-        const { std::cell::Cell::new(None) };
+    static RESIDUAL_PLANE_PLANS: std::cell::RefCell<Vec<Vec<ResidualPlanePlan>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn take_residual_plane_plans(

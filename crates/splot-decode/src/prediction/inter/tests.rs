@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::reference::buffer::RefSlots;
 use splot_parallel::ThreadCount;
 
 use splot_core::headers::frame::{
@@ -62,7 +63,9 @@ fn motion_dependencies_deduplicate_slots_and_ignore_invalid_indices() {
     let handle = || MotionFieldHandle::settled(TemporalMotionField::new(2, 2).unwrap());
     let (zero, last) = (handle(), handle());
     let mut reference = super::InterReferenceState::<u8>::empty().unwrap();
-    reference.ref_motion_fields = vec![None; ReferenceSlot::MAX_SLOTS];
+    reference.ref_motion_fields =
+        RefSlots::from_iter_checked(core::iter::repeat_n(None, ReferenceSlot::MAX_SLOTS))
+            .expect("reference slots fit");
     reference.ref_motion_fields[0] = Some(zero.clone());
     reference.ref_motion_fields[15] = Some(last.clone());
     let deps = reference.motion_dependencies(&[15, 15, 0, 15]);
@@ -460,10 +463,10 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
     }
 }
 
-fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
+fn luma_coeff_block(quant: &[i32], eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob,
-        quant,
+        quant_range: 0..quant.len(),
         intra_ist: None,
         cctx_type,
         plane_tx_type: 0,
@@ -473,15 +476,7 @@ fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> Lu
 }
 
 fn all_zero_inter_coeff_block() -> LumaCoeffBlock {
-    LumaCoeffBlock {
-        eob: 0,
-        quant: Vec::new(),
-        intra_ist: None,
-        cctx_type: None,
-        plane_tx_type: 0,
-        use_tcq: false,
-        lossless: false,
-    }
+    luma_coeff_block(&[], 0, None)
 }
 
 fn read_rect_samples(
@@ -518,13 +513,13 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
     let mut u_quant = vec![0; 32];
     u_quant[0] = -1;
     u_quant[1] = 1;
-    let mut u_coeffs = luma_coeff_block(u_quant, 3, Some(5));
+    let mut u_coeffs = luma_coeff_block(&u_quant, 3, Some(5));
     u_coeffs.plane_tx_type = 6;
     let v_coeffs = all_zero_inter_coeff_block();
     let (want_u, want_v) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
-        &u_coeffs,
+        u_coeffs.view(&u_quant),
         &u_prediction,
-        &v_coeffs,
+        v_coeffs.view(&[]),
         &v_prediction,
         101,
         3,
@@ -574,6 +569,7 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
+        &u_quant,
         101,
         false,
         true,
@@ -622,7 +618,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
     ] {
         quant[index] = value;
     }
-    let mut coeffs = luma_coeff_block(quant, 22, None);
+    let mut coeffs = luma_coeff_block(&quant, 22, None);
     coeffs.plane_tx_type = 1;
     let residual_blocks = vec![super::InterResidualBlock {
         plane: PlaneId::Y,
@@ -641,6 +637,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
+        &quant,
         150,
         false,
         true,
@@ -2361,10 +2358,14 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
             .ref_frame_idx = [0, 1, 2, 3].into_iter().collect();
 
         let mut reference = super::InterReferenceState::<u8>::empty().unwrap();
-        reference.ref_valid = vec![true; 4];
-        reference.ref_order_hint = vec![6, 9, 12, 15];
-        reference.ref_base_q_idx = vec![50, 101, 104, 200];
-        reference.ref_chroma_ac_deltas = vec![[20, 20], [-3, -5], [4, -2], [40, 40]];
+        reference.ref_valid = RefSlots::from_iter_checked([true; 4]).expect("reference slots fit");
+        reference.ref_order_hint =
+            RefSlots::from_iter_checked([6, 9, 12, 15]).expect("reference slots fit");
+        reference.ref_base_q_idx =
+            RefSlots::from_iter_checked([50, 101, 104, 200]).expect("reference slots fit");
+        reference.ref_chroma_ac_deltas =
+            RefSlots::from_iter_checked([[20, 20], [-3, -5], [4, -2], [40, 40]])
+                .expect("reference slots fit");
 
         super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset, None)
             .unwrap();

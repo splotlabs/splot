@@ -74,8 +74,26 @@ const SHUFFLED_INDEX: [usize; 64] = [
 /// The resolved frame-level `FrameLrWienerNs[plane]` bank.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WienerNsFrameFilterBank {
-    /// One resolved class entry per `numClasses`.
-    pub classes: Vec<WienerNsFrameFilterClass>,
+    /// One resolved class entry per `numClasses`, held inline: AV2 bounds a
+    /// bank at `MAX_WIENER_NS_CLASSES` classes.
+    pub classes: crate::tile::InlineVec<WienerNsFrameFilterClass, MAX_WIENER_NS_CLASSES>,
+}
+
+/// Classes a frame-level Wiener NS bank may carry (`DECODE_NUM_FILTER_CLASSES`).
+pub const MAX_WIENER_NS_CLASSES: usize = 16;
+
+impl Default for WienerNsFrameFilterClass {
+    fn default() -> Self {
+        static EMPTY: std::sync::OnceLock<std::sync::Arc<[i16]>> = std::sync::OnceLock::new();
+        Self {
+            match_index: 0,
+            merged: false,
+            ref_bank: 0,
+            subset: None,
+            wiener_ns_uv_sym: false,
+            coeffs: std::sync::Arc::clone(EMPTY.get_or_init(|| std::sync::Arc::from(Vec::new()))),
+        }
+    }
 }
 
 /// One class from a resolved frame-level Wiener NS filter bank.
@@ -94,7 +112,10 @@ pub struct WienerNsFrameFilterClass {
     /// `wiener_ns_uv_sym`, only meaningful for chroma classes with `subset > 0`.
     pub wiener_ns_uv_sym: bool,
     /// The parsed `FrameLrWienerNs[plane][c]` coefficients.
-    pub coeffs: Vec<i16>,
+    /// Shared, not owned: a temporal copy and the decoder's per-frame tap
+    /// table both take this bank, and copying the coefficients for each one
+    /// cost an allocation per class per frame.
+    pub coeffs: std::sync::Arc<[i16]>,
 }
 
 /// Parses a § 5.18 frame-level Wiener-NS filter bank. `ref_taps` are the
@@ -152,7 +173,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
     }
 
     let mut frame_coeffs = vec![vec![0i16; n_coeffs]; num_classes];
-    let mut classes = Vec::with_capacity(num_classes);
+    let mut classes = crate::tile::InlineVec::default();
     for c in 0..num_classes {
         fill_first_slot_of_bank_with_filter_match(
             c,
@@ -222,14 +243,18 @@ pub(super) fn parse_frame_wiener_ns_filter(
             }
         }
         frame_coeffs[c].clone_from(&coeffs);
-        classes.push(WienerNsFrameFilterClass {
-            match_index: match_indices[c] as u8,
-            merged: merged[c],
-            ref_bank: 0,
-            subset,
-            wiener_ns_uv_sym,
-            coeffs,
-        });
+        classes
+            .push(WienerNsFrameFilterClass {
+                match_index: match_indices[c] as u8,
+                merged: merged[c],
+                ref_bank: 0,
+                subset,
+                wiener_ns_uv_sym,
+                coeffs: std::sync::Arc::from(coeffs),
+            })
+            .ok_or(crate::error::Error::Unimplemented {
+                feature: "wienerns_filter_bank_classes",
+            })?;
     }
 
     Ok(WienerNsFrameFilterBank { classes })
@@ -541,7 +566,11 @@ mod tests {
         assert!(bank.classes.iter().all(|class| class.merged));
         assert!(bank.classes.iter().all(|class| class.ref_bank == 0));
         assert!(bank.classes.iter().all(|class| class.coeffs.len() == 16));
-        assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
+        assert!(
+            bank.classes
+                .iter()
+                .all(|class| class.coeffs.as_ref() == [0; 16].as_slice())
+        );
     }
 
     #[test]
@@ -565,7 +594,7 @@ mod tests {
 
         assert_eq!(bank.classes.len(), 1);
         assert_eq!(bank.classes[0].match_index, 1);
-        assert_eq!(bank.classes[0].coeffs, taps);
+        assert_eq!(bank.classes[0].coeffs.as_ref(), taps.as_slice());
     }
 
     #[test]
@@ -581,7 +610,10 @@ mod tests {
 
         assert_eq!(bank.classes.len(), 1);
         assert_eq!(bank.classes[0].match_index, 1);
-        assert_eq!(bank.classes[0].coeffs, vec![0; WIENER_NS_LUMA_COEFFS]);
+        assert_eq!(
+            bank.classes[0].coeffs.as_ref(),
+            [0; WIENER_NS_LUMA_COEFFS].as_slice()
+        );
     }
 
     #[test]

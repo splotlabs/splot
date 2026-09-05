@@ -67,13 +67,13 @@ pub(crate) use general_intra_block::{
     read_general_intra_palette_y_mode, read_lossless_luma_tx_size, read_lossless_tx_size,
 };
 pub(crate) use general_intra_residual::{
-    FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope, FrameQuantizerSnapshot,
-    FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope, GeneralIntraResidualError,
-    LumaCoeffBlock, LumaTransformPartitionContext, LumaTransformPartitionUnits,
-    LumaTransformTypeContext, PositionedLumaCoeffBlock, TransformToolResidualPolicy,
-    current_frame_qm_segment_id, decode_general_intra_luma_partition_coeffs,
-    decode_general_intra_plane_coeffs, is_cctx_geometry_allowed,
-    reconstruct_general_intra_chroma_cctx_pair_into,
+    CoeffBlock, FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope,
+    FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
+    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformPartitionContext,
+    LumaTransformPartitionUnits, LumaTransformTypeContext, PositionedLumaCoeffBlock,
+    TransformToolResidualPolicy, current_frame_qm_segment_id,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
+    is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_into,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
@@ -103,7 +103,7 @@ pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
     DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraTreeWalkError,
+    GeneralIntraTreeWalkError, LrTileRecords,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,

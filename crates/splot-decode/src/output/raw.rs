@@ -9,7 +9,7 @@ use core::num::NonZeroUsize;
 
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use splot_parallel::CompletionCell;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
@@ -19,6 +19,7 @@ use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
 use crate::{DecodeOptions, DecodeStreamPlan};
+use parking_lot::Mutex;
 
 pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     bitstream: &[u8],
@@ -42,11 +43,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
             |output| {
                 if let Some(done) = outstanding.take() {
                     let () = done.wait_with_pool_assist();
-                    if let Some(error) = output_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .take()
-                    {
+                    if let Some(error) = output_error.lock().take() {
                         return Err(error);
                     }
                 }
@@ -58,7 +55,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
                 outstanding = Some(Arc::clone(&done));
                 scope.spawn(move |_| {
                     let result = catch_unwind(AssertUnwindSafe(|| {
-                        let mut writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
+                        let mut writer = writer.lock();
                         match &frame {
                             PipelineDecodedFrame::Eight(frame) => {
                                 let display = film_grain::frame_for_output(
@@ -78,8 +75,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
                     }))
                     .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")));
                     if let Err(error) = result {
-                        let mut failure =
-                            output_error.lock().unwrap_or_else(PoisonError::into_inner);
+                        let mut failure = output_error.lock();
                         if failure.is_none() {
                             *failure = Some(error);
                         }
@@ -94,10 +90,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
         }
         decode_result
     })?;
-    if let Some(error) = output_error
-        .into_inner()
-        .unwrap_or_else(PoisonError::into_inner)
-    {
+    if let Some(error) = output_error.into_inner() {
         return Err(error);
     }
     decode_result?;

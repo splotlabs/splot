@@ -29,22 +29,37 @@ use core::cell::UnsafeCell;
 use core::num::NonZeroUsize;
 use core::ptr::NonNull;
 use core::slice;
-use core::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard};
+use std::sync::{Arc, OnceLock};
 
 use splot_parallel::{CompletionCell, Condition, WatermarkCell};
 use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample};
 
 use crate::error::{DecodeError, Result};
 use crate::pipeline::unsupported;
+use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 
 /// The stripe geometry one frame's filter phase publishes through.
+/// One stripe's publication state.
+///
+/// The four facts a stripe carries were four parallel vectors, so a frame paid
+/// four allocations to open its progress and every read walked four
+/// allocations; they are one row each now.
+#[derive(Clone, Copy, Default)]
+struct StripeProgress {
+    /// The stripe's exclusive luma row end.
+    end: usize,
+    /// Whether the stripe has landed.
+    landed: bool,
+    leased: bool,
+    /// Live holders of the stripe's direct lease: the lease itself plus one per
+    /// plane target. The lease is released when this reaches zero, which is
+    /// what a per-lease reference count used to track.
+    holds: u32,
+}
+
 struct ProgressLayout {
-    /// Each stripe's exclusive luma row end, in stripe order.
-    stripe_ends: Vec<usize>,
-    /// Whether each stripe has landed, indexed as `stripe_ends`.
-    landed: Vec<bool>,
-    leased: Vec<bool>,
+    /// Each stripe's publication state, in stripe order.
+    stripes: Vec<StripeProgress>,
     direct_aligned: bool,
     freezing: bool,
     /// The next stripe the contiguous prefix is waiting for.
@@ -188,7 +203,8 @@ struct DirectPlaneRegion {
 
 pub(crate) struct DirectPlaneTarget {
     region: DirectPlaneRegion,
-    lease_guard: Arc<DirectLeaseGuard>,
+    progress: Arc<dyn DirectLeaseRelease>,
+    stripe: usize,
 }
 
 /// SAFETY: moving this unique disjoint-band capability transfers ownership.
@@ -244,17 +260,20 @@ impl DirectPlaneTarget {
 
 impl Drop for DirectPlaneTarget {
     fn drop(&mut self) {
-        self.lease_guard
-            .remaining_targets
-            .fetch_sub(1, Ordering::Release);
+        self.progress.release_hold(self.stripe);
     }
 }
 
 impl DirectPlaneRegion {
-    fn into_target(self, lease_guard: Arc<DirectLeaseGuard>) -> DirectPlaneTarget {
+    fn into_target(
+        self,
+        progress: Arc<dyn DirectLeaseRelease>,
+        stripe: usize,
+    ) -> DirectPlaneTarget {
         DirectPlaneTarget {
             region: self,
-            lease_guard,
+            progress,
+            stripe,
         }
     }
 }
@@ -305,7 +324,12 @@ pub(crate) struct DirectStripeLease<T: ReconSample> {
     progress: Arc<FrameProgress<T>>,
     stripe: usize,
     target: Option<DirectStripeTarget>,
-    lease: Arc<DirectLeaseGuard>,
+}
+
+impl<T: ReconSample> Drop for DirectStripeLease<T> {
+    fn drop(&mut self) {
+        self.progress.release_direct_hold(self.stripe);
+    }
 }
 
 impl<T: ReconSample> DirectStripeLease<T> {
@@ -315,7 +339,7 @@ impl<T: ReconSample> DirectStripeLease<T> {
 
     pub(crate) fn submit(mut self) -> bool {
         drop(self.target.take());
-        if self.lease.remaining_targets.load(Ordering::Acquire) != 0 {
+        if self.progress.direct_holds(self.stripe) != 1 {
             return false;
         }
         self.progress.publish_direct(self.stripe);
@@ -324,19 +348,7 @@ impl<T: ReconSample> DirectStripeLease<T> {
 }
 
 trait DirectLeaseRelease: Send + Sync {
-    fn release(&self, stripe: usize);
-}
-
-struct DirectLeaseGuard {
-    progress: Arc<dyn DirectLeaseRelease>,
-    stripe: usize,
-    remaining_targets: AtomicUsize,
-}
-
-impl Drop for DirectLeaseGuard {
-    fn drop(&mut self) {
-        self.progress.release(self.stripe);
-    }
+    fn release_hold(&self, stripe: usize);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -378,8 +390,8 @@ pub(crate) struct FrameProgress<T: ReconSample> {
 }
 
 impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
-    fn release(&self, stripe: usize) {
-        self.release_direct(stripe);
+    fn release_hold(&self, stripe: usize) {
+        self.release_direct_hold(stripe);
     }
 }
 
@@ -390,8 +402,12 @@ impl<T: ReconSample> FrameProgress<T> {
     /// # Errors
     ///
     /// Returns the workspace allocation's own diagnostic.
-    pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
-        let workspace = DirectWorkspace::new(CurrentFrameWorkspace::new_recycled(info)?); // every row is published by a filter stripe before any consumer may read past the watermark
+    pub(crate) fn recycled(
+        info: DecodedFrameInfo,
+        recycled: &mut splot_recon::FramePlaneSamples<T>,
+    ) -> Result<Self> {
+        let workspace =
+            DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?); // every row is published by a filter stripe before any consumer may read past the watermark
         Ok(Self {
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
@@ -400,6 +416,11 @@ impl<T: ReconSample> FrameProgress<T> {
             luma_height: info.coded_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
+        Self::recycled(info, &mut splot_recon::FramePlaneSamples::default())
     }
 
     /// Publishes the terminal watermark of a filter phase that ended.
@@ -435,10 +456,16 @@ impl<T: ReconSample> FrameProgress<T> {
             }
             next = end;
         }
+        let mut stripes = Vec::new();
+        if stripes.try_reserve_exact(ranges.len()).is_err() {
+            return false;
+        }
+        stripes.extend(ranges.iter().map(|&(_, end)| StripeProgress {
+            end,
+            ..StripeProgress::default()
+        }));
         let layout = ProgressLayout {
-            stripe_ends: ranges.iter().map(|&(_, end)| end).collect(),
-            landed: vec![false; ranges.len()],
-            leased: vec![false; ranges.len()],
+            stripes,
             direct_aligned: ranges
                 .iter()
                 .take(ranges.len().saturating_sub(1))
@@ -454,24 +481,21 @@ impl<T: ReconSample> FrameProgress<T> {
         stripe: usize,
     ) -> Option<DirectStripeLease<T>> {
         let layout = self.layout.get()?;
-        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut layout = layout.lock();
         if layout.freezing
             || !layout.direct_aligned
-            || layout.landed.get(stripe).copied()?
-            || *layout.leased.get(stripe)?
+            || layout.stripes.get(stripe)?.landed
+            || layout.stripes.get(stripe)?.leased
         {
             return None;
         }
         let start = if stripe == 0 {
             0
         } else {
-            *layout.stripe_ends.get(stripe - 1)?
+            layout.stripes.get(stripe - 1)?.end
         };
-        let end = *layout.stripe_ends.get(stripe)?;
-        let workspace_guard = self
-            .workspace
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
+        let end = layout.stripes.get(stripe)?.end;
+        let workspace_guard = self.workspace.read();
         let workspace = workspace_guard.as_ref()?;
         let chroma_start = start >> self.subsampling_y;
         let chroma_end = end.div_ceil(1 << self.subsampling_y);
@@ -481,37 +505,66 @@ impl<T: ReconSample> FrameProgress<T> {
         if u.is_some() != v.is_some() {
             return None;
         }
-        layout.leased[stripe] = true;
+        layout.stripes[stripe].leased = true;
+        let holds = 2 + u32::from(u.is_some()) + u32::from(v.is_some());
+        if let Some(slot) = layout
+            .stripes
+            .get_mut(stripe)
+            .map(|stripe| &mut stripe.holds)
+        {
+            *slot = holds;
+        }
         drop(workspace_guard);
         drop(layout);
         let progress: Arc<dyn DirectLeaseRelease> = self.clone();
-        let lease = Arc::new(DirectLeaseGuard {
-            progress,
-            stripe,
-            remaining_targets: AtomicUsize::new(
-                1 + usize::from(u.is_some()) + usize::from(v.is_some()),
-            ),
-        });
-        let y = y.into_target(Arc::clone(&lease));
-        let u = u.map(|region| region.into_target(Arc::clone(&lease)));
-        let v = v.map(|region| region.into_target(Arc::clone(&lease)));
+        let y = y.into_target(Arc::clone(&progress), stripe);
+        let u = u.map(|region| region.into_target(Arc::clone(&progress), stripe));
+        let v = v.map(|region| region.into_target(progress, stripe));
         Some(DirectStripeLease {
             progress: Arc::clone(self),
             stripe,
             target: Some(DirectStripeTarget {
                 planes: [Some(y), u, v],
             }),
-            lease,
         })
     }
 
-    fn release_direct(&self, stripe: usize) {
-        if let Some(layout) = self.layout.get() {
-            let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(leased) = layout.leased.get_mut(stripe) {
-                *leased = false;
+    /// Drops one holder of a stripe's direct lease, releasing it at zero.
+    fn release_direct_hold(&self, stripe: usize) {
+        let Some(layout) = self.layout.get() else {
+            return;
+        };
+        let mut layout = layout.lock();
+        let released = match layout
+            .stripes
+            .get_mut(stripe)
+            .map(|stripe| &mut stripe.holds)
+        {
+            Some(holds) => {
+                *holds = holds.saturating_sub(1);
+                *holds == 0
             }
+            None => return,
+        };
+        if released
+            && let Some(leased) = layout
+                .stripes
+                .get_mut(stripe)
+                .map(|stripe| &mut stripe.leased)
+        {
+            *leased = false;
         }
+    }
+
+    /// Holders left on a stripe's direct lease.
+    fn direct_holds(&self, stripe: usize) -> u32 {
+        self.layout.get().map_or(0, |layout| {
+            layout
+                .lock()
+                .stripes
+                .get(stripe)
+                .map_or(0, |stripe| stripe.holds)
+        })
     }
 
     /// Records that one stripe's samples have landed in the workspace and
@@ -521,7 +574,7 @@ impl<T: ReconSample> FrameProgress<T> {
         let Some(layout) = self.layout.get() else {
             return;
         };
-        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut layout = layout.lock();
         let rows = complete_stripe(&mut layout, stripe);
         drop(layout);
         self.published_luma_rows.publish(rows);
@@ -531,8 +584,12 @@ impl<T: ReconSample> FrameProgress<T> {
         let Some(layout) = self.layout.get() else {
             return;
         };
-        let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(leased) = layout.leased.get_mut(stripe) else {
+        let mut layout = layout.lock();
+        let Some(leased) = layout
+            .stripes
+            .get_mut(stripe)
+            .map(|stripe| &mut stripe.leased)
+        else {
             return;
         };
         *leased = false;
@@ -572,10 +629,7 @@ impl<T: ReconSample> FrameProgress<T> {
     pub(crate) fn read(&self) -> Option<PublishedFrame<'_, T>> {
         let rows = self.published_luma_rows();
         let luma_rows = NonZeroUsize::new(rows)?;
-        let workspace = self
-            .workspace
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
+        let workspace = self.workspace.read();
         if workspace.is_none() {
             return None;
         }
@@ -608,42 +662,42 @@ impl<T: ReconSample> FrameProgress<T> {
         publish: impl FnOnce(splot_recon::DecodedFrame<T>) -> R,
     ) -> Result<R> {
         if let Some(layout) = self.layout.get() {
-            let mut layout = layout.lock().unwrap_or_else(PoisonError::into_inner);
-            if layout.leased.iter().any(|&leased| leased) {
+            let mut layout = layout.lock();
+            if layout.stripes.iter().any(|stripe| stripe.leased) {
                 return Err(live_direct_lease());
             }
             layout.freezing = true;
         }
-        let mut guard = self
-            .workspace
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut guard = self.workspace.write();
         let workspace = guard.take().ok_or_else(taken_workspace)?;
         Ok(publish(workspace.into_workspace().freeze()?))
     }
 }
 
 fn complete_stripe(layout: &mut ProgressLayout, stripe: usize) -> usize {
-    let Some(landed) = layout.landed.get_mut(stripe) else {
+    let Some(landed) = layout
+        .stripes
+        .get_mut(stripe)
+        .map(|stripe| &mut stripe.landed)
+    else {
         return layout
             .prefix
             .checked_sub(1)
-            .and_then(|last| layout.stripe_ends.get(last).copied())
+            .and_then(|last| layout.stripes.get(last).map(|stripe| stripe.end))
             .unwrap_or_default();
     };
     *landed = true;
     while layout
-        .landed
+        .stripes
         .get(layout.prefix)
-        .copied()
-        .unwrap_or_default()
+        .is_some_and(|stripe| stripe.landed)
     {
         layout.prefix += 1;
     }
     layout
         .prefix
         .checked_sub(1)
-        .and_then(|last| layout.stripe_ends.get(last).copied())
+        .and_then(|last| layout.stripes.get(last).map(|stripe| stripe.end))
         .unwrap_or_default()
 }
 

@@ -85,7 +85,9 @@ pub use dequant_process::{
 pub use error::{ReconError, Result};
 pub use film_grain::apply_film_grain;
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
-pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes, SharedFrame};
+pub use frame::{
+    DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, RetiredFramePlanes, SharedFrame,
+};
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
 pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput, visible_byte_len};
 pub use intra::{
@@ -195,10 +197,9 @@ pub use wienerns_filter::{
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect,
-    CurrentFrameRectRows, CurrentFrameRectRowsMut, CurrentFrameSurface, CurrentFrameWorkspace,
-    InterIntraMode, IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameBands,
-    OwnedFramePlaneBand, OwnedFrameRect, OwnedFrameRectRows, OwnedFrameRowBand, WorkspaceRectRows,
-    wedge_mask_plane_sample,
+    CurrentFrameRectRowsMut, CurrentFrameSurface, CurrentFrameWorkspace, InterIntraMode,
+    IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect, OwnedFrameRectRows,
+    WorkspaceRectRows, wedge_mask_plane_sample,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

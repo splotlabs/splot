@@ -116,12 +116,8 @@ fn luma_palette_grid_stores_one_palette_per_block() {
     assert_eq!(state.palette_at(1, 0), Some(palette));
     assert_eq!(state.palette_at(2, 1), Some(palette));
     assert_eq!(state.palette_at(0, 0), None);
-}
-
-#[test]
-fn luma_palette_grid_cell_stays_pointer_sized() {
-    assert_eq!(size_of::<Option<NonZeroUsize>>(), size_of::<usize>());
-    assert!(size_of::<Option<NonZeroUsize>>() < size_of::<Option<LumaPalette>>());
+    assert_eq!(size_of::<Option<NonZeroU32>>(), size_of::<u32>());
+    assert!(size_of::<Option<NonZeroU32>>() < size_of::<Option<LumaPalette>>());
 }
 
 #[test]

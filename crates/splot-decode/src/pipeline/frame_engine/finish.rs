@@ -244,7 +244,7 @@ impl<T: ReconSample> WalkedFrame<T> {
 pub(crate) fn finish_walked_frame<T: ReconSample>(
     walked: WalkedFrame<T>,
     progress: Option<Arc<FrameProgress<T>>>,
-    admit: Option<&dyn splot_parallel::Admit<'_>>,
+    admit: Option<&dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>>,
     publish: impl FnOnce(SharedFrame<T>),
 ) -> Result<FrameFilterRecords> {
     let WalkedFrame {

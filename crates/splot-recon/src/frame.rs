@@ -116,6 +116,48 @@ impl<T: ReconSample> FramePlanes<T> {
     }
 }
 
+/// The sample buffers of one frame's planes, kept for the next frame's.
+///
+/// A frame that no reference slot holds any more still owns three sizeable
+/// allocations. Handing them over here lets the frame that takes its place in
+/// the slot reuse them instead of asking the allocator for the same bytes
+/// again, which is what dav2d's picture pool does for the same lifetime.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct FramePlaneSamples<T: ReconSample> {
+    planes: [Vec<T>; 3],
+}
+
+impl<T: ReconSample> FramePlaneSamples<T> {
+    /// Collects one frame's plane buffers, absent chroma included.
+    #[must_use]
+    pub fn new(y: Vec<T>, u: Option<Vec<T>>, v: Option<Vec<T>>) -> Self {
+        Self {
+            planes: [y, u.unwrap_or_default(), v.unwrap_or_default()],
+        }
+    }
+
+    /// Takes the buffer kept for `plane`, leaving nothing behind.
+    #[must_use]
+    pub fn take(&mut self, plane: PlaneId) -> Vec<T> {
+        core::mem::take(&mut self.planes[plane.index()])
+    }
+}
+
+/// One frame's retired plane buffers, in whichever storage depth it decoded to.
+///
+/// The pipeline hands buffers between frames through channels that do not carry
+/// the sample type, so the depth travels with the buffers.
+#[derive(Debug, Default)]
+pub enum RetiredFramePlanes {
+    /// No frame has handed its buffers over yet.
+    #[default]
+    None,
+    /// Eight-bit sample storage.
+    Eight(FramePlaneSamples<u8>),
+    /// Ten-bit sample storage.
+    Ten(FramePlaneSamples<u16>),
+}
+
 /// Immutable decoded output frame made of owned planes.
 ///
 /// Does not implement `Clone`: it owns the frame's sample storage. Borrow it as a
@@ -169,6 +211,19 @@ impl<T: ReconSample> DecodedFrame<T> {
         }
 
         Ok(Self { info, planes })
+    }
+
+    /// Hands this frame's sample buffers to the frame that replaces it.
+    #[must_use]
+    pub fn into_plane_samples(self) -> FramePlaneSamples<T> {
+        let FramePlanes { y, u, v } = self.planes;
+        FramePlaneSamples {
+            planes: [
+                y.into_samples(),
+                u.map(Plane::into_samples).unwrap_or_default(),
+                v.map(Plane::into_samples).unwrap_or_default(),
+            ],
+        }
     }
 
     /// Returns the decoded output frame metadata.
@@ -274,29 +329,18 @@ impl<T: ReconSample> SharedFrame<T> {
         self.inner.as_frame_ref()
     }
 
+    /// Takes the frame back when this is its last handle.
+    ///
+    /// Returns `None` while any other handle is still sharing the storage, so a
+    /// caller reclaiming a frame's buffers cannot take them from a live reader.
+    #[must_use]
+    pub fn into_frame(self) -> Option<DecodedFrame<T>> {
+        Arc::into_inner(self.inner)
+    }
+
     /// Returns the number of live handles sharing this frame storage.
     pub fn handle_count(&self) -> usize {
         Arc::strong_count(&self.inner)
-    }
-}
-
-/// Returns the frame's plane sample buffers to the reconstruction-plane pool
-/// when the last owner releases the frame.
-///
-/// Reclaiming on drop covers every release path — the driver retiring a frame,
-/// a reference slot being replaced, an output handle going away — so a decoded
-/// frame's storage funds the next frame's workspace instead of being freed and
-/// reallocated. It can never disturb a still-referenced frame: the drop only
-/// runs once no handle remains.
-impl<T: ReconSample> Drop for DecodedFrame<T> {
-    fn drop(&mut self) {
-        crate::workspace::recycle_recon_plane_buffer(self.planes.y.take_samples());
-        if let Some(u) = self.planes.u.as_mut() {
-            crate::workspace::recycle_recon_plane_buffer(u.take_samples());
-        }
-        if let Some(v) = self.planes.v.as_mut() {
-            crate::workspace::recycle_recon_plane_buffer(v.take_samples());
-        }
     }
 }
 

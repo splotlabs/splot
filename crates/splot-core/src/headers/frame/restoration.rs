@@ -44,7 +44,7 @@ use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 mod wienerns;
 
 use wienerns::parse_frame_wiener_ns_filter;
-pub use wienerns::{WienerNsFrameFilterBank, WienerNsFrameFilterClass};
+pub use wienerns::{MAX_WIENER_NS_CLASSES, WienerNsFrameFilterBank, WienerNsFrameFilterClass};
 
 /// `RESTORATION_TILESIZE_MAX` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`):
 /// maximum size of a loop-restoration tile. Exposed `pub(crate)` so the § 5.18.7.11 writer
@@ -56,7 +56,11 @@ pub(crate) const RESTORATION_TILESIZE_MAX: u32 = 512;
 const RESTORE_SWITCHABLE_TYPES: usize = 3;
 
 /// Maximum `NumPlanes` (Y, U, V); bounds the per-plane loop-restoration scratch.
-const MAX_LR_PLANES: usize = 3;
+/// Planes an `lr_params()` payload may carry.
+pub const MAX_LR_PLANES: usize = 3;
+
+/// Planes a `ccso_params()` payload may carry.
+pub const MAX_CCSO_PLANES: usize = 3;
 
 /// `Decode_Num_Filter_Classes[8]` (AV2 § 5.18.7.11, mirror :7410): maps the f(3)
 /// `num_filter_classes_idx` to `NumFilterClasses`.
@@ -96,9 +100,10 @@ pub fn ccso_quant_step(scale_idx: u8, quant_idx: u8) -> u16 {
 
 /// `FrameRestorationType[plane]` (AV2 § 5.18.7.11 / § 6.17.7.7, mirror semantics
 /// :5680-5688): the loop-restoration tool selected for a plane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameRestorationType {
     /// `RESTORE_NONE` (0).
+    #[default]
     None,
     /// `RESTORE_PC_WIENER` (1).
     PcWiener,
@@ -209,7 +214,7 @@ pub struct LrGeometry {
 /// Retained frame-level Wiener-NS filter taps for one reference slot, shared
 /// from the decoder's § 7.23 reference buffer. `None` marks a slot with no
 /// frame-level filter, avoiding an allocation for the common empty case.
-pub type SlotFrameFilterTaps = Option<Arc<[Vec<Vec<i16>>; 3]>>;
+pub type SlotFrameFilterTaps = Option<Arc<[Vec<Arc<[i16]>>; 3]>>;
 
 /// Reference-frame Wiener-NS state used by the inter `lr_params()` temporal-copy arm.
 ///
@@ -267,7 +272,7 @@ impl LrGeometry {
 }
 
 /// One plane's parsed `lr_params()` per-plane state (AV2 § 5.18.7.11).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LrPlaneParams {
     /// `FrameRestorationType[plane]` (selected via `tool_index ns(n)`).
     pub restoration_type: FrameRestorationType,
@@ -292,7 +297,12 @@ pub struct LrParams {
     /// `UsesLr`: any plane uses loop restoration.
     pub uses_lr: bool,
     /// Per-plane parsed state (`NumPlanes` entries; empty when restoration is disabled).
-    pub planes: Vec<LrPlaneParams>,
+    /// Per-plane parsed state, held inline: AV2 codes at most
+    /// `MAX_LR_PLANES` planes.
+    pub planes: crate::tile::InlineVec<
+        LrPlaneParams,
+        { crate::headers::frame::restoration::MAX_LR_PLANES },
+    >,
     /// `LoopRestorationSize[0..3]` derived per plane.
     pub loop_restoration_size: [u32; 3],
 }
@@ -327,7 +337,7 @@ pub fn parse_lr_params(
         geometry,
         0,
         [0; 3],
-        &[Vec::new(), Vec::new(), Vec::new()],
+        &[&[], &[], &[]],
         LrTemporalReferenceView::unknown(&[]),
     )
 }
@@ -352,7 +362,7 @@ pub fn parse_lr_params_for_inter(
     geometry: LrGeometry,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
-    reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
+    reference_filter_taps: &[&[Option<&[i16]>]; 3],
     temporal_references: LrTemporalReferenceView<'_>,
 ) -> Result<LrParams> {
     parse_lr_params_with_references(
@@ -377,20 +387,20 @@ fn parse_lr_params_with_references(
     geometry: LrGeometry,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
-    reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
+    reference_filter_taps: &[&[Option<&[i16]>]; 3],
     temporal_references: LrTemporalReferenceView<'_>,
 ) -> Result<LrParams> {
     if coded_lossless || !view.enable_restoration {
         return Ok(LrParams {
             uses_lr: false,
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
             loop_restoration_size: default_restoration_size(geometry),
         });
     }
 
     let mut uses_luma_lr = false;
     let mut uses_chroma_lr = false;
-    let mut planes: Vec<LrPlaneParams> = Vec::with_capacity(usize::from(num_planes));
+    let mut planes = crate::tile::InlineVec::default();
     let mut temporal_pred_flags = [false; MAX_LR_PLANES];
     let mut temporal_ref_indices = [0usize; MAX_LR_PLANES];
 
@@ -452,12 +462,16 @@ fn parse_lr_params_with_references(
         if let Some(slot) = temporal_ref_indices.get_mut(plane) {
             *slot = temporal_ref_index;
         }
-        planes.push(LrPlaneParams {
-            restoration_type,
-            frame_filters_on,
-            num_filter_classes,
-            frame_filter_bank: None,
-        });
+        planes
+            .push(LrPlaneParams {
+                restoration_type,
+                frame_filters_on,
+                num_filter_classes,
+                frame_filter_bank: None,
+            })
+            .ok_or(crate::error::Error::Unimplemented {
+                feature: "lr_params_plane_count",
+            })?;
     }
 
     let uses_lr = uses_luma_lr || uses_chroma_lr;
@@ -495,9 +509,7 @@ fn parse_lr_params_with_references(
         } else {
             let classes = plane_params.num_filter_classes.unwrap_or(1);
             let num_ref_filters = reference_filter_counts.get(plane).copied().unwrap_or(0);
-            let ref_taps = reference_filter_taps
-                .get(plane)
-                .map_or(&[][..], Vec::as_slice);
+            let ref_taps = reference_filter_taps.get(plane).copied().unwrap_or(&[]);
             plane_params.frame_filter_bank = Some(parse_frame_wiener_ns_filter(
                 reader,
                 plane,
@@ -561,8 +573,8 @@ fn copy_temporal_frame_filter(
     else {
         return;
     };
-    plane_params.frame_filter_bank = Some(WienerNsFrameFilterBank {
-        classes: classes
+    let Some(classes) = crate::tile::InlineVec::from_iter_checked(
+        classes
             .iter()
             .take(class_count)
             .enumerate()
@@ -572,10 +584,12 @@ fn copy_temporal_frame_filter(
                 ref_bank: 0,
                 subset: None,
                 wiener_ns_uv_sym: false,
-                coeffs: coeffs.clone(),
-            })
-            .collect(),
-    });
+                coeffs: Arc::clone(coeffs),
+            }),
+    ) else {
+        return;
+    };
+    plane_params.frame_filter_bank = Some(WienerNsFrameFilterBank { classes });
 }
 
 /// Reads the luma/chroma restoration size `shift` (AV2 § 5.18.7.11, mirror :7287-7369).
@@ -641,7 +655,7 @@ pub(crate) const fn default_restoration_size(geometry: LrGeometry) -> [u32; 3] {
 /// One plane's parsed `ccso_params()` state (AV2 § 5.18.7.12).
 ///
 /// Not `Copy`: [`Self::ccso_offset_idx`] owns the per-plane `ccso_offset_idx` array.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CcsoPlaneParams {
     /// `ccso_planes[plane]`: whether CCSO is enabled for the plane.
     pub ccso_planes: bool,
@@ -685,8 +699,8 @@ pub struct CcsoParams {
     /// is disabled (the early return leaves all `ccso_planes` `0`).
     pub ccso_frame_flag: Option<bool>,
     /// Per-plane parsed state (`NumPlanes` entries; empty when CCSO is disabled or the
-    /// frame flag is `0`).
-    pub planes: Vec<CcsoPlaneParams>,
+    /// frame flag is `0`). Held inline: AV2 codes at most `MAX_CCSO_PLANES`.
+    pub planes: crate::tile::InlineVec<CcsoPlaneParams, MAX_CCSO_PLANES>,
 }
 
 /// Parses `ccso_params()` (AV2 v1.0.0 § 5.18.7.12) on the intra path.
@@ -742,7 +756,7 @@ fn parse_ccso_params_with_references(
     if coded_lossless || !view.enable_ccso {
         return Ok(CcsoParams {
             ccso_frame_flag: None,
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
         });
     }
 
@@ -754,11 +768,11 @@ fn parse_ccso_params_with_references(
     if !ccso_frame_flag {
         return Ok(CcsoParams {
             ccso_frame_flag: Some(false),
-            planes: Vec::new(),
+            planes: crate::tile::InlineVec::default(),
         });
     }
 
-    let mut planes: Vec<CcsoPlaneParams> = Vec::with_capacity(usize::from(num_planes));
+    let mut planes = crate::tile::InlineVec::default();
     for _ in 0..usize::from(num_planes) {
         let ccso_planes = reader.read_flag()?;
         let mut plane_params = CcsoPlaneParams {
@@ -792,7 +806,11 @@ fn parse_ccso_params_with_references(
                 }
             }
             if reuse_ccso {
-                planes.push(plane_params);
+                planes
+                    .push(plane_params)
+                    .ok_or(crate::error::Error::Unimplemented {
+                        feature: "ccso_params_plane_count",
+                    })?;
                 continue;
             }
 
@@ -837,7 +855,11 @@ fn parse_ccso_params_with_references(
             plane_params.ccso_offset_idx = ccso_offset_idx;
         }
 
-        planes.push(plane_params);
+        planes
+            .push(plane_params)
+            .ok_or(crate::error::Error::Unimplemented {
+                feature: "ccso_params_plane_count",
+            })?;
     }
 
     Ok(CcsoParams {
@@ -986,7 +1008,11 @@ mod tests {
         assert_eq!(bank.classes[0].match_index, 0);
         assert_eq!(bank.classes[1].match_index, 1);
         assert!(bank.classes.iter().all(|class| class.merged));
-        assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
+        assert!(
+            bank.classes
+                .iter()
+                .all(|class| class.coeffs.as_ref() == [0; 16].as_slice())
+        );
     }
 
     #[test]
@@ -1012,7 +1038,7 @@ mod tests {
             geom_128_420(),
             1,
             [0; 3],
-            &[Vec::new(), Vec::new(), Vec::new()],
+            &[&[], &[], &[]],
             LrTemporalReferenceView::unknown(&[0]),
         )
         .unwrap();
@@ -1042,7 +1068,7 @@ mod tests {
             geom_128_420(),
             1,
             [1, 0, 0],
-            &[vec![None], Vec::new(), Vec::new()],
+            &[&[None], &[], &[]],
             LrTemporalReferenceView::unknown(&[0]),
         )
         .unwrap_err();
@@ -1068,9 +1094,13 @@ mod tests {
         let mut r = reader(&data);
         let counts = [[1, 0, 0], [2, 0, 0]];
         let taps = [
-            Some(Arc::new([vec![vec![1; 16]], Vec::new(), Vec::new()])),
             Some(Arc::new([
-                vec![vec![3; 16], vec![7; 16]],
+                vec![Arc::from(vec![1; 16])],
+                Vec::new(),
+                Vec::new(),
+            ])),
+            Some(Arc::new([
+                vec![Arc::from(vec![3; 16]), Arc::from(vec![7; 16])],
                 Vec::new(),
                 Vec::new(),
             ])),
@@ -1083,7 +1113,7 @@ mod tests {
             geom_128_420(),
             2,
             [0; 3],
-            &[Vec::new(), Vec::new(), Vec::new()],
+            &[&[], &[], &[]],
             LrTemporalReferenceView::new(&[0, 1], Some(&counts), Some(&taps)),
         )
         .unwrap();
@@ -1093,14 +1123,18 @@ mod tests {
             .frame_filter_bank
             .as_ref()
             .expect("temporal reference coefficients are retained");
-        assert_eq!(bank.classes[0].coeffs, vec![3; 16]);
-        assert_eq!(bank.classes[1].coeffs, vec![7; 16]);
+        assert_eq!(bank.classes[0].coeffs.as_ref(), [3; 16].as_slice());
+        assert_eq!(bank.classes[1].coeffs.as_ref(), [7; 16].as_slice());
     }
 
     #[test]
     fn temporal_filter_copy_uses_alternate_chroma_and_rejects_short_bank() {
         let counts = [[2, 0, 1]];
-        let taps = [Some(Arc::new([Vec::new(), Vec::new(), vec![vec![9; 8]]]))];
+        let taps = [Some(Arc::new([
+            Vec::new(),
+            Vec::new(),
+            vec![Arc::from(vec![9; 8])],
+        ]))];
         let references = LrTemporalReferenceView::new(&[0], Some(&counts), Some(&taps));
         let mut chroma = LrPlaneParams {
             restoration_type: FrameRestorationType::WienerNonsep,
@@ -1113,7 +1147,7 @@ mod tests {
             .frame_filter_bank
             .as_ref()
             .expect("U falls back to the retained V bank");
-        assert_eq!(bank.classes[0].coeffs, vec![9; 8]);
+        assert_eq!(bank.classes[0].coeffs.as_ref(), [9; 8].as_slice());
 
         let mut luma = LrPlaneParams {
             restoration_type: FrameRestorationType::WienerNonsep,

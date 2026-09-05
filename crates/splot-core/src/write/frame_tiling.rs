@@ -361,8 +361,8 @@ fn check_reuse_layout(
         || info.tile_rows != reused.tile_rows
         || info.tile_cols_log2 != reused.tile_cols_log2
         || info.tile_rows_log2 != reused.tile_rows_log2
-        || info.mi_col_starts != mi_col_starts
-        || info.mi_row_starts != mi_row_starts
+        || info.mi_col_starts.as_ref() != mi_col_starts.as_slice()
+        || info.mi_row_starts.as_ref() != mi_row_starts.as_slice()
     {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "reuse_tile_params",
@@ -457,8 +457,8 @@ fn check_explicit_layout(
         || info.tile_rows != layout.params.tile_rows
         || info.tile_cols_log2 != layout.params.tile_cols_log2
         || info.tile_rows_log2 != layout.params.tile_rows_log2
-        || info.mi_col_starts != mi_col_starts
-        || info.mi_row_starts != mi_row_starts
+        || info.mi_col_starts.as_ref() != mi_col_starts.as_slice()
+        || info.mi_row_starts.as_ref() != mi_row_starts.as_slice()
     {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "tile_params_summary",
@@ -505,8 +505,8 @@ fn check_bridge_layout(
         || info.tile_rows != layout.params.tile_rows
         || info.tile_cols_log2 != layout.params.tile_cols_log2
         || info.tile_rows_log2 != layout.params.tile_rows_log2
-        || info.mi_col_starts != mi_col_starts
-        || info.mi_row_starts != mi_row_starts
+        || info.mi_col_starts.as_ref() != mi_col_starts.as_slice()
+        || info.mi_row_starts.as_ref() != mi_row_starts.as_slice()
     {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "tile_params_summary",

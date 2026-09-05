@@ -6,6 +6,7 @@
 use splot_recon::{DecodedFrameInfo, OutputIndex, PlaneRect, PlaneSize};
 
 use super::*;
+use crate::bitstream::tile_payload::LumaCoeffBlock;
 
 fn interior() -> NeighbourAvailability {
     NeighbourAvailability::new(true, true, 0, 0)
@@ -59,7 +60,7 @@ fn seeded_cfl_scratch() -> crate::pipeline::general_intra::GeneralIntraReconScra
 fn zero_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
-        quant: Vec::new(),
+        quant_range: 0..0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -116,7 +117,7 @@ fn invalid_cfl_filter_preserves_prediction_scratch() {
     let result = reconstruct_general_intra_chroma_cfl_block_into(
         &mut scratch,
         &mut frame,
-        &zero_block(),
+        zero_block().view(&[]),
         PlaneId::U,
         0,
         0,
@@ -159,7 +160,7 @@ fn invalid_mhccp_filter_preserves_prediction_scratch() {
     let result = reconstruct_general_intra_chroma_cfl_block_into(
         &mut scratch,
         &mut frame,
-        &zero_block(),
+        zero_block().view(&[]),
         PlaneId::U,
         0,
         0,
@@ -472,7 +473,7 @@ fn cfl_reconstruction_supports_non_420_chroma_geometry() {
         reconstruct_general_intra_chroma_cfl_block_into(
             &mut scratch,
             &mut frame,
-            &zero_block(),
+            zero_block().view(&[]),
             PlaneId::U,
             0,
             0,

@@ -30,6 +30,7 @@ use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateErro
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
+use crate::reference::buffer::RefSlots;
 use crate::reference::buffer::ReferenceMetadata;
 use crate::{
     DecodeIvfFrameContext, DecodeOptions, DecodePlannedObu, DecodeSourceIssue, DecodeStreamPlan,
@@ -152,6 +153,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference,
         bit_depth,
         geometry,
+        &mut scratch.reclaim_retired_planes(),
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let InterBlockDecodeOutput {
@@ -883,6 +885,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
+    residual_coeffs: &[i32],
     qindex: u32,
     luma_use_tcq: bool,
     enable_inter_ddt: bool,
@@ -905,6 +908,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
                 scratch,
                 sink,
                 [block, v_block],
+                residual_coeffs,
                 qindex,
                 cctx_type,
                 use_ddt,
@@ -918,7 +922,8 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
         crate::pipeline::reconstruct::reconstruct_inter_block_residual_rect_into(
             sink,
-            &block.coeffs,
+            crate::bitstream::tile_payload::CoeffBlock::new(&block.coeffs, residual_coeffs)
+                .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?,
             block.plane,
             block.x,
             block.y,
@@ -982,10 +987,12 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
     v.plane == ReconPlaneId::V && u.x == v.x && u.y == v.y && u.tx_size == v.tx_size
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     [u, v]: [&InterResidualBlock; 2],
+    residual_coeffs: &[i32],
     qindex: u32,
     cctx_type: usize,
     use_ddt: bool,
@@ -1004,9 +1011,9 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     read_inter_residual_prediction(sink, u, u_rect, &mut scratch.u_prediction)?;
     read_inter_residual_prediction(sink, v, v_rect, &mut scratch.v_prediction)?;
     reconstruct_general_intra_chroma_cctx_pair_into(
-        &u.coeffs,
+        crate::bitstream::tile_payload::CoeffBlock::new(&u.coeffs, residual_coeffs)?,
         &scratch.u_prediction,
-        &v.coeffs,
+        crate::bitstream::tile_payload::CoeffBlock::new(&v.coeffs, residual_coeffs)?,
         &scratch.v_prediction,
         qindex,
         log2_width,
@@ -1169,29 +1176,30 @@ pub(crate) struct InterResidualBlock {
 }
 pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) store: ReferenceFrameStore<RefFrameSlot<T>>,
-    pub(crate) ref_valid: Vec<bool>,
-    pub(crate) ref_order_hint: Vec<u32>,
-    pub(crate) ref_order_hint_lsbs: Vec<u32>,
-    pub(crate) ref_implicit_output_frame: Vec<bool>,
-    pub(crate) ref_immediate_output_frame: Vec<bool>,
-    pub(crate) ref_frame_width: Vec<u32>,
-    pub(crate) ref_frame_height: Vec<u32>,
-    pub(crate) ref_base_q_idx: Vec<u32>,
-    pub(crate) ref_counter: Vec<u32>,
-    ref_chroma_ac_deltas: Vec<[i32; 2]>,
-    pub(crate) ref_is_inter: Vec<bool>,
-    pub(crate) ref_long_term_id: Vec<Option<u32>>,
-    pub(crate) ref_num_total_refs: Vec<u32>,
+    pub(crate) ref_valid: RefSlots<bool>,
+    pub(crate) ref_order_hint: RefSlots<u32>,
+    pub(crate) ref_order_hint_lsbs: RefSlots<u32>,
+    pub(crate) ref_implicit_output_frame: RefSlots<bool>,
+    pub(crate) ref_immediate_output_frame: RefSlots<bool>,
+    pub(crate) ref_frame_width: RefSlots<u32>,
+    pub(crate) ref_frame_height: RefSlots<u32>,
+    pub(crate) ref_base_q_idx: RefSlots<u32>,
+    pub(crate) ref_counter: RefSlots<u32>,
+    ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
+    pub(crate) ref_is_inter: RefSlots<bool>,
+    pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
+    pub(crate) ref_num_total_refs: RefSlots<u32>,
     pub(crate) saved_global_motion_order_hints:
-        Vec<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
-    pub(crate) saved_global_motion_params: Vec<splot_core::headers::frame::SavedGlobalMotionParams>,
-    pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
-    pub(crate) lr_frame_filter_taps: Vec<SlotFrameFilterTaps>,
-    pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: Vec<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
-    pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoGridHandle>>,
-    pub(crate) ref_segment_ids: Vec<Option<SegmentIdMapHandle>>,
-    pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
+        RefSlots<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
+    pub(crate) saved_global_motion_params:
+        RefSlots<splot_core::headers::frame::SavedGlobalMotionParams>,
+    pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
+    pub(crate) lr_frame_filter_taps: RefSlots<SlotFrameFilterTaps>,
+    pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
+    pub(crate) ref_ccso_params: RefSlots<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
+    pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
+    pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
+    pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
 }
 
 impl<T: ReconSample> InterReferenceState<T> {
@@ -1201,31 +1209,10 @@ impl<T: ReconSample> InterReferenceState<T> {
     /// Returns [`splot_recon::ReconError`] when the minimal store capacity is
     /// rejected.
     pub(crate) fn empty() -> splot_recon::Result<Self> {
-        Ok(Self {
-            store: ReferenceFrameStore::with_capacity(1)?,
-            ref_valid: Vec::new(),
-            ref_order_hint: Vec::new(),
-            ref_order_hint_lsbs: Vec::new(),
-            ref_implicit_output_frame: Vec::new(),
-            ref_immediate_output_frame: Vec::new(),
-            ref_frame_width: Vec::new(),
-            ref_frame_height: Vec::new(),
-            ref_base_q_idx: Vec::new(),
-            ref_counter: Vec::new(),
-            ref_chroma_ac_deltas: Vec::new(),
-            ref_is_inter: Vec::new(),
-            ref_long_term_id: Vec::new(),
-            ref_num_total_refs: Vec::new(),
-            saved_global_motion_order_hints: Vec::new(),
-            saved_global_motion_params: Vec::new(),
-            lr_frame_filter_class_counts: Vec::new(),
-            lr_frame_filter_taps: Vec::new(),
-            ref_frame_cdfs: Vec::new(),
-            ref_ccso_params: Vec::new(),
-            ref_ccso_unit_grids: Vec::new(),
-            ref_segment_ids: Vec::new(),
-            ref_motion_fields: Vec::new(),
-        })
+        Ok(Self::from_metadata(
+            ReferenceFrameStore::with_capacity(1)?,
+            ReferenceMetadata::default(),
+        ))
     }
 
     /// Shares the selected reference slots' published § 7.9 motion fields.
@@ -1276,65 +1263,37 @@ impl<T: ReconSample> InterReferenceState<T> {
 
     pub(crate) fn from_metadata(
         store: ReferenceFrameStore<RefFrameSlot<T>>,
-        metadata: ReferenceMetadata,
+        mut metadata: ReferenceMetadata,
     ) -> Self {
         Self {
             store,
-            ref_valid: metadata.ref_valid,
-            ref_order_hint: metadata.ref_order_hint,
-            ref_order_hint_lsbs: metadata.ref_order_hint_lsbs,
-            ref_implicit_output_frame: metadata.ref_implicit_output_frame,
-            ref_immediate_output_frame: metadata.ref_immediate_output_frame,
-            ref_frame_width: metadata.ref_frame_width,
-            ref_frame_height: metadata.ref_frame_height,
-            ref_base_q_idx: metadata.ref_base_q_idx,
-            ref_counter: metadata.ref_counter,
-            ref_chroma_ac_deltas: metadata.ref_chroma_ac_deltas,
-            ref_is_inter: metadata.ref_is_inter,
-            ref_long_term_id: metadata.ref_long_term_id,
-            ref_num_total_refs: metadata.ref_num_total_refs,
-            saved_global_motion_order_hints: metadata.saved_global_motion_order_hints,
-            saved_global_motion_params: metadata.saved_global_motion_params,
-            lr_frame_filter_class_counts: metadata.lr_frame_filter_class_counts,
-            lr_frame_filter_taps: metadata.lr_frame_filter_taps,
-            ref_frame_cdfs: metadata.ref_frame_cdfs,
-            ref_ccso_params: metadata.ref_ccso_params,
-            ref_ccso_unit_grids: metadata.ref_ccso_unit_grids,
-            ref_segment_ids: metadata.ref_segment_ids,
-            ref_motion_fields: metadata.ref_motion_fields,
-        }
-    }
-}
-
-impl<T: ReconSample> Drop for InterReferenceState<T> {
-    fn drop(&mut self) {
-        let meta = crate::reference::buffer::ReferenceMetadata {
-            ref_valid: std::mem::take(&mut self.ref_valid),
-            ref_order_hint: std::mem::take(&mut self.ref_order_hint),
-            ref_order_hint_lsbs: std::mem::take(&mut self.ref_order_hint_lsbs),
-            ref_implicit_output_frame: std::mem::take(&mut self.ref_implicit_output_frame),
-            ref_immediate_output_frame: std::mem::take(&mut self.ref_immediate_output_frame),
-            ref_frame_width: std::mem::take(&mut self.ref_frame_width),
-            ref_frame_height: std::mem::take(&mut self.ref_frame_height),
-            ref_base_q_idx: std::mem::take(&mut self.ref_base_q_idx),
-            ref_counter: std::mem::take(&mut self.ref_counter),
-            ref_chroma_ac_deltas: std::mem::take(&mut self.ref_chroma_ac_deltas),
-            ref_is_inter: std::mem::take(&mut self.ref_is_inter),
-            ref_long_term_id: std::mem::take(&mut self.ref_long_term_id),
-            ref_num_total_refs: std::mem::take(&mut self.ref_num_total_refs),
-            saved_global_motion_order_hints: std::mem::take(
-                &mut self.saved_global_motion_order_hints,
+            ref_valid: core::mem::take(&mut metadata.ref_valid),
+            ref_order_hint: core::mem::take(&mut metadata.ref_order_hint),
+            ref_order_hint_lsbs: core::mem::take(&mut metadata.ref_order_hint_lsbs),
+            ref_implicit_output_frame: core::mem::take(&mut metadata.ref_implicit_output_frame),
+            ref_immediate_output_frame: core::mem::take(&mut metadata.ref_immediate_output_frame),
+            ref_frame_width: core::mem::take(&mut metadata.ref_frame_width),
+            ref_frame_height: core::mem::take(&mut metadata.ref_frame_height),
+            ref_base_q_idx: core::mem::take(&mut metadata.ref_base_q_idx),
+            ref_counter: core::mem::take(&mut metadata.ref_counter),
+            ref_chroma_ac_deltas: core::mem::take(&mut metadata.ref_chroma_ac_deltas),
+            ref_is_inter: core::mem::take(&mut metadata.ref_is_inter),
+            ref_long_term_id: core::mem::take(&mut metadata.ref_long_term_id),
+            ref_num_total_refs: core::mem::take(&mut metadata.ref_num_total_refs),
+            saved_global_motion_order_hints: core::mem::take(
+                &mut metadata.saved_global_motion_order_hints,
             ),
-            saved_global_motion_params: std::mem::take(&mut self.saved_global_motion_params),
-            lr_frame_filter_class_counts: std::mem::take(&mut self.lr_frame_filter_class_counts),
-            lr_frame_filter_taps: std::mem::take(&mut self.lr_frame_filter_taps),
-            ref_frame_cdfs: std::mem::take(&mut self.ref_frame_cdfs),
-            ref_ccso_params: std::mem::take(&mut self.ref_ccso_params),
-            ref_ccso_unit_grids: std::mem::take(&mut self.ref_ccso_unit_grids),
-            ref_segment_ids: std::mem::take(&mut self.ref_segment_ids),
-            ref_motion_fields: std::mem::take(&mut self.ref_motion_fields),
-        };
-        crate::reference::buffer::recycle_reference_metadata(meta);
+            saved_global_motion_params: core::mem::take(&mut metadata.saved_global_motion_params),
+            lr_frame_filter_class_counts: core::mem::take(
+                &mut metadata.lr_frame_filter_class_counts,
+            ),
+            lr_frame_filter_taps: core::mem::take(&mut metadata.lr_frame_filter_taps),
+            ref_frame_cdfs: core::mem::take(&mut metadata.ref_frame_cdfs),
+            ref_ccso_params: core::mem::take(&mut metadata.ref_ccso_params),
+            ref_ccso_unit_grids: core::mem::take(&mut metadata.ref_ccso_unit_grids),
+            ref_segment_ids: core::mem::take(&mut metadata.ref_segment_ids),
+            ref_motion_fields: core::mem::take(&mut metadata.ref_motion_fields),
+        }
     }
 }
 
@@ -2197,7 +2156,7 @@ pub(crate) use find_mv_stack::{
 };
 pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
 pub(crate) use frame_walk::{
-    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, parse_inter_frame,
+    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, parse_inter_frame_prologue,
     splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;

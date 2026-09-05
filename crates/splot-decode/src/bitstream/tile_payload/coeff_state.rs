@@ -8,12 +8,10 @@
 
 use core::ops::Range;
 use std::collections::TryReserveError;
-use std::sync::{Mutex, MutexGuard};
 
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::PlaneId;
 
-use crate::support::reusable_scratch::with_reusable_scratch;
 use crate::tile::block_context::ChromaSampling;
 
 const PLANE_COUNT: usize = 3;
@@ -24,180 +22,11 @@ const MAX_ADJUSTED_TX_EXTENT: usize = 32;
 pub(crate) const LEVEL_GRID_PAD: usize = 4;
 const MAX_PADDED_COEFF_LEN: usize =
     (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD) * (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD);
-const MAX_RETAINED_COEFF_BUFFERS_PER_WORKER: usize = 64;
-/// Fewest shared quant buffers retained, and the floor the pool-width bound
-/// never drops below.
-const MIN_RETAINED_SHARED_QUANT_BUFFERS: usize = 2_560;
-/// Shared quant buffers retained per worker. Buffers cross from the parse
-/// worker to the commit worker and outlive the frame they were parsed in, so
-/// the count in flight follows the pool width rather than a fixed decode shape.
-const RETAINED_SHARED_QUANT_BUFFERS_PER_WORKER: usize = 1_280;
 
-/// Retains one worker's share per worker, with
-/// [`MIN_RETAINED_SHARED_QUANT_BUFFERS`] as the floor and
-/// [`MAX_RETAINED_COEFF_BUFFER_CAPACITY`] bounding each retained buffer.
-/// Scales per worker only on a pool thread; off-pool callers get the floor.
-fn max_retained_shared_quant_buffers() -> usize {
-    splot_parallel::current_pool_width()
-        .saturating_mul(RETAINED_SHARED_QUANT_BUFFERS_PER_WORKER)
-        .max(MIN_RETAINED_SHARED_QUANT_BUFFERS)
-}
-/// Buffers shed per recycle once the retained count is over the limit.
-const SHED_PER_RECYCLE: usize = 8;
-const MAX_RETAINED_COEFF_BUFFER_CAPACITY: usize = MAX_PADDED_COEFF_LEN;
 static ZERO_QUANT_SIGN: [i8; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
-#[derive(Default)]
-struct TransformCoeffBufferRecycler {
-    levels: Vec<Vec<u8>>,
-    signed: Vec<Vec<i8>>,
-}
-
-thread_local! {
-    static TRANSFORM_COEFF_BUFFERS: core::cell::RefCell<TransformCoeffBufferRecycler> =
-        const { core::cell::RefCell::new(TransformCoeffBufferRecycler {
-            levels: Vec::new(),
-            signed: Vec::new(),
-        }) };
-}
-
-/// Capacity buckets the shared quant pool is split into.
-///
-/// A retained buffer sits in bucket `floor(log2(capacity))`, so every buffer in
-/// bucket `k` holds at least `1 << k` coefficients. Capacities never exceed
-/// [`MAX_RETAINED_COEFF_BUFFER_CAPACITY`], which bounds the bucket count.
-const QUANT_BUCKETS: usize = MAX_RETAINED_COEFF_BUFFER_CAPACITY.ilog2() as usize + 1;
-
-/// Free coefficient-quant storage, bucketed by capacity.
-///
-/// Buffers are handed between workers — the parse worker builds one and the
-/// commit worker drops it — so this pool is shared rather than thread-local.
-/// Bucketing keeps both ends off a scan of the whole pool: a request for `len`
-/// coefficients takes from the first bucket that guarantees `capacity >= len`,
-/// and a returned buffer lands in its own bucket, both in a bounded number of
-/// steps rather than one proportional to the retained count.
-struct QuantBufferPool {
-    buckets: [Vec<Vec<i32>>; QUANT_BUCKETS],
-    retained: usize,
-    limit: usize,
-}
-
-impl QuantBufferPool {
-    const fn new() -> Self {
-        Self {
-            buckets: [const { Vec::new() }; QUANT_BUCKETS],
-            retained: 0,
-            limit: MIN_RETAINED_SHARED_QUANT_BUFFERS,
-        }
-    }
-
-    /// The bucket a buffer of `capacity` coefficients is retained in.
-    fn bucket_of(capacity: usize) -> usize {
-        (capacity.max(1).ilog2() as usize).min(QUANT_BUCKETS - 1)
-    }
-
-    /// The first bucket whose buffers all hold at least `len` coefficients.
-    fn first_fitting_bucket(len: usize) -> usize {
-        (len.max(1).next_power_of_two().ilog2() as usize).min(QUANT_BUCKETS - 1)
-    }
-
-    /// Takes the smallest retained buffer that already holds `len`
-    /// coefficients, falling back to the largest retained one for
-    /// [`zero_buffer`] to grow — the order of preference a best-fit scan over
-    /// the whole pool produced.
-    fn take(&mut self, len: usize) -> Vec<i32> {
-        let fitting = Self::first_fitting_bucket(len);
-        let bucket = (fitting..QUANT_BUCKETS)
-            .chain((0..fitting).rev())
-            .find(|bucket| !self.buckets[*bucket].is_empty());
-        match bucket.and_then(|bucket| self.buckets[bucket].pop()) {
-            Some(buffer) => {
-                self.retained -= 1;
-                buffer
-            }
-            None => Vec::new(),
-        }
-    }
-
-    /// Drops at most [`SHED_PER_RECYCLE`] buffers from the smallest occupied
-    /// buckets, so a limit that fell with the pool width is reached over the
-    /// next recycles instead of in one long hold of the shared lock.
-    fn shed_excess(&mut self) {
-        for _ in 0..SHED_PER_RECYCLE {
-            if self.retained <= self.limit {
-                return;
-            }
-            let Some(bucket) = (0..QUANT_BUCKETS).find(|bucket| !self.buckets[*bucket].is_empty())
-            else {
-                return;
-            };
-            self.buckets[bucket].pop();
-            self.retained -= 1;
-        }
-    }
-
-    /// Retains `buffer`, keeping it in place of the smallest retained buffer
-    /// once the pool is full.
-    ///
-    /// Only the branch that would already have rejected the buffer asks the
-    /// active pool for its width, keeping that query off the per-coefficient
-    /// path, and it takes the width's bound as-is so the limit falls again
-    /// once a wide decode is over.
-    fn recycle(&mut self, buffer: Vec<i32>) {
-        let bucket = Self::bucket_of(buffer.capacity());
-        if self.buckets[bucket].try_reserve(1).is_err() {
-            return;
-        }
-        if self.retained >= self.limit {
-            self.limit = max_retained_shared_quant_buffers();
-            self.shed_excess();
-        }
-        if self.retained < self.limit {
-            self.retained += 1;
-            self.buckets[bucket].push(buffer);
-            return;
-        }
-        if let Some(smallest) = (0..bucket).find(|bucket| !self.buckets[*bucket].is_empty()) {
-            self.buckets[smallest].pop();
-            self.buckets[bucket].push(buffer);
-        }
-    }
-
-    #[cfg(test)]
-    const fn len(&self) -> usize {
-        self.retained
-    }
-
-    #[cfg(test)]
-    const fn is_empty(&self) -> bool {
-        self.retained == 0
-    }
-
-    #[cfg(test)]
-    fn iter(&self) -> impl Iterator<Item = &Vec<i32>> {
-        self.buckets.iter().flatten()
-    }
-}
-
-type SharedQuantBuffers = Mutex<QuantBufferPool>;
-
-static TRANSFORM_COEFF_QUANT_BUFFERS: SharedQuantBuffers = Mutex::new(QuantBufferPool::new());
-
-fn lock_transform_coeff_quant_buffers(
-    buffers: &SharedQuantBuffers,
-) -> MutexGuard<'_, QuantBufferPool> {
-    buffers
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn take_zeroed_buffer<T: Default + Copy>(
-    buffers: &mut Vec<Vec<T>>,
-    len: usize,
-) -> Result<Vec<T>, TryReserveError> {
-    zero_buffer(buffers.pop().unwrap_or_default(), len)
-}
+use core::cell::Cell;
 
 fn zero_buffer<T: Default + Copy>(
     mut buffer: Vec<T>,
@@ -209,45 +38,23 @@ fn zero_buffer<T: Default + Copy>(
     Ok(buffer)
 }
 
-fn take_zeroed_quant_buffer_from(
-    buffers: &SharedQuantBuffers,
-    len: usize,
-) -> Result<Vec<i32>, TryReserveError> {
-    let buffer = lock_transform_coeff_quant_buffers(buffers).take(len);
-    zero_buffer(buffer, len)
+/// A transform block's level, sign and quantised-coefficient buffers.
+type CoeffBlockBuffers = (Vec<u8>, Vec<i8>, Vec<i32>);
+
+std::thread_local! {
+    /// One transform block's buffers, reused by the next block on this worker.
+    static COEFF_BLOCK_BUFFERS: Cell<Option<CoeffBlockBuffers>> = const { Cell::new(None) };
 }
 
-fn take_zeroed_quant_buffer(len: usize) -> Result<Vec<i32>, TryReserveError> {
-    take_zeroed_quant_buffer_from(&TRANSFORM_COEFF_QUANT_BUFFERS, len)
-}
-
-fn recycle_buffer<T>(buffers: &mut Vec<Vec<T>>, mut buffer: Vec<T>) {
-    if buffer.capacity() == 0
-        || buffers.len() == MAX_RETAINED_COEFF_BUFFERS_PER_WORKER
-        || buffers.try_reserve(1).is_err()
-    {
-        return;
-    }
-    buffer.clear();
-    buffers.push(buffer);
-}
-
-fn recycle_coeff_quant_into(buffers: &SharedQuantBuffers, buffer: Vec<i32>) {
-    if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_COEFF_BUFFER_CAPACITY {
-        return;
-    }
-    let mut buffer = buffer;
-    buffer.clear();
-    lock_transform_coeff_quant_buffers(buffers).recycle(buffer);
-}
-
-pub(crate) fn recycle_coeff_quant(buffer: Vec<i32>) {
-    recycle_coeff_quant_into(&TRANSFORM_COEFF_QUANT_BUFFERS, buffer);
-}
-
-impl Drop for super::general_intra_residual::LumaCoeffBlock {
+impl Drop for TransformCoeffBlockState {
     fn drop(&mut self) {
-        recycle_coeff_quant(core::mem::take(&mut self.quant));
+        COEFF_BLOCK_BUFFERS.with(|slot| {
+            slot.set(Some((
+                core::mem::take(&mut self.level),
+                core::mem::take(&mut self.quant_sign),
+                core::mem::take(&mut self.quant),
+            )));
+        });
     }
 }
 
@@ -271,32 +78,23 @@ impl TransformCoeffBlockState {
         let allocation = Self::allocation(width, height)?;
         let stride = width + LEVEL_GRID_PAD;
         let level_len = stride * (height + LEVEL_GRID_PAD);
-        let level = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
-            take_zeroed_buffer(&mut buffers.levels, level_len)
-        })?;
-        let quant = match take_zeroed_quant_buffer(allocation) {
-            Ok(quant) => quant,
-            Err(error) => {
-                with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
-                    recycle_buffer(&mut buffers.levels, level);
-                });
-                return Err(error.into());
-            }
-        };
+        let (level, mut quant_sign, quant) =
+            COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
+        let level = zero_buffer(level, level_len)?;
+        let quant = zero_buffer(quant, allocation)?;
+        quant_sign.clear();
         Ok(Self {
             height,
             stride,
             level,
-            quant_sign: Vec::new(),
+            quant_sign,
             quant,
         })
     }
 
     pub(crate) fn ensure_quant_sign(&mut self) -> Result<(), TileCoeffStateError> {
         if self.quant_sign.is_empty() {
-            self.quant_sign = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
-                take_zeroed_buffer(&mut buffers.signed, self.level.len())
-            })?;
+            self.quant_sign = zero_buffer(core::mem::take(&mut self.quant_sign), self.level.len())?;
         }
         Ok(())
     }
@@ -338,8 +136,13 @@ impl TransformCoeffBlockState {
     }
 
     #[must_use]
-    pub(crate) fn into_quant(mut self) -> Vec<i32> {
-        core::mem::take(&mut self.quant)
+    /// The block's quantised coefficients.
+    ///
+    /// Borrowed, not taken: the caller copies them into its row's arena and
+    /// lets this state drop, which hands all three buffers to the next block
+    /// parsed on this worker.
+    pub(crate) fn quant(&self) -> &[i32] {
+        &self.quant
     }
 
     pub(crate) fn set_level(
@@ -415,33 +218,7 @@ impl TransformCoeffBlockState {
     }
 }
 
-impl Drop for TransformCoeffBlockState {
-    fn drop(&mut self) {
-        let level = core::mem::take(&mut self.level);
-        let quant_sign = core::mem::take(&mut self.quant_sign);
-        let quant = core::mem::take(&mut self.quant);
-        with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
-            recycle_buffer(&mut buffers.levels, level);
-            recycle_buffer(&mut buffers.signed, quant_sign);
-        });
-        recycle_coeff_quant(quant);
-    }
-}
-
-#[cfg(test)]
-fn clear_transform_coeff_buffers() {
-    TRANSFORM_COEFF_BUFFERS
-        .with(|slot| *slot.borrow_mut() = TransformCoeffBufferRecycler::default());
-}
-
-#[cfg(test)]
-fn transform_coeff_buffer_counts() -> (usize, usize) {
-    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
-        (buffers.levels.len(), buffers.signed.len())
-    })
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub(crate) struct TileCoeffContextState {
     plane_row_origins: [usize; PLANE_COUNT],
     plane_col_origins: [usize; PLANE_COUNT],
@@ -466,23 +243,41 @@ impl TileCoeffContextState {
         Ok(())
     }
 
+    /// A state laid out for one tile, for tests that want a fresh one.
+    #[cfg(test)]
     pub(crate) fn new_for_tile_chroma(
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
         chroma: ChromaFormatIdc,
     ) -> Result<Self, TileCoeffStateError> {
-        Self::new_for_tile_with_chroma_sampling(
+        let mut state = Self::default();
+        state.reset_for_tile_chroma(mi_rows, mi_cols, chroma)?;
+        Ok(state)
+    }
+
+    /// Lays this state out for another tile, keeping the context lines.
+    ///
+    /// The decoder holds one of these for the whole stream, so a steady-state
+    /// tile zeroes the lines the last one left rather than sizing new ones.
+    pub(crate) fn reset_for_tile_chroma(
+        &mut self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+        chroma: ChromaFormatIdc,
+    ) -> Result<(), TileCoeffStateError> {
+        self.reset_for_tile_with_chroma_sampling(
             mi_rows,
             mi_cols,
             ChromaSampling::from_chroma_format_idc(chroma),
         )
     }
 
-    fn new_for_tile_with_chroma_sampling(
+    fn reset_for_tile_with_chroma_sampling(
+        &mut self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
         chroma: ChromaSampling,
-    ) -> Result<Self, TileCoeffStateError> {
+    ) -> Result<(), TileCoeffStateError> {
         let rows = mi_rows.end.saturating_sub(mi_rows.start);
         let cols = mi_cols.end.saturating_sub(mi_cols.start);
         Self::allocation(rows, cols)?;
@@ -499,16 +294,15 @@ impl TileCoeffContextState {
             plane_cols[index] = (subsampled_context_len(mi_cols.end, sub_x)?)
                 .saturating_sub(plane_col_origins[index]);
         }
-        Ok(Self {
-            plane_row_origins,
-            plane_col_origins,
-            plane_rows,
-            plane_cols,
-            above_level: zeroed_plane_lines(plane_cols)?,
-            left_level: zeroed_plane_lines(plane_rows)?,
-            above_dc: zeroed_plane_lines(plane_cols)?,
-            left_dc: zeroed_plane_lines(plane_rows)?,
-        })
+        self.plane_row_origins = plane_row_origins;
+        self.plane_col_origins = plane_col_origins;
+        self.plane_rows = plane_rows;
+        self.plane_cols = plane_cols;
+        zero_plane_lines(&mut self.above_level, plane_cols)?;
+        zero_plane_lines(&mut self.left_level, plane_rows)?;
+        zero_plane_lines(&mut self.above_dc, plane_cols)?;
+        zero_plane_lines(&mut self.left_dc, plane_rows)?;
+        Ok(())
     }
 
     pub(crate) fn above_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
@@ -867,21 +661,21 @@ fn fill_context_line(
     }
 }
 
-fn zeroed_plane_lines<T: Default>(
+fn zero_plane_lines<T: Default>(
+    lines: &mut [Vec<T>; PLANE_COUNT],
     lengths: [usize; PLANE_COUNT],
-) -> Result<[Vec<T>; PLANE_COUNT], TileCoeffStateError> {
-    Ok([
-        zeroed_vec(lengths[0])?,
-        zeroed_vec(lengths[1])?,
-        zeroed_vec(lengths[2])?,
-    ])
+) -> Result<(), TileCoeffStateError> {
+    for (line, len) in lines.iter_mut().zip(lengths) {
+        zero_line(line, len)?;
+    }
+    Ok(())
 }
 
-fn zeroed_vec<T: Default>(len: usize) -> Result<Vec<T>, TileCoeffStateError> {
-    let mut values = Vec::new();
+fn zero_line<T: Default>(values: &mut Vec<T>, len: usize) -> Result<(), TileCoeffStateError> {
+    values.clear();
     values.try_reserve_exact(len)?;
     values.resize_with(len, T::default);
-    Ok(values)
+    Ok(())
 }
 
 #[cfg(test)]

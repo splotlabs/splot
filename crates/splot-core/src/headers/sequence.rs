@@ -15,9 +15,9 @@ mod layer_dependency;
 mod profile;
 
 pub use child_configs::{
-    CdefOnSkipTxfm, DrlReorder, SequenceFilterConfig, SequenceInterConfig, SequenceIntraConfig,
-    SequencePartitionConfig, SequenceSccConfig, SequenceSegmentConfig, SequenceTileConfig,
-    SequenceTqEntropyConfig, SuperblockSize, parse_sequence_filter_config,
+    CdefOnSkipTxfm, DrlReorder, MAX_REF_FRAMES, SequenceFilterConfig, SequenceInterConfig,
+    SequenceIntraConfig, SequencePartitionConfig, SequenceSccConfig, SequenceSegmentConfig,
+    SequenceTileConfig, SequenceTqEntropyConfig, SuperblockSize, parse_sequence_filter_config,
     parse_sequence_inter_config, parse_sequence_intra_config, parse_sequence_partition_config,
     parse_sequence_scc_config, parse_sequence_segment_config, parse_sequence_tile_config,
     parse_sequence_transform_quant_entropy_config,

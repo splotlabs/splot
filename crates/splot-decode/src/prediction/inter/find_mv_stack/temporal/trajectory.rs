@@ -535,7 +535,7 @@ impl OwnedTrajectoryBand {
             }
         }
         OwnedTrajectoryFields {
-            cells: self.fields,
+            cells: core::mem::take(&mut self.fields),
             reference_count: self.reference_count,
         }
     }

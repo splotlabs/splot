@@ -565,6 +565,10 @@ pub fn parse_tile_group_framing(
         };
     }
 
+    tiles
+        .try_reserve_exact(usize::try_from(tg_end.saturating_sub(tg_start)).unwrap_or(0) + 1)
+        .ok();
+
     for tile_num in tg_start..=tg_end {
         let last_tile = tile_num == tg_end;
 
@@ -857,8 +861,6 @@ mod tests {
 
     #[test]
     fn tile_group_prefix_non_first_header_copy_is_not_parsed() {
-        // is_first_tile_group == 0 but frame_header_present_flag == 1 -> a
-        // frame_header_copy() the prefix parser records but does not parse.
         let mut bits = Bits::default();
         bits.bit(0); // is_first_tile_group == 0
         bits.bit(1); // frame_header_present_flag == 1 (header copy follows)
@@ -896,7 +898,6 @@ mod tests {
 
     #[test]
     fn recorded_frame_header_bits_round_trips_through_copy() {
-        // A non-byte-aligned bit count exercises the trailing partial byte.
         let pattern = [1u8, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0]; // 11 bits
         let (recorded, copy_bytes) = record_bits(&pattern);
         assert_eq!(recorded.num_frame_header_bits(), 11);
@@ -905,7 +906,6 @@ mod tests {
             parse_frame_header_copy(&mut reader, &recorded),
             FrameHeaderCopyOutcome::Matches
         );
-        // The copy reader consumed exactly NumFrameHeaderBits.
         assert_eq!(reader.consumed_bits(), 11);
     }
 
@@ -913,7 +913,6 @@ mod tests {
     fn frame_header_copy_reports_first_mismatch_bit() {
         let pattern = [1u8, 0, 1, 1, 0, 0, 1, 0, 1]; // 9 bits
         let (recorded, _) = record_bits(&pattern);
-        // Flip bit 5 of the copy (0 -> 1).
         let mut copy = pattern;
         copy[5] = 1;
         let mut bits = Bits::default();
@@ -932,7 +931,6 @@ mod tests {
     fn frame_header_copy_reports_truncation_when_payload_short() {
         let pattern = [1u8, 0, 1, 1, 0, 0, 1, 0, 1, 1]; // 10 bits recorded
         let (recorded, _) = record_bits(&pattern);
-        // The copy payload carries only the first 6 (matching) bits.
         let mut bits = Bits::default();
         for &b in &pattern[..6] {
             bits.bit(b);
@@ -1029,11 +1027,8 @@ mod tests {
     fn tile_group_layout_tile_bits_sums_and_caps() {
         assert_eq!(TileGroupLayout::new(2, 1, 1, 0).tile_bits(), 1);
         assert_eq!(TileGroupLayout::new(4, 4, 2, 2).tile_bits(), 4);
-        // Max AV2-legal log2 is 6 each -> 12 bits.
         assert_eq!(TileGroupLayout::new(64, 64, 6, 6).tile_bits(), 12);
-        // Out-of-domain log2 values are capped at 32 so the read width stays legal.
         assert_eq!(TileGroupLayout::new(0, 0, 200, 200).tile_bits(), 32);
-        // num_tiles is a saturating product.
         assert_eq!(TileGroupLayout::new(64, 64, 6, 6).num_tiles, 4096);
     }
 
@@ -1044,11 +1039,9 @@ mod tests {
         // reader is at bit 1; byte_alignment pads 7 zero bits to byte 1. headerBytes = 1.
         let structure = Bits::default(); // no structure bits before byte_alignment
         let (data, _) = structure_reader(1, &structure);
-        // Pad the payload to allow byte_alignment + a payload region (sz = 4 bytes).
         let mut data = data;
         data.resize(4, 0);
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        // Consume the 1 prefix bit so the reader's consumed_bits matches the caller state.
         reader.read_bit().unwrap();
         let layout = TileGroupLayout::new(1, 1, 0, 0);
         let s = parse_tile_group_structure(&mut reader, layout, 4).unwrap();
@@ -1079,7 +1072,6 @@ mod tests {
         assert_eq!(s.tg_start, 1);
         assert_eq!(s.tg_end, 3);
         assert_eq!(s.outcome, TileGroupStructureOutcome::Complete);
-        // Prefix(1) + flag(1) + tg_start(2) + tg_end(2) = 6 bits, padded to byte 1.
         assert_eq!(s.header_bytes, Some(1));
         assert_eq!(s.payload_size, Some(7));
     }
@@ -1388,6 +1380,7 @@ mod tests {
     fn framing_huge_range_is_bounded_by_the_spec_tile_ceiling() {
         let framing = parse_tile_group_framing(&[], 0, u32::MAX, 1, true);
         assert!(framing.tiles.len() <= 4096);
+        assert!(framing.tiles.capacity() <= 4096);
     }
 
     #[test]

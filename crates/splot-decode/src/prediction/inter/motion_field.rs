@@ -14,9 +14,9 @@ use super::find_mv_stack::{
 #[derive(Debug)]
 struct MotionFieldPublication {
     layout: MotionFieldLayout,
-    metadata: CompletionCell<Option<Arc<TemporalMotionFieldMetadata>>>,
+    metadata: CompletionCell<Option<TemporalMotionFieldMetadata>>,
     field: CompletionCell<Option<Arc<TemporalMotionField>>>,
-    bands: Vec<CompletionCell<Option<Arc<TemporalMotionBand>>>>,
+    bands: Vec<CompletionCell<Option<TemporalMotionBand>>>,
 }
 
 /// One frame's § 7.9 temporal motion field, named before it is derived.
@@ -32,17 +32,16 @@ impl MotionFieldHandle {
     /// Names a field that is already derived.
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
         let layout = field.layout();
-        let metadata = Arc::new(field.metadata());
-        let bands = field
-            .clone()
-            .into_bands()
-            .into_iter()
-            .map(|band| CompletionCell::completed(Some(Arc::new(band))))
-            .collect();
+        let metadata = field.metadata();
+        let field = Arc::new(field);
+        let mut bands = Vec::with_capacity(layout.band_count());
+        TemporalMotionField::shared_bands(&field, |band| {
+            bands.push(CompletionCell::completed(Some(band)));
+        });
         Self(Arc::new(MotionFieldPublication {
             layout,
             metadata: CompletionCell::completed(Some(metadata)),
-            field: CompletionCell::completed(Some(Arc::new(field))),
+            field: CompletionCell::completed(Some(field)),
             bands,
         }))
     }
@@ -63,7 +62,7 @@ impl MotionFieldHandle {
 
     /// Publishes the parse-derived semantic metadata independently of pixels.
     pub(crate) fn publish_metadata(&self, metadata: TemporalMotionFieldMetadata) {
-        let _ = self.0.metadata.set(Some(Arc::new(metadata)));
+        let _ = self.0.metadata.set(Some(metadata));
     }
 
     /// Publishes the derived field, which every consumer then reads.
@@ -72,28 +71,26 @@ impl MotionFieldHandle {
     /// handle is filled by exactly one reconstruction.
     pub(crate) fn publish(&self, field: TemporalMotionField) {
         self.publish_metadata(field.metadata());
-        for (cell, band) in self.0.bands.iter().zip(field.clone().into_bands()) {
-            let _ = cell.set(Some(Arc::new(band)));
-        }
-        let _ = self.0.field.set(Some(Arc::new(field)));
+        let field = Arc::new(field);
+        let mut cells = self.0.bands.iter();
+        TemporalMotionField::shared_bands(&field, |band| {
+            if let Some(cell) = cells.next() {
+                let _ = cell.set(Some(band));
+            }
+        });
+        let _ = self.0.field.set(Some(field));
     }
 
     /// Publishes one completed full-width source superblock row.
     pub(crate) fn publish_band(&self, index: usize, band: TemporalMotionBand) {
         if let Some(cell) = self.0.bands.get(index) {
-            let _ = cell.set(Some(Arc::new(band)));
+            let _ = cell.set(Some(band));
         }
     }
 
     /// Rebuilds the terminal compatibility field after every band has landed.
     pub(crate) fn publish_whole_from_bands(&self) {
-        let Some(metadata) = self
-            .0
-            .metadata
-            .get()
-            .and_then(Option::as_ref)
-            .map(Arc::as_ref)
-        else {
+        let Some(metadata) = self.0.metadata.get().and_then(Option::as_ref) else {
             let _ = self.0.field.set(None);
             return;
         };
@@ -133,18 +130,15 @@ impl MotionFieldHandle {
         self.0.layout
     }
 
-    pub(crate) fn metadata(&self) -> Option<&Arc<TemporalMotionFieldMetadata>> {
+    pub(crate) fn metadata(&self) -> Option<&TemporalMotionFieldMetadata> {
         self.0.metadata.get().and_then(Option::as_ref)
     }
 
-    pub(crate) fn band(&self, index: usize) -> Option<&Arc<TemporalMotionBand>> {
+    pub(crate) fn band(&self, index: usize) -> Option<&TemporalMotionBand> {
         self.0.bands.get(index)?.get().and_then(Option::as_ref)
     }
 
-    pub(crate) fn band_publication(
-        &self,
-        index: usize,
-    ) -> Option<&Option<Arc<TemporalMotionBand>>> {
+    pub(crate) fn band_publication(&self, index: usize) -> Option<&Option<TemporalMotionBand>> {
         self.0.bands.get(index)?.get()
     }
 
@@ -174,6 +168,7 @@ mod tests {
         let handle = MotionFieldHandle::settled(field);
 
         assert_eq!(handle.field().map(Arc::as_ref), Some(&expected));
+        assert_eq!(handle.metadata(), Some(&expected.metadata()));
         assert!(
             (0..layout.band_count())
                 .all(|index| matches!(handle.band_publication(index), Some(Some(_))))

@@ -12,13 +12,13 @@
 //! Feature tracking: `INFRA-DECODE-FRAME-PIPELINING`.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
-use splot_recon::{BitDepth, ReconSample};
+use splot_recon::BitDepth;
 
 use crate::Result;
 use crate::error::DecodeError;
@@ -26,6 +26,7 @@ use crate::prediction::inter;
 
 use super::inflight::{InflightRing, PendingFinish, PipelineFrameSlot, RefFrameSlot};
 use super::unsupported;
+use parking_lot::Mutex;
 
 type EntropyResult<T> = Arc<CompletionCell<Mutex<Option<Result<inter::DeferredInterWalk<T>>>>>>;
 type EntropyEarly<T> = Arc<CompletionCell<Mutex<Option<inter::InterWalkEarly<T>>>>>;
@@ -81,7 +82,7 @@ pub(super) fn schedule_entropy<'scope, 'job, T, P>(
     segment_ids: inter::SegmentIdMapHandle,
     motion: inter::MotionFieldHandle,
     dependencies: &inter::EntropyDependencies,
-    scheduler: &'scope AdmissionScheduler<'job>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
 ) -> EntropyHandles<T>
 where
@@ -107,7 +108,7 @@ where
         scope,
         order_key,
         &conditions,
-        Box::new(move |_| {
+        boxed_task(move |_| {
             let parsed = parse(&|early| {
                 let _ = early_for_job.set(Mutex::new(Some(early)));
             });
@@ -135,12 +136,79 @@ const ORDER_KEY_FRAME_STRIDE: u64 = 1 << 32;
 type TemporalScratchSlot = Arc<CompletionCell<Mutex<Option<inter::TemporalMvScratch>>>>;
 type ReconScratchSlot = Arc<CompletionCell<Mutex<Option<ScheduledReconScratch>>>>;
 
-pub(super) enum ScheduledReconScratch {
+pub(crate) enum ScheduledReconScratch {
     Eight(inter::InterDecodeScratch<u8>),
     Ten(inter::InterDecodeScratch<u16>),
 }
 
-pub(super) trait ScheduledScratchSample: splot_recon::ReconSample {
+/// A scheduled frame of either sample depth.
+///
+/// One scheduler serves both depths, so a task that names a frame has to hold
+/// either kind; the pipeline already splits this way for its scratch.
+pub(crate) enum ScheduledFrameRef {
+    Eight(Arc<ScheduledFrame<u8>>),
+    Ten(Arc<ScheduledFrame<u16>>),
+}
+
+/// The job shapes the pipeline schedules for every unit of every frame.
+///
+/// These four are the whole steady-state task load, so they are named here and
+/// live in the scheduler's slot rather than in a box of their own, the way
+/// dav2d dispatches a preallocated task record on its kind. Rarer jobs, which
+/// carry state no enum could name, still box.
+pub(crate) enum FrameTask {
+    Precompute {
+        frame: ScheduledFrameRef,
+        index: usize,
+    },
+    Commit {
+        frame: ScheduledFrameRef,
+        index: usize,
+    },
+    Frontier {
+        frame: ScheduledFrameRef,
+        row: usize,
+    },
+    Resolve {
+        frame: ScheduledFrameRef,
+        index: usize,
+    },
+}
+
+impl<'job> splot_parallel::Task<'job> for FrameTask {
+    fn run(self, admit: &dyn splot_parallel::Admit<'job, Self>) {
+        match self {
+            Self::Precompute { frame, index } => match frame {
+                ScheduledFrameRef::Eight(frame) => frame.precompute(index, admit),
+                ScheduledFrameRef::Ten(frame) => frame.precompute(index, admit),
+            },
+            Self::Commit { frame, index } => match frame {
+                ScheduledFrameRef::Eight(frame) => frame.commit(index, admit),
+                ScheduledFrameRef::Ten(frame) => frame.commit(index, admit),
+            },
+            Self::Frontier { frame, row } => match frame {
+                ScheduledFrameRef::Eight(frame) => frame.frontier(row, admit),
+                ScheduledFrameRef::Ten(frame) => frame.frontier(row, admit),
+            },
+            Self::Resolve { frame, index } => match frame {
+                ScheduledFrameRef::Eight(frame) => frame.resolve(index, admit),
+                ScheduledFrameRef::Ten(frame) => frame.resolve(index, admit),
+            },
+        }
+    }
+}
+
+/// Wraps a job the task enum cannot name.
+pub(crate) fn boxed_task<'job>(
+    job: impl for<'a> FnOnce(&'a dyn splot_parallel::Admit<'job, FrameTask>) + Send + 'job,
+) -> splot_parallel::Job<'job, FrameTask> {
+    splot_parallel::Job::Boxed(Box::new(job))
+}
+
+pub(crate) trait ScheduledScratchSample: splot_recon::ReconSample {
+    /// Names this depth's frame for a scheduled task.
+    fn scheduled_frame_ref(frame: Arc<ScheduledFrame<Self>>) -> ScheduledFrameRef;
+
     fn take_scheduled_scratch(
         scratch: &mut Option<ScheduledReconScratch>,
     ) -> Option<inter::InterDecodeScratch<Self>>;
@@ -151,6 +219,10 @@ pub(super) trait ScheduledScratchSample: splot_recon::ReconSample {
 macro_rules! impl_scheduled_scratch_sample {
     ($sample:ty, $variant:ident) => {
         impl ScheduledScratchSample for $sample {
+            fn scheduled_frame_ref(frame: Arc<ScheduledFrame<Self>>) -> ScheduledFrameRef {
+                ScheduledFrameRef::$variant(frame)
+            }
+
             fn take_scheduled_scratch(
                 scratch: &mut Option<ScheduledReconScratch>,
             ) -> Option<inter::InterDecodeScratch<Self>> {
@@ -186,7 +258,7 @@ type PendingTipProducts<T> = (
 );
 
 /// Reserves the pending frame and product handles published by one TIP job.
-pub(super) fn reserve_tip_output<T: ReconSample>(
+pub(super) fn reserve_tip_output<T: super::inflight::SpareFramePlanes>(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     bit_depth: BitDepth,
@@ -224,7 +296,7 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
     segment_ids: inter::SegmentIdMapHandle,
     motion: inter::MotionFieldHandle,
     finish: PendingFinish<T>,
-    scheduler: &'scope AdmissionScheduler<'job>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     lane: &mut ReconAdmissionLane,
 ) where
@@ -247,15 +319,11 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
         scope,
         order_key,
         &conditions,
-        Box::new(move |_| {
+        boxed_task(move |_| {
             let mut scratch = scratch_for_job
                 .as_deref()
                 .and_then(CompletionCell::get)
-                .and_then(|scratch| {
-                    T::take_scheduled_scratch(
-                        &mut scratch.lock().unwrap_or_else(PoisonError::into_inner),
-                    )
-                })
+                .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
                 .unwrap_or_default();
             match reconstruct(&mut scratch) {
                 Ok((frame, _, cdfs, ccso, field, segments)) => {
@@ -322,7 +390,7 @@ impl ReconAdmissionLane {
     }
 }
 
-struct ScheduledFrame<T: splot_recon::ReconSample> {
+pub(crate) struct ScheduledFrame<T: splot_recon::ReconSample> {
     reconstruction: inter::ScheduledTileRecon<T>,
     finish: Mutex<Option<PendingFinish<T>>>,
     motion: inter::MotionFieldHandle,
@@ -342,15 +410,19 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn submit_batches(
         self: &Arc<Self>,
         batches: core::ops::Range<usize>,
-        admit: &dyn splot_parallel::Admit<'_>,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
         let starts_commit = batches.start == 0 && !batches.is_empty();
         let mut ready_key = None;
-        let mut ready = Vec::<splot_parallel::Job<'_>>::new();
+        let mut ready = Vec::<splot_parallel::Job<'_, FrameTask>>::new();
+        let mut conditions = Vec::new();
         for index in batches {
-            let conditions = self.reconstruction.conditions(index);
+            self.reconstruction.conditions(index, &mut conditions);
             let row = Arc::clone(self);
-            let job: splot_parallel::Job<'_> = Box::new(move |admit| row.precompute(index, admit));
+            let job = splot_parallel::Job::Inline(FrameTask::Precompute {
+                frame: T::scheduled_frame_ref(row),
+                index,
+            });
             if conditions.is_empty() {
                 ready_key.get_or_insert_with(|| self.batch_key(index, 1));
                 ready.push(job);
@@ -372,15 +444,23 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                     Condition::completion(&self.prepared[0]),
                     Condition::completion(self.filters_ready.as_ref()),
                 ],
-                Box::new(move |admit| commit.commit(0, admit)),
+                splot_parallel::Job::Inline(FrameTask::Commit {
+                    frame: T::scheduled_frame_ref(commit),
+                    index: 0,
+                }),
             );
         }
     }
 
-    fn continue_commit(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
+    fn continue_commit(
+        self: &Arc<Self>,
+        index: usize,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         let commit = Arc::clone(self);
-        let job = Box::new(move |admit: &dyn splot_parallel::Admit<'_>| {
-            commit.commit(index, admit);
+        let job = splot_parallel::Job::Inline(FrameTask::Commit {
+            frame: T::scheduled_frame_ref(commit),
+            index,
         });
         if self.prepared[index].is_set() {
             admit.continue_ready(self.batch_key(index, 2), job);
@@ -410,7 +490,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         self: &Arc<Self>,
         batch: usize,
         row: usize,
-        admit: &dyn splot_parallel::Admit<'_>,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
         let conditions = row
             .checked_sub(1)
@@ -421,11 +501,18 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         admit.submit(
             self.batch_key(batch, 3),
             &conditions,
-            Box::new(move |admit| frame.frontier(row, admit)),
+            splot_parallel::Job::Inline(FrameTask::Frontier {
+                frame: T::scheduled_frame_ref(frame),
+                row,
+            }),
         );
     }
 
-    fn frontier(self: &Arc<Self>, row: usize, admit: &dyn splot_parallel::Admit<'_>) {
+    fn frontier(
+        self: &Arc<Self>,
+        row: usize,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         if !self.failed.load(Ordering::Acquire) {
             match self.reconstruction.frontier(row) {
                 Ok(progress) => self.publish_filters(progress, admit),
@@ -437,20 +524,33 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         }
     }
 
-    fn submit_resolve(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
-        let conditions = self.reconstruction.resolve_conditions(index);
+    fn submit_resolve(
+        self: &Arc<Self>,
+        index: usize,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
+        let mut conditions = Vec::new();
+        self.reconstruction
+            .resolve_conditions(index, &mut conditions);
         let resolve = Arc::clone(self);
         let index_key = u64::try_from(index).unwrap_or(u64::MAX / 2);
         admit.submit(
             self.order_base.saturating_add(index_key),
             &conditions,
-            Box::new(move |admit| resolve.resolve(index, admit)),
+            splot_parallel::Job::Inline(FrameTask::Resolve {
+                frame: T::scheduled_frame_ref(resolve),
+                index,
+            }),
         );
     }
 
     /// Resolves one § 7.12 band, or resumes on the § 8.2 watermark when the
     /// pass has not yet published the units the band still owes.
-    fn resolve(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
+    fn resolve(
+        self: &Arc<Self>,
+        index: usize,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         if self.failed.load(Ordering::Acquire) {
             return;
         }
@@ -471,7 +571,10 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                     self.reconstruction.parse_watermark(),
                     units,
                 )],
-                Box::new(move |admit| resume.resolve(index, admit)),
+                splot_parallel::Job::Inline(FrameTask::Resolve {
+                    frame: T::scheduled_frame_ref(resume),
+                    index,
+                }),
             );
             return;
         }
@@ -481,7 +584,11 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         }
     }
 
-    fn precompute(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
+    fn precompute(
+        self: &Arc<Self>,
+        index: usize,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         if !self.failed.load(Ordering::Acquire)
             && let Err(error) = self.reconstruction.precompute(index)
         {
@@ -492,7 +599,11 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         }
     }
 
-    fn commit(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
+    fn commit(
+        self: &Arc<Self>,
+        index: usize,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         if self.failed.load(Ordering::Acquire) {
             return;
         }
@@ -527,7 +638,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn publish_filters(
         self: &Arc<Self>,
         progress: inter::ScheduledFrameProgress<T>,
-        admit: &dyn splot_parallel::Admit<'_>,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
         for filter in progress.filters {
             let stripe = filter.stripe();
@@ -543,12 +654,9 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 break;
             }
             let frame = Arc::clone(self);
-            admit.spawn_ready(Box::new(move |_| {
+            admit.spawn_ready(boxed_task(move |_| {
                 if let Err(error) = filter.run() {
-                    let mut owed = frame
-                        .filter_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
+                    let mut owed = frame.filter_error.lock();
                     if owed.is_none() {
                         *owed = Some(error);
                     }
@@ -559,11 +667,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         let Some(filter) = progress.output else {
             return;
         };
-        let finish = self
-            .finish
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let finish = self.finish.lock().take();
         if let Some(finish) = finish {
             let mut conditions = self
                 .filter_gate
@@ -576,12 +680,8 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             admit.submit(
                 self.order_base + u64::from(u32::MAX),
                 &conditions,
-                Box::new(move |_| {
-                    let error = frame
-                        .filter_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .take();
+                boxed_task(move |_| {
+                    let error = frame.filter_error.lock().take();
                     if let Some(error) = error {
                         finish.fail(error);
                     } else {
@@ -593,7 +693,11 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         }
     }
 
-    fn fail(&self, error: DecodeError, admit: &dyn splot_parallel::Admit<'_>) {
+    fn fail(
+        &self,
+        error: DecodeError,
+        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+    ) {
         if self.failed.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -610,12 +714,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             let _ = completion.set(());
         }
         admit.admit_ready();
-        if let Some(finish) = self
-            .finish
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
+        if let Some(finish) = self.finish.lock().take() {
             finish.fail(error);
         }
     }
@@ -626,7 +725,7 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
     tail: EntropyResult<T>,
     finish: PendingFinish<T>,
     frame_index: usize,
-    scheduler: &'scope AdmissionScheduler<'job>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     lane: &mut ReconAdmissionLane,
 ) where
@@ -658,25 +757,16 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
         scope,
         order_base,
         &conditions,
-        Box::new(move |admit| {
+        boxed_task(move |admit| {
             let temporal_scratch = temporal_source
                 .as_deref()
                 .and_then(CompletionCell::get)
-                .and_then(|scratch| {
-                    scratch
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .take()
-                })
+                .and_then(|scratch| scratch.lock().take())
                 .unwrap_or_default();
             let decode_scratch = scheduled_scratch_source
                 .as_deref()
                 .and_then(CompletionCell::get)
-                .and_then(|scratch| {
-                    T::take_scheduled_scratch(
-                        &mut scratch.lock().unwrap_or_else(PoisonError::into_inner),
-                    )
-                })
+                .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
                 .unwrap_or_default();
             let settle_prepare_failure = |finish: PendingFinish<T>, error| {
                 let _ = temporal_done.set(Mutex::new(Some(inter::TemporalMvScratch::default())));
@@ -727,10 +817,8 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 admit.submit(
                     order_base.saturating_add(1 << 19),
                     &[Condition::completion(tail.as_ref())],
-                    Box::new(move |admit| {
-                        let parsed = attach_tail.get().and_then(|slot| {
-                            slot.lock().unwrap_or_else(PoisonError::into_inner).take()
-                        });
+                    boxed_task(move |admit| {
+                        let parsed = attach_tail.get().and_then(|slot| slot.lock().take());
                         let outcome = match parsed {
                             Some(Ok(deferred)) => deferred
                                 .attach_filters(pending_filters, &attach_frame.reconstruction),
@@ -770,7 +858,7 @@ pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send +
     walked: super::frame_engine::finish::WalkedFrame<T>,
     frame_index: usize,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
@@ -787,7 +875,7 @@ pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send +
         scope,
         order_base + u64::from(u32::MAX),
         &conditions,
-        Box::new(move |admit| {
+        boxed_task(move |admit| {
             finish.run_finish(walked, Some(admit));
             let _ = done.set(());
         }),
@@ -797,7 +885,7 @@ pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send +
 fn promote_front<'scope, 'job>(
     entropy: &mut PendingEntropyQueue,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
@@ -812,21 +900,13 @@ fn promote_front<'scope, 'job>(
             finish,
         } => {
             let settled = early.wait_with_pool_assist();
-            let early = settled
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
+            let early = settled.lock().take();
             if let Some(early) = early {
                 schedule_typed(early, tail, finish, frame_index, scheduler, scope, lane);
             } else {
                 let error = tail
                     .get()
-                    .and_then(|slot| {
-                        slot.lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .take()
-                            .and_then(Result::err)
-                    })
+                    .and_then(|slot| slot.lock().take().and_then(Result::err))
                     .unwrap_or_else(frame_task_scope);
                 finish.fail(error);
             }
@@ -837,21 +917,13 @@ fn promote_front<'scope, 'job>(
             finish,
         } => {
             let settled = early.wait_with_pool_assist();
-            let early = settled
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
+            let early = settled.lock().take();
             if let Some(early) = early {
                 schedule_typed(early, tail, finish, frame_index, scheduler, scope, lane);
             } else {
                 let error = tail
                     .get()
-                    .and_then(|slot| {
-                        slot.lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .take()
-                            .and_then(Result::err)
-                    })
+                    .and_then(|slot| slot.lock().take().and_then(Result::err))
                     .unwrap_or_else(frame_task_scope);
                 finish.fail(error);
             }
@@ -862,7 +934,7 @@ fn promote_front<'scope, 'job>(
 fn drain_ready_entropy<'scope, 'job>(
     entropy: &mut PendingEntropyQueue,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
@@ -886,7 +958,7 @@ pub(super) fn prepare_entropy_submission<'scope, 'job>(
     entropy: &mut PendingEntropyQueue,
     limit: usize,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
@@ -902,7 +974,7 @@ pub(super) fn prepare_entropy_submission<'scope, 'job>(
 pub(super) fn drain_entropy_before_barrier<'scope, 'job>(
     entropy: &mut PendingEntropyQueue,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
@@ -958,7 +1030,7 @@ mod tests {
         assert_eq!(lane.recon.len(), 1);
         let prior = prior.expect("prior context");
         let stored = prior.get().expect("settled prior context");
-        let mut stored = stored.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut stored = stored.lock();
         assert!(u8::take_scheduled_scratch(&mut stored).is_none());
         assert!(u16::take_scheduled_scratch(&mut stored).is_some());
     }
@@ -976,7 +1048,6 @@ mod tests {
                 .get()
                 .expect("settled failure")
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner)
                 .is_none()
         );
     }

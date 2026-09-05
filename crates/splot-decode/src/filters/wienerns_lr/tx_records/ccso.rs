@@ -123,7 +123,7 @@ impl CcsoState {
             shift,
             plane_enabled,
             sb_reuse,
-            blocks: std::array::from_fn(|_| vec![0u8; cells]),
+            blocks: std::array::from_fn(|_| vec![0; cells]),
             row_start: 0,
             col_start: 0,
             grid_rows,
@@ -321,18 +321,19 @@ impl CcsoState {
         Ok(())
     }
 
-    pub(crate) fn into_grid(self) -> Result<Option<CcsoUnitGrid>> {
+    pub(crate) fn into_grid(mut self) -> Result<Option<CcsoUnitGrid>> {
         if !self.active {
             return Ok(None);
         }
         if self.row_start != 0 || self.col_start != 0 {
             return Err(ccso_state_error());
         }
+        let blocks = core::mem::take(&mut self.blocks);
         CcsoUnitGrid::new(
             self.active,
             self.shift,
             self.plane_enabled,
-            self.blocks,
+            blocks,
             self.grid_rows,
             self.grid_cols,
         )

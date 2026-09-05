@@ -1440,7 +1440,7 @@ impl WienerNsFrameFilterClassView {
             ref_bank: class.ref_bank,
             subset: class.subset,
             wiener_ns_uv_sym: class.wiener_ns_uv_sym,
-            coeffs: class.coeffs.clone(),
+            coeffs: class.coeffs.to_vec(),
         }
     }
 }

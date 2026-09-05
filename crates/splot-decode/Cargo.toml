@@ -51,6 +51,7 @@ wildcard_imports = "allow"
 if_not_else = "allow"
 
 [dependencies]
+parking_lot.workspace = true
 splot-core.workspace = true
 splot-parallel.workspace = true
 splot-recon.workspace = true

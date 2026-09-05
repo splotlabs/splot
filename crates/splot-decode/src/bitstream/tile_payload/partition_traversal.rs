@@ -40,6 +40,7 @@ use partition_children::child_calls;
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
+    LrTileRecords,
 };
 #[cfg(test)]
 use tree_walk::{

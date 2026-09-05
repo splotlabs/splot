@@ -59,6 +59,7 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
     let offset = ByteOffset::new(43);
     let row = ReconRow {
         ordinal: 0,
+        residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
         entries: Vec::new(),
         residual_blocks: Vec::new(),
@@ -66,6 +67,7 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         motion_grids: Vec::new(),
         flag_log: Vec::new(),
         filter_records: TileFilterRecords::default(),
+        residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         motion_folded: false,
         motion_derived: false,
         failure: ReconRowFailure::Terminal(malformed_tile_error(offset)),
@@ -159,7 +161,11 @@ fn recon_entries_keep_contiguous_superblock_order() {
 
 #[test]
 fn reconstruction_pools_reuse_owned_storage() {
-    let rows = ReconRowBufferPool::new(0);
+    let rows = {
+        let mut pool = ReconRowBufferPool::default();
+        pool.reset(0);
+        pool
+    };
     let mut buffers = ReconRowBuffers::default();
     buffers.temporal.reserve(8);
     let pointer = buffers.temporal.as_ptr();

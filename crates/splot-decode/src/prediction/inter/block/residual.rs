@@ -68,7 +68,7 @@ impl InterLumaTxTypeMap {
     fn reset(&mut self, row: usize, col: usize, rows: usize, cols: usize) -> Result<()> {
         let len = rows.checked_mul(cols).ok_or_else(residual_geometry_error)?;
         self.values
-            .try_reserve(len.saturating_sub(self.values.len()))
+            .try_reserve_exact(len.saturating_sub(self.values.len()))
             .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
         self.values.resize(len, DCT_DCT);
         self.values.fill(DCT_DCT);
@@ -128,6 +128,7 @@ pub(crate) fn read_inter_residual(
     coeff_ctx: &mut TileCoeffContextState,
     scratch: &mut InterResidualParseScratch,
     blocks: &mut Vec<InterResidualBlock>,
+    arena: &mut Vec<i32>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
@@ -193,6 +194,7 @@ pub(crate) fn read_inter_residual(
                             symbols,
                             coeff_ctx,
                             blocks,
+                            arena,
                             &mut scratch.luma_tx_types,
                             luma_tx_records,
                             luma_tx_size,
@@ -221,6 +223,7 @@ pub(crate) fn read_inter_residual(
                                 symbols,
                                 coeff_ctx,
                                 blocks,
+                                arena,
                                 &scratch.luma_tx_types,
                                 &mut scratch.chroma_reads,
                                 frontier,
@@ -313,6 +316,7 @@ fn read_inter_residual_luma_chunk(
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     blocks: &mut Vec<InterResidualBlock>,
+    arena: &mut Vec<i32>,
     luma_tx_types: &mut InterLumaTxTypeMap,
     luma_tx_records: Option<&[SelectableLumaTxRecord]>,
     tx_size: usize,
@@ -332,6 +336,7 @@ fn read_inter_residual_luma_chunk(
             symbols,
             coeff_ctx,
             blocks,
+            arena,
             luma_tx_types,
             luma_tx_records,
             luma_chunk_x4,
@@ -355,6 +360,7 @@ fn read_inter_residual_luma_chunk(
                 work_unit,
                 symbols,
                 coeff_ctx,
+                arena,
                 0,
                 tx_size,
                 x4 * MI_SIZE,
@@ -381,6 +387,7 @@ fn read_inter_residual_luma_records_for_chunk(
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     blocks: &mut Vec<InterResidualBlock>,
+    arena: &mut Vec<i32>,
     luma_tx_types: &mut InterLumaTxTypeMap,
     luma_tx_records: &[SelectableLumaTxRecord],
     luma_chunk_x4: usize,
@@ -405,6 +412,7 @@ fn read_inter_residual_luma_records_for_chunk(
             work_unit,
             symbols,
             coeff_ctx,
+            arena,
             0,
             record.tx_size,
             record.col * MI_SIZE,
@@ -439,6 +447,7 @@ fn read_inter_residual_chroma_group(
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     blocks: &mut Vec<InterResidualBlock>,
+    arena: &mut Vec<i32>,
     luma_tx_types: &InterLumaTxTypeMap,
     chroma_reads: &mut Vec<InterChromaURead>,
     frontier: &DecodeBlockFrontier,
@@ -536,6 +545,7 @@ fn read_inter_residual_chroma_group(
                 work_unit,
                 symbols,
                 coeff_ctx,
+                arena,
                 1,
                 tx_size,
                 start_x,
@@ -576,6 +586,7 @@ fn read_inter_residual_chroma_group(
             work_unit,
             symbols,
             coeff_ctx,
+            arena,
             2,
             tx_size,
             start_x,
@@ -658,6 +669,7 @@ fn read_inter_residual_plane(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
+    arena: &mut Vec<i32>,
     plane: usize,
     tx_size: usize,
     start_x: usize,
@@ -673,6 +685,7 @@ fn read_inter_residual_plane(
         work_unit,
         symbols,
         coeff_ctx,
+        arena,
         plane,
         tx_size,
         start_x,

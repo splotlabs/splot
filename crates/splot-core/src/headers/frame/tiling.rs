@@ -56,10 +56,10 @@ pub struct CoreSeqTileView {
     /// `SeqSbColStarts[0..SeqTileCols]` (AV2 § 5.4.2), needed by the non-uniform
     /// `reuse_tile_params()` branch (§ 5.18.7.4); empty unless a non-reserved sequence
     /// tile layout is present. Bounded by `MAX_TILE_COLS`.
-    pub seq_sb_col_starts: Vec<u32>,
+    pub seq_sb_col_starts: std::sync::Arc<[u32]>,
     /// `SeqSbRowStarts[0..SeqTileRows]` (AV2 § 5.4.2), the row companion of
     /// [`Self::seq_sb_col_starts`]. Bounded by `MAX_TILE_ROWS`.
-    pub seq_sb_row_starts: Vec<u32>,
+    pub seq_sb_row_starts: std::sync::Arc<[u32]>,
     /// `get_seq_sb_size()` (AV2 § 5.18.7.6): the `seqSbSize` argument of
     /// `tile_params()` / `reuse_tile_params()` (§ 5.18.7.2).
     pub seq_sb_size: SuperblockSize,
@@ -97,8 +97,8 @@ impl CoreSeqTileView {
             seq_tile_info_present_flag: tile.seq_tile_info_present_flag,
             allow_tile_info_change: tile.allow_tile_info_change.unwrap_or(false),
             seq_tile_params: tile.params,
-            seq_sb_col_starts: tile.seq_sb_col_starts.clone(),
-            seq_sb_row_starts: tile.seq_sb_row_starts.clone(),
+            seq_sb_col_starts: std::sync::Arc::clone(&tile.seq_sb_col_starts),
+            seq_sb_row_starts: std::sync::Arc::clone(&tile.seq_sb_row_starts),
             seq_sb_size: partition.seq_sb_size(),
             use_256x256_superblock: partition.use_256x256_superblock,
             use_128x128_superblock: partition.use_128x128_superblock,
@@ -146,10 +146,10 @@ pub struct TileInfo {
     pub tile_rows_log2: u8,
     /// `MiColStarts[0..=TileCols]` (`sbColStarts[i] << sbShift2`, with
     /// `MiColStarts[TileCols] = MiCols`).
-    pub mi_col_starts: Vec<u32>,
+    pub mi_col_starts: crate::tile::TileStarts,
     /// `MiRowStarts[0..=TileRows]` (`sbRowStarts[i] << sbShift2`, with
     /// `MiRowStarts[TileRows] = MiRows`).
-    pub mi_row_starts: Vec<u32>,
+    pub mi_row_starts: crate::tile::TileStarts,
     /// `context_update_tile_id` (read only for a multi-tile, non-bridge,
     /// non-TIP-as-output layout when `!enable_avg_cdf || !avg_cdf_type`; else `0`).
     pub context_update_tile_id: u32,
@@ -163,6 +163,15 @@ pub struct TileInfo {
     /// discard). `Some` on the explicit branch; `None` on the reuse branch (which writes
     /// no `tile_params()` bits — the layout is recomputed from the stored sequence layout).
     pub tile_params: Option<TileParams>,
+}
+
+/// More tile starts than AV2 allows for one axis.
+fn tile_starts_overflow(reader: &BitReader<'_>) -> Error {
+    Error::InvalidTileParams {
+        offset: reader.byte_offset(),
+        bit_offset: reader.bit_offset(),
+        kind: crate::error::TileParamsErrorKind::TileColsOutOfRange,
+    }
 }
 
 /// Parses `tile_info()` (AV2 v1.0.0 § 5.18.7.2,
@@ -298,12 +307,24 @@ pub fn parse_tile_info(
     };
 
     let sb_shift2 = sb_shift2.min(31);
-    let mut mi_col_starts: Vec<u32> = Vec::with_capacity(sb_col_starts.len() + 1);
-    mi_col_starts.extend(sb_col_starts.iter().map(|&start| start << sb_shift2));
-    mi_col_starts.push(mi_cols);
-    let mut mi_row_starts: Vec<u32> = Vec::with_capacity(sb_row_starts.len() + 1);
-    mi_row_starts.extend(sb_row_starts.iter().map(|&start| start << sb_shift2));
-    mi_row_starts.push(mi_rows);
+    let mut mi_col_starts = crate::tile::TileStarts::default();
+    for &start in &sb_col_starts {
+        mi_col_starts
+            .push(start << sb_shift2)
+            .ok_or_else(|| tile_starts_overflow(reader))?;
+    }
+    mi_col_starts
+        .push(mi_cols)
+        .ok_or_else(|| tile_starts_overflow(reader))?;
+    let mut mi_row_starts = crate::tile::TileStarts::default();
+    for &start in &sb_row_starts {
+        mi_row_starts
+            .push(start << sb_shift2)
+            .ok_or_else(|| tile_starts_overflow(reader))?;
+    }
+    mi_row_starts
+        .push(mi_rows)
+        .ok_or_else(|| tile_starts_overflow(reader))?;
 
     let (context_update_tile_id, tile_size_bytes) =
         if (tile_cols > 1 || tile_rows > 1) && !is_bridge && !tip_frame_as_output {
@@ -396,8 +417,8 @@ mod tests {
         assert_eq!(info.tile_rows, 1);
         assert_eq!(info.tile_cols_log2, 0);
         assert_eq!(info.tile_rows_log2, 0);
-        assert_eq!(info.mi_col_starts, vec![0, 4]);
-        assert_eq!(info.mi_row_starts, vec![0, 2]);
+        assert_eq!(info.mi_col_starts.as_ref(), [0, 4].as_slice());
+        assert_eq!(info.mi_row_starts.as_ref(), [0, 2].as_slice());
         assert_eq!(info.context_update_tile_id, 0);
         assert_eq!(info.tile_size_bytes, None);
         assert_eq!(reader.consumed_bits(), 1);
@@ -428,8 +449,8 @@ mod tests {
         assert_eq!(info.tile_rows, 1);
         assert_eq!(info.tile_cols_log2, 1);
         assert_eq!(info.tile_rows_log2, 0);
-        assert_eq!(info.mi_col_starts, vec![0, 32, 64]);
-        assert_eq!(info.mi_row_starts, vec![0, 64]);
+        assert_eq!(info.mi_col_starts.as_ref(), [0, 32, 64].as_slice());
+        assert_eq!(info.mi_row_starts.as_ref(), [0, 64].as_slice());
         assert_eq!(info.context_update_tile_id, 1);
         assert_eq!(info.tile_size_bytes, Some(4));
         assert_eq!(reader.consumed_bits(), 7);
@@ -461,8 +482,8 @@ mod tests {
         assert_eq!(info.tile_rows, 2);
         assert_eq!(info.tile_cols_log2, 1);
         assert_eq!(info.tile_rows_log2, 1);
-        assert_eq!(info.mi_col_starts, vec![0, 32, 64]);
-        assert_eq!(info.mi_row_starts, vec![0, 32, 64]);
+        assert_eq!(info.mi_col_starts.as_ref(), [0, 32, 64].as_slice());
+        assert_eq!(info.mi_row_starts.as_ref(), [0, 32, 64].as_slice());
         assert_eq!(info.context_update_tile_id, 2);
         assert_eq!(info.tile_size_bytes, Some(2));
         assert_eq!(reader.consumed_bits(), 5);
@@ -592,8 +613,8 @@ mod tests {
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
-        view.seq_sb_col_starts = vec![0, 2];
-        view.seq_sb_row_starts = vec![0, 2];
+        view.seq_sb_col_starts = std::sync::Arc::from(vec![0, 2]);
+        view.seq_sb_row_starts = std::sync::Arc::from(vec![0, 2]);
         let mut bits = Bits::default();
         bits.f(2, 2); // context_update_tile_id (n = TileRowsLog2 + TileColsLog2 = 2)
         bits.f(1, 2); // tile_size_bytes_minus_1 -> TileSizeBytes = 2
@@ -604,8 +625,8 @@ mod tests {
         assert_eq!(info.tile_rows, 2);
         assert_eq!(info.tile_cols_log2, 1);
         assert_eq!(info.tile_rows_log2, 1);
-        assert_eq!(info.mi_col_starts, vec![0, 32, 64]);
-        assert_eq!(info.mi_row_starts, vec![0, 32, 64]);
+        assert_eq!(info.mi_col_starts.as_ref(), [0, 32, 64].as_slice());
+        assert_eq!(info.mi_row_starts.as_ref(), [0, 32, 64].as_slice());
         assert_eq!(info.context_update_tile_id, 2);
         assert_eq!(info.tile_size_bytes, Some(2));
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
@@ -628,8 +649,8 @@ mod tests {
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
-        view.seq_sb_col_starts = vec![0, 2];
-        view.seq_sb_row_starts = vec![0, 2];
+        view.seq_sb_col_starts = std::sync::Arc::from(vec![0, 2]);
+        view.seq_sb_row_starts = std::sync::Arc::from(vec![0, 2]);
         let mut bits = Bits::default();
         bits.bit(1); // uniform_tile_spacing_flag (fresh tile_params)
         let data = bits.into_bytes();
@@ -646,8 +667,8 @@ mod tests {
         let mut params = uniform_2x2_seq_params();
         params.uniform_spacing = false;
         view.seq_tile_params = Some(params);
-        view.seq_sb_col_starts = vec![0, 2];
-        view.seq_sb_row_starts = vec![0, 2];
+        view.seq_sb_col_starts = std::sync::Arc::from(vec![0, 2]);
+        view.seq_sb_row_starts = std::sync::Arc::from(vec![0, 2]);
         assert!(matches!(
             parse(&view, &[], FrameSize::new(256, 256)),
             Err(Error::UnexpectedEof { .. })
@@ -765,8 +786,8 @@ mod proptests {
                     covers_cols: true,
                     covers_rows: true,
                 }),
-                seq_sb_col_starts,
-                seq_sb_row_starts,
+                seq_sb_col_starts: std::sync::Arc::from(seq_sb_col_starts),
+                seq_sb_row_starts: std::sync::Arc::from(seq_sb_row_starts),
                 seq_sb_size: sb_size(seq_sb),
                 use_256x256_superblock: use_256,
                 use_128x128_superblock: use_128,

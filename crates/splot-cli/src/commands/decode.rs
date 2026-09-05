@@ -841,7 +841,7 @@ fn read_decode_input(path: &Path, options: &DecodeOptions) -> Result<DecodeInput
         }
 
         let read_limit = max_input_bytes.checked_add(1).unwrap_or(max_input_bytes);
-        let mut bytes = Vec::new();
+        let mut bytes = sized_input_buffer(&file, Some(read_limit));
         file.take(read_limit)
             .read_to_end(&mut bytes)
             .with_context(|| format!("failed to read input file: {}", path.display()))?;
@@ -853,10 +853,23 @@ fn read_decode_input(path: &Path, options: &DecodeOptions) -> Result<DecodeInput
         return Ok(DecodeInputRead::Bytes(bytes));
     }
 
-    let mut bytes = Vec::new();
+    let mut bytes = sized_input_buffer(&file, None);
     file.read_to_end(&mut bytes)
         .with_context(|| format!("failed to read input file: {}", path.display()))?;
     Ok(DecodeInputRead::Bytes(bytes))
+}
+
+/// Reserves the file's exact length so `read_to_end` never doubles past it.
+fn sized_input_buffer(file: &File, limit: Option<u64>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let Ok(metadata) = file.metadata() else {
+        return bytes;
+    };
+    let len = limit.map_or_else(|| metadata.len(), |limit| metadata.len().min(limit));
+    if let Ok(len) = usize::try_from(len) {
+        let _ = bytes.try_reserve_exact(len);
+    }
+    bytes
 }
 
 fn input_byte_limit_error(options: &DecodeOptions, actual: u64) -> Option<DecodeLimitError> {

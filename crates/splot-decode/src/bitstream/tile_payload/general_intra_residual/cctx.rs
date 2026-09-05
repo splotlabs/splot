@@ -9,7 +9,7 @@ use splot_recon::{
 };
 
 use super::reconstruct::{dequantize_coeff_block, reconstruct_block_setup};
-use super::{GeneralIntraResidualError, LumaCoeffBlock, with_residual_scratch};
+use super::{CoeffBlock, GeneralIntraResidualError, with_residual_scratch};
 
 const CCTX_PREC_BITS: u32 = 8;
 const CCTX_MTX: [[i32; 2]; 6] = [
@@ -24,9 +24,9 @@ const CCTX_MTX: [[i32; 2]; 6] = [
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: ReconSample>(
-    u_block: &LumaCoeffBlock,
+    u_block: CoeffBlock<'_>,
     u_prediction: &[T],
-    v_block: &LumaCoeffBlock,
+    v_block: CoeffBlock<'_>,
     v_prediction: &[T],
     qindex: u32,
     log2_width: u32,
@@ -56,9 +56,9 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
-    u_block: &LumaCoeffBlock,
+    u_block: CoeffBlock<'_>,
     u_prediction: &[T],
-    v_block: &LumaCoeffBlock,
+    v_block: CoeffBlock<'_>,
     v_prediction: &[T],
     qindex: u32,
     log2_width: u32,
