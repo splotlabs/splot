@@ -1498,11 +1498,14 @@ pub(crate) fn reference_order_hints(
     ref_frame_idx: &[u32],
     ref_valid: &[bool],
     ref_order_hint: &[u32],
-) -> Vec<Option<u32>> {
-    ref_frame_idx
-        .iter()
-        .map(|&slot| reference_order_hint(slot, ref_valid, ref_order_hint))
-        .collect()
+) -> RefOrderHints {
+    let mut hints = RefOrderHints::default();
+    hints.extend_within(
+        ref_frame_idx
+            .iter()
+            .map(|&slot| reference_order_hint(slot, ref_valid, ref_order_hint)),
+    );
+    hints
 }
 
 pub(crate) fn tip_reference_pair_from_hints(

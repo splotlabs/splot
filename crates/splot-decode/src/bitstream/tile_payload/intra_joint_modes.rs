@@ -182,12 +182,12 @@ impl<T: Copy + Send + 'static> MiGrid<T> {
 
 /// Retained per-thread MI-grid cell buffers, keyed by cell type.
 ///
-/// The intra-frontier cursor rebuilds seven area-sized `MiGrid` backing vectors
-/// per tile (five `u8` grids, the luma-palette grid, and the tree-walk y-mode
-/// grid). Recycling them through this bounded thread-local pool removes that
+/// The intra-frontier cursor rebuilds nine area-sized `MiGrid` backing vectors
+/// per tile (five `u8` grids, the luma-palette grid, the tree-walk y-mode grid,
+/// and the two segment-id grids). Recycling them through this bounded thread-local pool removes that
 /// per-tile allocation traffic while keeping the grids trivially droppable (no
 /// `Drop` glue on the read hot path).
-const MI_GRID_SCRATCH_SLOTS: usize = 8;
+const MI_GRID_SCRATCH_SLOTS: usize = 10;
 const MAX_RETAINED_MI_GRID_CELLS: usize = 1 << 24;
 
 thread_local! {
@@ -195,11 +195,11 @@ thread_local! {
         const { RefCell::new([const { None }; MI_GRID_SCRATCH_SLOTS]) };
 }
 
-fn take_mi_grid_vec<T: Send + 'static>() -> Vec<T> {
+pub(super) fn take_mi_grid_vec<T: Send + 'static>() -> Vec<T> {
     MI_GRID_SCRATCH.with(|cell| take_reusable_vec(cell))
 }
 
-fn recycle_mi_grid_vec<T: Send + 'static>(mut cells: Vec<T>) {
+pub(super) fn recycle_mi_grid_vec<T: Send + 'static>(mut cells: Vec<T>) {
     if cells.capacity() == 0 || cells.capacity() > MAX_RETAINED_MI_GRID_CELLS {
         return;
     }
@@ -566,19 +566,31 @@ pub(crate) struct TileSegmentIdState {
     predicted: MiGrid<u8>,
 }
 
+/// Returns both grids to the per-thread MI-grid pool. Unlike its frontier
+/// siblings this state is merged into the frame map rather than handed back at
+/// a single call site, so the buffers come home on drop.
+impl Drop for TileSegmentIdState {
+    fn drop(&mut self) {
+        recycle_mi_grid_vec(core::mem::take(&mut self.grid.cells));
+        recycle_mi_grid_vec(core::mem::take(&mut self.predicted.cells));
+    }
+}
+
 impl TileSegmentIdState {
     pub(crate) fn new_for_tile(
         mi_rows: core::ops::Range<usize>,
         mi_cols: core::ops::Range<usize>,
     ) -> Result<Self, TileSegmentIdStateError> {
-        let rows = mi_rows.end.saturating_sub(mi_rows.start);
-        let cols = mi_cols.end.saturating_sub(mi_cols.start);
-        let grid = mi_grid_new!(TileSegmentIdStateError, 0u8, rows, cols, Ok(()))?;
-        let predicted = mi_grid_new!(TileSegmentIdStateError, 0u8, rows, cols, Ok(()))?;
-        Ok(Self {
-            grid: grid.with_origin(mi_rows.start, mi_cols.start),
-            predicted: predicted.with_origin(mi_rows.start, mi_cols.start),
-        })
+        let grid = mi_grid_new_for_tile!(
+            TileSegmentIdStateError,
+            0u8,
+            mi_rows.clone(),
+            mi_cols.clone(),
+            Ok(())
+        )?;
+        let predicted =
+            mi_grid_new_for_tile!(TileSegmentIdStateError, 0u8, mi_rows, mi_cols, Ok(()))?;
+        Ok(Self { grid, predicted })
     }
 
     pub(crate) fn cell(&self, r: usize, c: usize) -> Option<u8> {

@@ -8,6 +8,7 @@
 use std::collections::TryReserveError;
 use std::ops::Range;
 
+use super::intra_joint_modes::{recycle_mi_grid_vec, take_mi_grid_vec};
 use super::partition_size::{BlockSize, PartitionSizeError};
 use super::partition_traversal::TilePartitionContextState;
 
@@ -420,11 +421,20 @@ fn checked_mul_usize(
 fn coalesced_storage(
     allocation: TileMiSizeStateAllocation,
 ) -> Result<Vec<u8>, TileMiSizeStateError> {
-    let mut storage = Vec::new();
+    let mut storage = take_mi_grid_vec::<u8>();
+    storage.clear();
     storage.try_reserve_exact(allocation.entry_count())?;
     storage.resize(2 * allocation.padded_grid_cells(), BLOCK_256X256_INDEX);
     storage.resize(allocation.entry_count(), CLEAR_PARTITION_CONTEXT);
     Ok(storage)
+}
+
+/// Returns the coalesced store to the per-thread MI-grid pool; the frontier
+/// cursor drops this state at the end of every tile.
+impl Drop for TileMiSizeState {
+    fn drop(&mut self) {
+        recycle_mi_grid_vec(core::mem::take(&mut self.storage));
+    }
 }
 
 fn partition_context_above(mi_size_index: usize) -> Result<u8, TileMiSizeStateError> {

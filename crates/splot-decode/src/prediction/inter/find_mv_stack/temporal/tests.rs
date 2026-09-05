@@ -244,8 +244,8 @@ fn tip_reference_pair_uses_the_two_nearest_past_references() {
 #[test]
 fn reference_order_hints_exclude_invalid_slots() {
     assert_eq!(
-        reference_order_hints(&[0, 1, 2], &[true, false, true], &[8, 9, 12]),
-        vec![Some(8), None, Some(12)]
+        *reference_order_hints(&[0, 1, 2], &[true, false, true], &[8, 9, 12]),
+        [Some(8), None, Some(12)]
     );
 }
 
