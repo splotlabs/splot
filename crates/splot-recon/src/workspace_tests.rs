@@ -344,30 +344,6 @@ fn owned_rectangular_surface_round_trips_without_borrowing_the_frame() {
 }
 
 #[test]
-fn rectangular_surface_rejects_cross_band_access_before_writing() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
-    let mut surfaces = workspace
-        .rect_surfaces(&[rect(0, 0, 8, 2), rect(0, 2, 8, 2)])
-        .unwrap();
-    {
-        let mut surface = CurrentFrameSurface::Rect(&mut surfaces[0]);
-        assert!(matches!(
-            surface.write_rect(PlaneId::Y, rect(0, 1, 1, 2), &[9; 2], 1),
-            Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
-        ));
-    }
-    drop(surfaces);
-    assert!(
-        workspace
-            .samples(PlaneId::Y)
-            .unwrap()
-            .iter()
-            .all(|&sample| sample == 3)
-    );
-}
-
-#[test]
 fn rectangular_surface_reports_plane_global_sample_index() {
     let mut workspace =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
@@ -383,10 +359,22 @@ fn rectangular_surface_reports_plane_global_sample_index() {
             max: 255,
         })
     ));
+    assert!(matches!(
+        surface.write_rect(PlaneId::Y, rect(0, 2, 1, 2), &[9; 2], 1),
+        Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
+    ));
+    drop(surfaces);
+    assert!(
+        workspace
+            .samples(PlaneId::Y)
+            .unwrap()
+            .iter()
+            .all(|&sample| sample == 3)
+    );
 }
 
 #[test]
-fn rectangular_surface_partition_rejects_anything_but_a_free_full_width_band() {
+fn rectangular_surface_partition_rejects_overlap() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 0).unwrap();
     assert!(matches!(

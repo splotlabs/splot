@@ -526,15 +526,6 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
                 interp,
             );
             let mut direct = workspace_with_format(format, width, height);
-            motion_compensate_inter_block_into(
-                &mut WorkspaceSink::Frame(&mut direct),
-                block,
-                ByteOffset::new(0),
-            )
-            .expect("direct u8 single-reference prediction");
-            SUBPEL_PREDICTION_BUFFER
-                .with(|slot| assert!(slot.take().is_none(), "direct path used packed u16 storage"));
-
             let mut staged = workspace_with_format(format, width, height);
             let luma_rect = PlaneRect::new(
                 block_rect.luma_x,
@@ -548,19 +539,17 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
                     .rect_surfaces(&[luma_rect])
                     .expect("rectangle surface");
                 let surface = surfaces.first_mut().expect("one rectangle surface");
-                motion_compensate_inter_block_into(
-                    &mut WorkspaceSink::Rect(surface),
-                    block,
-                    ByteOffset::new(0),
-                )
-                .expect("band u8 single-reference prediction");
+                for mut sink in [
+                    WorkspaceSink::Frame(&mut direct),
+                    WorkspaceSink::Rect(surface),
+                ] {
+                    motion_compensate_inter_block_into(&mut sink, block, ByteOffset::new(0))
+                        .expect("u8 single-reference prediction");
+                    SUBPEL_PREDICTION_BUFFER.with(|slot| {
+                        assert!(slot.take().is_none(), "surface used packed u16 storage");
+                    });
+                }
             }
-            SUBPEL_PREDICTION_BUFFER.with(|slot| {
-                assert!(
-                    slot.take().is_none(),
-                    "band surface used packed u16 storage"
-                );
-            });
 
             let direct = direct.freeze().expect("freeze direct workspace");
             let staged = staged.freeze().expect("freeze staged workspace");
