@@ -32,22 +32,38 @@ static EIGHT_BIT_SPARES: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 static TEN_BIT_SPARES: Mutex<Vec<Vec<u16>>> = Mutex::new(Vec::new());
 
 /// Takes a spare buffer holding at least `samples`, or an empty one.
+///
+/// A spare that is already `samples` long is worth much more than one that is
+/// merely large enough: the caller's `resize` then writes nothing. See
+/// [`recycle`].
 fn take<T>(spares: &Mutex<Vec<Vec<T>>>, samples: usize) -> Vec<T> {
     let Ok(mut spares) = spares.lock() else {
         return Vec::new();
     };
-    let Some(index) = spares.iter().position(|spare| spare.capacity() >= samples) else {
-        return Vec::new();
-    };
-    spares.swap_remove(index)
+    let mut best = None;
+    for (index, spare) in spares.iter().enumerate() {
+        if spare.capacity() < samples {
+            continue;
+        }
+        if spare.len() == samples {
+            best = Some(index);
+            break;
+        }
+        best = best.or(Some(index));
+    }
+    best.map_or_else(Vec::new, |index| spares.swap_remove(index))
 }
 
 /// Offers `buffer` back, keeping it only while there is room.
-fn recycle<T>(spares: &Mutex<Vec<Vec<T>>>, mut buffer: Vec<T>) {
+///
+/// The samples stay in place rather than being cleared. A workspace writes
+/// every sample it later reads -- that is what makes the retiring hand-off this
+/// pool serves alongside sound -- so clearing here would only add a
+/// multi-megabyte `resize` fill to the next frame that takes the buffer.
+fn recycle<T>(spares: &Mutex<Vec<Vec<T>>>, buffer: Vec<T>) {
     if buffer.capacity() < MIN_POOLED_SAMPLES {
         return;
     }
-    buffer.clear();
     if let Ok(mut spares) = spares.lock()
         && spares.len() < MAX_SPARE_BUFFERS
     {
