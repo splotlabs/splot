@@ -497,7 +497,7 @@ fn dispatcher_blends_compound_average_with_odd_chroma_extents() {
 }
 
 #[test]
-fn single_reference_u8_direct_matches_sliced_fallback_across_chroma_formats_and_edges() {
+fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_edges() {
     for format in [
         PixelFormat::Yuv420,
         PixelFormat::Yuv422,
@@ -513,7 +513,7 @@ fn single_reference_u8_direct_matches_sliced_fallback_across_chroma_formats_and_
                 InterpolationFilter::EightTap,
             ),
             (
-                rect(1, 1, width - 1, height - 1),
+                rect(0, 1, width, height - 1),
                 Mv { row: 5, col: -3 },
                 InterpolationFilter::EightTapSharp,
             ),
@@ -553,12 +553,12 @@ fn single_reference_u8_direct_matches_sliced_fallback_across_chroma_formats_and_
                     block,
                     ByteOffset::new(0),
                 )
-                .expect("sliced u8 single-reference prediction");
+                .expect("band u8 single-reference prediction");
             }
             SUBPEL_PREDICTION_BUFFER.with(|slot| {
                 assert!(
-                    slot.take().is_some(),
-                    "sliced fallback skipped packed u16 storage"
+                    slot.take().is_none(),
+                    "band surface used packed u16 storage"
                 );
             });
 
@@ -574,6 +574,36 @@ fn single_reference_u8_direct_matches_sliced_fallback_across_chroma_formats_and_
         }
     }
     SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+}
+
+#[test]
+fn a_frame_edge_overhanging_block_stages_through_packed_u16_storage() {
+    let width = 17;
+    let height = 15;
+    let reference = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 23);
+    let block_rect = rect(12, 10, 8, 8);
+    let block = InterBlockParams::single(
+        ReferenceSamples::settled(&reference),
+        block_rect,
+        Mv { row: 5, col: -3 },
+        InterpolationFilter::EightTapSharp,
+    );
+
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    let mut workspace = workspace_with_format(PixelFormat::Yuv420, width, height);
+    motion_compensate_inter_block_into(
+        &mut super::WorkspaceSink::Frame(&mut workspace),
+        block,
+        ByteOffset::new(0),
+    )
+    .expect("clipped u8 single-reference prediction");
+
+    SUBPEL_PREDICTION_BUFFER.with(|slot| {
+        assert!(
+            slot.take().is_some(),
+            "a clipped rectangle skipped packed u16 storage"
+        );
+    });
 }
 
 #[test]

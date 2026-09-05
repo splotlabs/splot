@@ -201,6 +201,18 @@ pub enum ReconError {
         /// Rectangle that crossed `band`.
         rect: PlaneRect,
     },
+    /// A requested current-frame rectangle surface was not a free full-width band.
+    #[error("current-frame workspace {} rectangle x={} y={} width={} height={} is not a full-width band of storage {}x{} below settled row {settled_rows}", .plane.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height(), .storage.width(), .storage.height())]
+    WorkspaceRectSurfaceNotABand {
+        /// Plane being partitioned into bands.
+        plane: PlaneId,
+        /// Storage dimensions the band had to span.
+        storage: PlaneSize,
+        /// Rectangle that was not a free full-width band.
+        rect: PlaneRect,
+        /// First plane row this split had not handed out yet.
+        settled_rows: usize,
+    },
     /// Two requested current-frame rectangle surfaces overlap.
     #[error("current-frame workspace rectangles x={} y={} width={} height={} and x={} y={} width={} height={} overlap", .first.x(), .first.y(), .first.width(), .first.height(), .second.x(), .second.y(), .second.width(), .second.height())]
     WorkspaceRectSurfacesOverlap {
