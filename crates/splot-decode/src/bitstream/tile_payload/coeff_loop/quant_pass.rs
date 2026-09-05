@@ -5,17 +5,9 @@
 //!
 //! Feature tracking: `DECODE-COEFF-QUANT-PASS-COMPOSE`.
 
-use super::quant_state::CoeffQuantStateWriteError;
+use super::quant_state::{CoeffQuantStateConfig, CoeffQuantStateWriteError};
 use super::read_quant::CoeffReadQuantError;
 use super::scan_walk::CoeffScanEntry;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffQuantPassConfig {
-    pub(crate) is_hidden: bool,
-    pub(crate) sum_abs1: u32,
-    pub(crate) use_tcq: bool,
-    pub(crate) lossless: bool,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffQuantPassError {
@@ -32,7 +24,7 @@ pub(crate) enum CoeffQuantPassError {
 }
 
 pub(crate) fn validate_coeff_quant_pass_config(
-    config: CoeffQuantPassConfig,
+    config: CoeffQuantStateConfig,
 ) -> Result<(), CoeffQuantPassError> {
     if config.is_hidden && (config.use_tcq || config.lossless) {
         return Err(CoeffQuantPassError::InconsistentHiddenParityConfig {

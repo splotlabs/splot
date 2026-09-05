@@ -9,8 +9,7 @@
 //! This module covers the §5.4.1 fields up to (but not including) the first child
 //! config (`sequence_partition_config()`): the general fields, the cropping window,
 //! the decoder-model cascade, and the two dependency maps. The top-level
-//! `write_sequence_header` (and the child-config writers) land in later changes;
-//! they compose these helpers in §5.4.1 read order.
+//! `write_sequence_header` composes these helpers in §5.4.1 read order.
 //!
 //! This module is additive: it depends on the model/parser read-only and serializes a
 //! parsed [`SequenceHeaderGeneral`] back to bits via [`BitWriter`]. The universal
@@ -25,6 +24,7 @@
 //! writer emits bits only from values the parser would have signaled and the round-trip
 //! property is provable. See [`WriteError::NonCanonicalSequenceValue`].
 
+use super::seq_config::check_field_width;
 use crate::headers::frame::ceil_log2;
 use crate::headers::sequence::{
     CroppingWindow, MLayerDependencyMap, SequenceDecoderModelInfo, SequenceHeaderGeneral,
@@ -48,18 +48,6 @@ const fn seq_tier_bit(tier: Tier) -> u8 {
     match tier {
         Tier::Main => 0,
         Tier::High => 1,
-    }
-}
-
-/// Returns `Ok(())` if `value` fits in `width_bits`, else [`WriteError::ValueTooWide`]
-/// — the same bound the `f(n)` write enforces, checked up front so a rejected header
-/// never leaves a partial encoding in the writer.
-fn check_field_width(value: u64, width_bits: u32) -> WriteResult<()> {
-    let fits = width_bits >= 64 || value < (1u64 << width_bits);
-    if fits {
-        Ok(())
-    } else {
-        Err(WriteError::ValueTooWide { value, width_bits })
     }
 }
 
@@ -467,33 +455,18 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
                 what: "mlayer_dependency_present_flag",
             });
         }
-        if !mlayer_maps_equal(&general.mlayer_dependency_map, &m_default) {
+        if general.mlayer_dependency_map != m_default {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "mlayer_dependency_map",
             });
         }
     } else if !general.mlayer_dependency_present_flag {
-        if !mlayer_maps_equal(&general.mlayer_dependency_map, &m_default) {
+        if general.mlayer_dependency_map != m_default {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "mlayer_dependency_map",
             });
         }
     } else {
-        for reference in 0..MAX_NUM_MLAYERS {
-            let stored = general.mlayer_dependency_map.depends_on(
-                EmbeddedLayerId::from_bits(0),
-                EmbeddedLayerId::from_bits(reference),
-            );
-            let default = m_default.depends_on(
-                EmbeddedLayerId::from_bits(0),
-                EmbeddedLayerId::from_bits(reference),
-            );
-            if stored != default {
-                return Err(WriteError::NonCanonicalSequenceValue {
-                    what: "mlayer_dependency_map",
-                });
-            }
-        }
         check_mlayer_unsignaled_matches_default(general, &m_default)?;
     }
 
@@ -506,7 +479,7 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
                 what: "tlayer_dependency_present_flag",
             });
         }
-        if !tlayer_maps_equal(&general.tlayer_dependency_map, &t_default) {
+        if general.tlayer_dependency_map != t_default {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "tlayer_dependency_map",
             });
@@ -517,7 +490,7 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
                 what: "multi_tlayer_dependency_map_present_flag",
             });
         }
-        if !tlayer_maps_equal(&general.tlayer_dependency_map, &t_default) {
+        if general.tlayer_dependency_map != t_default {
             return Err(WriteError::NonCanonicalSequenceValue {
                 what: "tlayer_dependency_map",
             });
@@ -532,51 +505,6 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
     }
 
     Ok(())
-}
-
-/// Returns `true` if two mlayer maps agree on every entry the parser could read or infer
-/// (the full `MAX_NUM_MLAYERS` grid; ids outside the 3-bit range read `false`).
-fn mlayer_maps_equal(a: &MLayerDependencyMap, b: &MLayerDependencyMap) -> bool {
-    for curr in 0..MAX_NUM_MLAYERS {
-        for reference in 0..MAX_NUM_MLAYERS {
-            let ca = a.depends_on(
-                EmbeddedLayerId::from_bits(curr),
-                EmbeddedLayerId::from_bits(reference),
-            );
-            let cb = b.depends_on(
-                EmbeddedLayerId::from_bits(curr),
-                EmbeddedLayerId::from_bits(reference),
-            );
-            if ca != cb {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// Returns `true` if two tlayer maps agree on every `[m][curr][ref]` entry.
-fn tlayer_maps_equal(a: &TLayerDependencyMap, b: &TLayerDependencyMap) -> bool {
-    for m in 0..MAX_NUM_MLAYERS {
-        for curr in 0..MAX_NUM_TLAYERS {
-            for reference in 0..MAX_NUM_TLAYERS {
-                let ca = a.depends_on(
-                    EmbeddedLayerId::from_bits(m),
-                    TemporalLayerId::from_bits(curr),
-                    TemporalLayerId::from_bits(reference),
-                );
-                let cb = b.depends_on(
-                    EmbeddedLayerId::from_bits(m),
-                    TemporalLayerId::from_bits(curr),
-                    TemporalLayerId::from_bits(reference),
-                );
-                if ca != cb {
-                    return false;
-                }
-            }
-        }
-    }
-    true
 }
 
 /// Ensures every mlayer entry the parser does NOT signal (row 0, rows `> max_mlayer`, and

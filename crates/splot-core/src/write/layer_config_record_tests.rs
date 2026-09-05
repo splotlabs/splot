@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -117,7 +116,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn minimal_global_round_trips() {
         let body = global_prefix(1, 0b1, false, false, false, false, false).into_bytes();
@@ -144,8 +142,7 @@ mod tests {
 
     #[test]
     fn global_with_atlas_id_round_trips() {
-        let mut bits = global_prefix(3, 0b1, false, false, false, false, true);
-        bits.bits.clear();
+        let mut bits = Bits::default();
         bits.f(3, 3); // id
         bits.f(0b1, 31); // map
         bits.f(0, 4); // agg/ptl/payload/dependent flags = 0
@@ -228,15 +225,7 @@ mod tests {
 
     #[test]
     fn minimal_local_round_trips() {
-        let mut bits = Bits::default();
-        bits.f(3, 3); // lcr_global_id
-        bits.f(1, 3); // lcr_local_id
-        bits.bit(0); // ptl present
-        bits.bit(0); // local atlas present
-        bits.f(0, 3); // reserved_zero_3bits
-        bits.f(0, 5); // reserved_zero_5bits
-        bits.extend(minimal_xlayer_info(false));
-        round_trip(&bits.into_bytes(), ExtendedLayerId::from_bits(2));
+        round_trip(&minimal_local_body(), ExtendedLayerId::from_bits(2));
     }
 
     #[test]
@@ -337,7 +326,6 @@ mod tests {
         assert_eq!(embedded.layers[1].dependent_layer_map, Some(1));
         assert!(embedded.layers[1].same_sh_max_resolution_flag);
     }
-
 
     #[test]
     fn rejects_aggregate_info_gate() {

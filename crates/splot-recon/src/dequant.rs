@@ -23,8 +23,7 @@
 //! update) stays with the caller, which passes the already-resolved facts. The
 //! § 7.14.4 dequantization process that applies these quantizers (with
 //! quantizer-matrix weighting) to coded coefficients, the § 7.14.3 reconstruct
-//! process, inverse transforms, and residual addition are out of scope and
-//! tracked by their own future rows.
+//! process, inverse transforms, and residual addition are outside this module.
 
 use crate::{BitDepth, PlaneId};
 
@@ -105,11 +104,7 @@ pub fn quantizer_value(qindex: u32, delta: i32, bit_depth: BitDepth) -> u32 {
     if qindex == 0 && delta <= 0 {
         return u32::from(AC_QLOOKUP[0]);
     }
-    let adjusted = if delta < 0 {
-        qindex.saturating_sub(delta.unsigned_abs())
-    } else {
-        qindex.saturating_add(delta as u32)
-    };
+    let adjusted = qindex.saturating_add_signed(delta);
     qlookup(adjusted.clamp(1, max_quantizer_index(bit_depth)))
 }
 
@@ -151,11 +146,7 @@ pub fn quantizer_index(
         } else {
             base_q_idx
         };
-        let qindex = if segment_alt_q_data < 0 {
-            base.saturating_sub(segment_alt_q_data.unsigned_abs())
-        } else {
-            base.saturating_add(segment_alt_q_data as u32)
-        };
+        let qindex = base.saturating_add_signed(segment_alt_q_data);
         qindex.min(max_quantizer_index(bit_depth))
     } else if delta_q_applies {
         current_q_index
@@ -224,6 +215,7 @@ pub fn ac_quantizer(
 
 #[cfg(test)]
 mod tests {
+    use super::quantizer_index as qindex;
     use super::*;
 
     #[test]
@@ -281,26 +273,6 @@ mod tests {
             qlookup(303)
         );
         assert_eq!(quantizer_value(1, i32::MIN, BitDepth::Eight), qlookup(1));
-    }
-
-    fn qindex(
-        base_q_idx: u32,
-        current_q_index: u32,
-        seg_active: bool,
-        seg_data: i32,
-        delta_q_present: bool,
-        ignore_delta_q: bool,
-        bit_depth: BitDepth,
-    ) -> u32 {
-        quantizer_index(
-            base_q_idx,
-            current_q_index,
-            seg_active,
-            seg_data,
-            delta_q_present,
-            ignore_delta_q,
-            bit_depth,
-        )
     }
 
     #[test]

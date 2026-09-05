@@ -5,26 +5,9 @@
 
 use super::*;
 
-/// The Annex A Table A.4 interoperability-point OBU-presence tracker (AV2 v1.0.0 Annex A.2
-/// Table A.4, mirror `annex-a-profiles-levels-and-tiers.md` lines 178-201), scoped to a
-/// coded (multistream-)video-sequence window.
-///
-/// The window spans the whole coded video sequence and is evaluated at its end — the start
-/// of the next coded video sequence (a CLK in a *later* temporal unit, § 7.3.6) or the end
-/// of the bitstream. Per-temporal-unit observations accumulate in [`Self::pending`]; at
-/// temporal-unit completion they are committed to the right window (lesson 8): a temporal
-/// unit that begins a new coded video sequence (has a CLK while a window opened in an
-/// earlier temporal unit is still open) first flushes the prior window, then seeds a fresh
-/// window from *this* temporal unit's pending facts — so an OBU_MSDO (or any HLS) observed
-/// BEFORE the CLK in the CLK-bearing temporal unit belongs to the NEW coded video sequence,
-/// not the prior one (§ 7.3.6: the new coded video sequence starts at the temporal unit
-/// containing the CLK).
-///
-/// The presence-requirement evaluation needs frame-confirmed activation state that is only
-/// final at temporal-unit completion (which sequence headers are activated, whether a
-/// global LCR is *activated*, and the MSDO's `multistream_profile_idc`), so the window's
-/// interoperability point, extended/embedded-layer counts, and activated-global-LCR flag
-/// are resolved from the live context at flush time, not accumulated per-OBU.
+/// Annex A Table A.4 presence window, finalized per temporal unit. A CLK in a later
+/// temporal unit flushes the old CVS before merging that unit’s pending facts, so
+/// pre-CLK HLS belongs to the new CVS (§ 7.3.6). Only frame-confirmed activations count.
 #[derive(Debug, Default)]
 pub(super) struct AnnexAIopTracker {
     /// The currently-open coded-video-sequence window, or `None` before the first
@@ -256,15 +239,6 @@ impl AnnexAIopTracker {
             window.cvs_start_tu.get_or_insert(tu_index);
         }
     }
-
-    /// Builds a fresh window from a temporal unit's pending facts (a temporal unit that
-    /// begins a new coded video sequence). The new window's coded-video-sequence start is
-    /// this temporal unit.
-    pub(super) fn window_from_pending(pending: &TuIopFacts, tu_index: u64) -> AnnexAIopWindow {
-        let mut window = AnnexAIopWindow::default();
-        Self::merge_pending_into(&mut window, pending, tu_index);
-        window
-    }
 }
 
 /// The Table A.3 "Number of Extended Layers" for an [`AnnexAIopWindow`] (mirror lines
@@ -348,18 +322,8 @@ impl ValidatorContext {
         );
     }
 
-    /// Commits the just-completed temporal unit's Annex A Table A.4 IOP pending facts to
-    /// the right coded-(multistream-)video-sequence window (AV2 § 7.3.6 per-temporal-unit
-    /// attribution, lesson 8). `completed_tu_index` is the temporal unit's index.
-    ///
-    /// When this temporal unit begins a NEW coded video sequence (it has a CLK and the open
-    /// window's coded video sequence began in an *earlier* temporal unit), the prior window
-    /// is first flushed and evaluated, then a fresh window is seeded from this temporal
-    /// unit's pending facts — so a same-temporal-unit pre-CLK OBU_MSDO/LCR belongs to the
-    /// NEW coded video sequence (§ 7.3.6: the new coded video sequence starts at the
-    /// temporal unit containing the CLK). Otherwise the pending facts merge into the open
-    /// window (the same coded video sequence continues across this temporal unit). The
-    /// pending facts reset for the next temporal unit.
+    /// Commits this temporal unit’s facts to its CVS, flushing the prior window first
+    /// if this unit starts a new CVS (§ 7.3.6). Pre-CLK HLS belongs to the new window.
     pub(super) fn commit_annex_a_iop_pending(
         &mut self,
         completed_tu_index: u64,
@@ -368,19 +332,13 @@ impl ValidatorContext {
     ) {
         if self.annex_a_iop.pending_starts_new_cvs(completed_tu_index) {
             self.flush_annex_a_iop_window(options, report);
-            let pending = std::mem::take(&mut self.annex_a_iop.pending);
-            self.annex_a_iop.window = Some(AnnexAIopTracker::window_from_pending(
-                &pending,
-                completed_tu_index,
-            ));
-        } else {
-            let pending = std::mem::take(&mut self.annex_a_iop.pending);
-            let window = self
-                .annex_a_iop
-                .window
-                .get_or_insert_with(AnnexAIopWindow::default);
-            AnnexAIopTracker::merge_pending_into(window, &pending, completed_tu_index);
         }
+        let pending = std::mem::take(&mut self.annex_a_iop.pending);
+        let window = self
+            .annex_a_iop
+            .window
+            .get_or_insert_with(AnnexAIopWindow::default);
+        AnnexAIopTracker::merge_pending_into(window, &pending, completed_tu_index);
     }
 
     /// Takes the current Annex A Table A.4 IOP window and evaluates its MSDO/LCR
@@ -401,33 +359,9 @@ impl ValidatorContext {
         Self::evaluate_annex_a_iop_window(&window, report);
     }
 
-    /// Emits the Annex A Table A.4 MSDO/LCR interoperability-point presence diagnostics for
-    /// one coded-(multistream-)video-sequence `window` (AV2 v1.0.0 Annex A.2 Table A.4,
-    /// mirror `annex-a-profiles-levels-and-tiers.md` lines 178-201).
-    ///
-    /// The interoperability point is taken from the window's OBU_MSDO `multistream_profile_idc`
-    /// when an MSDO is present (mirror lines 1659-1662), else from the window's
-    /// frame-confirmed activated headers (lesson; see [`AnnexAIopWindow::iop`]). A window with
-    /// no decidable single interoperability point (no in-band profile, a reserved /
-    /// Configurable profile whose IOP is not table-determined, or mixed IOPs across layers) is
-    /// a no-op — the Table A.4 row is not determinable.
-    ///
-    /// `E = "Number of Extended Layers > 1"` and `M = "Number of Embedded Layers > 1"` are the
-    /// Table A.3 counts ([`annex_a_extended_layers`] in declared precedence, mirror lines
-    /// 146-151; the embedded-layer maximum, lines 152-153). The Table A.4 rows, by IOP:
-    ///
-    /// - IOP0 (lines 183-185): MSDO prohibited when `!E`, required when `E`.
-    /// - IOP1 (lines 187-191): `!E && !M` -> MSDO prohibited; `E && !M` -> MSDO required;
-    ///   `!E && M` -> MSDO prohibited and a local LCR required. (`E && M` exceeds IOP1's Table
-    ///   A.3 layer budget and has no Table A.4 row.)
-    /// - IOP2 (lines 193-201): `!E && !M` -> MSDO prohibited; `E && !M` -> MSDO **or** an
-    ///   activated global LCR required (either satisfies); `!E && M` -> MSDO prohibited and an
-    ///   LCR (local or activated global) required; `E && M` -> (MSDO **and** local LCR) **or**
-    ///   an activated global LCR required.
-    ///
-    /// Only an *activated* global LCR ([`AnnexAIopWindow::activated_global_count`], resolved
-    /// via the association chain) satisfies the global-LCR arms (lesson 10); an
-    /// observed-but-unactivated global LCR does not.
+    /// Checks Annex A Table A.4 using MSDO profile precedence and frame-confirmed
+    /// activations. Undecidable or mixed IOPs are skipped; only activated global LCRs
+    /// satisfy global-LCR presence requirements. Layer counts follow Table A.3.
     pub(super) fn evaluate_annex_a_iop_window(
         window: &AnnexAIopWindow,
         report: &mut ValidationReport,
@@ -464,7 +398,6 @@ impl ValidatorContext {
                 if !m {
                     Self::emit_iop_msdo_presence(e, window, extended_layers, offset, report);
                 } else if !e {
-                    Self::emit_msdo_prohibited(window, offset, report);
                     Self::emit_iop1_local_lcr_required(window, offset, report);
                 }
             }
@@ -543,20 +476,16 @@ impl ValidatorContext {
         offset: ByteOffset,
         report: &mut ValidationReport,
     ) {
-        if e {
-            if window.msdo_num_streams.is_none() {
-                report.push(annex_a_iop_error(
-                    "annex-a/msdo-required-for-iop",
-                    offset,
-                    format!(
-                        "Annex A Table A.4: the coded video sequence has more than one extended \
+        if e && window.msdo_num_streams.is_none() {
+            report.push(annex_a_iop_error(
+                "annex-a/msdo-required-for-iop",
+                offset,
+                format!(
+                    "Annex A Table A.4: the coded video sequence has more than one extended \
                          layer ({extended_layers}) but contains no OBU_MSDO, which the activated \
                          profile's interoperability point requires"
-                    ),
-                ));
-            }
-        } else {
-            Self::emit_msdo_prohibited(window, offset, report);
+                ),
+            ));
         }
     }
 
@@ -573,7 +502,7 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         match (e, m) {
-            (false, false) => Self::emit_msdo_prohibited(window, offset, report),
+            (false, false) => {}
             (true, false) => {
                 if window.msdo_num_streams.is_none() && !global_lcr {
                     report.push(annex_a_iop_error(
@@ -589,7 +518,6 @@ impl ValidatorContext {
                 }
             }
             (false, true) => {
-                Self::emit_msdo_prohibited(window, offset, report);
                 if !global_lcr && !window.local_lcr_present {
                     report.push(annex_a_iop_error(
                         "annex-a/lcr-required-for-iop",
@@ -618,36 +546,6 @@ impl ValidatorContext {
                     ));
                 }
             }
-        }
-    }
-
-    /// Emits `annex-a/msdo-prohibited-for-iop` when an MSDO is present in a window whose
-    /// Table A.4 row prohibits one.
-    ///
-    /// This is the documented *defensive* arm. Under the Table A.3 "Number of Extended
-    /// Layers" definition ([`annex_a_extended_layers`], declared precedence), a present
-    /// OBU_MSDO declares `num_streams_minus_2 + 2 >= 2`, so `E = extended_layers > 1` is
-    /// always true when `msdo_num_streams` is `Some`. Every Table A.4 "MSDO Prohibited" row
-    /// requires `E` to be false (`E == 1`), so a caller reaching this method with `!E`
-    /// already has no MSDO, and this body never fires in-band today. The genuine
-    /// violation the prohibition rows would catch — an MSDO declaring substreams that never
-    /// materialize as distinct extended layers — is the declared-vs-observed reconciliation
-    /// owned by the § 6.6 sub-stream change, not this presence window. The id stays emitted
-    /// (and registered) so a future declared-vs-observed model can reach it.
-    pub(super) fn emit_msdo_prohibited(
-        window: &AnnexAIopWindow,
-        offset: ByteOffset,
-        report: &mut ValidationReport,
-    ) {
-        if window.msdo_num_streams.is_some() {
-            report.push(annex_a_iop_error(
-                "annex-a/msdo-prohibited-for-iop",
-                offset,
-                "Annex A Table A.4: the coded video sequence does not have more than one extended \
-                 layer, so an OBU_MSDO is prohibited for the activated profile's interoperability \
-                 point"
-                    .to_owned(),
-            ));
         }
     }
 

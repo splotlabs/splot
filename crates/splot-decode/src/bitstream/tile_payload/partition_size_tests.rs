@@ -24,8 +24,8 @@ fn block(index: usize) -> BlockSize {
     BlockSize::new(index).unwrap()
 }
 
-fn valid_index(result: PartitionSubsize) -> Option<usize> {
-    result.valid().map(BlockSize::index)
+fn valid_index(result: Option<BlockSize>) -> Option<usize> {
+    result.map(BlockSize::index)
 }
 
 #[test]
@@ -56,11 +56,11 @@ fn partition_subsize_preserves_valid_and_invalid_entries() {
     );
     assert_eq!(
         partition_subsize(PartitionType::Horz, block(BLOCK_4X4)).unwrap(),
-        PartitionSubsize::Invalid
+        None
     );
     assert_eq!(
         partition_subsize(PartitionType::Vert, block(BLOCK_4X8)).unwrap(),
-        PartitionSubsize::Invalid
+        None
     );
 }
 
@@ -102,10 +102,7 @@ fn horizontal_partition_midsize_preserves_valid_and_invalid_entries() {
         valid_index(h_partition_midsize(block(BLOCK_64X64)).unwrap()),
         Some(BLOCK_32X32)
     );
-    assert_eq!(
-        h_partition_midsize(block(BLOCK_4X4)).unwrap(),
-        PartitionSubsize::Invalid
-    );
+    assert_eq!(h_partition_midsize(block(BLOCK_4X4)).unwrap(), None);
 }
 
 #[test]

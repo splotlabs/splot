@@ -75,7 +75,6 @@ fn inter_partition_reader_uses_sequence_selected_reduced_cdf() {
                 TX_16X16,
                 6,
                 0,
-                true,
                 reduced_tx_part_set,
                 ByteOffset::new(0),
             )
@@ -144,7 +143,6 @@ fn inter_reduced_partition_set_suppresses_one_axis_four_way_symbol() {
                 TX_4X32,
                 19,
                 0,
-                true,
                 reduced_tx_part_set,
                 ByteOffset::new(0),
             )
@@ -194,7 +192,6 @@ fn writer_produced_inter_narrow_four_and_five_way_partitions_are_malformed() {
             TX_8X8,
             3,
             0,
-            true,
             false,
             ByteOffset::new(41),
         )
@@ -221,17 +218,6 @@ fn writer_produced_inter_narrow_four_and_five_way_partitions_are_malformed() {
     }
 }
 
-/// The AV2 §7.13.2.1 PER-TRANSFORM far-edge availability (`num4AboveRight`) for the
-/// LEFT `TX_16X8` of a `BLOCK_32X8` `V_PRED` coding block at MI(224,30) must be the
-/// transform width in 4x4 units (`tx_size_wide_unit == 4`), NOT the partition count
-/// `0` the old block-granularity helper produced. The transform's above-right lies
-/// inside the coding block's own above span (AVM `has_top_right`,
-/// `reconintra.c:113`: `col_off + tx_size_wide_unit < plane_bw_unit` ⇒ `0 + 4 < 8`),
-/// so it reads the already-decoded row ABOVE the whole 32x8 block — never the next
-/// undecoded partition block to the right. A block-width `count_top_right_avail`
-/// scan (`w4 == n4w == 8`) would instead scan past the block and return `0` (the
-/// #566 partition-granularity bug). Verifies both the per-transform count (4) and
-/// the partition-granularity scan (0) over the same live `BlockDecoded` state.
 #[test]
 fn selectable_tx_grid_returns_vertical_five_partition_in_scan_order() {
     let mut grid = SelectableLumaTxGrid::new(8, 8).unwrap();
@@ -784,7 +770,7 @@ fn selectable_transform_record_failures_are_typed_header_state_errors() {
         }
     ));
     assert!(matches!(
-        selectable_read_error(ByteOffset::new(9), "5.20.5.11"),
+        selectable_symbol_read_error(ByteOffset::new(9), "5.20.5.11"),
         crate::error::DecodeError::MalformedSource { .. }
     ));
 }

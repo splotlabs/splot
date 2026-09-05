@@ -35,11 +35,9 @@ use crate::write::error::{WriteError, WriteResult};
 ///
 /// This is **not** `trailing_bits()` (AV2 v1.0.0 § 5.2.3,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-2-3`), which writes a
-/// `trailing_one_bit == 1` marker *before* the zero padding. OBU payload tails that
-/// end with `trailing_bits()` must therefore write that marker `1` bit first (via
-/// [`BitWriter::write_bit`]) — `align_to_byte` / `into_bytes` alone would produce an
-/// invalid tail. A dedicated `trailing_bits` helper lands with the OBU-header/size
-/// writer; this module covers only zero-pad alignment.
+/// `trailing_one_bit == 1` marker *before* the zero padding. OBU payload tails
+/// use [`BitWriter::write_trailing_bits`] to emit that marker and its padding;
+/// `align_to_byte` / `into_bytes` alone would produce an invalid tail.
 #[derive(Debug, Default, Clone)]
 pub struct BitWriter {
     /// Completed bytes, in emission order.
@@ -454,9 +452,7 @@ impl BitWriter {
     /// Propagates [`WriteError`] from the underlying [`BitWriter::write_bit`] (never fails
     /// for a `0`/`1` bit, so this returns `Ok` for any well-formed `other`).
     pub fn append(&mut self, other: &BitWriter) -> WriteResult<()> {
-        for &byte in &other.bytes {
-            self.write_bits_u8(byte, 8)?;
-        }
+        self.write_le(&other.bytes)?;
         for i in (0..other.nbits).rev() {
             self.write_bit((other.current >> i) & 1)?;
         }

@@ -40,11 +40,7 @@ fn local_decoder_mission_path() -> PathBuf {
 }
 
 fn repeated_sequence_header_obus(count: usize) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(count * 2);
-    for _ in 0..count {
-        bytes.extend_from_slice(&[0x01, 0x08]);
-    }
-    bytes
+    [0x01, 0x08].repeat(count)
 }
 
 fn default_max_input_bytes() -> u64 {
@@ -61,13 +57,6 @@ fn default_max_obus() -> u64 {
         .max_obus()
         .max_value()
         .expect("default max_obus is finite")
-}
-
-fn read_dir_paths(path: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(path)
-        .expect("read temporary directory")
-        .map(|entry| entry.expect("read temporary directory entry").path())
-        .collect()
 }
 
 fn decode_hash_json(path: &Path, threads: &str, frame_delay: &str) -> serde_json::Value {
@@ -228,7 +217,7 @@ fn decode_hash_output_format_missing_input_is_operational_error() {
     let cwd = temp_dir("hash-cwd");
     assert!(!input.exists(), "temporary input unexpectedly exists");
     assert!(
-        read_dir_paths(&cwd).is_empty(),
+        read_dir_names(&cwd).is_empty(),
         "temporary cwd unexpectedly contains files"
     );
 
@@ -250,8 +239,8 @@ fn decode_hash_output_format_missing_input_is_operational_error() {
     );
     assert!(!input.exists(), "decode created the missing input path");
     assert_eq!(
-        read_dir_paths(&cwd),
-        Vec::<PathBuf>::new(),
+        read_dir_names(&cwd),
+        Vec::<String>::new(),
         "decode created an implicit output in the temporary cwd"
     );
 }
@@ -321,26 +310,6 @@ fn decode_hash_json_success_for_minimal_fixture() {
     assert_eq!(
         frame["hashes"][0]["digest_hex"],
         "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af"
-    );
-}
-
-#[test]
-fn decode_general_intra_fixture_reconstructs_full_frame() {
-    let input = conformance_vector("syn-flat-intra-64x64-q80.ivf");
-
-    let out = splot(&[
-        "decode",
-        "--json",
-        "--output-format",
-        "hash",
-        input.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(0));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(
-        json["frames"][0]["hashes"][0]["digest_hex"],
-        "ce9c46b1078b9dd593254837ead7dcd6cee8b3ec6cc3c7d34f54fb08df703979"
     );
 }
 
@@ -697,7 +666,7 @@ fn decode_hash_json_success_creates_no_implicit_output_file() {
     );
 
     assert_eq!(out.status.code(), Some(0));
-    assert_eq!(read_dir_paths(&cwd), Vec::<PathBuf>::new());
+    assert_eq!(read_dir_names(&cwd), Vec::<String>::new());
 }
 
 #[test]

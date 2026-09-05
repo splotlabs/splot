@@ -16,6 +16,7 @@ use splot_core::tables::cdf::{
     DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF, DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF,
 };
 
+use super::super::util::checked_context;
 use super::super::{
     CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows,
 };
@@ -68,26 +69,6 @@ macro_rules! visit_mv_cdf_rows {
         $visit!(col_mv_index.flatten());
         $visit!(amvd_joint);
         $visit!(amvd_index);
-    };
-}
-
-macro_rules! joint_shell_class_row_match {
-    ($rows:expr, $precision:expr, $shell_set:expr, $mv_ctx:expr, $slice:ident) => {
-        match ($precision, $shell_set) {
-            (0, 0) => Ok($rows.joint_shell0_class0[$mv_ctx].$slice()),
-            (0, 1) => Ok($rows.joint_shell0_class1[$mv_ctx].$slice()),
-            (1, 0) => Ok($rows.joint_shell1_class0[$mv_ctx].$slice()),
-            (1, 1) => Ok($rows.joint_shell1_class1[$mv_ctx].$slice()),
-            (3, 0) => Ok($rows.joint_shell3_class0[$mv_ctx].$slice()),
-            (3, 1) => Ok($rows.joint_shell3_class1[$mv_ctx].$slice()),
-            (4, 0) => Ok($rows.joint_shell4_class0[$mv_ctx].$slice()),
-            (4, 1) => Ok($rows.joint_shell4_class1[$mv_ctx].$slice()),
-            (5, 0) => Ok($rows.joint_shell5_class0[$mv_ctx].$slice()),
-            (5, 1) => Ok($rows.joint_shell5_class1[$mv_ctx].$slice()),
-            (6, 0) => Ok($rows.joint_shell6_class0[$mv_ctx].$slice()),
-            (6, 1) => Ok($rows.joint_shell6_class1[$mv_ctx].$slice()),
-            _ => Err(precision_error($precision)),
-        }
     };
 }
 
@@ -293,7 +274,21 @@ impl MvCdfRows {
         mv_ctx: usize,
     ) -> Result<&mut [u16], TileCdfError> {
         checked_shell_class_axes(precision, shell_set, mv_ctx)?;
-        joint_shell_class_row_match!(self, precision, shell_set, mv_ctx, as_mut_slice)
+        match (precision, shell_set) {
+            (0, 0) => Ok(self.joint_shell0_class0[mv_ctx].as_mut_slice()),
+            (0, 1) => Ok(self.joint_shell0_class1[mv_ctx].as_mut_slice()),
+            (1, 0) => Ok(self.joint_shell1_class0[mv_ctx].as_mut_slice()),
+            (1, 1) => Ok(self.joint_shell1_class1[mv_ctx].as_mut_slice()),
+            (3, 0) => Ok(self.joint_shell3_class0[mv_ctx].as_mut_slice()),
+            (3, 1) => Ok(self.joint_shell3_class1[mv_ctx].as_mut_slice()),
+            (4, 0) => Ok(self.joint_shell4_class0[mv_ctx].as_mut_slice()),
+            (4, 1) => Ok(self.joint_shell4_class1[mv_ctx].as_mut_slice()),
+            (5, 0) => Ok(self.joint_shell5_class0[mv_ctx].as_mut_slice()),
+            (5, 1) => Ok(self.joint_shell5_class1[mv_ctx].as_mut_slice()),
+            (6, 0) => Ok(self.joint_shell6_class0[mv_ctx].as_mut_slice()),
+            (6, 1) => Ok(self.joint_shell6_class1[mv_ctx].as_mut_slice()),
+            _ => Err(precision_error(precision)),
+        }
     }
 }
 
@@ -302,22 +297,13 @@ fn checked_shell_class_axes(
     shell_set: usize,
     mv_ctx: usize,
 ) -> Result<(), TileCdfError> {
-    if shell_set >= 2 {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::JointShell6Class,
-            index_name: "shell_set",
-            actual: shell_set,
-            max_exclusive: 2,
-        });
-    }
-    if mv_ctx >= MV_CONTEXTS {
-        return Err(TileCdfError::SelectorOutOfRange {
-            array: TileCdfArray::JointShell6Class,
-            index_name: "mv_ctx",
-            actual: mv_ctx,
-            max_exclusive: MV_CONTEXTS,
-        });
-    }
+    checked_context(TileCdfArray::JointShell6Class, "shell_set", shell_set, 2)?;
+    checked_context(
+        TileCdfArray::JointShell6Class,
+        "mv_ctx",
+        mv_ctx,
+        MV_CONTEXTS,
+    )?;
     if matches!(precision, 0 | 1 | 3..=6) {
         Ok(())
     } else {

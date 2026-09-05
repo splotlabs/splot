@@ -1,38 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Frame-header loop-restoration and CCSO parameters: `lr_params()`
-//! (AV2 v1.0.0 § 5.18.7.11, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11`)
-//! and `ccso_params()` (§ 5.18.7.12, `#s-5-18-7-12`).
+//! Frame-header loop-restoration and CCSO parameters (AV2 v1.0.0 § 5.18.7.11–12,
+//! `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11`).
 //!
-//! These are the next two § 5.18.2 tail structures after the `deblocking_filter_params()`
-//! / `gdf_params()` / `cdef_params()` filter cluster
-//! ([`super::filtering`]) and before `read_tx_mode()` (§ 5.18.8.1). They are the two
-//! largest filtering syntax bodies. On the **intra path** (`FrameIsIntra`, the only path
-//! this phase models) `NumTotalRefs == 0` (§ 5.18.2, mirror :4573), so the
-//! reference-frame-state machinery in both structures collapses:
-//!
-//! - `lr_params()`'s `temporal_pred_flag[plane]` is never read (it is gated on
-//!   `numRefFrames > 0`, and `numRefFrames == 0` on the intra path), so the temporal-copy
-//!   branch and `rst_ref_pic_idx` are dead, and every signalled tool reads its frame-level
-//!   classes/size flags directly.
-//! - `ccso_params()`'s `reuse_ccso` / `sb_reuse_ccso` / `ccso_ref_idx` reads are gated on
-//!   `!(FrameIsIntra || FrameType == SWITCH_FRAME)`, so they are dead on the intra path and
-//!   `load_ccso_params()` (a reference-frame-update process call) never fires.
-//!
-//! These structures are gated by the parsed `sequence_filter_config()` (§ 5.4.10):
-//! `enable_restoration` / the `lr_tools_disable[*]` flags gate `lr_params()`, and
-//! `enable_ccso` gates `ccso_params()` ([`CoreSeqRestorationView`] /
-//! [`CoreSeqCcsoView`]).
-//!
-//! **Frame-level Wiener NS bank.** When a plane signals `frame_filters_on[plane] == 1`
-//! (the `RESTORE_WIENER_NONSEP` / `RESTORE_SWITCHABLE` frame-level-filter arm),
-//! `lr_params()` calls `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.18.7.11, mirror :7377)
-//! at its tail. The fixed-coded frame-level path of that sub-call is modeled in
-//! [`wienerns`]: it preserves the parsed `FrameLrWienerNs` class bank on
-//! [`LrPlaneParams::frame_filter_bank`]. The inter wrapper also resolves temporal-copy
-//! Wiener state from the retained reference-frame banks. Entropy-coded LR unit filters
-//! (`readFrameFilters == 0`) and reconstruction remain out of scope for this parser surface.
+//! Intra and inter wrappers share parsing, with optional retained reference state for
+//! temporal Wiener banks and CCSO reuse. Frame-level Wiener NS coefficients are parsed
+//! by [`wienerns`]; entropy-coded restoration-unit filters and reconstruction live elsewhere.
 
 use std::sync::Arc;
 
@@ -296,9 +270,7 @@ pub struct LrPlaneParams {
 pub struct LrParams {
     /// `UsesLr`: any plane uses loop restoration.
     pub uses_lr: bool,
-    /// Per-plane parsed state (`NumPlanes` entries; empty when restoration is disabled).
-    /// Per-plane parsed state, held inline: AV2 codes at most
-    /// `MAX_LR_PLANES` planes.
+    /// Per-plane state, empty when restoration is disabled; bounded by `MAX_LR_PLANES`.
     pub planes: crate::tile::InlineVec<
         LrPlaneParams,
         { crate::headers::frame::restoration::MAX_LR_PLANES },
@@ -329,7 +301,7 @@ pub fn parse_lr_params(
     view: &CoreSeqRestorationView,
     geometry: LrGeometry,
 ) -> Result<LrParams> {
-    parse_lr_params_with_references(
+    parse_lr_params_for_inter(
         reader,
         coded_lossless,
         num_planes,
@@ -355,31 +327,6 @@ pub fn parse_lr_params(
 /// ends mid-field before a modeled read completes.
 #[allow(clippy::too_many_arguments)]
 pub fn parse_lr_params_for_inter(
-    reader: &mut BitReader<'_>,
-    coded_lossless: bool,
-    num_planes: u8,
-    view: CoreSeqRestorationView,
-    geometry: LrGeometry,
-    num_ref_frames: u32,
-    reference_filter_counts: [usize; 3],
-    reference_filter_taps: &[&[Option<&[i16]>]; 3],
-    temporal_references: LrTemporalReferenceView<'_>,
-) -> Result<LrParams> {
-    parse_lr_params_with_references(
-        reader,
-        coded_lossless,
-        num_planes,
-        view,
-        geometry,
-        num_ref_frames,
-        reference_filter_counts,
-        reference_filter_taps,
-        temporal_references,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn parse_lr_params_with_references(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
     num_planes: u8,
@@ -435,7 +382,7 @@ fn parse_lr_params_with_references(
                 }
                 if temporal_pred_flag && num_ref_frames > 1 {
                     let n = ceil_log2(num_ref_frames);
-                    temporal_ref_index = reader.read_f(n)? as usize;
+                    temporal_ref_index = reader.read_bits(n)? as usize;
                 }
                 if !temporal_pred_flag
                     && DECODE_NUM_FILTER_CLASSES[DECODE_NUM_FILTER_CLASSES.len() - 1] > 1
@@ -451,7 +398,7 @@ fn parse_lr_params_with_references(
                 temporal_pred_flag = reader.read_flag()?;
                 if temporal_pred_flag && num_ref_frames > 1 {
                     let n = ceil_log2(num_ref_frames);
-                    temporal_ref_index = reader.read_f(n)? as usize;
+                    temporal_ref_index = reader.read_bits(n)? as usize;
                 }
             }
         }
@@ -777,16 +724,7 @@ fn parse_ccso_params_with_references(
         let ccso_planes = reader.read_flag()?;
         let mut plane_params = CcsoPlaneParams {
             ccso_planes,
-            reuse_ccso: false,
-            sb_reuse_ccso: false,
-            ccso_ref_idx: None,
-            ccso_bo_only: None,
-            ccso_scale_idx: None,
-            ccso_quant_idx: None,
-            ccso_ext_filter: None,
-            ccso_edge_clf: None,
-            ccso_max_band_log2: None,
-            ccso_offset_idx: Vec::new(),
+            ..Default::default()
         };
 
         if ccso_planes {
@@ -799,7 +737,7 @@ fn parse_ccso_params_with_references(
                 if reuse_ccso || sb_reuse_ccso {
                     plane_params.ccso_ref_idx = if num_ref_frames > 1 {
                         let n = ceil_log2(num_ref_frames);
-                        Some(reader.read_f(n)?)
+                        Some(reader.read_bits(n)?)
                     } else {
                         Some(0)
                     };

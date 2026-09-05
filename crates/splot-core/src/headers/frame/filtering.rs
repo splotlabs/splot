@@ -599,7 +599,6 @@ pub fn parse_cdef_params(
     };
 
     let mut strength_values = [CdefStrengthSet::default(); MAX_CDEF_STRENGTH_SETS];
-    let mut strength_len = 0u8;
     for slot in strength_values.iter_mut().take(usize::from(cdef_strengths)) {
         let (y_pri_strength, y_sec_strength) = read_cdef_strength(reader)?;
         let (uv_pri_strength, uv_sec_strength) = if num_planes > 1 {
@@ -613,11 +612,10 @@ pub fn parse_cdef_params(
             uv_pri_strength,
             uv_sec_strength,
         };
-        strength_len += 1;
     }
     let strengths = CdefStrengthSets {
         values: strength_values,
-        len: strength_len,
+        len: cdef_strengths,
     };
 
     Ok(CdefParams {
@@ -1084,8 +1082,6 @@ mod tests {
 
     #[test]
     fn cdef_skip_txfm_always_on_and_disabled_infer_no_bit() {
-        let mut filter = base_filter();
-        filter.cdef_on_skip_txfm = CdefOnSkipTxfm::AlwaysOn;
         let mut bits = Bits::default();
         bits.bit(1); // cdef_frame_enable
         bits.f(0, 2); // damping
@@ -1095,23 +1091,16 @@ mod tests {
         bits.bit(1); // cdef_uv_pri_zero
         bits.f(0, 2); // cdef_uv_sec_strength
         let data = bits.into_bytes();
-        let mut r = reader(&data);
-        let params = parse_cdef_params(&mut r, false, 3, &filter).unwrap();
-        assert_eq!(params.cdef_on_skip_txfm_frame_enable, Some(true));
-
-        filter.cdef_on_skip_txfm = CdefOnSkipTxfm::Disabled;
-        let mut bits = Bits::default();
-        bits.bit(1); // cdef_frame_enable
-        bits.f(0, 2); // damping
-        bits.f(0, 3); // strengths -> 1
-        bits.bit(1); // cdef_y_pri_zero
-        bits.f(0, 2); // cdef_y_sec_strength
-        bits.bit(1); // cdef_uv_pri_zero
-        bits.f(0, 2); // cdef_uv_sec_strength
-        let data = bits.into_bytes();
-        let mut r = reader(&data);
-        let params = parse_cdef_params(&mut r, false, 3, &filter).unwrap();
-        assert_eq!(params.cdef_on_skip_txfm_frame_enable, Some(false));
+        for (mode, enabled) in [
+            (CdefOnSkipTxfm::AlwaysOn, true),
+            (CdefOnSkipTxfm::Disabled, false),
+        ] {
+            let mut filter = base_filter();
+            filter.cdef_on_skip_txfm = mode;
+            let mut r = reader(&data);
+            let params = parse_cdef_params(&mut r, false, 3, &filter).unwrap();
+            assert_eq!(params.cdef_on_skip_txfm_frame_enable, Some(enabled));
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@ use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfSelector, TileCdfWorkUnitBoundary,
     tile_cdf_save_policy,
 };
-use super::super::{SymbolInitBoundary, TileCoeffFrameFacts, TileCoeffFrameFactsInput};
+use super::super::{SymbolInitBoundary, TileCoeffFrameFacts};
 use super::tree_walk::LrTileRecords;
 use super::*;
 use crate::bitstream::tile_payload::encode_symbol_sequence;
@@ -114,25 +114,11 @@ fn frame_level_pc_wiener(unit_size: usize) -> TilePartitionLoopRestorationState 
     )
 }
 
-#[derive(Clone, Copy)]
-enum LrUnitSymbolRow {
-    WienerNs,
-    PcWiener,
-    FlexRestorationType { tool: usize, plane: usize },
-}
-
-fn lr_unit_symbol_row(work_unit: &mut DecodeTileWorkUnit<'_>, row: LrUnitSymbolRow) -> [u16; 3] {
-    let selector = match row {
-        LrUnitSymbolRow::WienerNs => TileCdfSelector::UseWienerNs,
-        LrUnitSymbolRow::PcWiener => TileCdfSelector::UsePcWiener,
-        LrUnitSymbolRow::FlexRestorationType { tool, plane } => {
-            TileCdfSelector::FlexRestorationType { tool, plane }
-        }
-    };
+fn lr_unit_symbol_row(work_unit: &mut DecodeTileWorkUnit<'_>, row: TileCdfSelector) -> [u16; 3] {
     work_unit
         .cdf_mut()
         .tile_cdfs_mut()
-        .with_row_mut(selector, |cdf| [cdf[0], cdf[1], cdf[2]])
+        .with_row_mut(row, |cdf| [cdf[0], cdf[1], cdf[2]])
         .unwrap()
 }
 
@@ -155,7 +141,7 @@ pub(crate) fn make_work_unit_at(
         tile_bytes: payload,
         tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
         tile_size: payload.len() as u64,
-        coeff_frame_facts: TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+        coeff_frame_facts: TileCoeffFrameFacts {
             enable_fsc: false,
             enable_intra_ist: false,
             enable_inter_ist: false,
@@ -167,7 +153,7 @@ pub(crate) fn make_work_unit_at(
             allow_tcq: false,
             allow_parity_hiding: false,
             base_q_idx: 0,
-        }),
+        },
         symbol: SymbolInitBoundary {
             consumed_bits: payload.len().saturating_mul(8).min(15) as u64,
             symbol_max_bits: payload.len() as i64 * 8 - 15,
@@ -812,7 +798,7 @@ fn read_lr_gate_precedes_partition_symbol_reads() {
 
 fn assert_frame_level_lr_symbol_precedes_partition_read(
     loop_restoration: TilePartitionLoopRestorationState,
-    row: LrUnitSymbolRow,
+    row: TileCdfSelector,
     cdf_update_message: &'static str,
 ) {
     let mut work_unit = make_work_unit(&[0x00, 0x00, 0x80], CdfUpdateMode::Enabled);
@@ -840,12 +826,12 @@ fn frame_level_lr_symbol_precedes_partition_read() {
     let cases = [
         (
             frame_level_wiener_ns(256),
-            LrUnitSymbolRow::WienerNs,
+            TileCdfSelector::UseWienerNs,
             "successful LR unit reads commit the tile-local UseWienerNs CDF row",
         ),
         (
             frame_level_pc_wiener(256),
-            LrUnitSymbolRow::PcWiener,
+            TileCdfSelector::UsePcWiener,
             "successful LR unit reads commit the tile-local UsePcWiener CDF row",
         ),
     ];
@@ -914,11 +900,11 @@ fn switchable_luma_selection_controls_current_source_output() {
         let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
         let first_before = lr_unit_symbol_row(
             &mut work_unit,
-            LrUnitSymbolRow::FlexRestorationType { tool: 0, plane: 0 },
+            TileCdfSelector::FlexRestorationType { tool: 0, plane: 0 },
         );
         let second_before = lr_unit_symbol_row(
             &mut work_unit,
-            LrUnitSymbolRow::FlexRestorationType { tool: 1, plane: 0 },
+            TileCdfSelector::FlexRestorationType { tool: 1, plane: 0 },
         );
         let mut facts = frame(BLOCK_32X32);
         facts.loop_restoration =
@@ -942,14 +928,14 @@ fn switchable_luma_selection_controls_current_source_output() {
         assert_ne!(
             lr_unit_symbol_row(
                 &mut work_unit,
-                LrUnitSymbolRow::FlexRestorationType { tool: 0, plane: 0 }
+                TileCdfSelector::FlexRestorationType { tool: 0, plane: 0 }
             ),
             first_before
         );
         assert_eq!(
             lr_unit_symbol_row(
                 &mut work_unit,
-                LrUnitSymbolRow::FlexRestorationType { tool: 1, plane: 0 }
+                TileCdfSelector::FlexRestorationType { tool: 1, plane: 0 }
             ) != second_before,
             reads_second_selector
         );

@@ -525,17 +525,6 @@ pub enum DecodeUnsupportedReason {
 }
 
 /// Generates an exhaustive `const fn as_str(self) -> &'static str` label mapping.
-///
-/// A variant-declaring macro (rather than a bare `match`) keeps the mapping
-/// exhaustive — a new or reordered variant fails to compile until its label is
-/// added — while reading as a macro invocation, so it is not a structural
-/// duplicate of the other enum string-label `match`es (the dupehound diff-ratchet
-/// flags those).
-///
-/// The leading `$vis` token sets the generated `as_str` visibility so the macro
-/// serves both public and crate-visible enums without tripping pedantic
-/// clippy's `unreachable_pub`. `#[macro_export]` makes it reachable as
-/// `crate::impl_reason_labels!` from sibling modules.
 #[macro_export]
 macro_rules! impl_reason_labels {
     ($vis:vis $name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod proptests {
@@ -394,7 +393,6 @@ mod proptests {
                 .collect();
             let set_bits = mlayer_maps.len();
             let header = 1 + 2 + 4 + set_bits;
-            prop_assume!(header <= 127);
             let header_size = header as u8;
             let unit = MetadataGroupUnit {
                 metadata_type: MetadataType::Reserved(0),
@@ -456,10 +454,10 @@ mod proptests {
                     max_band_step_minus_1: step,
                 })
                 .collect();
-            let varying = has_varying.then(|| VaryingBandUnits {
+            let varying = has_varying.then_some(VaryingBandUnits {
                 band_block_in_luma_samples: block,
-                vert_size_in_band_blocks_minus_1: vert.clone(),
-                horz_size_in_band_blocks_minus_1: horz.clone(),
+                vert_size_in_band_blocks_minus_1: vert,
+                horz_size_in_band_blocks_minus_1: horz,
             });
             let band_units = has_band_units.then(|| BandUnits {
                 num_band_units_rows_minus_1: rows_minus_1,

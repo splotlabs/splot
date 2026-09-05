@@ -4,10 +4,7 @@
 //! Frame-configuration helpers for the frame-header core parser
 //! (AV2 v1.0.0 § 5.18.3, `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-3`).
 //!
-//! Only `screen_content_params()` (§ 5.18.3.3) and `intrabc_params()` (§ 5.18.3.4)
-//! are modeled — the two configuration structures the intra core path reaches.
-//! `frame_opfl_refine_type()` (§ 5.18.3.2) and `get_relative_dist()` (§ 5.18.3.1)
-//! belong to inter/TIP paths this phase does not parse.
+//! Parses `screen_content_params()` (§ 5.18.3.3) and `intrabc_params()` (§ 5.18.3.4).
 
 use crate::bitio::BitReader;
 use crate::error::Result;
@@ -133,28 +130,6 @@ pub(crate) fn parse_intrabc_params_full(
     Ok(params)
 }
 
-/// Parses `intrabc_params()` (AV2 v1.0.0 § 5.18.3.4) and returns `allow_intrabc` only. A
-/// thin wrapper over [`parse_intrabc_params_full`] for callers that do not surface the
-/// remaining fields (the inter control region).
-///
-/// `frame_is_intra` is `FrameIsIntra`; `allow_frame_max_bvp_drl_bits` comes from the
-/// active sequence's `sequence_inter_config()` (§ 5.4.6).
-///
-/// # Errors
-/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or
-/// [`Error::InvalidNs`](crate::error::Error::InvalidNs) if a signaled field is
-/// truncated.
-pub(crate) fn parse_intrabc_params(
-    reader: &mut BitReader<'_>,
-    frame_is_intra: bool,
-    allow_frame_max_bvp_drl_bits: bool,
-) -> Result<bool> {
-    Ok(
-        parse_intrabc_params_full(reader, frame_is_intra, allow_frame_max_bvp_drl_bits)?
-            .allow_intrabc,
-    )
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -216,7 +191,9 @@ mod tests {
         bits.bit(0); // allow_intrabc = 0
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_intrabc_params(&mut reader, true, false).unwrap();
+        let allow = parse_intrabc_params_full(&mut reader, true, false)
+            .unwrap()
+            .allow_intrabc;
         assert!(!allow);
         assert_eq!(reader.consumed_bits(), 1);
     }
@@ -229,7 +206,9 @@ mod tests {
         bits.bit(0); // allow_local_intrabc
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_intrabc_params(&mut reader, true, false).unwrap();
+        let allow = parse_intrabc_params_full(&mut reader, true, false)
+            .unwrap()
+            .allow_intrabc;
         assert!(allow);
         assert_eq!(reader.consumed_bits(), 3);
     }
@@ -243,7 +222,9 @@ mod tests {
         bits.bit(0); // ns(2): first bit 0 -> value 0 (w=2, m=4-2=2; v read as 1 bit = 0 < 2)
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let allow = parse_intrabc_params(&mut reader, true, true).unwrap();
+        let allow = parse_intrabc_params_full(&mut reader, true, true)
+            .unwrap()
+            .allow_intrabc;
         assert!(allow);
         assert_eq!(reader.consumed_bits(), 4);
     }
@@ -298,7 +279,7 @@ mod tests {
         let data = [0u8; 0];
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
-            parse_intrabc_params(&mut reader, true, false),
+            parse_intrabc_params_full(&mut reader, true, false),
             Err(Error::UnexpectedEof { .. })
         ));
     }

@@ -160,68 +160,7 @@ struct ResidualPlanePlan {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResidualReconstructionPlan {
-    LumaPalette {
-        palette: LumaPalette,
-        use_tcq: bool,
-    },
-    LumaRectSmooth {
-        mode: SupportedNonDcLumaMode,
-        use_tcq: bool,
-    },
-    LumaRectDip {
-        mode: u8,
-        transpose: bool,
-        use_tcq: bool,
-    },
-    LumaRectMiddle {
-        p_angle: u16,
-        use_tcq: bool,
-    },
-    LumaRectMiddleMrl {
-        p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
-        is_sb_boundary: bool,
-        secondary_mrl: bool,
-        use_tcq: bool,
-    },
-    LumaRectOneSidedAboveMrl {
-        p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
-        secondary_mrl: bool,
-        use_tcq: bool,
-    },
-    LumaRectOneSidedLeftMrl {
-        p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
-        is_sb_boundary: bool,
-        secondary_mrl: bool,
-        use_tcq: bool,
-    },
-    LumaRectCardinalMrl {
-        direction: IntraCardinalDirection,
-        mrl_index: usize,
-        above_mrl_index: usize,
-        secondary_mrl: bool,
-        use_tcq: bool,
-    },
-    LumaRectOneSidedAbove {
-        p_angle: u16,
-        use_tcq: bool,
-    },
-    LumaRectOneSidedLeft {
-        p_angle: u16,
-        use_tcq: bool,
-    },
-    LumaRectCardinal {
-        direction: IntraCardinalDirection,
-        use_tcq: bool,
-    },
-    LumaRectPaeth {
-        use_tcq: bool,
-    },
+    Luma(RectLumaPlan),
     Chroma {
         mode: SupportedChromaMode,
         dpcm: Option<DpcmDirection>,

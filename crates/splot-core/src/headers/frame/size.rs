@@ -3,30 +3,8 @@
 
 //! Frame-size helpers for the frame-header core parser (AV2 v1.0.0 § 5.18.4).
 //!
-//! This models only the `frame_size()` paths whose dimensions are exactly
-//! derivable from already-parsed state
-//! ([`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4-1`]):
-//!
-//! ```text
-//! frame_size( ) {
-//!     if ( frame_size_override_flag ) {
-//!         n = frame_width_bits_minus_1 + 1
-//!         frame_width_minus_1                              f(n)
-//!         n = frame_height_bits_minus_1 + 1
-//!         frame_height_minus_1                             f(n)
-//!         FrameWidth = frame_width_minus_1 + 1
-//!         FrameHeight = frame_height_minus_1 + 1
-//!     } else {
-//!         FrameWidth = mfh_frame_width_minus_1[ cur_mfh_id ] + 1
-//!         FrameHeight = mfh_frame_height_minus_1[ cur_mfh_id ] + 1
-//!     }
-//!     compute_image_size( )
-//! }
-//! ```
-//!
-//! `frame_size_with_refs()` (§ 5.18.4.3) and `frame_size_with_bridge()`
-//! (§ 5.18.4.2) need reference-frame dimensions that this phase does not model,
-//! so they are intentionally absent here.
+//! Parses `frame_size()` from explicit dimensions or known multi-frame defaults
+//! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4-1`).
 
 use crate::bitio::BitReader;
 use crate::error::Result;

@@ -145,9 +145,7 @@ pub struct SequenceSegmentConfig {
 /// (§ 5.4.9) when `seq_seg_info_present_flag` is set.
 ///
 /// # Errors
-/// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field,
-/// and [`Error::InvalidTileParams`] when a non-uniform layout exceeds the § 6.17.7.2
-/// tile-count limits.
+/// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field.
 pub fn parse_sequence_segment_config(reader: &mut BitReader<'_>) -> Result<SequenceSegmentConfig> {
     let enable_ext_seg = reader.read_flag()?;
     let max_segments = if enable_ext_seg { 16 } else { 8 };
@@ -553,9 +551,6 @@ pub struct SequenceTqEntropyConfig {
 }
 
 /// Parses `sequence_transform_quant_entropy_config()` (AV2 v1.0.0 § 5.4.8).
-///
-/// Only sequence-level transform/quant/entropy tool flags are read; no transform,
-/// quantizer, or entropy coder is implemented.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`] if the payload ends mid-field.

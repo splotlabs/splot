@@ -3,6 +3,7 @@
 
 //! The general intra DC **skip**-block composer, tile-data encoder, and IVF emitter.
 
+#[cfg(test)]
 use super::SKIP_FRAME_BASE_Q_IDX;
 use crate::block_symbol_trace::{
     BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace, encode_block_symbol_trace,
@@ -21,13 +22,8 @@ use crate::partition_emission::emit_root_do_split_none;
 /// (`1` each) in `residual()` order Y, U, V. The luma/U rows use the `TX_64X64` / `TX_32X32`
 /// contexts of a 64x64 4:2:0 leaf; V uses the neutral `txb_skip` row.
 pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let total = modes
-        .len()
-        .checked_add(4)
-        .ok_or(Error::BlockSymbolTraceAllocationFailed {
-            context: "general skip block trace length",
-        })?;
+    let modes = compose_minimal_intra_dc_block_mode_trace();
+    let total = modes.len() + 4;
     let mut trace = Vec::new();
     trace
         .try_reserve_exact(total)
@@ -78,12 +74,7 @@ pub(crate) fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
 /// composition or entropy coding), or if the AV2 IVF stream cannot be assembled by
 /// `splot-core`.
 pub fn emit_minimal_intra_skip_ivf() -> Result<Vec<u8>> {
-    let tile_data = encode_general_intra_dc_skip_tile_data()?;
-    splot_core::headers::frame::encode_minimal_intra_clk_ivf_with_base_q_idx(
-        SKIP_FRAME_BASE_Q_IDX,
-        &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
+    super::emit_minimal_intra_ivf(&compose_general_intra_dc_skip_block_trace()?)
 }
 
 /// Emits the minimal intra skip frame as a single coded **access unit** — the AV2 Annex B

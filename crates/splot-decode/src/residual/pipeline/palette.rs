@@ -9,7 +9,9 @@ use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, PositionedLumaCoeffBlock, TileCdfSelector,
 };
 
+use super::RectLumaPlan;
 use super::transform_units::tx_size_log2;
+
 use super::{ResidualPlanePlan, ResidualReconstructionPlan};
 
 const PALETTE_MAX_SIZE: usize = 8;
@@ -71,7 +73,9 @@ impl ResidualPlanePlan {
         work_unit: &mut DecodeTileWorkUnit<'_>,
         symbols: &mut SymbolDecoder<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, GeneralIntraResidualError> {
-        let ResidualReconstructionPlan::LumaPalette { palette, .. } = self.reconstruction else {
+        let ResidualReconstructionPlan::Luma(RectLumaPlan::Palette { palette, .. }) =
+            self.reconstruction
+        else {
             return Ok(None);
         };
         let plane_width = 1usize << self.tx.width_log2();

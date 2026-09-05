@@ -8,8 +8,8 @@ use splot_core::symbol::SymbolDecoder;
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::TransformCoeffBlockState;
 use super::{
-    AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEobContextInput,
-    NonZeroCoeffEobSymbolRead, adjusted_coeff_extent, read_nonzero_coeff_eob_from_context,
+    AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEob, NonZeroCoeffEobContextInput,
+    adjusted_coeff_extent, read_nonzero_coeff_eob_from_context,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,13 +20,13 @@ pub(crate) struct NonZeroCoeffBlockStartInput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBlockStart {
-    eob_read: NonZeroCoeffEobSymbolRead,
+    eob_read: NonZeroCoeffEob,
     block: TransformCoeffBlockState,
 }
 
 impl NonZeroCoeffBlockStart {
     #[must_use]
-    pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
+    pub(crate) const fn eob_read(&self) -> NonZeroCoeffEob {
         self.eob_read
     }
 
@@ -35,7 +35,7 @@ impl NonZeroCoeffBlockStart {
         &self.block
     }
 
-    pub(crate) fn into_parts(self) -> (NonZeroCoeffEobSymbolRead, TransformCoeffBlockState) {
+    pub(crate) fn into_parts(self) -> (NonZeroCoeffEob, TransformCoeffBlockState) {
         (self.eob_read, self.block)
     }
 }

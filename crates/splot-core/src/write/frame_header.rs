@@ -410,27 +410,17 @@ mod proptests {
 
     /// Appends `value` as MSB-first `uvlc()` bits to `bits`.
     fn push_uvlc(bits: &mut Vec<u8>, value: u32) {
-        let code_num = value + 1;
-        let leading_zeros = u32::BITS - 1 - code_num.leading_zeros();
-        for _ in 0..leading_zeros {
-            bits.push(0);
-        }
-        bits.push(1);
-        for shift in (0..leading_zeros).rev() {
-            bits.push((((code_num - (1 << leading_zeros)) >> shift) & 1) as u8);
-        }
+        let mut encoded = crate::test_bits::Bits::default();
+        encoded.uvlc(value);
+        bits.extend(encoded.bits);
     }
 
     fn pack(bits: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for chunk in bits.chunks(8) {
-            let mut byte = 0u8;
-            for (i, b) in chunk.iter().enumerate() {
-                byte |= (*b & 1) << (7 - i);
-            }
-            out.push(byte);
+        let mut out = crate::test_bits::Bits::default();
+        for &bit in bits {
+            out.bit(bit & 1);
         }
-        out
+        out.into_bytes()
     }
 
     proptest! {

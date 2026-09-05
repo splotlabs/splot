@@ -3,8 +3,6 @@
 
 //! Intra-mode tokens used by the supported DC general-intra encoder path.
 
-use crate::error::{Error, Result};
-
 /// Exact default-CDF row used by one supported intra-mode token.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IntraModeCdfRowSelector {
@@ -36,48 +34,35 @@ impl IntraModeToken {
 }
 
 /// Emits `y_mode_set == 0` and `y_mode_index == 0` for DC_PRED luma.
-pub(crate) fn emit_minimal_dc_luma_intra_mode() -> Result<Vec<IntraModeToken>> {
-    let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(2)
-        .map_err(|_| Error::IntraModeEmissionAllocationFailed {
-            context: "dc intra-mode tokens",
-        })?;
-    tokens.push(IntraModeToken {
-        selector: IntraModeCdfRowSelector::YModeSet,
-        symbol: 0,
-    });
-    tokens.push(IntraModeToken {
-        selector: IntraModeCdfRowSelector::YModeIndexTileOrigin,
-        symbol: 0,
-    });
-    Ok(tokens)
+pub(crate) fn emit_minimal_dc_luma_intra_mode() -> [IntraModeToken; 2] {
+    [
+        IntraModeToken {
+            selector: IntraModeCdfRowSelector::YModeSet,
+            symbol: 0,
+        },
+        IntraModeToken {
+            selector: IntraModeCdfRowSelector::YModeIndexTileOrigin,
+            symbol: 0,
+        },
+    ]
 }
 
 /// Emits `uv_mode == 0` for DC_PRED chroma.
-pub(crate) fn emit_minimal_dc_chroma_uv_mode() -> Result<Vec<IntraModeToken>> {
-    let mut tokens = Vec::new();
-    tokens
-        .try_reserve_exact(1)
-        .map_err(|_| Error::IntraModeEmissionAllocationFailed {
-            context: "dc chroma uv-mode token",
-        })?;
-    tokens.push(IntraModeToken {
+pub(crate) fn emit_minimal_dc_chroma_uv_mode() -> [IntraModeToken; 1] {
+    [IntraModeToken {
         selector: IntraModeCdfRowSelector::UvModeNonDirectional,
         symbol: 0,
-    });
-    Ok(tokens)
+    }]
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn emits_dc_pred_luma_tokens() {
         assert_eq!(
-            emit_minimal_dc_luma_intra_mode().unwrap(),
+            emit_minimal_dc_luma_intra_mode(),
             [
                 IntraModeToken {
                     selector: IntraModeCdfRowSelector::YModeSet,
@@ -94,7 +79,7 @@ mod tests {
     #[test]
     fn emits_dc_pred_chroma_token() {
         assert_eq!(
-            emit_minimal_dc_chroma_uv_mode().unwrap(),
+            emit_minimal_dc_chroma_uv_mode(),
             [IntraModeToken {
                 selector: IntraModeCdfRowSelector::UvModeNonDirectional,
                 symbol: 0,

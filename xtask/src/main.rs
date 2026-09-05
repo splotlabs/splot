@@ -538,16 +538,6 @@ fn run_cargo_deny_offline() -> Result<()> {
     )
 }
 
-/// Returns `true` if the `nightly` toolchain is installed (resolved via rustup).
-fn nightly_available() -> bool {
-    Command::new("rustup")
-        .args(["run", "nightly", "rustc", "--version"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 /// Generates a local HTML coverage report and enforces the `splot-validate`
 /// line-coverage threshold (>= 90%) the CI `coverage` job gates on. The `--html` run
 /// instruments the workspace; the follow-up `report` re-renders the same profile data
@@ -582,7 +572,9 @@ fn run_coverage() -> Result<()> {
 /// cargo-fuzz). Targets are enumerated from `fuzz/fuzz_targets/`, so listing needs
 /// no nightly toolchain; each target then runs for `--time` seconds.
 fn run_fuzz(time: Option<u64>) -> Result<()> {
-    if !tool_available("cargo-fuzz") || !nightly_available() {
+    if !tool_available("cargo-fuzz")
+        || !tool_available_with_args("rustup", &["run", "nightly", "rustc", "--version"])
+    {
         eprintln!(
             "fuzz: requires a nightly toolchain and cargo-fuzz; skipping.\n     \
              install: `rustup toolchain install nightly` and `cargo install cargo-fuzz --locked`"

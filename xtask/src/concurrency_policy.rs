@@ -93,7 +93,7 @@ const CORE_CRATE: &str = "splot-core";
 const VALIDATE_CRATE: &str = "splot-validate";
 
 /// Global Rayon pool initialization is banned: splot uses a local owned pool only.
-const BUILD_GLOBAL: &str = concat!("build", "_global");
+const BUILD_GLOBAL: &str = "build_global";
 
 /// Unbounded-channel needles — banned anywhere under `crates/`. Covers the qualified
 /// path, the bare call (any import form, e.g. `use crossbeam_channel::{unbounded};`
@@ -102,10 +102,10 @@ const BUILD_GLOBAL: &str = concat!("build", "_global");
 /// on `crossbeam-channel`, and it must stay bounded-only, so none of these belongs
 /// in any crate.
 const UNBOUNDED_NEEDLES: &[&str] = &[
-    concat!("crossbeam_channel::", "unbounded"),
-    concat!("unbounded", "("),
-    concat!("unbounded", "::"),
-    concat!("unbounded", " as "),
+    "crossbeam_channel::unbounded",
+    "unbounded(",
+    "unbounded::",
+    "unbounded as ",
     "unbounded_queue",
 ];
 
@@ -114,11 +114,11 @@ const UNBOUNDED_NEEDLES: &[&str] = &[
 /// the channel constructors (`mpsc::channel` / `mpsc::sync_channel`) regardless of how
 /// `mpsc` is imported. Use a bounded crossbeam queue instead.
 const STD_MPSC_NEEDLES: &[&str] = &[
-    concat!("std::sync::", "mpsc"),
-    concat!("std::sync::{", "mpsc"),
-    concat!("mpsc::", "channel"),
-    concat!("mpsc::", "sync_channel"),
-    concat!("mpsc", " as "),
+    "std::sync::mpsc",
+    "std::sync::{mpsc",
+    "mpsc::channel",
+    "mpsc::sync_channel",
+    "mpsc as ",
 ];
 
 /// Ad-hoc OS-thread-spawn needles — banned outside tests (the local `WorkerPool`
@@ -128,20 +128,20 @@ const STD_MPSC_NEEDLES: &[&str] = &[
 /// otherwise hide an aliased `t::spawn`. Scoped to full paths / import declarations
 /// so numeric casts such as `worker_thread as u32` are never matched.
 const THREAD_SPAWN_NEEDLES: &[&str] = &[
-    concat!("thread::", "spawn"),
-    concat!("thread::", "Builder"),
+    "thread::spawn",
+    "thread::Builder",
     // Scoped threads (`std::thread::scope(|s| s.spawn(...))`) also spawn OS threads
     // the WorkerPool does not own; flagging the `thread::scope` entry point catches
     // the whole scoped-spawn form.
-    concat!("thread::", "scope"),
-    concat!("std::thread", " as "),
-    concat!("std::thread::{", "self"),
-    concat!("std::thread::{", "spawn"),
+    "thread::scope",
+    "std::thread as ",
+    "std::thread::{self",
+    "std::thread::{spawn",
 ];
 
 /// Aliasing the `crossbeam_channel` crate (`use crossbeam_channel as cc;`) — flagged
 /// everywhere as an extra guard against hiding `cc::unbounded()`.
-const CROSSBEAM_ALIAS: &str = concat!("crossbeam_channel", " as ");
+const CROSSBEAM_ALIAS: &str = "crossbeam_channel as ";
 
 /// Rayon global-pool entry points — the free functions that run on Rayon's implicit
 /// **global** registry instead of a local pool. Banned everywhere under `crates/`
@@ -149,20 +149,20 @@ const CROSSBEAM_ALIAS: &str = concat!("crossbeam_channel", " as ");
 /// `WorkerPool`/`ThreadPool` (`pool.install`, `inner.join`, `inner.scope`, …), never
 /// these `rayon::` (or lower-level `rayon_core::`) free functions.
 const RAYON_GLOBAL_NEEDLES: &[&str] = &[
-    concat!("rayon::", "spawn"),
-    concat!("rayon::", "join"),
-    concat!("rayon::", "scope"),
-    concat!("rayon::", "in_place_scope"),
-    concat!("rayon::", "broadcast"),
-    concat!("rayon::", "yield_now"),
-    concat!("rayon::", "yield_local"),
-    concat!("rayon_core::", "spawn"),
-    concat!("rayon_core::", "join"),
-    concat!("rayon_core::", "scope"),
-    concat!("rayon_core::", "in_place_scope"),
-    concat!("rayon_core::", "broadcast"),
-    concat!("rayon_core::", "yield_now"),
-    concat!("rayon_core::", "yield_local"),
+    "rayon::spawn",
+    "rayon::join",
+    "rayon::scope",
+    "rayon::in_place_scope",
+    "rayon::broadcast",
+    "rayon::yield_now",
+    "rayon::yield_local",
+    "rayon_core::spawn",
+    "rayon_core::join",
+    "rayon_core::scope",
+    "rayon_core::in_place_scope",
+    "rayon_core::broadcast",
+    "rayon_core::yield_now",
+    "rayon_core::yield_local",
 ];
 
 /// Rayon parallel-iteration entry points. Calling one of these *outside*
@@ -171,20 +171,20 @@ const RAYON_GLOBAL_NEEDLES: &[&str] = &[
 /// `par_iter` also matches `into_par_iter` / `par_iter_mut`; the other tokens cover
 /// the slice helpers re-exported by `splot_parallel::prelude`.
 const PAR_ITER_TOKENS: &[&str] = &[
-    concat!("par", "_iter"),
-    concat!("par", "_chunks"),
-    concat!("par", "_rchunks"),
-    concat!("par", "_windows"),
-    concat!("par", "_chunk_by"),
-    concat!("par", "_split"),
-    concat!("par", "_sort"),
-    concat!("par", "_bridge"),
+    "par_iter",
+    "par_chunks",
+    "par_rchunks",
+    "par_windows",
+    "par_chunk_by",
+    "par_split",
+    "par_sort",
+    "par_bridge",
 ];
 
 /// The pool-scoping call that binds parallel iteration to the local worker pool.
 /// A file that uses a [`PAR_ITER_TOKENS`] entry but never calls this is presumed to
 /// run on the global pool. Matched leniently (substring) to minimize false positives.
-const INSTALL_CALL: &str = concat!(".install", "(");
+const INSTALL_CALL: &str = ".install(";
 
 /// Path prefix of the one crate exempt from the par-iter-outside-`install` rule:
 /// `splot-parallel` is the trusted wrapper that owns Rayon and may use parallel
@@ -853,8 +853,7 @@ mod tests {
 
     #[test]
     fn build_global_source_line_is_a_violation() {
-        // Build the needle the same `concat!` way so the literal never appears here.
-        let token = concat!("build", "_global");
+        let token = "build_global";
         let src = [line(&format!("    pool.{token}();"), false)];
         let violations = evaluate_concurrency_policy(&[], &src);
         assert!(
@@ -865,7 +864,7 @@ mod tests {
 
     #[test]
     fn unbounded_source_line_is_a_violation() {
-        let token = concat!("crossbeam_channel::", "unbounded");
+        let token = "crossbeam_channel::unbounded";
         let src = [line(&format!("    let (tx, rx) = {token}();"), false)];
         let violations = evaluate_concurrency_policy(&[], &src);
         assert!(
@@ -876,7 +875,7 @@ mod tests {
 
     #[test]
     fn std_mpsc_source_line_is_a_violation() {
-        let token = concat!("std::sync::", "mpsc");
+        let token = "std::sync::mpsc";
         let src = [line(&format!("    use {token}::channel;"), false)];
         let violations = evaluate_concurrency_policy(&[], &src);
         assert!(
@@ -1034,7 +1033,7 @@ mod tests {
 
     #[test]
     fn thread_spawn_is_a_violation_outside_tests_but_exempt_in_tests() {
-        let token = concat!("thread::", "spawn");
+        let token = "thread::spawn";
         let code = format!("    {token}(|| do_work());");
 
         let outside = [line(&code, false)];
@@ -1053,7 +1052,7 @@ mod tests {
 
     #[test]
     fn cfg_test_region_marks_lines_as_test() {
-        let token = concat!("thread::", "spawn");
+        let token = "thread::spawn";
         let contents = format!(
             "fn prod() {{}}\n#[cfg(test)]\nmod tests {{\n    fn helper() {{ {token}(|| ()); }}\n}}\n"
         );
@@ -1070,7 +1069,7 @@ mod tests {
 
     #[test]
     fn external_tests_rs_file_is_test_code() {
-        let token = concat!("thread::", "spawn");
+        let token = "thread::spawn";
         let mut sources = Vec::new();
         scan_source_text(
             "crates/x/src/tests.rs",
@@ -1090,7 +1089,7 @@ mod tests {
 
     #[test]
     fn comment_lines_naming_banned_tokens_are_not_flagged() {
-        let token = concat!("build", "_global");
+        let token = "build_global";
         let mut sources = Vec::new();
         scan_source_text(
             "crates/x/src/lib.rs",
@@ -1440,7 +1439,7 @@ mod tests {
 
     #[test]
     fn cfg_test_helper_fn_body_is_marked_as_test() {
-        let token = concat!("thread::", "spawn");
+        let token = "thread::spawn";
         let contents = format!("fn prod() {{}}\n#[cfg(test)]\nfn helper() {{ {token}(|| ()); }}\n");
         let scanned = scan_source_lines(&contents, false);
         let spawn_line = scanned

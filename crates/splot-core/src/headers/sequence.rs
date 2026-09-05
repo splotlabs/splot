@@ -647,23 +647,12 @@ pub fn parse_sequence_header(reader: &mut BitReader<'_>) -> Result<SequenceHeade
     };
     let tile = parse_sequence_tile_config(reader, tile_params_input)?;
 
-    if let Some(feature) = tile.unimplemented_at() {
-        return Ok(SequenceHeader {
-            general,
-            partition: Some(partition),
-            segment: Some(segment),
-            intra: Some(intra),
-            inter: Some(inter),
-            screen_content: Some(screen_content),
-            transform_quant_entropy: Some(transform_quant_entropy),
-            filter: Some(filter),
-            tile: Some(tile),
-            film_grain_params_present: None,
-            unimplemented_at: Some(feature),
-        });
-    }
-
-    let film_grain_params_present = reader.read_flag()?;
+    let unimplemented_at = tile.unimplemented_at();
+    let film_grain_params_present = if unimplemented_at.is_none() {
+        Some(reader.read_flag()?)
+    } else {
+        None
+    };
 
     Ok(SequenceHeader {
         general,
@@ -675,8 +664,8 @@ pub fn parse_sequence_header(reader: &mut BitReader<'_>) -> Result<SequenceHeade
         transform_quant_entropy: Some(transform_quant_entropy),
         filter: Some(filter),
         tile: Some(tile),
-        film_grain_params_present: Some(film_grain_params_present),
-        unimplemented_at: None,
+        film_grain_params_present,
+        unimplemented_at,
     })
 }
 

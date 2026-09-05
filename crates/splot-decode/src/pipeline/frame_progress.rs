@@ -38,12 +38,7 @@ use crate::error::{DecodeError, Result};
 use crate::pipeline::unsupported;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 
-/// The stripe geometry one frame's filter phase publishes through.
 /// One stripe's publication state.
-///
-/// The four facts a stripe carries were four parallel vectors, so a frame paid
-/// four allocations to open its progress and every read walked four
-/// allocations; they are one row each now.
 #[derive(Clone, Copy, Default)]
 struct StripeProgress {
     /// The stripe's exclusive luma row end.
@@ -535,24 +530,12 @@ impl<T: ReconSample> FrameProgress<T> {
             return;
         };
         let mut layout = layout.lock();
-        let released = match layout
-            .stripes
-            .get_mut(stripe)
-            .map(|stripe| &mut stripe.holds)
-        {
-            Some(holds) => {
-                *holds = holds.saturating_sub(1);
-                *holds == 0
-            }
-            None => return,
+        let Some(stripe) = layout.stripes.get_mut(stripe) else {
+            return;
         };
-        if released
-            && let Some(leased) = layout
-                .stripes
-                .get_mut(stripe)
-                .map(|stripe| &mut stripe.leased)
-        {
-            *leased = false;
+        stripe.holds = stripe.holds.saturating_sub(1);
+        if stripe.holds == 0 {
+            stripe.leased = false;
         }
     }
 

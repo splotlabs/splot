@@ -229,38 +229,9 @@ impl ValidatorContext {
         self.ci_rap_started_in_tu.get(&xlayer).copied().unwrap_or(0)
     }
 
-    /// Re-pairs the § 6.16.7 n_frames bound and the § 6.16.10 Table 6.18 scan-type
-    /// restrictions of the new coded video sequence's observations against the content
-    /// interpretation OBUs re-sent IDENTICALLY in this CLK's temporal unit (finding 1,
-    /// the CLK side of the epoch-aware dedup).
-    ///
-    /// A content interpretation re-sent in a § 7.3.8.11 random-access-point temporal
-    /// unit re-establishes the parameters for the new coded video sequence (§ 7.3.8.11
-    /// step 2). When it repeats the pre-RAP content **identically** the epoch-aware dedup
-    /// ([`Self::observe_content_interpretation`]) skipped its CI-time recheck — at
-    /// CI-time the epoch had not advanced past the still-present pre-RAP record, so the
-    /// re-sent CI could not be told apart from an ordinary identical repeat. By the time
-    /// the CLK runs, [`Self::observe_ci_rap`] has advanced the epoch to this temporal
-    /// unit and dropped the stale pre-RAP pairings. Re-running the suppressed rechecks
-    /// now pairs the new epoch's observations (`tu_index >= epoch`, i.e. this temporal
-    /// unit's metadata, since the epoch filter inside the rechecks excludes the dropped
-    /// previous-epoch observations) against the re-sent CI exactly once — the
-    /// authoritative pairing, with no duplicate because the pre-RAP pairing was dropped
-    /// rather than reported.
-    ///
-    /// The re-pair is filtered to the CIs whose CI-time recheck the dedup guard actually
-    /// SUPPRESSED — i.e. an identical re-send of the pre-RAP record (finding 1). A CI
-    /// re-sent in this RAP temporal unit with a CHANGED (different) decisive content
-    /// defeats the dedup guard and rechecked EAGERLY at CI-time, already reporting any
-    /// violation; re-pairing it here too would duplicate the diagnostic, so the
-    /// per-recheck `*_recheck_suppressed` flags exclude it. The scan-type and timecode
-    /// suppressions are filtered independently, since a re-send can change one decisive
-    /// content while leaving the other identical.
-    ///
-    /// Only the content interpretations re-sent IN this temporal unit (at/after the
-    /// epoch) for the CLK's extended layer (or a global-keyed CI, which describes every
-    /// layer) drive the re-pair; a CI from an earlier temporal unit belongs to the
-    /// ending coded video sequence and is excluded by the epoch.
+    /// Rechecks identical CI resends whose CI-time checks were suppressed before the RAP
+    /// epoch advanced (§ 7.3.8.11). Changed content already checked eagerly and must not
+    /// be reported twice. Only this epoch’s local or global CIs participate.
     pub(super) fn repair_post_rap_ci_pairings(
         &mut self,
         clk_xlayer: ExtendedLayerId,
@@ -407,70 +378,40 @@ impl ValidatorContext {
         }
         let timecode_recheck_suppressed = timing_unchanged;
 
-        match self.content_interpretations.entry((xlayer, mlayer)) {
-            Entry::Vacant(slot) => {
-                slot.insert(ContentInterpretationRecord {
-                    content: content_interpretation,
-                    offset: obu.offset,
-                    tu_index,
-                    scan_type_recheck_suppressed,
-                    timecode_recheck_suppressed,
-                });
-            }
-            Entry::Occupied(mut slot) => {
-                let existing = slot.get();
-                if content_interpretation_information_differs(
-                    &existing.content,
-                    &content_interpretation,
-                ) {
-                    let diagnostic = Diagnostic::error(
-                        "content-interpretation/repeated-ci-not-identical",
-                        format!(
-                            "content interpretation OBU for obu_xlayer_id {} / obu_mlayer_id {} \
-                             is repeated within the coded video sequence with different \
-                             information (previous copy at byte {})",
-                            xlayer.get(),
-                            mlayer.get(),
-                            existing.offset
-                        ),
-                    )
-                    .with_spec_section("6.14")
-                    .with_byte_offset(obu.offset);
-                    self.cvs
-                        .defer_or_emit(xlayer, existing.tu_index, diagnostic, report);
-                }
-                slot.insert(ContentInterpretationRecord {
-                    content: content_interpretation,
-                    offset: obu.offset,
-                    tu_index,
-                    scan_type_recheck_suppressed,
-                    timecode_recheck_suppressed,
-                });
-            }
+        if let Some(existing) = self.content_interpretations.insert(
+            (xlayer, mlayer),
+            ContentInterpretationRecord {
+                content: content_interpretation,
+                offset: obu.offset,
+                tu_index,
+                scan_type_recheck_suppressed,
+                timecode_recheck_suppressed,
+            },
+        ) && content_interpretation_information_differs(
+            &existing.content,
+            &content_interpretation,
+        ) {
+            let diagnostic = Diagnostic::error(
+                "content-interpretation/repeated-ci-not-identical",
+                format!(
+                    "content interpretation OBU for obu_xlayer_id {} / obu_mlayer_id {} \
+                     is repeated within the coded video sequence with different \
+                     information (previous copy at byte {})",
+                    xlayer.get(),
+                    mlayer.get(),
+                    existing.offset
+                ),
+            )
+            .with_spec_section("6.14")
+            .with_byte_offset(obu.offset);
+            self.cvs
+                .defer_or_emit(xlayer, existing.tu_index, diagnostic, report);
         }
     }
 
-    /// Resolves the § 7.3.6 first-CELU-of-the-sequence CI PRESENCE judgment (mirror lines
-    /// 560-562) for the just-completed temporal unit `completed_tu_index`. Called
-    /// at each global-temporal-delimiter boundary and at the end of the bitstream, after the
-    /// CLK boundary events of the temporal unit have been applied (so the CVS the temporal
-    /// unit belongs to is final — the whole temporal unit containing a CLK belongs to the new
-    /// coded video sequence, § 7.3.6). Drains [`Self::ci_observed_in_tu`].
-    ///
-    /// For each `(xlayer, mlayer)` CI observed in the temporal unit:
-    ///
-    /// - Under an external-HLS `Provided` mode the judgment DROPS: an external CI in the first
-    ///   CELU cannot be enumerated by [`crate::options::ExternalHlsSet`] (it expresses only
-    ///   sequence headers and operating point sets), so the validator cannot prove the first
-    ///   CELU lacked the CI — consistent with the partial-declaration suppression policy.
-    /// - If the layer's coded video sequence start was not observed (`first_celu_tu` is `None`
-    ///   — a mid-CVS join, no CLK seen) the judgment DROPS: the first CELU's CI set is
-    ///   unknowable (documented Unknown-first-CELU drop, see [`CiFirstCeluState`]).
-    /// - If this temporal unit IS the CVS's first temporal unit (`completed_tu_index ==
-    ///   first_celu_tu`), the CI is in the first CELU — record `mlayer` as present there.
-    /// - Otherwise the CI is in a LATER CELU: if `mlayer` was absent from the first CELU's CI
-    ///   set (and not already reported this CVS), fire `celu/content-interpretation-not-in-
-    ///   first-celu`, anchored at the offending CI, and dedup per `(xlayer, mlayer, CVS epoch)`.
+    /// Checks § 7.3.6 CI presence after CLK attribution is final. Record first-CELU
+    /// embedded layers, then report later additions once per CVS. Mid-CVS joins and
+    /// external HLS cannot prove first-CELU absence.
     pub(super) fn resolve_ci_first_celu_for_tu(
         &mut self,
         completed_tu_index: u64,

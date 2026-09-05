@@ -5,6 +5,8 @@
 //!
 //! Each integration-test binary that needs these declares `mod common;`.
 
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};

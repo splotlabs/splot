@@ -90,7 +90,7 @@ fn markdown_entries(root: &Path) -> Result<Vec<MarkdownEntry>> {
             .with_context(|| format!("failed to read {}", display_path(root, &path)))?;
         entries.push(MarkdownEntry {
             path: rel.to_owned(),
-            lines: line_count(&text),
+            lines: text.lines().count(),
         });
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -151,14 +151,6 @@ fn evaluate_doc_budget(budget: &Budget, entries: &[MarkdownEntry]) -> BudgetRepo
         manual_lines,
         largest: manual,
         problems,
-    }
-}
-
-fn line_count(text: &str) -> usize {
-    if text.is_empty() {
-        0
-    } else {
-        text.lines().count()
     }
 }
 

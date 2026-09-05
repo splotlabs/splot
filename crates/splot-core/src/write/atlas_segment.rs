@@ -132,9 +132,6 @@ pub fn write_atlas_segment(writer: &mut BitWriter, atlas: &AtlasSegment) -> Writ
     if atlas.num_segments != derived_num_segments {
         return Err(non_canonical("num_segments"));
     }
-    if derived_num_segments > MAX_NUM_ATLAS_SEGMENTS {
-        return Err(non_canonical("num_segments"));
-    }
 
     let mut scratch = BitWriter::new();
     scratch.write_bits_u8(atlas.atlas_segment_id, ATLAS_SEGMENT_ID_BITS)?;

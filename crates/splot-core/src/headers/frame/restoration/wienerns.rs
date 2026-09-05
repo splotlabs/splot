@@ -13,7 +13,6 @@ use super::CoreSeqRestorationView;
 const WIENER_NS_LUMA_COEFFS: usize = 16;
 const WIENER_NS_CHROMA_COEFFS: usize = 18;
 const WIENER_NS_SHORT_COEFFS: usize = 6;
-const LR_BANK_SIZE: usize = 4;
 
 const WIENER_NS_TAPS_MIN: [[i16; WIENER_NS_CHROMA_COEFFS]; 2] = [
     [
@@ -161,47 +160,11 @@ pub(super) fn parse_frame_wiener_ns_filter(
         }
     }
     let merged = read_merged_flags(reader, num_classes)?;
-    let mut ref_bank = vec![[[0i16; WIENER_NS_CHROMA_COEFFS]; LR_BANK_SIZE]; num_classes];
-    let mut bank_size = vec![0usize; num_classes];
-    let mut bank_ptr = vec![0usize; num_classes];
-    for class_bank in &mut ref_bank {
-        for slot in class_bank {
-            for (j, coeff) in slot.iter_mut().enumerate() {
-                *coeff = initial_tap_value(plane_index, j);
-            }
-        }
-    }
-
-    let mut frame_coeffs = vec![vec![0i16; n_coeffs]; num_classes];
     let mut classes = crate::tile::InlineVec::default();
     for c in 0..num_classes {
-        fill_first_slot_of_bank_with_filter_match(
-            c,
-            plane_is_chroma,
-            match_indices[c],
-            num_classes,
-            capped_ref,
-            ref_taps,
-            &mut bank_ptr,
-            &mut bank_size,
-            &mut ref_bank,
-            &frame_coeffs,
-            n_coeffs,
-        );
-
         let mut subset = None;
         let mut wiener_ns_uv_sym = false;
-        if merged[c] {
-            if bank_size[c] == 0 {
-                bank_size[c] = 1;
-            }
-        } else {
-            if bank_size[c] < LR_BANK_SIZE {
-                bank_ptr[c] = bank_size[c];
-                bank_size[c] += 1;
-            } else {
-                bank_ptr[c] = (bank_ptr[c] + 1) % LR_BANK_SIZE;
-            }
+        if !merged[c] {
             let read_subset = read_wiener_ns_subset(reader, plane_is_chroma)?;
             if plane_is_chroma && read_subset > 0 {
                 wiener_ns_uv_sym = reader.read_flag()?;
@@ -212,7 +175,15 @@ pub(super) fn parse_frame_wiener_ns_filter(
         let mut coeffs = vec![0i16; n_coeffs];
         let mut j = 0usize;
         while j < n_coeffs {
-            let mut value = ref_bank[c][0][j];
+            let mut value = filter_match_coeff(
+                plane_is_chroma,
+                match_indices[c],
+                num_classes,
+                capped_ref,
+                ref_taps,
+                &classes,
+                j,
+            );
             if !merged[c] {
                 let tap_subset = usize::from(subset.unwrap_or(0));
                 if WIENER_NS_TAPS_PRESENT[plane_index][tap_subset][j] {
@@ -242,7 +213,6 @@ pub(super) fn parse_frame_wiener_ns_filter(
                 j += 1;
             }
         }
-        frame_coeffs[c].clone_from(&coeffs);
         classes
             .push(WienerNsFrameFilterClass {
                 match_index: match_indices[c] as u8,
@@ -433,35 +403,6 @@ const fn group_base(group: usize, group_counts: [usize; 3]) -> usize {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn fill_first_slot_of_bank_with_filter_match(
-    c: usize,
-    plane_is_chroma: bool,
-    match_index: usize,
-    num_classes: usize,
-    capped_ref: usize,
-    ref_taps: &[Option<&[i16]>],
-    bank_ptr: &mut [usize],
-    bank_size: &mut [usize],
-    ref_bank: &mut [[[i16; WIENER_NS_CHROMA_COEFFS]; LR_BANK_SIZE]],
-    frame_coeffs: &[Vec<i16>],
-    n_coeffs: usize,
-) {
-    bank_ptr[c] = 0;
-    bank_size[c] = 1;
-    for (j, coeff) in ref_bank[c][0].iter_mut().enumerate().take(n_coeffs) {
-        *coeff = filter_match_coeff(
-            plane_is_chroma,
-            match_index,
-            num_classes,
-            capped_ref,
-            ref_taps,
-            frame_coeffs,
-            j,
-        );
-    }
-}
-
 /// § 5.18 `fill_first_slot_of_bank_with_filter_match` value resolution: match
 /// `m == 0` seeds zero, `m < numClasses` copies an earlier class of the frame
 /// bank, `m < numClasses + numRefFilters` copies the matched REFERENCE frame's
@@ -473,16 +414,16 @@ fn filter_match_coeff(
     num_classes: usize,
     capped_ref: usize,
     ref_taps: &[Option<&[i16]>],
-    frame_coeffs: &[Vec<i16>],
+    classes: &[WienerNsFrameFilterClass],
     j: usize,
 ) -> i16 {
     if match_index == 0 {
         0
     } else if match_index < num_classes {
         let old_class = match_index - 1;
-        frame_coeffs
+        classes
             .get(old_class)
-            .and_then(|coeffs| coeffs.get(j))
+            .and_then(|class| class.coeffs.get(j))
             .copied()
             .unwrap_or(0)
     } else if match_index < num_classes + capped_ref {
@@ -498,12 +439,6 @@ fn filter_match_coeff(
     } else {
         translated_pc_wiener(match_index.saturating_sub(num_classes + capped_ref), j)
     }
-}
-
-fn initial_tap_value(plane_index: usize, j: usize) -> i16 {
-    let min = WIENER_NS_TAPS_MIN[plane_index][j];
-    let k = WIENER_NS_TAPS_K[plane_index][j];
-    min + ((1i16 << k) >> 1)
 }
 
 fn translated_pc_wiener(match_index: usize, j: usize) -> i16 {

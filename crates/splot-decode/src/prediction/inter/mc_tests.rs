@@ -9,16 +9,6 @@ use splot_recon::{
     wedge_mask_plane_sample,
 };
 
-fn motion_grid_prediction<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
-    block: InterBlockParams<'_, T>,
-    optflow_unit_size: Option<usize>,
-    offset: ByteOffset,
-) -> Result<Option<CompoundMotionGrid>> {
-    let motion = inter_block_motion_grid(sink, block, optflow_unit_size, offset)?;
-    predict_inter_block_from_grid(sink, block, motion, offset)
-}
-
 fn compound_recycler_box<T: 'static>() -> Option<*const ()> {
     MC_SAMPLES_RECYCLER.with(|cell| {
         cell.borrow()
@@ -239,7 +229,7 @@ fn dispatcher_copies_non420_reference_planes() {
             &mut super::WorkspaceSink::Frame(&mut workspace),
             InterBlockParams::single(
                 ReferenceSamples::settled(&reference),
-                rect(0, 0, 8, 8),
+                McBlockRect::from_luma_rect(0, 0, 8, 8),
                 Mv::ZERO,
                 InterpolationFilter::EightTap,
             ),
@@ -266,7 +256,7 @@ fn compound_and_warp_copy_non420_chroma_at_native_resolution() {
             InterBlockParams::compound_average(
                 ReferenceSamples::settled(&reference),
                 ReferenceSamples::settled(&reference),
-                rect(0, 0, 8, 8),
+                McBlockRect::from_luma_rect(0, 0, 8, 8),
                 Mv::ZERO,
                 Mv::ZERO,
                 InterpolationFilter::EightTap,
@@ -274,7 +264,7 @@ fn compound_and_warp_copy_non420_chroma_at_native_resolution() {
             ),
             InterBlockParams::single_warp(
                 ReferenceSamples::settled(&reference),
-                rect(0, 0, 8, 8),
+                McBlockRect::from_luma_rect(0, 0, 8, 8),
                 Mv::ZERO,
                 InterpolationFilter::EightTap,
                 crate::prediction::inter::find_mv_stack::DEFAULT_WARP_PARAMS,
@@ -309,7 +299,7 @@ fn dispatcher_zero_mv_copies_single_reference_planes() {
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single(
             ReferenceSamples::settled(&reference),
-            rect(0, 0, 8, 8),
+            McBlockRect::from_luma_rect(0, 0, 8, 8),
             Mv { row: 0, col: 0 },
             InterpolationFilter::EightTap,
         ),
@@ -341,7 +331,7 @@ fn dispatcher_zero_mv_copies_odd_reference_chroma_extents() {
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single(
             ReferenceSamples::settled(&reference),
-            rect(0, 0, 9, 11),
+            McBlockRect::from_luma_rect(0, 0, 9, 11),
             Mv::ZERO,
             InterpolationFilter::EightTap,
         ),
@@ -367,7 +357,7 @@ fn dispatcher_clips_single_prediction_at_frame_edge() {
         &mut WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single(
             ReferenceSamples::settled(&reference),
-            rect(4, 4, 8, 8),
+            McBlockRect::from_luma_rect(4, 4, 8, 8),
             Mv::ZERO,
             InterpolationFilter::EightTap,
         ),
@@ -394,14 +384,14 @@ fn converted_prediction_write_is_fail_atomic() {
     let mut samples = vec![7; 64];
     samples[63] = 256;
 
-    let err = super::sink::write_u16_rect(
-        &mut WorkspaceSink::Frame(&mut workspace),
-        PlaneId::Y,
-        PlaneRect::new(0, 0, 8, 8).expect("full plane"),
-        &samples,
-        8,
-    )
-    .expect_err("unrepresentable late sample must reject the whole write");
+    let err = WorkspaceSink::Frame(&mut workspace)
+        .write_u16_rect(
+            PlaneId::Y,
+            PlaneRect::new(0, 0, 8, 8).expect("full plane"),
+            &samples,
+            8,
+        )
+        .expect_err("unrepresentable late sample must reject the whole write");
     assert!(matches!(
         err,
         ReconError::SampleValueUnsupportedStorage { value: 256, .. }
@@ -429,14 +419,9 @@ fn converted_prediction_write_is_fail_atomic() {
     let mut samples = vec![900; 64];
     samples[63] = 1024;
 
-    let err = super::sink::write_u16_rect(
-        &mut WorkspaceSink::Frame(&mut workspace),
-        PlaneId::Y,
-        plane_rect,
-        &samples,
-        8,
-    )
-    .expect_err("out-of-range late sample must reject the whole write");
+    let err = WorkspaceSink::Frame(&mut workspace)
+        .write_u16_rect(PlaneId::Y, plane_rect, &samples, 8)
+        .expect_err("out-of-range late sample must reject the whole write");
     assert!(matches!(
         err,
         ReconError::SampleOutOfRange {
@@ -480,7 +465,7 @@ fn dispatcher_blends_compound_average_with_odd_chroma_extents() {
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
-            rect(0, 0, 9, 11),
+            McBlockRect::from_luma_rect(0, 0, 9, 11),
             Mv::ZERO,
             Mv::ZERO,
             InterpolationFilter::EightTap,
@@ -508,12 +493,12 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
         let reference = patterned_frame_with_format(format, width, height, 23);
         for (block_rect, mv, interp) in [
             (
-                rect(0, 0, width, height),
+                McBlockRect::from_luma_rect(0, 0, width, height),
                 Mv::ZERO,
                 InterpolationFilter::EightTap,
             ),
             (
-                rect(0, 1, width, height - 1),
+                McBlockRect::from_luma_rect(0, 1, width, height - 1),
                 Mv { row: 5, col: -3 },
                 InterpolationFilter::EightTapSharp,
             ),
@@ -570,7 +555,7 @@ fn a_frame_edge_overhanging_block_stages_through_packed_u16_storage() {
     let width = 17;
     let height = 15;
     let reference = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 23);
-    let block_rect = rect(12, 10, 8, 8);
+    let block_rect = McBlockRect::from_luma_rect(12, 10, 8, 8);
     let block = InterBlockParams::single(
         ReferenceSamples::settled(&reference),
         block_rect,
@@ -606,7 +591,7 @@ fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
-            rect(0, 0, 8, 8),
+            McBlockRect::from_luma_rect(0, 0, 8, 8),
             Mv::ZERO,
             Mv::ZERO,
             InterpolationFilter::EightTap,
@@ -628,7 +613,7 @@ fn dispatcher_sub8x8_chroma_drops_warp() {
     let reference = patterned_frame(16, 16);
     let mut warped = workspace(16, 16);
     let mut translational = workspace(16, 16);
-    let rect = rect(0, 0, 8, 8);
+    let rect = McBlockRect::from_luma_rect(0, 0, 8, 8);
     let mv = Mv::ZERO;
 
     motion_compensate_inter_block_into(
@@ -696,7 +681,7 @@ fn dispatcher_rebuilds_optflow_compound_planes_from_refined_grid() {
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
-            rect(0, 0, 8, 8),
+            McBlockRect::from_luma_rect(0, 0, 8, 8),
             Mv::ZERO,
             Mv::ZERO,
             InterpolationFilter::EightTap,
@@ -728,7 +713,7 @@ fn optflow_reuses_the_luma_motion_grid_for_every_chroma_format() {
             InterBlockParams::compound_average(
                 ReferenceSamples::settled(&reference0),
                 ReferenceSamples::settled(&reference1),
-                rect(0, 0, 8, 8),
+                McBlockRect::from_luma_rect(0, 0, 8, 8),
                 Mv::ZERO,
                 Mv::ZERO,
                 InterpolationFilter::EightTapSharp,
@@ -763,12 +748,12 @@ fn optflow_derivation_is_independent_of_the_final_interpolation_filter() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let derive = |interp| {
         let mut workspace = workspace(width, height);
-        motion_grid_prediction(
+        motion_compensate_inter_block(
             &mut super::WorkspaceSink::Frame(&mut workspace),
             InterBlockParams::compound_average(
                 ReferenceSamples::settled(&reference0),
                 ReferenceSamples::settled(&reference1),
-                rect(8, 8, 8, 8),
+                McBlockRect::from_luma_rect(8, 8, 8, 8),
                 Mv { row: 3, col: 5 },
                 Mv { row: -5, col: -3 },
                 interp,
@@ -798,7 +783,7 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
     let compound = InterBlockParams::compound_average(
         ReferenceSamples::settled(&reference0),
         ReferenceSamples::settled(&reference1),
-        rect(0, 0, 8, 8),
+        McBlockRect::from_luma_rect(0, 0, 8, 8),
         Mv::ZERO,
         Mv::ZERO,
         InterpolationFilter::EightTap,
@@ -830,7 +815,7 @@ fn deferred_compound_prediction_matches_direct_publication() {
     let block = InterBlockParams::compound_average(
         ReferenceSamples::settled(&reference0),
         ReferenceSamples::settled(&reference1),
-        rect(0, 0, 8, 8),
+        McBlockRect::from_luma_rect(0, 0, 8, 8),
         Mv::ZERO,
         Mv::ZERO,
         InterpolationFilter::EightTap,
@@ -946,7 +931,7 @@ fn tip_optflow_skips_low_sad_predictors() {
     let compound = InterBlockParams::compound_average(
         ReferenceSamples::settled(&reference0),
         ReferenceSamples::settled(&reference1),
-        rect(0, 0, 8, 8),
+        McBlockRect::from_luma_rect(0, 0, 8, 8),
         Mv::ZERO,
         Mv::ZERO,
         InterpolationFilter::Bilinear,
@@ -972,12 +957,12 @@ fn optflow_sad_gate_preserves_refinemv_motion_grid() {
     let reference0 = flat_frame(8, 8, 55, 128, 128);
     let reference1 = flat_frame(8, 8, 55, 128, 128);
     let mut workspace = workspace(8, 8);
-    let grid = motion_grid_prediction(
+    let grid = motion_compensate_inter_block(
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
-            rect(0, 0, 8, 8),
+            McBlockRect::from_luma_rect(0, 0, 8, 8),
             Mv::ZERO,
             Mv::ZERO,
             InterpolationFilter::Bilinear,
@@ -1016,12 +1001,12 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_grid_prediction(
+    let grid = motion_compensate_inter_block(
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
-            rect(8, 8, 16, 16),
+            McBlockRect::from_luma_rect(8, 8, 16, 16),
             Mv::ZERO,
             Mv::ZERO,
             InterpolationFilter::EightTapSharp,
@@ -1049,12 +1034,12 @@ fn dispatcher_switchable_refinemv_excludes_low_sad_center() {
     let reference1 = flat_frame(width, height, 80, 128, 128);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_grid_prediction(
+    let grid = motion_compensate_inter_block(
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
-            rect(8, 8, 16, 16),
+            McBlockRect::from_luma_rect(8, 8, 16, 16),
             Mv::ZERO,
             Mv::ZERO,
             InterpolationFilter::EightTapSharp,
@@ -1091,12 +1076,12 @@ fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_grid_prediction(
+    let grid = motion_compensate_inter_block(
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
-            rect(8, 8, 16, 16),
+            McBlockRect::from_luma_rect(8, 8, 16, 16),
             Mv::ZERO,
             Mv::ZERO,
             InterpolationFilter::EightTapSharp,
@@ -1120,10 +1105,13 @@ fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
 #[test]
 fn chroma_geometry_rounds_odd_luma_extents_up() {
     assert_eq!(
-        rect(0, 0, 17, 19).plane_rect(PlaneId::U, 1, 1),
+        McBlockRect::from_luma_rect(0, 0, 17, 19).plane_rect(PlaneId::U, 1, 1),
         (0, 0, 9, 10)
     );
-    assert_eq!(rect(1, 1, 8, 8).plane_rect(PlaneId::V, 1, 1), (0, 0, 5, 5));
+    assert_eq!(
+        McBlockRect::from_luma_rect(1, 1, 8, 8).plane_rect(PlaneId::V, 1, 1),
+        (0, 0, 5, 5)
+    );
 }
 
 #[test]
@@ -1186,7 +1174,7 @@ fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference),
             ReferenceSamples::settled(&reference),
-            rect(0, 0, 32, 4),
+            McBlockRect::from_luma_rect(0, 0, 32, 4),
             Mv { row: 0, col: 32 },
             Mv { row: 0, col: -128 },
             InterpolationFilter::EightTap,
@@ -1383,7 +1371,7 @@ fn uniform_motion_direct_average_matches_materialized_path() {
         vec![448; chroma_len],
         vec![576; chroma_len],
     );
-    let rect = rect(4, 4, 8, 8);
+    let rect = McBlockRect::from_luma_rect(4, 4, 8, 8);
     let mvs = [Mv { row: 1, col: 1 }, Mv { row: -1, col: 2 }];
     let cell = MotionCell::from_refinemv(mvs);
     let uniform = CompoundMotionGrid::from_refinemv(1, mvs, vec![cell]);
@@ -1454,7 +1442,7 @@ fn translational_compound_average_direct_output_matches_staged_publication() {
     let block = InterBlockParams::compound_average(
         ReferenceSamples::settled(&reference0),
         ReferenceSamples::settled(&reference1),
-        rect(4, 4, 8, 8),
+        McBlockRect::from_luma_rect(4, 4, 8, 8),
         Mv { row: 1, col: 1 },
         Mv { row: -1, col: 2 },
         InterpolationFilter::EightTap,
@@ -1534,7 +1522,7 @@ fn u8_translational_compound_direct_matches_staged_for_every_relevant_block_size
                 PixelFormat::Monochrome,
                 width,
                 height,
-                rect(x, y, block_w, block_h),
+                McBlockRect::from_luma_rect(x, y, block_w, block_h),
                 [Mv { row: 3, col: 5 }, Mv { row: -5, col: -3 }],
                 CWP_EQUAL,
                 false,
@@ -1562,7 +1550,10 @@ fn u8_translational_compound_direct_matches_staged_across_formats_weights_and_su
         let reference1 = patterned_frame_with_format(format, width, height, 107);
         for cwp_weight in [-4, 4, CWP_EQUAL, 12, 20] {
             for mvs in motion_cases {
-                for block_rect in [rect(8, 8, 16, 16), rect(48, 48, 16, 16)] {
+                for block_rect in [
+                    McBlockRect::from_luma_rect(8, 8, 16, 16),
+                    McBlockRect::from_luma_rect(48, 48, 16, 16),
+                ] {
                     assert_u8_direct_matches_staged(
                         &reference0,
                         &reference1,
@@ -1588,7 +1579,7 @@ fn u8_translational_compound_direct_preflights_all_planes_before_writing() {
     let mut block = InterBlockParams::compound_average(
         ReferenceSamples::settled(&reference0),
         ReferenceSamples::settled(&reference1),
-        rect(0, 0, 8, 8),
+        McBlockRect::from_luma_rect(0, 0, 8, 8),
         Mv::ZERO,
         Mv::ZERO,
         InterpolationFilter::EightTap,
@@ -1709,7 +1700,7 @@ fn warp_skips_prediction_units_beyond_the_current_frame() {
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single_warp(
             ReferenceSamples::settled(&reference),
-            rect(8, 0, 16, 8),
+            McBlockRect::from_luma_rect(8, 0, 16, 8),
             Mv::ZERO,
             InterpolationFilter::EightTap,
             crate::prediction::inter::find_mv_stack::DEFAULT_WARP_PARAMS,
@@ -1742,7 +1733,7 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single_warp(
             ReferenceSamples::settled(&reference),
-            rect(12, 0, 8, 4),
+            McBlockRect::from_luma_rect(12, 0, 8, 4),
             Mv::ZERO,
             InterpolationFilter::EightTap,
             crate::prediction::inter::find_mv_stack::DEFAULT_WARP_PARAMS,
@@ -1809,7 +1800,7 @@ fn dispatch_compound_samples(
         InterBlockParams::compound_average(
             reference0,
             reference1,
-            rect(0, 0, 8, 8),
+            McBlockRect::from_luma_rect(0, 0, 8, 8),
             Mv { row: 0, col: 0 },
             Mv { row: 0, col: 0 },
             InterpolationFilter::EightTap,
@@ -2015,17 +2006,4 @@ fn visible_samples<T: ReconSample>(frame: &DecodedFrame<T>, plane: PlaneId) -> V
         .visible_rows()
         .flat_map(|row| row.iter().copied())
         .collect()
-}
-
-const fn rect(luma_x: usize, luma_y: usize, luma_w: usize, luma_h: usize) -> McBlockRect {
-    McBlockRect {
-        luma_x,
-        luma_y,
-        luma_w,
-        luma_h,
-        chroma_luma_x: luma_x,
-        chroma_luma_y: luma_y,
-        chroma_luma_w: luma_w,
-        chroma_luma_h: luma_h,
-    }
 }

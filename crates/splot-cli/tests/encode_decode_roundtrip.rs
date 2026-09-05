@@ -8,23 +8,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::PathBuf;
+mod common;
+use common::temp_path;
+
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn temp_path(stem: &str, extension: &str) -> PathBuf {
-    let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time is after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "splot-enc-dec-roundtrip-{stem}-{}-{nanos}-{id}.{extension}",
-        std::process::id()
-    ))
-}
 
 #[track_caller]
 fn decode_raw_64x64(ivf: &[u8], case: &str) -> Vec<u8> {
@@ -54,10 +41,8 @@ fn decode_raw_64x64(ivf: &[u8], case: &str) -> Vec<u8> {
     raw
 }
 
-/// The encoder's first end-to-end decodable output: `splot-encode` emits a 64x64 all-intra
-/// `OBU_CLOSED_LOOP_KEY` DC skip frame, and `splot decode --output-format raw` reconstructs
-/// it. The block is skipped (all-zero residual), so every luma and chroma sample is the
-/// § 7.13.2 DC prediction of a no-neighbour block — `128` for 8-bit — giving a flat frame.
+/// The minimal DC skip frame reconstructs to the AV2 § 7.13.2 no-neighbour
+/// prediction: 128 on every 8-bit plane.
 #[test]
 fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
     let ivf = splot_encode::emit_minimal_intra_skip_ivf().expect("emit the minimal skip IVF");
@@ -68,12 +53,7 @@ fn encoder_skip_ivf_decodes_to_a_flat_128_frame() {
     );
 }
 
-/// The encoder's first decodable output carrying a **coded** coefficient: `splot-encode`
-/// emits a 64x64 all-intra frame whose luma block has a single negative DC coefficient
-/// (U and V skipped), and `splot decode` reconstructs it. The dequantized residual is added
-/// to the `128` predictor, so the luma plane is flat `127` while the skipped chroma stays
-/// flat `128` — proving the encoder emits real residual the decoder reconstructs, not just
-/// prediction.
+/// A negative luma DC coefficient reconstructs luma to 127; skipped chroma stays 128.
 #[test]
 fn encoder_coded_dc_ivf_decodes_to_a_flat_127_luma_frame() {
     let ivf = splot_encode::emit_minimal_intra_coded_dc_ivf().expect("emit the coded DC IVF");
@@ -89,11 +69,7 @@ fn encoder_coded_dc_ivf_decodes_to_a_flat_127_luma_frame() {
     );
 }
 
-/// The encoder's first decodable output carrying a coded **chroma** coefficient: the U block
-/// has a single negative DC coefficient (luma and V skipped). `splot decode` reconstructs a
-/// flat luma plane of 128 (skipped), a flat U plane of 127 (the dequantized chroma residual),
-/// and a flat V plane of 128 (skipped) — proving the encoder emits chroma residual the decoder
-/// reconstructs, isolated from luma.
+/// A negative U DC coefficient reconstructs U to 127; skipped luma and V stay 128.
 #[test]
 fn encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame() {
     let ivf =
@@ -113,9 +89,7 @@ fn encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame() {
     );
 }
 
-/// The V-plane counterpart of the coded-chroma oracle: the V block carries a single negative
-/// DC coefficient (luma and U skipped). `splot decode` reconstructs flat luma 128, flat U 128,
-/// and flat V 127. With the U and V oracles this proves coded residual on every plane.
+/// A negative V DC coefficient reconstructs V to 127; skipped luma and U stay 128.
 #[test]
 fn encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame() {
     let ivf =
@@ -135,10 +109,7 @@ fn encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame() {
     );
 }
 
-/// The encoder's first frame with all three planes coded at once: luma, U, and V each carry a
-/// single negative coded DC coefficient (mirroring the q80 fixture's structure). `splot decode`
-/// reconstructs every plane below 128. With the per-plane oracles this proves the encoder can
-/// code all planes simultaneously, including the V `txb_skip` `EobU != 0` interaction.
+/// All three coded DC planes reconstruct to 127, exercising V txb_skip with EobU != 0.
 #[test]
 fn encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame() {
     let ivf =
@@ -150,12 +121,8 @@ fn encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame() {
     );
 }
 
-/// The encoder's first multi-coefficient (`eob > 1`) frame: the luma block carries a single
-/// nonzero AC coefficient (eob=2, U and V skipped). `splot decode` validates the eob=2 entropy
-/// stream (the §8.2.4 exit_symbol check passes only if the AC `coeff_base` symbols are
-/// consistent). The level-1 AC reconstructs to a sub-visible residual, so the frame is flat
-/// 128; a visibly-non-flat AC (larger magnitude, needing the per-level DC `coeff_base` context)
-/// is a follow-up. This proves the encoder emits a decodable eob>1 block, distinct from skip.
+/// An eob=2 level-1 AC is sub-visible and reconstructs to 128. Successful decode
+/// checks its coeff_base stream through the AV2 § 8.2.4 exit symbol.
 #[test]
 fn encoder_two_coeff_ivf_decodes_successfully() {
     let ivf = splot_encode::emit_minimal_intra_two_coeff_ivf().expect("emit the eob=2 IVF");
@@ -166,13 +133,8 @@ fn encoder_two_coeff_ivf_decodes_successfully() {
     );
 }
 
-/// The encoder's first frame where a coefficient **visibly shapes the reconstruction**. The
-/// luma block carries a single nonzero level-4 AC coefficient at scan index 1 (eob=2, U and V
-/// skipped). Unlike the sub-visible level-1 AC (which reconstructs flat 128), the level-4 AC
-/// dequantizes to a residual that survives rounding, producing a vertical low-frequency cosine:
-/// each row is constant across columns, the top 8 rows are 129, the middle 48 are 128, and the
-/// bottom 8 are 127. `splot decode` reconstructs it bit-exactly through the entropy + inverse
-/// transform path.
+/// A level-4 AC at scan index 1 survives rounding: luma rows form bands of
+/// 129 (top 8), 128 (middle 48), and 127 (bottom 8); chroma stays 128.
 #[test]
 fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
     let ivf = splot_encode::emit_minimal_intra_visible_ac_ivf().expect("emit the visible-AC IVF");
@@ -206,14 +168,9 @@ fn encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma() {
     );
 }
 
-/// The encoder's first block with **two nonzero coefficients**: a positive level-4 AC at scan
-/// index 1 and a **negative** level-1 DC at scan index 0 (eob=2, U and V skipped). This exercises
-/// the DC `coeff_base` nonzero path and the AV2 §5.20.7.27 reverse-scan sign pass (`c = eob-1 ..
-/// 0`): the AC `sign_bit` bypass (c=1) then the DC `dc_sign` CDF (c=0). The negative DC makes the
-/// reconstruction sign-order-sensitive — the wrong order would brighten rather than darken the
-/// lower band — so this oracle genuinely proves the ordering. `splot decode` reconstructs the
-/// cosine superimposed on the negative DC offset: each luma row constant, the top 50 rows 128 and
-/// the bottom 14 rows 127.
+/// A level-4 AC and negative level-1 DC exercise the AV2 § 5.20.7.27 reverse
+/// sign pass: AC bypass then DC CDF. The sign-sensitive result has 50 luma
+/// rows at 128 and 14 at 127; chroma stays 128.
 #[test]
 fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
     let ivf = splot_encode::emit_minimal_intra_two_nonzero_ivf().expect("emit the two-nonzero IVF");
@@ -244,12 +201,8 @@ fn encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset() {
     );
 }
 
-/// The encoder's first frame with **eob > 2**: the luma block has eob=3 with a single nonzero
-/// level-4 AC at scan index 2 (raster 1, the horizontal frequency-1 position), U and V skipped.
-/// This exercises the `eob_extra` CDF symbol (`eob_pt_1024 == 2`, `eob_extra == 0` -> eob 3) — the
-/// gateway to arbitrary-length blocks. `splot decode` reconstructs a horizontal low-frequency
-/// cosine (the transpose of the visible-AC vertical cosine): each column is constant, the left 8
-/// columns are 129, the middle 48 are 128, and the right 8 are 127.
+/// A level-4 AC at scan index 2 exercises eob_extra (eob_pt_1024=2, extra=0).
+/// Luma columns form bands of 129 (left 8), 128 (middle 48), and 127 (right 8).
 #[test]
 fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
     let ivf = splot_encode::emit_minimal_intra_eob3_ivf().expect("emit the eob=3 IVF");
@@ -283,13 +236,8 @@ fn encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma() {
     );
 }
 
-/// The encoder's first **2-D reconstruction**: eob=3 with two nonzero level-4 ACs — a positive
-/// horizontal AC at scan index 2 and a negative vertical AC at scan index 1 (U and V skipped).
-/// This is the first block whose decode varies in BOTH dimensions (neither rows nor columns are
-/// constant) — the horizontal and vertical low-frequency cosines superimposed with opposite
-/// signs, giving a diagonal gradient. The asymmetric AC signs also prove the reverse-scan
-/// two-`sign_bit` order: a wrong order would mirror the diagonal. `splot decode` reconstructs the
-/// 3x3 band grid (rows/cols sampled at 4/32/60): [[128,127,127],[129,128,127],[129,129,128]].
+/// Opposite-sign level-4 horizontal and vertical ACs test reverse sign-bit order.
+/// A reversed order mirrors the expected diagonal gradient; chroma stays 128.
 #[test]
 fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
     let ivf = splot_encode::emit_minimal_intra_2d_ivf().expect("emit the 2-D IVF");
@@ -317,22 +265,13 @@ fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
     );
 }
 
-/// Milestone A keystone: the encoder produces a real packet through the **public Context API**,
-/// and that packet decodes back to the input. An all-128 64x64 frame has zero residual against
-/// the §7.13.2 no-neighbour DC predictor, so `Context::send_frame` + `receive_packet` emit the
-/// skip frame, and `splot decode` reconstructs it bit-exactly: decode(encode(input)) == input.
-/// This proves the lifecycle wiring (not just the bare emitter), and the honesty invariant —
-/// the output decodes to the input, never a canned frame.
+/// The public Context API emits a packet whose decoded samples equal the input.
 #[test]
 fn context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128() {
     assert_all_128_roundtrips_at_qp(splot_encode::DEFAULT_QP);
 }
 
-/// The `EncoderConfig::qp` field is the single fixed-quantizer source: it threads into the
-/// frame-header `base_q_idx`, so a non-default `qp` produces a different (still decodable) stream.
-/// A skip frame's all-zero residual reconstructs flat-128 independent of `base_q_idx`, so this
-/// proves the qp threading decodes bit-exactly at a non-default quantizer (40, in the supported
-/// q-context-0 range) — not just at the default 80.
+/// A non-default qp=40 reaches base_q_idx while zero residual still decodes to 128.
 #[test]
 fn context_encodes_all_128_frame_at_non_default_qp_that_decodes_to_all_128() {
     assert_all_128_roundtrips_at_qp(40);

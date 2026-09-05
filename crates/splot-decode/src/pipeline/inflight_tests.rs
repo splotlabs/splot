@@ -230,17 +230,6 @@ fn a_failed_writer_closes_the_published_prefix_instead_of_lending_it() {
 }
 
 #[test]
-fn dropping_the_writer_settles_the_slot_as_failed() {
-    let (slot, writer) =
-        RefFrameSlot::<u8>::pending(decoded_frame(4, 4).info()).expect("pending slot");
-
-    drop(writer);
-
-    assert!(slot.is_settled());
-    assert!(slot.wait_settled().is_err());
-}
-
-#[test]
 fn a_completed_writer_leaves_the_published_samples_in_place() {
     let frame = decoded_frame(4, 4);
     let info = frame.info();

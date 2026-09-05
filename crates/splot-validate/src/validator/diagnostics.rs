@@ -6,9 +6,8 @@
 use splot_core::Error;
 use splot_core::ivf::{IvfError, IvfWarning};
 
-use crate::checks::syntax_error_diagnostic;
+use crate::checks::{payload_parse_error_diagnostic, syntax_error_diagnostic};
 use crate::diagnostic::{Diagnostic, Severity};
-use crate::error_location::{error_bit_offset, error_offset};
 
 const IVF_DIAGNOSTIC_RULE_IDS: [&str; 5] = [
     "ivf/truncated-header",
@@ -25,16 +24,7 @@ pub(super) fn parse_error_diagnostic(error: &Error) -> Diagnostic {
         return diagnostic;
     }
 
-    let mut diagnostic =
-        Diagnostic::new(Severity::Error, "bitstream/parse-error", error.to_string())
-            .with_spec_section("Annex B");
-    if let Some(offset) = error_offset(error) {
-        diagnostic = diagnostic.with_byte_offset(offset);
-    }
-    if let Some(bit_offset) = error_bit_offset(error) {
-        diagnostic = diagnostic.with_bit_offset(bit_offset);
-    }
-    diagnostic
+    payload_parse_error_diagnostic(error, "Annex B")
 }
 
 pub(super) fn ivf_error_diagnostic(error: &IvfError) -> Diagnostic {

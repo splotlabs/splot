@@ -344,10 +344,8 @@ fn write_xlayer_section(
         let map = payload
             .xlayer_map
             .ok_or_else(|| non_canonical("xlayer_map_scope"))?;
-        let expected: Vec<u8> = (0..OPS_XLAYER_MAP_LAYERS)
-            .filter(|j| map & (1u32 << u32::from(*j)) != 0)
-            .collect();
-        if payload.xlayer_entries.len() != expected.len() {
+        let expected = (0..OPS_XLAYER_MAP_LAYERS).filter(|j| map & (1u32 << u32::from(*j)) != 0);
+        if payload.xlayer_entries.len() != expected.clone().count() {
             return Err(non_canonical("xlayer_entries"));
         }
         body.write_bits(map, OPS_XLAYER_MAP_BITS)?;
@@ -499,10 +497,8 @@ fn write_ops_color_info(body: &mut BitWriter, color: &OpsColorInfo) -> WriteResu
 /// one `ops_tlayer_map` `f(4)` per set bit of the map in ascending order. The
 /// `tlayer_maps` set must match the map's set bits exactly to round-trip.
 fn write_ops_mlayer_info(body: &mut BitWriter, mlayer: &OpsMlayerInfo) -> WriteResult<()> {
-    let expected: Vec<u8> = (0..OPS_MLAYER_MAP_LAYERS)
-        .filter(|j| mlayer.mlayer_map & (1u8 << j) != 0)
-        .collect();
-    if mlayer.tlayer_maps.len() != expected.len() {
+    let expected = (0..OPS_MLAYER_MAP_LAYERS).filter(|j| mlayer.mlayer_map & (1u8 << j) != 0);
+    if mlayer.tlayer_maps.len() != expected.clone().count() {
         return Err(non_canonical("mlayer_tlayer_maps"));
     }
     body.write_bits_u8(mlayer.mlayer_map, OPS_MLAYER_MAP_BITS)?;

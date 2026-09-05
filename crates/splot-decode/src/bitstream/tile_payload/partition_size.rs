@@ -68,21 +68,6 @@ impl BlockSize {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PartitionSubsize {
-    Valid(BlockSize),
-    Invalid,
-}
-
-impl PartitionSubsize {
-    pub(crate) const fn valid(self) -> Option<BlockSize> {
-        match self {
-            Self::Valid(block_size) => Some(block_size),
-            Self::Invalid => None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum PartitionSizeError {
     #[error("{table} block-size index {b_size} is outside 0..{max_exclusive}")]
@@ -103,7 +88,7 @@ pub(crate) enum PartitionSizeError {
 pub(crate) fn partition_subsize(
     partition: PartitionType,
     b_size: BlockSize,
-) -> Result<PartitionSubsize, PartitionSizeError> {
+) -> Result<Option<BlockSize>, PartitionSizeError> {
     let partition_index = partition.index();
     let value = partition_table_i32(
         "Partition_Subsize",
@@ -116,7 +101,7 @@ pub(crate) fn partition_subsize(
 
 pub(crate) fn h_partition_midsize(
     b_size: BlockSize,
-) -> Result<PartitionSubsize, PartitionSizeError> {
+) -> Result<Option<BlockSize>, PartitionSizeError> {
     let value = table_i32("H_Partition_Midsize", &H_PARTITION_MIDSIZE, b_size)?;
     table_value("H_Partition_Midsize", None, b_size, value)
 }
@@ -126,15 +111,15 @@ fn table_value(
     partition: Option<usize>,
     b_size: BlockSize,
     value: i32,
-) -> Result<PartitionSubsize, PartitionSizeError> {
+) -> Result<Option<BlockSize>, PartitionSizeError> {
     if value == BLOCK_INVALID {
-        return Ok(PartitionSubsize::Invalid);
+        return Ok(None);
     }
     let index = usize::try_from(value)
         .map_err(|_| table_value_out_of_range(table, partition, b_size, value))?;
     let block_size = BlockSize::new(index)
         .map_err(|_| table_value_out_of_range(table, partition, b_size, value))?;
-    Ok(PartitionSubsize::Valid(block_size))
+    Ok(Some(block_size))
 }
 
 fn table_usize(

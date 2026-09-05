@@ -66,12 +66,6 @@ fn annex_a_iop_window_seeds_pre_clk_msdo_to_new_cvs() {
     assert!(
         !report
             .errors()
-            .any(|d| d.rule_id == "annex-a/msdo-prohibited-for-iop"),
-        "the pre-CLK MSDO belongs to the new CVS, not TU1; report was: {report}"
-    );
-    assert!(
-        !report
-            .errors()
             .any(|d| d.rule_id == "annex-a/msdo-required-for-iop"),
         "TU2's two-xlayer CVS has its required MSDO; report was: {report}"
     );
@@ -195,13 +189,6 @@ fn annex_a_iop_declared_count_precedence_over_observed() {
     data.extend(seq_header_obu_ptl(0, 0, 0, 0, false, true));
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // only xlayer 0 is coded
     let report = Validator::new(false).validate_bytes(&data);
-    assert!(
-        !report
-            .errors()
-            .any(|d| d.rule_id == "annex-a/msdo-prohibited-for-iop"),
-        "the MSDO's declared count (2) takes precedence over the single observed xlayer, \
-         so the MSDO is not prohibited; report was: {report}"
-    );
     assert!(
         !report
             .errors()

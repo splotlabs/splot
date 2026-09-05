@@ -8,7 +8,7 @@ use splot_recon::{
 
 use super::*;
 use crate::bitstream::tile_payload::{
-    BlockSize, BlockSymbolTraceReadError, CflParams, CoeffParseErrorClass, GeneralIntraBlockModes,
+    BlockSize, BlockSymbolTraceReadError, CoeffParseErrorClass, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     GeneralIntraLeafMode, IntraYMode, IntraYModeClass, IsCflContext, LumaTransformPartitionContext,
     LumaTransformTypeContext, MrlSelection, SupportedChromaMode, TileCoeffStateError,
@@ -775,28 +775,19 @@ fn rect_luma_plan(
         });
     }
     if modes.uses_active_mrl() {
-        return rect_luma_mrl_plan(modes, block_ctx, use_tcq, sb_mib);
+        return rect_luma_mrl_plan_for_parts(
+            modes.y_mode,
+            modes.angle_delta_y,
+            modes.mrl,
+            block_ctx,
+            use_tcq,
+            sb_mib,
+        );
     }
     rect_luma_plan_for_mode(
         modes.y_mode,
-        rect_luma_directional_p_angle(modes, block_ctx)?,
+        directional_p_angle_for_luma(modes.y_mode, modes.angle_delta_y, block_ctx)?,
         use_tcq,
-    )
-}
-
-fn rect_luma_mrl_plan(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    use_tcq: bool,
-    sb_mib: usize,
-) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
-    rect_luma_mrl_plan_for_parts(
-        modes.y_mode,
-        modes.angle_delta_y,
-        modes.mrl,
-        block_ctx,
-        use_tcq,
-        sb_mib,
     )
 }
 
@@ -909,13 +900,6 @@ fn rect_luma_plan_for_mode(
     Err(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)
 }
 
-fn rect_luma_directional_p_angle(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-) -> core::result::Result<Option<u16>, crate::DecodeHeaderStateError> {
-    directional_p_angle_for_luma(modes.y_mode, modes.angle_delta_y, block_ctx)
-}
-
 fn directional_p_angle_for_luma(
     y_mode: IntraYMode,
     angle_delta_y: i8,
@@ -1001,17 +985,11 @@ fn chroma_plan_for_parts(
             inherited_chroma_angle_delta(usize::from(coeff_uv_mode), y_mode, angle_delta_y),
             dpcm,
         ),
-        GeneralIntraChromaBlockMode::Cfl(params) => {
-            cfl_chroma_plan(params, cfl_ds_filter_index, sb_mib)
-        }
-    }
-}
-
-fn cfl_chroma_plan(params: CflParams, cfl_ds_filter_index: u8, sb_mib: usize) -> RectChromaPlan {
-    RectChromaPlan::Cfl {
-        params,
-        cfl_ds_filter_index,
-        sb_mib,
+        GeneralIntraChromaBlockMode::Cfl(params) => RectChromaPlan::Cfl {
+            params,
+            cfl_ds_filter_index,
+            sb_mib,
+        },
     }
 }
 

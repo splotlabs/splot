@@ -81,13 +81,7 @@ fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 pub(crate) fn physical_line_count(text: &str) -> usize {
-    if text.is_empty() {
-        0
-    } else {
-        #[allow(clippy::naive_bytecount)]
-        let newlines = text.as_bytes().iter().filter(|&&b| b == b'\n').count();
-        newlines + usize::from(!text.ends_with('\n'))
-    }
+    text.lines().count()
 }
 
 fn evaluate_source_lines(files: &[SourceFileLineCount]) -> SourceLineReport {

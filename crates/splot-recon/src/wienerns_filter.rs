@@ -614,7 +614,7 @@ fn wiener_ns_filter_luma_block_padded_layout_u16_into<T: ReconSample>(
     };
     for r in 0..params.height {
         let output_row = &mut output[r * params.output_stride..][..params.width];
-        filter_padded_luma_row_u8_source_u16_output(
+        filter_padded_luma_row_simd(
             output_row,
             samples,
             source.stride,
@@ -655,7 +655,7 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
         ($samples:expr) => {
             for r in 0..params.height {
                 let output_row = &mut output[r * params.output_stride..][..params.width];
-                filter_padded_luma_row_u8_source_u16_output(
+                filter_padded_luma_row_simd(
                     output_row,
                     $samples,
                     source.stride,
@@ -845,7 +845,7 @@ fn for_each_luma_segment(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn filter_padded_luma_row_u8_source_u16_output<T: LumaSimdSource, O: LumaSimdOutput>(
+fn filter_padded_luma_row_simd<T: LumaSimdSource, O: LumaSimdOutput>(
     output: &mut [O],
     samples: &[T],
     stride: usize,
@@ -871,7 +871,7 @@ fn filter_padded_luma_row_u8_source_u16_output<T: LumaSimdSource, O: LumaSimdOut
             let filtered = output
                 .get_mut(segment_start..segment_start + len)
                 .ok_or_else(|| luma_segment_error(params.width))?;
-            filter_luma_segment_u8(
+            filter_luma_segment_simd(
                 filtered,
                 flat.samples,
                 flat.row_base + segment_start,
@@ -914,7 +914,7 @@ fn filter_padded_luma_segment<T: ReconSample>(
     if let Some(samples) = T::u16_slice(flat.samples)
         && let Some(filtered) = T::u16_slice_mut(filtered)
     {
-        filter_luma_segment_u16(
+        filter_luma_segment_simd(
             filtered,
             samples,
             flat.row_base + c0,
@@ -955,33 +955,6 @@ struct LumaFlatSource<'a, T> {
     samples: &'a [T],
     row_base: usize,
     center_offset: usize,
-}
-
-/// Filters one `u16`-storage segment with the § 7.20.3 taps carried in
-/// registers, widest lane group first.
-///
-/// Each lane repeats the accumulator path of [`filter_padded_luma_segment`] in
-/// § 7.20.3 config order, so every output sample is bit-identical.
-fn filter_luma_segment_u16(
-    filtered: &mut [u16],
-    samples: &[u16],
-    base: usize,
-    center_offset: usize,
-    class: &PreparedLumaClass,
-    max_sample: u16,
-) {
-    filter_luma_segment_simd(filtered, samples, base, center_offset, class, max_sample);
-}
-
-fn filter_luma_segment_u8<T: LumaSimdSource, O: LumaSimdOutput>(
-    filtered: &mut [O],
-    samples: &[T],
-    base: usize,
-    center_offset: usize,
-    class: &PreparedLumaClass,
-    max_sample: u16,
-) {
-    filter_luma_segment_simd(filtered, samples, base, center_offset, class, max_sample);
 }
 
 trait LumaSimdOutput: Copy {
@@ -1089,7 +1062,7 @@ fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
     }
 }
 
-/// One `LANES`-wide group of [`filter_luma_segment_u16`].
+/// One `LANES`-wide group of [`filter_luma_segment_simd`].
 ///
 /// `Round2` is expanded as `(sum >> n) + ((sum >> (n - 1)) & 1)`, which is the
 /// definition of [`round2_i32`] for every `i32` and cannot overflow. `plus +
@@ -1361,7 +1334,7 @@ where
     T::try_from_u16(value as u16)
 }
 
-fn validated_source_sample<T, F>(
+pub(super) fn validated_source_sample<T, F>(
     source_sample: &mut F,
     x: isize,
     y: isize,

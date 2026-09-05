@@ -76,6 +76,7 @@ fn decode_hash_frames_pipelined(
             options,
             plan,
             frame_delay,
+            |_| Ok(()),
             |output| {
                 let ready = output.ready_frame()?;
                 let index = emitted;

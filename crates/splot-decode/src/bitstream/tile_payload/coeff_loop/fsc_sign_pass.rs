@@ -22,17 +22,6 @@ pub(crate) struct CoeffFscSignReadInput {
     pub(crate) level: u32,
     pub(crate) source: CoeffFscSignReadSource,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffFscSignRead {
-    sign: bool,
-}
-
-impl CoeffFscSignRead {
-    #[must_use]
-    pub(crate) const fn sign(self) -> bool {
-        self.sign
-    }
-}
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffFscSignPassError {
     #[error(
@@ -125,7 +114,7 @@ pub(crate) fn read_fsc_sign_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffFscSignReadInput,
-) -> Result<CoeffFscSignRead, CoeffFscSignPassError> {
+) -> Result<bool, CoeffFscSignPassError> {
     let sign = match input.source {
         CoeffFscSignReadSource::IdtxSign { selector } => {
             let symbol = cdfs
@@ -135,7 +124,7 @@ pub(crate) fn read_fsc_sign_symbol(
         }
         CoeffFscSignReadSource::None => false,
     };
-    Ok(CoeffFscSignRead { sign })
+    Ok(sign)
 }
 
 pub(crate) const fn quant_sign_value(sign: bool) -> i8 {

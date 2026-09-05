@@ -697,15 +697,7 @@ fn looks_absolute_path(token: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod link_tests;
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    const SAMPLE: &str = r#"
+const SAMPLE: &str = r#"
 matrix_version = 1
 last_reviewed = "2026-06-13"
 
@@ -738,6 +730,15 @@ diagnostics = []
 local_reference_evidence = []
 notes = "done"
 "#;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod link_tests;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
 
     #[test]
     fn valid_matrix_renders_rows_deterministically() -> Result<()> {

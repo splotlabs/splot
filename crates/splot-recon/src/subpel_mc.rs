@@ -1973,18 +1973,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
     output_stride: usize,
     mut finish: impl SubpelOutput<O>,
 ) -> Result<()> {
-    if output_stride < params.w {
-        return Err(ReconError::StrideTooSmall {
-            stride_samples: output_stride,
-            storage_width: params.w,
-        });
-    }
-    let output_len = (params.h - 1)
-        .checked_mul(output_stride)
-        .and_then(|len| len.checked_add(params.w))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "strided subpel output sample count",
-        })?;
+    let output_len = subpel_output_len(params, output_stride)?;
     if output.len() < output_len {
         return Err(ReconError::BufferLengthMismatch {
             expected: output_len,

@@ -123,7 +123,6 @@ fn count_bottom_left_scans_left_column_below() {
     state.force_decoded(0, 7, 8);
     state.force_decoded(0, 7, 9);
     assert_eq!(state.count_bottom_left_avail(0, 8, 0, 8), 2);
-    assert_eq!(state.count_bottom_left_avail(0, 8, 0, 8), 2);
 }
 
 #[test]

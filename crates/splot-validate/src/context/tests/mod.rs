@@ -8,6 +8,7 @@ use splot_core::headers::sequence::{MLayerDependencyMap, TLayerDependencyMap};
 use splot_core::hls::parse_msdo;
 use splot_core::span::ByteOffset;
 use splot_core::types::{EmbeddedLayerId, TemporalLayerId};
+use splot_core::write::BitWriter;
 
 use super::{
     CmvsState, CmvsTracker, MsdoObservation, MsdoObserver, ValidationReport,
@@ -17,7 +18,7 @@ use super::{
 /// Builds the synthetic `multistream_decoder_operation_obu()` payload bytes with the
 /// given § 7.3.2 condition-2 key fields. `num_streams_minus_2` drives the
 /// per-substream loop; the substream entries are filled with zeros (they are not
-/// § 7.3.2 key fields). The bytes are parsed by [`parse_test_msdo`].
+/// § 7.3.2 key fields). The bytes are parsed by [`observe_test_msdo`].
 fn msdo_bytes(profile_idc: u8, level_idx: u8, tier: u8, num_streams_minus_2: u8) -> Vec<u8> {
     msdo_bytes_uneven(profile_idc, level_idx, tier, num_streams_minus_2, None)
 }
@@ -31,33 +32,29 @@ fn msdo_bytes_uneven(
     num_streams_minus_2: u8,
     large_picture_idc: Option<u8>,
 ) -> Vec<u8> {
-    let mut bits = MsdoBits::default();
-    bits.f(u32::from(num_streams_minus_2), 3);
-    bits.f(u32::from(profile_idc), 5);
-    bits.f(u32::from(level_idx), 5);
-    bits.f(u32::from(tier), 1);
+    let mut bits = BitWriter::new();
+    assert!(bits.write_bits(u32::from(num_streams_minus_2), 3).is_ok());
+    assert!(bits.write_bits(u32::from(profile_idc), 5).is_ok());
+    assert!(bits.write_bits(u32::from(level_idx), 5).is_ok());
+    assert!(bits.write_bits(u32::from(tier), 1).is_ok());
     match large_picture_idc {
-        None => bits.f(1, 1), // multistream_even_allocation_flag = 1
+        None => assert!(bits.write_bits(1, 1).is_ok()), // multistream_even_allocation_flag = 1
         Some(idc) => {
-            bits.f(0, 1); // multistream_even_allocation_flag = 0
-            bits.f(u32::from(idc), 3); // multistream_large_picture_idc
+            assert!(bits.write_bits(0, 1).is_ok()); // multistream_even_allocation_flag = 0
+            assert!(bits.write_bits(u32::from(idc), 3).is_ok()); // multistream_large_picture_idc
         }
     }
     for _ in 0..(u32::from(num_streams_minus_2) + 2) {
-        bits.f(0, 5); // sub_xlayer_id
-        bits.f(0, 5); // sub_stream_max_profile
-        bits.f(0, 5); // sub_stream_max_level
-        bits.f(0, 1); // sub_stream_max_tier
+        assert!(bits.write_bits(0, 5).is_ok()); // sub_xlayer_id
+        assert!(bits.write_bits(0, 5).is_ok()); // sub_stream_max_profile
+        assert!(bits.write_bits(0, 5).is_ok()); // sub_stream_max_level
+        assert!(bits.write_bits(0, 1).is_ok()); // sub_stream_max_tier
     }
-    bits.f(0, 1); // multistream_doh_constraint_flag
+    assert!(bits.write_bits(0, 1).is_ok()); // multistream_doh_constraint_flag
     bits.into_bytes()
 }
 
-/// Feeds synthetic MSDO payload `bytes` to a [`MsdoObserver`] and returns the
-/// observation. Parsing is asserted to succeed (`unwrap`/`expect`/`panic` are
-/// denied workspace-wide); the `None` arm returns a deterministic sentinel that the
-/// observer treats as an ordinary observation, so a builder bug fails the test via
-/// the assertion rather than panicking.
+/// Parses synthetic MSDO bytes and observes them, asserting fixture validity.
 fn observe_test_msdo(observer: &mut MsdoObserver, bytes: &[u8]) -> MsdoObservation {
     let mut reader = BitReader::new(bytes, ByteOffset::new(0));
     let parsed = parse_msdo(&mut reader).ok();
@@ -65,35 +62,6 @@ fn observe_test_msdo(observer: &mut MsdoObserver, bytes: &[u8]) -> MsdoObservati
     match parsed {
         Some(msdo) => observer.observe(&msdo),
         None => MsdoObservation::Unchanged,
-    }
-}
-
-/// Minimal MSB-first bit writer for the MSDO test payloads.
-#[derive(Default)]
-struct MsdoBits {
-    bits: Vec<u8>,
-}
-
-impl MsdoBits {
-    fn f(&mut self, value: u32, width: u32) {
-        for shift in (0..width).rev() {
-            self.bits.push(((value >> shift) & 1) as u8);
-        }
-    }
-
-    fn into_bytes(mut self) -> Vec<u8> {
-        while !self.bits.len().is_multiple_of(8) {
-            self.bits.push(0);
-        }
-        self.bits
-            .chunks(8)
-            .map(|chunk| {
-                chunk
-                    .iter()
-                    .enumerate()
-                    .fold(0u8, |byte, (i, bit)| byte | (*bit << (7 - i)))
-            })
-            .collect()
     }
 }
 

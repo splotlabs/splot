@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::util::temp_root;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -343,19 +344,6 @@ right = "dav2d-raw-md5"
         sha256_hex(fixture_bytes),
         fixture_bytes.len()
     )
-}
-
-fn temp_root(name: &str) -> Result<PathBuf> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time is after Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "splot-reference-evidence-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&root)?;
-    Ok(root)
 }
 
 fn git_available() -> bool {

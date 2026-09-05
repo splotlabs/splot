@@ -12,16 +12,6 @@
 //! into the top-left scan sub-block of `Dequant`.
 //!
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
-//!
-//! Scope: this is the matrix transform itself over caller-resolved facts. The
-//! caller resolves `kernel` and `transpose` (the § 7.15.3 `YMode` /
-//! `is_directional_mode` / `pAngle` / `wide_angle_mapping` / `is_inter` /
-//! `PlaneTxType` / `most_probable_stx_set` / `Inv_Most_Probable_Stx_Mapping`
-//! derivation) and `n` (`IST_4X4_HEIGHT`, `IST_8X8_HEIGHT`, or the reduced
-//! `IST_8X8_HEIGHT_RED`), exactly as the other `splot-recon` transform primitives
-//! take caller-resolved `txSz`-derived values. It does not parse `sec_tx_type`,
-//! derive the kernel/transpose, read frame or block state, or wire into the
-//! runtime decode path.
 
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
@@ -263,9 +253,6 @@ mod tests {
             .iter()
             .map(|&pos| i64::from(dequant[pos as usize]))
             .collect();
-        for &pos in &scan[..p.n] {
-            dequant[pos as usize] = 0;
-        }
         dequant.fill(0);
         let stx = p.sec_tx_type - 1;
         let bound = 1i64 << (u32::from(p.bit_depth.bits()) + 7);

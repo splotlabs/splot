@@ -150,7 +150,7 @@ fn middle_edge_state_failure_does_not_mutate_luma_plane() {
             None,
             None,
             BitDepth::Eight,
-            MiddleEdgeAvailability {
+            IntraEdgeAvailability {
                 above: true,
                 left: false,
             },

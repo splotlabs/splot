@@ -26,7 +26,7 @@ fn compose_general_intra_luma_block_trace(
     signs: &[LumaSignToken],
     context: &'static str,
 ) -> Result<Vec<BlockSymbolToken>> {
-    let modes = compose_minimal_intra_dc_block_mode_trace()?;
+    let modes = compose_minimal_intra_dc_block_mode_trace();
     let total = modes
         .len()
         .checked_add(luma.len())
@@ -76,9 +76,8 @@ fn compose_general_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>
 /// This is the encoder's first multi-coefficient (`eob > 1`) frame, exercising the scan walk
 /// and the non-EOB `coeff_base` pass. The single AC coefficient is the minimal **level 1**,
 /// whose dequantized residual is sub-visible (it rounds to ~0), so the decoded frame is flat at
-/// 128 — distinct from a skip frame only in the entropy stream, not yet the reconstruction. A
-/// visibly non-flat (cosine) AC needs a larger magnitude, whose `Level[]`-derived DC
-/// `coeff_base` context differs and is computed per AC level; that is a follow-up. The
+/// 128. [`emit_minimal_intra_visible_ac_ivf`] uses a larger AC magnitude and its
+/// corresponding DC context to produce a visibly non-flat frame. The
 /// cross-crate decode oracle (it validates the eob=2 stream and reconstructs the frame) lives in
 /// `splot-cli`.
 ///

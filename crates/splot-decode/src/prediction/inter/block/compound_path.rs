@@ -303,7 +303,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         symbols,
         compound_blend_tools,
         CompoundBlendInput {
-            skip_mode: false,
             use_optflow: compound.use_optflow,
             joint_amvd: compound.y_mode == CompoundYMode::JointNew && use_amvd,
             switchable_refinemv_on: refinemv_signalled && refinemv_switchable,
@@ -327,7 +326,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         CompoundCwpInput {
             y_mode: compound.y_mode,
             jmvd_scale_mode,
-            skip_mode: false,
             use_optflow: compound.use_optflow,
             use_refinemv,
             motion_simple: !local_warp,
@@ -1623,7 +1621,6 @@ fn read_compound_jmvd_scale_mode_syntax(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CompoundBlendInput {
-    skip_mode: bool,
     use_optflow: bool,
     joint_amvd: bool,
     switchable_refinemv_on: bool,
@@ -1658,7 +1655,6 @@ impl CompoundBlendToolConfig {
 struct CompoundCwpInput {
     y_mode: CompoundYMode,
     jmvd_scale_mode: u8,
-    skip_mode: bool,
     use_optflow: bool,
     use_refinemv: bool,
     motion_simple: bool,
@@ -1684,8 +1680,7 @@ fn read_compound_blend_syntax(
 ) -> Result<mc::CompoundBlend> {
     let average_blend = mc::CompoundBlend::average_with_implicit_mask(tools.implicit_mask);
     let thin = compound_blend_is_thin(input.n4w, input.n4h);
-    if input.skip_mode
-        || input.use_optflow
+    if input.use_optflow
         || input.joint_amvd
         || input.switchable_refinemv_on
         || !tools.masked_enabled
@@ -1793,7 +1788,6 @@ fn read_compound_cwp_syntax<T: ReconSample>(
 
 fn compound_cwp_signal_allowed(cwp_enabled: bool, input: CompoundCwpInput) -> bool {
     cwp_enabled
-        && !input.skip_mode
         && !input.use_optflow
         && !input.use_refinemv
         && input.motion_simple

@@ -154,25 +154,11 @@ impl IntrabcReconCommand {
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
-        self.reconstruct_with_installed_quantizer(
-            residual_scratch,
-            residual_blocks,
-            residual_coeffs,
-            workspace,
-        )
-    }
-
-    fn reconstruct_with_installed_quantizer<T: ReconSample>(
-        self,
-        residual_scratch: &mut InterResidualReconScratch<T>,
-        residual_blocks: &[InterResidualBlock],
-        residual_coeffs: &[i32],
-        workspace: &mut CurrentFrameWorkspace<T>,
-    ) -> Result<()> {
         let prediction = self.prediction;
         if prediction.luma.fractional {
-            mc::intrabc_predict_fractional_luma_into(
+            mc::intrabc_predict_subpel_plane_into(
                 workspace,
+                PlaneId::Y,
                 prediction.luma.target,
                 prediction.luma.scaling,
             )?;

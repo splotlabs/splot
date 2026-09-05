@@ -282,18 +282,18 @@ impl CeluState {
 #[derive(Debug, Default)]
 struct DohTuAccumulator {
     /// Per known `OrderHintBits` value, each group's first decidable output-CELU sample (its
-    /// OrderHint LSB proxy and anchor). A later output CELU is compared to its own group's
+    /// OrderHint LSB proxy). A later output CELU is compared to its own group's
     /// representative, since the LSB proxy is sound only within one bits width; unknown-bits
     /// output CELUs stay out of all groups.
-    output_order_hint_by_bits: BTreeMap<u32, (u32, ByteOffset)>,
+    output_order_hint_by_bits: BTreeMap<u32, u32>,
     /// The (representative, found, anchor) of the first within-group output-CELU OrderHint
     /// that disagreed with its bits-group's representative, if any — emitted at
     /// [`Self::resolve`], deduplicated to one emission per temporal unit. A known-but-unequal
     /// bits pair is covered by `celu/doh-order-hint-bits-mismatch` (constraint 1) instead.
     order_hint_mismatch: Option<(u32, u32, ByteOffset)>,
-    /// The first frame's OrderHintBits and its anchor offset; `None` until the first frame
+    /// The first frame's OrderHintBits; `None` until the first frame
     /// with a readable OrderHintBits.
-    first_order_hint_bits: Option<(u32, ByteOffset)>,
+    first_order_hint_bits: Option<u32>,
     /// The (value, anchor) of the first frame OrderHintBits that disagreed with
     /// [`Self::first_order_hint_bits`], if any — emitted at [`Self::resolve`].
     bits_mismatch: Option<(u32, u32, ByteOffset)>,
@@ -310,14 +310,11 @@ struct DohTuAccumulator {
 pub(crate) struct CodedExtendedLayerTracker {
     /// The open CELUs of the current temporal unit, keyed by `obu_xlayer_id`.
     celus: BTreeMap<ExtendedLayerId, CeluState>,
-    /// The order CELUs were first opened in, so the per-CELU constraint family resolves
-    /// deterministically (ascending `obu_xlayer_id` via the `BTreeMap` key order suffices,
-    /// but resolution is over the map directly).
+    /// Cross-CELU display-order agreement within this temporal unit.
     doh: DohTuAccumulator,
     /// Whether the temporal unit's recorded DOH constraint flag is active (`lcr_doh_…` in
     /// the activated global LCR, or `multistream_doh_…` in the preceding MSDO, == 1). Set
-    /// once per temporal unit by the validator before the boundary resolution; `None`
-    /// before it is known, treated as "not active".
+    /// before boundary resolution; initially inactive.
     doh_flag_active: bool,
 }
 
@@ -823,10 +820,9 @@ impl DohTuAccumulator {
         };
         match self.output_order_hint_by_bits.get(&bits) {
             None => {
-                self.output_order_hint_by_bits
-                    .insert(bits, (order_hint, offset));
+                self.output_order_hint_by_bits.insert(bits, order_hint);
             }
-            Some(&(representative, _)) => {
+            Some(&representative) => {
                 if representative != order_hint && self.order_hint_mismatch.is_none() {
                     self.order_hint_mismatch = Some((representative, order_hint, offset));
                 }
@@ -838,8 +834,8 @@ impl DohTuAccumulator {
     /// first disagreement; emission is deferred to [`Self::resolve`].
     fn note_order_hint_bits(&mut self, bits: u32, offset: ByteOffset) {
         match self.first_order_hint_bits {
-            None => self.first_order_hint_bits = Some((bits, offset)),
-            Some((first, _)) => {
+            None => self.first_order_hint_bits = Some(bits),
+            Some(first) => {
                 if first != bits && self.bits_mismatch.is_none() {
                     self.bits_mismatch = Some((first, bits, offset));
                 }

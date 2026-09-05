@@ -3,15 +3,13 @@
 
 use std::collections::BTreeSet;
 
-use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize};
 
 use super::general_intra_tests::{
-    assert_lossless_directional_luma_oracle, assert_lossless_explicit_chroma_leftedge_pair_oracle,
-    assert_lossless_explicit_chroma_oracle,
+    assert_chroma_size, assert_hash, assert_lossless_directional_luma_oracle,
+    assert_lossless_explicit_chroma_leftedge_pair_oracle, assert_lossless_explicit_chroma_oracle,
+    assert_yuv420_frame, decode_eight,
 };
-use super::*;
-use crate::{DecodeContext, DecodeRuntimeConfig};
 
 const LOSSLESS_NONDC_CHROMA_D45_LEFTEDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d45-leftedge-128x64.ivf"
@@ -136,29 +134,10 @@ fn lossless_sdp_nondc_chroma_d203follow_leftedge_frame_decodes_to_oracle() {
 
 fn assert_lossless_sdp_d113follow_oracle(fixture: &[u8], expected_len: usize, expected_hash: &str) {
     assert_eq!(fixture.len(), expected_len);
-    let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(fixture, options).expect("plan");
-    let decoded = context
-        .pool()
-        .install(|| decode_frame_from_plan(fixture, &options, &plan))
-        .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
-        panic!("fixture decoded as 10-bit");
-    };
+    let frame = decode_eight(fixture);
 
-    assert_eq!(frame.bit_depth(), BitDepth::Eight);
-    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
-    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
-    assert_eq!(
-        frame.u().unwrap().visible_size(),
-        PlaneSize::new(64, 32).unwrap()
-    );
-    assert_eq!(
-        frame.v().unwrap().visible_size(),
-        PlaneSize::new(64, 32).unwrap()
-    );
+    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
+    assert_chroma_size(&frame, 64, 32);
     assert!(
         frame
             .y()
@@ -198,10 +177,7 @@ fn assert_lossless_sdp_d113follow_oracle(fixture: &[u8], expected_len: usize, ex
     assert_eq!(frame.u().unwrap().samples()[63], 42);
     assert_eq!(frame.v().unwrap().samples()[0], 128);
     assert_eq!(frame.v().unwrap().samples()[63], 214);
-    assert_eq!(
-        DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
-        expected_hash
-    );
+    assert_hash(&frame, expected_hash);
 }
 
 fn assert_lossless_sdp_directional_follow_oracle(
@@ -212,29 +188,10 @@ fn assert_lossless_sdp_directional_follow_oracle(
     expected_hash: &str,
 ) {
     assert_eq!(fixture.len(), expected_len);
-    let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(fixture, options).expect("plan");
-    let decoded = context
-        .pool()
-        .install(|| decode_frame_from_plan(fixture, &options, &plan))
-        .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
-        panic!("fixture decoded as 10-bit");
-    };
+    let frame = decode_eight(fixture);
 
-    assert_eq!(frame.bit_depth(), BitDepth::Eight);
-    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
-    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
-    assert_eq!(
-        frame.u().unwrap().visible_size(),
-        PlaneSize::new(64, 32).unwrap()
-    );
-    assert_eq!(
-        frame.v().unwrap().visible_size(),
-        PlaneSize::new(64, 32).unwrap()
-    );
+    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
+    assert_chroma_size(&frame, 64, 32);
     assert!(
         frame
             .y()
@@ -261,10 +218,7 @@ fn assert_lossless_sdp_directional_follow_oracle(
             .iter()
             .all(|&sample| sample == expected_v)
     );
-    assert_eq!(
-        DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
-        expected_hash
-    );
+    assert_hash(&frame, expected_hash);
 }
 
 #[test]
@@ -282,17 +236,7 @@ fn lossless_nondc_chroma_v_leftedge_frame_decodes_to_oracle() {
         ),
     ] {
         assert_eq!(fixture.len(), expected_len, "{label}");
-        let options = DecodeOptions::default();
-        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
-            .expect("context");
-        let plan = context.plan_bytes(fixture, options).expect("plan");
-        let decoded = context
-            .pool()
-            .install(|| decode_frame_from_plan(fixture, &options, &plan))
-            .expect("decode");
-        let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
-            panic!("fixture decoded as 10-bit");
-        };
+        let frame = decode_eight(fixture);
 
         assert_eq!(frame.bit_depth(), BitDepth::Eight, "{label}");
         assert_eq!(frame.pixel_format(), PixelFormat::Yuv420, "{label}");
@@ -393,29 +337,10 @@ struct LosslessRampedLeftedgeOracle {
 
 fn assert_lossless_ramped_leftedge_oracle(oracle: &LosslessRampedLeftedgeOracle) {
     assert_eq!(oracle.fixture.len(), oracle.expected_len);
-    let options = DecodeOptions::default();
-    let context =
-        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context");
-    let plan = context.plan_bytes(oracle.fixture, options).expect("plan");
-    let decoded = context
-        .pool()
-        .install(|| decode_frame_from_plan(oracle.fixture, &options, &plan))
-        .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
-        panic!("fixture decoded as 10-bit");
-    };
+    let frame = decode_eight(oracle.fixture);
 
-    assert_eq!(frame.bit_depth(), BitDepth::Eight);
-    assert_eq!(frame.pixel_format(), PixelFormat::Yuv420);
-    assert_eq!(frame.y().visible_size(), PlaneSize::new(128, 64).unwrap());
-    assert_eq!(
-        frame.u().unwrap().visible_size(),
-        PlaneSize::new(64, 32).unwrap()
-    );
-    assert_eq!(
-        frame.v().unwrap().visible_size(),
-        PlaneSize::new(64, 32).unwrap()
-    );
+    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
+    assert_chroma_size(&frame, 64, 32);
     assert!(
         frame
             .y()
@@ -462,10 +387,7 @@ fn assert_lossless_ramped_leftedge_oracle(oracle: &LosslessRampedLeftedgeOracle)
         assert_eq!(v_plane.samples()[index], expected);
     }
 
-    assert_eq!(
-        DecodedFrameHashInput::new(&frame).compute_hash().to_hex(),
-        oracle.expected_hash
-    );
+    assert_hash(&frame, oracle.expected_hash);
 }
 
 #[test]

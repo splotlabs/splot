@@ -1,43 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The implicit reference-map ranking — `get_ref_frames()` (AV2 v1.0.0 § 7.7,
-//! `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-7`).
+//! Implicit reference-map ranking: AV2 v1.0.0 § 7.7 `get_ref_frames()`
+//! (`docs/spec/av2/1.0.0/07-decoding-process.md#s-7-7`).
 //!
-//! When `frame_header_info()` (§ 5.18.2) is NOT using the explicit reference map
-//! (`explicitRefFrameMap == 0`), it calls `get_ref_frames( checkRes )` (mirror :4607 with
-//! `checkRes == 0`, then mirror :4647 with `checkRes == 1`) to DERIVE `NumTotalRefs` and the
-//! `ref_frame_idx[]` array from the saved per-slot quantizer and display-order-hint state —
-//! no bits are read, but the result determines every later inter-header bit position
-//! (`CeilLog2(NumTotalRefs)` for `bru_ref`, the `use_ref_frame_mvs` / TIP gates that test
-//! `NumTotalRefs`, …). This module models that derivation as a typed, total, panic-free
-//! function so the inter parser can advance past it for the minimal single-reference frame.
-//!
-//! ## What is modeled
-//!
-//! [`get_ref_frames`] implements the full § 7.7 ranking on EXPLICIT per-slot inputs
-//! ([`GetRefFramesInput`]): the distinct-reference detection (`first_slot_with_ref`), the
-//! resolution gate (`valid_ref_frame_size`), the per-reference scoring (`Dist_Score_Lookup`,
-//! the `tDist` / `maxDisp` arms, the `refRatio` penalty), the duplicate-score rejection
-//! (`new_score_or_dist`), the over-selection drop (`get_unmapped_ref`), the score sort
-//! (`bubble_sort_ref_scores`), the `NumTotalRefs = Min(NRanked, ActiveNumRefFrames)` cut, and
-//! the trailing restricted-frame append (the `checkRes && !IsBridge` loop). It is derived
-//! from the § 7.7 spec text, never from AVM source.
-//!
-//! ## What the caller must supply vs default
-//!
-//! § 7.7 reads saved reference state the validator's § 7.23 buffer models in part
-//! ([`super::FrameReferenceStateView`] carries `RefValid` / `RefOrderHint` / dims, and — via
-//! [`super::FrameReferenceStateView::from_slots_with_base_q_idx`] — `RefBaseQIdx`) and in
-//! part does NOT yet model (`RefCounter`, `RefMLayerId`, `RefTLayerId`, the per-frame
-//! `AllowedFrames`, the `TLayerDependencyMap` / `MLayerDependencyMap`). The caller passes
-//! whatever it can prove; for the single-spatial-layer minimal inter frame the unmodeled
-//! facts are deterministic (one TU layer → all dependency maps `1`, `AllowedFrames == -1`,
-//! and the `new_score_or_dist` dedup makes a shared `RefCounter` harmless), so the result is
-//! exact. With `RefBaseQIdx` supplied (the `from_slots_with_base_q_idx` caller) the inter
-//! parser admits the multi-reference (>= 2 valid slot) case; the
-//! [`super::FrameReferenceStateView::from_slots`] caller (no `RefBaseQIdx`) still stops at an
-//! honest `UnmodeledDerivation` for > 1 valid slot.
+//! Derives the reference map without reading bits. Inputs carry distinct-frame identity,
+//! quantizers, dimensions, order hints, and layer eligibility. The inter parser supplies
+//! known state and stops when a required ranking input is unavailable.
 
 /// `NUM_REF_FRAMES` (AV2 v1.0.0 § 3): the number of reference-frame buffer slots.
 pub(crate) const NUM_REF_FRAMES: usize = 16;
@@ -376,7 +345,7 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         }
     }
 
-    bubble_sort_ref_scores(&mut ranked[..ranked_len]);
+    ranked[..ranked_len].sort_by_key(|reference| reference.score);
 
     let n_ranked = ranked_len as u32;
     let mut num_total_refs = n_ranked.min(active_num_ref_frames);
@@ -463,19 +432,6 @@ fn get_unmapped_ref(ranked: &[Ranked], q_thresh: u32) -> Option<usize> {
         });
     }
     None
-}
-
-/// `bubble_sort_ref_scores()` (AV2 v1.0.0 § 7.7): a stable ascending bubble sort by score,
-/// matching the spec's exact comparison (`ScoresScore[j] > ScoresScore[j + 1]`) so the
-/// equal-score ordering is the spec's, not a library sort's.
-fn bubble_sort_ref_scores(ranked: &mut [Ranked]) {
-    for i in (1..ranked.len()).rev() {
-        for j in 0..i {
-            if ranked[j].score > ranked[j + 1].score {
-                ranked.swap(j, j + 1);
-            }
-        }
-    }
 }
 
 /// `FloorLog2( value )` over a `u64` area product (§ 7.7 `refRatio`). `FloorLog2(0)` is `0` by

@@ -1049,17 +1049,6 @@ fn packed_and_strided_write_sources_agree_on_range_and_error() {
 }
 
 #[test]
-fn u16_range_scan_covers_vector_chunks_and_tail() {
-    let mut samples = [1023u16; 17];
-    assert!(!u16_samples_exceed(&samples, 1023));
-    for index in [0, 7, 8, 15, 16] {
-        samples[index] = 1024;
-        assert!(u16_samples_exceed(&samples, 1023));
-        samples[index] = 1023;
-    }
-}
-
-#[test]
 fn workspace_extracts_edges_and_predicts_rectangular_dc() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 10), 0).unwrap();

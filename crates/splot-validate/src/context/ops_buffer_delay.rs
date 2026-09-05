@@ -58,7 +58,7 @@ pub(super) struct BufferDelayBaseline {
 /// (`decoder-model/buffer-delay-sum-changed-across-cvs`, severity `warning`) for a
 /// change of the explicitly signalled buffer-delay sum from `previous_sum` to `sum` for
 /// the `(obu_xlayer_id, opsID, op)` triple `key`. Shared by the eager cross-boundary
-/// check (`check_ops_buffer_delay_cross_cvs`) and the deferred-error replacement path
+/// check and the deferred-error replacement path
 /// (`check_ops_buffer_delay_sums`), where it is the `on_drop` diagnostic emitted when a
 /// late CLK reveals the deferred intra-CVS error to be a genuine cross-CVS change.
 pub(super) fn ops_buffer_delay_cross_cvs_warning(
@@ -204,7 +204,17 @@ impl ValidatorContext {
                 }
             }
 
-            self.check_ops_buffer_delay_cross_cvs(obu, key, sum, scope, report);
+            if let Some(previous) = previous
+                && previous.scope != scope
+                && previous.sum != sum
+            {
+                report.push(ops_buffer_delay_cross_cvs_warning(
+                    key,
+                    previous.sum,
+                    sum,
+                    obu.offset,
+                ));
+            }
 
             self.ops_buffer_delay_sums.insert(
                 key,
@@ -217,37 +227,6 @@ impl ValidatorContext {
         }
     }
 
-    /// Emits the § 6.10.5 cross-boundary advisory
-    /// (`decoder-model/buffer-delay-sum-changed-across-cvs`, severity `warning`) when
-    /// the explicitly signalled operating-point buffer-delay sum changes for the same
-    /// `(obu_xlayer_id, opsID, op)` triple across a coded-video-sequence or § 6.10.1
-    /// OPS-reset boundary. Such a change is conforming under the per-CVS reading of the
-    /// § 6.10.5 "video sequence" scope (each CVS re-baselines), so it must stay a
-    /// warning: the scope is unspecified and this finding asserts only the broad
-    /// (whole-sub-bitstream) reading. The same-CVS, same-reset-generation case is the
-    /// error tier (`check_ops_buffer_delay_sums`) and is intentionally not re-reported
-    /// here.
-    pub(super) fn check_ops_buffer_delay_cross_cvs(
-        &self,
-        obu: &ObuEnvelope<'_>,
-        key: OpsBufferDelayKey,
-        sum: u64,
-        scope: BufferDelayScope,
-        report: &mut ValidationReport,
-    ) {
-        let Some(previous) = self.ops_buffer_delay_sums.get(&key) else {
-            return;
-        };
-        if previous.scope == scope || previous.sum == sum {
-            return;
-        }
-        report.push(ops_buffer_delay_cross_cvs_warning(
-            key,
-            previous.sum,
-            sum,
-            obu.offset,
-        ));
-    }
     pub(super) fn check_seq_buffer_delay_sum(
         &mut self,
         xlayer: ExtendedLayerId,

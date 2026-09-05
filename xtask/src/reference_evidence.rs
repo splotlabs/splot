@@ -174,12 +174,12 @@ fn validate_manifest(root: &Path, manifest: &Manifest) -> Result<()> {
     let known_features = if manifest.evidence.is_empty() {
         BTreeSet::new()
     } else {
-        load_feature_ids(root, &mut problems)
+        load_ids(root, IMPLEMENTATION_MATRIX_PATH, "feature", &mut problems)
     };
     let known_rows = if manifest.evidence.is_empty() {
         BTreeSet::new()
     } else {
-        load_decoder_support_rows(root, &mut problems)
+        load_ids(root, DECODER_SUPPORT_MATRIX_PATH, "row", &mut problems)
     };
 
     let mut evidence_ids = BTreeSet::new();
@@ -580,42 +580,27 @@ fn validate_assertion(
     }
 }
 
-fn load_feature_ids(root: &Path, problems: &mut Vec<String>) -> BTreeSet<String> {
-    let path = root.join(IMPLEMENTATION_MATRIX_PATH);
+fn load_ids(
+    root: &Path,
+    manifest: &str,
+    table: &str,
+    problems: &mut Vec<String>,
+) -> BTreeSet<String> {
+    let path = root.join(manifest);
     let Ok(text) = std::fs::read_to_string(&path) else {
-        problems.push(format!("failed to read {IMPLEMENTATION_MATRIX_PATH}"));
+        problems.push(format!("failed to read {manifest}"));
         return BTreeSet::new();
     };
     let Ok(value) = toml::from_str::<toml::Value>(&text) else {
-        problems.push(format!("failed to parse {IMPLEMENTATION_MATRIX_PATH}"));
+        problems.push(format!("failed to parse {manifest}"));
         return BTreeSet::new();
     };
     value
-        .get("feature")
+        .get(table)
         .and_then(toml::Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|feature| feature.get("id").and_then(toml::Value::as_str))
-        .map(str::to_owned)
-        .collect()
-}
-
-fn load_decoder_support_rows(root: &Path, problems: &mut Vec<String>) -> BTreeSet<String> {
-    let path = root.join(DECODER_SUPPORT_MATRIX_PATH);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        problems.push(format!("failed to read {DECODER_SUPPORT_MATRIX_PATH}"));
-        return BTreeSet::new();
-    };
-    let Ok(value) = toml::from_str::<toml::Value>(&text) else {
-        problems.push(format!("failed to parse {DECODER_SUPPORT_MATRIX_PATH}"));
-        return BTreeSet::new();
-    };
-    value
-        .get("row")
-        .and_then(toml::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|row| row.get("id").and_then(toml::Value::as_str))
         .map(str::to_owned)
         .collect()
 }

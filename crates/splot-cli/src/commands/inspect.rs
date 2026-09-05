@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 use clap::Args;
-use serde::{Serialize, Serializer, ser::SerializeSeq as _};
+use serde::{Serialize, Serializer};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::buffer_removal_timing::{
@@ -141,8 +141,8 @@ impl InspectRecord {
             padding: padding_view(obu),
             metadata_short: metadata_short_view(obu),
             metadata_group: metadata_group_view(obu),
-            frame_header_prefix: frame_header_prefix_view(&frame_cache),
-            frame_header_core: frame_header_core_view(&frame_cache),
+            frame_header_prefix: frame_cache.prefix.as_ref().map(FrameHeaderPrefixView::new),
+            frame_header_core: frame_cache.core.as_ref().map(FrameHeaderCoreView::new),
             frame_header_copy: frame_header_copy_view(obu),
             tile_group_structure: tile_group_structure_view(obu, &frame_cache),
             header: obu.header,
@@ -549,17 +549,8 @@ struct FilmGrainModelView {
     film_grain_block_size: bool,
 }
 
-/// A single shared parse of an OBU's frame-header state, so the `--json` views derive
-/// from ONE parse path instead of each re-running the activation-prefix / core parsers.
-///
-/// [`InspectRecord::new`] builds this once per OBU; the prefix, core, and tile-group
-/// structure views read its cached results. Resolving the active sequence and
-/// multi-frame header from the single cached prefix keeps every JSON view on one parse
-/// path so they cannot drift independently.
-///
-/// Every field is `None` for an OBU that carries no parseable first-header prefix; the
-/// prefix only resolves for the first tile group of the tile-group family and for the
-/// SEF / TIP / bridge frame types (the same gating the per-view parsers used).
+/// Cached AV2 § 5.18 / § 5.19 state for the prefix, core and tile-structure views.
+/// Only first tile groups and SEF / TIP / bridge frames carry an activation prefix.
 struct FrameInspectCache {
     /// The parsed `frame_header_info()` activation prefix (AV2 § 5.18.2).
     prefix: Option<FrameHeaderPrefix>,
@@ -571,10 +562,7 @@ struct FrameInspectCache {
 }
 
 impl FrameInspectCache {
-    /// Parses the OBU's frame-header state once: the activation prefix, the frame-header
-    /// core (against the sequence / multi-frame header the prefix resolves to), and — for
-    /// the first tile group of an intra-complete coded frame — the § 5.19 tile-group
-    /// structure that continues from the core's reader position.
+    /// Resolves the prefix's sequence/MFH state before parsing the core and structure.
     fn new(
         obu: &ObuEnvelope<'_>,
         sequences: &BTreeMap<u8, SequenceHeader>,
@@ -616,12 +604,8 @@ fn parse_inspect_prefix(obu: &ObuEnvelope<'_>) -> Option<FrameHeaderPrefix> {
     }
 }
 
-/// Runs the frame-header **core** parser and, on the intra-complete first-tile-group
-/// path, the § 5.19 tile-group structure from the SAME reader continuation. The shared
-/// reader is why these parse together: the structure read starts exactly where
-/// [`parse_frame_header_core`] stops. The active sequence / multi-frame header are passed
-/// in already resolved (see [`FrameInspectCache::new`]); `None` inputs leave the core at
-/// its activation-only stop.
+/// Parses the frame core and § 5.19 structure using one reader continuation.
+/// Missing sequence/MFH state leaves the core at its activation-only stop.
 fn parse_inspect_core_and_structure(
     obu: &ObuEnvelope<'_>,
     active_sequence: Option<&SequenceHeader>,
@@ -683,12 +667,6 @@ fn inspect_tile_layout(tile_info: &TileInfo) -> TileGroupLayout {
         tile_info.tile_cols_log2,
         tile_info.tile_rows_log2,
     )
-}
-
-/// Builds the prefix-only frame-header view from the cached activation prefix (AV2
-/// § 5.18.2). `None` when the OBU carried no parseable first-header prefix.
-fn frame_header_prefix_view(cache: &FrameInspectCache) -> Option<FrameHeaderPrefixView> {
-    cache.prefix.as_ref().map(FrameHeaderPrefixView::new)
 }
 
 /// Surfaces the `frame_header_copy()` region of a non-first tile group (AV2 § 5.18.1).
@@ -822,16 +800,6 @@ fn resolve_inspect_sequence<'a>(
         mfh_record?.mfh_seq_header_id
     };
     sequences.get(&seq_id.get())
-}
-
-/// Exposes the frame-header **core** parse status and known core fields from the cache.
-/// The core was parsed against the active sequence header (when one was resolvable) and,
-/// for a `cur_mfh_id > 0` frame, the in-band multi-frame header resolving that reference,
-/// so the § 5.18.4.1 default dimensions and § 5.18.7.1 segmentation arm are surfaced; an
-/// unresolved reference leaves the parse at its unsupported stop. `None` when the OBU
-/// carries no parseable frame-header core.
-fn frame_header_core_view(cache: &FrameInspectCache) -> Option<FrameHeaderCoreView> {
-    cache.core.as_ref().map(FrameHeaderCoreView::new)
 }
 
 /// Surfaces the § 5.19 `tile_group_obu()` structure after `frame_header()` for the FIRST
@@ -1369,11 +1337,7 @@ impl Serialize for CdefStrengthSetsView {
     where
         S: Serializer,
     {
-        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
-        for &set in &self.0 {
-            sequence.serialize_element(&CdefStrengthSetView::new(set))?;
-        }
-        sequence.end()
+        serializer.collect_seq(self.0.iter().copied().map(CdefStrengthSetView::new))
     }
 }
 

@@ -15,6 +15,7 @@
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
 use crate::math::round2_i32;
+use crate::wienerns_filter::validated_source_sample;
 use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
@@ -133,21 +134,15 @@ impl<'a, T: ReconSample> WienerNsChromaPaddedSource<'a, T> {
                 subsampling_y,
             });
         }
-        let (chroma_width, chroma_rows) =
-            padded_window_shape(width, height, WIENER_NS_CHROMA_TAP_RADIUS, 0, 0)?;
+        let (chroma_width, chroma_rows) = padded_window_shape(width, height, 0, 0)?;
         validate_padded_window(
             chroma_samples.len(),
             chroma_stride,
             chroma_width,
             chroma_rows,
         )?;
-        let (luma_width, luma_rows) = padded_window_shape(
-            width,
-            height,
-            WIENER_NS_CHROMA_TAP_RADIUS,
-            subsampling_x,
-            subsampling_y,
-        )?;
+        let (luma_width, luma_rows) =
+            padded_window_shape(width, height, subsampling_x, subsampling_y)?;
         validate_padded_window(luma_samples.len(), luma_stride, luma_width, luma_rows)?;
         Ok(Self {
             chroma_samples,
@@ -170,17 +165,16 @@ pub struct WienerNsChromaScratch<T> {
 fn padded_window_shape(
     width: usize,
     height: usize,
-    radius: usize,
     sub_x: u8,
     sub_y: u8,
 ) -> Result<(usize, usize)> {
     const CONTEXT: &str = "Wiener NS chroma padded window shape";
     let padded_width = width
-        .checked_add(2 * radius)
+        .checked_add(2 * WIENER_NS_CHROMA_TAP_RADIUS)
         .and_then(|padded| padded.checked_shl(u32::from(sub_x)))
         .ok_or(ReconError::ArithmeticOverflow { context: CONTEXT })?;
     let padded_rows = height
-        .checked_add(2 * radius)
+        .checked_add(2 * WIENER_NS_CHROMA_TAP_RADIUS)
         .and_then(|padded| padded.checked_shl(u32::from(sub_y)))
         .ok_or(ReconError::ArithmeticOverflow { context: CONTEXT })?;
     Ok((padded_width, padded_rows))
@@ -440,13 +434,8 @@ fn prepare_chroma_padded<T: ReconSample>(
     )?;
 
     let max_sample = params.bit_depth.max_sample();
-    let (chroma_padded_width, chroma_padded_rows) = padded_window_shape(
-        params.width,
-        params.height,
-        WIENER_NS_CHROMA_TAP_RADIUS,
-        0,
-        0,
-    )?;
+    let (chroma_padded_width, chroma_padded_rows) =
+        padded_window_shape(params.width, params.height, 0, 0)?;
     validate_padded_samples(
         source.chroma_samples,
         source.chroma_stride,
@@ -457,7 +446,6 @@ fn prepare_chroma_padded<T: ReconSample>(
     let (luma_padded_width, luma_padded_rows) = padded_window_shape(
         params.width,
         params.height,
-        WIENER_NS_CHROMA_TAP_RADIUS,
         params.subsampling_x,
         params.subsampling_y,
     )?;
@@ -490,7 +478,6 @@ fn prepare_chroma_padded<T: ReconSample>(
         ds_width,
         source.luma_samples,
         source.luma_stride,
-        context.cfl_ds_filter_index,
         params,
         &context,
     )?;
@@ -535,10 +522,10 @@ fn downsample_luma<T: ReconSample>(
     output_stride: usize,
     source: &[T],
     source_stride: usize,
-    filter_index: usize,
     params: &WienerNsChromaFilter<'_>,
     context: &ChromaFilterContext,
 ) -> Result<()> {
+    let filter_index = context.cfl_ds_filter_index;
     let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
     let scale_x = 1isize << u32::from(params.subsampling_x);
     let scale_y = 1isize << u32::from(params.subsampling_y);
@@ -1239,28 +1226,6 @@ where
     } else {
         validated_source_sample(luma_source_sample, x, y, max_sample)
     }
-}
-
-fn validated_source_sample<T, F>(
-    source_sample: &mut F,
-    x: isize,
-    y: isize,
-    max_sample: u16,
-) -> Result<u16>
-where
-    T: ReconSample,
-    F: FnMut(isize, isize) -> T,
-{
-    let value = source_sample(x, y).to_u16();
-    if value > max_sample {
-        return Err(ReconError::WienerNsFilterSourceSampleOutOfRange {
-            x,
-            y,
-            value,
-            max: max_sample,
-        });
-    }
-    Ok(value)
 }
 
 fn block_coord(base: usize, offset: usize, context: &'static str) -> Result<isize> {

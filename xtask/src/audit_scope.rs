@@ -1299,19 +1299,7 @@ fn normalize_workspace_path(root: &Path, base: &Path, path: &str) -> Result<Stri
 }
 
 fn normalize_workspace_path_if_inside(root: &Path, base: &Path, path: &str) -> Option<String> {
-    let root = normalize_path_lexically(root);
-    let path = Path::new(path);
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    };
-    let normalized = normalize_path_lexically(&joined);
-    let relative = normalized.strip_prefix(&root).ok()?;
-    if relative.as_os_str().is_empty() {
-        return None;
-    }
-    Some(path_to_string(relative))
+    normalize_workspace_path(root, base, path).ok()
 }
 
 fn repo_relative_path(root: &Path, path: &Path) -> Option<String> {
@@ -1474,6 +1462,7 @@ fn path_to_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::temp_root;
 
     #[test]
     fn classifies_future_workspace_members_without_hardcoded_crate_names() -> Result<()> {
@@ -2424,13 +2413,6 @@ module = "xtask/src/audit_scope.rs"
             feature_ids: Vec::new(),
             outcome: "success".to_owned(),
         }
-    }
-
-    fn temp_root(name: &str) -> Result<PathBuf> {
-        let root = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root)?;
-        Ok(root)
     }
 
     fn temp_git_repo(name: &str) -> Result<PathBuf> {

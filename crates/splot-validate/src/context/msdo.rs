@@ -5,22 +5,13 @@
 
 use super::*;
 
-/// The § 6.6 sub-stream PTL ceilings of the most recently observed OBU_MSDO, indexed by
-/// `sub_xlayer_id[i]` (AV2 v1.0.0 § 6.6, mirror `06-syntax-structures-semantics.md`
-/// lines 1359-1378). A sequence header activated by the i-th independent sub-stream is
-/// the header active for the extended layer whose `obu_xlayer_id` equals
-/// `sub_xlayer_id[i]`; its `seq_profile_idc` / `seq_level_idx` / `seq_tier` must not
-/// exceed the ceilings recorded here.
+/// Latest MSDO's per-layer § 6.6 PTL ceilings
+/// (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md`).
+/// A sequence activated by substream i belongs to sub_xlayer_id[i].
 #[derive(Debug, Clone)]
 pub(super) struct MsdoSubstreamMax {
-    /// `sub_xlayer_id[i] → (sub_stream_max_profile[i], sub_stream_max_level[i],
-    /// sub_stream_max_tier[i])`. § 6.6 imposes the ceiling "for each sequence header
-    /// activated by the i-th independent sub-stream", i.e. for EACH i. The spec states no
-    /// uniqueness requirement on `sub_xlayer_id` (see the proposal's roadmap-hygiene
-    /// note), so two i values may name the same extended layer; a header activated by
-    /// that layer must then satisfy both ceilings, so a duplicate `sub_xlayer_id` keeps
-    /// the most restrictive (per-dimension minimum) maximum rather than letting a
-    /// last-wins insert discard the tighter ceiling.
+    /// Per-layer ceiling. Duplicate sub_xlayer_id values retain the minimum
+    /// in each PTL dimension: § 6.6 binds every declaration and requires no uniqueness.
     pub(super) ceilings: BTreeMap<u8, SubStreamCeiling>,
     /// `multistream_doh_constraint_flag` of the recorded MSDO, for the § 6.6
     /// DOH-constraint requirement (`msdo/doh-constraint-required`).
@@ -169,29 +160,11 @@ pub(super) enum MsdoObservation {
     Changed,
 }
 
-/// § 7.3.8.2 non-RAP MSDO-identity tracker (AV2 v1.0.0 § 7.3.8.2, mirror
-/// `07-decoding-process.md` line 716): "an OBU with obu_type equal to OBU_MSDO that is
-/// not at a random access point shall be identical to the previous OBU_MSDO."
-///
-/// § 7.3.7 places the at-most-one global MSDO before the frame OBUs of its temporal
-/// unit, so whether the temporal unit is a random access point (§ 7.4.1: it contains a
-/// CLK / OLK / RAS OBU) is only known once the temporal unit ends. The tracker therefore
-/// buffers each temporal unit's MSDO payload fingerprint(s) and offset(s) plus the
-/// temporal unit's accumulated random-access-point-ness, and resolves the identity rule
-/// at temporal-unit completion ([`Self::complete_temporal_unit`]):
-///
-/// - A random-access-point temporal unit updates the reference fingerprint for each of
-///   its MSDOs **without** a comparison ("at a random access point" is exempt).
-/// - A non-random-access-point temporal unit compares each MSDO against the *previous*
-///   OBU_MSDO and emits `msdo/non-rap-not-identical` (error) on a difference, then
-///   advances the reference. With several MSDOs in one temporal unit the comparison is
-///   pairwise-previous: the second MSDO compares against the first of the same temporal
-///   unit (the spec's "the previous OBU_MSDO" is the immediately preceding one in
-///   decode order). The reference advances per MSDO regardless of the verdict, so a
-///   second identical MSDO after a flagged change is not re-flagged.
-///
-/// The full OBU payload fingerprint is used (the rule demands byte identity, "shall be
-/// identical", not merely the § 7.3.2 condition-2 key fields).
+/// § 7.3.8.2 non-RAP MSDO identity, resolved at TU completion because a later
+/// CLK/OLK/RAS can make the TU a RAP. Compare full payload fingerprints, not only
+/// CMVS key fields. At a RAP, update without comparison; elsewhere compare with
+/// the immediately previous MSDO and advance even after a mismatch.
+/// Source: docs/spec/av2/1.0.0/07-decoding-process.md § 7.3.8.2.
 #[derive(Debug, Default)]
 pub(super) struct MsdoIdentityTracker {
     /// Payload fingerprint of the most recent OBU_MSDO resolved into the reference, or
@@ -279,17 +252,9 @@ impl MsdoObserver {
 }
 
 impl ValidatorContext {
-    /// Observes an `OBU_MSDO` (AV2 § 5.6): parses the payload, records its § 7.3.2
-    /// condition-2 key fields in the stateful [`MsdoObserver`], forwards the
-    /// observation to the [`CmvsTracker`] for the temporal unit currently being
-    /// observed, records the § 6.6 sub-stream PTL ceilings for the agreement checks,
-    /// buffers the § 7.3.8.2 identity fingerprint for this temporal unit, and re-runs
-    /// the sub-stream PTL-ceiling agreement checks against every already
-    /// frame-confirmed activation (the MSDO-arrives-after-the-header arrival order). A
-    /// parse failure is silent — the structural MSDO syntax diagnostics are owned by
-    /// the stateless check (AV2-5.6-MSDO), and the CMVS tracker treats an unparsable
-    /// MSDO conservatively (no MSDO observation is recorded for the temporal unit, so
-    /// no MSDO-driven begin condition fires).
+    /// Parses MSDO, records CMVS/IOP facts, payload identity and per-layer ceilings,
+    /// then rechecks already-confirmed activations for MSDO-after-header ordering.
+    /// Malformed payloads remain silent here; stateless MSDO syntax checks report them.
     pub(super) fn observe_msdo(
         &mut self,
         obu: &ObuEnvelope<'_>,
@@ -375,41 +340,10 @@ impl ValidatorContext {
         }
     }
 
-    /// Emits the § 6.6 sub-stream PTL-ceiling errors
-    /// (`msdo/substream-profile-exceeds-max` / `-level-` / `-tier-`) for the sequence
-    /// header activated for `xlayer` against the most recently observed OBU_MSDO's
-    /// `sub_stream_max_*` ceilings (mirror `06-syntax-structures-semantics.md` lines
-    /// 1362-1378):
-    ///
-    /// > It is a requirement of bitstream conformance that seq_profile_idc /
-    /// > seq_level_idx / seq_tier is less than or equal to sub_stream_max_profile[i] /
-    /// > sub_stream_max_level[i] / sub_stream_max_tier[i] for each sequence header
-    /// > activated by the i-th independent sub-stream.
-    ///
-    /// "Activated by the i-th independent sub-stream" is resolved through
-    /// `sub_xlayer_id[i]`: the i-th sub-stream is the extended layer whose
-    /// `obu_xlayer_id` equals `sub_xlayer_id[i]`, so the header active for `xlayer` is
-    /// checked against the ceiling recorded under that key. An extended layer not named
-    /// by any `sub_xlayer_id[i]` is not an independent sub-stream of this MSDO and has
-    /// no ceiling — it is skipped.
-    ///
-    /// Gating mirrors the agreement checks exactly. The check fires only for a
-    /// *frame-confirmed* activation (`frame_confirmed_xlayers`): the § 5.18.2
-    /// `load_sequence_header` reference, never the OBU-order first-seen fallback (a
-    /// § 7.3.6 staged-but-unactivated header could be superseded, and a ceiling error
-    /// emitted against the guess could not be retracted). It is suppressed when external
-    /// HLS declares a sequence header (`external_declares_sequence_header`): an
-    /// out-of-band activated header carries unmodeled `seq_profile_idc` /
-    /// `seq_level_idx` / `seq_tier`, so the in-band-ceiling comparison would be
-    /// unreliable — the same split the OPS / § 6.4.1 agreement checks use. Locally the
-    /// ceiling comes from the in-band MSDO and the activated header is the in-band one,
-    /// so a Disabled-mode stream is fully checked.
-    ///
-    /// Idempotent across both arrival orders (activation re-confirmed by multiple
-    /// frames; MSDO re-running it against already-confirmed layers) and across repeated
-    /// activations of unchanged state via the [`SubstreamMaxFindingKey`] dedup, which
-    /// carries the CVS epoch, the active ceiling, and a value-space fingerprint so a
-    /// § 7.3.6 redefinition or a new MSDO ceiling re-emits.
+    /// Checks activated sequence PTL against the latest MSDO's § 6.6 ceilings.
+    /// Only named substreams with frame-confirmed in-band activations participate;
+    /// external sequence declarations suppress the check. Dedup includes CVS epoch,
+    /// ceiling and value-space fingerprint so changed declarations re-emit.
     pub(super) fn check_substream_max_ceilings(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -504,39 +438,11 @@ impl ValidatorContext {
         }
     }
 
-    /// Emits `msdo/doh-constraint-required` (error, § 6.6) when, with the § 7.3.2 CMVS
-    /// tracker definitively *inside* a coded multistream video sequence, the sequence
-    /// header just activated for `xlayer` has `monotonic_output_order_flag == 0` while
-    /// the recorded MSDO has `multistream_doh_constraint_flag == 0` (mirror
-    /// `06-syntax-structures-semantics.md` lines 1391-1393):
-    ///
-    /// > It is a requirement of bitstream conformance that when
-    /// > monotonic_output_order_flag is equal to 0 in any activated sequence header of
-    /// > the coded multistream video sequence, multistream_doh_constraint_flag shall be
-    /// > equal to 1.
-    ///
-    /// **CMVS membership is resolved by the deferred evaluation, not gated here.** § 6.6
-    /// scopes the requirement to a coded multistream *video* sequence, but the temporal
-    /// unit's CMVS membership is not final until its temporal unit completes: a same-id
-    /// header redefinition at the top of a temporal unit that a later MSDO-less CLK ENDS
-    /// (§ 7.3.2 end condition 2) sits *outside* the CMVS even though the committed state
-    /// is still `Inside` when the header activates. And a
-    /// same-id CLK that re-references an already-active header opens the CMVS at the CLK
-    /// without re-entering `on_sequence_activation` (the seq id is unchanged and the layer
-    /// was already frame-confirmed), so an eager activation-time check never sees the
-    /// transition. Both are handled by routing this check
-    /// through [`ValidatorContext::resolve_deferred_doh_constraint`], which runs at
-    /// temporal-unit completion against the *resolved* membership and the then-current
-    /// frame-confirmed activations — the same membership-resolution discipline the landed
-    /// § 6.4.1 monotonic-output-order agreement check uses, snapshotting the active
-    /// headers at resolution time. This method therefore performs the per-layer field
-    /// comparison only; the caller guarantees the temporal unit resolved to a definitive
-    /// CMVS `Inside`.
-    ///
-    /// Frame-confirmed activations only, suppressed under
-    /// `external_declares_sequence_header`, and idempotent across temporal units and both
-    /// arrival orders via the `(xlayer, seq_header_id, cvs_epoch)` dedup so a resolved
-    /// evaluation does not re-spam per temporal unit.
+    /// Checks § 6.6 DOH flag agreement for one frame-confirmed in-band activation.
+    /// The caller resolves CMVS membership at TU completion: eager activation-time
+    /// checks cannot account for a later MSDO-less CLK ending the CMVS or a same-id
+    /// CLK beginning one without reactivation. External sequence declarations
+    /// suppress the check; dedup is per layer/header/CVS epoch.
     pub(super) fn check_doh_constraint_required(
         &mut self,
         xlayer: ExtendedLayerId,

@@ -9,30 +9,11 @@ const LAYER_GLOBAL: u8 = 1;
 const LAYER_CURRENT: u8 = 2;
 const LAYER_VALUES: u8 = 3;
 
-/// The bitstream-derived embedded-layer association of one HDR CLL / MDCV
-/// metadata unit (AV2 § 6.16.5 / § 6.16.6 bind "metadata units **associated with
-/// an embedded layer** in a coded video sequence"; the association is derivable
-/// per § 6.16.3: "muh_layer_idc is used to signal a mode that specifies the
-/// layers to which the signaled metadata applies").
-///
-/// Two units fall under the § 6.16.5 / § 6.16.6 same-content rule exactly when
-/// their association sets intersect — share at least one embedded layer —
-/// regardless of how the targeting was encoded (a global `LAYER_GLOBAL` unit
-/// "applies to all layers" and a `LAYER_CURRENT` unit for a concrete
-/// `(obu_xlayer_id, obu_mlayer_id)` are both associated with that embedded
-/// layer). Units whose association is not derivable from the bitstream enter no
-/// comparison and no baseline (see [`derive_hdr_association`]):
-///
-/// - `LAYER_UNSPECIFIED` (0) — § 6.16.3: "The current signaling does not specify
-///   to what layers the metadata applies to. This information can potentially be
-///   indicated or determined through external means." Comparing two such units
-///   could manufacture a false positive (their real associations may differ);
-///   skipping them is a documented false negative in the conservative direction.
-/// - `LAYER_CURRENT` on a `GLOBAL_XLAYER_ID` OBU — § 6.2.2 forces
-///   `obu_mlayer_id` to 0 there, but `GLOBAL_XLAYER_ID` is not an extended
-///   layer, so the "current layer" names no concrete embedded layer
-///   (conservative skip).
-/// - Reserved `muh_layer_idc` 4..=7 — no defined association.
+/// Bitstream-derived HDR targeting (AV2 § 6.16.3, § 6.16.5–6.16.6;
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md`). Repeated content
+/// must agree when association sets intersect, regardless of targeting encoding.
+/// Unspecified/reserved targeting and LAYER_CURRENT on a global OBU have no
+/// concrete association; skipping them conservatively avoids false positives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum HdrAssociation {
     /// `LAYER_GLOBAL` on a `GLOBAL_XLAYER_ID` OBU: "The metadata applies to all
@@ -92,9 +73,8 @@ impl HdrAssociation {
     /// association names exactly, or `None` when the association covers every
     /// embedded layer of an extended layer (`XLayerWide`) or all layers
     /// (`Universal`) and so names no single concrete first coded picture. Used by
-    /// the § 6.16.5 / § 6.16.6 first-coded-picture check, which fires only when
-    /// every named embedded layer's first coded picture has already passed —
-    /// requiring an exact set of named pairs to stay zero-false-positive.
+    /// the § 6.16.5 / § 6.16.6 first-coded-picture check, which evaluates lateness
+    /// independently for each explicitly named pair.
     pub(super) fn explicit_embedded_pairs(&self) -> Option<&[(ExtendedLayerId, EmbeddedLayerId)]> {
         match self {
             Self::Universal | Self::XLayerWide(_) => None,
@@ -102,33 +82,9 @@ impl HdrAssociation {
         }
     }
 
-    /// Returns `true` when a content interpretation OBU for embedded layer
-    /// `(ci_xlayer, ci_mlayer)` is associated with the layers this metadata unit
-    /// describes — the § 6.16.7 / Annex E.4.2 "content interpretation OBU
-    /// associated with this extended layer" relation, refined by the unit's
-    /// § 6.16.3 targeting (finding 4). A `Universal` unit describes every layer;
-    /// an `XLayerWide` unit every embedded layer of its extended layer; an
-    /// explicit `Pairs` unit only the `(obu_xlayer_id, obu_mlayer_id)` pairs it
-    /// names, so a CI at an untargeted embedded layer cannot pair with it.
-    pub(super) fn associated_with_ci(
-        &self,
-        ci_xlayer: ExtendedLayerId,
-        ci_mlayer: EmbeddedLayerId,
-    ) -> bool {
-        match self {
-            Self::Universal => true,
-            Self::XLayerWide(x) => *x == ci_xlayer,
-            Self::Pairs(pairs) => pairs.contains(&(ci_xlayer, ci_mlayer)),
-        }
-    }
-
-    /// Returns `true` when this association includes the concrete embedded-layer
-    /// pair `(xlayer, mlayer)` — `Universal` includes every layer, `XLayerWide`
-    /// every embedded layer of its extended layer, and `Pairs` only the pairs it
-    /// names. Used by the § 6.16.5 / § 6.16.6 first-coded-picture check to decide
-    /// **per pair** whether a prior baseline already established that layer's
-    /// content (finding 4), so a unit targeting an established layer alongside a new
-    /// one is still checked for the new layer.
+    /// Whether this association contains an embedded-layer pair. Used for both
+    /// CI pairing (§ 6.16.7 / Annex E.4.2) and per-pair HDR establishment
+    /// (§ 6.16.5–6.16.6); an already-established different pair does not suffice.
     pub(super) fn includes_embedded_pair(
         &self,
         xlayer: ExtendedLayerId,
@@ -378,35 +334,11 @@ impl ValidatorContext {
         }
     }
 
-    /// Checks the § 6.16.5 / § 6.16.6 repeated-content rule for an HDR CLL / MDCV
-    /// metadata unit: "Any additional metadata_hdr_cll \[metadata_hdr_mdcv\]
-    /// metadata units associated with an embedded layer in a coded video sequence
-    /// shall have the same content." The unit's embedded-layer association set is
-    /// derived from its § 6.16.3 layer targeting (see [`derive_hdr_association`])
-    /// and the unit is compared against every stored baseline of the same
-    /// metadata type whose association set intersects it — sharing an embedded
-    /// layer is exactly when the rule binds the two units, independent of how
-    /// each encoded its targeting (e.g. a global `LAYER_GLOBAL` unit against a
-    /// later `LAYER_CURRENT` unit for one concrete embedded layer). Disjoint
-    /// associations are never compared — the § 6.16.5 / § 6.16.6
-    /// inheritance/override sentence shows different embedded layers may
-    /// legitimately carry different content — and units with no
-    /// bitstream-derivable association (see [`HdrAssociation`]) enter no
-    /// comparison and no baseline. The comparison is independent of § 6.16.3
-    /// cancellation (the rule has no cancel exception); the CVS scope is exact
-    /// per § 7.3.6 (a CLK boundary event prunes earlier-temporal-unit baselines
-    /// touching its extended layer, and a comparison against an earlier temporal
-    /// unit's baseline is deferred to the temporal-unit flush; see
-    /// [`CvsTracker`]).
-    ///
-    /// The other half of § 6.16.5 / § 6.16.6 — "metadata associated with an
-    /// embedded layer, when present, shall be indicated at the first coded picture
-    /// of that embedded layer in the coded video sequence" — is now enforced for
-    /// the sound subset (see [`Self::check_hdr_first_coded_picture`]): an
-    /// explicit-pair-targeted HDR CLL / MDCV unit that *first establishes* its
-    /// content after every named embedded layer's first coded picture of the coded
-    /// video sequence has already passed. `XLayerWide` / `Universal` targeting and
-    /// the color-inheritance refinement stay deferred to avoid false positives.
+    /// Checks § 6.16.5–6.16.6 repeat content across intersecting layer associations.
+    /// Cancellation does not erase the baseline; disjoint or underivable associations
+    /// are not compared. Earlier-TU comparisons defer through CvsTracker so a later
+    /// CLK can place them in different CVSs. First-picture placement is checked by
+    /// Self::check_hdr_first_coded_picture.
     pub(super) fn check_hdr_repeat_content(
         &mut self,
         obu: &ObuEnvelope<'_>,
@@ -481,41 +413,14 @@ impl ValidatorContext {
         }
     }
 
-    /// Enforces the § 6.16.5 / § 6.16.6 "shall be indicated at the first coded
-    /// picture of that embedded layer in the coded video sequence" rule for the
-    /// sound subset (mirror `06-syntax-structures-semantics.md` lines 3687-3688 /
-    /// 3736-3737).
-    ///
-    /// The § 6.16.5 / § 6.16.6 requirement binds **independently per associated
-    /// embedded layer**, so the check is applied **per named pair** and fires when
-    /// **any** `(obu_xlayer_id, obu_mlayer_id)` pair *first establishes* its content
-    /// (no prior same-type baseline already includes that pair) after that pair has
-    /// already passed its first coded picture of the coded video sequence — not only
-    /// when every pair is late (finding 6), and not gated away when a *different*
-    /// targeted pair was already established by an earlier unit (finding 4: a unit
-    /// targeting {an established layer + a NEW layer} must still fire for the new
-    /// layer). The check requires **explicit-pair** targeting (`LAYER_CURRENT` /
-    /// `LAYER_VALUES`); `XLayerWide` / `Universal` targeting names no single concrete
-    /// first coded picture, so it is skipped (zero-false-positive). A pair observed in
-    /// the pre-frame region of its layer's first coded frame unit has no first-picture
-    /// entry yet, so it is not late; a pair a prior baseline already established is an
-    /// allowed later repeat, not a fresh establishment, so it is filtered out. A
-    /// **suffix** metadata (`metadata_is_suffix == 1`) is placed by § 7.3.3 in the tail
-    /// *after* the coded frame but still inside the same coded frame unit, so when it
-    /// falls within the layer's first coded frame unit of this temporal unit (the
-    /// segmenter reports no completed unit for the pair yet) it is "indicated at the
-    /// first coded picture" and is not late — the predicate keys on coded-frame-UNIT
-    /// boundaries, not first-frame-OBU order.
-    ///
-    /// Each late pair's first picture carries the temporal-unit index at which it was
-    /// observed. A same-temporal-unit first picture is unambiguously in the current
-    /// coded video sequence (§ 7.3.6: a CVS starts at a temporal unit, never inside
-    /// one), so the finding is emitted eagerly. A first picture from an *earlier*
-    /// temporal unit may belong to a previous CVS — a CLK later in this temporal unit
-    /// would start a new CVS for its extended layer and re-establish its first-picture
-    /// state — so the finding is **deferred** to the temporal-unit flush via
-    /// [`CvsTracker::defer_or_emit`] (finding 2: stale previous-CVS first-picture state
-    /// must not fire on a new CVS's first unit).
+    /// Checks first-coded-picture placement independently for each explicitly
+    /// named pair (§ 6.16.5–6.16.6, mirror 06-syntax-structures-semantics.md).
+    /// A pair is late only if no prior same-type baseline established it and its
+    /// first coded frame unit has ended. Suffix metadata inside that first unit
+    /// is still on time. Universal/XLayerWide targeting and color inheritance
+    /// remain conservatively unchecked because no exact first-picture pair is known.
+    /// Same-TU first pictures emit eagerly; earlier-TU ones defer through CvsTracker
+    /// because a later CLK can start a new CVS at the current temporal unit.
     pub(super) fn check_hdr_first_coded_picture(
         &mut self,
         obu: &ObuEnvelope<'_>,

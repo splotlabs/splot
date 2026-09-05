@@ -26,15 +26,9 @@ use crate::partition_emission::emit_root_do_split_none;
 /// while U and V stay skipped. The V `txb_skip` keeps the neutral `ctx 0` (`EobU == 0`,
 /// since U is skipped).
 fn compose_general_intra_dc_coded_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let luma = general_intra_64x64_luma_dc_coded_tokens()?;
-    let total = modes
-        .len()
-        .checked_add(luma.len())
-        .and_then(|n| n.checked_add(3)) // do_split + U + V txb_skip
-        .ok_or(Error::BlockSymbolTraceAllocationFailed {
-            context: "general coded block trace length",
-        })?;
+    let modes = compose_minimal_intra_dc_block_mode_trace();
+    let luma = general_intra_64x64_luma_dc_coded_tokens();
+    let total = modes.len() + luma.len() + 3;
     let mut trace = Vec::new();
     trace
         .try_reserve_exact(total)

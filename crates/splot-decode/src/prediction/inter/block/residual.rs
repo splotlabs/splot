@@ -152,14 +152,8 @@ pub(crate) fn read_inter_residual(
         } else {
             frontier.b_size
         };
-        let luma_tx_size = inter_residual_tx_size(
-            work_unit,
-            symbols,
-            frontier.b_size,
-            lossless,
-            luma_tx_size_mode,
-            tile_offset,
-        )?;
+        let luma_tx_size =
+            inter_residual_tx_size(work_unit, symbols, frontier.b_size, lossless, tile_offset)?;
         let selectable_luma_tx = inter_luma_tx_records_are_selectable(
             residual_uses_selectable_tx_partitions(core),
             lossless,
@@ -465,7 +459,6 @@ fn read_inter_residual_chroma_group(
     let chroma_mi_size = chroma_ref.size();
     let chroma_ref_size = get_plane_residual_size(chroma_mi_size, 1, subsampling_x, subsampling_y)
         .map_err(|_| residual_geometry_error())?
-        .valid()
         .ok_or_else(residual_geometry_error)?;
     let tx_size = fixed_inter_residual_tx_size(chroma_ref_size.index(), lossless)?;
     let cctx_allowed = is_cctx_geometry_allowed(
@@ -486,7 +479,6 @@ fn read_inter_residual_chroma_group(
     };
     let plane_size = get_plane_residual_size(plane_source_size, 1, subsampling_x, subsampling_y)
         .map_err(|_| residual_geometry_error())?
-        .valid()
         .ok_or_else(residual_geometry_error)?;
     let block_width_chunks = (frontier
         .b_size
@@ -713,18 +705,13 @@ fn inter_residual_tx_size(
     symbols: &mut SymbolDecoder<'_>,
     block_size: BlockSize,
     lossless: bool,
-    mode: InterResidualLumaTxSizeMode,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
     if !lossless {
         return max_tx_size(block_size.index());
     }
-    match mode {
-        InterResidualLumaTxSizeMode::Inter | InterResidualLumaTxSizeMode::Intrabc => {
-            read_lossless_tx_size(work_unit, symbols, block_size, false, true, true)
-                .map_err(|error| residual_read_error(&error, SPEC_TX_SIZE, tile_offset))
-        }
-    }
+    read_lossless_tx_size(work_unit, symbols, block_size, false, true, true)
+        .map_err(|error| residual_read_error(&error, SPEC_TX_SIZE, tile_offset))
 }
 
 fn fixed_inter_residual_tx_size(block_size: usize, lossless: bool) -> Result<usize> {

@@ -8,7 +8,7 @@
 use super::cdf::context::{PartitionContextInput, RectPartitionType, SquareSplitContextInput};
 use super::partition::{AllowedPartitions, PartitionType, ReadPartitionDecisionInput};
 use super::partition_size::{
-    BlockSize, PartitionSizeError, PartitionSubsize, h_partition_midsize, partition_subsize,
+    BlockSize, PartitionSizeError, h_partition_midsize, partition_subsize,
 };
 
 const BLOCK_4X4: usize = 0;
@@ -214,7 +214,7 @@ pub(crate) fn get_plane_residual_size(
     plane: usize,
     subsampling_x: bool,
     subsampling_y: bool,
-) -> Result<PartitionSubsize, PartitionAllowedError> {
+) -> Result<Option<BlockSize>, PartitionAllowedError> {
     let subx = plane > 0 && subsampling_x;
     let suby = plane > 0 && subsampling_y;
     let raw_width_4x4 = subsampled_4x4(sub_size.num_4x4_wide()?, subx);
@@ -223,17 +223,12 @@ pub(crate) fn get_plane_residual_size(
     if (subx && raw_width_4x4 == 0 && !suby && raw_height_4x4 > 1)
         || (suby && raw_height_4x4 == 0 && !subx && raw_width_4x4 > 1)
     {
-        return Ok(PartitionSubsize::Invalid);
+        return Ok(None);
     }
 
     let width_4x4 = raw_width_4x4.max(1);
     let height_4x4 = raw_height_4x4.max(1);
-    Ok(
-        match BlockSize::from_4x4_dimensions(width_4x4, height_4x4)? {
-            Some(block_size) => PartitionSubsize::Valid(block_size),
-            None => PartitionSubsize::Invalid,
-        },
-    )
+    Ok(BlockSize::from_4x4_dimensions(width_4x4, height_4x4)?)
 }
 
 pub(crate) fn rect_type_implied_by_bsize(
@@ -308,7 +303,7 @@ pub(crate) fn is_partition_allowed(
     input: PartitionAllowedInput,
     partition: PartitionType,
 ) -> Result<bool, PartitionAllowedError> {
-    let Some(sub_size) = partition_subsize(partition, input.b_size)?.valid() else {
+    let Some(sub_size) = partition_subsize(partition, input.b_size)? else {
         return Ok(false);
     };
     if !input.frame_is_intra && input.mixed_region && sub_size.index() == BLOCK_4X4 {
@@ -342,8 +337,7 @@ pub(crate) fn is_partition_allowed(
     }
     if ((input.has_chroma && !chroma_offset && !input.tree_type.is_luma_part())
         || check_chroma(input, block_geometry)?)
-        && get_plane_residual_size(sub_size, 1, input.subsampling_x, input.subsampling_y)?
-            == PartitionSubsize::Invalid
+        && get_plane_residual_size(sub_size, 1, input.subsampling_x, input.subsampling_y)?.is_none()
     {
         return Ok(false);
     }
@@ -450,8 +444,7 @@ fn check_chroma(
     input: PartitionAllowedInput,
     block_geometry: BlockGeometry,
 ) -> Result<bool, PartitionAllowedError> {
-    if get_plane_residual_size(input.b_size, 1, input.subsampling_x, input.subsampling_y)?
-        == PartitionSubsize::Invalid
+    if get_plane_residual_size(input.b_size, 1, input.subsampling_x, input.subsampling_y)?.is_none()
     {
         return Ok(false);
     }
@@ -471,7 +464,7 @@ fn is_chroma_offset_for_partition(
     if partition == PartitionType::Horz3 {
         let middle_chroma = input.b_size.index() == BLOCK_8X32 && input.subsampling_x;
         if !middle_chroma
-            && let Some(midsize) = h_partition_midsize(input.b_size)?.valid()
+            && let Some(midsize) = h_partition_midsize(input.b_size)?
             && is_chroma_offset_for_subsize(input, midsize)?
         {
             return Ok(true);

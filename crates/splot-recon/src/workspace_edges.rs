@@ -55,7 +55,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         rect: PlaneRect,
         edge: IntraDcEdge,
     ) -> Result<Option<u32>> {
-        self.fold_dc_edge_samples(rect, edge, 1, 0_u32, |sum, _, sample| {
+        self.fold_dc_edge_samples(rect, edge, 1, 0_u32, |sum, sample| {
             sum.checked_add(u32::from(sample.to_u16()))
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: dc_sum_context(edge),
@@ -74,7 +74,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             edge,
             step,
             DcEdgeSum { sum: 0, count: 0 },
-            |sampled, _, sample| {
+            |sampled, sample| {
                 let sum = sampled.sum.checked_add(u32::from(sample.to_u16())).ok_or(
                     ReconError::ArithmeticOverflow {
                         context: dc_sampled_sum_context(edge),
@@ -114,7 +114,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 if end_x > self.storage_size.width() {
                     return Err(self.directional_angle_edge_unavailable(p_angle, edge, rect));
                 }
-                self.above_edge_samples(rect.y() - 1, rect.x(), len, len, context)
+                self.above_edge_samples(rect.y() - 1, rect.x(), len, context)
             }
             IntraDirectionalAngleEdge::Left => {
                 if rect.x() == 0 {
@@ -165,7 +165,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                     .ok_or(ReconError::ArithmeticOverflow {
                         context: "workspace middle directional angle above edge length",
                     })?;
-                self.above_edge_samples(rect.y() - 1, rect.x() - 1, len, len, context)
+                self.above_edge_samples(rect.y() - 1, rect.x() - 1, len, context)
             }
             IntraDirectionalAngleEdge::Left => {
                 let len = rect
@@ -244,7 +244,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         edge: IntraDcEdge,
         step: usize,
         mut acc: A,
-        mut fold: impl FnMut(A, usize, T) -> Result<A>,
+        mut fold: impl FnMut(A, T) -> Result<A>,
     ) -> Result<Option<A>> {
         if step == 0 {
             return Err(ReconError::ArithmeticOverflow {
@@ -262,13 +262,13 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 for edge_index in (0..len).step_by(step) {
                     let row = rect.y() + edge_index;
                     let sample = self.samples[self.sample_index(rect.x() - 1, row)?];
-                    acc = fold(acc, edge_index, sample)?;
+                    acc = fold(acc, sample)?;
                 }
             }
             IntraDcEdge::Above => {
                 let range = self.row_range(rect.y() - 1, rect.x(), len)?;
                 for edge_index in (0..len).step_by(step) {
-                    acc = fold(acc, edge_index, self.samples[range.start + edge_index])?;
+                    acc = fold(acc, self.samples[range.start + edge_index])?;
                 }
             }
         }
@@ -291,11 +291,10 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         row: usize,
         x: usize,
         len: usize,
-        reserve_len: usize,
         context: &'static str,
     ) -> Result<Vec<T>> {
         let range = self.row_range(row, x, len)?;
-        let mut samples = self.edge_scratch(reserve_len, context)?;
+        let mut samples = self.edge_scratch(len, context)?;
         // splot-copy-ok: materialize bounded above-edge scratch for intra prediction
         samples.extend_from_slice(&self.samples[range]);
         Ok(samples)

@@ -515,19 +515,35 @@ impl ValidatorContext {
             Some(LcrAssociation {
                 lcr_is_global: false,
                 lcr_id: seq_lcr_id,
-                maps: self.hls.local_lcr_embedded(xlayer, seq_lcr_id).cloned(),
+                maps: self
+                    .hls
+                    .local_lcr_embedded
+                    .get(&(xlayer, seq_lcr_id))
+                    .cloned(),
                 global_record: None,
-                ptl: self.hls.local_lcr_ptl(xlayer, seq_lcr_id).copied(),
-                rep_info: self.hls.local_lcr_rep_info(xlayer, seq_lcr_id).copied(),
+                ptl: self.hls.local_lcr_ptl.get(&(xlayer, seq_lcr_id)).copied(),
+                rep_info: self
+                    .hls
+                    .local_lcr_rep_info
+                    .get(&(xlayer, seq_lcr_id))
+                    .copied(),
             })
         } else if self.hls.global_lcr_xlayer_map(seq_lcr_id).is_some() {
             Some(LcrAssociation {
                 lcr_is_global: true,
                 lcr_id: seq_lcr_id,
-                maps: self.hls.global_lcr_embedded(seq_lcr_id, xlayer).cloned(),
+                maps: self
+                    .hls
+                    .global_lcr_embedded
+                    .get(&(seq_lcr_id, xlayer))
+                    .cloned(),
                 global_record: self.global_lcr_records.get(&seq_lcr_id).cloned(),
-                ptl: self.hls.global_lcr_ptl(seq_lcr_id, xlayer).copied(),
-                rep_info: self.hls.global_lcr_rep_info(seq_lcr_id, xlayer).copied(),
+                ptl: self.hls.global_lcr_ptl.get(&(seq_lcr_id, xlayer)).copied(),
+                rep_info: self
+                    .hls
+                    .global_lcr_rep_info
+                    .get(&(seq_lcr_id, xlayer))
+                    .copied(),
             })
         } else {
             None

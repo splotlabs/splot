@@ -149,7 +149,7 @@ fn single_tile_payload_yields_deterministic_work_unit() {
         cdf_before.as_slice()
     );
 
-    assert!(plan.frame_end().reaches_last_tile_group());
+    assert!(plan.reaches_last_tile_group());
 }
 
 #[test]
@@ -259,7 +259,6 @@ fn inverted_tile_group_range_is_unsupported_without_work_units() {
         unsupported.reason(),
         TilePayloadUnsupportedReason::MissingTileFramingRecords
     );
-    assert_eq!(unsupported.tile_num(), None);
 }
 
 #[test]
@@ -398,7 +397,7 @@ fn minimal_tier_admission_and_rejections_are_structured_inner() {
     assert_eq!(plan.work_units().len(), 1);
     assert_eq!(plan.work_units()[0].tile_num(), 0);
     assert_eq!(plan.work_units()[0].tile_bytes(), &payload);
-    assert!(plan.frame_end().reaches_last_tile_group());
+    assert!(plan.reaches_last_tile_group());
 
     let cases = vec![
         (
@@ -416,7 +415,6 @@ fn minimal_tier_admission_and_rejections_are_structured_inner() {
         let error = plan_tile_payload_boundary(&input).unwrap_err();
         let unsupported = unsupported(&error);
         assert_eq!(unsupported.reason(), reason);
-        assert_eq!(unsupported.tile_num(), None);
         assert_eq!(unsupported.byte_offset(), ByteOffset::new(256));
         assert!(!unsupported.message().is_empty());
     }

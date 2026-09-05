@@ -687,11 +687,8 @@ impl StripeSamples {
                 .then_some(())
                 .ok_or(StripeCopyError::Geometry)
         })();
-        if let Err(error) = initialized {
-            drop(staging);
-            return Err(error);
-        }
-        unsafe { staging.set_len(sample_count) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; every in-bounds spare slot is initialized without a `&mut [u16]` before this non-panicking call, errors recycle and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
+        initialized?;
+        unsafe { staging.set_len(sample_count) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; every in-bounds spare slot is initialized without a `&mut [u16]` before this non-panicking call, errors and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
         let pointer = core::ptr::NonNull::from(staging.as_mut_slice());
         Ok(Self {
             samples: pointer,
@@ -712,11 +709,8 @@ impl StripeSamples {
             .get_mut(..source.len())
             .ok_or(StripeCopyError::Geometry)
             .and_then(|destination| write_uninit_u16(destination, source));
-        if let Err(error) = initialized {
-            drop(staging);
-            return Err(error);
-        }
-        unsafe { staging.set_len(source.len()) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; the equal-length helper initialized every in-bounds spare slot without a `&mut [u16]` before this non-panicking call, errors recycle and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
+        initialized?;
+        unsafe { staging.set_len(source.len()) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; the equal-length helper initialized every in-bounds spare slot without a `&mut [u16]` before this non-panicking call, errors and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
         let pointer = core::ptr::NonNull::from(staging.as_mut_slice());
         Ok(Self {
             samples: pointer,
@@ -895,59 +889,43 @@ impl StripePlane {
             .width()
             .checked_mul(end_y - origin_y)
             .ok_or(geometry)?;
-        let mut output = match target {
-            Some(target)
-                if target.width() == source.width()
-                    && target.frame_height() == source.frame_height()
-                    && target.origin_y() == origin_y
-                    && target.len() == sample_count =>
-            {
-                if target.is_u16() {
-                    Self::from_target(target)?
-                } else {
-                    if initialization != StripeInitialization::CopyAll {
-                        return Err(geometry);
-                    }
-                    return Ok(Self {
-                        width: source.width(),
-                        frame_height: source.frame_height(),
-                        origin_y,
-                        samples: StripeSamples::direct_u8_from_frame(
-                            target, source, origin_y, end_y,
-                        )?,
-                    });
-                }
-            }
-            Some(_) => return Err(geometry),
-            None => {
-                let mut samples = take_stripe_sample_buffer(sample_count)?;
-                if source
-                    .append_u16_rows(origin_y, end_y, &mut samples)
-                    .is_none()
-                {
-                    for y in origin_y..end_y {
-                        let Some(row) = source.row(y) else {
-                            drop(samples);
-                            return Err(geometry);
-                        };
-                        if let Some(row) = T::u16_slice(row) {
-                            samples.extend_from_slice(row);
-                        } else {
-                            samples.extend(row.iter().map(|sample| sample.to_u16()));
-                        }
-                    }
-                }
-                if samples.len() != sample_count {
-                    drop(samples);
-                    return Err(geometry);
-                }
+        let mut output = if let Some(target) = target {
+            if target.is_u16() {
+                Self::from_target(target)?
+            } else {
                 return Ok(Self {
                     width: source.width(),
                     frame_height: source.frame_height(),
                     origin_y,
-                    samples: StripeSamples::owned(samples),
+                    samples: StripeSamples::direct_u8_from_frame(target, source, origin_y, end_y)?,
                 });
             }
+        } else {
+            let mut samples = take_stripe_sample_buffer(sample_count)?;
+            if source
+                .append_u16_rows(origin_y, end_y, &mut samples)
+                .is_none()
+            {
+                for y in origin_y..end_y {
+                    let Some(row) = source.row(y) else {
+                        return Err(geometry);
+                    };
+                    if let Some(row) = T::u16_slice(row) {
+                        samples.extend_from_slice(row);
+                    } else {
+                        samples.extend(row.iter().map(|sample| sample.to_u16()));
+                    }
+                }
+            }
+            if samples.len() != sample_count {
+                return Err(geometry);
+            }
+            return Ok(Self {
+                width: source.width(),
+                frame_height: source.frame_height(),
+                origin_y,
+                samples: StripeSamples::owned(samples),
+            });
         };
         if initialization == StripeInitialization::FullyOverwritten {
             return Ok(output);
@@ -1038,35 +1016,26 @@ impl StripePlane {
             .checked_mul(self.width)
             .ok_or(geometry)?;
         let source = self.samples().get(start..end).ok_or(geometry)?;
-        let mut output = match target {
-            Some(target)
-                if target.width() == self.width
-                    && target.frame_height() == self.frame_height
-                    && target.origin_y() == origin_y
-                    && target.len() == source.len() =>
-            {
-                if target.is_u16() {
-                    Self::from_target(target)?
-                } else {
-                    return Ok(Self {
-                        width: self.width,
-                        frame_height: self.frame_height,
-                        origin_y,
-                        samples: StripeSamples::direct_u8_from_u16_slice(target, source)?,
-                    });
-                }
-            }
-            Some(_) => return Err(geometry),
-            None => {
-                let mut samples = take_stripe_sample_buffer(source.len())?;
-                samples.extend_from_slice(source);
+        let mut output = if let Some(target) = target {
+            if target.is_u16() {
+                Self::from_target(target)?
+            } else {
                 return Ok(Self {
                     width: self.width,
                     frame_height: self.frame_height,
                     origin_y,
-                    samples: StripeSamples::owned(samples),
+                    samples: StripeSamples::direct_u8_from_u16_slice(target, source)?,
                 });
             }
+        } else {
+            let mut samples = take_stripe_sample_buffer(source.len())?;
+            samples.extend_from_slice(source);
+            return Ok(Self {
+                width: self.width,
+                frame_height: self.frame_height,
+                origin_y,
+                samples: StripeSamples::owned(samples),
+            });
         };
         if initialization == StripeInitialization::FullyOverwritten {
             return Ok(output);

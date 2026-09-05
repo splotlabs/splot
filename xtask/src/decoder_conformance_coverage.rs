@@ -98,7 +98,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         spec_sections: &["3", "4", "4.11"],
         spec_title: "Symbols, conventions, and descriptor primitives",
         normative_status: "mixed",
-        implementation_owner: "splot-core parser primitives and future decoder consumers",
+        implementation_owner: "splot-core parser primitives and splot-decode",
         decoder_support_rows: &[
             "decode-byte-stream-planner",
             "decode-runtime-hash-fuzz",
@@ -118,14 +118,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/malformed-source", "decode/unsupported-feature"],
-        notes: "Section 3 is symbol notation context; Section 4 descriptor behavior is normative where syntax and decode processes consume it. Core descriptor parsing exists, but full runtime decoder consumption remains incomplete.",
+        notes: "Section 3 supplies notation; Section 4 descriptors are normative where syntax and decoding processes consume them.",
     },
     CoverageRow {
         id: "obu-and-length-delimited-front-door",
         spec_sections: &["5.2", "5.3", "6.2", "6.3", "Annex B"],
         spec_title: "OBU syntax, reserved OBUs, semantics, and Annex B input",
         normative_status: "normative",
-        implementation_owner: "splot-core stream parsing and splot-decode byte planner/runtime front door",
+        implementation_owner: "splot-core stream parsing and splot-decode input",
         decoder_support_rows: &[
             "decode-byte-stream-planner",
             "decode-runtime-hash-fuzz",
@@ -159,7 +159,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "decode/resource-limit",
             "decode/unsupported-feature",
         ],
-        notes: "Input traversal and malformed-source diagnostics exist. Broad runtime decode remains intentionally unsupported outside the documented minimal hash/raw/Y4M tier.",
+        notes: "",
     },
     CoverageRow {
         id: "sequence-hls-and-global-state",
@@ -170,7 +170,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         spec_title: "Sequence, HLS, metadata, layer, operating-point, QM, and film-grain state",
         normative_status: "normative",
-        implementation_owner: "splot-core parsers, splot-validate state, and future splot-decode runtime state",
+        implementation_owner: "splot-core parsers, splot-validate, and splot-decode state",
         decoder_support_rows: &[
             "decode-stream-state",
             "minimal-decode-tier-contract",
@@ -190,14 +190,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Parser and validator coverage exists for many syntax structures, and the minimal tier hash path consumes a supported 8-bit 4:2:0 sequence subset. Broad runtime decoder consumption, external-HLS handling, metadata effects, film-grain state, and operating-point behavior are incomplete.",
+        notes: "",
     },
     CoverageRow {
         id: "frame-header-state",
         spec_sections: &["5.18", "6.17"],
         spec_title: "Frame header syntax, semantics, and runtime frame state",
         normative_status: "normative",
-        implementation_owner: "splot-core frame-header parsers and future splot-decode frame state",
+        implementation_owner: "splot-core frame-header parsers and splot-decode frame state",
         decoder_support_rows: &[
             "tile-payload-input-derivation",
             "minimal-decode-tier-contract",
@@ -217,14 +217,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature", "decode/resource-limit"],
-        notes: "Frame-header parsing and tile input derivation are partial, with the minimal tier hash path consuming its supported closed-loop-key subset. Full runtime frame state, inter paths, filters, global motion, segmentation, quantization, and film-grain config consumption are not yet runtime decoded.",
+        notes: "",
     },
     CoverageRow {
         id: "tile-group-and-payload-syntax",
         spec_sections: &["5.19", "5.20", "6.18", "6.19"],
         spec_title: "Tile group, tile payload, partition, block, mode, residual, and transform syntax",
         normative_status: "normative",
-        implementation_owner: "splot-decode tile payload boundary and future decode_tile implementation",
+        implementation_owner: "splot-decode tile parsing and traversal",
         decoder_support_rows: &[
             "tile-payload-decode",
             "tile-payload-decode-fuzz",
@@ -391,14 +391,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
             "decode/resource-limit",
             "decode/malformed-source",
         ],
-        notes: "Tile payload, partition CDF boundary subsets, and targeted minimal tile-payload frontier fuzz evidence exist. Full tile group traversal, decode_tile, partition/block syntax, residual syntax, and multi-tile handling remain unsupported.",
+        notes: "",
     },
     CoverageRow {
         id: "decode-orchestration-and-random-access",
         spec_sections: &["7.1", "7.2", "7.3", "7.4"],
         spec_title: "General decode process, frame wrapup, ordering, and random access",
         normative_status: "normative",
-        implementation_owner: "splot-decode planning and future runtime orchestration",
+        implementation_owner: "splot-decode pipeline",
         decoder_support_rows: &[
             "cli-decode-entrypoint",
             "decode-stream-state",
@@ -426,14 +426,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Broad public decode outside the minimal tier tier still defers at the runtime tier boundary, so general decoding, wrapup, output units, and random-access runtime behavior are unsupported.",
+        notes: "",
     },
     CoverageRow {
         id: "cdf-layer-reference-and-motion-setup",
         spec_sections: &["7.5", "7.6", "7.7", "7.8", "7.9", "7.10", "7.11", "7.12"],
         spec_title: "CDF update, extended layers, reference lists, motion fields, contexts, and prediction setup",
         normative_status: "normative",
-        implementation_owner: "future splot-decode CDF/reference/motion setup",
+        implementation_owner: "splot-decode CDF, reference, and motion state",
         decoder_support_rows: &[
             "symbol-decoder",
             "tile-cdf-selection-boundary",
@@ -449,14 +449,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "The current implementation has a partition CDF boundary subset and a generic reference store container, but no full runtime CDF lifecycle, layer context management, reference list construction, reference refresh semantics, motion-field estimation, or motion-vector prediction.",
+        notes: "",
     },
     CoverageRow {
         id: "prediction-process",
         spec_sections: &["7.13"],
         spec_title: "Prediction process",
         normative_status: "normative",
-        implementation_owner: "splot-recon intra subsets and future full prediction implementation",
+        implementation_owner: "splot-recon prediction primitives and splot-decode prediction",
         decoder_support_rows: &[
             "intra-dc-square-prediction",
             "intra-dc-rectangular-prediction",
@@ -497,14 +497,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &["recon_intra_prediction_bytes"],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Some scalar intra prediction and workspace primitives exist, including subsampled DC, IBP DC, H/V cardinal directional prediction, one-sided directional-angle prediction, middle directional-angle prediction, chroma workspace directional-angle handoff, luma workspace directional-angle rejection until IDIF exists, and no-panic fuzz coverage over bounded structured direct prediction and current-frame workspace cases, plus the §7.13.3.18 block inter prediction (sub-pel motion compensation) kernel (subpel_predict_block, the separable interpolation-filter convolution over the verbatim §7.13.3.18 Subpel_Filters table with the InterRound0/InterRound1 rounding and the single-reference Clip1 write, over caller-resolved §7.13.3.17 scaling and a clipped reference-border view). Luma/MRL/IDIF/full-dispatch directional angles, full edge preparation, data-driven, general directional-angle IBP, full CfL/MHCCP, palette, the rest of inter prediction (the §7.13.3.17 motion-vector scaling, compound/mask-blend/distance-weighted prediction, §7.13.3.19 block warp, intra block copy, reference-area selection), and broad runtime integration remain unsupported.",
+        notes: "",
     },
     CoverageRow {
         id: "reconstruction-transform-and-filters",
         spec_sections: &["7.14", "7.15", "7.16", "7.17", "7.18", "7.19", "7.20"],
         spec_title: "Dequantization, inverse transform, residual add, and loop filters",
         normative_status: "normative",
-        implementation_owner: "future splot-recon reconstruction and filter stages",
+        implementation_owner: "splot-recon reconstruction primitives and splot-decode filters",
         decoder_support_rows: &[
             "current-frame-workspace",
             "dequant-quantizer-lookup",
@@ -568,14 +568,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Scheduler-free splot-recon primitives exist for the workspace allocation, the §7.14.2 dequantization quantizer functions, all three §7.15.2 1D inverse transforms (kernel, Walsh-Hadamard, identity), the §7.15.4.1 2D matrix transform core (row-then-column passes), the §7.15.4 outer 2D inverse transform orchestration (the Lossless IDTX shortcut, the DPCM cumulative sum, and adjusted-size sample duplication over caller-resolved transform selections), the §7.14.4 dequantization process (per-coefficient dequant arithmetic, the non-quantization-matrix transform-block helper, and the built-in Quantizer_Matrix step-2 weighting over caller-resolved quantizers), the §7.15.4 Transform_Shift row and column down-shift lookup keyed on the original log2 shape, the §7.15.4 get_transform_1d_type row and column transform-type derivation (the Transform_1d_Type table plus the useDdt DDTX and FDDT substitution), the combined §7.15.4 transform-parameter resolve helper (InverseTransform2dOuter::resolve deriving the per-pass shifts, the per-pass types over adjusted sizes, and the IDTX flag from one transform-block fact source), the §7.15.4 DPCM cumulative-sum direction selection (dpcm_direction mapping caller-resolved useDpcm and whether the mode is V_PRED to None, Vertical, or Horizontal), the §5.20.7.30 get_scan coefficient scan order (the anti-diagonal 2D scan and the row and column raster scans) with its §8.3.2 get_tx_class PlaneTxType-to-class mapping, the §7.14.3 residual-addition step, the §7.14.4 to §7.15.4 to §7.14.3 transform-block reconstruction chain composition (reconstruct_transform_block_residual, the residual sink that turns decoded Quant into reconstructed samples over caller-resolved dequant and transform params), and the §7.15.3 secondary inverse transform (secondary_inverse_transform, the §9.7 IST matrix transform over caller-resolved kernel and transpose), the §7.17.7.1 deblocking sample filter (deblock_sample_filter, the per-edge deltaM2 ramp over a caller-supplied sample line and caller-resolved widths and weights), the §7.17.3 deblocking filter-maximum-width derivation (deblock_filter_max_width), the §7.17.5 deblocking adaptive filter strength (deblock_adaptive_filter_strength and deblock_side_threshold_index, the qThr and side thresholds from the filter level), the §7.17.7.2 deblocking filter-choice process (deblock_filter_choice, the chosen filter width from the two perpendicular edge sample lines, the estimated second derivatives, and the qThr and sideThr threshold cascade over the caller-resolved Q_First table), the §7.20.2 loop-restoration source-sample selector (loop_restoration_source_sample, the allowed-extent clipping, current-stripe source choice, and two-line out-of-stripe clamp over caller-resolved luma bounds), the §7.20.2 immutable source-frame read helper (loop_restoration_source_sample_value, selecting CurrFrame or CdefFrame and reading the selected current-plane coded-storage sample through direct PlaneRef stride offsets with plane-view geometry, chroma-subsampling, and bit-depth/range validation), the §7.20.3 luma non-separable Wiener filter primitive (wiener_ns_filter_luma_block, the Wiener_Ns_Config_Y tap accumulation over caller-resolved source samples, subclasses, coefficients, and bit depth), the §7.20.3 chroma non-separable Wiener filter primitive (wiener_ns_filter_chroma_block, including chroma taps and caller-resolved luma-tap contribution), and the §7.20.4 pixel-classified Wiener skip-filter classification primitive (pc_wiener_classify, the 6x6 feature window, LrTxSkip normalization, quantizer contribution, lutInput construction, and Pc_Wiener_Lut_To_Class lookup over caller-resolved source samples and tx-skip values). The §7.14.4 useQm/UserQm gating and shift derivation, the §5.20.7.29 compute_tx_type transform-type computation that produces PlaneTxType, the coefficient entropy decode that produces Quant, the rest of §7.17 deblocking (the §7.17.6 filter-level selection and the §7.17.1/§7.17.2 edge traversal), CDEF, CCSO, full loop restoration traversal/filter orchestration, runtime FilterClass/SubclassLookup storage, and GDF are not implemented, and none of the primitives are wired as runtime decode stages.",
+        notes: "",
     },
     CoverageRow {
         id: "output-film-grain-and-reference-update",
         spec_sections: &["7.21", "7.22", "7.23"],
         spec_title: "Output process, film grain, motion-field storage, and reference-frame update",
         normative_status: "normative",
-        implementation_owner: "splot-recon output containers and future splot-decode frame lifecycle",
+        implementation_owner: "splot-recon output containers and splot-decode frame lifecycle",
         decoder_support_rows: &[
             "decoded-frame-plane-runtime-types",
             "recon-frame-plane-types-fuzz",
@@ -614,14 +614,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Frame/hash/raw/Y4M/reference primitives exist for caller-supplied frames, with decoded-frame/plane type validators, hash input, and Y4M serialization fuzzed from bounded structured frames, and the documented minimal tier tier emits hash/raw/Y4M output for one supported fixture shape. The runtime hash/raw/Y4M byte APIs are fuzzed with bounded raw bytes, minimal fixture mutations, and in-memory writers. Broad runtime output ordering, post-film-grain output, show-existing/flush behavior, motion-field storage, and AV2 reference refresh semantics remain unsupported. Current raw AVM/dav2d MD5 metadata is background evidence, not runtime coverage proof.",
+        notes: "Raw AVM/dav2d MD5 metadata records reference agreement; runtime output coverage requires the linked decoder tests.",
     },
     CoverageRow {
         id: "symbol-and-cdf-process",
         spec_sections: &["8.1", "8.2", "8.3", "9.3"],
         spec_title: "Symbol parsing and CDF selection/lifecycle",
         normative_status: "normative",
-        implementation_owner: "splot-core symbol primitives and future splot-decode CDF lifecycle",
+        implementation_owner: "splot-core symbol primitives and splot-decode CDF lifecycle",
         decoder_support_rows: &[
             "symbol-decoder",
             "symbol-decoder-fuzz",
@@ -718,14 +718,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &["symbol_decoder_bytes", "decode_runtime_hash_bytes"],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Generic f(n)/symbol foundations, a public §8.2 symbol-decoder fuzz target, a partition/block CDF subset, and supported-subset Tile/Saved/Frame lifecycle behavior exist. Full Section 8.3 CDF selection/lifecycle and Section 9.3 default CDF banks are incomplete.",
+        notes: "",
     },
     CoverageRow {
         id: "decode-lookup-tables",
         spec_sections: &["9.2", "9.4", "9.5", "9.6", "9.7", "9.8"],
         spec_title: "Decode-relevant normative lookup tables",
         normative_status: "normative",
-        implementation_owner: "splot-core generated tables and future decode consumers",
+        implementation_owner: "splot-core and splot-tables generated tables",
         decoder_support_rows: &[
             "symbol-decoder",
             "minimal-decode-tier-contract",
@@ -743,7 +743,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Generated table plumbing exists for committed table sources, including the TxSize enum-valued `Adjusted_Tx_Size`, `Tx_Size_Sqr`, and `Tx_Size_Sqr_Up` conversion tables plus the TxType enum-valued `Mode_To_Txfm` conversion table. Many transform, quant-matrix, warp/filter, and restoration consumers are still not wired into runtime decode.",
+        notes: "Generated table values come from the committed spec attachment; table generation alone does not prove runtime coverage.",
     },
     CoverageRow {
         id: "profiles-levels-and-decoder-conformance",
@@ -756,7 +756,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         ],
         spec_title: "Profiles, levels, tiers, and decoder conformance",
         normative_status: "normative",
-        implementation_owner: "future splot-decode profile/level/tier conformance checks",
+        implementation_owner: "splot-decode profile, level, and tier conformance",
         decoder_support_rows: &["minimal-decode-tier-contract", "decode-limits-budget"],
         feature_ids: &[
             "DOC-MINIMAL-DECODE-TIER-CONTRACT",
@@ -767,14 +767,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/resource-limit", "decode/unsupported-feature"],
-        notes: "Minimal-tier documentation and local resource policy exist. Full Annex A profile, level, tier, and decoder conformance checks remain incomplete and must stay distinct from splot resource limits.",
+        notes: "Spec profile, level, and tier conformance is distinct from splot resource limits.",
     },
     CoverageRow {
         id: "decoder-model-constraints",
         spec_sections: &["Annex E"],
         spec_title: "Decoder model timing, buffer, and presentation constraints",
         normative_status: "normative",
-        implementation_owner: "future splot-decode decoder model checks",
+        implementation_owner: "splot-decode decoder model",
         decoder_support_rows: &["minimal-decode-tier-contract"],
         feature_ids: &["DOC-MINIMAL-DECODE-TIER-CONTRACT"],
         status: "unsupported",
@@ -782,14 +782,14 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &["decode/unsupported-feature"],
-        notes: "Annex E model state, timing, buffer, presentation, deadline, and level-imposed runtime constraints are not implemented.",
+        notes: "",
     },
     CoverageRow {
         id: "informative-annexes",
         spec_sections: &["Annex C", "Annex D", "Annex F", "Annex G"],
         spec_title: "Informative annexes and examples",
         normative_status: "informative",
-        implementation_owner: "documentation only unless a future normative dependency is identified",
+        implementation_owner: "documentation",
         decoder_support_rows: &[],
         feature_ids: &[],
         status: "out-of-scope-nonnormative",
@@ -797,7 +797,7 @@ const COVERAGE_ROWS: &[CoverageRow] = &[
         fuzz_targets: &[],
         local_reference_evidence: &[],
         diagnostics: &[],
-        notes: "These annexes are marked informative in the spec mirror and are not required for the full decoder conformance claim unless a future normative section explicitly depends on them.",
+        notes: "These annexes are informative in the spec mirror. A normative dependency would require separate coverage.",
     },
 ];
 
@@ -1168,6 +1168,7 @@ fn md_escape(cell: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::util::temp_root;
 
     #[test]
     fn spec_index_parser_accepts_sections_and_annexes() {
@@ -1379,16 +1380,5 @@ mod tests {
 
     fn local_reference_evidence() -> String {
         "manifest_version = 1\nlast_reviewed = \"2026-06-15\"\n".to_owned()
-    }
-
-    fn temp_root(name: &str) -> Result<PathBuf> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time is after Unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("{name}-{}-{nanos}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root)?;
-        Ok(root)
     }
 }

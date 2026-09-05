@@ -286,22 +286,12 @@ pub(super) fn horizontal_intermediate<T: ReconSample>(
         }
         row_out[c..c + 4].copy_from_slice(&round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array()); // splot-copy-ok: publish clipped-edge SIMD convolution lanes
     }
-    for (offset, output) in row_out[vector_end4..interior.end].iter_mut().enumerate() {
+    for (offset, output) in row_out[vector_end4..].iter_mut().enumerate() {
         *output = horizontal_scalar(
             reference,
             params,
             ref_row,
             vector_end4 + offset,
-            taps,
-            tap_start,
-        );
-    }
-    for (offset, output) in row_out[interior.end..].iter_mut().enumerate() {
-        *output = horizontal_scalar(
-            reference,
-            params,
-            ref_row,
-            interior.end + offset,
             taps,
             tap_start,
         );

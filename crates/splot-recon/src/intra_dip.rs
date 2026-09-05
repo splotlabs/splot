@@ -111,7 +111,6 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
     validate_dip_mode(dip_mode)?;
-    validate_dip_size(size)?;
     validate_dip_edges(bit_depth, size, edges)?;
     validate_output_shape(
         size,
@@ -141,17 +140,6 @@ fn validate_dip_mode(dip_mode: usize) -> Result<()> {
         Err(ReconError::UnsupportedIntraDipMode {
             mode: dip_mode,
             max: DIP_MODE_COUNT - 1,
-        })
-    }
-}
-
-fn validate_dip_size(size: IntraRectBlockSize) -> Result<()> {
-    if size.width() >= 4 && size.height() >= 4 {
-        Ok(())
-    } else {
-        Err(ReconError::UnsupportedIntraDipBlockSize {
-            width: size.width(),
-            height: size.height(),
         })
     }
 }

@@ -23,8 +23,8 @@ use splot_core::types::ObuType;
 
 use super::cdf::{FrameCdfSubset, TileCdfPolicyInput};
 use super::{
-    DecodeTilePayloadPlan, TileCoeffFrameFacts, TileCoeffFrameFactsInput, TileFrameFacts,
-    TileGridFacts, TilePayloadBoundaryError, TilePayloadBoundaryInput, plan_tile_payload_boundary,
+    DecodeTilePayloadPlan, TileCoeffFrameFacts, TileFrameFacts, TileGridFacts,
+    TilePayloadBoundaryError, TilePayloadBoundaryInput, plan_tile_payload_boundary,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
@@ -164,7 +164,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
                 fact: "lossless_info",
             })?;
         let reduced_tx_set = path.reduced_tx_set(core)?;
-        let coeff_frame_facts = TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
+        let coeff_frame_facts = TileCoeffFrameFacts {
             enable_fsc: coeff.enable_fsc,
             enable_intra_ist: coeff.enable_intra_ist,
             enable_inter_ist: coeff.enable_inter_ist,
@@ -176,7 +176,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             allow_tcq: lossless.allow_tcq,
             allow_parity_hiding: lossless.allow_parity_hiding,
             base_q_idx: quant.base_q_idx,
-        });
+        };
 
         Ok(Self {
             obu_type: core.obu_type,

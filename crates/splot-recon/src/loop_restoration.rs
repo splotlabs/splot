@@ -405,27 +405,12 @@ mod tests {
         .unwrap()
     }
 
-    fn monochrome_frame(
+    fn monochrome_frame<T: ReconSample>(
         frame_info: DecodedFrameInfo,
-        y: &[u8],
+        y: &[T],
         stride_samples: usize,
         visible_rect: PlaneRect,
-    ) -> FrameRef<'_, u8> {
-        FrameRef::new(
-            frame_info,
-            crate::PlaneRef::new(y, stride_samples, visible_rect).unwrap(),
-            None,
-            None,
-        )
-        .unwrap()
-    }
-
-    fn monochrome_frame_u16(
-        frame_info: DecodedFrameInfo,
-        y: &[u16],
-        stride_samples: usize,
-        visible_rect: PlaneRect,
-    ) -> FrameRef<'_, u16> {
+    ) -> FrameRef<'_, T> {
         FrameRef::new(
             frame_info,
             crate::PlaneRef::new(y, stride_samples, visible_rect).unwrap(),
@@ -640,8 +625,8 @@ mod tests {
             53, 60, 61, 62, 63, 70, 71, 72, 73,
         ];
         let cdef_y = [200_u8; 32];
-        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(0, 0, 4, 8));
-        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(0, 0, 4, 8));
+        let curr = monochrome_frame::<u8>(frame_info, &curr_y, 4, rect(0, 0, 4, 8));
+        let cdef = monochrome_frame::<u8>(frame_info, &cdef_y, 4, rect(0, 0, 4, 8));
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: 0,
             luma_end_x: 3,
@@ -712,8 +697,8 @@ mod tests {
         let frame_info = info(PixelFormat::Monochrome, size(4, 4), rect(1, 1, 2, 2));
         let curr_y = [0_u8; 16];
         let cdef_y = [0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33];
-        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(1, 1, 2, 2));
-        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(1, 1, 2, 2));
+        let curr = monochrome_frame::<u8>(frame_info, &curr_y, 4, rect(1, 1, 2, 2));
+        let cdef = monochrome_frame::<u8>(frame_info, &cdef_y, 4, rect(1, 1, 2, 2));
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: 0,
             luma_end_x: 3,
@@ -754,8 +739,8 @@ mod tests {
         .unwrap();
         let curr_y = [10_u8; 16];
         let cdef_y = [20_u8; 16];
-        let curr = monochrome_frame(curr_info, &curr_y, 4, rect(0, 0, 4, 4));
-        let cdef = monochrome_frame(cdef_info, &cdef_y, 4, rect(0, 0, 4, 4));
+        let curr = monochrome_frame::<u8>(curr_info, &curr_y, 4, rect(0, 0, 4, 4));
+        let cdef = monochrome_frame::<u8>(cdef_info, &cdef_y, 4, rect(0, 0, 4, 4));
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: 0,
             luma_end_x: 3,
@@ -783,8 +768,8 @@ mod tests {
         let frame_info = info(PixelFormat::Monochrome, size(4, 4), rect(0, 0, 2, 2));
         let curr_y = [10_u8; 16];
         let cdef_y = [20_u8; 16];
-        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(0, 0, 2, 2));
-        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(1, 1, 2, 2));
+        let curr = monochrome_frame::<u8>(frame_info, &curr_y, 4, rect(0, 0, 2, 2));
+        let cdef = monochrome_frame::<u8>(frame_info, &cdef_y, 4, rect(1, 1, 2, 2));
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: 0,
             luma_end_x: 1,
@@ -812,8 +797,8 @@ mod tests {
         let frame_info = info(PixelFormat::Monochrome, size(4, 4), rect(0, 0, 4, 4));
         let curr_y = [10_u8; 16];
         let cdef_y = [20_u8; 16];
-        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
-        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
+        let curr = monochrome_frame::<u8>(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
+        let cdef = monochrome_frame::<u8>(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: 0,
             luma_end_x: 3,
@@ -850,8 +835,8 @@ mod tests {
         );
         let curr_y = [10_u8; 16];
         let cdef_y = [20_u8; 16];
-        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
-        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
+        let curr = monochrome_frame::<u8>(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
+        let cdef = monochrome_frame::<u8>(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: 0,
             luma_end_x: 3,
@@ -886,8 +871,8 @@ mod tests {
         let curr_y = [0_u16; 16];
         let mut cdef_y = [0_u16; 16];
         cdef_y[0] = 1024;
-        let curr = monochrome_frame_u16(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
-        let cdef = monochrome_frame_u16(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
+        let curr = monochrome_frame::<u16>(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
+        let cdef = monochrome_frame::<u16>(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: 0,
             luma_end_x: 3,
@@ -955,8 +940,8 @@ mod tests {
         let frame_info = info(PixelFormat::Monochrome, size(4, 4), rect(0, 0, 4, 4));
         let curr_y = [10_u8; 16];
         let cdef_y = [20_u8; 16];
-        let curr = monochrome_frame(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
-        let cdef = monochrome_frame(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
+        let curr = monochrome_frame::<u8>(frame_info, &curr_y, 4, rect(0, 0, 4, 4));
+        let cdef = monochrome_frame::<u8>(frame_info, &cdef_y, 4, rect(0, 0, 4, 4));
         let bounds = LoopRestorationSourceBounds {
             luma_start_x: 0,
             luma_end_x: 3,

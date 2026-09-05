@@ -327,17 +327,6 @@ fn per_block_gdf_fixture_matches_reference_output_hash() {
 }
 
 #[test]
-fn per_block_gdf_fixture_eof_fails_closed() {
-    let truncated = &GDF_PER_BLOCK_FIXTURE[..GDF_PER_BLOCK_FIXTURE.len() - 1];
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(truncated, DecodeOptions::default())
-        .unwrap_err();
-
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
-}
-
-#[test]
 fn multi_tile_gdf_fixture_matches_reference_output_hash() {
     for threads in [1usize, 2, 4, 10] {
         let report = context(ThreadCount::from(threads))
@@ -350,17 +339,6 @@ fn multi_tile_gdf_fixture_matches_reference_output_hash() {
             GDF_MULTI_TILE_EXPECTED_DIGEST
         );
     }
-}
-
-#[test]
-fn multi_tile_gdf_fixture_eof_fails_closed() {
-    let truncated = &GDF_MULTI_TILE_FIXTURE[..GDF_MULTI_TILE_FIXTURE.len() - 1];
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(truncated, DecodeOptions::default())
-        .unwrap_err();
-
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
 
 #[test]
@@ -378,17 +356,6 @@ fn inter_444_fixture_matches_reference_output_hash() {
         );
         assert_eq!(frame.hashes[0].digest_hex, INTER_444_EXPECTED_DIGEST);
     }
-}
-
-#[test]
-fn inter_444_fixture_eof_fails_closed() {
-    let truncated = &INTER_444_FIXTURE[..INTER_444_FIXTURE.len() - 1];
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(truncated, DecodeOptions::default())
-        .unwrap_err();
-
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
 
 #[test]
@@ -424,17 +391,6 @@ fn reference_scaling_fixture_matches_reference_output_hashes() {
 }
 
 #[test]
-fn reference_scaling_fixture_eof_fails_closed() {
-    let truncated = &REFERENCE_SCALING_FIXTURE[..REFERENCE_SCALING_FIXTURE.len() - 1];
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(truncated, DecodeOptions::default())
-        .unwrap_err();
-
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
-}
-
-#[test]
 fn directional_tx_partition_fixture_matches_reference_output_hash() {
     let report = context(ThreadCount::from(1usize))
         .decode_hash_report_bytes(DIRECTIONAL_TX_PARTITION_FIXTURE, DecodeOptions::default())
@@ -445,17 +401,6 @@ fn directional_tx_partition_fixture_matches_reference_output_hash() {
         report.frames[0].hashes[0].digest_hex,
         DIRECTIONAL_TX_PARTITION_EXPECTED_DIGEST
     );
-}
-
-#[test]
-fn directional_tx_partition_fixture_eof_fails_closed() {
-    let truncated = &DIRECTIONAL_TX_PARTITION_FIXTURE[..DIRECTIONAL_TX_PARTITION_FIXTURE.len() - 1];
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(truncated, DecodeOptions::default())
-        .unwrap_err();
-
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
 
 #[test]
@@ -533,17 +478,6 @@ fn rect_chroma_chunks_444_fixture_matches_reference_output_hash() {
         frame.hashes[0].digest_hex,
         RECT_CHROMA_CHUNKS_444_EXPECTED_DIGEST
     );
-}
-
-#[test]
-fn rect_chroma_chunks_444_fixture_eof_fails_closed() {
-    let truncated = &RECT_CHROMA_CHUNKS_444_FIXTURE[..RECT_CHROMA_CHUNKS_444_FIXTURE.len() - 1];
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(truncated, DecodeOptions::default())
-        .unwrap_err();
-
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
 
 #[test]
@@ -889,4 +823,31 @@ fn decoded_hash_is_deterministic_across_thread_policies() {
     assert_eq!(digest(ThreadCount::from(1usize)), EXPECTED_DIGEST);
     assert_eq!(digest(ThreadCount::Auto), EXPECTED_DIGEST);
     assert_eq!(digest(ThreadCount::from(2usize)), EXPECTED_DIGEST);
+}
+
+#[test]
+fn truncated_fixtures_fail_closed() {
+    for (name, fixture) in [
+        ("per-block GDF", GDF_PER_BLOCK_FIXTURE),
+        ("multi-tile GDF", GDF_MULTI_TILE_FIXTURE),
+        ("inter 4:4:4", INTER_444_FIXTURE),
+        ("reference scaling", REFERENCE_SCALING_FIXTURE),
+        (
+            "directional transform partition",
+            DIRECTIONAL_TX_PARTITION_FIXTURE,
+        ),
+        (
+            "rectangular chroma chunks 4:4:4",
+            RECT_CHROMA_CHUNKS_444_FIXTURE,
+        ),
+    ] {
+        let truncated = &fixture[..fixture.len() - 1];
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(truncated, DecodeOptions::default())
+            .unwrap_err();
+        assert!(
+            matches!(error, DecodeError::MalformedSource { .. }),
+            "{name}: {error}"
+        );
+    }
 }

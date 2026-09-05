@@ -500,19 +500,16 @@ impl PlaneModel {
 }
 
 struct FuzzInput<'a> {
-    data: &'a [u8],
-    offset: usize,
+    bytes: std::slice::Iter<'a, u8>,
 }
 
 impl<'a> FuzzInput<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { data, offset: 0 }
+        Self { bytes: data.iter() }
     }
 
     fn byte(&mut self) -> u8 {
-        let byte = self.data.get(self.offset).copied().unwrap_or(0);
-        self.offset = self.offset.saturating_add(1);
-        byte
+        self.bytes.next().copied().unwrap_or(0)
     }
 
     fn word(&mut self) -> u16 {

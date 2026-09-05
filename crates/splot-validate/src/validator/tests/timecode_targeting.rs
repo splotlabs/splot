@@ -50,10 +50,8 @@ pub(in crate::validator::tests) fn global_timecode_group_layer_values(
 #[test]
 fn metadata_timecode_n_frames_targeting_excludes_untargeted_layer_ci() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -72,10 +70,8 @@ fn metadata_timecode_n_frames_targeting_excludes_untargeted_layer_ci() {
 #[test]
 fn metadata_timecode_n_frames_targeting_pairs_with_targeted_layer_ci() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -94,10 +90,8 @@ fn metadata_timecode_n_frames_targeting_pairs_with_targeted_layer_ci() {
 #[test]
 fn metadata_timecode_n_frames_olk_reinit_drops_deferred_pairing() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -119,10 +113,8 @@ fn metadata_timecode_n_frames_olk_reinit_drops_deferred_pairing() {
 #[test]
 fn metadata_timecode_n_frames_rap_resent_identical_ci_repairs() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -149,10 +141,8 @@ fn metadata_timecode_n_frames_rap_resent_identical_ci_repairs() {
 #[test]
 fn metadata_timecode_n_frames_rap_resent_identical_ci_before_timecode_reports_once() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -194,10 +184,8 @@ pub(in crate::validator::tests) fn n_frames_errors_for_xlayer(
 #[test]
 fn metadata_timecode_n_frames_rap_eager_pairing_for_one_layer_does_not_suppress_other() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -236,10 +224,8 @@ fn metadata_timecode_n_frames_rap_eager_pairing_for_one_layer_does_not_suppress_
 #[test]
 fn metadata_timecode_n_frames_double_clk_same_layer_same_tu_repairs_once() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -264,10 +250,8 @@ fn metadata_timecode_n_frames_double_clk_same_layer_same_tu_repairs_once() {
 #[test]
 fn metadata_timecode_n_frames_olk_rap_resent_identical_ci_repairs() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -294,10 +278,8 @@ fn metadata_timecode_n_frames_olk_rap_resent_identical_ci_repairs() {
 #[test]
 fn metadata_timecode_n_frames_rap_resent_different_ci_reports_once() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let changed_rate = CiTiming {
         display_tick: 1000,
@@ -328,10 +310,8 @@ fn metadata_timecode_n_frames_rap_resent_different_ci_reports_once() {
 #[test]
 fn metadata_timecode_n_frames_identical_ci_repeat_no_rap_reports_once() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -371,10 +351,8 @@ fn scan_type_identical_ci_repeat_no_rap_reports_once() {
 #[test]
 fn metadata_timecode_n_frames_global_layer_values_survives_other_layer_clk() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
@@ -506,10 +484,8 @@ fn metadata_timecode_inference_keyed_per_targeted_embedded_layer() {
 #[test]
 fn metadata_timecode_n_frames_unspecified_targeting_compares_nothing() {
     let low_rate = CiTiming {
-        display_tick: 1000,
         time_scale: 1000, // maxPicPerSecond = ceil(1000 / 2000) = 1
-        equal_picture_interval: true,
-        num_ticks_minus_1: 1,
+        ..BASE_TIMING
     };
     let mut data = temporal_delimiter_obu();
     data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));

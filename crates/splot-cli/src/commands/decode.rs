@@ -798,16 +798,12 @@ fn create_temp_file(
 }
 
 fn temp_file_name(artifact: OutputArtifact, nonce: usize, attempt: usize) -> OsString {
-    let mut name = OsString::from(OsStr::new(".splot-decode-"));
-    name.push(artifact.temp_label);
-    name.push("-");
-    name.push(std::process::id().to_string());
-    name.push("-");
-    name.push(nonce.to_string());
-    name.push("-");
-    name.push(attempt.to_string());
-    name.push(".tmp");
-    name
+    format!(
+        ".splot-decode-{}-{}-{nonce}-{attempt}.tmp",
+        artifact.temp_label,
+        std::process::id()
+    )
+    .into()
 }
 
 fn cleanup_temp_file(path: &Path, artifact: OutputArtifact, error: DecodeError) -> DecodeError {

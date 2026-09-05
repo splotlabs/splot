@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#![allow(clippy::expect_used)]
+
 use super::*;
 
 #[test]
@@ -9,10 +11,7 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
     let stride = 16 + GDF_READ_RADIUS * 2;
     let source_len = stride * (1 + GDF_READ_RADIUS * 2);
     let tap_offsets_result = gdf_tap_offsets(stride);
-    assert!(tap_offsets_result.is_ok());
-    let Ok(tap_offsets) = tap_offsets_result else {
-        return;
-    };
+    let tap_offsets = tap_offsets_result.expect("valid tap offsets result");
 
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         let max_sample = bit_depth.max_sample();
@@ -60,10 +59,7 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
                         &block,
                         source_origin,
                     );
-                    assert!(wide_result.is_ok());
-                    let Ok([actual]) = wide_result else {
-                        return;
-                    };
+                    let [actual] = wide_result.expect("valid wide result");
                     let expected = core::array::from_fn(|col| {
                         gdf_sample(
                             &base_luma,
@@ -93,10 +89,7 @@ fn mixed_width_eight_matches_scalar_samples_for_all_tables() {
     let stride = 8 + GDF_READ_RADIUS * 2;
     let source_len = stride * (1 + GDF_READ_RADIUS * 2);
     let tap_offsets_result = gdf_tap_offsets(stride);
-    assert!(tap_offsets_result.is_ok());
-    let Ok(tap_offsets) = tap_offsets_result else {
-        return;
-    };
+    let tap_offsets = tap_offsets_result.expect("valid tap offsets result");
 
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         let max_sample = bit_depth.max_sample();
@@ -143,10 +136,7 @@ fn mixed_width_eight_matches_scalar_samples_for_all_tables() {
                     &block,
                     source_origin,
                 );
-                assert!(wide_result.is_ok());
-                let Ok([actual]) = wide_result else {
-                    return;
-                };
+                let [actual] = wide_result.expect("valid wide result");
                 let expected = core::array::from_fn(|col| {
                     gdf_sample(
                         &base_luma,
@@ -174,10 +164,7 @@ fn width_four_row_matches_legacy_samples_for_all_tables_and_classes() {
     let stride = 4 + GDF_READ_RADIUS * 2;
     let source_len = stride * (1 + GDF_READ_RADIUS * 2);
     let tap_offsets_result = gdf_tap_offsets(stride);
-    assert!(tap_offsets_result.is_ok());
-    let Ok(tap_offsets) = tap_offsets_result else {
-        return;
-    };
+    let tap_offsets = tap_offsets_result.expect("valid tap offsets result");
 
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         let max_sample = bit_depth.max_sample();
@@ -236,10 +223,7 @@ fn width_four_row_matches_legacy_samples_for_all_tables_and_classes() {
                             0,
                             source_origin,
                         );
-                        assert!(row_result.is_ok());
-                        let Ok([actual]) = row_result else {
-                            return;
-                        };
+                        let [actual] = row_result.expect("valid row result");
                         let expected = core::array::from_fn(|col| {
                             gdf_sample(
                                 &base_luma,

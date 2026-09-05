@@ -26,8 +26,7 @@
 use std::io::{self, Read};
 
 use crate::ivf::{
-    IVF_FRAME_HEADER_SIZE, IVF_HEADER_SIZE, IVF_SIGNATURE, IvfError, IvfHeader, IvfWarning,
-    parse_ivf_header,
+    IVF_FRAME_HEADER_SIZE, IVF_HEADER_SIZE, IVF_SIGNATURE, IvfError, IvfWarning, parse_ivf_header,
 };
 use crate::leb128::read_leb128;
 use crate::span::ByteOffset;
@@ -73,11 +72,15 @@ pub enum StreamUnit<'a> {
 
 /// An error that aborts streaming (as opposed to a malformed-but-reportable
 /// bitstream, which is delivered in-band as unit bytes the consumer parses).
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ReaderError {
     /// A non-EOF I/O error from the underlying reader.
+    #[error("input read error: {0}")]
     Io(io::Error),
     /// A declared unit size exceeded the configured per-unit byte cap.
+    #[error(
+        "temporal unit at byte {offset} declares {declared} byte(s), exceeding the {cap}-byte cap"
+    )]
     UnitTooLarge {
         /// Absolute offset of the offending unit.
         offset: ByteOffset,
@@ -87,27 +90,9 @@ pub enum ReaderError {
         cap: usize,
     },
     /// A terminal IVF container structural error (header or frame framing).
+    #[error("{0}")]
     Ivf(IvfError),
 }
-
-impl std::fmt::Display for ReaderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "input read error: {error}"),
-            Self::UnitTooLarge {
-                offset,
-                declared,
-                cap,
-            } => write!(
-                f,
-                "temporal unit at byte {offset} declares {declared} byte(s), exceeding the {cap}-byte cap"
-            ),
-            Self::Ivf(error) => write!(f, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for ReaderError {}
 
 /// Forward-only, `Read`-based temporal-unit demuxer.
 #[derive(Debug)]
@@ -125,8 +110,8 @@ pub struct TemporalUnitReader<R: Read> {
     cap: usize,
     /// Detected format (resolved lazily on first read).
     format: Option<BitstreamFormat>,
-    /// Parsed IVF header (once the IVF header has been consumed).
-    ivf_header: Option<IvfHeader>,
+    /// Whether the IVF header has been consumed and validated.
+    ivf_header_read: bool,
     /// Next IVF frame index to assign.
     frame_index: usize,
     /// Once set, all further reads yield `Ok(None)`.
@@ -149,7 +134,7 @@ impl<R: Read> TemporalUnitReader<R> {
             pos: 0,
             cap,
             format: None,
-            ivf_header: None,
+            ivf_header_read: false,
             frame_index: 0,
             done: false,
         }
@@ -328,7 +313,7 @@ impl<R: Read> TemporalUnitReader<R> {
 
     /// Frames the next IVF frame payload (parsing the file header on first use).
     fn next_ivf_unit(&mut self) -> Result<Option<StreamUnit<'_>>, ReaderError> {
-        if self.ivf_header.is_none() {
+        if !self.ivf_header_read {
             self.buf.clear();
             let got = self.read_into_buf(IVF_HEADER_SIZE_BYTES)?;
             if got == IVF_HEADER_SIZE_BYTES {
@@ -338,7 +323,7 @@ impl<R: Read> TemporalUnitReader<R> {
                 }
             }
             match parse_ivf_header(&self.buf) {
-                Ok(header) => self.ivf_header = Some(header),
+                Ok(_) => self.ivf_header_read = true,
                 Err(error) => {
                     self.done = true;
                     return Err(ReaderError::Ivf(error));
@@ -404,7 +389,7 @@ impl<R: Read> TemporalUnitReader<R> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::ivf::write_ivf_header;
+    use crate::ivf::{IvfHeader, write_ivf_header};
     use crate::test_support::ivf_with_frame;
 
     /// A `Read` that hands out at most one byte per call, to stress cross-read

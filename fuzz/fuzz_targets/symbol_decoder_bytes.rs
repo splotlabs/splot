@@ -48,7 +48,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    let mut cursor = ByteCursor::new(ops);
+    let mut cursor = ops.iter().copied();
     let op_count = 1 + usize::from(*op_count_seed % MAX_OPS as u8);
     let mut previous_checkpoint = decoder.checkpoint();
 
@@ -157,7 +157,7 @@ fn assert_symbol_summary(
     assert_eq!(summary.consumed_bits, summary.padding_end_position);
 }
 
-fn valid_cdf_row(n: usize, cursor: &mut ByteCursor<'_>) -> Vec<i32> {
+fn valid_cdf_row(n: usize, cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -> Vec<i32> {
     let mut row = Vec::with_capacity(n + 1);
     for index in 0..n - 1 {
         let value = ((index + 1) * 32_768 / n) as i32;
@@ -168,7 +168,7 @@ fn valid_cdf_row(n: usize, cursor: &mut ByteCursor<'_>) -> Vec<i32> {
     row
 }
 
-fn malformed_cdf_row(cursor: &mut ByteCursor<'_>) -> Vec<i32> {
+fn malformed_cdf_row(cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -> Vec<i32> {
     match cursor.next().unwrap_or(0) % 6 {
         0 => vec![1, 0],
         1 => vec![0, 0, 0],
@@ -180,23 +180,5 @@ fn malformed_cdf_row(cursor: &mut ByteCursor<'_>) -> Vec<i32> {
         ],
         4 => vec![16_384, 0, 33 + i32::from(cursor.next().unwrap_or(0))],
         _ => vec![-(1 + i32::from(cursor.next().unwrap_or(0))), 0, 0],
-    }
-}
-
-#[derive(Debug)]
-struct ByteCursor<'a> {
-    bytes: &'a [u8],
-    index: usize,
-}
-
-impl<'a> ByteCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, index: 0 }
-    }
-
-    fn next(&mut self) -> Option<u8> {
-        let byte = self.bytes.get(self.index).copied()?;
-        self.index += 1;
-        Some(byte)
     }
 }

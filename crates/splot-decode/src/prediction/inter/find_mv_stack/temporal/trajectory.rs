@@ -99,8 +99,7 @@ pub(super) struct TrajectoryMotionField {
 
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let (width8, height8, mut cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
-        cells.fill(PackedTrajectoryMv::INVALID);
+        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
         Some(Self {
             width8,
             height8,
@@ -209,7 +208,6 @@ impl TrajectoryState {
         let total = cell_count.checked_mul(reference_count)?;
         self.reference_count = reference_count;
         self.cells.resize(total, PackedTrajectoryMv::INVALID);
-        self.cells.truncate(total);
         self.cells.fill(PackedTrajectoryMv::INVALID);
         self.positions.resize_with(reference_count, Vec::new);
         for positions in &mut self.positions {

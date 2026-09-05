@@ -6,7 +6,7 @@
 //! Feature tracking: `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use crate::intra_dc_math::{clip1, round2_u32, validate_output_shape, validate_sample_type};
+use crate::intra_dc_math::{round2_u32, validate_output_shape, validate_sample_type};
 use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
@@ -297,15 +297,10 @@ impl IntraMiddleDirectionalAngle {
         self.p_angle
     }
 
-    fn branch(self) -> Result<MiddleDirectionalAngleBranch> {
-        if self.p_angle <= ZONE_1_MAX || self.p_angle >= ZONE_3_MIN {
-            return Err(ReconError::UnsupportedIntraMiddleDirectionalAngle {
-                p_angle: self.p_angle,
-            });
-        }
+    fn branch(self) -> MiddleDirectionalAngleBranch {
         let dx = DR_INTRA_DERIVATIVE[usize::from(ZONE_3_MIN - self.p_angle)];
         let dy = DR_INTRA_DERIVATIVE[usize::from(self.p_angle - ZONE_1_MAX)];
-        Ok(MiddleDirectionalAngleBranch { dx, dy })
+        MiddleDirectionalAngleBranch { dx, dy }
     }
 }
 
@@ -475,10 +470,9 @@ impl<'a, T: ReconSample> IntraDirectionalAngleIdifEdges<'a, T> {
 
 /// Writes a supported one-sided AV2 §7.13.2.8 directional prediction into caller storage.
 ///
-/// This primitive intentionally covers only chroma/no-IDIF/no-MRL one-sided
-/// pAngles `45`, `67`, and `203` over already-prepared edges. For pAngles `45`
-/// and `67`, callers provide `AboveRow[0..w+h)`; for pAngle `203`, callers
-/// provide `LeftCol[0..w+h)`. `output` points at the top-left destination sample
+/// Uses bilinear interpolation without MRL. Callers provide `AboveRow[0..w+h)`
+/// for zone 1 or `LeftCol[0..w+h)` for zone 3.
+/// `output` points at the top-left destination sample
 /// and `stride_samples` is the distance between adjacent output rows.
 ///
 /// # Errors
@@ -493,14 +487,13 @@ pub fn predict_intra_directional_angle_rect_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let context = validate_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
-    write_prediction(size, angle, context.edge, output, stride_samples)
+    let edge = validate_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
+    write_prediction(size, angle, edge, output, stride_samples)
 }
 
 /// Writes a supported middle AV2 §7.13.2.8 directional prediction into caller storage.
 ///
-/// This primitive intentionally covers only chroma/no-IDIF/no-MRL middle
-/// pAngles `113`, `135`, and `157` over already-prepared logical edges.
+/// Uses bilinear interpolation without MRL for zone-2 angles.
 /// Callers provide `AboveRow[-1..w)` and `LeftCol[-1..h)`, where slice index
 /// zero stores the logical `-1` sample. `output` points at the top-left
 /// destination sample and `stride_samples` is the distance between adjacent
@@ -548,8 +541,7 @@ pub fn predict_intra_middle_directional_angle_rect_into<T: ReconSample>(
 /// `LeftCol[-2..=h+1]` (length `side + 4`); slice index zero is the logical
 /// `-2` sample (the §7.13.2.8 `LeftCol[minBase - 1]` / spec edge extension).
 /// `output` points at the top-left destination sample and `stride_samples` is
-/// the distance between adjacent output rows. This primitive covers only the
-/// no-MRL middle pAngles `113`, `135`, and `157` over already-prepared edges.
+/// the distance between adjacent output rows. The prepared edges use no MRL.
 ///
 /// # Errors
 /// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
@@ -744,11 +736,6 @@ struct MiddleSampleReference {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ValidatedInputs<'a, T: ReconSample> {
-    edge: &'a [T],
-}
-
-#[derive(Clone, Copy, Debug)]
 struct ValidatedMiddleInputs<'a, T: ReconSample> {
     left: &'a [T],
     above: &'a [T],
@@ -778,7 +765,7 @@ fn validate_inputs<T: ReconSample>(
     edges: IntraDirectionalAngleEdges<'_, T>,
     output_len: usize,
     stride_samples: usize,
-) -> Result<ValidatedInputs<'_, T>> {
+) -> Result<&[T]> {
     validate_sample_type::<T>(bit_depth)?;
     validate_output_shape(
         size,
@@ -786,8 +773,7 @@ fn validate_inputs<T: ReconSample>(
         stride_samples,
         "intra prediction output buffer length",
     )?;
-    let expected_len = required_edge_len(size)?;
-    validate_index_bounds(size, angle)?;
+    let expected_len = size.width() + size.height();
 
     let edge_kind = angle.required_edge();
     let edge = match edge_kind {
@@ -810,7 +796,7 @@ fn validate_inputs<T: ReconSample>(
     };
     validate_directional_edge(edge_kind, edge, expected_len, bit_depth)?;
 
-    Ok(ValidatedInputs { edge })
+    Ok(edge)
 }
 
 fn validate_middle_inputs<T: ReconSample>(
@@ -842,8 +828,8 @@ fn validate_middle_inputs<T: ReconSample>(
         },
     )?;
 
-    let left_len = required_middle_left_len(size)?;
-    let above_len = required_middle_above_len(size)?;
+    let left_len = size.height() + 1;
+    let above_len = size.width() + 1;
     validate_middle_edge(IntraDirectionalAngleEdge::Left, left, left_len, bit_depth)?;
     validate_middle_edge(
         IntraDirectionalAngleEdge::Above,
@@ -886,8 +872,8 @@ fn validate_middle_idif_inputs<T: ReconSample>(
             edge: IntraDirectionalAngleEdge::Above,
         })?;
 
-    let left_len = required_middle_idif_left_len(size)?;
-    let above_len = required_middle_idif_above_len(size)?;
+    let left_len = size.height() + 4;
+    let above_len = size.width() + 4;
     validate_middle_edge(IntraDirectionalAngleEdge::Left, left, left_len, bit_depth)?;
     validate_middle_edge(
         IntraDirectionalAngleEdge::Above,
@@ -946,24 +932,6 @@ fn validate_middle_idif_mrl_inputs<T: ReconSample>(
     Ok(ValidatedMiddleIdifInputs { left, above })
 }
 
-/// IDIF left edge length: logical `-2 ..= h + 1` is `h + 4` samples.
-fn required_middle_idif_left_len(size: IntraRectBlockSize) -> Result<usize> {
-    size.height()
-        .checked_add(4)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "middle directional angle IDIF left edge length",
-        })
-}
-
-/// IDIF above edge length: logical `-2 ..= w + 1` is `w + 4` samples.
-fn required_middle_idif_above_len(size: IntraRectBlockSize) -> Result<usize> {
-    size.width()
-        .checked_add(4)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "middle directional angle IDIF above edge length",
-        })
-}
-
 fn required_middle_idif_mrl_left_len(size: IntraRectBlockSize, mrl_index: usize) -> Result<usize> {
     size.height()
         .checked_add(mrl_index)
@@ -988,7 +956,7 @@ fn validate_middle_idif_index_bounds(
     left_len: usize,
     above_len: usize,
 ) -> Result<()> {
-    let branch = angle.branch()?;
+    let branch = angle.branch();
     for row in 0..size.height() {
         let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
         for _ in 0..size.width() {
@@ -1019,7 +987,7 @@ fn validate_middle_idif_mrl_index_bounds(
     above_len: usize,
     mrl_index: usize,
 ) -> Result<()> {
-    let branch = angle.branch()?;
+    let branch = angle.branch();
     for row in 0..size.height() {
         let mut walk = MiddleRowWalk::new(row, size.width(), branch, mrl_index)?;
         for _ in 0..size.width() {
@@ -1043,64 +1011,13 @@ fn validate_middle_idif_mrl_index_bounds(
     Ok(())
 }
 
-fn required_edge_len(size: IntraRectBlockSize) -> Result<usize> {
-    size.width()
-        .checked_add(size.height())
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "directional angle prepared edge length",
-        })
-}
-
-fn required_middle_left_len(size: IntraRectBlockSize) -> Result<usize> {
-    size.height()
-        .checked_add(1)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "middle directional angle left edge length",
-        })
-}
-
-fn required_middle_above_len(size: IntraRectBlockSize) -> Result<usize> {
-    size.width()
-        .checked_add(1)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "middle directional angle above edge length",
-        })
-}
-
-fn validate_index_bounds(size: IntraRectBlockSize, angle: IntraDirectionalAngle) -> Result<()> {
-    let branch = angle.branch();
-    let (outer, inner) = match branch {
-        DirectionalAngleBranch::Above { .. } => (size.height(), size.width()),
-        DirectionalAngleBranch::Left { .. } => (size.width(), size.height()),
-    };
-    let derivative = match branch {
-        DirectionalAngleBranch::Above { derivative }
-        | DirectionalAngleBranch::Left { derivative } => usize::from(derivative),
-    };
-    let max_idx = outer
-        .checked_mul(derivative)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "directional angle derivative product",
-        })?;
-    let max_base_prefix = max_idx >> 6;
-    let max_inner = inner.checked_sub(1).ok_or(ReconError::ArithmeticOverflow {
-        context: "directional angle inner dimension",
-    })?;
-    max_base_prefix
-        .checked_add(max_inner)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "directional angle referenced base index",
-        })?;
-    Ok(())
-}
-
 fn validate_middle_index_bounds(
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
     left_len: usize,
     above_len: usize,
 ) -> Result<()> {
-    let branch = angle.branch()?;
+    let branch = angle.branch();
     for row in 0..size.height() {
         let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
         for _ in 0..size.width() {
@@ -1208,7 +1125,7 @@ fn write_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let max_base = required_edge_len(size)? - 1;
+    let max_base = size.width() + size.height() - 1;
     match angle.branch() {
         DirectionalAngleBranch::Above { derivative } => {
             for row in 0..size.height() {
@@ -1248,8 +1165,7 @@ fn write_prediction<T: ReconSample>(
     Ok(())
 }
 
-/// Validates the zone-1 one-sided IDIF inputs and returns the prepared above
-/// edge. The supported zone-1 above angle (D45) reads only the above edge.
+/// Validates one-sided IDIF inputs and returns the angle's prepared edge.
 fn validate_one_sided_idif_inputs<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
@@ -1266,11 +1182,8 @@ fn validate_one_sided_idif_inputs<T: ReconSample>(
         stride_samples,
         "intra prediction output buffer length",
     )?;
-    let direction = match angle.branch() {
-        DirectionalAngleBranch::Above { .. } => IntraDirectionalAngleEdge::Above,
-        DirectionalAngleBranch::Left { .. } => IntraDirectionalAngleEdge::Left,
-    };
-    if angle.required_edge() != direction || edges.direction != direction {
+    let direction = angle.required_edge();
+    if edges.direction != direction {
         return Err(ReconError::UnsupportedIntraDirectionalAngle {
             p_angle: angle.p_angle(),
         });
@@ -1291,7 +1204,7 @@ fn required_one_sided_idif_edge_len(size: IntraRectBlockSize, mrl_index: usize) 
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle IDIF edge length",
         })?;
-    required_edge_len(size)?
+    (size.width() + size.height())
         .checked_add(4)
         .and_then(|v| v.checked_add(mrl_extension))
         .ok_or(ReconError::ArithmeticOverflow {
@@ -1350,7 +1263,7 @@ fn one_sided_max_base(size: IntraRectBlockSize, mrl_index: usize) -> Result<i32>
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle maxBase",
         })?;
-    let max_base = required_edge_len(size)?
+    let max_base = (size.width() + size.height())
         .checked_sub(1)
         .and_then(|v| v.checked_add(mrl_extension))
         .ok_or(ReconError::ArithmeticOverflow {
@@ -1614,7 +1527,7 @@ fn write_middle_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let branch = angle.branch()?;
+    let branch = angle.branch();
     for row in 0..size.height() {
         let row_start = row * stride_samples;
         let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
@@ -1652,7 +1565,7 @@ fn write_middle_idif_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let branch = angle.branch()?;
+    let branch = angle.branch();
     for row in 0..size.height() {
         let row_start = row * stride_samples;
         let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
@@ -1674,7 +1587,7 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
     params: MiddleIdifMrlPrediction<'_, T>,
     output: &mut [T],
 ) -> Result<()> {
-    let branch = params.angle.branch()?;
+    let branch = params.angle.branch();
     for row in 0..params.size.height() {
         let row_start = row * params.stride_samples;
         let mut walk = MiddleRowWalk::new(row, params.size.width(), branch, params.mrl_index)?;
@@ -1684,7 +1597,7 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
                 IntraDirectionalAngleEdge::Left => params.left,
                 IntraDirectionalAngleEdge::Above => params.above,
             };
-            let value = idif_tap_mrl(
+            let value = idif_tap_with_mrl(
                 edge,
                 reference.base,
                 reference.shift,
@@ -1704,16 +1617,6 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
 /// `Clip1` clamps a negative result to `0`.
 fn idif_tap<T: ReconSample>(edge: &[T], base: i32, shift: u16, bit_depth: BitDepth) -> Result<u16> {
     idif_tap_with_mrl(edge, base, shift, bit_depth, 0)
-}
-
-fn idif_tap_mrl<T: ReconSample>(
-    edge: &[T],
-    base: i32,
-    shift: u16,
-    bit_depth: BitDepth,
-    mrl_index: usize,
-) -> Result<u16> {
-    idif_tap_with_mrl(edge, base, shift, bit_depth, mrl_index)
 }
 
 fn idif_tap_with_mrl<T: ReconSample>(
@@ -1762,12 +1665,7 @@ fn idif_tap_with_mrl<T: ReconSample>(
 /// then clamp to `0..=max_sample`.
 fn idif_round2_clip(sum: i32, bit_depth: BitDepth) -> u16 {
     let rounded = round2_i32(sum, u32::from(DR_INTERP_FILTER_ROUND));
-    if rounded <= 0 {
-        return 0;
-    }
-    let max = i32::from(bit_depth.max_sample());
-    let clamped = rounded.min(max);
-    clip1(clamped as u16, bit_depth)
+    rounded.clamp(0, i32::from(bit_depth.max_sample())) as u16
 }
 
 fn logical_idif_edge_sample<T: ReconSample>(samples: &[T], logical_index: i32) -> Result<T> {
@@ -2039,10 +1937,7 @@ pub fn apply_intra_edge_filter<T: ReconSample>(
     sz: usize,
     strength: u8,
 ) -> Result<()> {
-    if strength == 0 {
-        return Ok(());
-    }
-    if sz == 0 {
+    if strength == 0 || sz == 0 {
         return Ok(());
     }
     if sz > edge.len() {

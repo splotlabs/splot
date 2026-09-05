@@ -1,78 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The AV2 § 5.18.2 **inter** frame-header shared tail
-//! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`, mirror :5183-5343).
+//! AV2 § 5.18.2 inter shared tail after `disable_cdf_update`
+//! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
 //!
-//! After the non-intra control region reaches
-//! [`InterStop::ReachedSharedTail`](super::inter::InterStop) (just past
-//! `disable_cdf_update`, mirror :5041), the § 5.18.2 grammar reads the **same shared
-//! structure cluster** the intra path reads, plus the inter-specific arms the intra path
-//! infers to no-bit defaults:
-//!
-//! ```text
-//! tile_info( )               // § 5.18.7.2, mirror :5183
-//! quantization_params( )     // § 5.18.6.1, mirror :5185
-//! segmentation_params( )     // § 5.18.7.1, mirror :5189
-//! setup_qm_params( )         // § 5.18.6.2, mirror :5191
-//! delta_q_params( )          // § 5.18.7.8, mirror :5193
-//! // per-segment lossless/QM derivation + allow_tcq + allow_parity_hiding (mirror :5209-5295)
-//! deblocking_filter_params( )// § 5.18.5.2, mirror :5297 (inter: allow_df_sub_pu arm)
-//! gdf_params( )              // § 5.18.7.9, mirror :5299
-//! cdef_params( )             // § 5.18.7.10, mirror :5301
-//! lr_params( )               // § 5.18.7.11, mirror :5303
-//! ccso_params( )             // § 5.18.7.12, mirror :5305
-//! read_tx_mode( )            // § 5.18.8.1, mirror :5307
-//! frame_reference_mode( )    // § 5.18.8.3, mirror :5309 (inter: reference_select f(1))
-//! skip_mode_params( )        // § 5.18.8.2, mirror :5311 (inter: skip_mode_present f(1))
-//! if (!FrameIsIntra && enable_bawp) allow_bawp          f(1)   // mirror :5313
-//! if (!FrameIsIntra && frame_enabled_motion_modes[DELTAWARP])
-//!     allow_warpmv_mode                                 f(1)   // mirror :5327
-//! reduced_tx_set                                        f(2)   // mirror :5337
-//! global_motion_params( )    // § 5.18.9.1, mirror :5339 (inter: use_global_motion arm)
-//! film_grain_config( )       // § 5.18.10.1, mirror :5341
-//! ```
-//!
-//! This module models the **minimal-tool single-reference inter subset** the verified
-//! fixtures exercise (`tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf`,
-//! `syn-key-inter-64x64.ivf`): a single 64x64 zero-MV skip block with broad decode tools
-//! off, `TipFrameMode == TIP_FRAME_DISABLED`, `!IsBridge`, `!bru_inactive`, and
-//! `NumTotalRefs == 1`. The shared structure cluster is reused verbatim from the intra
-//! path's sub-parsers (every § 5.18.6 / § 5.18.7 / § 5.18.5 structure is
-//! `FrameIsIntra`-independent except for the gates below), with the inter inputs threaded:
-//!
-//! - `tile_info()` is parsed with `frame_is_intra == false` (the inter `SbSize`).
-//! - `quantization_params()` with `tip_frame_as_output == false`.
-//! - `deblocking_filter_params()` reads the inter `allow_df_sub_pu` arm
-//!   (`enable_df_sub_pu && FrameType == INTER_FRAME`, § 5.18.5.2 mirror :5935).
-//! - `frame_reference_mode()` reads `reference_select` `f(1)` (mirror :7747).
-//! - `skip_mode_params()` reads `skip_mode_present` `f(1)` (`skipModeAllowed == 1` for a
-//!   non-switch inter frame, mirror :7717).
-//! - `global_motion_params()`'s inter arm is parsed via
-//!   [`parse_global_motion_params`](super::global_motion::parse_global_motion_params)
-//!   (the honest cross-frame stops there cover `use_global_motion == 1` warp models).
-//!
-//! ## Honest gating
-//!
-//! Anything outside the modeled subset stops honestly with
-//! [`FrameHeaderParseStatus::UnsupportedUntilFeature`] (a coverage stop, never a
-//! truncation) rather than guessing bit positions:
-//!
-//! - `segmentation_enabled == 1` when the modeled reference state cannot determine whether
-//!   `DerivedPrimaryRefFrame == PRIMARY_REF_NONE`; the no-eligible-primary arm and its
-//!   inferred map flags are modeled.
-//! - `global_motion_params()` reaching a cross-frame stop (`use_global_motion == 1` with
-//!   per-reference warp models): the honest [`GlobalMotionStop`] is surfaced.
-//! - the per-segment QM index loop reaching a `using_qmatrix` read it cannot evaluate, or a
-//!   tile layout needing unmodeled sequence state: the sub-parser's `Unimplemented` is
-//!   surfaced.
-//! - `lr_params()` selecting a retained Wiener-NS reference filter whose taps are not
-//!   available: the facts parsed before LR are preserved and the header stops at the typed
-//!   capability boundary.
-//!
-//! An [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) inside the modeled tail
-//! is converted by the caller to the facts-preserving
-//! [`FrameHeaderParseStatus::StoppedInsideInterControl`].
+//! Reuses the tile, quantization, segmentation, and filtering parsers, then reads the
+//! inter coding-mode and film-grain fields. Missing MFH or reference state stops at
+//! the corresponding typed coverage boundary. The caller preserves earlier facts
+//! when a modeled field reaches EOF.
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};

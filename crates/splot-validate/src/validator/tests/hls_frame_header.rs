@@ -121,14 +121,9 @@ pub(in crate::validator::tests) const LEADING_TILE_GROUP_HEADER: u8 = 0x18;
 pub(in crate::validator::tests) const REGULAR_TILE_GROUP_HEADER: u8 = 0x1C;
 
 /// A global temporal delimiter followed by a sequence header with `seq_header_id`
-/// for xlayer 0 (no embedded/temporal layering).
+/// for xlayer 0, allowing temporal and embedded layers 0 and 1.
 pub(in crate::validator::tests) fn td_and_seq(seq_header_id: u32) -> Vec<u8> {
-    let mut data = temporal_delimiter_obu();
-    data.extend(annex_b_obu(
-        0x04,
-        &sequence_header_payload_with_id(seq_header_id, 1, 1),
-    ));
-    data
+    td_and_seq_header(seq_header_id, 1, 1)
 }
 
 /// A bare sequence header OBU with `seq_header_id` for xlayer 0 (a resend within an

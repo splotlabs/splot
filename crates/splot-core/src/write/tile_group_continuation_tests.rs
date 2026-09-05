@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod continuation_tests {
@@ -42,16 +41,7 @@ mod continuation_tests {
         }
     }
 
-    fn structure(present: bool, tg_start: u32, tg_end: u32) -> TileGroupStructure {
-        TileGroupStructure {
-            tile_start_and_end_present_flag: present,
-            tg_start,
-            tg_end,
-            outcome: TileGroupStructureOutcome::Complete,
-            header_bytes: None, // parse-context; ignored by the writer
-            payload_size: None,
-        }
-    }
+    use super::tests::structure;
 
     #[test]
     fn non_first_tile_group_round_trips() {

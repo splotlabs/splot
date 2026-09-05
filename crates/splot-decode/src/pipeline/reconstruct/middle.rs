@@ -67,18 +67,6 @@ pub(crate) struct TwoSidedMiddleEdgeFilters {
     pub left: OneSidedEdgeFilter,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MiddleEdgeAvailability {
-    pub above: bool,
-    pub left: bool,
-}
-
-impl MiddleEdgeAvailability {
-    pub(crate) const fn new(above: bool, left: bool) -> Self {
-        Self { above, left }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -92,7 +80,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     bit_depth: BitDepth,
-    availability: MiddleEdgeAvailability,
+    availability: IntraEdgeAvailability,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
@@ -183,7 +171,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
-    availability: MiddleEdgeAvailability,
+    availability: IntraEdgeAvailability,
     filters: TwoSidedMiddleEdgeFilters,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -207,7 +195,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         T::default(),
     )?;
 
-    if left_samples.is_some() && above_samples.is_some() {
+    let (left_idif, above_idif) = if left_samples.is_some() && above_samples.is_some() {
         let above_row = y
             .checked_sub(1)
             .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
@@ -227,27 +215,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         let left_idif = build_two_sided_middle_idif_edge(height, filters.left, corner, |i| {
             workspace.reconstructed_sample(plane_id, left_col, y.saturating_add(i).min(max_y))
         })?;
-        if matches!(plane_id, PlaneId::Y) {
-            predict_intra_middle_directional_angle_rect_idif_into(
-                bit_depth,
-                block_size,
-                angle,
-                IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-                &mut prediction,
-                width,
-            )?;
-        } else {
-            let left = &left_idif[1..height + 2];
-            let above = &above_idif[1..width + 2];
-            predict_intra_middle_directional_angle_rect_into(
-                bit_depth,
-                block_size,
-                angle,
-                IntraMiddleDirectionalAngleEdges::both(left, above),
-                &mut prediction,
-                width,
-            )?;
-        }
+        (left_idif, above_idif)
     } else {
         let (left, above) = build_directional_middle_rect_edges(
             left_samples,
@@ -273,27 +241,28 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         } else {
             extend_one_middle_idif_edge(&above, bit_depth)?
         };
-        if matches!(plane_id, PlaneId::Y) {
-            predict_intra_middle_directional_angle_rect_idif_into(
-                bit_depth,
-                block_size,
-                angle,
-                IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-                &mut prediction,
-                width,
-            )?;
-        } else {
-            let left = &left_idif[1..height + 2];
-            let above = &above_idif[1..width + 2];
-            predict_intra_middle_directional_angle_rect_into(
-                bit_depth,
-                block_size,
-                angle,
-                IntraMiddleDirectionalAngleEdges::both(left, above),
-                &mut prediction,
-                width,
-            )?;
-        }
+        (left_idif, above_idif)
+    };
+    if matches!(plane_id, PlaneId::Y) {
+        predict_intra_middle_directional_angle_rect_idif_into(
+            bit_depth,
+            block_size,
+            angle,
+            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+            &mut prediction,
+            width,
+        )?;
+    } else {
+        let left = &left_idif[1..height + 2];
+        let above = &above_idif[1..width + 2];
+        predict_intra_middle_directional_angle_rect_into(
+            bit_depth,
+            block_size,
+            angle,
+            IntraMiddleDirectionalAngleEdges::both(left, above),
+            &mut prediction,
+            width,
+        )?;
     }
     write_intra_prediction_block(
         workspace,
@@ -327,7 +296,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
     secondary_mrl: bool,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
-    availability: MiddleEdgeAvailability,
+    availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
@@ -384,7 +353,7 @@ fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
     mrl_index: usize,
     above_mrl_index: usize,
     is_sb_boundary: bool,
-    availability: MiddleEdgeAvailability,
+    availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {

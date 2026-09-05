@@ -188,57 +188,8 @@ impl ValidatorContext {
         reader.read_bit().ok().map(|bit| bit != 0)
     }
 
-    /// Parses a frame-bearing OBU's [`FrameHeaderCore`] against the layer's active sequence
-    /// header, but **only** returns it when the frame's referenced sequence header resolved
-    /// to the very header parsed against (AV2 § 5.18.2). `None` (undecidable → Unknown
-    /// routing) when:
-    ///
-    /// - no sequence header is active for the layer, or its stored header is missing;
-    /// - the core parse failed (a payload the skeleton cannot reach); or
-    /// - the frame's referenced sequence header is **not** the active header parsed against.
-    ///
-    /// A frame's referenced sequence header is the active header when **either**:
-    ///
-    /// - **`cur_mfh_id == 0`** (direct reference) and the §5.18.2 prefix's
-    ///   `referenced_sequence_header_id` (set only when `seq_header_id_in_frame_header` is in
-    ///   range) equals the parsed-against id; or
-    /// - **`cur_mfh_id > 0`** (multi-frame-header reference) and an *in-band* multi-frame
-    ///   header record resolves that `cur_mfh_id` (in range, present in
-    ///   [`HlsAvailabilityStore::multi_frame_header`]) whose `mfh_seq_header_id` equals the
-    ///   parsed-against id (§ 7.3.8.7). The §5.18.2 control region through the output flags is
-    ///   determined by the active (== resolved) sequence header alone, so the output class /
-    ///   `order_hint` are decidable on this path even though `referenced_sequence_header_id` is
-    ///   `None` (the prefix leaves it unset for `cur_mfh_id > 0`).
-    ///
-    /// External-HLS caveat: an MFH only *externally* declared (`ExternalHlsMode::Provided`, not
-    /// in-band) is **not** a verifiable association — `multi_frame_header` returns `None` for
-    /// it — so the frame stays Unknown (the partial-declaration policy). An out-of-range
-    /// `cur_mfh_id`, an absent record, or an MFH whose `mfh_seq_header_id` names a different
-    /// header all keep Unknown.
-    ///
-    /// This is the stale-activation safety: the sequence-header-dependent field widths
-    /// (`order_hint` is `f(OrderHintBits)`, etc.) make any post-prefix field a misparse when
-    /// read against the wrong header, so the output class and `order_hint` would be garbage. The
-    /// activation/reference prefix (`cur_mfh_id`, `seq_header_id_in_frame_header`,
-    /// `referenced_sequence_header_id`) is parsed *before* any sequence-dependent field, so it
-    /// stays reliable even when the parse ran against a stale header — making the resolution
-    /// check sound. The same guard is applied by the frame-unit segmenter's output-class
-    /// derivation ([`Self::frame_output_class`]) so the two layers route to Unknown together.
-    /// Resolves a frame's `cur_mfh_id` (`> 0`) reference to the in-band multi-frame
-    /// header record the `cur_mfh_id > 0` core parse must consume, with the §7.3.8.7
-    /// resolution discipline (AV2 § 5.18.2): the lightweight prefix parse reads only the
-    /// activation fields (`cur_mfh_id` is before any sequence-dependent field, so it is
-    /// reliable even against a stale active header), the `cur_mfh_id` must be nonzero
-    /// and in range, an in-band record must resolve it, and that record's
-    /// `mfh_seq_header_id` must equal `seq_id` — the sequence header the frame is parsed
-    /// against. `None` for a `cur_mfh_id == 0` direct reference, an out-of-range
-    /// `cur_mfh_id`, an absent record, or a record naming a different sequence header;
-    /// the core parser then keeps its `cur_mfh_id > 0`-unresolvable early-stop rather
-    /// than guessing a multi-frame-header-derived size.
-    ///
-    /// Shared by [`Self::frame_core_against_referenced_header`] (output-class /
-    /// reference-header derivation) and [`frame_header_core_checks`] (frame-header
-    /// diagnostics) so the resolution predicate has a single definition.
+    /// Resolves the frame prefix’s multi-frame-header reference against available in-band
+    /// HLS. Missing or incomplete prefixes and unavailable records return `None`.
     pub(super) fn resolve_frame_mfh_record(
         &self,
         obu: &ObuEnvelope<'_>,

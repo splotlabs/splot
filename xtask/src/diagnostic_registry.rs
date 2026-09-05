@@ -401,6 +401,7 @@ fn backtick_ids_for(registry: &RegistryConfig, region: &str) -> Result<BTreeSet<
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::util::temp_root;
 
     fn ids(code: &str) -> Vec<String> {
         string_literals_skipping_comments(code)
@@ -551,7 +552,7 @@ mod tests {
 
     #[test]
     fn decoder_registry_accepts_matching_source_and_doc() {
-        let root = temp_root("decoder-match");
+        let root = temp_root("decoder-match").unwrap();
         write_decoder_fixture(
             &root,
             r#"const RULE: &str = "decode/unsupported-feature";"#,
@@ -565,7 +566,7 @@ mod tests {
 
     #[test]
     fn decoder_registry_reports_undocumented_id() {
-        let root = temp_root("decoder-undocumented");
+        let root = temp_root("decoder-undocumented").unwrap();
         write_decoder_fixture(
             &root,
             r#"const RULE: &str = "decode/resource-limit";"#,
@@ -582,7 +583,7 @@ mod tests {
 
     #[test]
     fn decoder_registry_reports_unemitted_id() {
-        let root = temp_root("decoder-unemitted");
+        let root = temp_root("decoder-unemitted").unwrap();
         write_decoder_fixture(
             &root,
             r#"const RULE: &str = "decode/unsupported-feature";"#,
@@ -599,7 +600,7 @@ mod tests {
 
     #[test]
     fn decoder_registry_rejects_wrong_prefix_in_source() {
-        let root = temp_root("decoder-wrong-prefix-source");
+        let root = temp_root("decoder-wrong-prefix-source").unwrap();
         write_decoder_fixture(&root, r#"const RULE: &str = "validator/not-decoder";"#, "");
 
         let err = check_one_registry(&root, &DECODER_REGISTRY).unwrap_err();
@@ -612,7 +613,7 @@ mod tests {
 
     #[test]
     fn decoder_registry_rejects_wrong_prefix_in_doc() {
-        let root = temp_root("decoder-wrong-prefix-doc");
+        let root = temp_root("decoder-wrong-prefix-doc").unwrap();
         write_decoder_fixture(
             &root,
             r#"const RULE: &str = "decode/unsupported-feature";"#,
@@ -644,7 +645,7 @@ mod tests {
 
     #[test]
     fn emitted_ids_skips_split_test_files_under_tests_dirs() {
-        let root = temp_root("split-tests");
+        let root = temp_root("split-tests").unwrap();
         let src = root.join(VALIDATE_SRC);
         std::fs::create_dir_all(src.join("validator/tests")).unwrap();
         std::fs::write(src.join("real.rs"), r#"fn real() { d("ops/real"); }"#).unwrap();
@@ -678,17 +679,6 @@ mod tests {
             .parent()
             .expect("xtask has a parent dir")
             .to_path_buf()
-    }
-
-    fn temp_root(name: &str) -> std::path::PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "splot-xtask-diagnostic-registry-{name}-{}-{nonce}",
-            std::process::id()
-        ))
     }
 
     fn write_decoder_fixture(root: &Path, source: &str, registry_rows: &str) {

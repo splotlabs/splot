@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -9,14 +8,11 @@
     clippy::panic,
     clippy::too_many_lines
 )]
-mod tests {
+pub(super) mod tests {
     use super::*;
-    use crate::headers::frame::{
-        FrameHeaderParseStatus, FrameSize,
-    };
+    use crate::headers::frame::{FrameHeaderParseStatus, FrameSize};
 
     use crate::test_bits::Bits;
-
 
     /// A representative non-single-picture sequence view (mirrors `info.rs::tests::base_seq`):
     /// OrderHintBits 4, NumRefFrames 8, no long-term ids, full refresh signaling, screen
@@ -93,10 +89,9 @@ mod tests {
         assert_eq!(a, b, "parse(write(core)) != core");
     }
 
-
     /// CLK, cur_mfh_id == 0, full non-lossless intra path with grain absent (the exact bytes
     /// from `info.rs::tests::frame_header_core_reads_direct_sequence_reference`).
-    fn clk_direct_reference_bits() -> Bits {
+    pub(in crate::write) fn clk_direct_reference_bits() -> Bits {
         let mut bits = Bits::default();
         bits.uvlc(0); // cur_mfh_id == 0
         bits.uvlc(1); // seq_header_id_in_frame_header
@@ -195,28 +190,8 @@ mod tests {
 
     #[test]
     fn single_picture_key_round_trips() {
-        let mut seq = base_seq();
-        seq.single_picture_header_flag = true;
-        seq.filter.single_picture_header_flag = true;
-        seq.ccso.single_picture_header_flag = true;
-        let mut bits = Bits::default();
-        bits.uvlc(0); // cur_mfh_id == 0
-        bits.uvlc(0); // seq_header_id
-        bits.f(9, 4); // order_hint
-        bits.bit(0); // allow_intrabc
-        bits.bit(0); // disable_cdf_update
-        bits.bit(1); // uniform_tile_spacing_flag
-        bits.bit(0); // increment_tile_cols_log2
-        bits.bit(0); // increment_tile_rows_log2
-        bits.f(120, 8); // base_q_idx
-        bits.bit(0); // segmentation_enabled
-        bits.bit(0); // using_qmatrix
-        bits.bit(0); // delta_q_present
-        bits.bit(0); // apply_deblocking_filter[0]
-        bits.bit(0); // apply_deblocking_filter[1]
-        bits.bit(0); // tx_mode_select
-        bits.f(0, 2); // reduced_tx_set
-        let data = bits.into_bytes();
+        let seq = single_picture_seq();
+        let data = single_picture_clk_bits().into_bytes();
         let core = assert_roundtrip(&data, ObuType::ClosedLoopKey, true, &seq);
         assert_eq!(core.frame_size_override_flag, Some(false));
         assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
@@ -354,7 +329,6 @@ mod tests {
                 .unwrap();
         assert_cores_equal(&reparsed, &core);
     }
-
 
     /// Builds a valid CLK intra core for mutation in the rejection tests.
     fn valid_core() -> (FrameHeaderCore, CoreSeqView) {
@@ -529,7 +503,6 @@ mod tests {
         assert_eq!(core.immediate_output_frame, Some(true));
     }
 
-
     /// A representative single-picture sequence (mirrors `single_picture_key_round_trips`),
     /// with `single_picture_header_flag` set on every sub-view that consults it.
     fn single_picture_seq() -> CoreSeqView {
@@ -686,7 +659,6 @@ mod tests {
         core.reached_qm_reset = true;
         assert_rejected_what(&core, &seq, true, "reached_qm_reset");
     }
-
 
     #[test]
     fn reject_non_single_bridge_intra_model() {

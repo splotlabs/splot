@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -50,6 +49,38 @@ mod tests {
         }
     }
 
+    fn varying_banding_detail() -> BandingHintsDetail {
+        BandingHintsDetail {
+            three_color_components_flag: true,
+            components: vec![
+                BandingComponent {
+                    banding_in_component_present_flag: false,
+                    max_band_width_minus_4: None,
+                    max_band_step_minus_1: None,
+                },
+                BandingComponent {
+                    banding_in_component_present_flag: true,
+                    max_band_width_minus_4: Some(10),
+                    max_band_step_minus_1: Some(3),
+                },
+                BandingComponent {
+                    banding_in_component_present_flag: false,
+                    max_band_width_minus_4: None,
+                    max_band_step_minus_1: None,
+                },
+            ],
+            band_units: Some(BandUnits {
+                num_band_units_rows_minus_1: 1,
+                num_band_units_cols_minus_1: 1,
+                varying_size: Some(VaryingBandUnits {
+                    band_block_in_luma_samples: 4,
+                    vert_size_in_band_blocks_minus_1: vec![1, 2],
+                    horz_size_in_band_blocks_minus_1: vec![3, 4],
+                }),
+                banding_in_band_unit_present: vec![true, false, false, true],
+            }),
+        }
+    }
 
     #[test]
     fn short_hdr_cll_round_trips() {
@@ -236,42 +267,18 @@ mod tests {
 
     #[test]
     fn short_banding_hints_varying_size_round_trips() {
-        let detail = BandingHintsDetail {
-            three_color_components_flag: true,
-            components: vec![
-                BandingComponent {
-                    banding_in_component_present_flag: false,
-                    max_band_width_minus_4: None,
-                    max_band_step_minus_1: None,
-                },
-                BandingComponent {
-                    banding_in_component_present_flag: true,
-                    max_band_width_minus_4: Some(10),
-                    max_band_step_minus_1: Some(3),
-                },
-                BandingComponent {
-                    banding_in_component_present_flag: false,
-                    max_band_width_minus_4: None,
-                    max_band_step_minus_1: None,
-                },
-            ],
-            band_units: Some(BandUnits {
-                num_band_units_rows_minus_1: 1,
-                num_band_units_cols_minus_1: 1,
-                varying_size: Some(VaryingBandUnits {
-                    band_block_in_luma_samples: 4,
-                    vert_size_in_band_blocks_minus_1: vec![1, 2],
-                    horz_size_in_band_blocks_minus_1: vec![3, 4],
-                }),
-                banding_in_band_unit_present: vec![true, false, false, true],
-            }),
-        };
+        let detail = varying_banding_detail();
         let payload = MetadataPayload::BandingHints(MetadataBandingHints {
             coding_banding_present_flag: true,
             source_banding_present_flag: true,
             hints: Some(detail),
         });
-        let obu = short_obu(MetadataType::BandingHints, 1, Some(unit(MetadataType::BandingHints, 8, payload)), false);
+        let obu = short_obu(
+            MetadataType::BandingHints,
+            1,
+            Some(unit(MetadataType::BandingHints, 8, payload)),
+            false,
+        );
         short_round_trip(&obu, &[]);
     }
 
@@ -336,7 +343,6 @@ mod tests {
         let reparsed = reparse_short(&bytes).unwrap();
         assert_eq!(reparsed, obu);
     }
-
 
     #[test]
     fn short_layer_idc_out_of_domain_is_rejected() {
@@ -412,7 +418,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-
     #[test]
     fn unit_payload_overflows_size_is_rejected() {
         let payload = MetadataPayload::HdrCll(MetadataHdrCll { max_cll: 0, max_fall: 0 });
@@ -452,7 +457,6 @@ mod tests {
         ));
         assert_eq!(writer.bit_len(), 0);
     }
-
 
     #[test]
     fn payload_non_empty_passthrough_for_modeled_is_rejected() {
@@ -662,7 +666,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-
     fn group_round_trip(obu: &MetadataGroupObu, xlayer: ExtendedLayerId, passthrough: &[&[u8]]) {
         let mut writer = BitWriter::new();
         write_metadata_group_obu(&mut writer, obu, xlayer, passthrough).unwrap();
@@ -751,21 +754,10 @@ mod tests {
 
     #[test]
     fn group_local_mlayer_map_round_trips() {
-        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
-        let unit = MetadataGroupUnit {
-            metadata_type: MetadataType::Reserved(0),
-            muh_header_size: 4,
-            muh_cancel_flag: false,
-            muh_payload_size: Some(0),
-            muh_layer_idc: Some(LAYER_VALUES),
-            muh_persistence_idc: Some(0),
-            muh_priority: Some(0),
-            muh_reserved_zero_2bits: Some(0),
-            muh_xlayer_map: None,
-            muh_mlayer_maps: vec![0b0000_0110],
-            header_extension_len: 0,
-            unit: Some(unit(MetadataType::Reserved(0), 0, payload)),
-        };
+        let mut unit = unknown_raw_group_unit(0);
+        unit.muh_header_size = 4;
+        unit.muh_layer_idc = Some(LAYER_VALUES);
+        unit.muh_mlayer_maps = vec![0b0000_0110];
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -777,21 +769,11 @@ mod tests {
 
     #[test]
     fn group_global_xlayer_map_round_trips() {
-        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
-        let unit = MetadataGroupUnit {
-            metadata_type: MetadataType::Reserved(0),
-            muh_header_size: 8,
-            muh_cancel_flag: false,
-            muh_payload_size: Some(0),
-            muh_layer_idc: Some(LAYER_VALUES),
-            muh_persistence_idc: Some(0),
-            muh_priority: Some(0),
-            muh_reserved_zero_2bits: Some(0),
-            muh_xlayer_map: Some(1), // bit 0 set
-            muh_mlayer_maps: vec![0xAA],
-            header_extension_len: 0,
-            unit: Some(unit(MetadataType::Reserved(0), 0, payload)),
-        };
+        let mut unit = unknown_raw_group_unit(0);
+        unit.muh_header_size = 8;
+        unit.muh_layer_idc = Some(LAYER_VALUES);
+        unit.muh_xlayer_map = Some(1);
+        unit.muh_mlayer_maps = vec![0xAA];
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -803,21 +785,9 @@ mod tests {
 
     #[test]
     fn group_header_extension_bytes_round_trip() {
-        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
-        let unit = MetadataGroupUnit {
-            metadata_type: MetadataType::Reserved(0),
-            muh_header_size: 4,
-            muh_cancel_flag: false,
-            muh_payload_size: Some(0),
-            muh_layer_idc: Some(0),
-            muh_persistence_idc: Some(0),
-            muh_priority: Some(0),
-            muh_reserved_zero_2bits: Some(0),
-            muh_xlayer_map: None,
-            muh_mlayer_maps: vec![],
-            header_extension_len: 1,
-            unit: Some(unit(MetadataType::Reserved(0), 0, payload)),
-        };
+        let mut unit = unknown_raw_group_unit(0);
+        unit.muh_header_size = 4;
+        unit.header_extension_len = 1;
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -905,7 +875,6 @@ mod tests {
         );
         assert_eq!(writer.bit_len(), 0);
     }
-
 
     #[test]
     fn group_passthrough_count_mismatch_is_rejected() {
@@ -1011,21 +980,7 @@ mod tests {
 
     #[test]
     fn group_payload_size_leb_len_is_rejected() {
-        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 200 });
-        let unit = MetadataGroupUnit {
-            metadata_type: MetadataType::Reserved(0),
-            muh_header_size: 3,
-            muh_cancel_flag: false,
-            muh_payload_size: Some(200),
-            muh_layer_idc: Some(0),
-            muh_persistence_idc: Some(0),
-            muh_priority: Some(0),
-            muh_reserved_zero_2bits: Some(0),
-            muh_xlayer_map: None,
-            muh_mlayer_maps: vec![],
-            header_extension_len: 0,
-            unit: Some(unit(MetadataType::Reserved(0), 200, payload)),
-        };
+        let unit = unknown_raw_group_unit(200);
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -1042,21 +997,10 @@ mod tests {
 
     #[test]
     fn group_layer_map_count_is_rejected() {
-        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
-        let unit = MetadataGroupUnit {
-            metadata_type: MetadataType::Reserved(0),
-            muh_header_size: 4,
-            muh_cancel_flag: false,
-            muh_payload_size: Some(0),
-            muh_layer_idc: Some(LAYER_VALUES),
-            muh_persistence_idc: Some(0),
-            muh_priority: Some(0),
-            muh_reserved_zero_2bits: Some(0),
-            muh_xlayer_map: None,
-            muh_mlayer_maps: vec![0x01, 0x02],
-            header_extension_len: 0,
-            unit: Some(unit(MetadataType::Reserved(0), 0, payload)),
-        };
+        let mut unit = unknown_raw_group_unit(0);
+        unit.muh_header_size = 4;
+        unit.muh_layer_idc = Some(LAYER_VALUES);
+        unit.muh_mlayer_maps = vec![0x01, 0x02];
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -1112,7 +1056,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-
     #[test]
     fn group_noncancel_missing_field_is_rejected() {
         let mut unit = hdr_cll_group_unit();
@@ -1156,21 +1099,9 @@ mod tests {
 
     #[test]
     fn group_global_missing_xlayer_map_is_rejected() {
-        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
-        let unit = MetadataGroupUnit {
-            metadata_type: MetadataType::Reserved(0),
-            muh_header_size: 8,
-            muh_cancel_flag: false,
-            muh_payload_size: Some(0),
-            muh_layer_idc: Some(LAYER_VALUES),
-            muh_persistence_idc: Some(0),
-            muh_priority: Some(0),
-            muh_reserved_zero_2bits: Some(0),
-            muh_xlayer_map: None,
-            muh_mlayer_maps: vec![],
-            header_extension_len: 0,
-            unit: Some(unit(MetadataType::Reserved(0), 0, payload)),
-        };
+        let mut unit = unknown_raw_group_unit(0);
+        unit.muh_header_size = 8;
+        unit.muh_layer_idc = Some(LAYER_VALUES);
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -1220,7 +1151,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-
     #[test]
     fn short_reserved_named_metadata_type_is_rejected() {
         let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
@@ -1239,7 +1169,6 @@ mod tests {
         ));
         assert_eq!(writer.bit_len(), 0);
     }
-
 
     #[test]
     fn payload_itut_t35_unexpected_extension_is_rejected() {
@@ -1430,7 +1359,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0);
     }
 
-
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn unit_oversized_declared_payload_size_is_rejected() {
@@ -1460,7 +1388,6 @@ mod tests {
         write_metadata_unit(&mut writer, &u, &[]).unwrap();
         assert_eq!(writer.into_bytes().len(), 100_000);
     }
-
 
     #[test]
     fn group_timecode_unit_round_trips() {
@@ -1502,36 +1429,7 @@ mod tests {
 
     #[test]
     fn group_varying_band_units_round_trips() {
-        let detail = BandingHintsDetail {
-            three_color_components_flag: true,
-            components: vec![
-                BandingComponent {
-                    banding_in_component_present_flag: false,
-                    max_band_width_minus_4: None,
-                    max_band_step_minus_1: None,
-                },
-                BandingComponent {
-                    banding_in_component_present_flag: true,
-                    max_band_width_minus_4: Some(10),
-                    max_band_step_minus_1: Some(3),
-                },
-                BandingComponent {
-                    banding_in_component_present_flag: false,
-                    max_band_width_minus_4: None,
-                    max_band_step_minus_1: None,
-                },
-            ],
-            band_units: Some(BandUnits {
-                num_band_units_rows_minus_1: 1,
-                num_band_units_cols_minus_1: 1,
-                varying_size: Some(VaryingBandUnits {
-                    band_block_in_luma_samples: 4,
-                    vert_size_in_band_blocks_minus_1: vec![1, 2],
-                    horz_size_in_band_blocks_minus_1: vec![3, 4],
-                }),
-                banding_in_band_unit_present: vec![true, false, false, true],
-            }),
-        };
+        let detail = varying_banding_detail();
         let payload = MetadataPayload::BandingHints(MetadataBandingHints {
             coding_banding_present_flag: true,
             source_banding_present_flag: true,
@@ -1564,21 +1462,11 @@ mod tests {
 
     #[test]
     fn group_multi_bit_global_xlayer_map_round_trips() {
-        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
-        let unit = MetadataGroupUnit {
-            metadata_type: MetadataType::Reserved(0),
-            muh_header_size: 10,
-            muh_cancel_flag: false,
-            muh_payload_size: Some(0),
-            muh_layer_idc: Some(LAYER_VALUES),
-            muh_persistence_idc: Some(0),
-            muh_priority: Some(0),
-            muh_reserved_zero_2bits: Some(0),
-            muh_xlayer_map: Some(0b1011),
-            muh_mlayer_maps: vec![0x11, 0x22, 0x44],
-            header_extension_len: 0,
-            unit: Some(unit(MetadataType::Reserved(0), 0, payload)),
-        };
+        let mut unit = unknown_raw_group_unit(0);
+        unit.muh_header_size = 10;
+        unit.muh_layer_idc = Some(LAYER_VALUES);
+        unit.muh_xlayer_map = Some(0b1011);
+        unit.muh_mlayer_maps = vec![0x11, 0x22, 0x44];
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -1590,21 +1478,11 @@ mod tests {
 
     #[test]
     fn group_global_xlayer_map_high_bit_round_trips() {
-        let payload = MetadataPayload::UnknownRaw(MetadataUnknownRaw { raw_len: 0 });
-        let unit = MetadataGroupUnit {
-            metadata_type: MetadataType::Reserved(0),
-            muh_header_size: 8,
-            muh_cancel_flag: false,
-            muh_payload_size: Some(0),
-            muh_layer_idc: Some(LAYER_VALUES),
-            muh_persistence_idc: Some(0),
-            muh_priority: Some(0),
-            muh_reserved_zero_2bits: Some(0),
-            muh_xlayer_map: Some(1 << 30),
-            muh_mlayer_maps: vec![0x55],
-            header_extension_len: 0,
-            unit: Some(unit(MetadataType::Reserved(0), 0, payload)),
-        };
+        let mut unit = unknown_raw_group_unit(0);
+        unit.muh_header_size = 8;
+        unit.muh_layer_idc = Some(LAYER_VALUES);
+        unit.muh_xlayer_map = Some(1 << 30);
+        unit.muh_mlayer_maps = vec![0x55];
         let obu = MetadataGroupObu {
             metadata_is_suffix: false,
             metadata_necessity_idc: 0,
@@ -1636,7 +1514,6 @@ mod tests {
         let reparsed = reparse_group(&bytes, xlayer).unwrap();
         assert_eq!(&reparsed, &obu);
     }
-
 
     #[test]
     fn short_unaligned_writer_is_rejected() {

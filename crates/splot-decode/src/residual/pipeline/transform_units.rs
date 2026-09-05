@@ -12,70 +12,46 @@ use crate::bitstream::tile_payload::{
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
-use super::{ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4};
+use super::{RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4};
 
 impl ResidualReconstructionPlan {
-    pub(super) fn for_luma_transform_row(self, is_parent_row: bool) -> Self {
+    pub(super) fn for_luma_transform_row(mut self, is_parent_row: bool) -> Self {
         if is_parent_row {
             return self;
         }
-        match self {
-            Self::LumaRectOneSidedLeftMrl {
-                p_angle,
-                mrl_index,
-                secondary_mrl,
-                use_tcq,
-                ..
-            } => Self::LumaRectOneSidedLeftMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index: mrl_index,
-                is_sb_boundary: false,
-                secondary_mrl,
-                use_tcq,
-            },
-            Self::LumaRectOneSidedAboveMrl {
-                p_angle,
-                mrl_index,
-                secondary_mrl,
-                use_tcq,
-                ..
-            } => Self::LumaRectOneSidedAboveMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index: mrl_index,
-                secondary_mrl,
-                use_tcq,
-            },
-            Self::LumaRectCardinalMrl {
-                direction,
-                mrl_index,
-                secondary_mrl,
-                use_tcq,
-                ..
-            } => Self::LumaRectCardinalMrl {
-                direction,
-                mrl_index,
-                above_mrl_index: mrl_index,
-                secondary_mrl,
-                use_tcq,
-            },
-            Self::LumaRectMiddleMrl {
-                p_angle,
-                mrl_index,
-                secondary_mrl,
-                use_tcq,
-                ..
-            } => Self::LumaRectMiddleMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index: mrl_index,
-                is_sb_boundary: false,
-                secondary_mrl,
-                use_tcq,
-            },
-            _ => self,
+        match &mut self {
+            Self::Luma(
+                RectLumaPlan::OneSidedLeftMrl {
+                    mrl_index,
+                    above_mrl_index,
+                    is_sb_boundary,
+                    ..
+                }
+                | RectLumaPlan::MiddleMrl {
+                    mrl_index,
+                    above_mrl_index,
+                    is_sb_boundary,
+                    ..
+                },
+            ) => {
+                *above_mrl_index = *mrl_index;
+                *is_sb_boundary = false;
+            }
+            Self::Luma(
+                RectLumaPlan::OneSidedAboveMrl {
+                    mrl_index,
+                    above_mrl_index,
+                    ..
+                }
+                | RectLumaPlan::CardinalMrl {
+                    mrl_index,
+                    above_mrl_index,
+                    ..
+                },
+            ) => *above_mrl_index = *mrl_index,
+            _ => {}
         }
+        self
     }
 }
 

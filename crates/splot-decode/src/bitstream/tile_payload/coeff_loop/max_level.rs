@@ -35,7 +35,7 @@ pub(crate) struct CoeffMaxLevelConfig {
 }
 
 pub(crate) fn derive_coeff_max_level(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) -> u32 {
-    let is_low_frequency = get_lf_limits(entry, config);
+    let is_low_frequency = coeff_is_low_frequency(entry, config.plane, config.tx_class);
     if config.is_hidden && entry.scan_index() == 0 {
         NUM_BASE_LEVELS + 1
     } else {
@@ -52,24 +52,13 @@ pub(crate) fn coeff_is_low_frequency(
     plane: usize,
     tx_class: CoeffTransformClass,
 ) -> bool {
-    get_lf_limits(
-        entry,
-        CoeffMaxLevelConfig {
-            plane,
-            tx_class,
-            is_hidden: false,
-        },
-    )
-}
-
-fn get_lf_limits(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) -> bool {
-    let is_luma = config.plane == 0;
-    let coordinate = match config.tx_class {
+    let is_luma = plane == 0;
+    let coordinate = match tx_class {
         CoeffTransformClass::TwoD => entry.row().saturating_add(entry.col()),
         CoeffTransformClass::Horizontal => entry.col(),
         CoeffTransformClass::Vertical => entry.row(),
     };
-    let limit = match (config.tx_class, is_luma) {
+    let limit = match (tx_class, is_luma) {
         (CoeffTransformClass::TwoD, true) => 4,
         (CoeffTransformClass::Horizontal | CoeffTransformClass::Vertical, true) => 2,
         (_, false) => 1,

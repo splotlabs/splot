@@ -8,12 +8,6 @@
 use super::*;
 use crate::error::ReconError;
 
-/// Builds a reference view from a fresh `width * height` row-major buffer.
-fn build_ref(samples: Vec<u16>, width: usize, height: usize) -> Vec<u16> {
-    assert_eq!(samples.len(), width * height);
-    samples
-}
-
 /// Default single-reference 8-bit params for a `w x h` block sampled from
 /// reference origin `(rx, ry)` in whole samples (full-pel) with the given filter.
 fn full_pel_params(
@@ -200,7 +194,6 @@ fn full_pel_zero_fraction_is_exact_copy() {
     let ref_w = 16usize;
     let ref_h = 16usize;
     let samples: Vec<u16> = (0..(ref_w * ref_h) as u16).collect();
-    let samples = build_ref(samples, ref_w, ref_h);
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     let w = 8usize;
@@ -228,7 +221,7 @@ fn full_pel_zero_fraction_is_exact_copy() {
 fn full_pel_into_clamps_vector_chunks_and_tail() {
     let ref_w = 16usize;
     let ref_h = 8usize;
-    let samples = build_ref(vec![1200u16; ref_w * ref_h], ref_w, ref_h);
+    let samples = vec![1200u16; ref_w * ref_h];
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = SubpelPredictParams {
         bit_depth: BitDepth::Ten,
@@ -254,13 +247,9 @@ fn full_pel_into_clamps_vector_chunks_and_tail() {
 fn bilinear_horizontal_overlap_matches_fresh_tip_predictor() {
     let ref_w = 48usize;
     let ref_h = 32usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     for (h_phase, v_phase) in [(0, 0), (5, 0), (0, 7), (5, 7)] {
         let previous = SubpelPredictParams {
@@ -300,13 +289,9 @@ fn bilinear_horizontal_overlap_matches_fresh_tip_predictor() {
 fn bilinear_horizontal_overlap_clips_physical_plane_borders() {
     let ref_w = 48usize;
     let ref_h = 32usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     for (x0, y0) in [(-10, -2), (26, 18)] {
@@ -347,7 +332,7 @@ fn bilinear_horizontal_overlap_clips_physical_plane_borders() {
 fn full_pel_flat_reference_returns_flat() {
     let ref_w = 12usize;
     let ref_h = 12usize;
-    let samples = build_ref(vec![100u16; ref_w * ref_h], ref_w, ref_h);
+    let samples = vec![100u16; ref_w * ref_h];
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     let params = SubpelPredictParams {
@@ -381,7 +366,6 @@ fn half_pel_horizontal_worked_example() {
             samples[r * ref_w + c] = (10 * (c as u16 + 1)).min(255);
         }
     }
-    let samples = build_ref(samples, ref_w, ref_h);
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     let params = SubpelPredictParams {
@@ -421,7 +405,6 @@ fn half_pel_vertical_with_horizontal_zero_phase_matches_reference() {
     let samples: Vec<u16> = (0..ref_w * ref_h)
         .map(|index| ((index * 17 + 23) % 256) as u16)
         .collect();
-    let samples = build_ref(samples, ref_w, ref_h);
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = SubpelPredictParams {
         interp: InterpolationFilter::EightTapSharp,
@@ -449,7 +432,6 @@ fn reference_border_extension_clips() {
     let ref_w = 8usize;
     let ref_h = 8usize;
     let samples: Vec<u16> = (0..(ref_w * ref_h) as u16).map(|v| v + 1).collect();
-    let samples = build_ref(samples, ref_w, ref_h);
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     let params = SubpelPredictParams {
@@ -475,13 +457,9 @@ fn reference_border_extension_clips() {
 fn bilinear_fixed_window_clips_physical_plane_borders() {
     let ref_w = 32usize;
     let ref_h = 32usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     for (h_phase, v_phase) in [(8, 0), (0, 8), (8, 8)] {
@@ -536,7 +514,6 @@ fn matches_independent_reference_over_many_cases() {
         let samples: Vec<u16> = (0..(ref_w * ref_h))
             .map(|_| (next() % 256) as u16)
             .collect();
-        let samples = build_ref(samples, ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
         let w = dims[(next() % dims.len() as u32) as usize];
@@ -597,7 +574,6 @@ fn edge_positions_match_independent_reference() {
         let samples: Vec<u16> = (0..(ref_w * ref_h))
             .map(|_| (next() % 256) as u16)
             .collect();
-        let samples = build_ref(samples, ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
         let w = dims[(next() % dims.len() as u32) as usize];
@@ -660,7 +636,6 @@ fn extreme_ten_bit_contrast_matches_independent_reference() {
                 .collect::<Vec<u16>>(),
         ),
     ] {
-        let samples = build_ref(samples, ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
         for phase_x in 0..16i32 {
             for phase_y in 0..16i32 {
@@ -722,7 +697,6 @@ fn scaled_steps_match_independent_reference() {
         let samples: Vec<u16> = (0..(ref_w * ref_h))
             .map(|_| (next() % 1024) as u16)
             .collect();
-        let samples = build_ref(samples, ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
         let w = dims[(next() % dims.len() as u32) as usize];
@@ -773,7 +747,6 @@ fn zero_phase_copy_matches_independent_reference() {
     let samples: Vec<u16> = (0..(ref_w * ref_h))
         .map(|_| (next() % 1024) as u16)
         .collect();
-    let samples = build_ref(samples, ref_w, ref_h);
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     for (base_x, base_y, w, h) in [
@@ -902,7 +875,7 @@ fn published_view_zero_phase_copy_stays_within_the_available_prefix() {
 fn ten_bit_clip_uses_full_range() {
     let ref_w = 12usize;
     let ref_h = 12usize;
-    let samples = build_ref(vec![1200u16; ref_w * ref_h], ref_w, ref_h);
+    let samples = vec![1200u16; ref_w * ref_h];
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = SubpelPredictParams {
         bit_depth: BitDepth::Ten,
@@ -931,13 +904,9 @@ fn ten_bit_clip_uses_full_range() {
 fn bilinear_2d_into_matches_reference_for_direct_and_clipped_blocks() {
     let ref_w = 17usize;
     let ref_h = 13usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 73 + index / ref_w * 211) % 1200) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 73 + index / ref_w * 211) % 1200) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     for (base_x, base_y, w, h, phase_x, phase_y) in [
@@ -971,13 +940,9 @@ fn bilinear_2d_into_matches_reference_for_direct_and_clipped_blocks() {
 fn single_prediction_strided_matches_contiguous_and_preserves_padding() {
     let ref_w = 24usize;
     let ref_h = 20usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 73 + 19) & 1023) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 73 + 19) & 1023) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let base = full_pel_params(
         InterpolationFilter::EightTap,
@@ -1152,7 +1117,7 @@ fn single_prediction_u8_rejects_destination_geometry_before_mutation() {
 fn single_prediction_into_rejects_short_output_without_writes() {
     let ref_w = 8usize;
     let ref_h = 8usize;
-    let samples = build_ref(vec![80u16; ref_w * ref_h], ref_w, ref_h);
+    let samples = vec![80u16; ref_w * ref_h];
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = SubpelPredictParams {
         interp: InterpolationFilter::Bilinear,
@@ -1185,7 +1150,7 @@ fn single_prediction_into_rejects_short_output_without_writes() {
 fn compound_intermediate_keeps_unclipped_prescaled_predictor() {
     let ref_w = 8usize;
     let ref_h = 8usize;
-    let samples = build_ref(vec![255u16; ref_w * ref_h], ref_w, ref_h);
+    let samples = vec![255u16; ref_w * ref_h];
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = full_pel_params(
         InterpolationFilter::EightTap,
@@ -1216,13 +1181,9 @@ fn compound_intermediate_keeps_unclipped_prescaled_predictor() {
 fn compound_intermediate_into_matches_owned_copy_and_filtered() {
     let ref_w = 16usize;
     let ref_h = 16usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 13 + 7) % 256) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 13 + 7) % 256) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let copy = full_pel_params(
         InterpolationFilter::EightTap,
@@ -1284,13 +1245,9 @@ fn compound_intermediate_into_matches_owned_copy_and_filtered() {
 fn compound_average_into_matches_materialized_second_predictor() {
     let ref_w = 24usize;
     let ref_h = 24usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 73 + (index / ref_w) * 29) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 73 + (index / ref_w) * 29) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let base = SubpelPredictParams {
         interp: InterpolationFilter::EightTap,
@@ -1397,13 +1354,9 @@ fn compound_average_into_matches_materialized_second_predictor() {
 fn clipped_one_axis_compound_average_preserves_column_order() {
     let ref_w = 32usize;
     let ref_h = 12usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 73 + (index / ref_w) * 29) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 73 + (index / ref_w) * 29) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let horizontal = SubpelPredictParams {
         interp: InterpolationFilter::EightTap,
@@ -1520,13 +1473,9 @@ fn compound_average_sink_matches_scalar_oracle_across_shapes_and_clamps() {
     let phases = [(0i32, 0i32), (0, 8), (11, 0), (5, 13)];
     let ref_w = 48usize;
     let ref_h = 24usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 73 + index / ref_w * 29) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 73 + index / ref_w * 29) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let pred0_pattern = |w: usize, h: usize| {
         (0..w * h)
@@ -1636,20 +1585,12 @@ fn compound_average_sink_matches_scalar_oracle_across_shapes_and_clamps() {
 fn fullpel_compound_average_matches_materialized_predictors() {
     let ref_w = 24usize;
     let ref_h = 20usize;
-    let samples0 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 17 + 3) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
-    let samples1 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 29 + 11) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples0 = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 3) % 1024) as u16)
+        .collect::<Vec<u16>>();
+    let samples1 = (0..ref_w * ref_h)
+        .map(|index| ((index * 29 + 11) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
     let params0 = SubpelPredictParams {
@@ -1780,20 +1721,12 @@ fn fullpel_compound_average_u8_matches_materialized_predictors() {
 fn clipped_horizontal_compound_matches_materialized_predictors() {
     let ref_w = 24usize;
     let ref_h = 16usize;
-    let samples0 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 17 + 3) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
-    let samples1 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 29 + 11) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples0 = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 3) % 1024) as u16)
+        .collect::<Vec<u16>>();
+    let samples1 = (0..ref_w * ref_h)
+        .map(|index| ((index * 29 + 11) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
     let params0 = SubpelPredictParams {
@@ -1859,20 +1792,12 @@ fn clipped_horizontal_compound_matches_materialized_predictors() {
 fn clipped_horizontal_compound_rows_match_materialized_predictors() {
     let ref_w = 24usize;
     let ref_h = 8usize;
-    let samples0 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 17 + 3) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
-    let samples1 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 29 + 11) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples0 = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 3) % 1024) as u16)
+        .collect::<Vec<u16>>();
+    let samples1 = (0..ref_w * ref_h)
+        .map(|index| ((index * 29 + 11) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
     let params0 = SubpelPredictParams {
@@ -1925,20 +1850,12 @@ fn clipped_horizontal_compound_rows_match_materialized_predictors() {
 fn fused_two_axis_compound_matches_materialized_predictors() {
     let ref_w = 32usize;
     let ref_h = 24usize;
-    let samples0 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 17 + 3) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
-    let samples1 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 29 + 11) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples0 = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 3) % 1024) as u16)
+        .collect::<Vec<u16>>();
+    let samples1 = (0..ref_w * ref_h)
+        .map(|index| ((index * 29 + 11) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
     for width in [4, 8] {
@@ -1994,20 +1911,12 @@ fn fused_two_axis_compound_matches_materialized_predictors() {
 fn clipped_two_axis_compound_matches_materialized_predictors() {
     let ref_w = 24usize;
     let ref_h = 20usize;
-    let samples0 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 17 + 3) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
-    let samples1 = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 29 + 11) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples0 = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 3) % 1024) as u16)
+        .collect::<Vec<u16>>();
+    let samples1 = (0..ref_w * ref_h)
+        .map(|index| ((index * 29 + 11) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
     for width in [4, 8] {
@@ -2074,13 +1983,9 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
 fn one_axis_compound_intermediates_match_independent_reference() {
     let ref_w = 24usize;
     let ref_h = 24usize;
-    let samples = build_ref(
-        (0..ref_w * ref_h)
-            .map(|index| ((index * 73 + (index / ref_w) * 211) % 1024) as u16)
-            .collect(),
-        ref_w,
-        ref_h,
-    );
+    let samples = (0..ref_w * ref_h)
+        .map(|index| ((index * 73 + (index / ref_w) * 211) % 1024) as u16)
+        .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let filters = [
         InterpolationFilter::EightTap,
@@ -2144,7 +2049,7 @@ fn one_axis_compound_intermediates_match_independent_reference() {
 fn compound_intermediate_into_rejects_invalid_destination_without_writes() {
     let ref_w = 8usize;
     let ref_h = 8usize;
-    let samples = build_ref(vec![80u16; ref_w * ref_h], ref_w, ref_h);
+    let samples = vec![80u16; ref_w * ref_h];
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = full_pel_params(
         InterpolationFilter::EightTap,
@@ -2241,7 +2146,6 @@ fn small_block_uses_four_tap_filter() {
     let samples: Vec<u16> = (0..(ref_w * ref_h))
         .map(|i| ((i * 7) % 200 + 10) as u16)
         .collect();
-    let samples = build_ref(samples, ref_w, ref_h);
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = SubpelPredictParams {
         interp: InterpolationFilter::EightTap,
@@ -2266,7 +2170,7 @@ fn small_block_uses_four_tap_filter() {
 
 #[test]
 fn rejects_zero_dimension() {
-    let samples = build_ref(vec![0u16; 16], 4, 4);
+    let samples = vec![0u16; 16];
     let view = ReferencePlaneView::new(&samples, 4, 4).unwrap();
     let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
     params.w = 0;
@@ -2278,7 +2182,7 @@ fn rejects_zero_dimension() {
 
 #[test]
 fn rejects_oversized_block() {
-    let samples = build_ref(vec![0u16; 16], 4, 4);
+    let samples = vec![0u16; 16];
     let view = ReferencePlaneView::new(&samples, 4, 4).unwrap();
     let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
     params.w = 129;
@@ -2290,7 +2194,7 @@ fn rejects_oversized_block() {
 
 #[test]
 fn rejects_negative_step() {
-    let samples = build_ref(vec![0u16; 16], 4, 4);
+    let samples = vec![0u16; 16];
     let view = ReferencePlaneView::new(&samples, 4, 4).unwrap();
     let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
     params.step_y = -1;
@@ -2302,7 +2206,7 @@ fn rejects_negative_step() {
 
 #[test]
 fn rejects_overflowing_step_without_panic() {
-    let samples = build_ref(vec![0u16; 16], 4, 4);
+    let samples = vec![0u16; 16];
     let view = ReferencePlaneView::new(&samples, 4, 4).unwrap();
     let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
     params.step_y = i32::MAX;
@@ -2356,8 +2260,6 @@ fn vertical_only_matches_independent_reference_across_shapes() {
     };
     let eight: Vec<u16> = (0..ref_w * ref_h).map(|_| (next() % 256) as u16).collect();
     let ten: Vec<u16> = (0..ref_w * ref_h).map(|_| (next() % 1024) as u16).collect();
-    let eight = build_ref(eight, ref_w, ref_h);
-    let ten = build_ref(ten, ref_w, ref_h);
 
     let filters = [
         InterpolationFilter::EightTap,

@@ -16,8 +16,8 @@
 //! ## Output classification and the Unknown invariant
 //!
 //! Output vs non-output selects the § 7.3.3 / § 7.3.4 grammar and the BRT
-//! multiplicity bound. A SEF is always output, `OBU_BRIDGE_FRAME` always non-output
-//! (mirror line 470); the rest carry `immediate_output_frame` /
+//! multiplicity bound. A SEF is always output; bridge output depends on the active
+//! sequence header; the remaining types carry `immediate_output_frame` /
 //! `implicit_output_frame` from the core parser. When that classification is
 //! undecidable the output class is [`OutputClass::Unknown`] and the
 //! output-class-derived judgment (the § 7.3.4 BRT bound and the grammar branch) is
@@ -34,8 +34,8 @@
 //! (silently, not `mixed-coded-frame-types`) while a same-`obu_type` neighbour is
 //! unit-count-undecidable: it stays in the open coded frame and reports
 //! [`FrameBoundary::Ambiguous`]. A TIP routes the open frame's class to Unknown; a
-//! bridge keeps its type-decided non-output class, so its § 7.3.4 BRT bound stays
-//! evaluable.
+//! bridge keeps its sequence-decided output class, so the § 7.3.4 BRT bound remains
+//! evaluable for ordinary non-output bridges.
 //!
 //! The structural facts fire eagerly; the one output-class-dependent fact (the
 //! § 7.3.4 non-output BRT multiplicity bound) is resolved at the unit boundary.
@@ -123,8 +123,7 @@ pub(crate) enum FrameBoundary {
     /// This OBU is a *decided* continuation of the open coded frame unit (a
     /// later OBU of the same coded frame: a `is_first_tile_group == 0` tile OBU, a
     /// same-type readable continuation, the out-of-order `sef-single-obu` /
-    /// `mixed-coded-frame-types` OBUs the segmenter keeps in the open frame, or a
-    /// same-type bridge whose output is type-decided). It does *not* open a CELU
+    /// `mixed-coded-frame-types` OBUs the segmenter keeps in the open frame). It does not open a CELU
     /// frame unit.
     ContinuesUnit,
     /// The boundary is *undecidable* (a same-type no-delimiter TIP OBU, or a
@@ -232,12 +231,6 @@ enum FlushKind {
     EndOfStream,
 }
 
-/// Per-layer-triple segmentation state within the current temporal unit.
-#[derive(Debug)]
-struct LayerState {
-    unit: UnitState,
-}
-
 /// Coded-frame-unit segmenter (AV2 § 7.3.3 / § 7.3.4 / § 7.3.5 / § 7.3.8.10).
 ///
 /// One instance lives in the validator context. It is fed every OBU in stream
@@ -247,7 +240,7 @@ struct LayerState {
 /// triple, since § 7.3.3 / § 7.3.4 define a coded frame unit over that triple.
 #[derive(Debug, Default)]
 pub(crate) struct FrameUnitSegmenter {
-    layers: BTreeMap<(ExtendedLayerId, EmbeddedLayerId, TemporalLayerId), LayerState>,
+    layers: BTreeMap<(ExtendedLayerId, EmbeddedLayerId, TemporalLayerId), UnitState>,
     /// Number of distinct coded frames opened for each `(xlayer, mlayer)` embedded layer in
     /// the current temporal unit, counted at each coded frame's first OBU. Each coded frame is
     /// its own unit (§ 7.3.3 / § 7.3.4), so completed units is this minus the open one (see
@@ -296,8 +289,8 @@ impl FrameUnitSegmenter {
     /// severity.
     fn flush_open_units(&mut self, kind: FlushKind, report: &mut ValidationReport) {
         for state in self.layers.values_mut() {
-            Self::resolve_unit(&state.unit, report);
-            Self::report_head_only_unit(&state.unit, kind, report);
+            Self::resolve_unit(state, report);
+            Self::report_head_only_unit(state, kind, report);
         }
     }
 
@@ -362,10 +355,10 @@ impl FrameUnitSegmenter {
         let Some(state) = self.layers.get(&key) else {
             return true;
         };
-        if Self::starts_new_unit(&state.unit, role, obu.header.obu_type) {
+        if Self::starts_new_unit(state, role, obu.header.obu_type) {
             return true;
         }
-        if state.unit.coded_frame.is_none() {
+        if state.coded_frame.is_none() {
             return true;
         }
         match role {
@@ -410,9 +403,7 @@ impl FrameUnitSegmenter {
         let embedded_key = (obu.header.extended_layer_id, obu.header.embedded_layer_id);
         let coded_frames_opened_for_embedded_layer =
             &mut self.coded_frames_opened_for_embedded_layer;
-        let state = self.layers.entry(key).or_insert_with(|| LayerState {
-            unit: UnitState::new(),
-        });
+        let state = self.layers.entry(key).or_insert_with(UnitState::new);
 
         Self::observe_in_layer(
             state,
@@ -427,7 +418,7 @@ impl FrameUnitSegmenter {
     /// Drives one layer-triple's state machine for a single OBU. Returns the
     /// frame-bearing OBU's [`FrameBoundary`] (`None` for a non-frame OBU).
     fn observe_in_layer(
-        state: &mut LayerState,
+        state: &mut UnitState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         coded_frames_opened_for_embedded_layer: &mut BTreeMap<
             (ExtendedLayerId, EmbeddedLayerId),
@@ -437,9 +428,9 @@ impl FrameUnitSegmenter {
         role: SegRole,
         report: &mut ValidationReport,
     ) -> Option<FrameBoundary> {
-        if Self::starts_new_unit(&state.unit, role, obu.header.obu_type) {
-            Self::resolve_unit(&state.unit, report);
-            state.unit = UnitState::new();
+        if Self::starts_new_unit(state, role, obu.header.obu_type) {
+            Self::resolve_unit(state, report);
+            *state = UnitState::new();
         }
 
         if matches!(
@@ -453,7 +444,7 @@ impl FrameUnitSegmenter {
                     is_suffix: Some(false),
                 }
         ) {
-            state.unit.note_head(obu.offset);
+            state.note_head(obu.offset);
         }
 
         match role {
@@ -468,21 +459,21 @@ impl FrameUnitSegmenter {
                 None
             }
             SegRole::MultiFrameHeader => {
-                Self::observe_mfh(&mut state.unit, obu, report);
+                Self::observe_mfh(state, obu, report);
                 None
             }
             SegRole::BufferRemovalTiming => {
-                Self::observe_brt(&mut state.unit, obu);
+                Self::observe_brt(state, obu);
                 None
             }
             SegRole::QuantizationMatrix | SegRole::FilmGrain => {
-                if !state.unit.region_blind {
-                    state.unit.region = Region::PreFrame;
+                if !state.region_blind {
+                    state.region = Region::PreFrame;
                 }
                 None
             }
             SegRole::Metadata { is_suffix } => {
-                Self::observe_metadata(&mut state.unit, is_suffix, obu, report);
+                Self::observe_metadata(state, is_suffix, obu, report);
                 None
             }
             SegRole::TileFrame {
@@ -501,7 +492,6 @@ impl FrameUnitSegmenter {
                 state,
                 embedded_key,
                 coded_frames_opened_for_embedded_layer,
-                None,
                 output_class(type_decided_output(obu.header.obu_type)),
                 true,
                 false, // a SEF is a single-OBU coded frame, judged by the SEF rule
@@ -514,7 +504,6 @@ impl FrameUnitSegmenter {
                 state,
                 embedded_key,
                 coded_frames_opened_for_embedded_layer,
-                None,
                 output_class(output),
                 false,
                 true,  // TIP frames carry no in-band coded-frame delimiter
@@ -527,7 +516,6 @@ impl FrameUnitSegmenter {
                 state,
                 embedded_key,
                 coded_frames_opened_for_embedded_layer,
-                None,
                 output_class(output),
                 false,
                 true,             // OBU_BRIDGE_FRAME carries no in-band coded-frame delimiter
@@ -597,13 +585,12 @@ impl FrameUnitSegmenter {
 
     /// Observes a content-interpretation OBU (region 1; § 7.3.8.10 placement).
     fn observe_ci(
-        state: &mut LayerState,
+        unit: &mut UnitState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         coded_frames_opened_for_embedded_layer: &BTreeMap<(ExtendedLayerId, EmbeddedLayerId), u32>,
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) {
-        let unit = &mut state.unit;
         let completed = coded_frames_opened_for_embedded_layer
             .get(&embedded_key)
             .copied()
@@ -725,7 +712,7 @@ impl FrameUnitSegmenter {
     /// Observes a tile-group frame OBU (the coded frame; first-tile-group rule).
     #[allow(clippy::too_many_arguments)]
     fn observe_tile_frame(
-        state: &mut LayerState,
+        state: &mut UnitState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         coded_frames_opened_for_embedded_layer: &mut BTreeMap<
             (ExtendedLayerId, EmbeddedLayerId),
@@ -736,14 +723,12 @@ impl FrameUnitSegmenter {
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) -> FrameBoundary {
-        let obu_type = obu.header.obu_type;
-        let first_in_frame = state.unit.coded_frame.is_none();
+        let first_in_frame = state.coded_frame.is_none();
         let delimiter_unreadable = !first_in_frame && is_first_tile_group.is_none();
         let boundary = Self::observe_frame(
             state,
             embedded_key,
             coded_frames_opened_for_embedded_layer,
-            Some(obu_type),
             class,
             false,
             false, // tile-group OBUs carry the is_first_tile_group delimiter
@@ -766,12 +751,11 @@ impl FrameUnitSegmenter {
     /// Observes a frame-bearing OBU joining (or extending) the unit's coded frame: records
     /// the coded frame's identity / output class on the first OBU, and enforces the
     /// structural SEF-single-OBU and same-`obu_type` rules (independent of output class) on
-    /// later OBUs. `obu_type_for_match` is the same-type rule's type (`None` for
-    /// SEF/TIP/bridge, which use the OBU's own type). `is_no_delimiter_frame` marks a TIP /
+    /// later OBUs. `is_no_delimiter_frame` marks a TIP /
     /// bridge OBU, whose same-type adjacency is unit-count-ambiguous
     /// ([`FrameBoundary::Ambiguous`]); `output_is_type_decided` distinguishes a TIP (routes
-    /// the open frame's class to Unknown) from a bridge (keeps its type-decided non-output
-    /// class, mirror line 470, so its § 7.3.4 BRT bound stays evaluable).
+    /// the open frame's class to Unknown) from a bridge whose sequence header has
+    /// established its output class (which remains available for the § 7.3.4 BRT bound).
     ///
     /// `delimiter_unreadable` marks a tile-group OBU whose `is_first_tile_group` bit could
     /// not be read while a coded frame is open: the boundary is undecidable, so the structural
@@ -783,13 +767,12 @@ impl FrameUnitSegmenter {
     /// `Ambiguous` for the undecidable boundary, `ContinuesUnit` for every decided continuation.
     #[allow(clippy::too_many_arguments)]
     fn observe_frame(
-        state: &mut LayerState,
+        state: &mut UnitState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
         coded_frames_opened_for_embedded_layer: &mut BTreeMap<
             (ExtendedLayerId, EmbeddedLayerId),
             u32,
         >,
-        obu_type_for_match: Option<ObuType>,
         class: OutputClass,
         is_sef: bool,
         is_no_delimiter_frame: bool,
@@ -798,16 +781,16 @@ impl FrameUnitSegmenter {
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) -> FrameBoundary {
-        let obu_type = obu_type_for_match.unwrap_or(obu.header.obu_type);
-        match state.unit.coded_frame {
+        let obu_type = obu.header.obu_type;
+        match state.coded_frame {
             None => {
-                state.unit.coded_frame = Some(CodedFrameState {
+                state.coded_frame = Some(CodedFrameState {
                     obu_type,
                     is_sef,
                     output: class,
                 });
-                if !state.unit.region_blind {
-                    state.unit.region = Region::CodedFrame;
+                if !state.region_blind {
+                    state.region = Region::CodedFrame;
                 }
                 let opened = coded_frames_opened_for_embedded_layer
                     .entry(embedded_key)
@@ -819,7 +802,7 @@ impl FrameUnitSegmenter {
                 if delimiter_unreadable {
                     if frame.output != OutputClass::Unknown {
                         frame.output = OutputClass::Unknown;
-                        state.unit.coded_frame = Some(frame);
+                        state.coded_frame = Some(frame);
                     }
                     FrameBoundary::Ambiguous
                 } else if frame.is_sef {
@@ -847,7 +830,7 @@ impl FrameUnitSegmenter {
                 } else if is_no_delimiter_frame {
                     if !output_is_type_decided && frame.output != OutputClass::Unknown {
                         frame.output = OutputClass::Unknown;
-                        state.unit.coded_frame = Some(frame);
+                        state.coded_frame = Some(frame);
                     }
                     FrameBoundary::Ambiguous
                 } else {
@@ -916,18 +899,8 @@ fn output_class(output: Option<bool>) -> OutputClass {
     }
 }
 
-/// The **type-decided** output classification of a frame-bearing OBU, when its `obu_type` alone
-/// settles it (AV2 § 7.3.3 / § 7.3.4): `Some(true)` for a SEF (`OBU_LEADING_SEF` /
-/// `OBU_REGULAR_SEF` — the § 7.3.3 "Or" branch makes a SEF a coded *output* frame unit, mirror
-/// line 417), `Some(false)` for `OBU_BRIDGE_FRAME` (it appears only in the § 7.3.4
-/// coded-*non-output*-frame-unit list, mirror line 470). `None` for every other frame type
-/// (CLK / OLK / `*_TILE_GROUP` / `SWITCH` / `RAS` / `*_TIP` / `BRIDGE`), whose class is
-/// carried by the
-/// `immediate_output_frame` / `implicit_output_frame` flags — they appear in *both* § 7.3.3 and
-/// § 7.3.4.
-///
-/// The bridge class is instead derived from the active sequence header by
-/// `ValidatorContext::bridge_output_class`, because a single-picture bridge is an output frame.
+/// SEF is always output (§ 7.3.3). Other types require parsed header state;
+/// in particular a bridge can be output under a single-picture sequence header.
 pub(crate) fn type_decided_output(obu_type: ObuType) -> Option<bool> {
     if obu_type.is_sef() { Some(true) } else { None }
 }
@@ -1038,7 +1011,7 @@ mod tests {
         assert!(
             r.errors()
                 .any(|d| d.rule_id == "frame-unit/buffer-removal-timing-multiplicity"),
-            "the bridge unit keeps its type-decided non-output class across the ambiguous \
+            "the bridge unit keeps its known non-output class across the ambiguous \
              boundary, so the § 7.3.4 BRT multiplicity bound must still fire; report: {r}"
         );
     }

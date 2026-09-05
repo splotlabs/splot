@@ -503,7 +503,6 @@ impl<'a> FrameDeblock<'a> {
                     band: PlaneBand {
                         row_count: samples.len() / stride,
                         storage: PlaneRows { samples, stride },
-                        stride,
                         width,
                         height,
                         y_origin,
@@ -537,25 +536,14 @@ impl<'a> FrameDeblock<'a> {
         mi_row_end: usize,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
-        self.advance_with(mi_row_end, bit_depth, |this, ranges, depth| {
-            this.run_ranges_source(source, ranges, depth)
-        })?;
+        let (ranges, pass_0_end, pass_1_end) = self.next_ranges(mi_row_end);
+        self.run_ranges_source(source, &ranges, bit_depth)?;
+        self.next_pass_0_mi_row = pass_0_end;
+        self.next_pass_1_mi_row = pass_1_end;
         let sub_y = usize::from(source.info().pixel_format().subsampling_y());
         if !source.publish_final_rows(self.final_luma_rows(sub_y)) {
             return Err(DeblockError::Workspace);
         }
-        Ok(())
-    }
-
-    fn advance_with(
-        &mut self,
-        mi_row_end: usize,
-        bit_depth: BitDepth,
-        run: impl FnOnce(&Self, &[Range<usize>; 2], BitDepth) -> Result<(), DeblockError>,
-    ) -> Result<(), DeblockError> {
-        let (ranges, pass_0_end, pass_1_end) = self.next_ranges(mi_row_end);
-        run(self, &ranges, bit_depth)?;
-        self.record_frontiers(pass_0_end, pass_1_end);
         Ok(())
     }
 
@@ -573,11 +561,6 @@ impl<'a> FrameDeblock<'a> {
             pass_0_end,
             pass_1_end,
         )
-    }
-
-    fn record_frontiers(&mut self, pass_0_end: usize, pass_1_end: usize) {
-        self.next_pass_0_mi_row = pass_0_end;
-        self.next_pass_1_mi_row = pass_1_end;
     }
 
     fn run_ranges_source<T: ReconSample>(
@@ -627,7 +610,6 @@ impl<'a> FrameDeblock<'a> {
                         self.run_plane_job(PlaneJob {
                             band: PlaneBand {
                                 storage: PlaneRows { samples, stride },
-                                stride,
                                 width,
                                 height,
                                 y_origin,
@@ -1056,7 +1038,6 @@ struct PlaneCtx<'rows, 'samples, T: ReconSample> {
     rows: &'rows mut PlaneRows<'samples, T>,
     width: usize,
     height: usize,
-    x_origin: usize,
     y_origin: usize,
     band_rows: usize,
 }
@@ -1068,7 +1049,6 @@ struct PlaneCtx<'rows, 'samples, T: ReconSample> {
 /// banding, while `y_origin` and `rows` name the rows the job owns.
 struct PlaneBand<'a, T> {
     storage: PlaneRows<'a, T>,
-    stride: usize,
     width: usize,
     height: usize,
     y_origin: usize,
@@ -1079,7 +1059,6 @@ impl<'a, T> PlaneBand<'a, T> {
     const fn plane(samples: &'a mut [T], stride: usize, width: usize, height: usize) -> Self {
         Self {
             storage: PlaneRows { samples, stride },
-            stride,
             width,
             height,
             y_origin: 0,
@@ -1094,7 +1073,7 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
     /// Coordinates stay in plane space, so a band filters exactly the samples
     /// the whole-plane view does; a row outside the band is not addressable.
     fn new(band: &'rows mut PlaneBand<'samples, T>) -> Result<Self, DeblockError> {
-        let (stride, width, height) = (band.stride, band.width, band.height);
+        let (stride, width, height) = (band.storage.stride, band.width, band.height);
         let (y_origin, rows) = (band.y_origin, band.row_count);
         if width > stride || stride == 0 || y_origin.checked_add(rows) > Some(height) {
             return Err(DeblockError::Workspace);
@@ -1112,7 +1091,6 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
             rows: &mut band.storage,
             width,
             height,
-            x_origin: 0,
             y_origin,
             band_rows: rows,
         })
@@ -1122,9 +1100,7 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
         let row = y
             .checked_sub(self.y_origin)
             .filter(|row| *row < self.band_rows)?;
-        let column = x
-            .checked_sub(self.x_origin)
-            .filter(|column| *column < self.width)?;
+        let column = (x < self.width).then_some(x)?;
         Some((row, column))
     }
 
@@ -1521,7 +1497,7 @@ fn deblock_filter_edge_specialized<T: ReconSample, const PLANE: usize, const PAS
 
     let horizontal = dx == 1
         && dy == 0
-        && x_p >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && x_p >= GATHER_HALF
         && x_p <= plane_ctx.width.saturating_sub(GATHER_HALF)
         && y_p >= plane_ctx.y_origin
         && y_p
@@ -1531,15 +1507,13 @@ fn deblock_filter_edge_specialized<T: ReconSample, const PLANE: usize, const PAS
         && dy == 1
         && y_p >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
         && y_p <= plane_ctx.height.saturating_sub(GATHER_HALF)
-        && x_p >= plane_ctx.x_origin
         && x_p
             .checked_add(MI_SIZE)
             .is_some_and(|end| end <= plane_ctx.width);
     if horizontal || vertical {
-        let x_origin = plane_ctx.x_origin;
         let y_origin = plane_ctx.y_origin;
         let (samples, stride) = plane_ctx.rows.contiguous_mut();
-        let boundary = (y_p - y_origin) * stride + x_p - x_origin;
+        let boundary = (y_p - y_origin) * stride + x_p;
         let (perpendicular, lane) = if horizontal { (1, stride) } else { (stride, 1) };
         return filter_contiguous_edge(
             samples,
@@ -1652,7 +1626,7 @@ fn choose_filter_width<T: ReconSample>(
     let boundary = GATHER_HALF;
     let horizontal = dx == 1
         && dy == 0
-        && x_p >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && x_p >= GATHER_HALF
         && x_p <= plane_ctx.width.saturating_sub(GATHER_HALF)
         && y_p >= plane_ctx.y_origin
         && y_p
@@ -1662,13 +1636,12 @@ fn choose_filter_width<T: ReconSample>(
         && dy == 1
         && y_p >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
         && y_p <= plane_ctx.height.saturating_sub(GATHER_HALF)
-        && x_p >= plane_ctx.x_origin
         && x_p
             .checked_add(MI_SIZE)
             .is_some_and(|end| end <= plane_ctx.width);
     if horizontal || vertical {
         let (samples, stride) = plane_ctx.rows.contiguous();
-        let first_boundary = (y_p - plane_ctx.y_origin) * stride + x_p - plane_ctx.x_origin;
+        let first_boundary = (y_p - plane_ctx.y_origin) * stride + x_p;
         let perpendicular_stride = if horizontal { 1 } else { stride };
         let lane_stride = if horizontal { stride } else { 1 };
         let params = DeblockFilterChoice {
@@ -1759,7 +1732,7 @@ fn apply_edge_samples<T: ReconSample>(
     }
     let horizontal = dx == 1
         && dy == 0
-        && x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && x >= GATHER_HALF
         && x <= plane_ctx.width.saturating_sub(GATHER_HALF)
         && y >= plane_ctx.y_origin
         && y.checked_add(lanes)
@@ -1768,14 +1741,12 @@ fn apply_edge_samples<T: ReconSample>(
         && dy == 1
         && y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
         && y <= plane_ctx.height.saturating_sub(GATHER_HALF)
-        && x >= plane_ctx.x_origin
         && x.checked_add(lanes)
             .is_some_and(|end| end <= plane_ctx.width);
     if lanes <= MI_SIZE && params.boundary == GATHER_HALF && (horizontal || vertical) {
-        let x_origin = plane_ctx.x_origin;
         let y_origin = plane_ctx.y_origin;
         let (samples, stride) = plane_ctx.rows.contiguous_mut();
-        let boundary = (y - y_origin) * stride + x - x_origin;
+        let boundary = (y - y_origin) * stride + x;
         let perpendicular_stride = if horizontal { 1 } else { stride };
         let lane_stride = if horizontal { stride } else { 1 };
         let perpendicular_stride =
@@ -1803,107 +1774,6 @@ fn apply_edge_samples<T: ReconSample>(
         }
         return Ok(());
     }
-    if lanes <= MI_SIZE
-        && params.boundary == GATHER_HALF
-        && dx == 1
-        && dy == 0
-        && x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
-        && x <= plane_ctx.width.saturating_sub(GATHER_HALF)
-        && y >= plane_ctx.y_origin
-        && y.checked_add(lanes)
-            .is_some_and(|end| end <= plane_ctx.height)
-    {
-        let row_start = y - plane_ctx.y_origin;
-        let column_start = x - GATHER_HALF - plane_ctx.x_origin;
-        let row_range = row_start..row_start + lanes;
-        if row_range.clone().all(|row| {
-            plane_ctx
-                .rows
-                .row(row)
-                .is_some_and(|row| column_start + 2 * GATHER_HALF <= row.len())
-        }) {
-            for row in row_range {
-                let row = plane_ctx.rows.row_mut(row).ok_or(DeblockError::Workspace)?;
-                deblock_sample_filter(
-                    &mut row[column_start..column_start + 2 * GATHER_HALF],
-                    &params,
-                )
-                .map_err(|_| DeblockError::SampleFilter)?;
-            }
-            return Ok(());
-        }
-    }
-
-    if lanes <= MI_SIZE
-        && params.boundary == GATHER_HALF
-        && dx == 0
-        && dy == 1
-        && y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
-        && y <= plane_ctx.height.saturating_sub(GATHER_HALF)
-        && x >= plane_ctx.x_origin
-        && x.checked_add(lanes)
-            .is_some_and(|end| end <= plane_ctx.width)
-    {
-        let row_start = y - GATHER_HALF - plane_ctx.y_origin;
-        let column_start = x - plane_ctx.x_origin;
-        let row_range = row_start..row_start + 2 * GATHER_HALF;
-        if row_range.clone().all(|row| {
-            plane_ctx
-                .rows
-                .row(row)
-                .is_some_and(|row| column_start + lanes <= row.len())
-        }) {
-            let mut lines = [[T::default(); 2 * GATHER_HALF]; MI_SIZE];
-            for (sample_index, row) in row_range.clone().enumerate() {
-                let row = plane_ctx.rows.row(row).ok_or(DeblockError::Workspace)?;
-                for lane in 0..lanes {
-                    lines[lane][sample_index] = row[column_start + lane];
-                }
-            }
-            deblock_sample_filter_strided_4(
-                lines.as_flattened_mut(),
-                NonZeroUsize::MIN,
-                NonZeroUsize::new(2 * GATHER_HALF).ok_or(DeblockError::Workspace)?,
-                &params,
-            )
-            .map_err(|_| DeblockError::SampleFilter)?;
-
-            if !params.prev_lossless {
-                let start = params.boundary - params.max_width_neg;
-                for offset in 0..params.max_width_neg {
-                    let sample_index = start + offset;
-                    let row = plane_ctx
-                        .rows
-                        .row_mut(row_start + sample_index)
-                        .ok_or(DeblockError::Workspace)?;
-                    for (target, line) in row[column_start..column_start + lanes]
-                        .iter_mut()
-                        .zip(&lines[..lanes])
-                    {
-                        *target = line[sample_index];
-                    }
-                }
-            }
-            if !params.curr_lossless {
-                let width = params.max_width_neg.max(params.max_width_pos);
-                for offset in 0..width {
-                    let sample_index = params.boundary + offset;
-                    let row = plane_ctx
-                        .rows
-                        .row_mut(row_start + sample_index)
-                        .ok_or(DeblockError::Workspace)?;
-                    for (target, line) in row[column_start..column_start + lanes]
-                        .iter_mut()
-                        .zip(&lines[..lanes])
-                    {
-                        *target = line[sample_index];
-                    }
-                }
-            }
-            return Ok(());
-        }
-    }
-
     for lane in 0..lanes {
         apply_sample_filter(
             plane_ctx,
@@ -1943,14 +1813,14 @@ fn gather_line<T: ReconSample>(
     perp: PerpLine,
 ) -> [T; 2 * GATHER_HALF] {
     let mut line = [T::default(); 2 * GATHER_HALF];
-    if perp.x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+    if perp.x >= GATHER_HALF
         && perp.y >= plane_ctx.y_origin
         && perp.x <= plane_ctx.width.saturating_sub(GATHER_HALF)
         && perp.dx == 1
         && perp.dy == 0
     {
         let row = perp.y - plane_ctx.y_origin;
-        let start = perp.x - GATHER_HALF - plane_ctx.x_origin;
+        let start = perp.x - GATHER_HALF;
         if let Some(src) = plane_ctx
             .rows
             .row(row)
@@ -1961,14 +1831,13 @@ fn gather_line<T: ReconSample>(
         }
     }
     if perp.y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
-        && perp.x >= plane_ctx.x_origin
         && perp.x < plane_ctx.width
         && perp.y <= plane_ctx.height.saturating_sub(GATHER_HALF)
         && perp.dx == 0
         && perp.dy == 1
     {
         let start = perp.y - GATHER_HALF - plane_ctx.y_origin;
-        let x = perp.x - plane_ctx.x_origin;
+        let x = perp.x;
         let row_range = start..start + 2 * GATHER_HALF;
         if row_range
             .clone()

@@ -20,13 +20,10 @@ pub(super) struct QmLevelRecord {
     pub(super) num_planes: u8,
 }
 
-/// Quantizer-matrix validator state (AV2 § 6.12).
-///
-/// The window fields (`seen_levels_since_coded_frame`, `qm_obu_seen_since_coded_frame`)
-/// reset at each coded-frame boundary (see [`ValidatorContext::reset_coded_frame_window`])
-/// and drive the § 6.12 duplicate-reset / duplicate-level checks. The `available`
-/// array is monotonic per-level HLS state, foundation for the deferred frame
-/// quantization-reference checks (`using_qmatrix` / `qm_*`, § 7.3.8 / § 6.17.6).
+/// QM availability and duplicate checks (§ 6.12 / § 7.3.8.9). The coded-frame
+/// window resets independently of availability. Resent levels are protected for
+/// the temporal unit; confirmed resets clear unprotected levels and prior poison.
+/// Unconfirmed resets poison unprotected levels until a confirmed reset or resend.
 #[derive(Debug, Default)]
 pub(super) struct QuantizerMatrixState {
     /// Levels (`qm_bit_map` bits) specified by a QM OBU since the last coded frame.
@@ -77,20 +74,8 @@ impl QuantizerMatrixState {
         self.qm_protected = 0;
     }
 
-    /// Applies the AV2 § 5.18.2 `reset_qm()` *availability* effect for a CLK / OLK (the
-    /// unconditional `needsReset = 1` arm, mirror :5348-5360): every **unprotected** level's
-    /// availability record is cleared to the spec defaults (`QmDataPresent = 0`,
-    /// `QmMLayerId = QmTLayerId = -1`), which the validator models as the level becoming
-    /// *unavailable* (`available[level] = None`). A level protected by a QM OBU re-sent in
-    /// the current temporal unit (`qm_protected` bit set) is left untouched.
-    ///
-    /// This is the fully-decidable arm: a CLK / OLK resets *every* unprotected level
-    /// regardless of layer (`needsReset = 1`), so no `MLayerPresenceMap` state is needed.
-    ///
-    /// A CLK / OLK reset is always *confirmed* (it is decidable from `obu_type` +
-    /// `FirstPictureInTU` alone), so it also clears any prior `availability_poisoned` bit for
-    /// the cleared level: the level is now definitively unavailable, re-grounding the
-    /// § 7.3.8.9 judgment.
+    /// Applies the unconditional CLK/OLK reset to unprotected levels (§ 5.18.2).
+    /// Cleared levels become definitively unavailable, removing any prior poison.
     pub(super) fn reset_qm_availability_for_key(&mut self) {
         for level in 0..NUM_CUSTOM_QMS {
             if (self.qm_protected >> level) & 1 == 0 {
@@ -100,28 +85,9 @@ impl QuantizerMatrixState {
         }
     }
 
-    /// Applies the AV2 § 5.18.2 `reset_qm()` *availability* effect for a SWITCH (with
-    /// `restricted_prediction_switch == 1`) or RAS frame (mirror :4278-4286 / :5350-5354).
-    ///
-    /// For these frame types `needsReset = QmMLayerId[level] == -1 ||
-    /// MLayerPresenceMap[QmMLayerId[level]][obu_mlayer_id]` (mirror :5350-5352). Both arms are
-    /// modeled: a level whose recorded `QmMLayerId == -1` (the record's `mlayer_id == None`,
-    /// set by a `qm_bit_map == 0` reset QM OBU, or by a prior `reset_qm`) is unconditionally
-    /// reset; a level with a recorded `QmMLayerId == m` (`mlayer_id == Some(m)`) resets when
-    /// `MLayerPresenceMap[m][obu_mlayer_id] == 1` — i.e. the current frame's embedded layer is
-    /// (transitively) present whenever the level's defining layer is, so the level cannot
-    /// survive into this frame. `presence` is the § 5.4.1 [`MLayerPresenceMap`] of the frame's
-    /// activated sequence header; when it is `None` (the activated header is unavailable) the
-    /// presence arm cannot be decided, so the level is left available (never falsely cleared —
-    /// the zero-false-positive direction for an availability reset). Protected levels
-    /// (`qm_protected` set) are untouched.
-    ///
-    /// This is the *confirmed*-reset path: the caller only invokes it once the frame's core
-    /// parse has reached the § 5.18.2 reset call site (mirror :4283) — a resolved RAS core,
-    /// or a SWITCH core with `restricted_prediction_switch == 1`
-    /// ([`ValidatorContext::apply_qm_reset_for_frame`]). A level it clears therefore also
-    /// re-grounds out of any prior poison (`availability_poisoned` bit cleared): the level is
-    /// now definitively unavailable.
+    /// Applies a confirmed SWITCH/RAS reset (§ 5.18.2). Unprotected levels reset when
+    /// their defining mlayer is absent or its presence map includes this frame’s layer.
+    /// Without a presence map the latter case is undecidable and retains availability.
     pub(super) fn reset_qm_availability_for_switch_or_ras(
         &mut self,
         obu_mlayer_id: EmbeddedLayerId,
@@ -146,18 +112,8 @@ impl QuantizerMatrixState {
         }
     }
 
-    /// Poisons the *availability* state for a SWITCH / RAS frame whose `reset_qm()` effect
-    /// the validator cannot CONFIRM (AV2 § 5.18.2 mirror :4279-4283): the frame's core parse
-    /// never reached the reset call site (a truncated header, an unresolvable core, or a
-    /// SWITCH whose `restricted_prediction_switch` gate the parse never read). The reset
-    /// might or might not have fired, so each unprotected level's availability becomes
-    /// *unknown* — the § 7.3.8.9 judgment must DROP rather than fire or under-report.
-    ///
-    /// Only the `availability_poisoned` bit is set; the `available` record is left untouched
-    /// (a poisoned level is dropped regardless of its record, and preserving the record lets
-    /// a confirmed reset / resend re-ground precisely). Protected levels (`qm_protected`
-    /// set) survive any reset, so their availability stays known and is never poisoned —
-    /// symmetric with the protected-level skip in the confirmed-reset methods.
+    /// Marks unprotected availability unknown when the SWITCH/RAS reset is unconfirmed.
+    /// Keep records for later regrounding; protected levels survive either reset outcome.
     pub(super) fn poison_qm_availability_for_unconfirmed_reset(&mut self) {
         for level in 0..NUM_CUSTOM_QMS {
             if (self.qm_protected >> level) & 1 == 0 {

@@ -376,15 +376,8 @@ fn sequence_header_malformed_tail_after_segment_info_is_flagged() {
 
 #[test]
 fn hls_mfh_nonzero_obu_extension_flag_is_flagged() {
-    let mut bits = Bits::default();
-    bits.uvlc(0); // mfh_seq_header_id
-    bits.uvlc(0); // mfh_id_minus_1
-    bits.bit(0); // mfh_frame_size_present_flag
-    bits.bit(0); // mfh_deblocking_filter_update
-    bits.bit(0); // mfh_seg_info_present_flag -> fully parsed
-    bits.bit(1); // obu_extension_flag = 1 -> §6.2.1 violation
     let mut data = temporal_delimiter_obu();
-    data.extend(annex_b_obu(0x0C, &bits.into_bytes()));
+    data.extend(malformed_tail_mfh_obu(0, 0));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         report

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -17,47 +16,17 @@ mod obu_tests {
         parse_core_body, parse_frame_header_prefix,
     };
     use crate::headers::tile_group::{
-        TileFraming, parse_tile_group_framing, parse_tile_group_prefix,
-        parse_tile_group_structure,
+        TileFraming, parse_tile_group_framing, parse_tile_group_prefix, parse_tile_group_structure,
     };
     use crate::span::ByteOffset;
     use crate::types::ObuType;
-
-    use crate::test_bits::Bits;
 
 
     fn base_seq() -> CoreSeqView {
         CoreSeqView::new_minimal_intra(4096, 2304).expect("4096x2304 is a valid maximum")
     }
 
-    /// The canonical CLK, cur_mfh_id == 0, single-tile, non-lossless intra `frame_header()` body
-    /// bits (the exact fixture from `frame_header_core_tests.rs::clk_direct_reference_bits`). A
-    /// 1920x1080 @ 128x128 frame is a single tile (`NumTiles == 1`).
-    fn clk_frame_header_bits() -> Bits {
-        let mut bits = Bits::default();
-        bits.uvlc(0); // cur_mfh_id == 0
-        bits.uvlc(1); // seq_header_id_in_frame_header
-        bits.bit(0); // immediate_output_frame
-        bits.bit(0); // implicit_output_frame
-        bits.bit(1); // frame_size_override_flag
-        bits.f(5, 4); // order_hint
-        bits.f(1920 - 1, 12); // frame_width_minus_1
-        bits.f(1080 - 1, 12); // frame_height_minus_1
-        bits.bit(0); // allow_intrabc
-        bits.bit(0); // disable_cdf_update
-        bits.bit(1); // uniform_tile_spacing_flag
-        bits.bit(0); // increment_tile_cols_log2 = 0
-        bits.bit(0); // increment_tile_rows_log2 = 0
-        bits.f(90, 8); // base_q_idx
-        bits.bit(0); // segmentation_enabled
-        bits.bit(0); // using_qmatrix
-        bits.bit(0); // delta_q_present
-        bits.bit(0); // apply_deblocking_filter[0]
-        bits.bit(0); // apply_deblocking_filter[1]
-        bits.bit(0); // tx_mode_select = 0 -> TX_MODE_LARGEST
-        bits.f(0, 2); // reduced_tx_set = 0
-        bits
-    }
+    use crate::write::frame_header_core::tests::clk_direct_reference_bits as clk_frame_header_bits;
 
     /// Parses a frame-header body (activation prefix + `parse_core_body`) against the directly built
     /// `seq`, the same approach `frame_header_core_tests.rs::parse_core_body_for_test` uses. Reads

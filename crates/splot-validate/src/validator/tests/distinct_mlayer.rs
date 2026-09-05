@@ -358,11 +358,7 @@ fn distinct_mlayer_count_before_frame_header_activation_under_external_hls_is_no
 
 #[test]
 fn second_activation_without_clk_is_flagged() {
-    let mut data = temporal_delimiter_obu();
-    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
-    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 0)));
-    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0));
-    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 1));
+    let data = two_activation_stream();
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
         report.errors().any(|d| {
@@ -423,11 +419,7 @@ fn unreferenced_extra_sequence_header_is_conforming() {
 #[test]
 fn second_activation_under_external_hls_is_not_flagged() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
-    let mut data = temporal_delimiter_obu();
-    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(0, 0, 0)));
-    data.extend(annex_b_obu(0x04, &sequence_header_payload_with_id(1, 0, 0)));
-    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0));
-    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 1));
+    let data = two_activation_stream();
     let options = ValidationOptions {
         external_hls: ExternalHlsMode::Provided(ExternalHlsSet::new().with_sequence_header_id(0)),
     };
@@ -512,27 +504,7 @@ pub(in crate::validator::tests) fn seq_header_payload_monotonic(
     seq_header_id: u32,
     monotonic: bool,
 ) -> Vec<u8> {
-    let mut bits = Bits::default();
-    bits.uvlc(seq_header_id);
-    bits.f(0, 5); // seq_profile_idc
-    bits.bit(0); // single_picture_header_flag
-    bits.f(0, 5); // seq_level_idx
-    bits.uvlc(0); // chroma_format_idc
-    bits.uvlc(0); // bit_depth_idc
-    bits.f(0, 3); // seq_lcr_id
-    bits.bit(0); // still_picture
-    bits.f(0, 2); // max_tlayer_id
-    bits.f(0, 3); // max_mlayer_id = 0 (no seq_max_mlayer_cnt_minus_1 field)
-    bits.bit(u8::from(monotonic)); // monotonic_output_order_flag
-    bits.f(3, 4); // frame_width_bits_minus_1
-    bits.f(3, 4); // frame_height_bits_minus_1
-    bits.f(15, 4); // max_frame_width_minus_1
-    bits.f(7, 4); // max_frame_height_minus_1
-    bits.bit(0); // seq_cropping_window_present_flag
-    bits.bit(0); // seq_initial_display_delay_present_flag
-    bits.bit(0); // decoder_model_info_present_flag
-    append_non_single_child_configs(&mut bits);
-    bits.into_bytes()
+    seq_header_payload_ptl(seq_header_id, 0, 0, false, monotonic)
 }
 
 /// A sequence-header OBU for `xlayer` carrying [`seq_header_payload_monotonic`].

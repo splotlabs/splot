@@ -194,7 +194,6 @@ pub(crate) enum StripeLifecycle {
     Submitted,
 }
 
-#[allow(clippy::if_same_then_else)]
 pub(crate) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta: i32) -> u8 {
     let d = delta.unsigned_abs();
     let blk_wh = w + h;
@@ -202,10 +201,6 @@ pub(crate) fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u8, delta:
     if filter_type == 0 {
         if blk_wh <= 8 {
             if d >= 56 {
-                strength = 1;
-            }
-        } else if blk_wh <= 12 {
-            if d >= 40 {
                 strength = 1;
             }
         } else if blk_wh <= 16 {
@@ -345,21 +340,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.gdf_reference = context;
     }
 
-    pub(crate) fn into_owned_filter_setup<'progress, 'job>(
-        self,
-        core: Arc<splot_core::headers::frame::FrameHeaderCore>,
-        disable_loopfilters_across_tiles: bool,
-        progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<
-            &'progress dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
-        >,
-    ) -> Result<(
-        OwnedFilterSetup<'progress, 'job, T>,
-        Option<CurrentFrameWorkspace<T>>,
-    )> {
-        self.into_owned_filter_setup_inner(core, disable_loopfilters_across_tiles, progress, admit)
-    }
-
     /// Builds a filter setup whose progressive output handle is owned by
     /// scheduled row tasks.
     pub(crate) fn into_owned_filter_setup_published(
@@ -371,15 +351,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         OwnedFilterSetup<'static, 'static, T>,
         Option<CurrentFrameWorkspace<T>>,
     )> {
-        self.into_owned_filter_setup_inner(
-            core,
-            disable_loopfilters_across_tiles,
-            Some(progress),
-            None,
-        )
+        self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, Some(progress), None)
     }
 
-    fn into_owned_filter_setup_inner<'progress, 'job>(
+    pub(crate) fn into_owned_filter_setup<'progress, 'job>(
         mut self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
@@ -851,11 +826,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         Ok(range)
     }
 
-    /// Runs § 7.5's CDEF-then-CCSO sequence over one luma row range.
-    ///
-    /// GDF reads `CdefFrame`, which § 7.5 orders after CCSO, so the overlap
-    /// rows in [`Self::cdef_overlap_planes`] must come through this same path
-    /// rather than a bare CDEF pass.
     /// Tile MI starts when § 7.5's in-loop filters must stay inside their tile.
     fn tile_starts(&self) -> Option<(&[u32], &[u32])> {
         if !self.disable_loopfilters_across_tiles {

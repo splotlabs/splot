@@ -1,31 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Prefix-only AV2 frame-header parsing (AV2 v1.0.0 § 5.18.1 / § 5.18.2).
+//! AV2 frame-header activation-prefix and state-aware core parsers.
 //!
-//! This is **not** a full `frame_header()` parser. It reads only the head of
-//! `frame_header_info()` — the activation/reference fields needed by validator
-//! state — and stops before the rest of § 5.18:
-//!
-//! ```text
-//! frame_header_info( ) {
-//!     IsBridge = obu_type == OBU_BRIDGE_FRAME
-//!     if ( IsBridge ) cur_mfh_id = 0
-//!     else            cur_mfh_id                       uvlc()
-//!     if ( cur_mfh_id == 0 ) {
-//!         seq_header_id_in_frame_header                uvlc()
-//!         load_sequence_header( seq_header_id_in_frame_header )
-//!     } else {
-//!         load_sequence_header( MfhSeqHeaderId[ cur_mfh_id ] )
-//!     }
-//!     ...                                              // deeper § 5.18, not parsed
-//! }
-//! ```
-//!
-//! `frame_header(isFirst)` calls `frame_header_info()` only when `isFirst` is `1`;
-//! when `isFirst` is `0` it calls `frame_header_copy()`, a bit copy of the first
-//! header that this prefix parser does not model. Callers therefore only reach this
-//! parser on the first-header path.
+//! AV2 v1.0.0 § 5.18 (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18`).
 
 use crate::bitio::BitReader;
 use crate::error::Result;

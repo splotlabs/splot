@@ -261,32 +261,23 @@ fn check_intrabc_encodable(
     allow_frame_max_bvp_drl_bits: bool,
 ) -> WriteResult<()> {
     let global_coded = params.allow_intrabc && frame_is_intra;
-    match (global_coded, params.allow_global_intrabc) {
-        (true, Some(_)) | (false, None) => {}
-        _ => {
-            return Err(WriteError::NonCanonicalFrameHeader {
-                what: "allow_global_intrabc",
-            });
-        }
+    if global_coded != params.allow_global_intrabc.is_some() {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "allow_global_intrabc",
+        });
     }
     let local_coded = params.allow_global_intrabc == Some(true);
-    match (local_coded, params.allow_local_intrabc) {
-        (true, Some(_)) | (false, None) => {}
-        _ => {
-            return Err(WriteError::NonCanonicalFrameHeader {
-                what: "allow_local_intrabc",
-            });
-        }
+    if local_coded != params.allow_local_intrabc.is_some() {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "allow_local_intrabc",
+        });
     }
 
     let change_coded = params.allow_intrabc && allow_frame_max_bvp_drl_bits;
-    match (change_coded, params.change_bvp_drl) {
-        (true, Some(_)) | (false, None) => {}
-        _ => {
-            return Err(WriteError::NonCanonicalFrameHeader {
-                what: "change_bvp_drl",
-            });
-        }
+    if change_coded != params.change_bvp_drl.is_some() {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "change_bvp_drl",
+        });
     }
     let max_coded = params.change_bvp_drl == Some(true);
     match (max_coded, params.max_bvp_drl_bits_minus_1) {
@@ -611,16 +602,13 @@ mod proptests {
     use proptest::prelude::*;
 
     fn pack(bits: &[bool]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for chunk in bits.chunks(8) {
-            let mut byte = 0u8;
-            for (i, b) in chunk.iter().enumerate() {
-                byte |= u8::from(*b) << (7 - i);
-            }
-            out.push(byte);
+        let mut out = crate::test_bits::Bits::default();
+        for &bit in bits {
+            out.bit(u8::from(bit));
         }
-        out.extend_from_slice(&[0u8; 4]); // pad so the parser never hits EOF mid-field
-        out
+        let mut bytes = out.into_bytes();
+        bytes.extend_from_slice(&[0u8; 4]);
+        bytes
     }
 
     proptest! {

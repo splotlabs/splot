@@ -1,16 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Verifies the `tests/fixtures/MANIFEST.toml` `expect` outcomes against the real
-//! validator (XTASK-CHECK-FIXTURES).
-//!
-//! `cargo xtask check-fixtures` checks the manifest's hashes, presence, and
-//! `category`/`expect` *shape* hermetically. This complementary test closes the
-//! loop in-process: for every `[[fixture]]` it runs
-//! `splot_validate::Validator::validate_bytes` (the same entry point the CLI
-//! `validate` command uses — no external decoder) and asserts the recorded
-//! `expect`, so the manifest's outcomes can never silently drift from the
-//! validator. It also enforces the same orphan guard as the conformance corpus.
+//! Checks fixture manifest outcomes against the validator (XTASK-CHECK-FIXTURES).
+//! Hashes and manifest shape are checked by xtask; this test checks diagnostics
+//! and rejects unlisted fixtures.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

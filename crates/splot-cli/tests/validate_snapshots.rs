@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Golden snapshots of the `splot validate` output controls (CLI-VALIDATE-OUTPUT-CONTROLS).
-//!
-//! Freezes the text and JSON shape of `--max-diagnostics` (capped list + a
-//! truncation notice / `truncation` object) and `--summary-only` (counts +
-//! conformance line / a `summary` object with an empty `diagnostics` array). The
-//! output is deterministic for a committed fixture (byte offsets, messages, counts;
-//! no paths/timestamps), and these flags are presentation-only — the exit code is
-//! asserted to stay identical to the uncapped run.
+//! Text and JSON output-control snapshots (CLI-VALIDATE-OUTPUT-CONTROLS).
+//! Capped and summary-only reports retain the full report exit code.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

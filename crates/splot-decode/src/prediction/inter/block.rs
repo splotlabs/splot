@@ -1723,12 +1723,11 @@ fn decode_block<T: ReconSample>(
                 read_warpmv_delta_syntax(cdfs, symbols, mv_config, tile_offset)?
             }
         };
-        let warp_inter_intra = if warp_mode == WarpInterMode::Warpmv {
+        let warp_interintra_mode = if warp_mode == WarpInterMode::Warpmv {
             read_warp_inter_intra_syntax(cdfs, symbols, frontier.b_size, n4w, n4h, tile_offset)?
         } else {
-            WarpInterIntraSyntax::default()
+            None
         };
-        let warp_interintra_mode = interintra_prediction_mode(warp_inter_intra);
         let residual = if skip == 0 {
             Some(read_inter_residual(
                 work_unit,
@@ -1894,9 +1893,7 @@ fn decode_block<T: ReconSample>(
     let interintra = if tip_ref || segment_forces_globalmv {
         None
     } else if !bawp.enabled {
-        let syntax =
-            read_inter_intra_syntax(cdfs, symbols, core, frontier.b_size, n4w, n4h, tile_offset)?;
-        interintra_prediction_mode(syntax)
+        read_inter_intra_syntax(cdfs, symbols, core, frontier.b_size, n4w, n4h, tile_offset)?
     } else {
         None
     };
@@ -2156,11 +2153,10 @@ use self::temporal::block_ref_within_temporal_distance;
 #[cfg(test)]
 pub(super) use self::tip::tip_allowed_for_block_indices;
 use self::warp::{
-    WarpInterIntraSyntax, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
-    interintra_prediction_mode, local_warp_estimation, mvd_sign_derivation_block_scope_allowed,
-    read_warp_extend_syntax, read_warp_inter_intra_syntax, read_warp_inter_mode_syntax,
-    read_warp_newmv_delta_syntax, read_warp_newmv_motion_mode_syntax, read_warpmv_delta_syntax,
-    read_wedge_mode_syntax,
+    inter_mv_read_config, inter_mvd_sign_derivation_allowed, local_warp_estimation,
+    mvd_sign_derivation_block_scope_allowed, read_warp_extend_syntax, read_warp_inter_intra_syntax,
+    read_warp_inter_mode_syntax, read_warp_newmv_delta_syntax, read_warp_newmv_motion_mode_syntax,
+    read_warpmv_delta_syntax, read_wedge_mode_syntax,
 };
 
 use self::residual::{
@@ -2176,7 +2172,7 @@ fn read_inter_intra_syntax(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<WarpInterIntraSyntax> {
+) -> Result<Option<InterIntraPrediction>> {
     let frame_enables_interintra = core
         .inter
         .as_ref()
@@ -2201,17 +2197,17 @@ fn read_inter_intra_syntax_enabled(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<WarpInterIntraSyntax> {
+) -> Result<Option<InterIntraPrediction>> {
     let b_size = b_size.index();
     if !frame_enables_interintra || b_size < BLOCK_8X8 || n4w.max(n4h) > CHUNK_64_N4 {
-        return Ok(WarpInterIntraSyntax::default());
+        return Ok(None);
     }
     let bsize_group = SIZE_GROUP_LOOKUP[b_size];
     let inter_intra = cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntra { bsize_group }, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))?;
     if inter_intra.get() == 0 {
-        return Ok(WarpInterIntraSyntax::default());
+        return Ok(None);
     }
 
     warp::read_active_inter_intra_tail(cdfs, symbols, bsize_group, b_size, tile_offset)

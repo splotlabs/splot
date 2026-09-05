@@ -726,18 +726,10 @@ fn assert_rect_luma_plan_for_parts(
     label: &str,
 ) {
     assert_eq!(
-        rect_luma_plan_for_parts(mode, directional_p_angle, false),
+        rect_luma_plan_for_mode(mode, directional_p_angle, false),
         Ok(expected),
         "{label}"
     );
-}
-
-fn rect_luma_plan_for_parts(
-    mode: IntraYMode,
-    directional_p_angle: Option<u16>,
-    use_tcq: bool,
-) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
-    rect_luma_plan_for_mode(mode, directional_p_angle, use_tcq)
 }
 
 fn assert_rect_luma_mrl_plan(
@@ -858,7 +850,7 @@ fn chroma_part_cfl_reaches_cfl_plan() {
         alpha_u: 1,
         alpha_v: -1,
     };
-    let chroma = GeneralIntraChromaBlockMode::cfl_for_test(params);
+    let chroma = GeneralIntraChromaBlockMode::Cfl(params);
 
     assert_eq!(
         chroma_plan_for_parts(chroma, IntraYMode::Horizontal, 0, 1, 32),
@@ -887,7 +879,7 @@ fn lossless_chroma_block_cfl_reaches_cfl_plan() {
         use_dpcm_y: 0,
         dpcm_mode_y: 0,
     };
-    let chroma = GeneralIntraChromaBlockMode::cfl_for_test(params);
+    let chroma = GeneralIntraChromaBlockMode::Cfl(params);
     let modes = GeneralIntraBlockModes::from_luma_chroma_palette(luma, chroma, None);
 
     let result = rect_chroma_plan(&modes, 1, 16);
@@ -1521,7 +1513,7 @@ fn classifies_rect_directional_luma_angles() {
         ),
     ] {
         assert_eq!(
-            rect_luma_plan_for_parts(IntraYMode::D135, Some(p_angle), false),
+            rect_luma_plan_for_mode(IntraYMode::D135, Some(p_angle), false),
             Ok(expected),
         );
     }

@@ -44,7 +44,6 @@ pub(crate) fn record_inter_deblock_geometry(
     if inherited_chroma_metadata {
         let chroma_plane_size = get_plane_residual_size(chroma_ref.size(), 1, sub_x, sub_y)
             .map_err(|_| super::residual::residual_geometry_error())?
-            .valid()
             .ok_or_else(super::residual::residual_geometry_error)?;
         let chroma_tx = super::residual::max_tx_size(chroma_plane_size.index())?;
         let chroma_n4w = chroma_ref
@@ -212,7 +211,6 @@ fn record_skipped_chroma_deblock_geometry(
     let (sub_x, sub_y) = chroma_subsampling;
     let plane_size = get_plane_residual_size(chroma_ref_size, 1, sub_x, sub_y)
         .map_err(|_| super::residual::residual_geometry_error())?
-        .valid()
         .ok_or_else(super::residual::residual_geometry_error)?;
     let chroma_tx = super::residual::max_tx_size(plane_size.index())?;
     let width = plane_size

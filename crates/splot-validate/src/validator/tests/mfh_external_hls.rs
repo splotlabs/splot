@@ -22,11 +22,7 @@ pub(in crate::validator::tests) fn stream_with_mfh_reference(
     seq_header_id: u32,
     mfh_seq_header_id: u32,
 ) -> Vec<u8> {
-    let mut data = temporal_delimiter_obu();
-    data.extend(annex_b_obu(
-        0x04,
-        &sequence_header_payload_with_id(seq_header_id, 1, 1),
-    ));
+    let mut data = td_and_seq_header(seq_header_id, 1, 1);
     data.extend(multi_frame_header_obu(mfh_seq_header_id));
     data
 }

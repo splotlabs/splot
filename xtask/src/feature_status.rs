@@ -249,7 +249,6 @@ pub(crate) struct Feature {
     krate: String,
     module: String,
     change_id: String,
-    tracking_issue: String,
     owner: String,
     risk: String,
     notes: String,
@@ -1522,7 +1521,6 @@ sources = []
 crate = "splot-core"
 module = "crates/splot-core/src/obu.rs"
 change_id = ""
-tracking_issue = ""
 owner = "core"
 risk = "high"
 notes = "ok"

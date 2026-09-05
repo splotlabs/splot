@@ -65,23 +65,8 @@ const VIEW_EXPLICIT: u8 = 4;
 
 /// `lcr_xlayer_map` is `f(31)`; the set bits are the associated `LcrXLayerID[]`.
 const XLAYER_MAP_BITS: u32 = 31;
-/// `lcr_global_config_record_id` / `lcr_global_id` / `lcr_local_id` / atlas ids are `f(3)`.
-const F3: u32 = 3;
-/// `lcr_global_*_reserved_zero_5bits` / `lcr_local_reserved_zero_5bits` are `f(5)`.
-const F5: u32 = 5;
-/// `lcr_global_purpose_id` / `lcr_xlayer_purpose_id` are `f(7)`.
-const F7: u32 = 7;
-/// `lcr_*_atlas_segment_id` / `lcr_*_priority_order` / `lcr_*_rendering_method` /
-/// `lcr_mlayer_map` / `lcr_layer_type` / `lcr_view_type` and friends are `f(8)`.
-const F8: u32 = 8;
-/// `lsptli_reserved_2bits` is `f(2)`; `layer_color_description_idc` is `rg(2)`.
-const F2: u32 = 2;
-/// `lcr_config_idc` is `f(6)`.
-const F6: u32 = 6;
 /// `lcr_aggregate_level_idx` / `lcr_seq_profile_idc` / `lcr_max_level_idx` are `f(5)`.
 const AGG_F5: u32 = 5;
-/// `lcr_max_interop` is `f(4)`.
-const F4: u32 = 4;
 /// `lcr_max_mlayer_count` is `f(3)`.
 const MLAYER_COUNT_BITS: u32 = 3;
 
@@ -166,14 +151,14 @@ pub fn write_layer_config_record(
 fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> WriteResult<()> {
     let xlayer_ids = derive_xlayer_ids(info.xlayer_map);
 
-    scratch.write_bits_u8(info.global_config_record_id, F3)?;
+    scratch.write_bits_u8(info.global_config_record_id, 3)?;
     scratch.write_bits(info.xlayer_map, XLAYER_MAP_BITS)?;
     scratch.write_flag(info.aggregate_info_present)?;
     scratch.write_flag(info.seq_ptl_info_present)?;
     scratch.write_flag(info.global_payload_present)?;
     scratch.write_flag(info.dependent_xlayers_flag)?;
     scratch.write_flag(info.global_atlas_id_present)?;
-    scratch.write_bits_u8(info.global_purpose_id, F7)?;
+    scratch.write_bits_u8(info.global_purpose_id, 7)?;
     scratch.write_flag(info.doh_constraint_flag)?;
     scratch.write_flag(info.enforce_tile_alignment_flag)?;
 
@@ -183,7 +168,7 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
         info.global_atlas_id,
         info.reserved_zero_3bits,
     )?;
-    scratch.write_bits_u8(info.reserved_zero_5bits, F5)?;
+    scratch.write_bits_u8(info.reserved_zero_5bits, 5)?;
 
     match (info.aggregate_info_present, &info.aggregate_info) {
         (true, Some(agg)) => write_lcr_aggregate_info(scratch, agg)?,
@@ -192,10 +177,10 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
     }
 
     if info.seq_ptl_info_present {
-        if info.seq_ptl_infos.len() != xlayer_ids.len() {
+        if info.seq_ptl_infos.len() != xlayer_ids.clone().count() {
             return Err(non_canonical("seq_ptl_info_count"));
         }
-        for (ptl, &xid) in info.seq_ptl_infos.iter().zip(&xlayer_ids) {
+        for (ptl, xid) in info.seq_ptl_infos.iter().zip(xlayer_ids.clone()) {
             if ptl.xlayer_id != xid {
                 return Err(non_canonical("seq_ptl_xlayer_id"));
             }
@@ -206,10 +191,10 @@ fn write_lcr_global_info(scratch: &mut BitWriter, info: &LcrGlobalInfo) -> Write
     }
 
     if info.global_payload_present {
-        if info.payloads.len() != xlayer_ids.len() {
+        if info.payloads.len() != xlayer_ids.clone().count() {
             return Err(non_canonical("payload_count"));
         }
-        for (payload, &xid) in info.payloads.iter().zip(&xlayer_ids) {
+        for (payload, xid) in info.payloads.iter().zip(xlayer_ids) {
             if payload.xlayer_id != xid {
                 return Err(non_canonical("payload_xlayer_id"));
             }
@@ -242,8 +227,8 @@ fn write_lcr_local_info(
         return Err(non_canonical("local_xlayer_id"));
     }
 
-    scratch.write_bits_u8(info.global_id, F3)?;
-    scratch.write_bits_u8(info.local_id, F3)?;
+    scratch.write_bits_u8(info.global_id, 3)?;
+    scratch.write_bits_u8(info.local_id, 3)?;
     scratch.write_flag(info.profile_tier_level_info_present)?;
     scratch.write_flag(info.local_atlas_id_present)?;
 
@@ -264,7 +249,7 @@ fn write_lcr_local_info(
         info.local_atlas_id,
         info.reserved_zero_3bits,
     )?;
-    scratch.write_bits_u8(info.reserved_zero_5bits, F5)?;
+    scratch.write_bits_u8(info.reserved_zero_5bits, 5)?;
 
     let ctx = XlayerCtx {
         is_global: false,
@@ -289,28 +274,22 @@ fn write_atlas_or_reserved_3bits(
         if reserved_zero_3bits != 0 {
             return Err(non_canonical("atlas_reserved_3bits"));
         }
-        scratch.write_bits_u8(atlas_id, F3)
+        scratch.write_bits_u8(atlas_id, 3)
     } else {
         if atlas_id.is_some() {
             return Err(non_canonical("global_atlas_id_gate"));
         }
-        scratch.write_bits_u8(reserved_zero_3bits, F3)
+        scratch.write_bits_u8(reserved_zero_3bits, 3)
     }
 }
 
 /// Writes `lcr_aggregate_info()` (AV2 v1.0.0 § 5.8.3).
-///
-/// Kept `&LcrAggregateInfo` rather than by-value so this stays structurally identical
-/// to the independent `write_ops_aggregate_info` (§ 5.11.1): the two mirror separate
-/// AV2 spec structures whose wire layout coincides today, each with per-section named
-/// bit-width constants for spec traceability. Deduplicating them would be a false
-/// abstraction across unrelated spec sections (and would erase those named widths).
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn write_lcr_aggregate_info(scratch: &mut BitWriter, agg: &LcrAggregateInfo) -> WriteResult<()> {
-    scratch.write_bits_u8(agg.config_idc, F6)?;
+    scratch.write_bits_u8(agg.config_idc, 6)?;
     scratch.write_bits_u8(agg.aggregate_level_idx, AGG_F5)?;
     scratch.write_flag(agg.max_tier_flag)?;
-    scratch.write_bits_u8(agg.max_interop, F4)
+    scratch.write_bits_u8(agg.max_interop, 4)
 }
 
 /// Writes `lcr_seq_profile_tier_level_info(i)` (AV2 v1.0.0 § 5.8.4). The `i` / `xId`
@@ -324,7 +303,7 @@ fn write_lcr_seq_profile_tier_level_info(
     scratch.write_bits_u8(ptl.max_level_idx, AGG_F5)?;
     scratch.write_flag(ptl.tier_flag)?;
     scratch.write_bits_u8(ptl.max_mlayer_count, MLAYER_COUNT_BITS)?;
-    scratch.write_bits_u8(ptl.reserved_2bits, F2)
+    scratch.write_bits_u8(ptl.reserved_2bits, 2)
 }
 
 /// Writes `lcr_global_payload(n, sz)` (AV2 v1.0.0 § 5.8.5): the `lcr_data_size[i]` `leb128()`
@@ -387,7 +366,7 @@ fn write_lcr_xlayer_info(
         write_lcr_rep_info(scratch, rep)?;
     }
     if let Some(purpose) = info.purpose_id {
-        scratch.write_bits_u8(purpose, F7)?;
+        scratch.write_bits_u8(purpose, 7)?;
     }
     if let Some(color) = &info.color_info {
         write_lcr_xlayer_color_info(scratch, color)?;
@@ -405,9 +384,9 @@ fn write_lcr_xlayer_info(
             .xlayer_atlas
             .as_ref()
             .ok_or_else(|| non_canonical("xlayer_atlas_gate"))?;
-        scratch.write_bits_u8(atlas.atlas_segment_id, F8)?;
-        scratch.write_bits_u8(atlas.priority_order, F8)?;
-        scratch.write_bits_u8(atlas.rendering_method, F8)
+        scratch.write_bits_u8(atlas.atlas_segment_id, 8)?;
+        scratch.write_bits_u8(atlas.priority_order, 8)?;
+        scratch.write_bits_u8(atlas.rendering_method, 8)
     } else {
         if info.xlayer_atlas.is_some() {
             return Err(non_canonical("embedded_atlas_exclusive"));
@@ -442,12 +421,12 @@ fn write_lcr_xlayer_color_info(
     scratch: &mut BitWriter,
     color: &LcrXlayerColorInfo,
 ) -> WriteResult<()> {
-    scratch.write_rg(color.color_description_idc, F2)?;
+    scratch.write_rg(color.color_description_idc, 2)?;
     match (color.color_description_idc == 0, color.primaries) {
         (true, Some((primaries, transfer, matrix))) => {
-            scratch.write_bits_u8(primaries, F8)?;
-            scratch.write_bits_u8(transfer, F8)?;
-            scratch.write_bits_u8(matrix, F8)?;
+            scratch.write_bits_u8(primaries, 8)?;
+            scratch.write_bits_u8(transfer, 8)?;
+            scratch.write_bits_u8(matrix, 8)?;
         }
         (false, None) => {}
         _ => return Err(non_canonical("color_primaries_gate")),
@@ -463,16 +442,14 @@ fn write_lcr_embedded_layer_info(
     embedded: &LcrEmbeddedLayerInfo,
     atlas_segment_present: bool,
 ) -> WriteResult<()> {
-    scratch.write_bits_u8(embedded.mlayer_map, F8)?;
+    scratch.write_bits_u8(embedded.mlayer_map, 8)?;
 
-    let set_bits: Vec<u8> = (0u8..8)
-        .filter(|&j| embedded.mlayer_map & (1u8 << j) != 0)
-        .collect();
-    if embedded.layers.len() != set_bits.len() {
+    let set_bits = (0u8..8).filter(|&j| embedded.mlayer_map & (1u8 << j) != 0);
+    if embedded.layers.len() != set_bits.clone().count() {
         return Err(non_canonical("mlayer_layer_count"));
     }
 
-    for (layer, &j) in embedded.layers.iter().zip(&set_bits) {
+    for (layer, j) in embedded.layers.iter().zip(set_bits) {
         if layer.mlayer_index != j {
             return Err(non_canonical("mlayer_index"));
         }
@@ -486,24 +463,24 @@ fn write_lcr_embedded_layer_info(
             layer.rendering_method,
         ) {
             (true, Some(seg), Some(prio), Some(method)) => {
-                scratch.write_bits_u8(seg, F8)?;
-                scratch.write_bits_u8(prio, F8)?;
-                scratch.write_bits_u8(method, F8)?;
+                scratch.write_bits_u8(seg, 8)?;
+                scratch.write_bits_u8(prio, 8)?;
+                scratch.write_bits_u8(method, 8)?;
             }
             (false, None, None, None) => {}
             _ => return Err(non_canonical("embedded_atlas_gate")),
         }
 
-        scratch.write_bits_u8(layer.layer_type, F8)?;
+        scratch.write_bits_u8(layer.layer_type, 8)?;
         match (layer.layer_type == AUX_LAYER, layer.auxiliary_type) {
-            (true, Some(aux)) => scratch.write_bits_u8(aux, F8)?,
+            (true, Some(aux)) => scratch.write_bits_u8(aux, 8)?,
             (false, None) => {}
             _ => return Err(non_canonical("aux_type_gate")),
         }
 
-        scratch.write_bits_u8(layer.view_type, F8)?;
+        scratch.write_bits_u8(layer.view_type, 8)?;
         match (layer.view_type == VIEW_EXPLICIT, layer.view_id) {
-            (true, Some(view)) => scratch.write_bits_u8(view, F8)?,
+            (true, Some(view)) => scratch.write_bits_u8(view, 8)?,
             (false, None) => {}
             _ => return Err(non_canonical("view_id_gate")),
         }
@@ -536,10 +513,8 @@ fn write_lcr_embedded_layer_info(
 
 /// Derives `LcrXLayerID[]` from `lcr_xlayer_map` (AV2 § 5.8.1): the set bit indices of the
 /// 31-bit map, ascending — the order the PTL and payload loops iterate.
-fn derive_xlayer_ids(xlayer_map: u32) -> Vec<u8> {
-    (0u8..31)
-        .filter(|&i| xlayer_map & (1u32 << u32::from(i)) != 0)
-        .collect()
+fn derive_xlayer_ids(xlayer_map: u32) -> impl Iterator<Item = u8> + Clone {
+    (0u8..31).filter(move |&i| xlayer_map & (1u32 << u32::from(i)) != 0)
 }
 
 /// Writes `n` reserved zero bits in 32-bit chunks (the inverse of the

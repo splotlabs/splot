@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod proptests {
@@ -30,10 +29,7 @@ mod proptests {
             single_picture in any::<bool>(),
             sb in any::<u8>(),
         ) {
-            let mut raw = Vec::new();
-            for b in &bits {
-                raw.push(u8::from(*b));
-            }
+            let raw: Vec<_> = bits.iter().copied().map(u8::from).collect();
             let padding = [0u8; 4];
             let packed = pack_bits(&raw, &padding);
             let sb = sb_size(sb);
@@ -60,10 +56,7 @@ mod proptests {
             level in 0u8..=21,
             tier_high in any::<bool>(),
         ) {
-            let mut raw = Vec::new();
-            for b in &bits {
-                raw.push(u8::from(*b));
-            }
+            let raw: Vec<_> = bits.iter().copied().map(u8::from).collect();
             let padding = [0u8; 16];
             let packed = pack_bits(&raw, &padding);
             let sb = sb_size(sb);
@@ -101,10 +94,7 @@ mod proptests {
             level in 0u8..=31,
             tier_high in any::<bool>(),
         ) {
-            let mut raw = Vec::new();
-            for b in &bits {
-                raw.push(u8::from(*b));
-            }
+            let raw: Vec<_> = bits.iter().copied().map(u8::from).collect();
             let padding = [0u8; 16];
             let packed = pack_bits(&raw, &padding);
             let sb = sb_size(sb);
@@ -127,15 +117,12 @@ mod proptests {
 
     /// Packs a `0/1` byte slice MSB-first into bytes, appending `padding`.
     fn pack_bits(bits: &[u8], padding: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for chunk in bits.chunks(8) {
-            let mut byte = 0u8;
-            for (i, bit) in chunk.iter().enumerate() {
-                byte |= (*bit & 1) << (7 - i);
-            }
-            out.push(byte);
+        let mut out = crate::test_bits::Bits::default();
+        for &bit in bits {
+            out.bit(bit & 1);
         }
-        out.extend_from_slice(padding);
-        out
+        let mut bytes = out.into_bytes();
+        bytes.extend_from_slice(padding);
+        bytes
     }
 }

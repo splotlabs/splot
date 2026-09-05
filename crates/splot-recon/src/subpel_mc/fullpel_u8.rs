@@ -158,8 +158,8 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSam
         return Ok(false);
     }
     let (Some(x0), Some(x1)) = (
-        subpel_direct_u8_copy_x(reference0, params0),
-        subpel_direct_u8_copy_x(reference1, params1),
+        subpel_direct_copy_x(reference0, params0),
+        subpel_direct_copy_x(reference1, params1),
     ) else {
         return Ok(false);
     };
@@ -194,18 +194,6 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSam
         }
     }
     Ok(true)
-}
-
-#[inline]
-fn subpel_direct_u8_copy_x<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-) -> Option<usize> {
-    let x = usize::try_from(params.start_x >> SCALE_SUBPEL_BITS).ok()?;
-    let end = x.checked_add(params.w)?;
-    let last = i32::try_from(end.checked_sub(1)?).ok()?;
-    (x >= params.first_x.max(0) as usize && end <= reference.width && last <= params.last_x)
-        .then_some(x)
 }
 
 #[cfg(test)]

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod proptests {
@@ -16,16 +15,13 @@ mod proptests {
     use proptest::prelude::*;
 
     fn pack(bits: &[bool]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for chunk in bits.chunks(8) {
-            let mut byte = 0u8;
-            for (i, b) in chunk.iter().enumerate() {
-                byte |= u8::from(*b) << (7 - i);
-            }
-            out.push(byte);
+        let mut out = crate::test_bits::Bits::default();
+        for &bit in bits {
+            out.bit(u8::from(bit));
         }
-        out.extend_from_slice(&[0u8; 8]); // pad so the parser never hits EOF mid-field
-        out
+        let mut bytes = out.into_bytes();
+        bytes.extend_from_slice(&[0u8; 8]);
+        bytes
     }
 
     fn reader(bytes: &[u8]) -> BitReader<'_> {

@@ -49,6 +49,31 @@ struct TemplateStats {
     count: i32,
 }
 
+impl TemplateStats {
+    fn implicit_alpha(&self) -> i16 {
+        let mut alpha = 1i16 << SHIFT;
+        if self.count > 0 {
+            let nor = self.sum_xy - self.sum_x * self.sum_y / self.count;
+            let der = self.sum_xx - self.sum_x * self.sum_x / self.count;
+            if der != 0 && nor != 0 {
+                alpha = splot_recon::math::resolve_division(nor, der, SHIFT as u8);
+                if alpha == 0 {
+                    alpha = 1 << SHIFT;
+                }
+            }
+        }
+        alpha
+    }
+
+    fn beta(&self, alpha: i16) -> i32 {
+        if self.count > 0 {
+            ((self.sum_y << SHIFT) - self.sum_x * i32::from(alpha)) / self.count
+        } else {
+            -(1 << (SHIFT - 1))
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_template_stats<T, F>(
     edges: &CurrentFrameIntraEdges<T>,
@@ -185,13 +210,7 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     };
     let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, target.x(), target.y(), size)?;
 
-    let Some(TemplateStats {
-        sum_x,
-        sum_y,
-        sum_xx,
-        sum_xy,
-        count,
-    }) = collect_template_stats(
+    let Some(stats) = collect_template_stats(
         &edges,
         width,
         height,
@@ -200,27 +219,12 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
         ref_x,
         ref_y,
         |row, col| intrabc_morph_sample(workspace, row, col),
-    )
-    else {
+    ) else {
         return Ok(());
     };
 
-    let mut alpha = 1i16 << SHIFT;
-    if count > 0 {
-        let nor = sum_xy - sum_x * sum_y / count;
-        let der = sum_xx - sum_x * sum_x / count;
-        if der != 0 && nor != 0 {
-            alpha = splot_recon::math::resolve_division(nor, der, SHIFT as u8);
-            if alpha == 0 {
-                alpha = 1 << SHIFT;
-            }
-        }
-    }
-    let beta = if count > 0 {
-        ((sum_y << SHIFT) - sum_x * i32::from(alpha)) / count
-    } else {
-        -(1 << (SHIFT - 1))
-    };
+    let alpha = stats.implicit_alpha();
+    let beta = stats.beta(alpha);
 
     apply_bawp_region(workspace, PlaneId::Y, target, alpha, beta)?;
     Ok(())
@@ -317,22 +321,18 @@ fn apply_bawp_plane<T: ReconSample>(
         Some(ref_samples.sample(row, col))
     };
 
-    let Some(TemplateStats {
-        sum_x,
-        sum_y,
-        sum_xx,
-        sum_xy,
-        count,
-    }) = collect_template_stats(
+    let Some(stats) = collect_template_stats(
         &edges, width, height, num_up, num_left, ref_x, ref_y, ref_at,
-    )
-    else {
+    ) else {
         return Ok(luma_alpha);
     };
 
-    let mut alpha = 1i16 << SHIFT;
-    if plane != PlaneId::Y {
-        alpha = if count == 0 { 1 << SHIFT } else { luma_alpha };
+    let alpha = if plane != PlaneId::Y {
+        if stats.count == 0 {
+            1 << SHIFT
+        } else {
+            luma_alpha
+        }
     } else if bawp.explicit {
         let mut scale = i16::from(bawp.list_index) + 1;
         if bawp.ref_dist_gt4 {
@@ -341,22 +341,11 @@ fn apply_bawp_plane<T: ReconSample>(
         if !bawp.explicit_scale_positive {
             scale = -scale;
         }
-        alpha = 256 + 16 * scale;
-    } else if count > 0 {
-        let nor = sum_xy - sum_x * sum_y / count;
-        let der = sum_xx - sum_x * sum_x / count;
-        if der != 0 && nor != 0 {
-            alpha = splot_recon::math::resolve_division(nor, der, SHIFT as u8);
-            if alpha == 0 {
-                alpha = 1 << SHIFT;
-            }
-        }
-    }
-    let beta = if count > 0 {
-        ((sum_y << SHIFT) - sum_x * i32::from(alpha)) / count
+        256 + 16 * scale
     } else {
-        -(1 << (SHIFT - 1))
+        stats.implicit_alpha()
     };
+    let beta = stats.beta(alpha);
 
     apply_bawp_region(
         workspace,

@@ -2,14 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Parse-result vocabulary for the AV2 § 5.18.2 frame-header core parser.
-//!
-//! The enums here are pure classification types shared between
-//! [`parse_frame_header_core`](super::parse_frame_header_core) and its callers (the
-//! validator, the inspector, the [`crate::write`] frame-header writer): the requested
-//! [`FrameHeaderParseMode`], the stop-point [`FrameHeaderParseStatus`] (with its
-//! truncation partition), the derived [`FrameType`], and the show-existing-frame
-//! [`SefTrailingBits`] boundary classification. They carry no parser state and depend
-//! on no other frame-header type.
 
 /// Which parser path a caller selects for a frame header (AV2 v1.0.0 § 5.18).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,136 +15,32 @@ pub enum FrameHeaderParseMode {
     Core,
 }
 
-/// How much of `frame_header_info()` a core parse consumed (AV2 v1.0.0 § 5.18.2).
+/// How much of `frame_header_info()` was consumed (AV2 § 5.18.2).
 ///
-/// A partial status means the parser intentionally stopped; callers must not infer
-/// that the full payload or its trailing bits were validated.
-///
-/// # Truncation partition
-///
-/// The variants split cleanly into two disjoint classes that callers (the validator's
-/// `frame_header_core_checks`) MUST keep separate:
-///
-/// - **EOF-in-a-fully-modeled region** — the OBU payload ended where the spec mandates
-///   more syntax in a region this parser fully models, so the truncation is a decidable
-///   bitstream defect that must surface as a validation error
-///   ([`Self::is_truncated_in_modeled_region`] returns `true`):
-///   [`Self::StoppedInsideFilterParams`], [`Self::StoppedInsideIntraTail`],
-///   [`Self::StoppedInsideShowExistingFrame`], and [`Self::StoppedInsideInterControl`].
-/// - **Bounded coverage stop / complete parse** — the parser stopped at a point whose
-///   following syntax it does NOT fully model (unsupported coverage), or it completed,
-///   so an early stop is *not* evidence of a truncated payload and must stay silent:
-///   [`Self::ActivationFieldsOnly`], [`Self::ShowExistingFrameComplete`],
-///   [`Self::IntraHeaderComplete`], [`Self::InterHeaderComplete`], and
-///   [`Self::UnsupportedUntilFeature`].
-///
-/// The partition is exact: every status producer in this module either reaches a
-/// modeled-region EOF (the four `StoppedInside*` statuses) or sets a coverage/complete
-/// status. The honest distinction for the inter / bridge control region (§ 5.18.2): the
-/// region IS fully modeled up to its coverage stops
-/// ([`InterStop`](crate::headers::frame::inter::InterStop)), so the parser can only return
-/// `Ok` at one of those stops or `Err(UnexpectedEof)` while reading a modeled field — the
-/// EOF case is the only truncation, recorded as
-/// [`Self::StoppedInsideInterControl`], while a clean coverage stop stays on the silent side
-/// (`UnsupportedUntilFeature`).
+/// The four `StoppedInside*` variants record EOF in modeled syntax; earlier parsed
+/// facts remain available. Coverage stops indicate missing state or unsupported syntax,
+/// not a truncated payload. Header completion does not validate subsequent tile data
+/// or its trailing bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FrameHeaderParseStatus {
-    /// Only the activation/reference fields were read — either the caller asked for
-    /// [`FrameHeaderParseMode::ActivationPrefix`], or core mode lacked the sequence
-    /// state (a fully parsed active sequence header) needed to continue.
+    /// Only activation fields were read: prefix mode was selected or sequence state was unavailable.
     ActivationFieldsOnly,
-    /// The show-existing-frame path was consumed in full: `frame_to_show_map_idx`,
-    /// `derive_sef_order_hint`, the optional `sef_order_hint`, and the terminal
-    /// `film_grain_config()` (§ 5.18.10.1, mirror :4186) all parsed, after which the SEF
-    /// path `return`s (mirror :4196). The frame header is complete.
+    /// The show-existing header, including its film-grain fields, is complete.
     ShowExistingFrameComplete,
-    /// An intra frame header was consumed in full through its § 5.18.2 tail
-    /// (`read_tx_mode()` § 5.18.8.1, the no-bit `frame_reference_mode()` /
-    /// `skip_mode_params()` / `allow_bawp` / `allow_warpmv_mode` intra inferences,
-    /// `reduced_tx_set`, the no-bit intra arm of `global_motion_params()` § 5.18.9.1,
-    /// and `film_grain_config()` § 5.18.10.1). The frame header is complete: every
-    /// `frame_header_info()` field on the intra path has been read or derived. No
-    /// full-payload trailing-bits conformance is implied — the frame header is followed
-    /// by the rest of `tile_group_obu()` (§ 5.19), whose `trailing_bits()` reachability
-    /// is tracked separately (AV2-5.19-TILE-GROUP / NumFrameHeaderBits).
+    /// The intra header is complete through `film_grain_config()` (§ 5.18.10.1).
     IntraHeaderComplete,
-    /// A non-intra frame header was consumed in full through either its § 5.18.2 shared
-    /// tail and inter-specific arms or the TIP-as-output terminal tail. After an ordinary
-    /// inter control region reached
-    /// [`InterStop::ReachedSharedTail`](crate::headers::frame::inter::InterStop), the shared
-    /// tail parsed `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
-    /// `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
-    /// `delta_q_params()` (§ 5.18.7.8), the § 5.18.2 lossless / `allow_tcq` /
-    /// `allow_parity_hiding` derivation, the loop-filter cluster (`deblocking_filter_params()`
-    /// with the inter `allow_df_sub_pu` arm, `gdf_params()`, `cdef_params()`, `lr_params()`,
-    /// `ccso_params()`), and the inter tail (`read_tx_mode()` § 5.18.8.1,
-    /// `frame_reference_mode()`'s `reference_select` § 5.18.8.3, `skip_mode_params()`'s
-    /// `skip_mode_present` § 5.18.8.2, the gated `allow_bawp` / `allow_warpmv_mode`,
-    /// `reduced_tx_set`, `global_motion_params()` § 5.18.9.1, and `film_grain_config()`
-    /// § 5.18.10.1), reaching the terminal. The frame header is complete; the inter facts are
-    /// on `core.inter` and the shared-tail facts on the shared `core` fields
-    /// (`tile_info`/`quantization_params`/…). A TIP-as-output arm instead parses its optional
-    /// explicit `quantization_params()`, `allow_df_sub_pu`, `apply_deblocking_filter_tip`,
-    /// conditional `tile_info()`, and terminal `film_grain_config()`. No full-payload
-    /// tile-data or trailing-bits conformance is implied. Ordinary inter subsets outside the
-    /// shared-tail model and the BRU/bridge return arms stay an honest
-    /// [`Self::UnsupportedUntilFeature`] coverage stop.
+    /// The ordinary inter, TIP-output, or bridge header is complete.
     InterHeaderComplete,
-    /// An intra frame's control region was read in full through the § 5.18.2
-    /// lossless/`allow_tcq`/`allow_parity_hiding` tail, but the payload ran out
-    /// **inside** the loop-filter cluster `deblocking_filter_params()` (§ 5.18.5.2),
-    /// `gdf_params()` (§ 5.18.7.9), `cdef_params()` (§ 5.18.7.10), `lr_params()`
-    /// (§ 5.18.7.11), or `ccso_params()` (§ 5.18.7.12). The already-parsed
-    /// control-region facts (frame size, output flags, tile/quant/segmentation, and any
-    /// cluster structure that completed before the truncation) are intact and exposed; the
-    /// cluster fields that were not reached stay `None`. The truncation itself is a
-    /// payload-bounds condition, not a structural violation, so it is reported through this
-    /// status rather than as a hard parse error — earlier state-supported diagnostics still
-    /// see the preserved facts (the pre-cluster behavior, which stopped here before any
-    /// filter read, is preserved). No full-payload trailing-bits conformance is implied.
+    /// EOF inside the intra deblocking/GDF/CDEF/LR/CCSO cluster. Completed structures are retained.
     StoppedInsideFilterParams,
-    /// An intra frame parsed cleanly through `ccso_params()` (§ 5.18.7.12) but the
-    /// payload ran out **inside** the § 5.18.2 tail (`read_tx_mode()` § 5.18.8.1,
-    /// `reduced_tx_set`, or `film_grain_config()` § 5.18.10.1). The control-region and
-    /// loop-filter-cluster facts and any tail field read before the EOF are preserved;
-    /// the unreached tail (`intra_tail`) stays `None`. Like
-    /// [`Self::StoppedInsideFilterParams`], the truncation is a payload-bounds condition,
-    /// not a structural violation, so it is reported through this status rather than as a
-    /// hard parse error. No full-payload trailing-bits conformance is implied.
+    /// EOF after CCSO inside the intra coding-mode or film-grain tail; `intra_tail` is absent.
     StoppedInsideIntraTail,
-    /// The show-existing-frame path parsed `frame_to_show_map_idx`,
-    /// `derive_sef_order_hint`, and the optional `sef_order_hint`, but the payload ran out
-    /// **inside** the terminal `film_grain_config()` (§ 5.18.10.1, mirror :4186) — the SEF
-    /// tail *is* `film_grain_config()`, so an EOF there is a truncation of a fully-modeled
-    /// region, not an unsupported-coverage stop. The already-parsed SEF facts
-    /// (`frame_to_show_map_idx`, the order hint, the output flags, `refresh_frame_flags`)
-    /// are intact and exposed; `sef_film_grain` stays `None`. Like
-    /// [`Self::StoppedInsideIntraTail`] / [`Self::StoppedInsideFilterParams`], the
-    /// truncation is a payload-bounds condition, not a structural violation, so it is
-    /// reported through this status rather than as a hard parse error — but it is on the
-    /// truncated-in-modeled-region side of the partition.
+    /// EOF inside the show-existing film-grain fields; earlier SEF facts are retained.
     StoppedInsideShowExistingFrame,
-    /// A non-intra frame's `frame_header_info()` reached the § 5.18.2 inter / switch / TIP /
-    /// bridge control region (after `frame_size_override_flag` / `order_hint`, or after the
-    /// bridge's `bridge_frame_ref_idx`), but the payload ran out **inside** one of the
-    /// modeled control fields — the primary-reference signaling, `bridge_frame_overwrite_flag`,
-    /// `refresh_frame_flags`, the explicit reference map (`num_total_refs` / `ref_frame_idx`),
-    /// the reference-grounded frame size, any field through `disable_cdf_update`, or a
-    /// TIP-as-output quantization/deblocking/tile/film-grain tail field. That region IS fully
-    /// modeled up to its coverage stops
-    /// ([`InterStop`](crate::headers::frame::inter::InterStop)), so the parser only returns
-    /// `Ok` at a coverage stop or `Err(UnexpectedEof)` while reading a mandated field; this
-    /// status records the EOF case. The fields parsed before the EOF are intact and exposed on
-    /// `inter` (preserved via the caller-owned `control`), and earlier core facts survive.
-    /// Like the other `StoppedInside*` statuses, the truncation is a payload-bounds condition
-    /// reported through this status rather than a hard parse error — it is on the
-    /// truncated-in-modeled-region side of the partition, distinct from the silent
-    /// unsupported-coverage [`Self::UnsupportedUntilFeature`] a clean coverage stop sets.
+    /// EOF inside inter/bridge control or its modeled tail; earlier core and inter facts are retained.
     StoppedInsideInterControl,
-    /// A branch needs decoder/reference state or syntax this phase does not model
-    /// (e.g. the inter reference map, or the rest of a bridge frame). `feature_id` is
-    /// the implementation-matrix row that tracks the missing coverage.
+    /// Required decoder/reference state or syntax coverage is unavailable.
     UnsupportedUntilFeature {
         /// Implementation-matrix Feature ID for the unmodeled coverage.
         feature_id: &'static str,
@@ -176,19 +64,8 @@ impl FrameHeaderParseStatus {
         }
     }
 
-    /// `true` when the status records an EOF **inside a region this parser fully
-    /// models** — i.e. the OBU payload ended where the spec mandates more syntax, a
-    /// decidable bitstream defect (the truncated-in-modeled-region side of the
-    /// [enum partition](Self#truncation-partition)). Exactly
-    /// [`Self::StoppedInsideFilterParams`], [`Self::StoppedInsideIntraTail`],
-    /// [`Self::StoppedInsideShowExistingFrame`], and [`Self::StoppedInsideInterControl`].
-    ///
-    /// Coverage stops and complete parses return `false`: an early stop whose following
-    /// syntax is unmodeled ([`Self::UnsupportedUntilFeature`]) is not evidence of a
-    /// truncated payload, and a complete header ([`Self::IntraHeaderComplete`],
-    /// [`Self::InterHeaderComplete`], [`Self::ShowExistingFrameComplete`]) was not truncated
-    /// at all. The validator fires its truncated-frame-header diagnostic on exactly the
-    /// `true` set.
+    /// Whether the status records EOF in modeled syntax rather than a coverage stop.
+    /// The validator uses this distinction for its truncated-frame-header diagnostic.
     #[must_use]
     pub const fn is_truncated_in_modeled_region(self) -> bool {
         matches!(

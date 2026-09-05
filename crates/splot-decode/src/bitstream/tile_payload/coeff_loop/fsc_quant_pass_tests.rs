@@ -189,7 +189,7 @@ fn staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits() {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
     let start = read_start(&mut tile, &mut symbols, 1, 1);
-    let eob = start.eob_read().eob().eob();
+    let eob = start.eob_read().eob();
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 

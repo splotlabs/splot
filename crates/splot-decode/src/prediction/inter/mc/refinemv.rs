@@ -360,9 +360,7 @@ fn search_refinemv_offset(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "refine-MV SAD threshold",
             })? as u32;
-        let center = refinemv_sad(
-            pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth, None,
-        )?;
+        let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
         let biased_center = center - (center >> 3);
         if biased_center < threshold {
             return Ok((0, 0));
@@ -371,21 +369,13 @@ fn search_refinemv_offset(
     } else {
         let (dy, dx) = SEARCH_NEIGHBORS[0];
         let sad = refinemv_sad(
-            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth, None,
+            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
         )?;
         ((dx, dy), sad, 1)
     };
     for &(dy, dx) in &SEARCH_NEIGHBORS[first_unchecked_neighbor..] {
         let sad = refinemv_sad(
-            pred0,
-            pred1,
-            stride,
-            sad_width,
-            sad_height,
-            dx,
-            dy,
-            bit_depth,
-            Some(best_sad),
+            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
         )?;
         if sad < best_sad {
             best_sad = sad;
@@ -405,7 +395,6 @@ fn refinemv_sad(
     dx: i32,
     dy: i32,
     bit_depth: splot_recon::BitDepth,
-    limit: Option<u32>,
 ) -> splot_recon::Result<u32> {
     let start0_x = usize::try_from(2 + dx).map_err(|_| ReconError::ArithmeticOverflow {
         context: "refine-MV SAD left offset",
@@ -458,7 +447,7 @@ fn refinemv_sad(
         }
     }
     let sad = (sad8.reduce_sum() + sad4.reduce_sum() + sad_tail) >> downshift;
-    Ok(limit.map_or(sad, |limit| sad.min(limit)))
+    Ok(sad)
 }
 
 #[cfg(test)]

@@ -2,8 +2,14 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 #![no_main]
 
-use std::io;
 use std::sync::OnceLock;
+
+#[path = "../support/output.rs"]
+mod output;
+use output::FailAfterBytes;
+#[path = "../support/capture.rs"]
+mod capture;
+use capture::BoundedCaptureWriter;
 
 use libfuzzer_sys::fuzz_target;
 use splot_decode::{
@@ -78,70 +84,4 @@ fn assert_minimal_raw_shape(bytes: &[u8]) {
     let (luma, _) = bytes.split_at(MINIMAL_LUMA_BYTES);
     assert!(luma.iter().all(|sample| *sample == MINIMAL_LUMA_SAMPLE));
     assert_eq!(bytes, MINIMAL_EXPECTED_RAW);
-}
-
-#[derive(Debug)]
-struct BoundedCaptureWriter {
-    bytes: Vec<u8>,
-    max_bytes: usize,
-}
-
-impl BoundedCaptureWriter {
-    const fn new(max_bytes: usize) -> Self {
-        Self {
-            bytes: Vec::new(),
-            max_bytes,
-        }
-    }
-
-    fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
-impl io::Write for BoundedCaptureWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let Some(next_len) = self.bytes.len().checked_add(buf.len()) else {
-            return Err(io::Error::other("fuzz writer byte count overflow"));
-        };
-        if next_len > self.max_bytes {
-            return Err(io::Error::other("fuzz writer byte budget exhausted"));
-        }
-        self.bytes.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct FailAfterBytes {
-    bytes_written: usize,
-    max_bytes: usize,
-}
-
-impl FailAfterBytes {
-    const fn new(max_bytes: usize) -> Self {
-        Self {
-            bytes_written: 0,
-            max_bytes,
-        }
-    }
-}
-
-impl io::Write for FailAfterBytes {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.bytes_written >= self.max_bytes {
-            return Err(io::Error::other("fuzz writer byte budget exhausted"));
-        }
-        let allowed = (self.max_bytes - self.bytes_written).min(buf.len());
-        self.bytes_written += allowed;
-        Ok(allowed)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }

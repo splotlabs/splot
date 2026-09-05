@@ -115,27 +115,6 @@ pub(crate) fn emit_frames_from_prepared(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     frame_delay: NonZeroUsize,
-    emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
-) -> Result<()> {
-    decode_frames_from_plan_impl(
-        parsed,
-        bytes,
-        options,
-        plan,
-        frame_delay,
-        |_| Ok(()),
-        false,
-        emit,
-    )
-    .map(drop)
-}
-
-pub(crate) fn emit_materialized_frames_from_prepared(
-    bytes: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
-    frame_delay: NonZeroUsize,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
     emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
 ) -> Result<()> {

@@ -106,9 +106,7 @@ impl TemporalMotionBand {
             else {
                 return;
             };
-            if y8 >= row_base8
-                && let Some(target) = cells.get_mut(index)
-            {
+            if let Some(target) = cells.get_mut(index) {
                 *target = resolve_temporal_refs(cell, hints, &resolved);
             }
         });

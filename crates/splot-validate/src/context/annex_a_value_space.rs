@@ -37,25 +37,8 @@ pub(super) fn annex_a_value_space_fingerprint(
     }
 }
 
-/// Emits the Annex A.4 static level-limit diagnostics for a parsed frame against the
-/// active sequence header's level (AV2 v1.0.0 Annex A.4 static conformance block,
-/// mirror lines 615-629):
-///
-/// - `annex-a/frame-size-exceeds-level` (error): `FrameWidth * FrameHeight >
-///   MaxPicSize` (line 618), `FrameWidth > MaxHSize` (line 619), or
-///   `FrameHeight > MaxVSize` (line 620).
-/// - `annex-a/frame-size-below-minimum` (error): `FrameWidth < 16` (line 628) or
-///   `FrameHeight < 16` (line 629).
-/// - `annex-a/tile-count-exceeds-level` (error): `NumTiles > MaxTiles` (line 621) or
-///   `TileCols > MaxTileCols` (line 622). `NumTiles = TileCols * TileRows` and
-///   `TileCols` come from the parsed `tile_info()`.
-///
-/// All of these are inside the "When the mapped level ID, LevelIdx is contained in the
-/// tables above" block (mirror lines 615-616), so they apply only when `seq_level_idx`
-/// maps to a defined level (`0..=21`). [`level_limits`] returns `None` for the
-/// Maximum-parameters level 31 ("there are no level-based constraints", mirror lines
-/// 659-660) and for the reserved indices `22..=30`, which disables every check here —
-/// the minimum-dimension `>= 16` rule included (it lives in the same gated block).
+/// Checks Annex A.4 frame dimensions and tile counts for table-mapped levels.
+/// The minimum-dimension rule shares that gate; reserved levels and level 31 skip it.
 pub(super) fn frame_annex_a_level_checks(
     core: &FrameHeaderCore,
     active_sequence: &SequenceHeader,
@@ -163,38 +146,9 @@ pub(super) fn frame_annex_a_level_checks(
     }
 }
 
-/// Emits the OPS-carried Annex A profile/tier/level value-space diagnostics for each
-/// included extended layer's `ops_seq_profile_tier_level_info()` (§ 5.11.2):
-///
-/// - `annex-a/profile-reserved` (error, Annex A.2 Table A.1, mirror line 85) when
-///   `ops_seq_profile_idc` is in the reserved range `5..=30`; it conforms to no defined
-///   profile, so it is as non-conformant as a reserved `seq_profile_idc`. Annex A maps
-///   the OPS-derived profile id onto Table A.1 per sub-bitstream (§ 6.10.4, mirror lines
-///   443-451), and the OPS PTL carries `ops_seq_profile_idc` per included extended layer
-///   (§ 5.11.2).
-/// - `annex-a/level-reserved` (error, Annex A.4 Table A.7, mirror line 321) when
-///   `ops_level_idx` is in the reserved range `22..=30`; it maps to no defined level,
-///   so it is as non-conformant as a reserved `seq_level_idx`.
-/// - `annex-a/high-tier-below-4-0` (warning, Annex A.4 Table A.9 NOTE, mirror lines
-///   436-437) when `ops_tier_flag == 1` (High) with `ops_level_idx < 4` (level 4.0).
-///   Warning, not error: the only spec statement is the informative Table A.9 NOTE
-///   ("seq_tier equal to 1 can only be signaled for level 4.0 and above") plus the
-///   undefined HighMbps/HighCR cells below 4.0, so error severity would overclaim a
-///   non-normative source. This is the *reachable* high-tier-below-4.0 arm: a
-///   sub-bitstream's `seq_tier`/`seq_level_idx` "may be derived from the corresponding
-///   ops_tier_flag and ops_level_idx values signaled in the operating_point_set_obu()"
-///   (mirror lines 443-451), and the OPS PTL syntax signals both `ops_level_idx` and
-///   `ops_tier_flag` unconditionally (§ 5.11.2) — unlike the sequence-header arm, where
-///   `seq_tier` is only signaled for `seq_level_idx > 3` and the warning is
-///   syntax-unreachable.
-///
-/// Annex A applies its level/tier constraints per sub-bitstream using the OPS-derived
-/// `ops_tier_flag` / `ops_level_idx` values (mirror lines 443-451). Both values live in
-/// each included extended layer's `ops_seq_profile_tier_level_info()`
-/// ([`OpsSeqProfileTierLevelInfo::level_idx`] / [`OpsSeqProfileTierLevelInfo::tier_flag`],
-/// § 5.11.2). The aggregate `ops_aggregate_level_idx` (§ 5.11.1) is a separate value
-/// space tracked by `AV2-5.11.2-OPS-SEQ-PTL-INFO` and is not flagged here. Anchored at
-/// the OPS OBU.
+/// Checks each included extended layer’s OPS profile, level and tier (Annex A.2/A.4).
+/// High tier below 4.0 is advisory: the constraint comes from the informative Table A.9
+/// NOTE. OPS signals the tier unconditionally, making this warning reachable.
 pub(super) fn check_ops_level_tier_value_space(
     obu: &ObuEnvelope<'_>,
     ops: &OperatingPointSet,
@@ -266,49 +220,10 @@ pub(super) fn check_ops_level_tier_value_space(
 }
 
 impl ValidatorContext {
-    /// Emits the Annex A.2 / Annex A.4 profile and level/tier *value-space* diagnostics
-    /// for the sequence header activated for `xlayer`, once per activated header per
-    /// coded video sequence:
-    ///
-    /// - `annex-a/profile-reserved` (error, Annex A.2 Table A.1, mirror line 85):
-    ///   `seq_profile_idc` in the reserved range `5..=30`.
-    /// - `annex-a/profile-chroma-format-mismatch` (error, Annex A.2 Table A.1, mirror
-    ///   lines 61-90): `chroma_format_idc` outside the activated profile's allowed set.
-    ///   Skipped for the Configurable profile (31), whose Table A.1 chroma column is a
-    ///   dash, and for a reserved profile (the reserved-profile error already fires and
-    ///   no allowed set is defined).
-    /// - `annex-a/profile-bit-depth-mismatch` (error, Annex A.2 Table A.1, mirror lines
-    ///   61-90): `bit_depth_idc` not `0` or `1` for profiles `0..=4`. Skipped for the
-    ///   Configurable profile. The parsed [`BitDepthIdc`] only models `0`/`1`, so a
-    ///   sequence header that reaches activation always has an in-range bit depth; this
-    ///   check is defensive and currently never fires (documented below).
-    /// - `annex-a/level-reserved` (error, Annex A.4 Table A.7, mirror line 321):
-    ///   `seq_level_idx` in the reserved range `22..=30`. The Maximum-parameters value
-    ///   31 is valid and not flagged.
-    /// - `annex-a/high-tier-below-4-0` (warning, Annex A.4 Table A.9 NOTE, mirror lines
-    ///   436-437): `seq_tier == High` with `seq_level_idx < 4` (level 4.0). Warning, not
-    ///   error: the only spec statement is the informative Table A.9 NOTE ("seq_tier
-    ///   equal to 1 can only be signaled for level 4.0 and above") plus the undefined
-    ///   HighMbps/HighCR cells, so error severity would overclaim a non-normative source.
-    ///   This sequence-header arm is syntax-*unreachable*: the § 5.4.1 parser only reads
-    ///   `seq_tier` when `seq_level_idx > 3`, so a parseable header below level 4.0
-    ///   always infers `Tier::Main`. The *reachable* arm is the OPS path — a
-    ///   sub-bitstream's `seq_tier`/`seq_level_idx` may be derived from the OPS-signaled
-    ///   `ops_tier_flag`/`ops_level_idx` (mirror lines 443-451), and the OPS PTL syntax
-    ///   carries `ops_tier_flag` unconditionally (§ 5.11.2) — so it is also checked, in
-    ///   [`check_ops_level_tier_value_space`].
-    ///
-    /// Anchored at the defining sequence-header OBU ([`Self::sequence_header_offsets`]),
-    /// not the activating frame OBU.
-    ///
-    /// Emitted only for a *frame-confirmed* in-band activation (`frame_confirmed_xlayers`,
-    /// the § 5.18.2 `load_sequence_header` path): a staged-but-unactivated header that no
-    /// frame has loaded does not fire (§ 7.3.6 permits staging several headers, so the
-    /// OBU-order fallback — even when momentarily the sole candidate — is a guess a later
-    /// frame can contradict). Unlike the agreement checks, this runs even when the caller
-    /// declares external HLS, because the active header recorded for `xlayer` is always
-    /// the in-band one and its value-space facts are locally decidable regardless of any
-    /// external sequence header (see [`Self::on_sequence_activation`]).
+    /// Checks Annex A.2/A.4 value space once per frame-confirmed header and CVS epoch,
+    /// anchored at the defining OBU. Redefinitions with changed checked fields re-run it.
+    /// These in-band facts remain decidable under external HLS. Configurable profiles
+    /// have no fixed chroma restriction. The parser infers Main tier below level 4.0.
     pub(super) fn check_annex_a_value_space(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -350,35 +265,20 @@ impl ValidatorContext {
                 .with_spec_section("A.2")
                 .with_byte_offset(offset),
             );
-        } else if !is_configurable {
-            if !profile_allows_chroma(profile_idc, general.chroma_format_idc) {
-                report.push(
-                    Diagnostic::error(
-                        "annex-a/profile-chroma-format-mismatch",
-                        format!(
-                            "chroma_format_idc {} is not in the allowed set of seq_profile_idc {}",
-                            general.chroma_format_idc.get(),
-                            profile_idc
-                        ),
-                    )
-                    .with_spec_section("A.2")
-                    .with_byte_offset(offset),
-                );
-            }
-            let bit_depth_value = general.bit_depth_idc.get();
-            if bit_depth_value > 1 {
-                report.push(
-                    Diagnostic::error(
-                        "annex-a/profile-bit-depth-mismatch",
-                        format!(
-                            "bit_depth_idc {bit_depth_value} is not 0 or 1, the only values \
-                             allowed for seq_profile_idc {profile_idc}"
-                        ),
-                    )
-                    .with_spec_section("A.2")
-                    .with_byte_offset(offset),
-                );
-            }
+        } else if !is_configurable && !profile_allows_chroma(profile_idc, general.chroma_format_idc)
+        {
+            report.push(
+                Diagnostic::error(
+                    "annex-a/profile-chroma-format-mismatch",
+                    format!(
+                        "chroma_format_idc {} is not in the allowed set of seq_profile_idc {}",
+                        general.chroma_format_idc.get(),
+                        profile_idc
+                    ),
+                )
+                .with_spec_section("A.2")
+                .with_byte_offset(offset),
+            );
         }
 
         if is_reserved_level(level_idx) {
@@ -388,21 +288,6 @@ impl ValidatorContext {
                     format!(
                         "seq_level_idx {level_idx} is reserved (22..=30); it maps to no AV2 level \
                          defined in this version of the specification"
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(offset),
-            );
-        }
-
-        if matches!(general.seq_tier, Tier::High) && level_idx < HIGH_TIER_MIN_LEVEL_IDX {
-            report.push(
-                Diagnostic::warning(
-                    "annex-a/high-tier-below-4-0",
-                    format!(
-                        "seq_tier is High (1) with seq_level_idx {level_idx} below level 4.0 \
-                         (LevelIdx 4); the Table A.9 NOTE states High tier can only be signaled \
-                         for level 4.0 and above (advisory: the source is an informative NOTE)"
                     ),
                 )
                 .with_spec_section("A.4")

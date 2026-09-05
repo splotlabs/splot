@@ -1,6 +1,6 @@
 # Documentation
 
-Retained human docs are intentionally small:
+Start here:
 
 - [../README.md](../README.md) - user entry point and commands
 - [../AGENTS.md](../AGENTS.md) - contributor and coding-agent rules

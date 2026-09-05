@@ -29,7 +29,7 @@ pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
     let mut writer = None;
     let mut sample_bit_depth = None;
     let frame_rate_override = options.y4m_frame_rate_override();
-    crate::pipeline::emit_materialized_frames_from_prepared(
+    crate::pipeline::emit_frames_from_prepared(
         bytes,
         parsed,
         options,

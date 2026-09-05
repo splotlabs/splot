@@ -58,9 +58,6 @@ impl MLayerDependencyMap {
     /// Stores a signaled `mlayer_dependency_map` bit; out-of-range indices (never
     /// produced by the parser, whose loop bounds come from the 3-bit
     /// `max_mlayer_id`) are ignored rather than panicking.
-    ///
-    /// `pub(super)` so the relocated `sequence::tests` module can drive presence-map
-    /// derivations directly, as it did when this type lived in `sequence` itself.
     pub(super) fn set(&mut self, curr_layer: u8, ref_layer: u8, value: bool) {
         if let Some(entry) = self
             .0

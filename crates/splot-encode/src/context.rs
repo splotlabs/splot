@@ -42,9 +42,8 @@ const SUPPORTED_FRAME_DIMENSION: usize = 64;
 /// The `base_q_idx` range the minimal skip path can honestly emit: `1..=90`. Within this
 /// range the decoder's coefficient CDF q-context is `0` (matching the skip tile's coding);
 /// the skip block's all-zero residual makes the flat-128 reconstruction independent of the
-/// exact `base_q_idx`. Above 90 the q-context derivation is not yet modeled, and `0`
-/// (lossless) is excluded from this minimal tier.
-// TODO(spec: ENC-CONFIG-QP-FIELD): widen once the `get_qctx` mapping lands (co-evolving
+/// exact `base_q_idx`. Values above 90 require a different coefficient CDF context;
+/// this emitter supports only context 0. `0` (lossless) is excluded from this tier.
 const SUPPORTED_SKIP_QP: core::ops::RangeInclusive<u8> = 1..=90;
 
 /// A queued input frame with its visible samples owned, so [`Context::receive_packet`] can

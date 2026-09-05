@@ -41,20 +41,13 @@ pub(in crate::validator::tests) fn brt_obu() -> Vec<u8> {
     annex_b_obu(BRT_HEADER, &[0x80])
 }
 
-pub(in crate::validator::tests) fn has_frame_unit_error(
-    report: &ValidationReport,
-    rule: &str,
-) -> bool {
-    report.errors().any(|d| d.rule_id == rule)
-}
-
 #[test]
 fn frame_unit_first_tile_group_flag_zero_on_first_is_flagged() {
     let mut data = seg_td_and_seq();
     data.extend(clk_frame_decidable(false, true));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/first-tile-group-flag"),
+        has_error(&report, "frame-unit/first-tile-group-flag"),
         "report was: {report}"
     );
 }
@@ -123,14 +116,11 @@ fn frame_unit_brt_multiplicity_in_non_output_unit_is_flagged() {
     });
     data.extend(brt_obu());
     data.extend(brt_obu());
-    let mut fb = Bits::default();
-    fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
-    fb.f(0, 3); // bridge_frame_ref_idx == 0 (< NumRefFrames)
-    data.extend(annex_b_obu(BRIDGE_HEADER, &fb.into_bytes()));
+    data.extend(bridge_obu());
     data.extend(temporal_delimiter_obu()); // resolve the unit
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
+        has_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
         "report was: {report}"
     );
 }
@@ -144,7 +134,7 @@ fn frame_unit_brt_multiplicity_in_output_unit_is_conformant() {
     data.extend(temporal_delimiter_obu());
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        !has_frame_unit_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
+        !has_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
         "an output unit permits multiple BRT; report was: {report}"
     );
 }
@@ -172,7 +162,7 @@ fn frame_unit_brt_multiplicity_with_back_to_back_bridge_frames_is_flagged() {
     data.extend(temporal_delimiter_obu()); // resolve the unit
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
+        has_error(&report, "frame-unit/buffer-removal-timing-multiplicity"),
         "back-to-back bridge frames stay non-output by type, so the § 7.3.4 BRT bound \
          must still fire; report was: {report}"
     );
@@ -233,7 +223,7 @@ fn frame_unit_suffix_metadata_before_coded_frame_is_flagged() {
     data.extend(clk_frame_decidable(true, true));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/suffix-metadata-before-coded-frame"),
+        has_error(&report, "frame-unit/suffix-metadata-before-coded-frame"),
         "report was: {report}"
     );
 }
@@ -245,7 +235,7 @@ fn frame_unit_duplicate_content_interpretation_is_flagged() {
     data.extend(content_interpretation_obu(0, 0, None));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/duplicate-content-interpretation"),
+        has_error(&report, "frame-unit/duplicate-content-interpretation"),
         "report was: {report}"
     );
 }
@@ -257,7 +247,7 @@ fn frame_unit_ci_after_mfh_is_region_order_error() {
     data.extend(content_interpretation_obu(0, 0, None));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/region-order"),
+        has_error(&report, "frame-unit/region-order"),
         "report was: {report}"
     );
 }
@@ -271,7 +261,7 @@ fn frame_unit_sef_single_obu_violation_is_flagged() {
     data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &rtg.into_bytes()));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/sef-single-obu"),
+        has_error(&report, "frame-unit/sef-single-obu"),
         "report was: {report}"
     );
 }
@@ -329,7 +319,7 @@ fn frame_unit_mixed_coded_frame_types_is_flagged() {
     data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &rtg.into_bytes()));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/mixed-coded-frame-types"),
+        has_error(&report, "frame-unit/mixed-coded-frame-types"),
         "report was: {report}"
     );
 }
@@ -388,10 +378,7 @@ fn frame_unit_sef_after_bridge_frame_splits_silently() {
         num_ref_frames_minus_1: 5, // NumRefFrames == 6 for the bridge ref idx
         ..FrameCoreSeq::base()
     });
-    let mut fb = Bits::default();
-    fb.uvlc(0); // seq_header_id_in_frame_header (bridge infers cur_mfh_id == 0)
-    fb.f(0, 3); // bridge_frame_ref_idx == 0 (< NumRefFrames)
-    data.extend(annex_b_obu(BRIDGE_HEADER, &fb.into_bytes())); // unit 1: bridge coded frame
+    data.extend(bridge_obu()); // unit 1: bridge coded frame
     data.extend(annex_b_obu(REGULAR_SEF_HEADER, &[0x80])); // unit 2: SEF (new unit)
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
@@ -412,7 +399,7 @@ fn frame_unit_mixed_coded_frame_types_still_flags_tile_group_continuation() {
     data.extend(annex_b_obu(REGULAR_TILE_GROUP_HEADER, &rtg.into_bytes()));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/mixed-coded-frame-types"),
+        has_error(&report, "frame-unit/mixed-coded-frame-types"),
         "a flag-0 tile group continuing a mismatched TIP coded frame must still fire \
          mixed-coded-frame-types; report was: {report}"
     );
@@ -447,7 +434,7 @@ fn frame_unit_ci_in_second_frame_unit_is_flagged() {
     data.extend(content_interpretation_obu(0, 0, None)); // second unit's CI (violation)
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/ci-not-in-first-frame-unit"),
+        has_error(&report, "frame-unit/ci-not-in-first-frame-unit"),
         "report was: {report}"
     );
 }
@@ -472,7 +459,7 @@ fn frame_unit_ci_in_later_temporal_layer_unit_is_flagged() {
     ));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        has_frame_unit_error(&report, "frame-unit/ci-not-in-first-frame-unit"),
+        has_error(&report, "frame-unit/ci-not-in-first-frame-unit"),
         "a CI in a later temporal-layer unit of the same embedded layer must fire; \
          report was: {report}"
     );

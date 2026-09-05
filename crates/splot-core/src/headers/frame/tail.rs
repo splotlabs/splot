@@ -1,54 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The AV2 § 5.18.2 frame-header **intra tail** structures
-//! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`, mirror :5307-5341).
+//! AV2 § 5.18.2 intra coding-mode and film-grain tail after CCSO.
 //!
-//! After `ccso_params()` (§ 5.18.7.12) the § 5.18.2 grammar reads, in order:
-//!
-//! ```text
-//! read_tx_mode( )            // § 5.18.8.1, mirror :5307
-//! frame_reference_mode( )    // § 5.18.8.3, mirror :5309
-//! skip_mode_params( )        // § 5.18.8.2, mirror :5311
-//! if (!FrameIsIntra && enable_bawp) allow_bawp                f(1)   // else allow_bawp = 0
-//! if (!FrameIsIntra && frame_enabled_motion_modes[DELTAWARP])
-//!     allow_warpmv_mode                                       f(1)   // else allow_warpmv_mode = 0
-//! reduced_tx_set                                             f(2)    // mirror :5337
-//! global_motion_params( )    // § 5.18.9.1, mirror :5339
-//! film_grain_config( )       // § 5.18.10.1, mirror :5341
-//! ```
-//!
-//! This module models **only the intra arm**, where every conditional that needs
-//! reference-frame state collapses to a no-bit derivation determined by `FrameIsIntra`
-//! and `CodedLossless` (both already known to the core parser):
-//!
-//! - `read_tx_mode()` reads `tx_mode_select` `f(1)` unless `CodedLossless == 1`, in
-//!   which case `TxMode = ONLY_4X4` with no bits (mirror :7636).
-//! - `frame_reference_mode()` infers `reference_select = 0` on the intra path with no
-//!   bits (mirror :7741).
-//! - `skip_mode_params()` infers `skipModeAllowed = 0` and `skip_mode_present = 0` on
-//!   the intra path (`FrameIsIntra`, mirror :7673) with no bits.
-//! - `allow_bawp` / `allow_warpmv_mode` are inferred `0` on the intra path (their
-//!   `!FrameIsIntra` guards are false, mirror :5313 / :5327) with no bits.
-//! - `reduced_tx_set` `f(2)` is read unconditionally (mirror :5337).
-//! - `global_motion_params()` returns immediately on the intra path (`FrameIsIntra`,
-//!   mirror :7792), reading no bits — every `GmType[ref]` is `IDENTITY` and the
-//!   `gm_params` are the identity warp.
-//! - `film_grain_config()` (§ 5.18.10.1) reads `apply_grain` (`f(1)`, gated), and when
-//!   `apply_grain`, `fgm_id` `f(3)` and `grain_seed` `f(16)` (mirror :8163). The
-//!   `load_grain_model( fgm_id )` call (mirror :8183) reads **no bits**: it is a
-//!   memory-load reference to a film-grain model slot previously decoded by a
-//!   `film_grain_obu()` (§ 5.14), per § 6.17.10.1 (`load_grain_model(idx)` "indicates
-//!   that all syntax elements read in film_grain_model should be set equal to the values
-//!   stored in an area of memory indexed by idx"). No in-band `film_grain_model()`
-//!   (§ 5.18.10.2) syntax is present here, so the § 5.14
-//!   [`parse_film_grain`](crate::headers::film_grain::parse_film_grain) model parser is
-//!   intentionally **not** invoked from the frame-header path.
-//!
-//! The inter-path arms (the `tx_mode_select` always-read, `reference_select` `f(1)`,
-//! `skip_mode_present` gating, `allow_bawp` / `allow_warpmv_mode` reads, and the
-//! `global_motion_params()` per-reference subexp-coded warp model) are out of scope and
-//! tracked as named residuals on the matrix rows.
+//! `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2` defines the field order.
+//! Intra reference/skip/global-motion fields are inferred without bits; film grain
+//! depends on the output and sequence flags. Reference-buffer grain loading and
+//! reconstruction are handled by the caller.
 
 use crate::bitio::BitReader;
 use crate::error::Result;

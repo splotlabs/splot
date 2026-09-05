@@ -164,18 +164,6 @@ impl NonZeroCoeffEob {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NonZeroCoeffEobSymbolRead {
-    eob: NonZeroCoeffEob,
-}
-
-impl NonZeroCoeffEobSymbolRead {
-    #[must_use]
-    pub(crate) const fn eob(self) -> NonZeroCoeffEob {
-        self.eob
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffLoopContextError {
     #[error("coefficient context state error: {0}")]
@@ -275,7 +263,7 @@ pub(crate) fn read_nonzero_coeff_eob(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: NonZeroCoeffEobSymbolInput,
-) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
+) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
     let eob_pt_symbol = cdfs
         .read_block_symbol_trace(
             TileCdfSelector::EobPt {
@@ -315,14 +303,14 @@ pub(crate) fn read_nonzero_coeff_eob(
         eob_extra,
         eob_extra_bits: eob_extra_bits as usize,
     })?;
-    Ok(NonZeroCoeffEobSymbolRead { eob })
+    Ok(eob)
 }
 
 pub(crate) fn read_nonzero_coeff_eob_from_context(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: NonZeroCoeffEobContextInput,
-) -> Result<NonZeroCoeffEobSymbolRead, CoeffLoopContextError> {
+) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
     let input = nonzero_coeff_eob_symbol_input(input)?;
     read_nonzero_coeff_eob(cdfs, symbols, input)
 }

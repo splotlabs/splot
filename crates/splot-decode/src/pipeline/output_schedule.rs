@@ -356,13 +356,10 @@ pub(super) fn select_output_frames(
 ) -> Result<Vec<PipelineFrame>> {
     let mut outputs = Vec::with_capacity(output_frame_indices.len());
     for index in output_frame_indices {
-        let output = frames.get_mut(index).and_then(Option::take).ok_or_else(|| {
-            unsupported(
-                "displayed_frame_index_unavailable",
-                None,
-                "decode pipeline output ordering references a decoded frame that is unavailable",
-            )
-        })?;
+        let output = frames
+            .get_mut(index)
+            .and_then(Option::take)
+            .ok_or_else(missing_display_frame)?;
         outputs.push(output);
     }
     Ok(outputs)

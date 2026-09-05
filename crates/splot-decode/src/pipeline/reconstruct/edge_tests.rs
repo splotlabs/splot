@@ -109,7 +109,7 @@ fn chroma_d135_top_row_filters_available_left_edge() {
         None,
         None,
         BitDepth::Ten,
-        MiddleEdgeAvailability {
+        IntraEdgeAvailability {
             above: false,
             left: true,
         },

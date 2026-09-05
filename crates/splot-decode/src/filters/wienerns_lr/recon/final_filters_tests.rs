@@ -1559,22 +1559,18 @@ fn lr_source_scratch_does_not_retain_oversized_buffers() {
 }
 
 #[test]
-fn lr_block_output_lands_in_its_rectangle_for_both_storage_widths() {
-    fn filtered_plane<T: ReconSample>() -> Vec<u16> {
+fn lr_block_destination_lands_in_its_rectangle() {
+    fn filtered_plane() -> Vec<u16> {
         let mut plane = StripePlane::from_samples(8, 8, 4, vec![9u16; 32]).unwrap();
         let mut source = block(0, 2, 5);
         source.width = 3;
         source.height = 2;
-        filter_lr_block_into::<T>(&mut plane, &source, |output, stride| {
-            for row in 0..source.height {
-                for col in 0..source.width {
-                    output[row * stride + col] =
-                        T::try_from_u16((row * source.width + col + 1) as u16).unwrap();
-                }
+        let (output, stride) = lr_block_destination(&mut plane, &source).unwrap();
+        for row in 0..source.height {
+            for col in 0..source.width {
+                output[row * stride + col] = (row * source.width + col + 1) as u16;
             }
-            Ok(())
-        })
-        .unwrap();
+        }
         plane.samples().to_vec()
     }
 
@@ -1584,8 +1580,7 @@ fn lr_block_output_lands_in_its_rectangle_for_both_storage_widths() {
         9, 9, 4, 5, 6, 9, 9, 9, // row 6
         9, 9, 9, 9, 9, 9, 9, 9, // row 7
     ];
-    assert_eq!(filtered_plane::<u16>(), expected);
-    assert_eq!(filtered_plane::<u8>(), expected);
+    assert_eq!(filtered_plane(), expected);
 }
 
 #[test]
@@ -1594,20 +1589,6 @@ fn lr_block_output_refuses_a_rectangle_wider_than_the_stripe() {
     let mut source = block(0, 6, 5);
     source.width = 3;
     source.height = 1;
-    assert!(filter_lr_block_into::<u16>(&mut plane, &source, |_, _| Ok(())).is_err());
+    assert!(lr_block_destination(&mut plane, &source).is_err());
     assert!(plane.samples().iter().all(|sample| *sample == 9));
-}
-
-#[test]
-fn lr_output_scratch_reuses_storage_after_an_error() {
-    LR_OUTPUT_SCRATCH.with(|slot| slot.set(None));
-    let allocation = with_lr_output_scratch::<u16, _>(|output| {
-        output.try_reserve_exact(16).unwrap();
-        Err::<(), _>(output.as_ptr())
-    })
-    .unwrap_err();
-    with_lr_output_scratch::<u16, _>(|output| {
-        assert_eq!(output.as_ptr(), allocation);
-    });
-    LR_OUTPUT_SCRATCH.with(|slot| slot.set(None));
 }

@@ -130,22 +130,19 @@ impl CvsTracker {
             self.cvs_generation_for.insert(xlayer, self.cvs_generation);
         }
         self.cvs_started_in_tu.insert(xlayer, self.tu_index);
-        let mut retained = Vec::with_capacity(self.pending_cross_tu.len());
-        for entry in std::mem::take(&mut self.pending_cross_tu) {
-            if entry.xlayer == xlayer {
-                match entry.polarity {
-                    PendingPolarity::CvsScoped => {
-                        if let Some(replacement) = entry.on_drop {
-                            report.push(replacement);
-                        }
+        for entry in self
+            .pending_cross_tu
+            .extract_if(.., |entry| entry.xlayer == xlayer)
+        {
+            match entry.polarity {
+                PendingPolarity::CvsScoped => {
+                    if let Some(replacement) = entry.on_drop {
+                        report.push(replacement);
                     }
-                    PendingPolarity::PreCvs => report.push(entry.primary),
                 }
-            } else {
-                retained.push(entry);
+                PendingPolarity::PreCvs => report.push(entry.primary),
             }
         }
-        self.pending_cross_tu = retained;
     }
 
     /// The temporal unit in which `xlayer`'s current coded video sequence started, or

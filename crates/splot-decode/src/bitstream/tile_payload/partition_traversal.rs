@@ -22,7 +22,7 @@ use super::partition_allowed::{
     partition_decision_facts,
 };
 use super::partition_size::{
-    BlockSize, PartitionSizeError, PartitionSubsize, h_partition_midsize, partition_subsize,
+    BlockSize, PartitionSizeError, h_partition_midsize, partition_subsize,
 };
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimits};
 
@@ -488,17 +488,7 @@ impl GeneralIntraLeafMode {
 
     #[must_use]
     pub(crate) const fn chroma(uv_cfl: bool) -> Self {
-        Self {
-            intra_joint_mode: None,
-            y_mode: None,
-            angle_delta_y: None,
-            fsc_mode: None,
-            mrl: None,
-            use_dip: None,
-            palette_y: None,
-            uv_cfl: Some(uv_cfl),
-            intrabc: false,
-        }
+        Self::no_luma_mode().with_uv_cfl(uv_cfl)
     }
 
     #[must_use]

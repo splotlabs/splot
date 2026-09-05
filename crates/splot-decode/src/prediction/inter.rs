@@ -295,29 +295,22 @@ fn empty_segment_id_map(core: &FrameHeaderCore) -> Result<FrameSegmentIdMap> {
         .map_err(|_| DecodeHeaderStateError::MissingSegmentIdMap.into())
 }
 
-fn resolve_initial_frame_cdfs(
+fn frame_cdf_load(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     reference: &InterReferenceState<impl ReconSample>,
-    candidate: &DecodePlannedObu,
-    offset: ByteOffset,
-) -> Result<Arc<FrameCdfSubset>> {
+) -> ResolvedCdfLoad {
     let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
     let current_order_hint =
         i32::try_from(core.display_order_hint().unwrap_or(0)).unwrap_or(i32::MAX);
-    let default_cdfs = || {
-        Ok(Arc::new(FrameCdfSubset::default_for_base_q(
-            current_base_q_idx,
-        )))
-    };
     let Some(inter_ctrl) = core.inter.as_ref() else {
-        return default_cdfs();
+        return ResolvedCdfLoad::Default;
     };
     let (enable_avg_cdf, avg_cdf_type) = sequence
         .transform_quant_entropy
         .as_ref()
         .map_or((false, 1u8), |tq| (tq.enable_avg_cdf, tq.avg_cdf_type));
-    let cdf_load = resolve_cdf_load(
+    resolve_cdf_load(
         inter_ctrl.signal_primary_ref_frame,
         inter_ctrl.primary_ref_frame,
         inter_ctrl.disable_cross_frame_cdf_init,
@@ -332,7 +325,22 @@ fn resolve_initial_frame_cdfs(
         current_order_hint,
         cdf_blending_enabled(enable_avg_cdf, inter_ctrl.tip_frame_mode),
         avg_cdf_type,
-    );
+    )
+}
+
+fn resolve_initial_frame_cdfs(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<impl ReconSample>,
+    candidate: &DecodePlannedObu,
+    offset: ByteOffset,
+) -> Result<Arc<FrameCdfSubset>> {
+    let default_cdfs = || {
+        Ok(Arc::new(FrameCdfSubset::default_for_base_q(
+            core.quantization_params.map_or(0, |q| q.base_q_idx),
+        )))
+    };
+    let cdf_load = frame_cdf_load(core, sequence, reference);
     match cdf_load {
         ResolvedCdfLoad::Default => default_cdfs(),
         ResolvedCdfLoad::OutOfRangePrimary {
@@ -411,38 +419,15 @@ pub(crate) fn entropy_dependencies(
     reference: &InterReferenceState<impl ReconSample>,
 ) -> EntropyDependencies {
     let mut cdfs = Vec::new();
-    if let Some(inter_ctrl) = core.inter.as_ref() {
-        let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
-        let current_order_hint =
-            i32::try_from(core.display_order_hint().unwrap_or(0)).unwrap_or(i32::MAX);
-        let (enable_avg_cdf, avg_cdf_type) = sequence
-            .transform_quant_entropy
-            .as_ref()
-            .map_or((false, 1u8), |tq| (tq.enable_avg_cdf, tq.avg_cdf_type));
-        if let ResolvedCdfLoad::LoadSlot { primary, blend } = resolve_cdf_load(
-            inter_ctrl.signal_primary_ref_frame,
-            inter_ctrl.primary_ref_frame,
-            inter_ctrl.disable_cross_frame_cdf_init,
-            &inter_ctrl.ref_frame_idx,
-            &reference.ref_is_inter,
-            &reference.ref_counter,
-            &reference.ref_base_q_idx,
-            &reference.ref_order_hint,
-            &reference.ref_frame_width,
-            &reference.ref_frame_height,
-            current_base_q_idx,
-            current_order_hint,
-            cdf_blending_enabled(enable_avg_cdf, inter_ctrl.tip_frame_mode),
-            avg_cdf_type,
-        ) {
-            for slot in [Some(primary), blend].into_iter().flatten() {
-                if let Some(handle) = reference
-                    .ref_frame_cdfs
-                    .get(slot as usize)
-                    .and_then(Option::as_ref)
-                {
-                    cdfs.push(handle.clone());
-                }
+    if let ResolvedCdfLoad::LoadSlot { primary, blend } = frame_cdf_load(core, sequence, reference)
+    {
+        for slot in [Some(primary), blend].into_iter().flatten() {
+            if let Some(handle) = reference
+                .ref_frame_cdfs
+                .get(slot as usize)
+                .and_then(Option::as_ref)
+            {
+                cdfs.push(handle.clone());
             }
         }
     }
@@ -806,15 +791,7 @@ fn compound_is_joint_context(
     current_order_hint: u32,
 ) -> Result<usize> {
     let order_hint_of = |ref_frame: i8| -> Result<CompoundOrderHint> {
-        let list_len = ref_frame_idx.len();
-        let slot = usize::try_from(ref_frame)
-            .ok()
-            .and_then(|ref_idx| ref_frame_idx.get(ref_idx))
-            .copied()
-            .ok_or(DecodeReferenceStateError::ReferenceListIndexOutOfRange {
-                index: ref_frame,
-                list_len,
-            })?;
+        let slot = block_reference_slot(ref_frame_idx, ref_frame)?;
         let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
         let slot_count = ref_order_hint.len();
         ref_order_hint

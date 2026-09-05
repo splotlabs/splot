@@ -1017,7 +1017,7 @@ fn filter_intra_edge_corner_matches_spec_verbatim() {
 fn middle_row_walk_matches_the_per_sample_reference() {
     for p_angle in (ZONE_1_MAX + 1)..ZONE_3_MIN {
         let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle).unwrap();
-        let branch = angle.branch().unwrap();
+        let branch = angle.branch();
         for log2_width in 2..=6u8 {
             for log2_height in 2..=6u8 {
                 let size = rect_size(log2_width, log2_height);

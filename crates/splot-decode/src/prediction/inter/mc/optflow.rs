@@ -110,6 +110,21 @@ pub(super) struct MotionCell {
 }
 
 impl MotionCell {
+    fn from_optflow(base_mvs: [Mv; 2], delta: [[i32; 2]; 2]) -> Self {
+        let mut refined = [[0i32; 2]; 2];
+        for reference in 0..2 {
+            let base = [base_mvs[reference].row, base_mvs[reference].col];
+            for component in 0..2 {
+                refined[reference][component] = (base[component] * 2 + delta[reference][component])
+                    .clamp(-(1 << 17), (1 << 17) - 1);
+            }
+        }
+        Self {
+            base_mvs,
+            mvs: refined,
+        }
+    }
+
     fn uninitialized(base_mvs: [Mv; 2]) -> Self {
         Self {
             base_mvs,
@@ -472,19 +487,7 @@ pub(super) fn tip_optflow_motion_cell_strided(
                 distances,
                 &mut scratch,
             )?;
-            let mut refined = [[0i32; 2]; 2];
-            for reference in 0..2 {
-                let base = [base_mvs[reference].row, base_mvs[reference].col];
-                for component in 0..2 {
-                    refined[reference][component] = (base[component] * 2
-                        + delta[reference][component])
-                        .clamp(-(1 << 17), (1 << 17) - 1);
-                }
-            }
-            Ok(MotionCell {
-                base_mvs,
-                mvs: refined,
-            })
+            Ok(MotionCell::from_optflow(base_mvs, delta))
         })();
         slot.set(Some(scratch));
         result
@@ -619,19 +622,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                                         context: "optical-flow motion-grid write",
                                     },
                                 )?;
-                                let mut refined = [[0i32; 2]; 2];
-                                for reference in 0..2 {
-                                    let base = [base_mvs[reference].row, base_mvs[reference].col];
-                                    for component in 0..2 {
-                                        refined[reference][component] = (base[component] * 2
-                                            + delta[reference][component])
-                                            .clamp(-(1 << 17), (1 << 17) - 1);
-                                    }
-                                }
-                                *cell = MotionCell {
-                                    base_mvs,
-                                    mvs: refined,
-                                };
+                                *cell = MotionCell::from_optflow(base_mvs, delta);
                                 written_cells = written_cells.checked_add(1).ok_or(
                                     ReconError::ArithmeticOverflow {
                                         context: "optical-flow motion-grid completeness",

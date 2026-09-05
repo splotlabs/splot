@@ -23,48 +23,4 @@
 # calibrated against dupehound 0.1.2 (the version CI pins and installs); a
 # different local version may report a different number. CI is authoritative.
 #
-# EXCEPTION (2026-07-05): the frontier-taxonomy deletion (retiring the ~24
-# FRONTIER_* consts + the tier_id/matrix_row/feature_id/remediation carrier and
-# report fields; net removal of ~700 lines) shifted this metric 3329 -> 3341
-# (+12, structural, not a new duplicate cluster — verified by consolidating the
-# unsupported-feature carrier constructors and the report-diagnostic builder
-# with no change to the count). Raised to match; the change is transparent
-# deletion, not silent duplication growth.
-#
-# Retiring the walk-#2 selectable-reconstruction surface (recon.rs 5200 -> 478,
-# the IntrABC DV-range cluster, and their tests) lowered the metric 3341 -> 3247
-# (-94); ratcheted down with the cluster.
-#
-# Wave 1.3 decoder-reduction cleanup lowered repeated inline intra prediction
-# test scaffolding and the measured production duplicate metric 3079 -> 3041.
-# Wave 2 CDF selector cleanup shared the CDEF index-minus1 immutable/mutable row
-# selector and lowered the measured production duplicate metric 3041 -> 3025.
-# Wave 1.3 CDF inline test extraction moved CDF context/read tests under
-# `*_tests.rs` files and lowered the measured production duplicate metric
-# 3025 -> 2972.
-# Wave 3 coefficient-loop cleanup shared the FSC transform-size table lookup
-# helper and lowered the measured production duplicate metric 2972 -> 2961.
-# Wave 1.1 general-intra cleanup shared traced literal reads and lowered the
-# measured production duplicate metric 2961 -> 2938.
-# Wave 1.3 pipeline general-intra unit test extraction lowered the measured
-# production duplicate metric 2938 -> 2916, IntrABC ref-MV stack test extraction
-# lowered it to 2863, and the remaining inline-test extraction lowered it to 2726.
-# The block-decoded-state scan helper lowered the measured production duplicate
-# metric 2726 -> 2709.
-# The final Phase 1 decoder reduction collapsed duplicate decode-limit arithmetic
-# plumbing plus coefficient adapter cleanup lowered the measured production
-# duplicate metric 2709 -> 2704.
-# The frame-pipelining work lowered the measured metric to 2677 without
-# ratcheting; clearing its PR-ratchet findings (one shared `auto`/count policy
-# parser, one folded SEF/TIP frame-header parse, one shared reference-slot
-# storage-mismatch diagnostic) lowered it 2677 -> 2658.
-# Sharing the workspace rectangular-intra target resolution (block rectangle,
-# writable plane, active bit depth) across the five prediction entry points
-# lowered it 2664 -> 2640.
-# Retiring the empirical directional square-intra planner (all directional luma
-# now plans through the generic rectangular planner) lowered it 2619 -> 2577,
-# and collapsing the remaining square general-intra residual path into the same
-# rectangular planner lowered it 2577 -> 2558.
-# Removing the dead ActiveIntraIst/ActiveChroma residual reject policies (production
-# always allowed the record handoff) lowered it 2558 -> 2549.
 max_deletable_lines = 2146

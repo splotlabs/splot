@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Frame-header EOF / activation-prefix unit tests (split from [`super`] for the source-line budget).
+//! Frame-header EOF and activation-prefix tests.
 
 use super::*;
 

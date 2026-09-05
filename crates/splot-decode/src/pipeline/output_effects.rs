@@ -78,7 +78,7 @@ impl FrameOutputEffects {
             .content_interpretation
             .is_some_and(|content| content.reserved_2bit != 0)
         {
-            return Err(effect_error(
+            return Err(unsupported_feature_at(
                 "content_interpretation_reserved_bits",
                 ByteOffset::new(0),
                 "content interpretation reserved bits must be zero",
@@ -90,7 +90,7 @@ impl FrameOutputEffects {
             .iter()
             .any(|unit| !type_matches_payload(unit.metadata_type, &unit.payload))
         {
-            return Err(effect_error(
+            return Err(unsupported_feature_at(
                 "metadata_payload_type",
                 ByteOffset::new(0),
                 "attached metadata payload does not match its metadata_type",
@@ -233,7 +233,7 @@ impl OutputEffectState {
                     self.observe_metadata(*envelope, true)?;
                 }
                 _ => {
-                    return Err(effect_error(
+                    return Err(unsupported_feature_at(
                         "output_effect_suffix_order",
                         envelope.offset,
                         "coded-frame suffixes may contain only suffix metadata and padding",
@@ -336,7 +336,7 @@ impl OutputEffectState {
                 .content_interpretation
                 .is_some_and(|active| active != content)
             {
-                return Err(effect_error(
+                return Err(unsupported_feature_at(
                     "content_interpretation_changed_in_cvs",
                     envelope.offset,
                     "content interpretation must remain identical within a coded video sequence",
@@ -378,7 +378,7 @@ impl OutputEffectState {
     fn observe_mfh(&mut self, envelope: ObuEnvelope<'_>, sequence: &SequenceHeader) -> Result<()> {
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let mfh = parse_multi_frame_header(&mut reader).map_err(|_| {
-            effect_error(
+            unsupported_feature_at(
                 "multi_frame_header_parse",
                 envelope.offset,
                 "decode requires a complete multi-frame header OBU",
@@ -387,7 +387,7 @@ impl OutputEffectState {
         })?;
         finish(&mut reader, envelope, "multi_frame_header_tail", "5.7")?;
         if !mfh.mfh_id_in_range() || !mfh.seq_header_id_in_range() {
-            return Err(effect_error(
+            return Err(unsupported_feature_at(
                 "multi_frame_header_id_range",
                 envelope.offset,
                 "multi-frame and sequence-header ids must be in range",
@@ -395,7 +395,7 @@ impl OutputEffectState {
             ));
         }
         if mfh.mfh_seq_header_id != u32::from(sequence.general.seq_header_id.get()) {
-            return Err(effect_error(
+            return Err(unsupported_feature_at(
                 "multi_frame_header_sequence_unavailable",
                 envelope.offset,
                 "the referenced sequence header is not active in the selected decode layer",
@@ -403,7 +403,7 @@ impl OutputEffectState {
             ));
         }
         let id = usize::try_from(mfh.mfh_id()).map_err(|_| {
-            effect_error(
+            unsupported_feature_at(
                 "multi_frame_header_id_range",
                 envelope.offset,
                 "multi-frame header id does not fit the runtime slot index",
@@ -413,7 +413,7 @@ impl OutputEffectState {
         let seq_id =
             splot_core::headers::sequence::SequenceHeaderId::try_new(mfh.mfh_seq_header_id)
                 .ok_or_else(|| {
-                    effect_error(
+                    unsupported_feature_at(
                         "multi_frame_header_sequence_id_range",
                         envelope.offset,
                         "multi-frame header sequence id is out of range",
@@ -440,7 +440,7 @@ impl OutputEffectState {
     fn observe_qm(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let qm = parse_quantizer_matrix(&mut reader).map_err(|_| {
-            effect_error(
+            unsupported_feature_at(
                 "quantizer_matrix_parse",
                 envelope.offset,
                 "decode requires a complete quantizer matrix OBU",
@@ -450,7 +450,7 @@ impl OutputEffectState {
         finish(&mut reader, envelope, "quantizer_matrix_tail", "5.13")?;
         if qm.is_reset() {
             if self.qm_obu_seen_since_frame {
-                return Err(effect_error(
+                return Err(unsupported_feature_at(
                     "quantizer_matrix_duplicate_reset",
                     envelope.offset,
                     "a reset QM OBU must be first between coded frames",
@@ -471,7 +471,7 @@ impl OutputEffectState {
         }
         let duplicate = self.qm_seen_since_frame & qm.qm_bit_map;
         if duplicate != 0 {
-            return Err(effect_error(
+            return Err(unsupported_feature_at(
                 "quantizer_matrix_duplicate_level",
                 envelope.offset,
                 "a quantizer matrix level was specified twice between coded frames",
@@ -496,7 +496,7 @@ impl OutputEffectState {
     fn observe_ci(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let content = parse_content_interpretation(&mut reader).map_err(|_| {
-            effect_error(
+            unsupported_feature_at(
                 "content_interpretation_parse",
                 envelope.offset,
                 "decode requires a complete content interpretation OBU",
@@ -507,7 +507,7 @@ impl OutputEffectState {
         if let Some(existing) = self.ci_in_current_tu
             && existing != content
         {
-            return Err(effect_error(
+            return Err(unsupported_feature_at(
                 "content_interpretation_changed_in_temporal_unit",
                 envelope.offset,
                 "content interpretation must remain identical within an embedded layer and coded video sequence",
@@ -522,7 +522,7 @@ impl OutputEffectState {
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let ops = parse_operating_point_set(&mut reader, envelope.header.extended_layer_id)
             .map_err(|_| {
-                effect_error(
+                unsupported_feature_at(
                     "operating_point_set_parse",
                     envelope.offset,
                     "BRT resolution requires a complete operating point set OBU",
@@ -559,7 +559,7 @@ impl OutputEffectState {
                 .get(&(envelope.header.extended_layer_id, ops_id))
                 .or_else(|| self.ops_counts.get(&(GLOBAL_XLAYER_ID, ops_id)));
             if available.copied() != Some(ops_count) {
-                return Err(effect_error(
+                return Err(unsupported_feature_at(
                     "buffer_removal_timing_ops_unavailable",
                     envelope.offset,
                     "BRT operating point id/count does not match an available OPS",
@@ -584,7 +584,7 @@ impl OutputEffectState {
             ObuType::MetadataShort => {
                 let short =
                     parse_metadata_short(&mut reader, envelope.payload.len()).map_err(|_| {
-                        effect_error(
+                        unsupported_feature_at(
                             "metadata_short_parse",
                             envelope.offset,
                             "decode requires a complete metadata short OBU",
@@ -610,7 +610,7 @@ impl OutputEffectState {
             ObuType::MetadataGroup => {
                 let group = parse_metadata_group(&mut reader, envelope.header.extended_layer_id)
                     .map_err(|_| {
-                        effect_error(
+                        unsupported_feature_at(
                             "metadata_group_parse",
                             envelope.offset,
                             "decode requires a complete metadata group OBU",
@@ -738,7 +738,7 @@ impl OutputEffectState {
                     continue;
                 };
                 if usize::from(slot.num_planes) != num_planes {
-                    return Err(effect_error(
+                    return Err(unsupported_feature_at(
                         "quantizer_matrix_plane_count",
                         envelope.offset,
                         "referenced QM plane count differs from the active sequence",
@@ -751,7 +751,7 @@ impl OutputEffectState {
                         EmbeddedLayerId::from_bits(mlayer),
                     )
                 {
-                    return Err(effect_error(
+                    return Err(unsupported_feature_at(
                         "quantizer_matrix_mlayer_dependency",
                         envelope.offset,
                         "referenced QM level violates MLayerDependencyMap",
@@ -765,7 +765,7 @@ impl OutputEffectState {
                         splot_core::types::TemporalLayerId::from_bits(tlayer),
                     )
                 {
-                    return Err(effect_error(
+                    return Err(unsupported_feature_at(
                         "quantizer_matrix_tlayer_dependency",
                         envelope.offset,
                         "referenced QM level violates TLayerDependencyMap",
@@ -811,15 +811,10 @@ fn metadata_group_base_mlayer_map(
     envelope: ObuEnvelope<'_>,
     group: &MetadataGroupUnit,
 ) -> Option<u8> {
-    if envelope.header.extended_layer_id.is_global() {
-        let xlayer_map = group.muh_xlayer_map?;
-        let map_index = (0..31)
-            .filter(|bit| xlayer_map & (1 << bit) != 0)
-            .position(|bit| bit == 0)?;
-        group.muh_mlayer_maps.get(map_index).copied()
-    } else {
-        group.muh_mlayer_maps.first().copied()
+    if envelope.header.extended_layer_id.is_global() && group.muh_xlayer_map? & 1 == 0 {
+        return None;
     }
+    group.muh_mlayer_maps.first().copied()
 }
 
 fn finish(
@@ -834,7 +829,7 @@ fn finish(
         envelope.header.obu_type.is_extensible_obu(),
     )
     .map_err(|_| {
-        effect_error(
+        unsupported_feature_at(
             reason,
             envelope.offset,
             "output-effect OBU has a malformed payload tail",
@@ -854,7 +849,7 @@ fn malformed_obu_payload(
 }
 
 fn metadata_order_error(envelope: ObuEnvelope<'_>, expected_suffix: bool) -> crate::DecodeError {
-    effect_error(
+    unsupported_feature_at(
         "metadata_prefix_suffix_order",
         envelope.offset,
         if expected_suffix {
@@ -864,15 +859,6 @@ fn metadata_order_error(envelope: ObuEnvelope<'_>, expected_suffix: bool) -> cra
         },
         "7.3.3",
     )
-}
-
-fn effect_error(
-    reason: &'static str,
-    offset: ByteOffset,
-    message: &'static str,
-    spec: &'static str,
-) -> crate::DecodeError {
-    unsupported_feature_at(reason, offset, message, spec)
 }
 
 #[cfg(test)]
@@ -1218,40 +1204,12 @@ mod tests {
 
     #[test]
     fn coded_video_sequence_start_prunes_metadata_from_earlier_temporal_units() {
-        let parsed = parse_bitstream_partial(STANDALONE_OLK_FIXTURE);
+        let fixture = olk_frame();
         assert!(
-            matches!(&parsed, ParsedBitstream::Ivf(_)),
-            "the standalone OLK fixture must remain IVF"
+            fixture.is_some(),
+            "the OLK fixture must resolve sequence and frame headers"
         );
-        let ParsedBitstream::Ivf(ivf) = parsed else {
-            return;
-        };
-        let sequence_envelope = ivf
-            .frames
-            .iter()
-            .flat_map(|frame| &frame.obus)
-            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader);
-        let olk_envelope = ivf
-            .frames
-            .iter()
-            .flat_map(|frame| &frame.obus)
-            .find(|obu| obu.header.obu_type == ObuType::OpenLoopKey);
-        assert!(
-            sequence_envelope.is_some() && olk_envelope.is_some(),
-            "the fixture must contain a sequence header and open-loop key frame"
-        );
-        let (Some(sequence_envelope), Some(olk_envelope)) = (sequence_envelope, olk_envelope)
-        else {
-            return;
-        };
-        let sequence = crate::pipeline::parse_sequence(*sequence_envelope);
-        assert!(sequence.is_ok(), "the fixture sequence header must parse");
-        let Ok(sequence) = sequence else {
-            return;
-        };
-        let core = crate::pipeline::parse_frame_core(*olk_envelope, &sequence);
-        assert!(core.is_ok(), "the fixture frame header must parse");
-        let Ok(core) = core else {
+        let Some((olk_envelope, sequence, core)) = fixture else {
             return;
         };
         let mut state = OutputEffectState::new();
@@ -1261,7 +1219,7 @@ mod tests {
 
         assert!(
             state
-                .prepare_frame(*olk_envelope, &core, &sequence, true, None)
+                .prepare_frame(olk_envelope, &core, &sequence, true, None)
                 .is_ok()
         );
         assert_eq!(state.metadata.len(), 1);
@@ -1270,31 +1228,12 @@ mod tests {
 
     #[test]
     fn open_loop_key_not_first_in_tu_preserves_cvs_consistency_checks() {
-        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(STANDALONE_OLK_FIXTURE) else {
-            return;
-        };
-        let sequence_envelope = ivf
-            .frames
-            .iter()
-            .flat_map(|frame| &frame.obus)
-            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader);
-        let olk_envelope = ivf
-            .frames
-            .iter()
-            .flat_map(|frame| &frame.obus)
-            .find(|obu| obu.header.obu_type == ObuType::OpenLoopKey);
-        let (Some(sequence_envelope), Some(olk_envelope)) = (sequence_envelope, olk_envelope)
-        else {
-            return;
-        };
-        let sequence = crate::pipeline::parse_sequence(*sequence_envelope);
-        assert!(sequence.is_ok());
-        let Ok(sequence) = sequence else {
-            return;
-        };
-        let core = crate::pipeline::parse_frame_core(*olk_envelope, &sequence);
-        assert!(core.is_ok());
-        let Ok(core) = core else {
+        let fixture = olk_frame();
+        assert!(
+            fixture.is_some(),
+            "the OLK fixture must resolve sequence and frame headers"
+        );
+        let Some((olk_envelope, sequence, core)) = fixture else {
             return;
         };
         let active = content(0);
@@ -1307,7 +1246,7 @@ mod tests {
         state.content_interpretation = Some(active);
         state.ci_in_current_tu = Some(current);
 
-        let result = state.prepare_frame(*olk_envelope, &core, &sequence, false, None);
+        let result = state.prepare_frame(olk_envelope, &core, &sequence, false, None);
 
         assert!(matches!(
             result,

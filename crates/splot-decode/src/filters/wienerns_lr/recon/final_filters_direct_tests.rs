@@ -142,15 +142,10 @@ fn blocks_for_target(
 
 fn write_blocks(plane: &mut StripePlane, blocks: &[WienerNsLrSourceBlock], value: u16) {
     for block in blocks {
-        filter_lr_block_into::<u16>(plane, block, |output, stride| {
-            for row in 0..block.height {
-                for col in 0..block.width {
-                    output[row * stride + col] = value;
-                }
-            }
-            Ok(())
-        })
-        .unwrap();
+        let (output, stride) = lr_block_destination(plane, block).unwrap();
+        for row in 0..block.height {
+            output[row * stride..row * stride + block.width].fill(value);
+        }
     }
 }
 
@@ -414,20 +409,15 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
         .and_then(StripeOutputPlane::as_u16_mut)
         .unwrap();
     let curr = FramePlane::new(&workspace, PlaneId::Y).unwrap();
-    filter_lr_block_into::<u16>(output, &block, |samples, stride| {
-        for row in 0..block.height {
-            samples[row * stride..row * stride + block.width].fill(777);
-        }
-        chain.preserve_lossless_lr_samples(
-            PlaneId::Y,
-            &block,
-            curr,
-            samples,
-            stride,
-            |slot, sample| *slot = sample,
-        )
-    })
-    .unwrap();
+    let (samples, stride) = lr_block_destination(output, &block).unwrap();
+    for row in 0..block.height {
+        samples[row * stride..row * stride + block.width].fill(777);
+    }
+    chain
+        .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, samples, stride, |slot, sample| {
+            *slot = sample;
+        })
+        .unwrap();
     for y in 0..8 {
         for x in 0..8 {
             let actual = output.samples()[y * 8 + x];

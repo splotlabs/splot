@@ -889,76 +889,27 @@ fn unsupported_layers_and_obu_types_are_typed() {
 
     for (bytes, reason) in cases {
         let parsed = parse_bitstream_partial(&bytes);
-        let error = context(ThreadCount::from(1usize))
+        let parsed_error = context(ThreadCount::from(1usize))
             .plan_stream(
                 DecodeStreamInput::new(&parsed, bytes.len() as u64),
                 DecodeOptions::default(),
             )
             .unwrap_err();
 
-        assert!(matches!(
-            error,
-            DecodeError::UnsupportedStructure {
-                unsupported
-            } if unsupported.reason() == reason
-                && unsupported.rule_id() == UNSUPPORTED_FEATURE_RULE_ID
-                && unsupported.matrix_row() == DECODE_STREAM_STATE_MATRIX_ROW
-                && unsupported.feature_id() == DECODE_STREAM_STATE_FEATURE_ID
-        ));
-    }
-}
-
-#[test]
-fn byte_planner_propagates_unsupported_structures() {
-    let cases = [
-        (
-            obu(OBU_MSDO).to_vec(),
-            DecodeUnsupportedReason::MultistreamSelection,
-        ),
-        (
-            extended_obu(0x90, 0x20).to_vec(),
-            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
-        ),
-        (
-            extended_obu(0x90, 0x01).to_vec(),
-            DecodeUnsupportedReason::NonBaseExtendedLayer,
-        ),
-        (
-            extended_obu(0x91, 0x20).to_vec(),
-            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
-        ),
-        (
-            extended_obu(0x91, 0x01).to_vec(),
-            DecodeUnsupportedReason::NonBaseExtendedLayer,
-        ),
-        (
-            extended_obu(0x88, 0x00).to_vec(),
-            DecodeUnsupportedReason::InvalidLayerScope,
-        ),
-        (
-            extended_obu(0x90, 0x1F).to_vec(),
-            DecodeUnsupportedReason::InvalidLayerScope,
-        ),
-        (
-            extended_obu(0x84, 0x1F).to_vec(),
-            DecodeUnsupportedReason::InvalidLayerScope,
-        ),
-    ];
-
-    for (bytes, reason) in cases {
-        let error = context(ThreadCount::from(1usize))
+        let byte_error = context(ThreadCount::from(1usize))
             .plan_bytes(&bytes, DecodeOptions::default())
             .unwrap_err();
-
-        assert!(matches!(
-            error,
-            DecodeError::UnsupportedStructure {
-                unsupported
-            } if unsupported.reason() == reason
-                && unsupported.rule_id() == UNSUPPORTED_FEATURE_RULE_ID
-                && unsupported.matrix_row() == DECODE_STREAM_STATE_MATRIX_ROW
-                && unsupported.feature_id() == DECODE_STREAM_STATE_FEATURE_ID
-        ));
+        for error in [parsed_error, byte_error] {
+            assert!(matches!(
+                error,
+                DecodeError::UnsupportedStructure {
+                    unsupported
+                } if unsupported.reason() == reason
+                    && unsupported.rule_id() == UNSUPPORTED_FEATURE_RULE_ID
+                    && unsupported.matrix_row() == DECODE_STREAM_STATE_MATRIX_ROW
+                    && unsupported.feature_id() == DECODE_STREAM_STATE_FEATURE_ID
+            ));
+        }
     }
 }
 

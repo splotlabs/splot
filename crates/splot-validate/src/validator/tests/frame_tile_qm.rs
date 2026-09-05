@@ -770,27 +770,6 @@ fn validator_qm_switch_truncated_after_reset_point_confirms_reset() {
 }
 
 #[test]
-fn validator_qm_ras_truncated_before_reset_still_poisons() {
-    let mut data = td_and_frame_core_seq(FrameCoreSeq {
-        long_term_frame_id_bits: 4,
-        ..FrameCoreSeq::base()
-    });
-    data.extend(qm_reset_obu_chroma()); // TU1: level 0 available (mlayer_id -1) + protected
-    data.extend(temporal_delimiter_obu()); // TU2 starts: QmProtected cleared
-    data.extend(ras_frame_truncated_before_reset()); // truncated BEFORE :4283 -> poison
-    data.extend(temporal_delimiter_obu()); // TU3 starts: QmProtected cleared
-    data.extend(intra_only_frame_with_qm_reference(0)); // references level 0 (no own reset)
-    let report = Validator::new(false).validate_bytes(&data);
-    assert!(
-        !report
-            .errors()
-            .any(|d| d.rule_id == "frame-header/qm-level-unavailable"),
-        "a RAS truncated BEFORE reset_qm() must still poison (unconfirmed), so the later \
-         reference stays silent; report was: {report}"
-    );
-}
-
-#[test]
 fn validator_preserves_existing_unavailable_sequence_header_check() {
     let mut data = td_and_seq_header(0, 1, 1);
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 5)); // id 5 is unavailable

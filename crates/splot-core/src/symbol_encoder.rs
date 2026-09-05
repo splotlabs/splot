@@ -164,14 +164,7 @@ impl SymbolEncoder {
     /// Creates an empty symbol encoder with default configuration.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            config: SymbolEncoderConfig::new(),
-            range: SYMBOL_RANGE_INIT,
-            value_limit: SYMBOL_RANGE_INIT,
-            step_bits: 0,
-            symbol_count: 0,
-            steps: Vec::new(),
-        }
+        Self::with_config(SymbolEncoderConfig::new())
     }
 
     /// Creates an empty symbol encoder with `config`.

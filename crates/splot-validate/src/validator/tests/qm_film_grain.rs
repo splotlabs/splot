@@ -38,17 +38,7 @@ pub(in crate::validator::tests) fn qm_default_level_obu(level: u32) -> Vec<u8> {
 /// Appends the smallest non-monochrome `film_grain_model()` (no scaling points,
 /// `ar_coeff_lag == 0`).
 pub(in crate::validator::tests) fn append_minimal_film_grain_model(bits: &mut Bits) {
-    bits.bit(0); // chroma_scaling_from_luma
-    bits.f(0, 4); // num_y_points
-    bits.f(0, 4); // num_cb_points
-    bits.f(0, 4); // num_cr_points
-    bits.f(0, 2); // grain_scaling_minus_8
-    bits.f(0, 2); // ar_coeff_lag = 0 -> no AR coeffs
-    bits.f(0, 2); // ar_coeff_shift_minus_6
-    bits.f(0, 2); // grain_scale_shift
-    bits.bit(0); // overlap_flag
-    bits.bit(0); // clip_to_restricted_range = 0 -> mc_identity inferred 0
-    bits.bit(0); // film_grain_block_size
+    append_film_grain_model_with_points(bits, 0, 0, 0);
 }
 
 /// A `film_grain_obu()` with the given `update_flags` and (non-monochrome)

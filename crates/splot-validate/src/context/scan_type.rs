@@ -5,15 +5,9 @@
 
 use super::*;
 
-/// Table 6.18 picture-output group of a defined `mps_pic_struct_type` value
-/// (AV2 § 6.16.10, `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-10`).
-///
-/// The three groups mirror the § 6.16.10 bitstream-conformance requirement: "It is
-/// a requirement of bitstream conformance that when mps_pic_struct_type is present
-/// that only one of the following conditions, for all pictures in the current CVS,
-/// is true: – The value of mps_pic_struct_type is equal to 0, 7 or 8. – The value
-/// of mps_pic_struct_type is equal to 1, 2, 9, 10, 11 or 12. – The value of
-/// mps_pic_struct_type is equal to 3, 4, 5 or 6."
+/// Table 6.18 output groups (AV2 § 6.16.10,
+/// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-10`).
+/// All defined picture-structure values in one CVS must belong to one group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PicStructGroup {
     /// `mps_pic_struct_type` 0, 7 or 8 — frame output. Table 6.18 requires
@@ -65,18 +59,9 @@ impl PicStructGroup {
     }
 }
 
-/// One defined-`mps_pic_struct_type` scan-type metadata observation within its
-/// coded-video-sequence scope (AV2 § 6.16.10).
-///
-/// The Table 6.18 CI cross-checks pair each observation with each in-scope
-/// content-interpretation record exactly once per distinct decisive CI content:
-/// the metadata-time pass ([`ValidatorContext::check_scan_type_consistency`])
-/// pairs a new observation against every record already in scope, and the
-/// CI-time pass ([`ValidatorContext::recheck_scan_type_after_ci`]) runs only
-/// when the new CI's Table 6.18-decisive content differs from the record it
-/// replaces — so a repeated identical CI (the only legal repeat, § 6.14) never
-/// re-reports, while a CI for a new embedded layer or with changed content is
-/// evaluated against every stored observation.
+/// One defined picture-structure observation in its § 6.16.10 CVS scope.
+/// Metadata-time and changed-CI-time checks cover both arrival orders; identical
+/// CI repeats do not re-report.
 #[derive(Debug)]
 pub(super) struct ScanTypeObservation {
     /// The observed `mps_pic_struct_type` (defined values 0..=12 only; reserved
@@ -88,21 +73,9 @@ pub(super) struct ScanTypeObservation {
     /// exact § 7.3.6 CVS scoping (CLK pruning and deferral decisions) and by the
     /// § 7.3.8.11 CI-parameter epoch checks.
     pub(super) tu_index: u64,
-    /// The content-interpretation identities `(obu_xlayer_id, obu_mlayer_id)` whose
-    /// Table 6.18 restriction this observation already paired-and-emitted *eagerly*
-    /// against, in its OWN temporal unit, at observation time (the scan-type analogue of
-    /// the timecode eager-pairing path). A CI key lands here when, at
-    /// [`ValidatorContext::check_scan_type_consistency`], that already-recorded in-scope
-    /// CI in this temporal unit decided a Table 6.18 restriction and the diagnostic was
-    /// emitted (not deferred) — i.e. an identical CI was re-sent BEFORE the scan-type
-    /// metadata in the same § 7.3.8.11 RAP temporal unit. The § 7.3.8.11 RAP re-pair
-    /// ([`ValidatorContext::repair_post_rap_ci_pairings`]) skips only the
-    /// `(observation, CI)` *pairs* recorded here, not the whole observation: a multi-layer
-    /// stream can pair one observation with several CIs in opposite orderings relative to
-    /// the metadata, so an eager emission against one CI must not suppress the re-pair of
-    /// a different CI whose eager pairing was DEFERRED against a stale pre-RAP record (and
-    /// dropped at the RAP). The set is empty for an observation that emitted nothing
-    /// eagerly, and re-pairing covers every not-yet-emitted post-epoch pairing.
+    /// CI identities already emitted against eagerly in this observation's own TU.
+    /// RAP repair skips these pairs only; another CI may still need re-pairing after
+    /// its stale pre-RAP comparison was deferred and dropped.
     pub(super) eagerly_emitted: BTreeSet<ContentInterpretationKey>,
 }
 
@@ -218,45 +191,13 @@ pub(super) fn scan_type_equal_picture_interval_error(
 }
 
 impl ValidatorContext {
-    /// Folds one non-cancel `metadata_scan_type()` unit into the § 6.16.10 CVS
-    /// consistency state and runs the Table 6.18 checks (AV2 § 6.16.10,
-    /// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-16-10`):
-    ///
-    /// - **Group consistency**: "It is a requirement of bitstream conformance that
-    ///   when mps_pic_struct_type is present that only one of the following
-    ///   conditions, for all pictures in the current CVS, is true" (the three
-    ///   [`PicStructGroup`] value sets). The new value's group is compared against
-    ///   each in-scope group baseline (the scope's first observation in the coded
-    ///   video sequence); a global-bucket unit is also compared against every
-    ///   concrete extended-layer scope and vice versa, since global metadata
-    ///   describes every layer's pictures.
-    /// - **CI cross-check**: the Table 6.18 "Restrictions" column
-    ///   ("ci_scan_type_idc shall be equal to" 1 / 2 / 3 per group) against every
-    ///   in-scope content-interpretation record with an established non-zero
-    ///   `ci_scan_type_idc`; an established value of 0 is Unspecified and decides
-    ///   nothing (the scope-level absence is the
-    ///   `metadata/scan-type-ci-scan-type-unestablished` warning at the CVS flush
-    ///   instead). For values 7 and 8 additionally "equal_picture_interval shall
-    ///   be equal to 1", checked against records carrying `timing_info()`; a
-    ///   record without `timing_info()` is silently skipped for this half — the
-    ///   mirror attaches the restriction to the signaled element and states no
-    ///   absent-timing rule. A record from before its extended layer's most
-    ///   recent random access point is skipped: § 7.3.8.11 re-initializes the
-    ///   content interpretation parameters to defaults at each CLK / OLK temporal
-    ///   unit, so a pre-epoch record no longer establishes the parameters this
-    ///   picture sees (a record re-sent at or after the random access point
-    ///   refreshes its temporal unit and re-enters pairing).
-    ///
-    /// Reserved values above 12 never enter the state ("Decoders shall ignore
-    /// reserved values of mps_pic_struct_type", § 6.16.10). Comparisons against a
-    /// baseline from an earlier temporal unit are routed through
-    /// [`CvsTracker::defer_or_emit`], tagged with the baseline's owning scope, so
-    /// the exact § 7.3.6 CVS boundary applies.
-    ///
-    /// `mps_source_scan_type_idc` is deliberately NOT cross-checked against
-    /// `ci_scan_type_idc`: the mirror's complete semantics are
-    /// "mps_source_scan_type_idc specifies the scan type with the same semantics
-    /// as for ci_scan_type_idc" (§ 6.16.10) — no consistency requirement exists.
+    /// Checks § 6.16.10 group consistency and Table 6.18 CI restrictions.
+    /// Global metadata compares with every layer; concrete metadata with its own
+    /// and global group baseline. Reserved values are ignored. CI scan type 0 is
+    /// undecided, and absent timing does not establish an interval restriction.
+    /// Pre-RAP CI records are excluded by the § 7.3.8.11 epoch. Earlier-TU baselines
+    /// defer through CvsTracker to respect a later CLK in this TU.
+    /// No rule relates mps_source_scan_type_idc to ci_scan_type_idc; do not compare it.
     pub(super) fn check_scan_type_consistency(
         &mut self,
         obu: &ObuEnvelope<'_>,
@@ -349,36 +290,11 @@ impl ValidatorContext {
             });
     }
 
-    /// Re-evaluates the § 6.16.10 Table 6.18 restrictions of the stored scan-type
-    /// observations against a newly observed content-interpretation record — the
-    /// CI may arrive after the scan-type metadata it constrains. The caller
-    /// ([`ValidatorContext::observe_content_interpretation`]) invokes this only
-    /// when the CI's Table 6.18-decisive content differs from the record it
-    /// replaces, so a repeated identical CI never re-reports while every
-    /// genuinely new (observation, CI-content) pair is evaluated exactly once
-    /// (see [`ScanTypeObservation`]). Observations from a temporal unit before
-    /// the CI extended layer's most recent random access point are skipped —
-    /// their pictures' content interpretation parameters belong to the previous
-    /// § 7.3.8.11 epoch, the same epoch mismatch in the other direction as the
-    /// pre-epoch-record skip in
-    /// [`ValidatorContext::check_scan_type_consistency`]. The CI's own
-    /// extended-layer scope and the global bucket are re-evaluated (global
-    /// scan-type metadata describes every layer's pictures); the baseline of
-    /// each comparison is the metadata observation, so
-    /// [`CvsTracker::defer_or_emit`] routes on its temporal unit.
-    ///
-    /// `repair` flags the call as the § 7.3.8.11 RAP re-pair from
-    /// [`Self::repair_post_rap_ci_pairings`] (the scan-type analogue of the timecode
-    /// eager-pairing path). The eager CI-after-metadata caller passes `false`; the RAP
-    /// re-pair passes `true`, which skips an `(observation, CI)` pair that already
-    /// paired-and-emitted eagerly against this in-scope same-temporal-unit CI at
-    /// observation time (the [`ScanTypeObservation::eagerly_emitted`] set contains the
-    /// CI's identity — populated when an identical CI was already recorded BEFORE the
-    /// observation in the same RAP temporal unit, so the eager observation-time pairing
-    /// emitted directly). Re-pairing such a pair would duplicate the diagnostic; the skip
-    /// is per-CI, so a DIFFERENT CI for the same observation — whose eager pairing was
-    /// instead DEFERRED against a stale pre-RAP CI (and dropped by `observe_ci_rap` at the
-    /// RAP) — still gets re-paired.
+    /// Rechecks stored observations for changed Table 6.18-decisive CI content.
+    /// The caller excludes identical repeats. Only observations in the CI's current
+    /// § 7.3.8.11 epoch participate; global metadata also applies to concrete layers.
+    /// RAP repair skips only pairs in eagerly_emitted, preserving other pairings
+    /// whose stale pre-RAP diagnostics were deferred and dropped.
     pub(super) fn recheck_scan_type_after_ci(
         &mut self,
         ci_xlayer: ExtendedLayerId,
@@ -442,18 +358,9 @@ impl ValidatorContext {
         }
     }
 
-    /// Returns whether any in-scope content-interpretation record established a
-    /// non-zero `ci_scan_type_idc` for `scope_key`: a concrete extended layer
-    /// matches its own records, the global bucket matches every record (global
-    /// scan-type metadata describes every layer's pictures).
-    ///
-    /// The § 7.3.8.11 random-access epoch is deliberately NOT applied here: a
-    /// pre-OLK record keeps suppressing the
-    /// `metadata/scan-type-ci-scan-type-unestablished` warning after an OLK
-    /// re-initializes the parameters to `ci_scan_type_idc` 0 — a documented
-    /// lenient false-negative approximation in the conservative direction for a
-    /// warning-severity diagnostic derived from a literal Table 6.18 reading
-    /// (tightening it would make the derived warning fire more often).
+    /// Whether an in-scope CI establishes nonzero scan type. The warning deliberately
+    /// ignores RAP epochs: a pre-OLK record still suppresses it, a conservative
+    /// false-negative approximation. Global scope considers all layers.
     pub(super) fn scan_type_ci_established(&self, scope_key: ExtendedLayerId) -> bool {
         self.content_interpretations
             .iter()
@@ -463,22 +370,10 @@ impl ValidatorContext {
             })
     }
 
-    /// Ends the coded video sequence of `scope_key`'s scan-type scope: emits the
-    /// `metadata/scan-type-ci-scan-type-unestablished` warning when observations
-    /// are being retired and no in-scope content-interpretation record established
-    /// a non-zero `ci_scan_type_idc`, then drops observations with
-    /// `tu_index < keep_from_tu` (pass `u64::MAX` to retire the whole scope at the
-    /// end of the bitstream). One warning per scope, citing the first retiring
-    /// observation.
-    ///
-    /// The warning is a **derived** diagnostic from a literal reading of
-    /// Table 6.18 (AV2 § 6.16.10): every defined `mps_pic_struct_type` row
-    /// restricts `ci_scan_type_idc` to 1, 2 or 3, while the default content
-    /// interpretation parameter — in effect when no content interpretation OBU
-    /// establishes one — is "ci_scan_type_idc = 0 (unspecified)" (AV2 § 7.3.8.11),
-    /// which satisfies no row. The mirror states no explicit
-    /// presence requirement for the content interpretation OBU, so this is a
-    /// warning, never an error.
+    /// Retires observations before keep_from_tu (u64::MAX at EOF), warning once
+    /// at the first retiring observation if no CI established nonzero scan type.
+    /// This warning is derived from Table 6.18 (§ 6.16.10) versus default scan type 0
+    /// (§ 7.3.8.11); the spec does not explicitly require a CI OBU, so it is no error.
     pub(super) fn flush_scan_type_scope(
         &mut self,
         scope_key: ExtendedLayerId,
