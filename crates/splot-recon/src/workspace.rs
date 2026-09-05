@@ -939,7 +939,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         validate_sample_type::<T>(info.bit_depth())?;
         let luma_size = info.coded_luma_size();
         let luma_rect = info.visible_luma_rect();
-        let pool = recycled.pool().map(Arc::clone);
+        let pool = recycled.pool.clone();
         let pool = pool.as_ref();
         let y = CurrentFramePlane::new(
             PlaneId::Y,
@@ -1734,14 +1734,14 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
     fn freeze(mut self) -> Result<Plane<T>> {
         let stride_samples = self.stride_samples();
-        let pool = self.pool.take();
-        Plane::from_vec(
+        let mut plane = Plane::from_vec(
             self.storage_size,
             stride_samples,
             self.visible_rect,
             mem::take(&mut self.samples),
-        )
-        .map(|plane| plane.with_pool(pool.as_ref()))
+        )?;
+        plane.pool = self.pool.take();
+        Ok(plane)
     }
 
     /// Clamps a write/fill `rect` to the in-frame storage extent.

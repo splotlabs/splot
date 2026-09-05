@@ -125,7 +125,7 @@ impl<T: ReconSample> FramePlanes<T> {
 #[derive(Debug, Default)]
 pub struct FramePlaneSamples<T: ReconSample> {
     planes: [Vec<T>; 3],
-    pool: Option<std::sync::Arc<crate::PlanePool>>,
+    pub(crate) pool: Option<std::sync::Arc<crate::PlanePool>>,
 }
 
 /// The pool a set returns its storage to is not part of its value.
@@ -146,12 +146,6 @@ impl<T: ReconSample> FramePlaneSamples<T> {
             planes: [const { Vec::new() }; 3],
             pool: Some(std::sync::Arc::clone(pool)),
         }
-    }
-
-    /// The pool a workspace built from this set retires into.
-    #[must_use]
-    pub fn pool(&self) -> Option<&std::sync::Arc<crate::PlanePool>> {
-        self.pool.as_ref()
     }
 
     /// Collects one frame's plane buffers, absent chroma included.
@@ -251,7 +245,7 @@ impl<T: ReconSample> DecodedFrame<T> {
     #[must_use]
     pub fn into_plane_samples(self) -> FramePlaneSamples<T> {
         let FramePlanes { y, u, v } = self.planes;
-        let pool = y.pool().cloned();
+        let pool = y.pool.clone();
         FramePlaneSamples {
             planes: [
                 y.into_samples(),

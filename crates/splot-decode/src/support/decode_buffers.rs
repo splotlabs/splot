@@ -25,13 +25,6 @@ pub(crate) struct DecodeBuffers {
     rows: Mutex<Vec<ReconRowBuffers>>,
 }
 
-impl core::fmt::Debug for DecodeBuffers {
-    /// Names the storage without locking it or printing a frame of samples.
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("DecodeBuffers")
-    }
-}
-
 impl DecodeBuffers {
     /// Opens the storage for one decode.
     pub(crate) fn new() -> Arc<Self> {

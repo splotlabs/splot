@@ -25,6 +25,7 @@ const MAX_SPARE_BUFFERS: usize = 24;
 const MIN_POOLED_SAMPLES: usize = 1 << 14;
 
 /// The plane storage one decode's retired workspaces leave for its next ones.
+#[derive(Default)]
 pub struct PlanePool {
     eight: Mutex<Vec<Vec<u8>>>,
     ten: Mutex<Vec<Vec<u16>>>,
@@ -37,22 +38,7 @@ impl core::fmt::Debug for PlanePool {
     }
 }
 
-impl Default for PlanePool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl PlanePool {
-    /// Creates an empty pool, which fills as the decode's first frames retire.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            eight: Mutex::new(Vec::new()),
-            ten: Mutex::new(Vec::new()),
-        }
-    }
-
     /// Takes a spare buffer holding at least `samples`, or an empty one.
     ///
     /// A spare that is already `samples` long is worth much more than one that
@@ -119,7 +105,7 @@ mod tests {
 
     #[test]
     fn a_spare_returns_to_the_decode_that_retired_it() {
-        let pool = PlanePool::new();
+        let pool = PlanePool::default();
         pool.recycle(frame_sized());
         assert_eq!(
             pool.take::<u16>(MIN_POOLED_SAMPLES).len(),
@@ -129,8 +115,8 @@ mod tests {
 
     #[test]
     fn concurrent_decodes_do_not_take_each_other_s_spares() {
-        let decoding = PlanePool::new();
-        let other_decode = PlanePool::new();
+        let decoding = PlanePool::default();
+        let other_decode = PlanePool::default();
         decoding.recycle(frame_sized());
 
         assert!(
@@ -146,14 +132,14 @@ mod tests {
 
     #[test]
     fn the_two_sample_depths_do_not_share_storage() {
-        let pool = PlanePool::new();
+        let pool = PlanePool::default();
         pool.recycle(frame_sized());
         assert!(pool.take::<u8>(MIN_POOLED_SAMPLES).is_empty());
     }
 
     #[test]
     fn a_spare_of_the_wanted_length_is_preferred_over_a_merely_large_one() {
-        let pool = PlanePool::new();
+        let pool = PlanePool::default();
         let mut oversized = frame_sized();
         oversized.resize(MIN_POOLED_SAMPLES * 2, 0);
         pool.recycle(oversized);

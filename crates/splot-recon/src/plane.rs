@@ -17,7 +17,7 @@ pub struct Plane<T: ReconSample> {
     /// The decode pool this plane's storage returns to when the frame that
     /// owns it hands its buffers on. Carried rather than acted on: a plane
     /// released without a hand-off simply frees, as it always has.
-    pool: Option<std::sync::Arc<crate::PlanePool>>,
+    pub(crate) pool: Option<std::sync::Arc<crate::PlanePool>>,
     storage_size: PlaneSize,
     stride_samples: usize,
     visible_rect: PlaneRect,
@@ -128,19 +128,6 @@ impl<T: ReconSample> Plane<T> {
     /// Consumes the plane and returns the complete backing sample buffer.
     pub fn into_samples(self) -> Vec<T> {
         self.samples
-    }
-
-    /// Names the pool this plane's storage came from.
-    #[must_use]
-    pub fn with_pool(mut self, pool: Option<&std::sync::Arc<crate::PlanePool>>) -> Self {
-        self.pool = pool.map(std::sync::Arc::clone);
-        self
-    }
-
-    /// The pool this plane's storage returns to.
-    #[must_use]
-    pub fn pool(&self) -> Option<&std::sync::Arc<crate::PlanePool>> {
-        self.pool.as_ref()
     }
 
     /// Iterates over visible decoded-output rows, excluding padding and stride.
