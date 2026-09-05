@@ -118,6 +118,17 @@ impl<T: ReconSample> RefFrameSlot<T> {
         }
     }
 
+    /// Whether this is the only handle to the slot, so
+    /// [`Self::into_frame`] can take the published frame out of it.
+    ///
+    /// A frame captured as a reference by an in-flight frame is still held
+    /// through its slot even once nothing shares its samples, so the driver
+    /// must ask this before retiring it or the buffers are dropped instead of
+    /// kept.
+    pub(crate) fn is_sole_handle(&self) -> bool {
+        Arc::strong_count(&self.cell) == 1
+    }
+
     /// Returns a second handle to the same completion slot without copying
     /// pixels, and without requiring the slot to be settled.
     pub(crate) fn share(&self) -> Self {
@@ -317,6 +328,14 @@ impl PipelineFrameSlot {
         }
     }
 
+    /// Whether this is the only handle to the slot.
+    pub(crate) fn is_sole_handle(&self) -> bool {
+        match self {
+            Self::Eight(slot) => slot.is_sole_handle(),
+            Self::Ten(slot) => slot.is_sole_handle(),
+        }
+    }
+
     /// Shares the published frame storage, failing closed when the samples have
     /// not landed.
     pub(crate) fn ready(&self) -> Result<PipelineDecodedFrame> {
@@ -387,28 +406,41 @@ pub(crate) struct InflightRing {
     capacity: usize,
     entries: VecDeque<InflightEntry>,
     failure: Option<(usize, DecodeError)>,
-    spare_eight: splot_recon::FramePlaneSamples<u8>,
-    spare_ten: splot_recon::FramePlaneSamples<u16>,
+    spare_eight: Vec<splot_recon::FramePlaneSamples<u8>>,
+    spare_ten: Vec<splot_recon::FramePlaneSamples<u16>>,
 }
 
-/// Routes a frame's retired sample buffers to the ring slot of its sample type.
+/// Routes a frame's retired sample buffers to the ring's spares of its sample
+/// type.
 ///
-/// One frame retires for every frame the ring admits, so the single slot per
-/// type is the whole cycle: the frame taking a reference slot's place decodes
-/// into the buffers the frame leaving it gave up.
+/// One frame retires for every frame the ring admits, but at depth `D` up to
+/// `D` of them can retire between two takes, so the spares are a stack bounded
+/// by the ring's own capacity rather than a single slot: the frame taking a
+/// reference slot's place decodes into the buffers a frame leaving it gave up.
 pub(crate) trait SpareFramePlanes: ReconSample {
-    fn spare(ring: &mut InflightRing) -> &mut splot_recon::FramePlaneSamples<Self>;
+    fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>>;
 }
 
 impl SpareFramePlanes for u8 {
-    fn spare(ring: &mut InflightRing) -> &mut splot_recon::FramePlaneSamples<Self> {
+    fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>> {
         &mut ring.spare_eight
     }
 }
 
 impl SpareFramePlanes for u16 {
-    fn spare(ring: &mut InflightRing) -> &mut splot_recon::FramePlaneSamples<Self> {
+    fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>> {
         &mut ring.spare_ten
+    }
+}
+
+/// Keeps `retired` when the ring is not already holding a full cycle of spares.
+fn keep_spare<T: ReconSample>(
+    spares: &mut Vec<splot_recon::FramePlaneSamples<T>>,
+    capacity: usize,
+    retired: splot_recon::FramePlaneSamples<T>,
+) {
+    if spares.len() < capacity {
+        spares.push(retired);
     }
 }
 
@@ -419,8 +451,8 @@ impl InflightRing {
             capacity: depth.get(),
             entries: VecDeque::new(),
             failure: None,
-            spare_eight: splot_recon::FramePlaneSamples::default(),
-            spare_ten: splot_recon::FramePlaneSamples::default(),
+            spare_eight: Vec::new(),
+            spare_ten: Vec::new(),
         }
     }
 
@@ -432,12 +464,20 @@ impl InflightRing {
         match slot {
             PipelineFrameSlot::Eight(slot) => {
                 if let Some(frame) = slot.into_frame() {
-                    self.spare_eight = frame.into_plane_samples();
+                    keep_spare(
+                        &mut self.spare_eight,
+                        self.capacity,
+                        frame.into_plane_samples(),
+                    );
                 }
             }
             PipelineFrameSlot::Ten(slot) => {
                 if let Some(frame) = slot.into_frame() {
-                    self.spare_ten = frame.into_plane_samples();
+                    keep_spare(
+                        &mut self.spare_ten,
+                        self.capacity,
+                        frame.into_plane_samples(),
+                    );
                 }
             }
         }
@@ -583,7 +623,8 @@ pub(crate) fn reserve_pending_slot<T: SpareFramePlanes>(
     ring: &mut InflightRing,
     frame_index: usize,
 ) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
-    let (slot, writer) = RefFrameSlot::pending_recycled(info, T::spare(ring))?;
+    let mut spare = T::spares(ring).pop().unwrap_or_default();
+    let (slot, writer) = RefFrameSlot::pending_recycled(info, &mut spare)?;
     let progress = Arc::clone(&writer.progress);
     let report = Arc::new(CompletionCell::new());
     ring.push(InflightEntry {

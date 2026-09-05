@@ -159,6 +159,7 @@ fn reclaim_unowned_frames(
             || ring.holds(frame_index)
             || !frame.frame.is_settled()
             || frame.frame.handle_count() > 1
+            || !frame.frame.is_sole_handle()
         {
             continue;
         }

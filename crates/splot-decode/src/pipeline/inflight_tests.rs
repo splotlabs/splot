@@ -27,11 +27,45 @@ fn a_retired_frame_leaves_its_sample_buffers_in_the_ring() {
         SharedFrame::new(frame),
     )));
 
-    let kept = u8::spare(&mut ring).take(splot_recon::PlaneId::Y);
+    let kept = u8::spares(&mut ring)
+        .pop()
+        .expect("the ring kept the retired frame's planes")
+        .take(splot_recon::PlaneId::Y);
     assert_eq!(
         kept.as_ptr(),
         samples,
         "the next frame decodes into the retired frame's buffer"
+    );
+}
+
+#[test]
+fn a_slot_another_owner_still_holds_is_not_the_driver_s_to_retire() {
+    let frame = decoded_frame(4, 4);
+    let (slot, writer) = RefFrameSlot::pending(frame.info()).expect("pending slot");
+    let reference = slot.share();
+    writer.complete(SharedFrame::new(frame));
+
+    assert!(
+        !slot.is_sole_handle(),
+        "a frame an in-flight frame still references cannot give up its buffers"
+    );
+    drop(reference);
+    assert!(slot.is_sole_handle());
+}
+
+#[test]
+fn every_retired_frame_of_a_deep_ring_leaves_its_buffers_behind() {
+    let mut ring = InflightRing::new(nz(3));
+    for _ in 0..3 {
+        ring.keep_frame_planes(PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(
+            SharedFrame::new(decoded_frame(4, 4)),
+        )));
+    }
+
+    assert_eq!(
+        u8::spares(&mut ring).len(),
+        3,
+        "a depth-three ring keeps a whole cycle of retired buffers, not just the last"
     );
 }
 
@@ -45,11 +79,7 @@ fn a_frame_a_reader_still_holds_keeps_its_own_sample_buffers() {
         frame,
     )));
 
-    assert!(
-        u8::spare(&mut ring)
-            .take(splot_recon::PlaneId::Y)
-            .is_empty()
-    );
+    assert!(u8::spares(&mut ring).is_empty());
     drop(reader);
 }
 

@@ -74,7 +74,8 @@ where
     let width8 = mi_cols.div_ceil(2);
     let height8 = mi_rows.div_ceil(2);
     let cells = width8.checked_mul(height8)?;
-    let mut grid = Vec::new();
+    let mut grid = crate::support::reusable_scratch::take_pooled_vec::<T>();
+    grid.clear();
     grid.try_reserve_exact(cells).ok()?;
     grid.resize(cells, T::default());
     Some((width8, height8, grid))
@@ -103,6 +104,25 @@ pub(crate) struct TemporalMotionField {
 enum TemporalMotionStorage {
     Contiguous(Vec<TemporalMotionCell>),
     Bands(Vec<TemporalMotionBand>),
+}
+
+impl Default for TemporalMotionStorage {
+    fn default() -> Self {
+        Self::Contiguous(Vec::new())
+    }
+}
+
+/// Returns a released field's grid to the per-thread pool. A field outlives its
+/// frame as a reference, so this is the only point where the storage is free.
+impl Drop for TemporalMotionField {
+    fn drop(&mut self) {
+        if let TemporalMotionStorage::Contiguous(cells) = core::mem::take(&mut self.storage) {
+            crate::support::reusable_scratch::recycle_pooled_vec(cells);
+        }
+        if let Some(pending) = self.pending_ref_hints.take() {
+            crate::support::reusable_scratch::recycle_pooled_vec(pending);
+        }
+    }
 }
 
 /// Fixed geometry of one frame's motion-field publication.
@@ -260,11 +280,11 @@ impl TemporalMotionField {
     }
 
     /// This field's cells split into bands the caller then fills in.
-    pub(crate) fn into_bands(self) -> Vec<TemporalMotionBand> {
+    pub(crate) fn into_bands(mut self) -> Vec<TemporalMotionBand> {
         let layout = self.layout();
         let metadata = self.metadata();
         let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
-        let cells = match self.storage {
+        let cells = match core::mem::take(&mut self.storage) {
             TemporalMotionStorage::Contiguous(cells) => cells,
             TemporalMotionStorage::Bands(bands) => return bands,
         };

@@ -3,7 +3,6 @@
 
 //! Tile-local AV2 § 5.20.5.3 intra neighbour state.
 
-use std::cell::RefCell;
 use std::collections::TryReserveError;
 use std::num::NonZeroU32;
 use std::ops::Range;
@@ -11,7 +10,7 @@ use std::ops::Range;
 use splot_core::symbol::Symbol;
 
 use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
-use crate::support::reusable_scratch::{ErasedVecSlot, recycle_reusable_vec, take_reusable_vec};
+use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
 
 const NO_FSC: u8 = 0;
 const NO_DIP: u8 = 0;
@@ -54,27 +53,6 @@ struct MiGrid<T> {
 }
 
 impl<T: Copy> MiGrid<T> {
-    fn new<E>(
-        rows: usize,
-        cols: usize,
-        default: T,
-        empty_dimensions: impl FnOnce(usize, usize) -> E,
-        arithmetic_overflow: impl FnOnce(&'static str, usize, usize) -> E,
-        allocation: impl FnOnce(TryReserveError) -> E,
-        preallocate_check: Result<(), E>,
-    ) -> Result<Self, E> {
-        Self::build(
-            0..rows,
-            0..cols,
-            default,
-            Vec::new(),
-            empty_dimensions,
-            arithmetic_overflow,
-            allocation,
-            preallocate_check,
-        )
-    }
-
     #[expect(clippy::too_many_arguments)]
     fn build<E>(
         row_range: Range<usize>,
@@ -171,7 +149,7 @@ impl<T: Copy + Send + 'static> MiGrid<T> {
             row_range,
             col_range,
             default,
-            take_mi_grid_vec::<T>(),
+            take_pooled_vec::<T>(),
             empty_dimensions,
             arithmetic_overflow,
             allocation,
@@ -180,53 +158,8 @@ impl<T: Copy + Send + 'static> MiGrid<T> {
     }
 }
 
-/// Retained per-thread MI-grid cell buffers, keyed by cell type.
-///
-/// The intra-frontier cursor rebuilds nine area-sized `MiGrid` backing vectors
-/// per tile (five `u8` grids, the luma-palette grid, the tree-walk y-mode grid,
-/// and the two segment-id grids). Recycling them through this bounded thread-local pool removes that
-/// per-tile allocation traffic while keeping the grids trivially droppable (no
-/// `Drop` glue on the read hot path).
-const MI_GRID_SCRATCH_SLOTS: usize = 10;
-const MAX_RETAINED_MI_GRID_CELLS: usize = 1 << 24;
-
-thread_local! {
-    static MI_GRID_SCRATCH: RefCell<[ErasedVecSlot; MI_GRID_SCRATCH_SLOTS]> =
-        const { RefCell::new([const { None }; MI_GRID_SCRATCH_SLOTS]) };
-}
-
-pub(super) fn take_mi_grid_vec<T: Send + 'static>() -> Vec<T> {
-    MI_GRID_SCRATCH.with(|cell| take_reusable_vec(cell))
-}
-
-pub(super) fn recycle_mi_grid_vec<T: Send + 'static>(mut cells: Vec<T>) {
-    if cells.capacity() == 0 || cells.capacity() > MAX_RETAINED_MI_GRID_CELLS {
-        return;
-    }
-    cells.clear();
-    MI_GRID_SCRATCH.with(|cell| recycle_reusable_vec(cell, &mut cells));
-}
-
 fn require_nonzero<E>(value: usize, error: E) -> Result<(), E> {
     if value == 0 { Err(error) } else { Ok(()) }
-}
-
-macro_rules! mi_grid_new {
-    ($err:ident, $default:expr, $mi_rows:expr, $mi_cols:expr, $precheck:expr $(,)?) => {
-        MiGrid::new(
-            $mi_rows,
-            $mi_cols,
-            $default,
-            |mi_rows, mi_cols| $err::EmptyDimensions { mi_rows, mi_cols },
-            |operation, left, right| $err::ArithmeticOverflow {
-                operation,
-                left,
-                right,
-            },
-            |source| $err::Allocation { source },
-            $precheck,
-        )
-    };
 }
 
 macro_rules! mi_grid_new_for_tile {
@@ -265,7 +198,7 @@ macro_rules! impl_grid_recycle {
         $(
             impl $state {
                 pub(crate) fn recycle(self) {
-                    recycle_mi_grid_vec(self.grid.into_cells());
+                    recycle_pooled_vec(self.grid.into_cells());
                 }
             }
         )+
@@ -329,7 +262,7 @@ impl TileLumaPaletteState {
         )?;
         Ok(Self {
             grid,
-            palettes: take_mi_grid_vec(),
+            palettes: take_pooled_vec(),
         })
     }
 
@@ -381,8 +314,8 @@ impl TileLumaPaletteState {
     }
 
     pub(crate) fn recycle(self) {
-        recycle_mi_grid_vec(self.grid.into_cells());
-        recycle_mi_grid_vec(self.palettes);
+        recycle_pooled_vec(self.grid.into_cells());
+        recycle_pooled_vec(self.palettes);
     }
 }
 
@@ -571,8 +504,8 @@ pub(crate) struct TileSegmentIdState {
 /// a single call site, so the buffers come home on drop.
 impl Drop for TileSegmentIdState {
     fn drop(&mut self) {
-        recycle_mi_grid_vec(core::mem::take(&mut self.grid.cells));
-        recycle_mi_grid_vec(core::mem::take(&mut self.predicted.cells));
+        recycle_pooled_vec(core::mem::take(&mut self.grid.cells));
+        recycle_pooled_vec(core::mem::take(&mut self.predicted.cells));
     }
 }
 
@@ -683,9 +616,18 @@ pub(crate) struct FrameSegmentIdMap {
     cells: Vec<u8>,
 }
 
+/// Returns the frame map to the per-thread MI-grid pool; the map outlives its
+/// frame as a published entropy product, so it comes home on drop.
+impl Drop for FrameSegmentIdMap {
+    fn drop(&mut self) {
+        recycle_pooled_vec(core::mem::take(&mut self.cells));
+    }
+}
+
 impl FrameSegmentIdMap {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileSegmentIdStateError> {
-        let grid = mi_grid_new!(TileSegmentIdStateError, 0u8, mi_rows, mi_cols, Ok(()))?;
+        let grid =
+            mi_grid_new_for_tile!(TileSegmentIdStateError, 0u8, 0..mi_rows, 0..mi_cols, Ok(()))?;
         Ok(Self {
             mi_rows,
             mi_cols,
