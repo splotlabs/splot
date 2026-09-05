@@ -34,9 +34,7 @@ impl MotionFieldHandle {
         let layout = field.layout();
         let metadata = Arc::new(field.metadata());
         let field = Arc::new(field);
-        let mut bands = crate::support::buffer_pool::take::<
-            CompletionCell<Option<TemporalMotionBand>>,
-        >(layout.band_count());
+        let mut bands = Vec::with_capacity(layout.band_count());
         TemporalMotionField::shared_bands(&field, |band| {
             bands.push(CompletionCell::completed(Some(band)));
         });

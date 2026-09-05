@@ -420,8 +420,8 @@ fn checked_mul_usize(
 fn coalesced_storage(
     allocation: TileMiSizeStateAllocation,
 ) -> Result<Vec<u8>, TileMiSizeStateError> {
-    let mut storage = crate::support::buffer_pool::take(allocation.entry_count());
-    storage.try_reserve_exact(allocation.entry_count().saturating_sub(storage.capacity()))?;
+    let mut storage = Vec::new();
+    storage.try_reserve_exact(allocation.entry_count())?;
     storage.resize(2 * allocation.padded_grid_cells(), BLOCK_256X256_INDEX);
     storage.resize(allocation.entry_count(), CLEAR_PARTITION_CONTEXT);
     Ok(storage)

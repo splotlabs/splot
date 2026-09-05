@@ -67,15 +67,9 @@ impl InterLumaTxTypeMap {
 
     fn reset(&mut self, row: usize, col: usize, rows: usize, cols: usize) -> Result<()> {
         let len = rows.checked_mul(cols).ok_or_else(residual_geometry_error)?;
-        if self.values.capacity() < len {
-            let mut fresh = crate::support::buffer_pool::take::<usize>(len);
-            if fresh.capacity() < len {
-                fresh
-                    .try_reserve_exact(len)
-                    .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
-            }
-            self.values = fresh;
-        }
+        self.values
+            .try_reserve_exact(len.saturating_sub(self.values.len()))
+            .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
         self.values.resize(len, DCT_DCT);
         self.values.fill(DCT_DCT);
         self.row = row;

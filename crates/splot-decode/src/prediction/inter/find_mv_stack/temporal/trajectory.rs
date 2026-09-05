@@ -471,19 +471,19 @@ impl OwnedTrajectoryBand {
                 context: "inter temporal trajectory band",
             })
         };
-        let mut fields = crate::support::buffer_pool::take(total_cells);
+        let mut fields = Vec::new();
         fields
-            .try_reserve_exact(total_cells.saturating_sub(fields.len()))
+            .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         fields.resize(total_cells, PackedTrajectoryMv::INVALID);
-        let mut positions = crate::support::buffer_pool::take(total_cells);
+        let mut positions = Vec::new();
         positions
-            .try_reserve_exact(total_cells.saturating_sub(positions.len()))
+            .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         positions.resize(total_cells, TrajectoryPositions::EMPTY);
-        let mut projection_offsets = crate::support::buffer_pool::take(cell_count);
+        let mut projection_offsets = Vec::new();
         projection_offsets
-            .try_reserve_exact(cell_count.saturating_sub(projection_offsets.len()))
+            .try_reserve_exact(cell_count)
             .map_err(|_| allocation())?;
         projection_offsets.resize(cell_count, INVALID_PROJECTION_OFFSET);
         Ok(Self {

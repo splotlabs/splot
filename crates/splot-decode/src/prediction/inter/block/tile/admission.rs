@@ -1594,12 +1594,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let resolve_state = TileResolveState::new(&sequence);
     let tile = ScheduledTileRecon {
         recon: TileRecon {
-            rows: Mutex::new({
-                let mut rows = crate::support::buffer_pool::take(unit_count);
-                rows.clear();
-                rows.reserve(unit_count.saturating_sub(rows.capacity()));
-                rows
-            }),
+            rows: Mutex::new(Vec::with_capacity(unit_count)),
             prepared: Mutex::new(prepared),
             spare_batches: Mutex::new(Vec::new()),
             unit_count,

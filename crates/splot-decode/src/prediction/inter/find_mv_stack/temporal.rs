@@ -74,11 +74,8 @@ where
     let width8 = mi_cols.div_ceil(2);
     let height8 = mi_rows.div_ceil(2);
     let cells = width8.checked_mul(height8)?;
-    let mut grid = crate::support::buffer_pool::take::<T>(cells);
-    if grid.capacity() < cells {
-        grid.try_reserve_exact(cells).ok()?;
-    }
-    grid.clear();
+    let mut grid = Vec::new();
+    grid.try_reserve_exact(cells).ok()?;
     grid.resize(cells, T::default());
     Some((width8, height8, grid))
 }
@@ -624,9 +621,7 @@ impl ProjectedTemporalMotionField {
         })
     }
 
-    /// Sizes the field for the frame, taking a roomier buffer from the store
-    /// rather than growing this one, so the old one serves the next frame that
-    /// wants its shape instead of being freed.
+    /// Resizes and clears the field while retaining its allocation.
     fn reset(&mut self, mi_rows: usize, mi_cols: usize) -> crate::Result<()> {
         self.width8 = mi_cols.div_ceil(2);
         self.height8 = mi_rows.div_ceil(2);
@@ -634,11 +629,6 @@ impl ProjectedTemporalMotionField {
             .width8
             .checked_mul(self.height8)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-        if self.cells.capacity() < cells {
-            let mut roomier = crate::support::buffer_pool::take(cells);
-            roomier.clear();
-            self.cells = roomier;
-        }
         self.cells
             .try_reserve_exact(cells.saturating_sub(self.cells.len()))
             .map_err(|_| {
@@ -806,16 +796,13 @@ impl TemporalBandPlan {
         let cells = width8
             .checked_mul(row_count)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-        let mut field_cells = crate::support::buffer_pool::take(cells);
-        field_cells.clear();
-        field_cells
-            .try_reserve_exact(cells.saturating_sub(field_cells.capacity()))
-            .map_err(|_| {
-                crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
-                    plane: splot_recon::PlaneId::Y,
-                    context: "inter temporal motion band",
-                })
-            })?;
+        let mut field_cells = Vec::new();
+        field_cells.try_reserve_exact(cells).map_err(|_| {
+            crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: splot_recon::PlaneId::Y,
+                context: "inter temporal motion band",
+            })
+        })?;
         field_cells.resize(cells, ProjectedTemporalMotionCell::default());
         let mut output = ProjectedFieldBand {
             cells: &mut field_cells,

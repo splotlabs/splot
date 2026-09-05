@@ -50,12 +50,10 @@ impl CcsoState {
             .checked_mul(grid_cols)
             .ok_or_else(ccso_state_error)?;
         let copy_region = |source: &[u8], plane: splot_recon::PlaneId| -> Result<Vec<u8>> {
-            let mut blocks = crate::support::buffer_pool::take::<u8>(len);
-            if blocks.capacity() < len {
-                blocks
-                    .try_reserve_exact(len)
-                    .map_err(|_| ccso_allocation_error(plane))?;
-            }
+            let mut blocks = Vec::new();
+            blocks
+                .try_reserve_exact(len)
+                .map_err(|_| ccso_allocation_error(plane))?;
             for row in row_start..row_end {
                 let start = row
                     .checked_mul(self.grid_cols)
@@ -125,11 +123,7 @@ impl CcsoState {
             shift,
             plane_enabled,
             sb_reuse,
-            blocks: std::array::from_fn(|_| {
-                let mut plane = crate::support::buffer_pool::take::<u8>(cells);
-                plane.resize(cells, 0);
-                plane
-            }),
+            blocks: std::array::from_fn(|_| vec![0; cells]),
             row_start: 0,
             col_start: 0,
             grid_rows,
