@@ -519,18 +519,18 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
             scope,
             continuations: &continuations,
         };
-        let mut continued = 0;
+        let mut continued: usize = 0;
         loop {
             job.run(&admit);
             self.admit_ready_continuing(scope, &continuations);
             let Some(next) = continuations.take() else {
                 return;
             };
-            if continued == CONTINUATION_BUDGET {
+            if continued == CONTINUATION_BUDGET && crate::pool::current_pool_width() > 1 {
                 self.submit(scope, next.order_key, &[], next.job);
                 return;
             }
-            continued += 1;
+            continued = continued.saturating_add(1);
             job = next.job;
         }
     }
@@ -865,28 +865,30 @@ mod tests {
 
     #[test]
     fn continuations_are_iterative_and_allow_nested_work() {
-        let chained = AtomicUsize::new(0);
-        let nested = AtomicUsize::new(0);
-        let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
-        pool(2).install(|| {
-            ready_task_scope(|scope| {
-                scheduler.submit(
-                    scope,
-                    0,
-                    &[],
-                    boxed(|admit| {
-                        admit.spawn_ready(boxed(|_| {
-                            nested.fetch_add(1, Ordering::Relaxed);
-                        }));
-                        chain(admit, &chained, 32);
-                    }),
-                );
-            })
-            .unwrap();
-        });
-        assert_eq!(chained.load(Ordering::Relaxed), 33);
-        assert_eq!(nested.load(Ordering::Relaxed), 1);
-        scheduler.finish().unwrap();
+        for threads in [1, 2] {
+            let chained = AtomicUsize::new(0);
+            let nested = AtomicUsize::new(0);
+            let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
+            pool(threads).install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[],
+                        boxed(|admit| {
+                            admit.spawn_ready(boxed(|_| {
+                                nested.fetch_add(1, Ordering::Relaxed);
+                            }));
+                            chain(admit, &chained, 100_000);
+                        }),
+                    );
+                })
+                .unwrap();
+            });
+            assert_eq!(chained.load(Ordering::Relaxed), 100_001);
+            assert_eq!(nested.load(Ordering::Relaxed), 1);
+            scheduler.finish().unwrap();
+        }
     }
 
     #[test]
