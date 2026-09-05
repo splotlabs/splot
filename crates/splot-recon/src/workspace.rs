@@ -127,7 +127,7 @@ macro_rules! contiguous_rect_writer {
 /// as a [`FrameRef`]/[`FrameMut`] with [`CurrentFrameWorkspace::as_frame_ref`]/
 /// [`CurrentFrameWorkspace::as_frame_mut`] instead (see
 /// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct CurrentFrameWorkspace<T: ReconSample> {
     info: DecodedFrameInfo,
     y: CurrentFramePlane<T>,
@@ -1384,18 +1384,6 @@ pub struct CurrentFramePlane<T: ReconSample> {
     samples: Vec<T>,
     pool: Option<Arc<crate::PlanePool>>,
 }
-
-/// The pool a plane retires into is not part of its value.
-impl<T: ReconSample + PartialEq> PartialEq for CurrentFramePlane<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.plane == other.plane
-            && self.storage_size == other.storage_size
-            && self.visible_rect == other.visible_rect
-            && self.samples == other.samples
-    }
-}
-
-impl<T: ReconSample + Eq> Eq for CurrentFramePlane<T> {}
 
 /// Returns a retired workspace plane's storage to the pool the next workspace
 /// of this depth takes from.
