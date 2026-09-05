@@ -29,6 +29,14 @@ pub struct DecodeContext {
     frame_delay: NonZeroUsize,
 }
 
+/// Lets go of the frame-sized plane buffers this context's decodes retired, so
+/// a process that is done decoding does not hold them.
+impl Drop for DecodeContext {
+    fn drop(&mut self) {
+        splot_recon::release_plane_spares();
+    }
+}
+
 impl DecodeContext {
     /// Creates a decode context and its single owned worker pool.
     ///

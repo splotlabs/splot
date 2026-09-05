@@ -1066,11 +1066,11 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
     /// Hands this workspace's sample buffers to the next frame that needs them.
     #[must_use]
-    pub fn into_plane_samples(self) -> FramePlaneSamples<T> {
+    pub fn into_plane_samples(mut self) -> FramePlaneSamples<T> {
         FramePlaneSamples::new(
-            self.y.samples,
-            self.u.map(|plane| plane.samples),
-            self.v.map(|plane| plane.samples),
+            mem::take(&mut self.y.samples),
+            self.u.as_mut().map(|plane| mem::take(&mut plane.samples)),
+            self.v.as_mut().map(|plane| mem::take(&mut plane.samples)),
         )
     }
 
@@ -1378,6 +1378,14 @@ pub struct CurrentFramePlane<T: ReconSample> {
     samples: Vec<T>,
 }
 
+/// Returns a retired workspace plane's storage to the pool the next workspace
+/// of this depth takes from.
+impl<T: ReconSample> Drop for CurrentFramePlane<T> {
+    fn drop(&mut self) {
+        T::recycle_plane_buffer(mem::take(&mut self.samples));
+    }
+}
+
 impl<T: ReconSample> CurrentFramePlane<T> {
     fn new(
         plane: PlaneId,
@@ -1406,6 +1414,12 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             },
         )?;
 
+        if samples.capacity() < required_samples {
+            // A buffer too small for this frame would be reallocated anyway, so
+            // it goes back to the pool and a frame-sized spare comes out.
+            T::recycle_plane_buffer(mem::take(&mut samples));
+            samples = T::take_plane_buffer(required_samples);
+        }
         samples.truncate(required_samples);
         samples
             .try_reserve_exact(required_samples.saturating_sub(samples.len()))
@@ -1691,13 +1705,13 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         )
     }
 
-    fn freeze(self) -> Result<Plane<T>> {
+    fn freeze(mut self) -> Result<Plane<T>> {
         let stride_samples = self.stride_samples();
         Plane::from_vec(
             self.storage_size,
             stride_samples,
             self.visible_rect,
-            self.samples,
+            mem::take(&mut self.samples),
         )
     }
 
