@@ -1073,13 +1073,11 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Hands this workspace's sample buffers to the next frame that needs them.
     #[must_use]
     pub fn into_plane_samples(mut self) -> FramePlaneSamples<T> {
-        let pool = self.y.pool.clone();
         FramePlaneSamples::new(
             mem::take(&mut self.y.samples),
             self.u.as_mut().map(|plane| mem::take(&mut plane.samples)),
             self.v.as_mut().map(|plane| mem::take(&mut plane.samples)),
         )
-        .with_pool(pool.as_ref())
     }
 
     /// Returns all backing samples for `plane`, including padding if present.
