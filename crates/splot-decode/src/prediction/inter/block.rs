@@ -722,7 +722,7 @@ fn scheduled_motion_field_inputs(
                 field
                     .as_ref()
                     .and_then(MotionFieldHandle::metadata)
-                    .map(|metadata| metadata.as_ref().clone())
+                    .cloned()
             })
             .collect(),
         fields
