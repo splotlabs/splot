@@ -183,11 +183,7 @@ struct OrderedJob<'job, F: Task<'job>> {
 }
 
 /// The continuation a running job may leave for its own worker.
-///
-/// The flag is what keeps the lock cold. A slot is built per `run_job` frame,
-/// and a platform lock is allocated the first time each one is locked, so a
-/// job that leaves no continuation -- most of them -- paid an allocation for a
-/// lock guarding a `None`.
+/// The readiness flag avoids locking an empty slot.
 struct ContinuationSlot<'job, F: Task<'job>> {
     pending: AtomicBool,
     job: Mutex<Option<OrderedJob<'job, F>>>,
@@ -215,9 +211,9 @@ impl<'job, F: Task<'job>> ContinuationSlot<'job, F> {
         if !self.pending.load(Ordering::Acquire) {
             return None;
         }
-        let taken = self.job.lock().take();
+        let mut job = self.job.lock();
         self.pending.store(false, Ordering::Release);
-        taken
+        job.take()
     }
 }
 
@@ -852,6 +848,31 @@ mod tests {
                 boxed(move |admit| leaf_chain(admit, visits, id + 1, left - 1)),
             );
         }
+    }
+
+    #[test]
+    fn shared_continuation_slot_does_not_hide_concurrent_submissions() {
+        let slot: ContinuationSlot<'_, NoTask> = ContinuationSlot::new();
+        let mut taken = 0;
+        let submitted = std::thread::scope(|scope| {
+            let producer = scope.spawn(|| {
+                (0..100_000)
+                    .filter(|&order_key| {
+                        slot.put(OrderedJob {
+                            order_key,
+                            job: boxed(|_| {}),
+                        })
+                        .is_ok()
+                    })
+                    .count()
+            });
+            while !producer.is_finished() {
+                taken += usize::from(slot.take().is_some());
+            }
+            producer.join().unwrap()
+        });
+        taken += usize::from(slot.take().is_some());
+        assert_eq!(taken, submitted);
     }
 
     #[test]

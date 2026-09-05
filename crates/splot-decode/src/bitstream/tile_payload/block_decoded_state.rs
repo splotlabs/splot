@@ -45,12 +45,10 @@ struct PlaneGrid {
 
 impl Clone for PlaneGrid {
     fn clone(&self) -> Self {
-        let mut cells = Vec::new();
-        cells.extend_from_slice(&self.cells);
         Self {
             width: self.width,
             height: self.height,
-            cells,
+            cells: self.cells.clone(),
         }
     }
 
@@ -62,8 +60,7 @@ impl Clone for PlaneGrid {
     fn clone_from(&mut self, source: &Self) {
         self.width = source.width;
         self.height = source.height;
-        self.cells.clear();
-        self.cells.extend_from_slice(&source.cells);
+        self.cells.clone_from(&source.cells);
     }
 }
 
@@ -81,7 +78,7 @@ impl Clone for TileBlockDecodedState {
             sb_size4: self.sb_size4,
             mi_col_end: self.mi_col_end,
             mi_row_end: self.mi_row_end,
-            planes: core::array::from_fn(|index| self.planes[index].clone()),
+            planes: self.planes.clone(),
         }
     }
 
