@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
 use splot_recon::math::round2_signed_i32;
 
 use super::{
@@ -469,17 +470,17 @@ impl OwnedTrajectoryBand {
                 context: "inter temporal trajectory band",
             })
         };
-        let mut fields = Vec::new();
+        let mut fields = take_pooled_vec();
         fields
             .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         fields.resize(total_cells, PackedTrajectoryMv::INVALID);
-        let mut positions = Vec::new();
+        let mut positions = take_pooled_vec();
         positions
             .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         positions.resize(total_cells, TrajectoryPositions::EMPTY);
-        let mut projection_offsets = Vec::new();
+        let mut projection_offsets = take_pooled_vec();
         projection_offsets
             .try_reserve_exact(cell_count)
             .map_err(|_| allocation())?;
@@ -532,10 +533,19 @@ impl OwnedTrajectoryBand {
                 );
             }
         }
+        recycle_pooled_vec(core::mem::take(&mut self.positions));
+        recycle_pooled_vec(core::mem::take(&mut self.projection_offsets));
         OwnedTrajectoryFields {
             cells: core::mem::take(&mut self.fields),
             reference_count: self.reference_count,
         }
+    }
+}
+
+/// Returns a released band's trajectory cells to the per-thread pool.
+impl Drop for OwnedTrajectoryFields {
+    fn drop(&mut self) {
+        recycle_pooled_vec(core::mem::take(&mut self.cells));
     }
 }
 

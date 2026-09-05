@@ -718,6 +718,13 @@ struct TemporalBandResult {
     trajectories: Option<OwnedTrajectoryFields>,
 }
 
+/// Returns a released band's projected cells to the per-thread pool.
+impl Drop for TemporalBandResult {
+    fn drop(&mut self) {
+        crate::support::reusable_scratch::recycle_pooled_vec(core::mem::take(&mut self.field));
+    }
+}
+
 pub(crate) struct TemporalBandPlan {
     projections: Vec<ScheduledTemporalProjection>,
     config: TemporalProjectionConfig,
@@ -816,7 +823,7 @@ impl TemporalBandPlan {
         let cells = width8
             .checked_mul(row_count)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-        let mut field_cells = Vec::new();
+        let mut field_cells = crate::support::reusable_scratch::take_pooled_vec();
         field_cells.try_reserve_exact(cells).map_err(|_| {
             crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
                 plane: splot_recon::PlaneId::Y,

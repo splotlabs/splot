@@ -15,7 +15,7 @@ pub(crate) type ErasedVecSlot = Option<Box<dyn std::any::Any + Send>>;
 /// the frame segment-id map, the temporal motion field. Each is one allocation
 /// of tens to hundreds of kilobytes whose contents are overwritten anyway, so
 /// they are taken from here and returned on drop.
-const POOLED_VEC_SLOTS: usize = 16;
+const POOLED_VEC_SLOTS: usize = 32;
 
 /// Buffers larger than this are let go rather than held for the process's life.
 const MAX_POOLED_VEC_CELLS: usize = 1 << 24;
