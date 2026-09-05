@@ -94,10 +94,7 @@ enum JsonSeverity {
 pub(crate) fn run_conformance(root: &Path) -> Result<()> {
     let conformance_root = root.join("tests").join("conformance");
     let manifest_path = conformance_root.join("manifest.toml");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-    let manifest: Manifest = toml::from_str(&manifest_text)
-        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let manifest: Manifest = crate::util::load_toml(&manifest_path)?;
 
     if manifest.vector.is_empty() {
         bail!(

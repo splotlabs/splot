@@ -6931,7 +6931,7 @@ change_id = "validator-source-line-budget"
 tracking_issue = ""
 owner = "automation"
 risk = "low"
-notes = "Adds cargo xtask check-source-lines: checked Rust source files warn above 1000 physical lines and fail above the 2500-line hard cap unless covered by a documented temporary allowance with a recorded cap and rationale. Wired into cargo xtask ci and GitHub Actions."
+notes = "Adds cargo xtask check-source-lines: checked Rust source files warn above 1000 physical lines and fail above the 2500-line hard cap. Wired into cargo xtask ci and GitHub Actions."
 
 [feature.status]
 mapped = "done"

@@ -1055,10 +1055,7 @@ fn package_path_dependencies(
     if !manifest_path.is_file() {
         return Ok(Vec::new());
     }
-    let text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-    let value: toml::Value = toml::from_str(&text)
-        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let value: toml::Value = crate::util::load_toml(&manifest_path)?;
     let manifest_dir = root.join(member_path);
     let mut out = BTreeSet::new();
     collect_package_path_dependencies(
@@ -1351,10 +1348,7 @@ fn normalize_path_lexically(path: &Path) -> PathBuf {
 fn package_name_for_member(root: &Path, member: &str) -> Result<String> {
     let manifest_path = root.join(member).join("Cargo.toml");
     if manifest_path.is_file() {
-        let text = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-        let value: toml::Value = toml::from_str(&text)
-            .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+        let value: toml::Value = crate::util::load_toml(&manifest_path)?;
         if let Some(name) = value
             .get("package")
             .and_then(|package| package.get("name"))

@@ -638,10 +638,7 @@ pub(crate) fn fuzz_targets(root: &Path) -> Result<Vec<String>> {
     targets.sort();
 
     let manifest_path = root.join("fuzz").join("Cargo.toml");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-    let manifest: toml::Value = toml::from_str(&manifest_text)
-        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    let manifest: toml::Value = crate::util::load_toml(&manifest_path)?;
     let mut registered: Vec<String> = manifest
         .get("bin")
         .and_then(|bins| bins.as_array())
@@ -959,10 +956,7 @@ fn verify_spec_mirror_attachment(
     }
 
     let provenance_path = dir.join("provenance.toml");
-    let provenance = std::fs::read_to_string(&provenance_path)
-        .with_context(|| format!("failed to read {}", provenance_path.display()))?;
-    let table: toml::Table = toml::from_str(&provenance)
-        .with_context(|| format!("failed to parse {}", provenance_path.display()))?;
+    let table: toml::Table = crate::util::load_toml(&provenance_path)?;
     let recorded = table
         .get("attachments")
         .and_then(|v| v.as_table())
@@ -1078,10 +1072,7 @@ fn verify_spec_mirror_dir(
     }
 
     let provenance_path = dir.join("provenance.toml");
-    let provenance = std::fs::read_to_string(&provenance_path)
-        .with_context(|| format!("failed to read {}", provenance_path.display()))?;
-    let table: toml::Table = toml::from_str(&provenance)
-        .with_context(|| format!("failed to parse {}", provenance_path.display()))?;
+    let table: toml::Table = crate::util::load_toml(&provenance_path)?;
     let pdf_sha = table
         .get("pdf_sha256")
         .and_then(|v| v.as_str())
@@ -1213,10 +1204,7 @@ pub(crate) fn workspace_members(root: &Path) -> Result<Vec<String>> {
 }
 
 pub(crate) fn read_manifest(path: &Path) -> Result<toml::Table> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    toml::from_str::<toml::Table>(&text)
-        .with_context(|| format!("failed to parse {}", path.display()))
+    crate::util::load_toml(path)
 }
 
 fn manifest_package_name(manifest: &toml::Table) -> Option<String> {

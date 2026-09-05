@@ -7,26 +7,19 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use splot_decode::DecodeOptions;
 
 mod common;
-use common::{empty_avmenc_ivf, read_dir_names};
-
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+use common::{
+    conformance_vector, empty_avmenc_ivf, read_dir_names, splot, temp_dir, temp_input, temp_output,
+    temp_path,
+};
 
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
 const UNSUPPORTED_MULTISTREAM: &[u8] = &[0x01, 0x50];
 const MALFORMED_ANNEX_B: &[u8] = &[0x05, 0x10];
 const LOCAL_DECODER_MISSION_ENV: &str = "SPLOT_LOCAL_DECODER_MISSION_IVF";
-
-fn splot(args: &[&str]) -> Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
-        .args(args)
-        .output()
-        .expect("failed to run the splot binary")
-}
 
 fn splot_in(args: &[&str], cwd: &Path) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
@@ -34,30 +27,6 @@ fn splot_in(args: &[&str], cwd: &Path) -> Output {
         .args(args)
         .output()
         .expect("failed to run the splot binary")
-}
-
-fn temp_path(stem: &str, extension: &str) -> PathBuf {
-    let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time is after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "splot-decode-cli-test-{stem}-{}-{nanos}-{id}.{extension}",
-        std::process::id()
-    ))
-}
-
-fn temp_input(extension: &str, data: &[u8]) -> PathBuf {
-    let path = temp_path("input", extension);
-    std::fs::write(&path, data).expect("write temporary input");
-    path
-}
-
-fn conformance_vector(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/conformance/vectors/valid")
-        .join(name)
 }
 
 fn local_decoder_mission_path() -> PathBuf {
@@ -92,16 +61,6 @@ fn default_max_obus() -> u64 {
         .max_obus()
         .max_value()
         .expect("default max_obus is finite")
-}
-
-fn temp_output(extension: &str) -> PathBuf {
-    temp_path("output", extension)
-}
-
-fn temp_dir(stem: &str) -> PathBuf {
-    let path = temp_path(stem, "dir");
-    std::fs::create_dir(&path).expect("create temporary directory");
-    path
 }
 
 fn read_dir_paths(path: &Path) -> Vec<PathBuf> {

@@ -45,6 +45,3 @@ New decode modules must use AV2/decoder-domain names: `bitstream`, `tile`,
 or fixture-named runtime modules. Fixture names may appear only in isolated
 tests, local evidence, or stable feature/status identifiers that still document
 their historical frontier.
-
-Temporary oversized-module allowances remain only for active frontier files and
-must keep their source-line budget entries explicit.

@@ -1,39 +1,15 @@
-## Summary
+## Change
 
-## Feature IDs
+Describe the problem and resulting behavior. Include applicable Feature IDs.
 
--
+## Validation
 
-## Checklist
+Record `cargo xtask ci` and focused checks, including any failures or skipped checks.
+For decode changes, include output-correctness and performance evidence where relevant.
 
-- [ ] I ran `git status --short` before editing and preserved user work.
-- [ ] Feature IDs are present in code/docs/tests where relevant.
-- [ ] `docs/IMPLEMENTATION-MATRIX.toml` is updated.
-- [ ] No AV1 OBU assumptions were introduced.
-- [ ] No fabricated AV2 syntax/semantics were introduced.
-- [ ] Diagnostics have stable rule IDs, spec sections, offsets, and messages where applicable.
-- [ ] Tests/proof were added and recorded in the matrix.
-- [ ] PR title and commit subjects use Conventional Commits.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` passes.
-- [ ] `cargo test --workspace --all-targets --locked` passes.
-- [ ] `cargo xtask check-feature-status` passes.
-- [ ] `cargo xtask check-doc-budget` passes.
-- [ ] `cargo xtask ci` passes.
+## Encoder references, if applicable
 
-## Encoder research gate, if applicable
+List AV2 spec sections, AVM evidence, and any third-party inspiration or copied material.
+Read `docs/references/THIRD-PARTY-NOTICES.md` before encoder-facing changes.
 
-- Feature / module:
-- AV2 spec sections read:
-- AVM files/tests/streams used as oracle:
-- Decoder-visible behavior? yes/no
-- Matrix row added/updated in `docs/IMPLEMENTATION-MATRIX.toml`? yes/no
-- Reference docs read:
-  - [ ] `docs/references/THIRD-PARTY-NOTICES.md`
-- rav1e/SVT concepts used for inspiration:
-- Third-party material copied: none
-- AV1 syntax/tables/constants excluded: yes
-- Tests/traces added:
-- How this design aims to be better than the reference:
-
-## Deviations or follow-ups
+## Risks or follow-ups
