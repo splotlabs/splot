@@ -315,14 +315,16 @@ fn take_spare_plane<T: Send + 'static>(plane: &mut Vec<T>, cells: usize) {
     }
 }
 
-/// Returns a retired grid's four planes to the per-thread spare set.
+/// Returns a retired grid's three planes to the per-thread spare set.
+///
+/// The flag log is not among them: nothing takes a log back, so parking one
+/// would hold a spare slot against the planes that do.
 impl Drop for NeighbourMvGrid {
     fn drop(&mut self) {
         use crate::support::reusable_scratch::recycle_pooled_vec;
         recycle_pooled_vec(core::mem::take(&mut self.planes.flags));
         recycle_pooled_vec(core::mem::take(&mut self.planes.motion));
         recycle_pooled_vec(core::mem::take(&mut self.planes.leaves));
-        recycle_pooled_vec(core::mem::take(&mut self.flag_log));
     }
 }
 
