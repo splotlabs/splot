@@ -820,7 +820,7 @@ impl ReconRowFailure {
 }
 
 #[derive(Default)]
-pub(super) struct ReconRowBuffers {
+pub(crate) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
     /// The coefficients this row's transform blocks index into.
     pub(super) residual_coeffs: Vec<i32>,
@@ -836,29 +836,10 @@ pub(super) struct ReconRowBuffers {
 #[derive(Default)]
 struct ReconRowBufferPool {
     available: Mutex<Vec<ReconRowBuffers>>,
-}
-
-/// Row buffer sets kept between units and frames.
-///
-/// Global, not per worker: a unit is parsed on one worker and replayed on
-/// another, so a thread-local set is returned to a thread that will not ask
-/// for it again. The cap is a whole-process one for the same reason the
-/// frame-plane pool's is.
-const MAX_RETAINED_ROW_BUFFERS: usize = 256;
-
-static RETAINED_ROW_BUFFERS: Mutex<Vec<ReconRowBuffers>> = Mutex::new(Vec::new());
-
-/// Takes a retained row buffer set, or a fresh one.
-fn take_retained_row_buffers() -> ReconRowBuffers {
-    RETAINED_ROW_BUFFERS.lock().pop().unwrap_or_default()
-}
-
-/// Returns a spent row buffer set, whose vectors are already cleared.
-pub(super) fn retain_row_buffers(buffers: ReconRowBuffers) {
-    let mut retained = RETAINED_ROW_BUFFERS.lock();
-    if retained.len() < MAX_RETAINED_ROW_BUFFERS {
-        retained.push(buffers);
-    }
+    /// The decode's retained sets. A unit is parsed on one worker and replayed
+    /// on another, so a spent set goes back to the decode rather than to the
+    /// thread that happened to finish with it.
+    buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
 
 impl ReconRowBufferPool {
@@ -866,18 +847,27 @@ impl ReconRowBufferPool {
     ///
     /// The decoder holds one of these for the life of the stream, so the sets
     /// stay here between tiles instead of going back to the retained list.
-    fn reset(&mut self, slots: usize) {
+    fn reset(
+        &mut self,
+        slots: usize,
+        buffers: Option<&std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
+    ) {
+        self.buffers = buffers.cloned();
+        let retained = self.buffers.as_ref();
         let available = self.available.get_mut();
         while available.len() < slots {
-            available.push(take_retained_row_buffers());
+            available
+                .push(retained.map_or_else(ReconRowBuffers::default, |decode| decode.take_rows()));
         }
     }
 
     fn take(&self) -> ReconRowBuffers {
-        if let Some(buffers) = self.available.lock().pop() {
-            return buffers;
+        if let Some(set) = self.available.lock().pop() {
+            return set;
         }
-        take_retained_row_buffers()
+        self.buffers
+            .as_ref()
+            .map_or_else(ReconRowBuffers::default, |decode| decode.take_rows())
     }
 
     fn recycle(&self, buffers: ReconRowBuffers) {
@@ -957,8 +947,9 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     workers: InterReconScratchPool<T>,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
     batches: admission::BatchRowSlots<T>,
-    /// The decode's plane pool, for the sealed copy the frontier opens.
-    pub(in crate::prediction::inter) planes: Option<std::sync::Arc<splot_recon::PlanePool>>,
+    /// The decode's reusable storage, for the sealed copy and the row sets.
+    pub(in crate::prediction::inter) buffers:
+        Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
 
 impl<T: ReconSample> TileDecodeScratch<T> {
@@ -974,7 +965,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             workers: workers.take_reusable(),
             surfaces,
             batches: admission::BatchRowSlots::default(),
-            planes: None,
+            buffers: None,
         }
     }
 }
@@ -1405,6 +1396,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     gdf_state: &GdfState,
     ccso_state: &CcsoState,
     parse_progress: &Arc<ParseProgress>,
+    buffers: Option<&Arc<crate::support::decode_buffers::DecodeBuffers>>,
 ) -> Result<ParsedTile> {
     let context = &params.context(sequence, core, reference, ref_frame_idx);
     let geometry = parse_progress
@@ -1423,7 +1415,8 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     )?;
     parser.mv_grid.log_flags();
     loop {
-        let step = parser.next_unit(context, Some(take_retained_row_buffers()));
+        let row_set = buffers.map_or_else(ReconRowBuffers::default, |decode| decode.take_rows());
+        let step = parser.next_unit(context, Some(row_set));
         let (mut row, last) = match step {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
@@ -1577,7 +1570,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         mut workers,
         surfaces: mut recycled_surfaces,
         mut batches,
-        planes,
+        buffers,
     } = scratch;
     workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -1627,6 +1620,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             splot_parallel::current_pool_width()
                 .saturating_mul(3)
                 .max(1),
+            buffers.as_ref(),
         );
         let row_buffers = core::mem::take(&mut parse_state.row_buffers);
         let mut parser = TileParser::new(
@@ -1737,7 +1731,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
 
     Ok((
         TileDecodeScratch {
-            planes,
+            buffers,
             parse: parse_state,
             surface_source: spent_surface_source,
             ordered,

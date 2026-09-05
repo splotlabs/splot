@@ -46,9 +46,9 @@ pub(crate) struct FrameFilterRecords {
     /// filtered, and these records already run from the phase to the decoder's
     /// scratch and back out with the next frame.
     pub(crate) retired_planes: splot_recon::RetiredFramePlanes,
-    /// The decode's plane pool, so a workspace built from `retired_planes`
-    /// knows where its storage goes when the last filter job releases it.
-    pub(crate) planes: Option<std::sync::Arc<splot_recon::PlanePool>>,
+    /// The decode's reusable storage, so a workspace built from
+    /// `retired_planes` knows where it goes when its last holder releases it.
+    pub(crate) buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
 
 /// The per-stripe lists one frame's filter phase works through.

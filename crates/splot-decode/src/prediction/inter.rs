@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 pub(crate) use block::ParseProgress;
+pub(crate) use block::ReconRowBuffers;
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use std::sync::Arc;

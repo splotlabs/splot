@@ -778,8 +778,8 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
             // The scratch reaches here through a chain of `unwrap_or_default`s,
             // so the pool is named per frame rather than inherited down it.
             let mut decode_scratch = decode_scratch;
-            if let Some(planes) = progress.planes() {
-                decode_scratch.set_plane_pool(planes);
+            if let Some(buffers) = progress.buffers() {
+                decode_scratch.set_decode_buffers(buffers);
             }
             let filters_ready = Arc::new(CompletionCell::new());
             let (scheduled, pending_filters) =

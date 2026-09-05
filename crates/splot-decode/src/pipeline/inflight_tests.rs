@@ -83,8 +83,8 @@ fn a_frame_a_reader_still_holds_keeps_its_own_sample_buffers() {
     drop(reader);
 }
 
-fn test_plane_pool() -> Arc<splot_recon::PlanePool> {
-    Arc::new(splot_recon::PlanePool::new())
+fn test_plane_pool() -> Arc<crate::support::decode_buffers::DecodeBuffers> {
+    crate::support::decode_buffers::DecodeBuffers::new()
 }
 
 fn nz(value: usize) -> NonZeroUsize {

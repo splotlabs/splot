@@ -378,7 +378,7 @@ impl<'a, T: ReconSample> PublishedStorage<'a, T> {
 pub(crate) struct FrameProgress<T: ReconSample> {
     /// The decode's plane pool, carried so every frame can hand it back to the
     /// scratch it is scheduled with.
-    planes: Option<std::sync::Arc<splot_recon::PlanePool>>,
+    buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
     workspace: RwLock<Option<DirectWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
     published_luma_rows: WatermarkCell,
@@ -396,8 +396,10 @@ impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
 impl<T: ReconSample> FrameProgress<T> {
     /// The decode's plane pool, which every frame reads back from its progress
     /// rather than inheriting down a chain of defaultable scratch objects.
-    pub(crate) fn planes(&self) -> Option<&std::sync::Arc<splot_recon::PlanePool>> {
-        self.planes.as_ref()
+    pub(crate) fn buffers(
+        &self,
+    ) -> Option<&std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>> {
+        self.buffers.as_ref()
     }
 
     /// Opens the filtered workspace one pending frame's filter phase publishes
@@ -409,12 +411,13 @@ impl<T: ReconSample> FrameProgress<T> {
     pub(crate) fn recycled(
         info: DecodedFrameInfo,
         recycled: &mut splot_recon::FramePlaneSamples<T>,
+        buffers: Option<&std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
     ) -> Result<Self> {
-        let planes = recycled.pool().cloned();
+        let buffers = buffers.cloned();
         let workspace =
             DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?); // every row is published by a filter stripe before any consumer may read past the watermark
         Ok(Self {
-            planes,
+            buffers,
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
             published_luma_rows: WatermarkCell::new(),
@@ -426,7 +429,7 @@ impl<T: ReconSample> FrameProgress<T> {
 
     #[cfg(test)]
     pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
-        Self::recycled(info, &mut splot_recon::FramePlaneSamples::default())
+        Self::recycled(info, &mut splot_recon::FramePlaneSamples::default(), None)
     }
 
     /// Publishes the terminal watermark of a filter phase that ended.

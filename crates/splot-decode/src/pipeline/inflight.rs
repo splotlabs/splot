@@ -88,9 +88,10 @@ impl<T: ReconSample> RefFrameSlot<T> {
     pub(crate) fn pending_recycled(
         info: DecodedFrameInfo,
         recycled: &mut splot_recon::FramePlaneSamples<T>,
+        buffers: Option<&Arc<crate::support::decode_buffers::DecodeBuffers>>,
     ) -> Result<(Self, FrameSlotWriter<T>)> {
         let cell = Arc::new(CompletionCell::new());
-        let progress = Arc::new(FrameProgress::recycled(info, recycled)?);
+        let progress = Arc::new(FrameProgress::recycled(info, recycled, buffers)?);
         let writer = FrameSlotWriter {
             cell: Arc::clone(&cell),
             progress: Arc::clone(&progress),
@@ -106,7 +107,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     #[cfg(test)]
     pub(crate) fn pending(info: DecodedFrameInfo) -> Result<(Self, FrameSlotWriter<T>)> {
-        Self::pending_recycled(info, &mut splot_recon::FramePlaneSamples::default())
+        Self::pending_recycled(info, &mut splot_recon::FramePlaneSamples::default(), None)
     }
 
     /// Takes the published frame when this is the last handle to both the slot
@@ -408,7 +409,7 @@ pub(crate) struct InflightRing {
     failure: Option<(usize, DecodeError)>,
     spare_eight: Vec<splot_recon::FramePlaneSamples<u8>>,
     spare_ten: Vec<splot_recon::FramePlaneSamples<u16>>,
-    planes: Arc<splot_recon::PlanePool>,
+    buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
 }
 
 /// Routes a frame's retired sample buffers to the ring's spares of its sample
@@ -447,9 +448,12 @@ fn keep_spare<T: ReconSample>(
 
 impl InflightRing {
     /// Builds the in-flight ring for a resolved frame-delay depth.
-    pub(crate) fn new(depth: NonZeroUsize, planes: Arc<splot_recon::PlanePool>) -> Self {
+    pub(crate) fn new(
+        depth: NonZeroUsize,
+        buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
+    ) -> Self {
         Self {
-            planes,
+            buffers,
             capacity: depth.get(),
             entries: VecDeque::new(),
             failure: None,
@@ -625,11 +629,11 @@ pub(crate) fn reserve_pending_slot<T: SpareFramePlanes>(
     ring: &mut InflightRing,
     frame_index: usize,
 ) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
-    let planes = Arc::clone(&ring.planes);
+    let buffers = Arc::clone(&ring.buffers);
     let mut spare = <T as SpareFramePlanes>::spares(ring)
         .pop()
-        .unwrap_or_else(|| splot_recon::FramePlaneSamples::pooled(&planes));
-    let (slot, writer) = RefFrameSlot::pending_recycled(info, &mut spare)?;
+        .unwrap_or_else(|| splot_recon::FramePlaneSamples::pooled(buffers.planes()));
+    let (slot, writer) = RefFrameSlot::pending_recycled(info, &mut spare, Some(&buffers))?;
     let progress = Arc::clone(&writer.progress);
     let report = Arc::new(CompletionCell::new());
     ring.push(InflightEntry {
