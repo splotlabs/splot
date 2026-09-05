@@ -502,7 +502,14 @@ fn completed_direct_u8_and_staged_fallback_planes_publish_together() {
     y.finish_direct().expect("luma flush");
     v.finish_direct().expect("V flush");
     u.finish_direct().expect("direct U completion");
+    let staging = y.samples().as_ptr();
     drop((y, u, v, target));
+    assert!(super::STRIPE_STAGING.with(|slots| {
+        slots
+            .borrow()
+            .iter()
+            .any(|buffer| buffer.as_ptr() == staging)
+    }));
     assert!(lease.submit());
 
     let frame = progress

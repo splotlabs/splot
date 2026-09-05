@@ -613,7 +613,11 @@ unsafe impl Send for StripeSamples {}
 
 impl Drop for StripeSamples {
     fn drop(&mut self) {
-        if let StripeOwner::Owned(buffer) = &mut self.owner {
+        if let StripeOwner::Owned(buffer)
+        | StripeOwner::DirectU8 {
+            staging: buffer, ..
+        } = &mut self.owner
+        {
             give_stripe_sample_buffer(core::mem::take(buffer));
         }
     }

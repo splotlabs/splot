@@ -266,20 +266,6 @@ pub fn assist_pool_once() -> bool {
     matches!(assist_installed_pool(), PoolAssist::Executed)
 }
 
-/// The worker count of the installed pool the caller runs on (`1` when the
-/// caller is not a pool worker).
-///
-/// Parallel stages use this to choose a work-unit grain that yields a few
-/// units per worker instead of thousands of tiny tasks.
-///
-/// A retention bound built on this scales with the pool only for calls made on
-/// a worker; a caller outside the pool reads `1` and so gets the bound's floor.
-/// This worker's index in the pool, or `None` off a worker thread.
-#[must_use]
-pub(crate) fn current_worker_index() -> Option<usize> {
-    rayon::current_thread_index()
-}
-
 /// The width of the pool this call runs on, or `1` off a worker thread.
 #[must_use]
 pub fn current_pool_width() -> usize {

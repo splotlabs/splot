@@ -50,7 +50,7 @@ use parking_lot::Mutex;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::completion::CompletionCell;
 use crate::error::ParallelError;
@@ -170,50 +170,29 @@ pub trait Admit<'job, F: Task<'job> = NoTask>: Sync {
 
 const CONTINUATION_BUDGET: usize = 8;
 
-/// Continuation slots the scheduler builds up front, one per worker.
-///
-/// A fixed count rather than the pool's width: the scheduler is usually built
-/// off a worker thread, where the width reads as one, and a single shared slot
-/// would put every worker's continuation through the same lock.
-const MAX_WORKER_CONTINUATIONS: usize = 64;
-
 struct OrderedJob<'job, F: Task<'job>> {
     order_key: u64,
     job: Job<'job, F>,
 }
 
-/// The continuation a running job may leave for its own worker.
-/// The readiness flag avoids locking an empty slot.
-struct ContinuationSlot<'job, F: Task<'job>> {
-    pending: AtomicBool,
-    job: Mutex<Option<OrderedJob<'job, F>>>,
-}
+struct ContinuationSlot<'job, F: Task<'job>>(Mutex<Option<OrderedJob<'job, F>>>);
 
 impl<'job, F: Task<'job>> ContinuationSlot<'job, F> {
     fn new() -> Self {
-        Self {
-            pending: AtomicBool::new(false),
-            job: Mutex::new(None),
-        }
+        Self(Mutex::new(None))
     }
 
     fn put(&self, next: OrderedJob<'job, F>) -> Result<(), OrderedJob<'job, F>> {
-        let mut pending = self.job.lock();
+        let mut pending = self.0.lock();
         if pending.is_some() {
             return Err(next);
         }
         *pending = Some(next);
-        self.pending.store(true, Ordering::Release);
         Ok(())
     }
 
     fn take(&self) -> Option<OrderedJob<'job, F>> {
-        if !self.pending.load(Ordering::Acquire) {
-            return None;
-        }
-        let mut job = self.job.lock();
-        self.pending.store(false, Ordering::Release);
-        job.take()
+        self.0.lock().take()
     }
 }
 
@@ -410,12 +389,6 @@ impl<'job, F: Task<'job>> Slots<'job, F> {
 pub struct AdmissionScheduler<'job, F: Task<'job> = NoTask> {
     slots: Mutex<Slots<'job, F>>,
     ready: Arc<ReadyQueue>,
-    /// One continuation slot per worker, built once.
-    ///
-    /// A slot per running job allocated its platform lock the first time that
-    /// job touched it. dav2d gives each worker one context and reuses it for
-    /// every task the worker runs; these are that context's continuation.
-    continuations: [ContinuationSlot<'job, F>; MAX_WORKER_CONTINUATIONS],
 }
 
 impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
@@ -425,7 +398,6 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         Self {
             slots: Mutex::new(Slots::default()),
             ready: Arc::new(ReadyQueue::default()),
-            continuations: core::array::from_fn(|_| ContinuationSlot::new()),
         }
     }
 
@@ -537,27 +509,20 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         spawned
     }
 
-    /// This worker's continuation slot, or a shared one when it has no index.
-    fn worker_continuations(&self) -> &ContinuationSlot<'job, F> {
-        let index = crate::pool::current_worker_index().unwrap_or(0);
-        let count = self.continuations.len().max(1);
-        &self.continuations[index % count]
-    }
-
     fn run_job<'scope>(&'scope self, scope: &TaskScope<'_, 'scope>, mut job: Job<'job, F>)
     where
         'job: 'scope,
     {
-        let continuations = self.worker_continuations();
+        let continuations = ContinuationSlot::new();
         let admit = ScopeAdmit {
             scheduler: self,
             scope,
-            continuations,
+            continuations: &continuations,
         };
         let mut continued = 0;
         loop {
             job.run(&admit);
-            self.admit_ready_continuing(scope, continuations);
+            self.admit_ready_continuing(scope, &continuations);
             let Some(next) = continuations.take() else {
                 return;
             };
@@ -873,6 +838,29 @@ mod tests {
         });
         taken += usize::from(slot.take().is_some());
         assert_eq!(taken, submitted);
+    }
+
+    #[test]
+    fn nested_job_does_not_run_its_parents_continuation() {
+        let events = Mutex::new(Vec::new());
+        let scheduler: AdmissionScheduler<'_, NoTask> = AdmissionScheduler::new();
+        pool(1).install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    boxed(|admit| {
+                        admit.continue_ready(1, boxed(|_| events.lock().push("successor")));
+                        admit.spawn_ready(boxed(|_| events.lock().push("nested")));
+                        events.lock().push("parent returned");
+                    }),
+                );
+            })
+            .unwrap();
+        });
+        assert_eq!(*events.lock(), ["nested", "parent returned", "successor"]);
+        scheduler.finish().unwrap();
     }
 
     #[test]

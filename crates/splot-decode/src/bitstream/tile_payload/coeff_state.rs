@@ -94,7 +94,7 @@ impl TransformCoeffBlockState {
 
     pub(crate) fn ensure_quant_sign(&mut self) -> Result<(), TileCoeffStateError> {
         if self.quant_sign.is_empty() {
-            self.quant_sign = zero_buffer(Vec::new(), self.level.len())?;
+            self.quant_sign = zero_buffer(core::mem::take(&mut self.quant_sign), self.level.len())?;
         }
         Ok(())
     }
