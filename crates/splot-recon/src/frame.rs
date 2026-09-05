@@ -128,26 +128,7 @@ pub struct FramePlaneSamples<T: ReconSample> {
     pub(crate) pool: Option<std::sync::Arc<crate::PlanePool>>,
 }
 
-/// The pool a set returns its storage to is not part of its value.
-impl<T: ReconSample + PartialEq> PartialEq for FramePlaneSamples<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.planes == other.planes
-    }
-}
-
-impl<T: ReconSample + Eq> Eq for FramePlaneSamples<T> {}
-
 impl<T: ReconSample> FramePlaneSamples<T> {
-    /// Creates an empty set whose storage returns to `pool` once a workspace
-    /// built from it retires.
-    #[must_use]
-    pub fn pooled(pool: &std::sync::Arc<crate::PlanePool>) -> Self {
-        Self {
-            planes: [const { Vec::new() }; 3],
-            pool: Some(std::sync::Arc::clone(pool)),
-        }
-    }
-
     /// Collects one frame's plane buffers, absent chroma included.
     #[must_use]
     pub fn new(y: Vec<T>, u: Option<Vec<T>>, v: Option<Vec<T>>) -> Self {

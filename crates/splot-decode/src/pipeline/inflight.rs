@@ -632,7 +632,9 @@ pub(crate) fn reserve_pending_slot<T: SpareFramePlanes>(
     let buffers = Arc::clone(&ring.buffers);
     let mut spare = <T as SpareFramePlanes>::spares(ring)
         .pop()
-        .unwrap_or_else(|| splot_recon::FramePlaneSamples::pooled(buffers.planes()));
+        .unwrap_or_else(|| {
+            splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
+        });
     let (slot, writer) = RefFrameSlot::pending_recycled(info, &mut spare, Some(&buffers))?;
     let progress = Arc::clone(&writer.progress);
     let report = Arc::new(CompletionCell::new());

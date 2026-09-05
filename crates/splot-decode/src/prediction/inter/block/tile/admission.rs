@@ -1179,7 +1179,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 .buffers
                 .as_ref()
                 .map_or_else(Default::default, |buffers| {
-                    splot_recon::FramePlaneSamples::pooled(buffers.planes())
+                    splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
                 });
             let workspace = CurrentFrameWorkspace::new_recycled_from(self.info, &mut spare)?;
             Some(crate::filters::source::DeblockedSource::new(workspace))
