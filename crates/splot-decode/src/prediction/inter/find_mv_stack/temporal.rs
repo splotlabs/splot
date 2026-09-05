@@ -10,11 +10,14 @@ use super::{
     Mv, MvBlockContext, NeighbourCell, NeighbourMvGrid, RelativeProbe, TIP_REF_FRAME,
     warp_sub_mv_at,
 };
+use band::BandCells;
+pub(crate) use band::TemporalMotionBand;
 use selection::projection_queue;
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
 use trajectory::{OwnedTrajectoryBand, OwnedTrajectoryFields, TrajectoryBand, TrajectoryState};
 
+mod band;
 mod selection;
 mod trajectory;
 
@@ -155,61 +158,6 @@ pub(crate) struct TemporalMotionFieldMetadata {
     ref_order_hints: RefOrderHints,
 }
 
-/// One immutable full-width source superblock row of temporal motion.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TemporalMotionBand {
-    layout: MotionFieldLayout,
-    metadata: TemporalMotionFieldMetadata,
-    row_base8: usize,
-    cells: Vec<TemporalMotionCell>,
-}
-
-impl TemporalMotionBand {
-    pub(crate) fn row_end8(&self) -> usize {
-        self.row_base8
-            .saturating_add(self.cells.len().div_ceil(self.layout.width8.max(1)))
-            .min(self.layout.height8)
-    }
-
-    #[allow(
-        clippy::inline_always,
-        reason = "TMVP projection reads one row at a time"
-    )]
-    #[inline(always)]
-    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
-        let row = y8.checked_sub(self.row_base8)?;
-        let start = row.checked_mul(self.layout.width8)?;
-        let end = start.checked_add(self.layout.width8)?;
-        self.cells.get(start..end)
-    }
-
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    pub(crate) fn record_block(&mut self, block: TemporalMotionBlock) {
-        let row_base8 = self.row_base8;
-        let row_end8 = self.row_end8();
-        let width8 = self.layout.width8;
-        let resolved = resolve_block_refs(block.ref_order_hints, &self.metadata.ref_order_hints);
-        let cells = &mut self.cells;
-        visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
-            let Some(row) = y8.checked_sub(row_base8) else {
-                return;
-            };
-            let Some(index) = row
-                .checked_mul(width8)
-                .and_then(|base| base.checked_add(x8))
-            else {
-                return;
-            };
-            if y8 >= row_base8
-                && let Some(target) = cells.get_mut(index)
-            {
-                *target = resolve_temporal_refs(cell, hints, &resolved);
-            }
-        });
-    }
-}
-
 impl TemporalMotionField {
     pub(crate) fn empty() -> Self {
         Self {
@@ -314,18 +262,8 @@ impl TemporalMotionField {
         }
     }
 
+    /// This field's cells split into bands the caller then fills in.
     pub(crate) fn into_bands(self) -> Vec<TemporalMotionBand> {
-        if let TemporalMotionStorage::Bands(bands) = self.storage {
-            return bands;
-        }
-        self.bands()
-    }
-
-    /// This field's cells split into bands, without consuming it.
-    ///
-    /// A band owns a copy of its cells either way, so a publisher that also
-    /// keeps the field reads it here instead of cloning the whole field first.
-    pub(crate) fn bands(&self) -> Vec<TemporalMotionBand> {
         let layout = self.layout();
         let metadata = self.metadata();
         let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
@@ -340,9 +278,47 @@ impl TemporalMotionField {
                 layout,
                 metadata: metadata.clone(),
                 row_base8: index.saturating_mul(layout.band_rows8),
-                cells: cells.to_vec(),
+                cells: BandCells {
+                    owned: cells.to_vec(),
+                    shared: None,
+                },
             })
             .collect()
+    }
+
+    /// This settled field's cells split into bands that share its storage.
+    ///
+    /// A published field is never written again, so its bands are windows into
+    /// it rather than copies of it.
+    pub(crate) fn shared_bands(field: &Arc<Self>, mut sink: impl FnMut(TemporalMotionBand)) {
+        let layout = field.layout();
+        let metadata = field.metadata();
+        let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
+        let TemporalMotionStorage::Contiguous(cells) = &field.storage else {
+            if let TemporalMotionStorage::Bands(bands) = &field.storage {
+                bands.iter().cloned().for_each(sink);
+            }
+            return;
+        };
+        for (index, chunk) in cells.chunks(stride).enumerate() {
+            let start = index.saturating_mul(stride);
+            sink(TemporalMotionBand {
+                layout,
+                metadata: metadata.clone(),
+                row_base8: index.saturating_mul(layout.band_rows8),
+                cells: BandCells {
+                    owned: Vec::new(),
+                    shared: Some((Arc::clone(field), start..start + chunk.len())),
+                },
+            });
+        }
+    }
+
+    fn contiguous_cells(&self) -> &[TemporalMotionCell] {
+        match &self.storage {
+            TemporalMotionStorage::Contiguous(cells) => cells,
+            TemporalMotionStorage::Bands(_) => &[],
+        }
     }
 
     pub(crate) fn from_bands(
@@ -350,9 +326,9 @@ impl TemporalMotionField {
         metadata: &TemporalMotionFieldMetadata,
         bands: Vec<TemporalMotionBand>,
     ) -> Option<Self> {
-        let cells = bands
-            .iter()
-            .try_fold(0usize, |cells, band| cells.checked_add(band.cells.len()))?;
+        let cells = bands.iter().try_fold(0usize, |cells, band| {
+            cells.checked_add(band.cells.cells().len())
+        })?;
         if cells != layout.width8.checked_mul(layout.height8)? {
             return None;
         }
@@ -2242,16 +2218,6 @@ impl TemporalMotionRows for TemporalMotionField {
             }
             TemporalMotionStorage::Bands(bands) => bands.get(y8 / self.band_rows8.max(1))?.row(y8),
         }
-    }
-}
-
-impl TemporalMotionRows for TemporalMotionBand {
-    fn dimensions8(&self) -> (usize, usize) {
-        (self.layout.width8(), self.layout.height8())
-    }
-
-    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
-        TemporalMotionBand::row(self, y8)
     }
 }
 

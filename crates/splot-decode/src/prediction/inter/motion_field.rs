@@ -33,19 +33,17 @@ impl MotionFieldHandle {
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
         let layout = field.layout();
         let metadata = Arc::new(field.metadata());
-        let mut band_list = field.bands();
+        let field = Arc::new(field);
         let mut bands = crate::support::buffer_pool::take::<
             CompletionCell<Option<TemporalMotionBand>>,
-        >(band_list.len());
-        bands.extend(
-            band_list
-                .drain(..)
-                .map(|band| CompletionCell::completed(Some(band))),
-        );
+        >(layout.band_count());
+        TemporalMotionField::shared_bands(&field, |band| {
+            bands.push(CompletionCell::completed(Some(band)));
+        });
         Self(Arc::new(MotionFieldPublication {
             layout,
             metadata: CompletionCell::completed(Some(metadata)),
-            field: CompletionCell::completed(Some(Arc::new(field))),
+            field: CompletionCell::completed(Some(field)),
             bands,
         }))
     }
@@ -75,10 +73,14 @@ impl MotionFieldHandle {
     /// handle is filled by exactly one reconstruction.
     pub(crate) fn publish(&self, field: TemporalMotionField) {
         self.publish_metadata(field.metadata());
-        for (cell, band) in self.0.bands.iter().zip(field.bands()) {
-            let _ = cell.set(Some(band));
-        }
-        let _ = self.0.field.set(Some(Arc::new(field)));
+        let field = Arc::new(field);
+        let mut cells = self.0.bands.iter();
+        TemporalMotionField::shared_bands(&field, |band| {
+            if let Some(cell) = cells.next() {
+                let _ = cell.set(Some(band));
+            }
+        });
+        let _ = self.0.field.set(Some(field));
     }
 
     /// Publishes one completed full-width source superblock row.
