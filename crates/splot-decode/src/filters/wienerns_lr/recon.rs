@@ -1058,7 +1058,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         }
         self.filter_records.lr_source_blocks = self.lr_source_blocks;
         self.filter_records.lr_unit_filters = self.lr_unit_filters;
-        // Both go back to the decoder's scratch with the records.
         self.filter_records.stripes.ranges = core::mem::take(&mut self.ranges);
         self.filter_records.stripes.lifecycles = core::mem::take(self.stripe_state.get_mut());
         self.filter_records.stripes.outcomes = core::mem::take(&mut self.stripe_outcomes);

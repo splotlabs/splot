@@ -270,12 +270,11 @@ fn surface_scratch(
     info: splot_recon::DecodedFrameInfo,
     rects: &[splot_recon::PlaneRect],
 ) -> splot_recon::Result<TileDecodeScratch<u8>> {
-    let mut surfaces = rects
+    let surfaces = rects
         .iter()
         .copied()
         .map(|rect| splot_recon::OwnedFrameRect::new(info, rect, 0))
         .collect::<splot_recon::Result<Vec<_>>>()?;
-    surfaces.reverse();
     Ok(TileDecodeScratch {
         surfaces,
         ..TileDecodeScratch::default()
@@ -342,16 +341,23 @@ fn a_returned_surface_is_retargeted_rather_than_reallocated()
 }
 
 #[test]
-fn incompatible_recycled_surface_layout_is_cleared_whole()
+fn a_stale_recycled_surface_layout_is_laid_out_over()
 -> core::result::Result<(), Box<dyn std::error::Error>> {
     let workspace = crate::test_support::yuv420_workspace(256, 32, 0);
     let info = workspace.info();
     let rects = superblock_luma_rects(&(0..4), &(0..64), &workspace, 32)?;
     let stale_rects = superblock_luma_rects(&(4..8), &(0..64), &workspace, 32)?;
-    let mut scratch = surface_scratch(info, &stale_rects)?;
+    let scratch = surface_scratch(info, &stale_rects)?;
+    let mut source = super::admission::SurfaceSource::new(info, rects.clone(), scratch.surfaces);
 
-    scratch.clear_incompatible_surface_layout(info, &rects);
+    for unit in 0..rects.len() {
+        source.take(unit).ok_or("a surface")??;
+    }
 
-    assert!(scratch.surfaces.is_empty());
+    assert_eq!(
+        source.free_len(),
+        0,
+        "every stale surface must be reshaped into the new layout, not replaced"
+    );
     Ok(())
 }

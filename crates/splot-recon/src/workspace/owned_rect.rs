@@ -285,12 +285,12 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         let (y, u, v) = Self::regions(info, luma_rect)?;
         let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
         self.samples.clear();
-        self.samples
-            .try_reserve(total.saturating_sub(self.samples.capacity()))
-            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+        self.samples.try_reserve_exact(total).map_err(|_| {
+            ReconError::WorkspaceAllocationFailed {
                 plane: PlaneId::Y,
                 context: "owned rectangle samples",
-            })?;
+            }
+        })?;
         self.samples.resize(total, fill);
         self.info = info;
         self.y = y;

@@ -1185,8 +1185,7 @@ impl TemporalMvContext {
             self.trajectory_scratch = self.trajectories.take();
             None
         };
-        // At most `MFMV_STACK_SIZE` projections are ever queued, and an
-        // `Option` is `Default` whatever it holds, so the prepared list is
+        // An `Option` is `Default` whatever it holds, so the bounded list is
         // inline even though a projection borrows its source field.
         let mut prepared = PreparedProjections::default();
         for projection in projections.iter().copied() {

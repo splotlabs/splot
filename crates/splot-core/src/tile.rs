@@ -278,7 +278,7 @@ impl<T, const N: usize> InlineVec<T, N> {
 
 impl<T, const N: usize> InlineVec<T, N> {
     /// The backing array and the live length, for `const` readers that cannot
-    /// go through [`Deref`].
+    /// go through [`core::ops::Deref`].
     pub const fn as_array(&self) -> (&[T; N], usize) {
         (&self.values, self.len as usize)
     }

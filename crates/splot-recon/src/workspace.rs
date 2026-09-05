@@ -911,8 +911,6 @@ fn partition_plane_rects<'a, T: ReconSample>(
     for (y, row) in plane.samples.chunks_exact_mut(stride_samples).enumerate() {
         let mut rest = row;
         let mut consumed = 0usize;
-        // Column order for the row walk: the sorted list when the rectangles
-        // needed one, and their natural order when they arrived in it.
         let walk = order
             .iter()
             .copied()

@@ -1025,23 +1025,6 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             batches: admission::BatchRowSlots::default(),
         }
     }
-
-    fn clear_incompatible_surface_layout(
-        &mut self,
-        info: splot_recon::DecodedFrameInfo,
-        rects: &[splot_recon::PlaneRect],
-    ) {
-        let complete_layout = self.surfaces.len() == rects.len()
-            && self
-                .surfaces
-                .iter()
-                .rev()
-                .zip(rects)
-                .all(|(surface, rect)| surface.info() == info && surface.luma_rect() == *rect);
-        if !complete_layout {
-            self.surfaces.clear();
-        }
-    }
 }
 
 /// Stamps a reused reconstruction surface with a sentinel legal at every bit
@@ -1708,54 +1691,35 @@ pub(super) fn decode_tiles<T: ReconSample>(
             parse_state,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
-        let mut tile_scratch = TileDecodeScratch {
-            parse: TileParseState::default(),
-            surface_source: None,
-            ordered,
-            workers,
-            surfaces: recycled_surfaces,
-            batches,
-        };
         let info = workspace.info();
         let rects = if global_intrabc {
             Vec::new()
         } else {
-            let superblock_rects =
-                superblock_luma_rects(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4)?;
-            tile_scratch.clear_incompatible_surface_layout(info, &superblock_rects);
-            superblock_rects
+            superblock_luma_rects(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4)?
         };
-        let TileDecodeScratch {
-            parse: _,
-            surface_source: _,
-            ordered: tile_ordered,
-            workers: tile_workers,
-            surfaces: tile_surfaces,
-            batches: mut tile_batches,
-        } = tile_scratch;
         let surface_source = match reusable_surface_source
             .filter(|source| std::sync::Arc::strong_count(source) == 1)
         {
             Some(mut source) => {
                 if let Some(inner) = std::sync::Arc::get_mut(&mut source) {
-                    inner.get_mut().reset(info, rects, tile_surfaces);
+                    inner.get_mut().reset(info, rects, recycled_surfaces);
                     source
                 } else {
                     std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
                         info,
                         rects,
-                        tile_surfaces,
+                        recycled_surfaces,
                     )))
                 }
             }
             None => std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
                 info,
                 rects,
-                tile_surfaces,
+                recycled_surfaces,
             ))),
         };
         let commit = TileCommit::direct(
-            tile_ordered,
+            ordered,
             workspace,
             commit_block_decoded,
             decoded_any,
@@ -1774,10 +1738,10 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &quantizer,
             &row_gate,
             &row_buffers,
-            &tile_workers,
+            &workers,
             &block_decoded,
             &motion,
-            &mut tile_batches,
+            &mut batches,
             commit,
         )?;
         let (
@@ -1788,16 +1752,11 @@ pub(super) fn decode_tiles<T: ReconSample>(
             next_records,
             spent_block_decoded,
         ) = commit.finish_direct();
-        batches = tile_batches;
         ordered = next_ordered;
         workspace = next_workspace;
         decoded_any = next_decoded;
         recycled_surfaces = next_surfaces;
-        if !global_intrabc {
-            recycled_surfaces.reverse();
-        }
         *frame_filter_records = next_records;
-        workers = tile_workers;
         let (output, next_parse_state) = parser.into_output();
         parse_state = next_parse_state;
         parse_state.block_decoded = block_decoded;

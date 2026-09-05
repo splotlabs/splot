@@ -717,10 +717,8 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
                 out
             });
         }
-        // Both lists go home, so the next tile parses and precomputes this
-        // batch into the same two allocations. A batch skipped because the tile
-        // has already failed hands back the rows it never read; the commit
-        // stage reads a batch only while no error is recorded.
+        // Both lists go home for the next tile. A batch skipped after a tile
+        // failure hands back rows the commit stage will never read.
         if let Some(slot) = shared.pending.lock().get_mut(self.index) {
             *slot = parsed;
         }
@@ -748,8 +746,6 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
                 record_first_error(shared.error, value);
             }
         }
-        // The drained list goes home, so the next tile precomputes this batch
-        // into the same allocation.
         if let Some(slot) = shared.prepared.lock().get_mut(self.index) {
             *slot = batch;
         }
@@ -1574,7 +1570,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         &workspace,
         params.sb_h4,
     )?;
-    scratch.clear_incompatible_surface_layout(info, &rects);
     if unit_count == 0 {
         return Err(invalid_inter_tile_scheduling_state());
     }
