@@ -74,7 +74,7 @@ where
     let width8 = mi_cols.div_ceil(2);
     let height8 = mi_rows.div_ceil(2);
     let cells = width8.checked_mul(height8)?;
-    let mut grid = crate::support::reusable_scratch::take_pooled_vec::<T>();
+    let mut grid = crate::support::reusable_scratch::take_pooled_vec::<T>(cells);
     grid.clear();
     grid.try_reserve_exact(cells).ok()?;
     grid.resize(cells, T::default());
@@ -823,7 +823,7 @@ impl TemporalBandPlan {
         let cells = width8
             .checked_mul(row_count)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-        let mut field_cells = crate::support::reusable_scratch::take_pooled_vec();
+        let mut field_cells = crate::support::reusable_scratch::take_pooled_vec(cells);
         field_cells.try_reserve_exact(cells).map_err(|_| {
             crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
                 plane: splot_recon::PlaneId::Y,

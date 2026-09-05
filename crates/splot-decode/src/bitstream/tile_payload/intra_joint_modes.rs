@@ -145,11 +145,15 @@ impl<T: Copy + Send + 'static> MiGrid<T> {
         allocation: impl FnOnce(TryReserveError) -> E,
         preallocate_check: Result<(), E>,
     ) -> Result<Self, E> {
+        let cells = row_range
+            .len()
+            .checked_mul(col_range.len())
+            .unwrap_or_default();
         Self::build(
             row_range,
             col_range,
             default,
-            take_pooled_vec::<T>(),
+            take_pooled_vec::<T>(cells),
             empty_dimensions,
             arithmetic_overflow,
             allocation,
@@ -262,7 +266,7 @@ impl TileLumaPaletteState {
         )?;
         Ok(Self {
             grid,
-            palettes: take_pooled_vec(),
+            palettes: take_pooled_vec(0),
         })
     }
 

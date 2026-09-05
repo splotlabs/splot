@@ -421,7 +421,7 @@ fn checked_mul_usize(
 fn coalesced_storage(
     allocation: TileMiSizeStateAllocation,
 ) -> Result<Vec<u8>, TileMiSizeStateError> {
-    let mut storage = take_pooled_vec::<u8>();
+    let mut storage = take_pooled_vec::<u8>(allocation.entry_count());
     storage.clear();
     storage.try_reserve_exact(allocation.entry_count())?;
     storage.resize(2 * allocation.padded_grid_cells(), BLOCK_256X256_INDEX);

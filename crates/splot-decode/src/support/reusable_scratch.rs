@@ -25,10 +25,48 @@ thread_local! {
         const { RefCell::new([const { None }; POOLED_VEC_SLOTS]) };
 }
 
-/// Takes a spare buffer of `T`, or an empty one when this thread holds none.
-pub(crate) fn take_pooled_vec<T: Send + 'static>() -> Vec<T> {
+/// Takes a spare buffer of `T` holding at least `cells`, or the largest spare
+/// this thread has when none does, or an empty one when it has none at all.
+///
+/// Handing back a buffer the caller then grows costs the allocation the spare
+/// was meant to save, so a spare that already fits is picked first.
+pub(crate) fn take_pooled_vec<T: Send + 'static>(cells: usize) -> Vec<T> {
     POOLED_VECS
-        .try_with(take_reusable_vec)
+        .try_with(|slots| {
+            let mut spares = slots.borrow_mut();
+            let mut best: Option<(usize, usize)> = None;
+            for (index, spare) in spares.iter_mut().enumerate() {
+                let Some(capacity) = spare
+                    .as_mut()
+                    .and_then(|any| any.downcast_mut::<Vec<T>>())
+                    .map(|spare| spare.capacity())
+                    .filter(|capacity| *capacity > 0)
+                else {
+                    continue;
+                };
+                let better =
+                    best.is_none_or(|(_, best)| match (best >= cells, capacity >= cells) {
+                        // Prefer the smallest that fits; failing that, the largest.
+                        (true, true) => capacity < best,
+                        (false, true) => true,
+                        (true, false) => false,
+                        (false, false) => capacity > best,
+                    });
+                if better {
+                    best = Some((index, capacity));
+                }
+            }
+            let mut taken = Vec::new();
+            if let Some((index, _)) = best
+                && let Some(spare) = spares
+                    .get_mut(index)
+                    .and_then(|slot| slot.as_mut())
+                    .and_then(|any| any.downcast_mut::<Vec<T>>())
+            {
+                std::mem::swap(&mut taken, spare);
+            }
+            taken
+        })
         .unwrap_or_else(|_| Vec::new())
 }
 

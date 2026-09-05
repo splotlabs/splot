@@ -470,17 +470,17 @@ impl OwnedTrajectoryBand {
                 context: "inter temporal trajectory band",
             })
         };
-        let mut fields = take_pooled_vec();
+        let mut fields = take_pooled_vec(total_cells);
         fields
             .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         fields.resize(total_cells, PackedTrajectoryMv::INVALID);
-        let mut positions = take_pooled_vec();
+        let mut positions = take_pooled_vec(total_cells);
         positions
             .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         positions.resize(total_cells, TrajectoryPositions::EMPTY);
-        let mut projection_offsets = take_pooled_vec();
+        let mut projection_offsets = take_pooled_vec(cell_count);
         projection_offsets
             .try_reserve_exact(cell_count)
             .map_err(|_| allocation())?;

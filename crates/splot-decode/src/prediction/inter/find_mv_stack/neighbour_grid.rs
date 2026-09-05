@@ -296,12 +296,34 @@ fn reset_grid_planes(
     planes: &mut GridPlanes,
     cells: usize,
 ) -> Result<(), std::collections::TryReserveError> {
+    // A grid the split path builds per frame starts empty, so its planes come
+    // from the spare set a retired grid left rather than up a growth ladder.
+    take_spare_plane(&mut planes.flags, cells);
+    take_spare_plane(&mut planes.motion, cells);
+    take_spare_plane(&mut planes.leaves, cells);
     planes.flags.clear();
     planes.motion.clear();
     planes.leaves.clear();
     planes.flags.try_reserve_exact(cells)?;
     planes.flags.resize(cells, None);
     Ok(())
+}
+
+fn take_spare_plane<T: Send + 'static>(plane: &mut Vec<T>, cells: usize) {
+    if plane.capacity() == 0 {
+        *plane = crate::support::reusable_scratch::take_pooled_vec(cells);
+    }
+}
+
+/// Returns a retired grid's four planes to the per-thread spare set.
+impl Drop for NeighbourMvGrid {
+    fn drop(&mut self) {
+        use crate::support::reusable_scratch::recycle_pooled_vec;
+        recycle_pooled_vec(core::mem::take(&mut self.planes.flags));
+        recycle_pooled_vec(core::mem::take(&mut self.planes.motion));
+        recycle_pooled_vec(core::mem::take(&mut self.planes.leaves));
+        recycle_pooled_vec(core::mem::take(&mut self.flag_log));
+    }
 }
 
 /// One leaf's flag-plane publication, replayable onto a second grid.
