@@ -551,9 +551,6 @@ pub fn parse_tile_group_framing(
     let region_len = payload.len() as u64;
     let tsb = u64::from(tile_size_bytes.clamp(1, 4));
     let mut tiles = Vec::new();
-    tiles
-        .try_reserve_exact(usize::try_from(tg_end.saturating_sub(tg_start)).unwrap_or(0) + 1)
-        .ok();
 
     let max_tiles = crate::tile::MAX_TILE_COLS * crate::tile::MAX_TILE_ROWS;
     let tg_end = tg_end.min(tg_start.saturating_add(max_tiles - 1));
@@ -567,6 +564,10 @@ pub fn parse_tile_group_framing(
             defect: None,
         };
     }
+
+    tiles
+        .try_reserve_exact(usize::try_from(tg_end.saturating_sub(tg_start)).unwrap_or(0) + 1)
+        .ok();
 
     for tile_num in tg_start..=tg_end {
         let last_tile = tile_num == tg_end;
@@ -1379,6 +1380,7 @@ mod tests {
     fn framing_huge_range_is_bounded_by_the_spec_tile_ceiling() {
         let framing = parse_tile_group_framing(&[], 0, u32::MAX, 1, true);
         assert!(framing.tiles.len() <= 4096);
+        assert!(framing.tiles.capacity() <= 4096);
     }
 
     #[test]

@@ -214,10 +214,10 @@ pub struct TileParams {
 /// a Wiener filter bank's classes -- so they fit in the header they belong to
 /// rather than in a vector allocated for every frame. Dereferences to `[T]`,
 /// which leaves readers using it exactly as the slice it replaces.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq)]
 pub struct InlineVec<T, const N: usize> {
     values: [T; N],
-    len: u16,
+    len: usize,
 }
 
 impl<T: Default, const N: usize> Default for InlineVec<T, N> {
@@ -244,14 +244,12 @@ impl<T: Default, const N: usize> InlineVec<T, N> {
 impl<T, const N: usize> InlineVec<T, N> {
     /// Appends one item, or `None` when the list is already full.
     pub fn push(&mut self, item: T) -> Option<()> {
-        let slot = self.values.get_mut(usize::from(self.len))?;
+        let slot = self.values.get_mut(self.len)?;
         *slot = item;
-        self.len = self.len.checked_add(1)?;
+        self.len += 1;
         Some(())
     }
-}
 
-impl<T, const N: usize> InlineVec<T, N> {
     /// Appends every item that fits, dropping any beyond the capacity.
     ///
     /// For lists a bound already covers, where a caller that has checked the
@@ -263,24 +261,16 @@ impl<T, const N: usize> InlineVec<T, N> {
             }
         }
     }
-}
 
-impl<T, const N: usize> InlineVec<T, N> {
     /// Shortens the list to `len`, keeping the first entries.
     pub fn truncate(&mut self, len: usize) {
-        if let Ok(len) = u16::try_from(len)
-            && len < self.len
-        {
-            self.len = len;
-        }
+        self.len = self.len.min(len);
     }
-}
 
-impl<T, const N: usize> InlineVec<T, N> {
     /// The backing array and the live length, for `const` readers that cannot
     /// go through [`core::ops::Deref`].
     pub const fn as_array(&self) -> (&[T; N], usize) {
-        (&self.values, self.len as usize)
+        (&self.values, self.len)
     }
 }
 
@@ -297,13 +287,13 @@ impl<T, const N: usize> core::ops::Deref for InlineVec<T, N> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
-        self.values.get(..usize::from(self.len)).unwrap_or(&[])
+        self.values.get(..self.len).unwrap_or(&[])
     }
 }
 
 impl<T, const N: usize> core::ops::DerefMut for InlineVec<T, N> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        let len = usize::from(self.len);
+        let len = self.len;
         self.values.get_mut(..len).unwrap_or(&mut [])
     }
 }
@@ -326,6 +316,12 @@ impl<T: PartialEq, const N: usize> PartialEq<[T]> for InlineVec<T, N> {
 impl<T, const N: usize> AsRef<[T]> for InlineVec<T, N> {
     fn as_ref(&self) -> &[T] {
         self
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq for InlineVec<T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
     }
 }
 
@@ -666,6 +662,26 @@ mod tests {
             bits.ns(0, remaining);
             remaining -= 1;
         }
+    }
+
+    #[test]
+    fn inline_lists_compare_live_entries_after_truncation() {
+        let mut truncated = InlineVec::<u8, 3>::from_iter_checked([1, 2]).unwrap();
+        truncated.truncate(1);
+        let direct = InlineVec::<u8, 3>::from_iter_checked([1]).unwrap();
+        assert_eq!(truncated, direct);
+        assert_ne!(truncated, InlineVec::default());
+    }
+
+    #[test]
+    fn inline_list_supports_its_declared_capacity() {
+        let mut list = InlineVec::<(), 65536>::from_iter_checked([(); 65536]).unwrap();
+        assert_eq!(list.len(), 65536);
+        assert!(list.push(()).is_none());
+        list.truncate(usize::MAX);
+        assert_eq!(list.len(), 65536);
+        list.truncate(0);
+        assert!(list.is_empty());
     }
 
     #[test]
