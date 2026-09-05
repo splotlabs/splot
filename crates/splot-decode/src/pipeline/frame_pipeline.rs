@@ -775,6 +775,12 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 finish.fail(error);
             };
             let progress = finish.progress_handle();
+            // The scratch reaches here through a chain of `unwrap_or_default`s,
+            // so the pool is named per frame rather than inherited down it.
+            let mut decode_scratch = decode_scratch;
+            if let Some(buffers) = progress.buffers() {
+                decode_scratch.set_decode_buffers(buffers);
+            }
             let filters_ready = Arc::new(CompletionCell::new());
             let (scheduled, pending_filters) =
                 match early.prepare_scheduled(decode_scratch, temporal_scratch, progress) {

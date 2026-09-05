@@ -70,6 +70,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &gdf_state,
         &ccso_state,
         parse_progress,
+        records.buffers.as_ref(),
     )?;
     let mut segment_ids = frame_segment_id_map(params.mi_rows, params.mi_cols)?;
     records.clear();
@@ -187,8 +188,10 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         tile,
         temporal_context,
         frame_filter_records: _,
+        buffers,
     } = scratch;
-    let tile = tile.unwrap_or_default();
+    let mut tile = tile.unwrap_or_default();
+    tile.buffers = buffers;
     let mut temporal = temporal_context.unwrap_or_else(TemporalMvContext::empty);
     let temporal_plan =
         prelude.begin_scheduled(&mut temporal, &core, ref_frame_idx.as_slice(), &reference)?;

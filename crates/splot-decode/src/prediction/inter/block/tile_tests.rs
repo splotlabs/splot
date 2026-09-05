@@ -163,7 +163,7 @@ fn recon_entries_keep_contiguous_superblock_order() {
 fn reconstruction_pools_reuse_owned_storage() {
     let rows = {
         let mut pool = ReconRowBufferPool::default();
-        pool.reset(0);
+        pool.reset(0, None);
         pool
     };
     let mut buffers = ReconRowBuffers::default();
@@ -282,4 +282,34 @@ fn corrupted_multi_tile_payload_has_the_same_error_across_worker_widths() {
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
         assert_eq!(actual.to_string(), expected.to_string());
     }
+}
+
+#[test]
+fn concurrent_decodes_do_not_take_each_other_s_row_buffers() {
+    use crate::support::decode_buffers::DecodeBuffers;
+
+    let decoding = DecodeBuffers::new();
+    let other_decode = DecodeBuffers::new();
+    let mut spent = super::ReconRowBuffers::default();
+    spent.residual_coeffs.reserve(4096);
+    let retained = spent.residual_coeffs.capacity();
+    decoding.retain_rows(spent);
+
+    assert_eq!(
+        other_decode.take_rows().residual_coeffs.capacity(),
+        0,
+        "a second decode must not be served from the first one's row buffers"
+    );
+    assert_eq!(
+        decoding.take_rows().residual_coeffs.capacity(),
+        retained,
+        "and the first decode still has its own"
+    );
+}
+
+#[test]
+fn a_tile_row_pool_without_a_decode_still_hands_out_buffers() {
+    let mut pool = super::ReconRowBufferPool::default();
+    pool.reset(2, None);
+    assert_eq!(pool.take().residual_coeffs.capacity(), 0);
 }

@@ -370,7 +370,8 @@ pub(crate) fn parse_inter_frame_prologue<'payload, T: ReconSample>(
         &reference,
         bit_depth,
         geometry,
-        &mut T::reclaim_planes(&mut records.retired_planes),
+        &mut T::reclaim_planes(&mut records.retired_planes)
+            .with_pool(records.buffers.as_ref().map(|buffers| buffers.planes())),
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let quantizer = FrameQuantizerSnapshot::capture();

@@ -122,9 +122,10 @@ impl<T: ReconSample> FramePlanes<T> {
 /// allocations. Handing them over here lets the frame that takes its place in
 /// the slot reuse them instead of asking the allocator for the same bytes
 /// again, which is what dav2d's picture pool does for the same lifetime.
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 pub struct FramePlaneSamples<T: ReconSample> {
     planes: [Vec<T>; 3],
+    pub(crate) pool: Option<std::sync::Arc<crate::PlanePool>>,
 }
 
 impl<T: ReconSample> FramePlaneSamples<T> {
@@ -133,7 +134,15 @@ impl<T: ReconSample> FramePlaneSamples<T> {
     pub fn new(y: Vec<T>, u: Option<Vec<T>>, v: Option<Vec<T>>) -> Self {
         Self {
             planes: [y, u.unwrap_or_default(), v.unwrap_or_default()],
+            pool: None,
         }
+    }
+
+    /// Names the pool this set's storage returns to.
+    #[must_use]
+    pub fn with_pool(mut self, pool: Option<&std::sync::Arc<crate::PlanePool>>) -> Self {
+        self.pool = pool.map(std::sync::Arc::clone);
+        self
     }
 
     /// Takes the buffer kept for `plane`, leaving nothing behind.
@@ -223,6 +232,7 @@ impl<T: ReconSample> DecodedFrame<T> {
                 u.map(Plane::into_samples).unwrap_or_default(),
                 v.map(Plane::into_samples).unwrap_or_default(),
             ],
+            pool: None,
         }
     }
 

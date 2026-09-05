@@ -216,6 +216,8 @@ pub(crate) struct ScheduledCommitProgress {
 
 /// Resolved rows and the concrete reconstruction work they feed.
 struct TileRecon<T: ReconSample> {
+    /// The decode's reusable storage, for the tile scratch each commit opens.
+    buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
     rows: Mutex<Vec<TileReconRow<T>>>,
     prepared: Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
     /// Row lists a replayed unit gave back, for the next unit to precompute
@@ -250,6 +252,7 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
     tile_offset: ByteOffset,
     parse_progress: Arc<super::ParseProgress>,
     pending_surfaces: Arc<Mutex<SurfaceSource<T>>>,
+    buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
 
 /// Hands out one reconstruction surface per superblock, lazily.
@@ -533,13 +536,16 @@ impl<T: ReconSample> TileRecon<T> {
         );
         let mut batch = batch;
         for ready in batch.drain(..) {
-            super::retain_row_buffers(commit.replay(
+            let spent = commit.replay(
                 ready,
                 &self.quantizer,
                 &self.motion,
                 &self.temporal,
                 &context,
-            )?);
+            )?;
+            if let Some(decode) = self.buffers.as_ref() {
+                decode.retain_rows(spent);
+            }
         }
         self.return_spare_batch(batch);
         let terminal = commit.next == self.unit_count;
@@ -563,7 +569,9 @@ impl<T: ReconSample> TileRecon<T> {
 
     fn finish_commit(&self, commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
         let surfaces = commit.surfaces.lock().drain_free();
-        let scratch = TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, surfaces);
+        let mut scratch =
+            TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, surfaces);
+        scratch.buffers.clone_from(&self.buffers);
         *self.scratch.lock() = Some(scratch);
         commit.workspace
     }
@@ -1166,13 +1174,18 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .transpose()?
             .flatten();
         let mut frontier = self.frontier.lock();
-        frontier.sealed = deblock
-            .is_some()
-            .then(|| {
-                CurrentFrameWorkspace::new_recycled(self.info)
-                    .map(crate::filters::source::DeblockedSource::new)
-            })
-            .transpose()?;
+        frontier.sealed = if deblock.is_some() {
+            let mut spare = self
+                .buffers
+                .as_ref()
+                .map_or_else(Default::default, |buffers| {
+                    splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
+                });
+            let workspace = CurrentFrameWorkspace::new_recycled_from(self.info, &mut spare)?;
+            Some(crate::filters::source::DeblockedSource::new(workspace))
+        } else {
+            None
+        };
         frontier.deblock = deblock;
         frontier.filter = Some(Arc::new(filter_setup));
         Ok(())
@@ -1538,6 +1551,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     temporal_plan: TemporalBandPlan,
     parse_progress: Arc<super::ParseProgress>,
 ) -> Result<ScheduledTileRecon<T>> {
+    let buffers = scratch.buffers.clone();
     scratch.workers.ensure_workers(
         splot_parallel::current_pool_width()
             .saturating_sub(1)
@@ -1589,11 +1603,13 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         workers,
         surfaces,
         batches: _,
+        buffers: _,
     } = scratch;
     let surface_source = Arc::new(Mutex::new(SurfaceSource::new(info, rects, surfaces)));
     let resolve_state = TileResolveState::new(&sequence);
     let tile = ScheduledTileRecon {
         recon: TileRecon {
+            buffers: buffers.clone(),
             rows: Mutex::new(Vec::with_capacity(unit_count)),
             prepared: Mutex::new(prepared),
             spare_batches: Mutex::new(Vec::new()),
@@ -1644,6 +1660,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         tile_offset,
         parse_progress,
         pending_surfaces: Arc::clone(&surface_source),
+        buffers,
     };
     Ok(tile)
 }

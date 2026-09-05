@@ -10,6 +10,7 @@ use std::ops::Range;
 
 use super::partition_size::{BlockSize, PartitionSizeError};
 use super::partition_traversal::TilePartitionContextState;
+use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
 
 const BLOCK_256X256_INDEX: u8 = 18;
 const PLANE_COUNT: usize = 2;
@@ -420,11 +421,19 @@ fn checked_mul_usize(
 fn coalesced_storage(
     allocation: TileMiSizeStateAllocation,
 ) -> Result<Vec<u8>, TileMiSizeStateError> {
-    let mut storage = Vec::new();
+    let mut storage = take_pooled_vec::<u8>(allocation.entry_count());
     storage.try_reserve_exact(allocation.entry_count())?;
     storage.resize(2 * allocation.padded_grid_cells(), BLOCK_256X256_INDEX);
     storage.resize(allocation.entry_count(), CLEAR_PARTITION_CONTEXT);
     Ok(storage)
+}
+
+/// Returns the coalesced store to the per-thread MI-grid pool; the frontier
+/// cursor drops this state at the end of every tile.
+impl Drop for TileMiSizeState {
+    fn drop(&mut self) {
+        recycle_pooled_vec(core::mem::take(&mut self.storage));
+    }
 }
 
 fn partition_context_above(mi_size_index: usize) -> Result<u8, TileMiSizeStateError> {

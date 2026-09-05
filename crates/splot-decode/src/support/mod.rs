@@ -4,5 +4,6 @@
 //! Decode support-tier capability gates and local limit helpers.
 
 pub(crate) mod capability;
+pub(crate) mod decode_buffers;
 pub(crate) mod pipeline_limits;
 pub(crate) mod reusable_scratch;

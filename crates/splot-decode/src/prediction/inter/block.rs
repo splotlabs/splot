@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 pub(crate) use tile::ParseProgress;
+pub(crate) use tile::ReconRowBuffers;
 pub(crate) use tile::TileWalkParams;
 pub(crate) use tile::publish_tile_geometry;
 
@@ -186,6 +187,8 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     tile: Option<tile::TileDecodeScratch<T>>,
     temporal_context: Option<TemporalMvContext>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
+    /// The reusable storage this decode's retired work leaves behind.
+    buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
 
 impl<T: ReconSample> InterDecodeScratch<T> {
@@ -200,6 +203,7 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         tile: tile::TileDecodeScratch<T>,
     ) -> Self {
         Self {
+            buffers: tile.buffers.clone(),
             tile: Some(tile),
             temporal_context: None,
             frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
@@ -210,12 +214,23 @@ impl<T: ReconSample> InterDecodeScratch<T> {
     pub(crate) fn take_frame_filter_records(
         &mut self,
     ) -> crate::filters::wienerns_lr::FrameFilterRecords {
-        core::mem::take(&mut self.frame_filter_records)
+        let mut records = core::mem::take(&mut self.frame_filter_records);
+        records.buffers.clone_from(&self.buffers);
+        records
     }
 
     /// Takes back the plane buffers the last frame's filter phase retired.
     pub(crate) fn reclaim_retired_planes(&mut self) -> splot_recon::FramePlaneSamples<T> {
         T::reclaim_planes(&mut self.frame_filter_records.retired_planes)
+            .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes()))
+    }
+
+    /// Names the pool this decode's workspaces retire into.
+    pub(crate) fn set_decode_buffers(
+        &mut self,
+        buffers: &Arc<crate::support::decode_buffers::DecodeBuffers>,
+    ) {
+        self.buffers = Some(Arc::clone(buffers));
     }
 
     pub(crate) fn recycle_frame_filter_records(
@@ -537,7 +552,8 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ref_frame_idx,
         reference,
     )?;
-    let tile_scratch = scratch.tile.take().unwrap_or_default();
+    let mut tile_scratch = scratch.tile.take().unwrap_or_default();
+    tile_scratch.buffers.clone_from(&scratch.buffers);
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
         tile_scratch,
         &mut records,

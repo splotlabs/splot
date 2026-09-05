@@ -8,6 +8,55 @@ use std::thread::LocalKey;
 
 pub(crate) type ErasedVecSlot = Option<Box<dyn std::any::Any + Send>>;
 
+/// Retained per-thread frame- and tile-sized cell buffers, keyed by cell type.
+///
+/// Decoding rebuilds the same handful of area-sized grids for every tile and
+/// every frame -- the frontier cursor's MI grids, the coalesced MI-size store,
+/// the frame segment-id map, the temporal motion field. Each is one allocation
+/// of tens to hundreds of kilobytes whose contents are overwritten anyway, so
+/// they are taken from here and returned on drop.
+const POOLED_VEC_SLOTS: usize = 32;
+
+/// Buffers larger than this are let go rather than held for the process's life.
+const MAX_POOLED_VEC_CELLS: usize = 1 << 24;
+
+thread_local! {
+    static POOLED_VECS: RefCell<[ErasedVecSlot; POOLED_VEC_SLOTS]> =
+        const { RefCell::new([const { None }; POOLED_VEC_SLOTS]) };
+}
+
+/// Takes a spare buffer of `T` holding at least `cells`, or the largest spare
+/// this thread has when none does, or an empty one when it has none at all.
+///
+/// Handing back a buffer the caller then grows costs the allocation the spare
+/// was meant to save, so a spare that already fits is picked first.
+pub(crate) fn take_pooled_vec<T: Send + 'static>(cells: usize) -> Vec<T> {
+    POOLED_VECS
+        .try_with(|slots| {
+            slots
+                .borrow_mut()
+                .iter_mut()
+                .filter_map(|slot| slot.as_mut()?.downcast_mut::<Vec<T>>())
+                .filter(|spare| spare.capacity() > 0)
+                .min_by_key(|spare| match spare.capacity() {
+                    capacity if capacity >= cells => (0, capacity),
+                    capacity => (1, usize::MAX - capacity),
+                })
+                .map(core::mem::take)
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
+}
+
+/// Offers `cells` back to this thread's spare set.
+pub(crate) fn recycle_pooled_vec<T: Send + 'static>(mut cells: Vec<T>) {
+    if cells.capacity() == 0 || cells.capacity() > MAX_POOLED_VEC_CELLS {
+        return;
+    }
+    cells.clear();
+    let _ = POOLED_VECS.try_with(|slots| recycle_reusable_vec(slots, &mut cells));
+}
+
 pub(crate) fn take_reusable_vec<T: Send + 'static, const N: usize>(
     cell: &RefCell<[ErasedVecSlot; N]>,
 ) -> Vec<T> {

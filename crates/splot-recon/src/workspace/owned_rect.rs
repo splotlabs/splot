@@ -284,13 +284,17 @@ impl<T: ReconSample> OwnedFrameRect<T> {
     pub fn reshape(&mut self, info: DecodedFrameInfo, luma_rect: PlaneRect, fill: T) -> Result<()> {
         let (y, u, v) = Self::regions(info, luma_rect)?;
         let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
-        self.samples.clear();
-        self.samples.try_reserve_exact(total).map_err(|_| {
-            ReconError::WorkspaceAllocationFailed {
+        // Only the samples this rectangle gains are initialized. The ones it
+        // keeps are stale, exactly as they are on the same-size
+        // [`Self::retarget`] path, because reconstruction writes every sample
+        // of a surface before reading it.
+        self.samples.truncate(total);
+        self.samples
+            .try_reserve_exact(total.saturating_sub(self.samples.len()))
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
                 plane: PlaneId::Y,
                 context: "owned rectangle samples",
-            }
-        })?;
+            })?;
         self.samples.resize(total, fill);
         self.info = info;
         self.y = y;
