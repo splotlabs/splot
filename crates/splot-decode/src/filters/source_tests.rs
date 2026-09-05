@@ -172,12 +172,29 @@ fn multiple_immutable_leases_keep_the_source_alive_until_the_last_drop() {
         16
     );
 
-    drop(source);
+    assert!(source.into_workspace().is_none());
     assert!(!recycled.load(Ordering::SeqCst));
     drop(first);
     assert!(!recycled.load(Ordering::SeqCst));
     drop(middle);
     assert!(recycled.load(Ordering::SeqCst));
+}
+
+#[test]
+fn unleased_source_returns_the_original_workspace_storage() {
+    let original = workspace(16, 65);
+    let samples = original.plane(PlaneId::Y).expect("luma").samples().as_ptr();
+    let recovered = DeblockedSource::new(original)
+        .into_workspace()
+        .expect("unleased workspace");
+    assert_eq!(
+        recovered
+            .plane(PlaneId::Y)
+            .expect("luma")
+            .samples()
+            .as_ptr(),
+        samples
+    );
 }
 
 #[test]

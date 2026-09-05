@@ -7,7 +7,7 @@
 )]
 
 use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
-use std::mem::{ManuallyDrop, MaybeUninit};
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 use std::sync::Arc;
 #[cfg(test)]
@@ -30,7 +30,7 @@ pub(crate) struct DeblockedSource<T: ReconSample> {
 }
 
 struct DeblockedStorage<T: ReconSample> {
-    workspace: ManuallyDrop<CurrentFrameWorkspace<T>>,
+    workspace: Option<CurrentFrameWorkspace<T>>,
     info: splot_recon::DecodedFrameInfo,
     planes: [Option<DeblockedPlaneStorage<T>>; 3],
     #[cfg(test)]
@@ -74,7 +74,7 @@ impl<T: ReconSample> DeblockedSource<T> {
         }
         Self {
             storage: Arc::new(DeblockedStorage {
-                workspace: ManuallyDrop::new(workspace),
+                workspace: Some(workspace),
                 info,
                 planes,
                 #[cfg(test)]
@@ -101,13 +101,7 @@ impl<T: ReconSample> DeblockedSource<T> {
     /// The filter phase is the last reader of the frame it filtered, so this is
     /// where its sample buffers become the next frame's.
     pub(crate) fn into_workspace(self) -> Option<CurrentFrameWorkspace<T>> {
-        let mut storage = ManuallyDrop::new(Arc::into_inner(self.storage)?);
-        let workspace = unsafe { ManuallyDrop::take(&mut storage.workspace) }; // SAFETY: this was the final owning handle, so no view can read the samples, and the storage is not dropped, so `Drop` cannot take twice.
-        #[cfg(test)]
-        if let Some(recycled) = storage.recycled.take() {
-            recycled.store(true, Ordering::SeqCst);
-        }
-        Some(workspace)
+        Arc::into_inner(self.storage)?.workspace.take()
     }
 
     pub(crate) fn info(&self) -> splot_recon::DecodedFrameInfo {
@@ -299,13 +293,9 @@ impl<T: ReconSample> DeblockedStorage<T> {
     }
 }
 
-/// Recycles the workspace after the final owning `Arc` is gone.
+#[cfg(test)]
 impl<T: ReconSample> Drop for DeblockedStorage<T> {
     fn drop(&mut self) {
-        unsafe {
-            drop(ManuallyDrop::take(&mut self.workspace));
-        } // SAFETY: the final owning Arc has exclusive workspace access.
-        #[cfg(test)]
         if let Some(recycled) = &self.recycled {
             recycled.store(true, Ordering::SeqCst);
         }
