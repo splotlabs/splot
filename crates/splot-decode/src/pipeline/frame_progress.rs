@@ -376,8 +376,8 @@ impl<'a, T: ReconSample> PublishedStorage<'a, T> {
 
 /// One pending frame's filtered workspace and its published-row watermark.
 pub(crate) struct FrameProgress<T: ReconSample> {
-    /// The decode's plane pool, carried so every frame can hand it back to the
-    /// scratch it is scheduled with.
+    /// The decode's reusable storage, carried so every frame can hand it back
+    /// to the scratch it is scheduled with.
     buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
     workspace: RwLock<Option<DirectWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
@@ -394,8 +394,8 @@ impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
 }
 
 impl<T: ReconSample> FrameProgress<T> {
-    /// The decode's plane pool, which every frame reads back from its progress
-    /// rather than inheriting down a chain of defaultable scratch objects.
+    /// The decode's reusable storage, which every frame reads back from its
+    /// progress rather than inheriting down a chain of defaultable scratches.
     pub(crate) fn buffers(
         &self,
     ) -> Option<&std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>> {
