@@ -12,29 +12,13 @@ use crate::{PlaneRect, PlaneRef, PlaneSize, ReconError, ReconSample, Result};
 /// Does not implement `Clone`: cloning would duplicate the backing sample
 /// buffer. Borrow it as a [`PlaneRef`] with [`Plane::as_plane_ref`] instead (see
 /// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Plane<T: ReconSample> {
-    /// The decode pool this plane's storage returns to when the frame that
-    /// owns it hands its buffers on. Carried rather than acted on: a plane
-    /// released without a hand-off simply frees, as it always has.
-    pub(crate) pool: Option<std::sync::Arc<crate::PlanePool>>,
     storage_size: PlaneSize,
     stride_samples: usize,
     visible_rect: PlaneRect,
     samples: Vec<T>,
 }
-
-/// The pool a plane's storage came from is not part of its value.
-impl<T: ReconSample + PartialEq> PartialEq for Plane<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.storage_size == other.storage_size
-            && self.stride_samples == other.stride_samples
-            && self.visible_rect == other.visible_rect
-            && self.samples == other.samples
-    }
-}
-
-impl<T: ReconSample + Eq> Eq for Plane<T> {}
 
 impl<T: ReconSample> Plane<T> {
     /// Creates a plane from owned sample storage.
@@ -82,7 +66,6 @@ impl<T: ReconSample> Plane<T> {
         )?;
 
         Ok(Self {
-            pool: None,
             storage_size,
             stride_samples,
             visible_rect,

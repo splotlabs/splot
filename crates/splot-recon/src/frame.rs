@@ -245,14 +245,13 @@ impl<T: ReconSample> DecodedFrame<T> {
     #[must_use]
     pub fn into_plane_samples(self) -> FramePlaneSamples<T> {
         let FramePlanes { y, u, v } = self.planes;
-        let pool = y.pool.clone();
         FramePlaneSamples {
             planes: [
                 y.into_samples(),
                 u.map(Plane::into_samples).unwrap_or_default(),
                 v.map(Plane::into_samples).unwrap_or_default(),
             ],
-            pool,
+            pool: None,
         }
     }
 

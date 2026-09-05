@@ -1734,14 +1734,12 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
     fn freeze(mut self) -> Result<Plane<T>> {
         let stride_samples = self.stride_samples();
-        let mut plane = Plane::from_vec(
+        Plane::from_vec(
             self.storage_size,
             stride_samples,
             self.visible_rect,
             mem::take(&mut self.samples),
-        )?;
-        plane.pool = self.pool.take();
-        Ok(plane)
+        )
     }
 
     /// Clamps a write/fill `rect` to the in-frame storage extent.
