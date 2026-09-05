@@ -78,8 +78,8 @@ impl PlanePool {
 /// Rust has neither generic fields nor generic statics, and [`crate::ReconSample`]
 /// is sealed over exactly `u8` and `u16`, so this closed two-way dispatch is the
 /// whole of the mechanism.
+#[doc(hidden)]
 pub trait PooledPlaneSamples: Sized {
-    #[doc(hidden)]
     fn spares(pool: &PlanePool) -> &Mutex<Vec<Vec<Self>>>;
 }
 
