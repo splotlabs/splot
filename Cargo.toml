@@ -35,8 +35,7 @@ splot-validate = { path = "crates/splot-validate", version = "0.0.0" }
 splot-encode = { path = "crates/splot-encode", version = "0.0.0" }
 
 thiserror = "2"
-# Allocation-free mutex: std boxes a pthread lock on first use, which showed up
-# as ~15 allocations per decoded frame.
+# Avoid macOS std mutex allocations on first use.
 parking_lot = "0.12"
 clap = { version = "4.6", features = ["derive"] }
 anyhow = "1"

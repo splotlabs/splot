@@ -10,7 +10,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use core::num::NonZeroU64;
-use std::sync::{Arc, Condvar, Mutex};
+use parking_lot::{Condvar, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use splot_decode::{
@@ -83,12 +84,12 @@ fn collect_raw_with_timeout(
             DecodeOptions::default(),
         );
         let (slot, ready) = &*worker_result;
-        *slot.lock().unwrap() = Some(decoded);
+        *slot.lock() = Some(decoded);
         ready.notify_one();
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     let (slot, ready) = &*result;
-    let mut slot = slot.lock().unwrap();
+    let mut slot = slot.lock();
     loop {
         if let Some(decoded) = slot.take() {
             return decoded;
@@ -98,8 +99,7 @@ fn collect_raw_with_timeout(
             !remaining.is_zero(),
             "{threads}-worker decode did not settle within five seconds"
         );
-        let (next, timeout) = ready.wait_timeout(slot, remaining).unwrap();
-        slot = next;
+        let timeout = ready.wait_for(&mut slot, remaining);
         assert!(
             !(timeout.timed_out() && slot.is_none()),
             "{threads}-worker decode did not settle within five seconds"

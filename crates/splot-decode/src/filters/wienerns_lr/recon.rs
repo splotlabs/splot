@@ -1041,7 +1041,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
     ) -> Result<(R, super::FrameFilterRecords)> {
         let complete = self
             .stripe_state
-            .lock()
+            .get_mut()
             .iter()
             .all(|lifecycle| *lifecycle == StripeLifecycle::Submitted);
         if !complete {
@@ -1052,7 +1052,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         self.filter_records.stripes.ranges = core::mem::take(&mut self.ranges);
         self.filter_records.stripes.lifecycles = core::mem::take(self.stripe_state.get_mut());
         self.filter_records.stripes.outcomes = core::mem::take(&mut self.stripe_outcomes);
-        let has_restored_deblock = self.deblock_records.lock().is_some();
+        let has_restored_deblock = self.deblock_records.get_mut().is_some();
         if has_restored_deblock
             && (!self.filter_records.deblock_blocks.is_empty()
                 || !self.filter_records.chroma_deblock_blocks.is_empty())

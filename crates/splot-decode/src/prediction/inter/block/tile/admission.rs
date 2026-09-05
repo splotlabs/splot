@@ -985,11 +985,13 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     })?;
     let scheduler_result = scheduler.finish();
     drop(scheduler);
-    if let Some(error) = error.lock().take() {
+    if let Some(error) = error.into_inner() {
         return Err(error);
     }
     scheduler_result?;
-    take_active_commit(&commit)
+    commit
+        .into_inner()
+        .ok_or_else(invalid_inter_tile_scheduling_state)
 }
 
 impl<T: ReconSample> ScheduledTileRecon<T> {
