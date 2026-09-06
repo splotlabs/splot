@@ -325,17 +325,25 @@ impl<'job, F: Task<'job>> Slots<'job, F> {
         ready.push(entry);
     }
 
-    /// Reuses a spare waiter, if one is left holding the sole reference.
+    /// Reuses a spare waiter that is left holding the sole reference.
+    ///
+    /// A waiter returns to the spares while the condition that admitted its
+    /// job can still hold a reference, so one that is not unique yet is left
+    /// where it is for a later submission to claim: dropping it would cost
+    /// exactly the allocation the spare set exists to save.
     fn reuse_waiter(&mut self, pending: usize, entry: ReadyEntry) -> Option<Arc<Waiter>> {
-        while let Some(mut spare) = self.spare_waiters.pop() {
-            let Some(waiter) = Arc::get_mut(&mut spare) else {
-                continue;
-            };
-            waiter.pending = AtomicUsize::new(pending);
-            waiter.entry = entry;
-            return Some(spare);
-        }
-        None
+        let index = self
+            .spare_waiters
+            .iter_mut()
+            .position(|spare| Arc::get_mut(spare).is_some())?;
+        let mut spare = self.spare_waiters.swap_remove(index);
+        let Some(waiter) = Arc::get_mut(&mut spare) else {
+            self.spare_waiters.push(spare);
+            return None;
+        };
+        waiter.pending = AtomicUsize::new(pending);
+        waiter.entry = entry;
+        Some(spare)
     }
 
     fn take_slot(&mut self) -> (usize, u64) {
