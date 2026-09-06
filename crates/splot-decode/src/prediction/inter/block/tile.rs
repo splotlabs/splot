@@ -1356,11 +1356,13 @@ pub(crate) struct ParseProgress {
 impl ParseProgress {
     /// Opens a tile's progress with its record lists already sized for a tile
     /// this decode has walked before.
-    pub(crate) fn with_record_capacities(
-        hint: crate::filters::wienerns_lr::FrameFilterRecordCapacities,
+    pub(crate) fn for_decode(
+        buffers: Option<&Arc<crate::support::decode_buffers::DecodeBuffers>>,
     ) -> Self {
         let mut records = crate::filters::wienerns_lr::FrameFilterRecords::default();
-        records.reserve_from(hint);
+        if let Some(buffers) = buffers {
+            records.reserve_from(buffers.tile_record_capacities());
+        }
         Self {
             records: Mutex::new(records),
             ..Self::default()

@@ -332,18 +332,15 @@ impl<'job, F: Task<'job>> Slots<'job, F> {
     /// where it is for a later submission to claim: dropping it would cost
     /// exactly the allocation the spare set exists to save.
     fn reuse_waiter(&mut self, pending: usize, entry: ReadyEntry) -> Option<Arc<Waiter>> {
-        let index = self
-            .spare_waiters
-            .iter_mut()
-            .position(|spare| Arc::get_mut(spare).is_some())?;
-        let mut spare = self.spare_waiters.swap_remove(index);
-        let Some(waiter) = Arc::get_mut(&mut spare) else {
-            self.spare_waiters.push(spare);
-            return None;
-        };
-        waiter.pending = AtomicUsize::new(pending);
-        waiter.entry = entry;
-        Some(spare)
+        let index = self.spare_waiters.iter_mut().position(|spare| {
+            let Some(waiter) = Arc::get_mut(spare) else {
+                return false;
+            };
+            waiter.pending = AtomicUsize::new(pending);
+            waiter.entry = entry;
+            true
+        })?;
+        Some(self.spare_waiters.swap_remove(index))
     }
 
     fn take_slot(&mut self) -> (usize, u64) {
