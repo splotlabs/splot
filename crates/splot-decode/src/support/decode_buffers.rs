@@ -14,6 +14,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::prediction::inter::ReconRowBuffers;
+use crate::prediction::inter::ReconRowCapacities;
 
 /// Row buffer sets one decode keeps between units and frames.
 const MAX_RETAINED_ROW_BUFFERS: usize = 256;
@@ -22,7 +23,14 @@ const MAX_RETAINED_ROW_BUFFERS: usize = 256;
 #[derive(Default)]
 pub(crate) struct DecodeBuffers {
     planes: Arc<splot_recon::PlanePool>,
-    rows: Mutex<Vec<ReconRowBuffers>>,
+    rows: Mutex<RetainedRows>,
+}
+
+/// The row buffer sets a decode is holding, and the sizes they reached.
+#[derive(Default)]
+struct RetainedRows {
+    spares: Vec<ReconRowBuffers>,
+    reached: ReconRowCapacities,
 }
 
 impl DecodeBuffers {
@@ -37,16 +45,30 @@ impl DecodeBuffers {
         &self.planes
     }
 
-    /// Takes a retained row buffer set, or a fresh one.
+    /// Takes a retained row buffer set, or a fresh one already sized for the
+    /// rows this decode has seen.
+    ///
+    /// Every set outstanding at once is a set this decode is already paying
+    /// for, so a miss is not worth retaining more of them against -- but a set
+    /// built empty climbs the growth ladder for all nine of its lists, which
+    /// the sizes a spent set left behind are enough to skip.
     pub(crate) fn take_rows(&self) -> ReconRowBuffers {
-        self.rows.lock().pop().unwrap_or_default()
+        let reached = {
+            let mut rows = self.rows.lock();
+            if let Some(buffers) = rows.spares.pop() {
+                return buffers;
+            }
+            rows.reached
+        };
+        ReconRowBuffers::with_capacities(reached)
     }
 
     /// Returns a spent row buffer set, whose vectors are already cleared.
     pub(crate) fn retain_rows(&self, buffers: ReconRowBuffers) {
         let mut rows = self.rows.lock();
-        if rows.len() < MAX_RETAINED_ROW_BUFFERS {
-            rows.push(buffers);
+        rows.reached.cover(buffers.capacities());
+        if rows.spares.len() < MAX_RETAINED_ROW_BUFFERS {
+            rows.spares.push(buffers);
         }
     }
 }

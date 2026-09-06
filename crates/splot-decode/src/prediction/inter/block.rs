@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 pub(crate) use tile::ParseProgress;
-pub(crate) use tile::ReconRowBuffers;
 pub(crate) use tile::TileWalkParams;
 pub(crate) use tile::publish_tile_geometry;
+pub(crate) use tile::{ReconRowBuffers, ReconRowCapacities};
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{

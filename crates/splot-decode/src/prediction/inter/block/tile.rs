@@ -819,6 +819,56 @@ impl ReconRowFailure {
     }
 }
 
+/// The capacities one spent row buffer set was holding.
+///
+/// A set built after a pool miss starts at the sizes the last spent set
+/// reached, so its lists do not climb the growth ladder again for a row the
+/// decode has already sized once.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ReconRowCapacities {
+    superblocks: usize,
+    residual_coeffs: usize,
+    entries: usize,
+    residual_blocks: usize,
+    temporal: usize,
+    motion_grids: usize,
+    flag_log: usize,
+    deblock_blocks: usize,
+    tx_skip_records: usize,
+}
+
+impl ReconRowCapacities {
+    /// Grows every hint to cover `other` as well.
+    pub(crate) fn cover(&mut self, other: Self) {
+        self.superblocks = self.superblocks.max(other.superblocks);
+        self.residual_coeffs = self.residual_coeffs.max(other.residual_coeffs);
+        self.entries = self.entries.max(other.entries);
+        self.residual_blocks = self.residual_blocks.max(other.residual_blocks);
+        self.temporal = self.temporal.max(other.temporal);
+        self.motion_grids = self.motion_grids.max(other.motion_grids);
+        self.flag_log = self.flag_log.max(other.flag_log);
+        self.deblock_blocks = self.deblock_blocks.max(other.deblock_blocks);
+        self.tx_skip_records = self.tx_skip_records.max(other.tx_skip_records);
+    }
+}
+
+/// The share of the largest seen capacity a fresh list starts at.
+///
+/// Sizing a fresh set for the largest row instead sizes every set outstanding
+/// at once for it, and most of them hold far less than that; a quarter skips
+/// the early doublings, which is where the allocations are, without paying for
+/// the peak on every set. Measured at 10 workers: a quarter costs 7% peak RSS
+/// for 15% fewer requests, where the whole capacity costs 56% for 14%.
+const EARLY_GROWTH_SHARE: usize = 4;
+
+/// Reserves a share of `cells` in an empty list, leaving it empty when that fails.
+///
+/// A hint that cannot be met is not an error: the list grows on demand as it
+/// did before, which is the behaviour this is saving allocations against.
+fn reserve_hint<T>(list: &mut Vec<T>, cells: usize) {
+    let _ = list.try_reserve_exact(cells / EARLY_GROWTH_SHARE);
+}
+
 #[derive(Default)]
 pub(crate) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
@@ -831,6 +881,44 @@ pub(crate) struct ReconRowBuffers {
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
+}
+
+impl ReconRowBuffers {
+    /// The capacities this set is holding.
+    pub(crate) fn capacities(&self) -> ReconRowCapacities {
+        ReconRowCapacities {
+            superblocks: self.superblocks.capacity(),
+            residual_coeffs: self.residual_coeffs.capacity(),
+            entries: self.entries.capacity(),
+            residual_blocks: self.residual_blocks.capacity(),
+            temporal: self.temporal.capacity(),
+            motion_grids: self.motion_grids.capacity(),
+            flag_log: self.flag_log.capacity(),
+            deblock_blocks: self.filter_records.deblock_blocks.capacity(),
+            tx_skip_records: self.filter_records.tx_skip_records.capacity(),
+        }
+    }
+
+    /// A fresh set already sized for the rows this decode has seen.
+    pub(crate) fn with_capacities(hint: ReconRowCapacities) -> Self {
+        let mut buffers = Self::default();
+        reserve_hint(&mut buffers.superblocks, hint.superblocks);
+        reserve_hint(&mut buffers.residual_coeffs, hint.residual_coeffs);
+        reserve_hint(&mut buffers.entries, hint.entries);
+        reserve_hint(&mut buffers.residual_blocks, hint.residual_blocks);
+        reserve_hint(&mut buffers.temporal, hint.temporal);
+        reserve_hint(&mut buffers.motion_grids, hint.motion_grids);
+        reserve_hint(&mut buffers.flag_log, hint.flag_log);
+        reserve_hint(
+            &mut buffers.filter_records.deblock_blocks,
+            hint.deblock_blocks,
+        );
+        reserve_hint(
+            &mut buffers.filter_records.tx_skip_records,
+            hint.tx_skip_records,
+        );
+        buffers
+    }
 }
 
 #[derive(Default)]
