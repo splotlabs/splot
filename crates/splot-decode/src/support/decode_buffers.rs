@@ -18,7 +18,13 @@ use crate::prediction::inter::ReconRowBuffers;
 use crate::prediction::inter::ReconRowCapacities;
 
 /// Row buffer sets one decode keeps between units and frames.
-const MAX_RETAINED_ROW_BUFFERS: usize = 256;
+///
+/// Sets outstanding at once run well past this at wide worker counts, so the
+/// cap decides how many of the returning ones are kept rather than how much a
+/// decode holds at its peak. Swept against both: below this the misses cost
+/// more than the retained sets are worth, and above it the requests flatten
+/// while the retained sets keep accumulating.
+const MAX_RETAINED_ROW_BUFFERS: usize = 384;
 
 /// The storage one decode's finished work leaves for the work behind it.
 #[derive(Default)]
