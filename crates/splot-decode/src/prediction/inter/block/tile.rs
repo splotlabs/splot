@@ -819,6 +819,63 @@ impl ReconRowFailure {
     }
 }
 
+/// The share of the largest seen capacity a fresh list starts at.
+///
+/// Sizing a fresh set for the largest row instead sizes every set outstanding
+/// at once for it, and most of them hold far less than that; a quarter skips
+/// the early doublings, which is where the allocations are, without paying for
+/// the peak on every set. Measured at 10 workers: a quarter costs 7% peak RSS
+/// for 15% fewer requests, where the whole capacity costs 56% for 14%.
+const EARLY_GROWTH_SHARE: usize = 4;
+
+/// Reserves a share of `cells` in an empty list, leaving it empty when that fails.
+///
+/// A hint that cannot be met is not an error: the list grows on demand as it
+/// did before, which is the behaviour this is saving allocations against.
+fn reserve_hint<T>(list: &mut Vec<T>, cells: usize) {
+    let _ = list.try_reserve_exact(cells / EARLY_GROWTH_SHARE);
+}
+
+/// Names the lists a row buffer set sizes, once, for the three places that
+/// have to agree on them: the capacities a spent set reports, the running
+/// maximum a decode keeps, and the sizes a fresh set opens at.
+macro_rules! recon_row_lists {
+    ($($hint:ident: $($list:ident).+),+ $(,)?) => {
+        /// The capacities one spent row buffer set was holding.
+        ///
+        /// A set built after a pool miss starts at the sizes the last spent
+        /// set reached, so its lists do not climb the growth ladder again for
+        /// a row the decode has already sized once.
+        #[derive(Clone, Copy, Default)]
+        pub(crate) struct ReconRowCapacities {
+            $($hint: usize,)+
+        }
+
+        impl ReconRowCapacities {
+            /// Grows every hint to cover `other` as well.
+            pub(crate) fn cover(&mut self, other: Self) {
+                $(self.$hint = self.$hint.max(other.$hint);)+
+            }
+        }
+
+        impl ReconRowBuffers {
+            /// The capacities this set is holding.
+            pub(crate) fn capacities(&self) -> ReconRowCapacities {
+                ReconRowCapacities {
+                    $($hint: self.$($list).+.capacity(),)+
+                }
+            }
+
+            /// A fresh set already sized for the rows this decode has seen.
+            pub(crate) fn with_capacities(hint: ReconRowCapacities) -> Self {
+                let mut buffers = Self::default();
+                $(reserve_hint(&mut buffers.$($list).+, hint.$hint);)+
+                buffers
+            }
+        }
+    };
+}
+
 #[derive(Default)]
 pub(crate) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
@@ -831,6 +888,18 @@ pub(crate) struct ReconRowBuffers {
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
+}
+
+recon_row_lists! {
+    superblocks: superblocks,
+    residual_coeffs: residual_coeffs,
+    entries: entries,
+    residual_blocks: residual_blocks,
+    temporal: temporal,
+    motion_grids: motion_grids,
+    flag_log: flag_log,
+    deblock_blocks: filter_records.deblock_blocks,
+    tx_skip_records: filter_records.tx_skip_records,
 }
 
 #[derive(Default)]
@@ -1285,6 +1354,21 @@ pub(crate) struct ParseProgress {
 }
 
 impl ParseProgress {
+    /// Opens a tile's progress with its record lists already sized for a tile
+    /// this decode has walked before.
+    pub(crate) fn for_decode(
+        buffers: Option<&Arc<crate::support::decode_buffers::DecodeBuffers>>,
+    ) -> Self {
+        let mut records = crate::filters::wienerns_lr::FrameFilterRecords::default();
+        if let Some(buffers) = buffers {
+            records.reserve_from(buffers.tile_record_capacities());
+        }
+        Self {
+            records: Mutex::new(records),
+            ..Self::default()
+        }
+    }
+
     /// Hands one finished unit to the scheduler and publishes the new count.
     ///
     /// The frame's § 7.17 and loop-restoration records leave the unit here, in

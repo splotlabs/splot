@@ -150,6 +150,18 @@ pub(crate) enum ScheduledFrameRef {
     Ten(Arc<ScheduledFrame<u16>>),
 }
 
+/// One frame's filter stripe, named at its sample depth.
+pub(crate) enum ScheduledFilterJob {
+    Eight(
+        Arc<ScheduledFrame<u8>>,
+        crate::filters::wienerns_lr::recon::OwnedFilterJob<u8>,
+    ),
+    Ten(
+        Arc<ScheduledFrame<u16>>,
+        crate::filters::wienerns_lr::recon::OwnedFilterJob<u16>,
+    ),
+}
+
 /// The job shapes the pipeline schedules for every unit of every frame.
 ///
 /// These four are the whole steady-state task load, so they are named here and
@@ -173,6 +185,7 @@ pub(crate) enum FrameTask {
         frame: ScheduledFrameRef,
         index: usize,
     },
+    Filter(ScheduledFilterJob),
 }
 
 impl<'job> splot_parallel::Task<'job> for FrameTask {
@@ -194,6 +207,10 @@ impl<'job> splot_parallel::Task<'job> for FrameTask {
                 ScheduledFrameRef::Eight(frame) => frame.resolve(index, admit),
                 ScheduledFrameRef::Ten(frame) => frame.resolve(index, admit),
             },
+            Self::Filter(job) => match job {
+                ScheduledFilterJob::Eight(frame, filter) => frame.run_filter_stripe(filter),
+                ScheduledFilterJob::Ten(frame, filter) => frame.run_filter_stripe(filter),
+            },
         }
     }
 }
@@ -209,6 +226,12 @@ pub(crate) trait ScheduledScratchSample: splot_recon::ReconSample {
     /// Names this depth's frame for a scheduled task.
     fn scheduled_frame_ref(frame: Arc<ScheduledFrame<Self>>) -> ScheduledFrameRef;
 
+    /// Names this depth's frame and one of its filter stripes.
+    fn scheduled_filter_job(
+        frame: Arc<ScheduledFrame<Self>>,
+        filter: crate::filters::wienerns_lr::recon::OwnedFilterJob<Self>,
+    ) -> ScheduledFilterJob;
+
     fn take_scheduled_scratch(
         scratch: &mut Option<ScheduledReconScratch>,
     ) -> Option<inter::InterDecodeScratch<Self>>;
@@ -221,6 +244,13 @@ macro_rules! impl_scheduled_scratch_sample {
         impl ScheduledScratchSample for $sample {
             fn scheduled_frame_ref(frame: Arc<ScheduledFrame<Self>>) -> ScheduledFrameRef {
                 ScheduledFrameRef::$variant(frame)
+            }
+
+            fn scheduled_filter_job(
+                frame: Arc<ScheduledFrame<Self>>,
+                filter: crate::filters::wienerns_lr::recon::OwnedFilterJob<Self>,
+            ) -> ScheduledFilterJob {
+                ScheduledFilterJob::$variant(frame, filter)
             }
 
             fn take_scheduled_scratch(
@@ -636,10 +666,10 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     /// frame's finish once the final link has released them all.
     fn publish_filters(
         self: &Arc<Self>,
-        progress: inter::ScheduledFrameProgress<T>,
+        mut progress: inter::ScheduledFrameProgress<T>,
         admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
-        for filter in progress.filters {
+        for filter in progress.filters.drain(..) {
             let stripe = filter.stripe();
             if self.filtered.get(stripe).is_none() {
                 self.fail(
@@ -652,17 +682,12 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 );
                 break;
             }
-            let frame = Arc::clone(self);
-            admit.spawn_ready(boxed_task(move |_| {
-                if let Err(error) = filter.run() {
-                    let mut owed = frame.filter_error.lock();
-                    if owed.is_none() {
-                        *owed = Some(error);
-                    }
-                }
-                let _ = frame.filtered[stripe].set(());
-            }));
+            admit.spawn_ready(splot_parallel::Job::Inline(FrameTask::Filter(
+                T::scheduled_filter_job(Arc::clone(self), filter),
+            )));
         }
+        self.reconstruction
+            .recycle_filter_jobs(core::mem::take(&mut progress.filters));
         let Some(filter) = progress.output else {
             return;
         };
@@ -689,6 +714,21 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                     let _ = filter_done.set(());
                 }),
             );
+        }
+    }
+
+    /// Runs one filter stripe and publishes it, recording the frame's first
+    /// filter error.
+    fn run_filter_stripe(&self, filter: crate::filters::wienerns_lr::recon::OwnedFilterJob<T>) {
+        let stripe = filter.stripe();
+        if let Err(error) = filter.run() {
+            let mut owed = self.filter_error.lock();
+            if owed.is_none() {
+                *owed = Some(error);
+            }
+        }
+        if let Some(filtered) = self.filtered.get(stripe) {
+            let _ = filtered.set(());
         }
     }
 

@@ -63,7 +63,54 @@ pub(crate) struct FilterStripeLists {
     pub(crate) outcomes: Vec<Option<crate::Result<()>>>,
 }
 
+/// The capacities one tile's spent record lists reached.
+///
+/// A tile publishes its units into a fresh set, so without this the lists climb
+/// the growth ladder again for a tile the decode has already sized.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FrameFilterRecordCapacities {
+    deblock_blocks: usize,
+    chroma_deblock_blocks: usize,
+    tx_skip_records: usize,
+    lr_source_blocks: usize,
+    lr_unit_filters: usize,
+}
+
+impl FrameFilterRecordCapacities {
+    /// Grows every hint to cover `other` as well.
+    pub(crate) fn cover(&mut self, other: Self) {
+        self.deblock_blocks = self.deblock_blocks.max(other.deblock_blocks);
+        self.chroma_deblock_blocks = self.chroma_deblock_blocks.max(other.chroma_deblock_blocks);
+        self.tx_skip_records = self.tx_skip_records.max(other.tx_skip_records);
+        self.lr_source_blocks = self.lr_source_blocks.max(other.lr_source_blocks);
+        self.lr_unit_filters = self.lr_unit_filters.max(other.lr_unit_filters);
+    }
+}
+
 impl FrameFilterRecords {
+    /// The capacities these lists are holding.
+    pub(crate) fn capacities(&self) -> FrameFilterRecordCapacities {
+        FrameFilterRecordCapacities {
+            deblock_blocks: self.deblock_blocks.capacity(),
+            chroma_deblock_blocks: self.chroma_deblock_blocks.capacity(),
+            tx_skip_records: self.tx_skip_records.capacity(),
+            lr_source_blocks: self.lr_source_blocks.capacity(),
+            lr_unit_filters: self.lr_unit_filters.capacity(),
+        }
+    }
+
+    /// Sizes empty lists for the tile a spent set already covered.
+    pub(crate) fn reserve_from(&mut self, hint: FrameFilterRecordCapacities) {
+        let _ = self.deblock_blocks.try_reserve_exact(hint.deblock_blocks);
+        self.chroma_deblock_blocks
+            .reserve_records(hint.chroma_deblock_blocks);
+        let _ = self.tx_skip_records.try_reserve_exact(hint.tx_skip_records);
+        let _ = self
+            .lr_source_blocks
+            .try_reserve_exact(hint.lr_source_blocks);
+        let _ = self.lr_unit_filters.try_reserve_exact(hint.lr_unit_filters);
+    }
+
     /// Moves every record out of `other` and onto the end of these lists.
     pub(crate) fn append(&mut self, other: &mut Self) {
         self.deblock_blocks
