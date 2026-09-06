@@ -110,9 +110,7 @@ impl FrameFilterRecords {
             .try_reserve_exact(hint.lr_source_blocks);
         let _ = self.lr_unit_filters.try_reserve_exact(hint.lr_unit_filters);
     }
-}
 
-impl FrameFilterRecords {
     /// Moves every record out of `other` and onto the end of these lists.
     pub(crate) fn append(&mut self, other: &mut Self) {
         self.deblock_blocks

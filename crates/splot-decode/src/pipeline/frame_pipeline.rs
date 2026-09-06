@@ -666,10 +666,9 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     /// frame's finish once the final link has released them all.
     fn publish_filters(
         self: &Arc<Self>,
-        progress: inter::ScheduledFrameProgress<T>,
+        mut progress: inter::ScheduledFrameProgress<T>,
         admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
-        let mut progress = progress;
         for filter in progress.filters.drain(..) {
             let stripe = filter.stripe();
             if self.filtered.get(stripe).is_none() {

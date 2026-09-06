@@ -9,7 +9,7 @@
 //! binary and run as one sequential test. A second test running beside them
 //! would land its own allocations inside the measured region.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
 use splot_parallel::{FrameDelay, ThreadCount, WorkerPool};

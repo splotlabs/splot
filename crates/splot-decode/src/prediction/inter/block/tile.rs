@@ -819,39 +819,6 @@ impl ReconRowFailure {
     }
 }
 
-/// The capacities one spent row buffer set was holding.
-///
-/// A set built after a pool miss starts at the sizes the last spent set
-/// reached, so its lists do not climb the growth ladder again for a row the
-/// decode has already sized once.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct ReconRowCapacities {
-    superblocks: usize,
-    residual_coeffs: usize,
-    entries: usize,
-    residual_blocks: usize,
-    temporal: usize,
-    motion_grids: usize,
-    flag_log: usize,
-    deblock_blocks: usize,
-    tx_skip_records: usize,
-}
-
-impl ReconRowCapacities {
-    /// Grows every hint to cover `other` as well.
-    pub(crate) fn cover(&mut self, other: Self) {
-        self.superblocks = self.superblocks.max(other.superblocks);
-        self.residual_coeffs = self.residual_coeffs.max(other.residual_coeffs);
-        self.entries = self.entries.max(other.entries);
-        self.residual_blocks = self.residual_blocks.max(other.residual_blocks);
-        self.temporal = self.temporal.max(other.temporal);
-        self.motion_grids = self.motion_grids.max(other.motion_grids);
-        self.flag_log = self.flag_log.max(other.flag_log);
-        self.deblock_blocks = self.deblock_blocks.max(other.deblock_blocks);
-        self.tx_skip_records = self.tx_skip_records.max(other.tx_skip_records);
-    }
-}
-
 /// The share of the largest seen capacity a fresh list starts at.
 ///
 /// Sizing a fresh set for the largest row instead sizes every set outstanding
@@ -869,6 +836,46 @@ fn reserve_hint<T>(list: &mut Vec<T>, cells: usize) {
     let _ = list.try_reserve_exact(cells / EARLY_GROWTH_SHARE);
 }
 
+/// Names the lists a row buffer set sizes, once, for the three places that
+/// have to agree on them: the capacities a spent set reports, the running
+/// maximum a decode keeps, and the sizes a fresh set opens at.
+macro_rules! recon_row_lists {
+    ($($hint:ident: $($list:ident).+),+ $(,)?) => {
+        /// The capacities one spent row buffer set was holding.
+        ///
+        /// A set built after a pool miss starts at the sizes the last spent
+        /// set reached, so its lists do not climb the growth ladder again for
+        /// a row the decode has already sized once.
+        #[derive(Clone, Copy, Default)]
+        pub(crate) struct ReconRowCapacities {
+            $($hint: usize,)+
+        }
+
+        impl ReconRowCapacities {
+            /// Grows every hint to cover `other` as well.
+            pub(crate) fn cover(&mut self, other: Self) {
+                $(self.$hint = self.$hint.max(other.$hint);)+
+            }
+        }
+
+        impl ReconRowBuffers {
+            /// The capacities this set is holding.
+            pub(crate) fn capacities(&self) -> ReconRowCapacities {
+                ReconRowCapacities {
+                    $($hint: self.$($list).+.capacity(),)+
+                }
+            }
+
+            /// A fresh set already sized for the rows this decode has seen.
+            pub(crate) fn with_capacities(hint: ReconRowCapacities) -> Self {
+                let mut buffers = Self::default();
+                $(reserve_hint(&mut buffers.$($list).+, hint.$hint);)+
+                buffers
+            }
+        }
+    };
+}
+
 #[derive(Default)]
 pub(crate) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
@@ -883,42 +890,16 @@ pub(crate) struct ReconRowBuffers {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
 }
 
-impl ReconRowBuffers {
-    /// The capacities this set is holding.
-    pub(crate) fn capacities(&self) -> ReconRowCapacities {
-        ReconRowCapacities {
-            superblocks: self.superblocks.capacity(),
-            residual_coeffs: self.residual_coeffs.capacity(),
-            entries: self.entries.capacity(),
-            residual_blocks: self.residual_blocks.capacity(),
-            temporal: self.temporal.capacity(),
-            motion_grids: self.motion_grids.capacity(),
-            flag_log: self.flag_log.capacity(),
-            deblock_blocks: self.filter_records.deblock_blocks.capacity(),
-            tx_skip_records: self.filter_records.tx_skip_records.capacity(),
-        }
-    }
-
-    /// A fresh set already sized for the rows this decode has seen.
-    pub(crate) fn with_capacities(hint: ReconRowCapacities) -> Self {
-        let mut buffers = Self::default();
-        reserve_hint(&mut buffers.superblocks, hint.superblocks);
-        reserve_hint(&mut buffers.residual_coeffs, hint.residual_coeffs);
-        reserve_hint(&mut buffers.entries, hint.entries);
-        reserve_hint(&mut buffers.residual_blocks, hint.residual_blocks);
-        reserve_hint(&mut buffers.temporal, hint.temporal);
-        reserve_hint(&mut buffers.motion_grids, hint.motion_grids);
-        reserve_hint(&mut buffers.flag_log, hint.flag_log);
-        reserve_hint(
-            &mut buffers.filter_records.deblock_blocks,
-            hint.deblock_blocks,
-        );
-        reserve_hint(
-            &mut buffers.filter_records.tx_skip_records,
-            hint.tx_skip_records,
-        );
-        buffers
-    }
+recon_row_lists! {
+    superblocks: superblocks,
+    residual_coeffs: residual_coeffs,
+    entries: entries,
+    residual_blocks: residual_blocks,
+    temporal: temporal,
+    motion_grids: motion_grids,
+    flag_log: flag_log,
+    deblock_blocks: filter_records.deblock_blocks,
+    tx_skip_records: filter_records.tx_skip_records,
 }
 
 #[derive(Default)]

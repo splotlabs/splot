@@ -14,8 +14,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::filters::wienerns_lr::FrameFilterRecordCapacities;
-use crate::prediction::inter::ReconRowBuffers;
-use crate::prediction::inter::ReconRowCapacities;
+use crate::prediction::inter::{ReconRowBuffers, ReconRowCapacities};
 
 /// Row buffer sets one decode keeps between units and frames.
 ///
