@@ -629,6 +629,17 @@ struct ProjectedTemporalMotionField {
     cells: Vec<ProjectedTemporalMotionCell>,
 }
 
+/// Returns a spent projection grid to the per-thread pool.
+///
+/// A band's projection and averaging grids are frame-sized and live only for
+/// the projection that builds them, and `prepare_tip_field` swaps its result
+/// out through one of them, so this is where all three become free again.
+impl Drop for ProjectedTemporalMotionField {
+    fn drop(&mut self) {
+        crate::support::reusable_scratch::recycle_pooled_vec(core::mem::take(&mut self.cells));
+    }
+}
+
 impl ProjectedTemporalMotionField {
     #[cfg(test)]
     fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
@@ -648,6 +659,9 @@ impl ProjectedTemporalMotionField {
             .width8
             .checked_mul(self.height8)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        if self.cells.capacity() == 0 {
+            self.cells = crate::support::reusable_scratch::take_pooled_vec(cells);
+        }
         self.cells
             .try_reserve_exact(cells.saturating_sub(self.cells.len()))
             .map_err(|_| {
