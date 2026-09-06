@@ -121,6 +121,16 @@ impl ChromaDeblockRecords {
         self.blocks.append(&mut other.blocks);
     }
 
+    /// The record capacity this list is holding.
+    pub(crate) fn capacity(&self) -> usize {
+        self.blocks.capacity()
+    }
+
+    /// Reserves `records`, leaving the list as it was when that fails.
+    pub(crate) fn reserve_records(&mut self, records: usize) {
+        let _ = self.blocks.try_reserve_exact(records);
+    }
+
     pub(crate) fn clear(&mut self) {
         self.blocks.clear();
     }

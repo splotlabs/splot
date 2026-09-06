@@ -1342,7 +1342,15 @@ where
                                 segment_ids.clone(),
                                 motion.clone(),
                             );
-                            let parse_progress = Arc::new(inter::ParseProgress::default());
+                            let parse_progress =
+                                Arc::new(inter::ParseProgress::with_record_capacities(
+                                    records
+                                        .buffers
+                                        .as_ref()
+                                        .map_or_else(Default::default, |buffers| {
+                                            buffers.tile_record_capacities()
+                                        }),
+                                ));
                             let result = frame_pipeline::schedule_entropy(
                                 move |publish_early| {
                                     let _scopes = quantizer.install_frame();
@@ -1571,7 +1579,15 @@ where
                                 segment_ids.clone(),
                                 motion.clone(),
                             );
-                            let parse_progress = Arc::new(inter::ParseProgress::default());
+                            let parse_progress =
+                                Arc::new(inter::ParseProgress::with_record_capacities(
+                                    records
+                                        .buffers
+                                        .as_ref()
+                                        .map_or_else(Default::default, |buffers| {
+                                            buffers.tile_record_capacities()
+                                        }),
+                                ));
                             let result = frame_pipeline::schedule_entropy(
                                 move |publish_early| {
                                     let _scopes = quantizer.install_frame();

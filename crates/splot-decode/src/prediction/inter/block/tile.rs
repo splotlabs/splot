@@ -1373,6 +1373,19 @@ pub(crate) struct ParseProgress {
 }
 
 impl ParseProgress {
+    /// Opens a tile's progress with its record lists already sized for a tile
+    /// this decode has walked before.
+    pub(crate) fn with_record_capacities(
+        hint: crate::filters::wienerns_lr::FrameFilterRecordCapacities,
+    ) -> Self {
+        let mut records = crate::filters::wienerns_lr::FrameFilterRecords::default();
+        records.reserve_from(hint);
+        Self {
+            records: Mutex::new(records),
+            ..Self::default()
+        }
+    }
+
     /// Hands one finished unit to the scheduler and publishes the new count.
     ///
     /// The frame's § 7.17 and loop-restoration records leave the unit here, in

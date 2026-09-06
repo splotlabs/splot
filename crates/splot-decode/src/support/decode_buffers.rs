@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use crate::filters::wienerns_lr::FrameFilterRecordCapacities;
 use crate::prediction::inter::ReconRowBuffers;
 use crate::prediction::inter::ReconRowCapacities;
 
@@ -24,6 +25,7 @@ const MAX_RETAINED_ROW_BUFFERS: usize = 256;
 pub(crate) struct DecodeBuffers {
     planes: Arc<splot_recon::PlanePool>,
     rows: Mutex<RetainedRows>,
+    tile_records: Mutex<FrameFilterRecordCapacities>,
 }
 
 /// The row buffer sets a decode is holding, and the sizes they reached.
@@ -61,6 +63,16 @@ impl DecodeBuffers {
             rows.reached
         };
         ReconRowBuffers::with_capacities(reached)
+    }
+
+    /// The record capacities a spent tile reached, for the next tile's set.
+    pub(crate) fn tile_record_capacities(&self) -> FrameFilterRecordCapacities {
+        *self.tile_records.lock()
+    }
+
+    /// Notes the record capacities one spent tile reached.
+    pub(crate) fn note_tile_record_capacities(&self, reached: FrameFilterRecordCapacities) {
+        self.tile_records.lock().cover(reached);
     }
 
     /// Returns a spent row buffer set, whose vectors are already cleared.
