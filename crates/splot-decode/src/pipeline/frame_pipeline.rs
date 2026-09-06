@@ -639,7 +639,8 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         progress: inter::ScheduledFrameProgress<T>,
         admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
-        for filter in progress.filters {
+        let mut progress = progress;
+        for filter in progress.filters.drain(..) {
             let stripe = filter.stripe();
             if self.filtered.get(stripe).is_none() {
                 self.fail(
@@ -663,6 +664,8 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 let _ = frame.filtered[stripe].set(());
             }));
         }
+        self.reconstruction
+            .recycle_filter_jobs(core::mem::take(&mut progress.filters));
         let Some(filter) = progress.output else {
             return;
         };

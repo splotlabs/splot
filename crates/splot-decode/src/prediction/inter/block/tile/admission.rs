@@ -135,6 +135,8 @@ struct ScheduledFrontier<T: ReconSample> {
     deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
     filter: Option<Arc<crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>>>,
     next_filter_stripe: usize,
+    /// The job list a published link handed back, for the next link to fill.
+    spare_filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
 }
 
 struct ScheduledResolve {
@@ -1267,11 +1269,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             deblock,
             filter,
             next_filter_stripe,
+            spare_filters,
             ..
         } = &mut *frontier;
         let sealed_rows = sealed.as_ref().map(|_| *sealed_rows);
         let filtered = terminal_workspace.as_mut();
-        let mut filters = Vec::new();
+        let mut filters = core::mem::take(spare_filters);
         if let Some(deblock) = deblock.as_mut()
             && let Some(safe_mi_end) = safe_deblock_mi_end(
                 committed_units,
@@ -1325,6 +1328,22 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             });
         }
         Self::finish_frontier(&mut frontier, filters)
+    }
+
+    /// Takes back a published link's job list, so the next link fills a list
+    /// that is already sized instead of growing a new one.
+    ///
+    /// A link's jobs are spawned and dropped by the frame that published them,
+    /// which is the only point where the list is free again.
+    pub(crate) fn recycle_filter_jobs(
+        &self,
+        mut spent: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
+    ) {
+        spent.clear();
+        let mut frontier = self.frontier.lock();
+        if spent.capacity() > frontier.spare_filters.capacity() {
+            frontier.spare_filters = spent;
+        }
     }
 
     /// Completes the frame's filter stripes after the final frontier link.
@@ -1648,6 +1667,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             deblock: None,
             filter: None,
             next_filter_stripe: 0,
+            spare_filters: Vec::new(),
         }),
         resolve: Mutex::new(ScheduledResolve {
             next: 0,
