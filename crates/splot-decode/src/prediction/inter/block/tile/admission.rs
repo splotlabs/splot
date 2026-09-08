@@ -202,6 +202,47 @@ enum TileReconRow<T: ReconSample> {
     Taken,
 }
 
+#[derive(Default)]
+pub(in crate::prediction::inter) struct ScheduledRowSlots<T: ReconSample> {
+    rows: Mutex<Vec<TileReconRow<T>>>,
+    prepared: Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
+    spares: Mutex<Vec<Vec<ReadyReconRow<T>>>>,
+}
+
+impl<T: ReconSample> ScheduledRowSlots<T> {
+    fn reset(&mut self, units: usize, batches: &[core::ops::Range<usize>]) -> Result<()> {
+        let rows = self.rows.get_mut();
+        rows.clear();
+        rows.try_reserve(units)
+            .map_err(|_| inter_allocation!("inter admission rows"))?;
+        let prepared = self.prepared.get_mut();
+        prepared
+            .try_reserve(batches.len().saturating_sub(prepared.len()))
+            .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
+        prepared.resize_with(prepared.len().max(batches.len()), || None);
+        let spares = self.spares.get_mut();
+        spares
+            .try_reserve(batches.len().saturating_sub(spares.len()))
+            .map_err(|_| inter_allocation!("inter admission batch slots"))?;
+        spares.resize_with(spares.len().max(batches.len()), Vec::new);
+        for (spare, range) in spares.iter_mut().zip(batches) {
+            spare.clear();
+            spare
+                .try_reserve(range.len())
+                .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
+        }
+        Ok(())
+    }
+
+    fn retire(&self) -> Self {
+        Self {
+            rows: Mutex::new(core::mem::take(&mut *self.rows.lock())),
+            prepared: Mutex::new(core::mem::take(&mut *self.prepared.lock())),
+            spares: Mutex::new(core::mem::take(&mut *self.spares.lock())),
+        }
+    }
+}
+
 /// Filter jobs made ready by one ordered frontier link.
 pub(crate) struct ScheduledFrameProgress<T: ReconSample> {
     pub(crate) filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
@@ -220,11 +261,7 @@ pub(crate) struct ScheduledCommitProgress {
 struct TileRecon<T: ReconSample> {
     /// The decode's reusable storage, for the tile scratch each commit opens.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    rows: Mutex<Vec<TileReconRow<T>>>,
-    prepared: Mutex<Vec<Option<Vec<ReadyReconRow<T>>>>>,
-    /// Row lists a replayed unit gave back, for the next unit to precompute
-    /// into. Every unit of the tile builds two of these and drops them again.
-    spare_batches: Mutex<Vec<Vec<ReadyReconRow<T>>>>,
+    slots: ScheduledRowSlots<T>,
     unit_count: usize,
     units_per_row: usize,
     batches: Vec<core::ops::Range<usize>>,
@@ -369,7 +406,7 @@ impl<T: ReconSample> TileRecon<T> {
         info: splot_recon::DecodedFrameInfo,
         out: &mut Vec<Condition<'a>>,
     ) {
-        let rows = self.rows.lock();
+        let rows = self.slots.rows.lock();
         let mut bounds = row_gate::RowReferenceBounds::default();
         for ready in self
             .batch_range(index)
@@ -394,36 +431,12 @@ impl<T: ReconSample> TileRecon<T> {
         .conditions(&bounds, out);
     }
 
-    /// Row lists the tile keeps between units.
-    ///
-    /// Small on purpose: a unit holds at most the two lists it is building, so
-    /// beyond a handful the pool only pins memory the tile has stopped using.
-    const MAX_SPARE_BATCHES: usize = 8;
-
-    fn take_spare_batch(&self, capacity: usize) -> Vec<ReadyReconRow<T>> {
-        let mut batch = self.spare_batches.lock().pop().unwrap_or_default();
-        batch.clear();
-        batch.reserve(capacity);
-        batch
-    }
-
-    fn return_spare_batch(&self, mut batch: Vec<ReadyReconRow<T>>) {
-        if batch.capacity() == 0 {
-            return;
-        }
-        batch.clear();
-        let mut spare = self.spare_batches.lock();
-        if spare.len() < Self::MAX_SPARE_BATCHES {
-            spare.push(batch);
-        }
-    }
-
     fn precompute(&self, index: usize, surfaces: &Mutex<SurfaceSource<T>>) -> Result<()> {
         let range = self
             .batch_range(index)
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         {
-            let prepared = self.prepared.lock();
+            let prepared = self.slots.prepared.lock();
             let Some(slot) = prepared.get(index) else {
                 return Err(invalid_inter_tile_scheduling_state());
             };
@@ -432,7 +445,7 @@ impl<T: ReconSample> TileRecon<T> {
             }
         }
         let ready = {
-            let mut rows = self.rows.lock();
+            let mut rows = self.slots.rows.lock();
             let Some(rows) = rows.get_mut(range) else {
                 return Err(invalid_inter_tile_scheduling_state());
             };
@@ -442,7 +455,13 @@ impl<T: ReconSample> TileRecon<T> {
             {
                 return Err(invalid_inter_tile_scheduling_state());
             }
-            let mut ready = self.take_spare_batch(rows.len());
+            let mut ready = core::mem::take(
+                self.slots
+                    .spares
+                    .lock()
+                    .get_mut(index)
+                    .ok_or_else(invalid_inter_tile_scheduling_state)?,
+            );
             for row in rows {
                 if let TileReconRow::Ready(row) = core::mem::replace(row, TileReconRow::Taken) {
                     ready.push(row);
@@ -509,7 +528,7 @@ impl<T: ReconSample> TileRecon<T> {
                 })
                 .collect()
         });
-        let mut prepared = self.prepared.lock();
+        let mut prepared = self.slots.prepared.lock();
         let Some(slot) = prepared.get_mut(index) else {
             return Err(invalid_inter_tile_scheduling_state());
         };
@@ -523,7 +542,7 @@ impl<T: ReconSample> TileRecon<T> {
     fn commit_batch(&self, index: usize) -> Result<CommittedBatch<T>> {
         let mut commit = take_active_commit(&self.commit)?;
         let batch = {
-            let mut prepared = self.prepared.lock();
+            let mut prepared = self.slots.prepared.lock();
             prepared
                 .get_mut(index)
                 .ok_or_else(invalid_inter_tile_scheduling_state)?
@@ -549,7 +568,12 @@ impl<T: ReconSample> TileRecon<T> {
                 decode.retain_rows(spent);
             }
         }
-        self.return_spare_batch(batch);
+        *self
+            .slots
+            .spares
+            .lock()
+            .get_mut(index)
+            .ok_or_else(invalid_inter_tile_scheduling_state)? = batch;
         let terminal = commit.next == self.unit_count;
         let closed_rows = closed_frontier_rows(
             commit.next,
@@ -573,6 +597,7 @@ impl<T: ReconSample> TileRecon<T> {
         let surfaces = commit.surfaces.lock().drain_free();
         let mut scratch =
             TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, surfaces);
+        scratch.scheduled_rows = self.slots.retire();
         scratch.buffers.clone_from(&self.buffers);
         *self.scratch.lock() = Some(scratch);
         commit.workspace
@@ -1071,7 +1096,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.materialize_rows(self.recon.unit_count);
         let mut awaiting = None;
         let mut resolve = self.resolve.lock();
-        let mut rows = self.recon.rows.lock();
+        let mut rows = self.recon.slots.rows.lock();
         loop {
             let next = resolve.next;
             let Some(state) = rows.get(next) else {
@@ -1200,7 +1225,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// and a unit the pass has not reached simply stops the pull.
     fn materialize_rows(&self, units: usize) {
         let units = units.min(self.recon.unit_count);
-        let mut rows = self.recon.rows.lock();
+        let mut rows = self.recon.slots.rows.lock();
         if rows.len() >= units {
             return;
         }
@@ -1609,12 +1634,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let prepass_block_decoded = geometry.block_decoded.clone();
     let block_decoded = geometry.block_decoded.clone();
     let batches = superblock_row_batches(unit_count, units_per_row.max(1), RECON_BATCH_UNITS);
-    let batch_count = batches.len();
-    let mut prepared = Vec::new();
-    prepared
-        .try_reserve_exact(batch_count)
-        .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
-    prepared.resize_with(batch_count, || None);
+    scratch.scheduled_rows.reset(unit_count, &batches)?;
     let TileDecodeScratch {
         parse: _,
         surface_source: _,
@@ -1622,6 +1642,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         workers,
         surfaces,
         batches: _,
+        scheduled_rows,
         buffers: _,
     } = scratch;
     let surface_source = Arc::new(Mutex::new(SurfaceSource::new(info, rects, surfaces)));
@@ -1629,9 +1650,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let tile = ScheduledTileRecon {
         recon: TileRecon {
             buffers: buffers.clone(),
-            rows: Mutex::new(Vec::with_capacity(unit_count)),
-            prepared: Mutex::new(prepared),
-            spare_batches: Mutex::new(Vec::new()),
+            slots: scheduled_rows,
             unit_count,
             units_per_row,
             batches,
@@ -1690,6 +1709,38 @@ mod tests {
     use super::{TileCommit, project_temporal_band, safe_deblock_mi_end, take_active_commit};
     use crate::prediction::inter::MotionFieldLayout;
     use parking_lot::Mutex;
+
+    #[test]
+    fn scheduled_row_slots_survive_retirement_and_smaller_tiles() -> crate::Result<()> {
+        let mut slots = super::ScheduledRowSlots::<u8>::default();
+        let batches = super::superblock_row_batches(65, 8, 4);
+        slots.reset(65, &batches)?;
+        let rows = slots.rows.get_mut().as_ptr();
+        let prepared = slots.prepared.get_mut().as_ptr();
+        let spares: Vec<_> = slots.spares.get_mut().iter().map(Vec::as_ptr).collect();
+        for units in [65, 3, 65] {
+            let active = super::superblock_row_batches(units, 8, 4);
+            slots.reset(units, &active)?;
+            slots
+                .rows
+                .get_mut()
+                .resize_with(units, || super::TileReconRow::Taken);
+            let retired = slots.retire();
+            assert!(slots.rows.get_mut().is_empty());
+            slots = retired;
+            assert_eq!(slots.rows.get_mut().as_ptr(), rows);
+            assert_eq!(slots.prepared.get_mut().as_ptr(), prepared);
+            assert!(
+                slots
+                    .spares
+                    .get_mut()
+                    .iter()
+                    .zip(&spares)
+                    .all(|(batch, &pointer)| batch.as_ptr() == pointer)
+            );
+        }
+        Ok(())
+    }
 
     struct TemporalProjectionCase {
         plan: super::TemporalBandPlan,

@@ -1016,6 +1016,7 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     workers: InterReconScratchPool<T>,
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
     batches: admission::BatchRowSlots<T>,
+    scheduled_rows: admission::ScheduledRowSlots<T>,
     /// The decode's reusable storage, for the sealed copy and the row sets.
     pub(in crate::prediction::inter) buffers:
         Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
@@ -1034,6 +1035,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             workers: workers.take_reusable(),
             surfaces,
             batches: admission::BatchRowSlots::default(),
+            scheduled_rows: admission::ScheduledRowSlots::default(),
             buffers: None,
         }
     }
@@ -1654,6 +1656,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         mut workers,
         surfaces: mut recycled_surfaces,
         mut batches,
+        scheduled_rows,
         buffers,
     } = scratch;
     workers.ensure_workers(
@@ -1822,6 +1825,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             workers,
             surfaces: recycled_surfaces,
             batches,
+            scheduled_rows,
         },
         workspace,
         TileDecodeOutput {
