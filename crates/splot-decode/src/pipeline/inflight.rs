@@ -321,6 +321,21 @@ impl PipelineFrameSlot {
         }
     }
 
+    /// Whether two settled slots hold the same sample allocation.
+    pub(crate) fn shares_samples(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Eight(left), Self::Eight(right)) => left
+                .try_frozen()
+                .zip(right.try_frozen())
+                .is_some_and(|(left, right)| std::ptr::eq(left, right)),
+            (Self::Ten(left), Self::Ten(right)) => left
+                .try_frozen()
+                .zip(right.try_frozen())
+                .is_some_and(|(left, right)| std::ptr::eq(left, right)),
+            _ => false,
+        }
+    }
+
     /// Returns the number of live handles on the published frame storage.
     pub(crate) fn handle_count(&self) -> usize {
         match self {

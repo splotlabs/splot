@@ -135,7 +135,8 @@ pub(crate) fn emit_frames_from_prepared(
 /// buffers for the frames that take their reference slots and subtracting their
 /// bytes from the live-frame accounting.
 ///
-/// A frame with any remaining owner or shared sample handle is skipped: its
+/// A frame with any remaining owner is skipped. Shared samples retire only
+/// when another tracked frame keeps their bytes accounted for; otherwise their
 /// planes stay alive whatever the driver releases, and subtracting the bytes
 /// would let the live-frame peak run above
 /// [`crate::DecodeLimitName::MaxReferenceStoreBytes`]. The driver rescans every
@@ -158,8 +159,17 @@ fn reclaim_unowned_frames(
             || emission.holds(frame_index)
             || ring.holds(frame_index)
             || !frame.frame.is_settled()
-            || frame.frame.handle_count() > 1
             || !frame.frame.is_sole_handle()
+        {
+            continue;
+        }
+        if frame.frame.handle_count() > 1
+            && !frames.iter().enumerate().any(|(other_index, other)| {
+                other_index != frame_index
+                    && other
+                        .as_ref()
+                        .is_some_and(|other| frame.frame.shares_samples(&other.frame))
+            })
         {
             continue;
         }

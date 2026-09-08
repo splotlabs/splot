@@ -581,6 +581,67 @@ mod tests {
     }
 
     #[test]
+    fn emitted_sample_aliases_retire_without_losing_live_byte_accounting() {
+        let source = settled_frame(8, FrameOutputEffects::empty()).unwrap();
+        let mut retained_bytes = retained_decoded_frame_bytes(&source).unwrap();
+        let source_bytes = retained_bytes;
+        let external = source.frame.ready().unwrap();
+        let mut frames = vec![Some(source), None];
+        let reference = crate::reference::buffer::RuntimeReferenceBuffer::new(1).unwrap();
+        let mut scheduler = OutputScheduler::new(1);
+        scheduler.pending[0] = Some((0, 0));
+        let queue = EmissionQueue::default();
+        let mut ring = crate::pipeline::inflight::InflightRing::new(
+            core::num::NonZeroUsize::MIN,
+            crate::support::decode_buffers::DecodeBuffers::new(),
+        );
+        for _ in 0..128 {
+            let mut alias = settled_frame(8, FrameOutputEffects::empty()).unwrap();
+            alias.frame =
+                PipelineFrameSlot::completed(frames[0].as_ref().unwrap().frame.ready().unwrap());
+            assert_eq!(retained_decoded_frame_bytes(&alias).unwrap(), 0);
+            frames[1] = Some(alias);
+            crate::pipeline::reclaim_unowned_frames(
+                &mut frames,
+                &reference,
+                &scheduler,
+                &queue,
+                &mut ring,
+                &mut retained_bytes,
+            )
+            .unwrap();
+            assert!(frames[1].is_none());
+            assert_eq!(retained_bytes, source_bytes);
+        }
+        scheduler.pending[0] = None;
+        crate::pipeline::reclaim_unowned_frames(
+            &mut frames,
+            &reference,
+            &scheduler,
+            &queue,
+            &mut ring,
+            &mut retained_bytes,
+        )
+        .unwrap();
+        assert!(
+            frames[0].is_some(),
+            "external samples still need accounting"
+        );
+        drop(external);
+        crate::pipeline::reclaim_unowned_frames(
+            &mut frames,
+            &reference,
+            &scheduler,
+            &queue,
+            &mut ring,
+            &mut retained_bytes,
+        )
+        .unwrap();
+        assert!(frames.iter().all(Option::is_none));
+        assert_eq!(retained_bytes, 0);
+    }
+
+    #[test]
     fn new_sequence_flushes_pending_output_and_recreates_slots() {
         let mut scheduler = OutputScheduler::new(2);
         assert!(scheduler.refresh(0b11, 7, 5, true, false).is_empty());
