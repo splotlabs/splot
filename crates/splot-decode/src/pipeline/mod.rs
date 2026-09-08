@@ -1293,12 +1293,7 @@ where
                             &sequence,
                             inter_envelope.offset,
                         )?;
-                        let _user_qm_scope =
-                            crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
-                        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
-                            frame_engine::intra::build_frame_qm_levels(&inter_core),
-                        );
-                        if splot_parallel::current_pool_width() > 1
+                        let parse_progress = if splot_parallel::current_pool_width() > 1
                             && inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
                         {
                             frame_pipeline::prepare_entropy_submission(
@@ -1309,6 +1304,16 @@ where
                                 &mut recon_lane,
                             );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
+                            Some(ring.claim_parse_slot())
+                        } else {
+                            None
+                        };
+                        let _user_qm_scope =
+                            crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
+                        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+                            frame_engine::intra::build_frame_qm_levels(&inter_core),
+                        );
+                        if let Some(parse_progress) = parse_progress {
                             let records = decode_scratch_eight.take_frame_filter_records();
                             let quantizer =
                                 crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
@@ -1342,9 +1347,6 @@ where
                                 segment_ids.clone(),
                                 motion.clone(),
                             );
-                            let parse_progress = Arc::new(inter::ParseProgress::for_decode(
-                                records.buffers.as_ref(),
-                            ));
                             let result = frame_pipeline::schedule_entropy(
                                 move |publish_early| {
                                     let _scopes = quantizer.install_frame();
@@ -1524,12 +1526,7 @@ where
                             &sequence,
                             inter_envelope.offset,
                         )?;
-                        let _user_qm_scope =
-                            crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
-                        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
-                            frame_engine::intra::build_frame_qm_levels(&inter_core),
-                        );
-                        if splot_parallel::current_pool_width() > 1
+                        let parse_progress = if splot_parallel::current_pool_width() > 1
                             && inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
                         {
                             frame_pipeline::prepare_entropy_submission(
@@ -1540,6 +1537,16 @@ where
                                 &mut recon_lane,
                             );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
+                            Some(ring.claim_parse_slot())
+                        } else {
+                            None
+                        };
+                        let _user_qm_scope =
+                            crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
+                        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+                            frame_engine::intra::build_frame_qm_levels(&inter_core),
+                        );
+                        if let Some(parse_progress) = parse_progress {
                             let records = decode_scratch_ten.take_frame_filter_records();
                             let quantizer =
                                 crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
@@ -1573,9 +1580,6 @@ where
                                 segment_ids.clone(),
                                 motion.clone(),
                             );
-                            let parse_progress = Arc::new(inter::ParseProgress::for_decode(
-                                records.buffers.as_ref(),
-                            ));
                             let result = frame_pipeline::schedule_entropy(
                                 move |publish_early| {
                                     let _scopes = quantizer.install_frame();

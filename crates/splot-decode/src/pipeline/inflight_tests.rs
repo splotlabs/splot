@@ -14,6 +14,59 @@ use crate::prediction::inter::InterReferenceState;
 use crate::test_support::decoded_frame;
 
 #[test]
+fn saturated_parse_slot_drivers_execute_queued_last_readers() {
+    let barrier = std::sync::Barrier::new(2);
+    WorkerPool::new(ThreadCount::from(2usize))
+        .unwrap()
+        .install(|| {
+            ready_task_scope(|scope| {
+                for _ in 0..2 {
+                    let barrier = &barrier;
+                    scope.spawn(move |scope| {
+                        let mut ring = InflightRing::new(nz(1), test_plane_pool());
+                        let first = ring.claim_parse_slot();
+                        first.cell().publish(1);
+                        scope.spawn(move |_| drop(first));
+                        barrier.wait();
+                        assert_eq!(ring.claim_parse_slot().cell().current(), 0);
+                    });
+                }
+            })
+            .unwrap();
+        });
+}
+
+#[test]
+fn parse_slots_are_bounded_and_reset_only_after_readers_release() {
+    let mut ring = InflightRing::new(nz(2), test_plane_pool());
+    let first = ring.claim_parse_slot();
+    let pointer = Arc::as_ptr(&first) as usize;
+    first.cell().publish(1);
+    let second = ring.claim_parse_slot();
+    WorkerPool::new(ThreadCount::from(2usize))
+        .unwrap()
+        .install(|| {
+            ready_task_scope(|scope| {
+                scope.spawn(move |_| {
+                    for _ in 0..1024 {
+                        assert_eq!(first.cell().current(), 1);
+                        std::thread::yield_now();
+                    }
+                });
+                let reused = ring.claim_parse_slot();
+                assert_eq!(Arc::as_ptr(&reused) as usize, pointer);
+                assert_eq!(reused.cell().current(), 0);
+            })
+            .unwrap();
+        });
+    drop(second);
+    for _ in 0..128 {
+        drop(ring.claim_parse_slot());
+    }
+    assert_eq!(ring.parse_slots.len(), 2);
+}
+
+#[test]
 fn a_retired_frame_leaves_its_sample_buffers_in_the_ring() {
     let mut ring = InflightRing::new(nz(1), test_plane_pool());
     let frame = decoded_frame(4, 4);

@@ -129,11 +129,7 @@ impl InterFrameParse {
         {
             return Err(tile::invalid_inter_tile_scheduling_state());
         }
-        let mut tile_records = parse_progress.take_records();
-        if let Some(buffers) = records.buffers.as_ref() {
-            buffers.note_tile_record_capacities(tile_records.capacities());
-        }
-        records.append(&mut tile_records);
+        parse_progress.append_records(&mut records);
         let has_active_deblock = core
             .deblocking_filter_params
             .as_ref()

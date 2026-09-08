@@ -1353,22 +1353,18 @@ pub(crate) struct ParseProgress {
     rows: Mutex<Vec<Option<ReconRow>>>,
     geometry: Mutex<Option<Arc<TileGeometry>>>,
     records: Mutex<crate::filters::wienerns_lr::FrameFilterRecords>,
+    parser: Mutex<TileParseState>,
 }
 
 impl ParseProgress {
-    /// Opens a tile's progress with its record lists already sized for a tile
-    /// this decode has walked before.
-    pub(crate) fn for_decode(
-        buffers: Option<&Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    ) -> Self {
-        let mut records = crate::filters::wienerns_lr::FrameFilterRecords::default();
-        if let Some(buffers) = buffers {
-            records.reserve_from(buffers.tile_record_capacities());
-        }
-        Self {
-            records: Mutex::new(records),
-            ..Self::default()
-        }
+    /// Resets a retired frame's parse state while keeping its backing storage.
+    pub(crate) fn reset(&mut self, buffers: &crate::support::decode_buffers::DecodeBuffers) {
+        self.finished.reset();
+        self.rows.get_mut().clear();
+        self.geometry.get_mut().take();
+        let records = self.records.get_mut();
+        records.clear();
+        records.reserve_from(buffers.tile_record_capacities());
     }
 
     /// Hands one finished unit to the scheduler and publishes the new count.
@@ -1391,9 +1387,16 @@ impl ParseProgress {
         self.rows.lock().get_mut(index).and_then(Option::take)
     }
 
-    /// Takes the filter records detached from units already handed out.
-    pub(super) fn take_records(&self) -> crate::filters::wienerns_lr::FrameFilterRecords {
-        core::mem::take(&mut self.records.lock())
+    /// Moves the parsed records into the frame, keeping this slot's lists.
+    pub(super) fn append_records(
+        &self,
+        target: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+    ) {
+        let mut records = self.records.lock();
+        if let Some(buffers) = target.buffers.as_ref() {
+            buffers.note_tile_record_capacities(records.capacities());
+        }
+        target.append(&mut records);
     }
 
     /// Reserves room for one tile's units up front, so the parser never
@@ -1497,7 +1500,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
         gdf_state.for_tile(mi_rows.clone(), mi_cols.clone())?,
         ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
-        TileParseState::default(),
+        core::mem::take(&mut *parse_progress.parser.lock()),
     )?;
     parser.mv_grid.log_flags();
     loop {
@@ -1514,11 +1517,13 @@ pub(super) fn parse_tile_units<T: ReconSample>(
             break;
         }
     }
+    let (output, state) = parser.into_output();
+    *parse_progress.parser.lock() = state;
     Ok(ParsedTile {
         mi_rows,
         mi_cols,
         unit_count,
-        output: parser.into_output().0,
+        output,
     })
 }
 
