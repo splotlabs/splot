@@ -152,8 +152,7 @@ struct TileDecodeContext<'a, T: ReconSample> {
     params: TileWalkParams,
 }
 
-struct TileParser<'tile, 'payload> {
-    tile: &'tile mut DecodeTileWorkUnit<'payload>,
+struct TileParser<'payload> {
     walk: TileParserWalk<GeneralIntraMultiblockCursor<'payload>>,
     coeff_ctx: TileCoeffContextState,
     residual_scratch: InterResidualParseScratch,
@@ -270,9 +269,9 @@ fn inter_tile_grid_error(
     }
 }
 
-impl<'tile, 'payload> TileParser<'tile, 'payload> {
+impl<'payload> TileParser<'payload> {
     fn new<T: ReconSample>(
-        tile: &'tile mut DecodeTileWorkUnit<'payload>,
+        tile: &mut DecodeTileWorkUnit<'payload>,
         context: &TileDecodeContext<'_, T>,
         cdef_state: CdefState,
         gdf_state: GdfState,
@@ -329,7 +328,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             )
         })?;
         Ok(Self {
-            tile,
             walk: TileParserWalk::Active(walk),
             coeff_ctx: parse.coeff_ctx,
             residual_scratch: InterResidualParseScratch::default(),
@@ -354,10 +352,11 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
 
     fn next_unit<T: ReconSample>(
         &mut self,
+        tile: &mut DecodeTileWorkUnit<'payload>,
         context: &TileDecodeContext<'_, T>,
         buffers: Option<ReconRowBuffers>,
     ) -> ParserStep<ReconRow> {
-        let tile_offset = self.tile.tile_byte_span().start;
+        let tile_offset = tile.tile_byte_span().start;
         let ReconRowBuffers {
             superblocks,
             residual_coeffs,
@@ -472,7 +471,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     },
                 );
             };
-            walk.decode_next_superblock(self.tile, &mut decode_leaf, &mut on_published)
+            walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published)
                 .map(|superblock| superblock.is_some())
         };
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
@@ -1505,7 +1504,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     parser.mv_grid.log_flags();
     loop {
         let row_set = buffers.map_or_else(ReconRowBuffers::default, |decode| decode.take_rows());
-        let step = parser.next_unit(context, Some(row_set));
+        let step = parser.next_unit(tile, context, Some(row_set));
         let (mut row, last) = match step {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
@@ -1761,6 +1760,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         );
         let commit = admission::run_ordinary_tile(
             &mut parser,
+            tile,
             &mut resolve_state,
             tile_offset,
             &surface_source,

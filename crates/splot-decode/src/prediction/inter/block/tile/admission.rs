@@ -823,8 +823,9 @@ impl<'a, 'c: 'a, T: ReconSample> splot_parallel::Task<'a> for BatchJob<'a, 'c, T
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_ordinary_tile<T: ReconSample>(
-    parser: &mut TileParser<'_, '_>,
+pub(super) fn run_ordinary_tile<'payload, T: ReconSample>(
+    parser: &mut TileParser<'payload>,
+    tile: &mut DecodeTileWorkUnit<'payload>,
     resolve: &mut TileResolveState,
     tile_offset: ByteOffset,
     surfaces: &Arc<Mutex<SurfaceSource<T>>>,
@@ -892,7 +893,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             for _ in range.clone() {
                 let step = {
                     let _quantizer_scopes = quantizer.install_frame();
-                    let step = parser.next_unit(context, Some(row_buffers.take()));
+                    let step = parser.next_unit(tile, context, Some(row_buffers.take()));
                     resolve_parser_step(step, |row| {
                         resolve.resolve_unit(
                             &mut parser.mv_grid,
