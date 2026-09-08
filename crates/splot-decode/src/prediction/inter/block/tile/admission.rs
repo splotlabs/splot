@@ -291,7 +291,6 @@ pub(crate) struct ScheduledTileRecon<T: ReconSample> {
     tile_offset: ByteOffset,
     parse_progress: Arc<super::ParseProgress>,
     pending_surfaces: Arc<Mutex<SurfaceSource<T>>>,
-    buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
 
 /// Hands out one reconstruction surface per superblock, lazily.
@@ -1202,18 +1201,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .transpose()?
             .flatten();
         let mut frontier = self.frontier.lock();
-        frontier.sealed = if deblock.is_some() {
-            let mut spare = self
-                .buffers
-                .as_ref()
-                .map_or_else(Default::default, |buffers| {
-                    splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
-                });
-            let workspace = CurrentFrameWorkspace::new_recycled_from(self.info, &mut spare)?;
-            Some(crate::filters::source::DeblockedSource::new(workspace))
-        } else {
-            None
-        };
         frontier.deblock = deblock;
         frontier.filter = Some(Arc::new(filter_setup));
         Ok(())
@@ -1648,9 +1635,21 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     } = scratch;
     let surface_source = Arc::new(Mutex::new(SurfaceSource::new(info, rects, surfaces)));
     let resolve_state = TileResolveState::new(&sequence);
+    let sealed = if core
+        .deblocking_filter_params
+        .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4])
+    {
+        let mut spare = buffers.as_ref().map_or_else(Default::default, |buffers| {
+            splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
+        });
+        let workspace = CurrentFrameWorkspace::new_recycled_from(info, &mut spare)?;
+        Some(crate::filters::source::DeblockedSource::new(workspace))
+    } else {
+        None
+    };
     let tile = ScheduledTileRecon {
         recon: TileRecon {
-            buffers: buffers.clone(),
+            buffers,
             slots: scheduled_rows,
             unit_count,
             units_per_row,
@@ -1681,7 +1680,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         },
         filter_count,
         frontier: Mutex::new(ScheduledFrontier {
-            sealed: None,
+            sealed,
             sealed_rows: 0,
             terminal_workspace: None,
             deblock: None,
@@ -1700,7 +1699,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         tile_offset,
         parse_progress,
         pending_surfaces: Arc::clone(&surface_source),
-        buffers,
     };
     Ok(tile)
 }

@@ -470,10 +470,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             let commit = Arc::clone(self);
             admit.submit(
                 self.batch_key(0, 2),
-                &[
-                    Condition::completion(&self.prepared[0]),
-                    Condition::completion(self.filters_ready.as_ref()),
-                ],
+                &[Condition::completion(&self.prepared[0])],
                 splot_parallel::Job::Inline(FrameTask::Commit {
                     frame: T::scheduled_frame_ref(commit),
                     index: 0,
@@ -513,23 +510,22 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
 
     /// Submits the § 7.17 frontier link for one sealed superblock row.
     ///
-    /// The chain is ordered by the previous link alone: a link is submitted
-    /// exactly when the commit spine has sealed its rows, so its own source is
-    /// final before it exists.
+    /// The first link waits for entropy's filter records; later links wait for
+    /// their predecessor. The commit spine has already sealed each link's rows.
     fn submit_frontier(
         self: &Arc<Self>,
         batch: usize,
         row: usize,
         admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
     ) {
-        let conditions = row
+        let ready = row
             .checked_sub(1)
             .and_then(|previous| self.frontier_done.get(previous))
-            .map(Condition::completion);
+            .unwrap_or(self.filters_ready.as_ref());
         let frame = Arc::clone(self);
         admit.submit(
             self.batch_key(batch, 3),
-            conditions.as_slice(),
+            &[Condition::completion(ready)],
             splot_parallel::Job::Inline(FrameTask::Frontier {
                 frame: T::scheduled_frame_ref(frame),
                 row,
