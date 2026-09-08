@@ -44,6 +44,8 @@ use crate::support::pipeline_limits::checked_add;
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 mod frame_lifecycle;
+pub(crate) mod frame_store;
+use frame_store::FrameStore;
 pub(crate) mod frame_pipeline;
 pub(crate) mod frame_progress;
 pub(crate) mod inflight;
@@ -143,15 +145,16 @@ pub(crate) fn emit_frames_from_prepared(
 /// frame on each call, so the skipped frame is reclaimed on the first pass after
 /// its last owner releases it.
 fn reclaim_unowned_frames(
-    frames: &mut [Option<PipelineFrame>],
+    frames: &mut FrameStore,
     reference: &reference_buffer::RuntimeReferenceBuffer,
-    scheduler: &OutputScheduler,
+    scheduler: &mut OutputScheduler,
     emission: &output_schedule::EmissionQueue,
     ring: &mut inflight::InflightRing,
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
-    for frame_index in 0..frames.len() {
-        let Some(frame) = frames[frame_index].as_ref() else {
+    for slot_index in 0..frames.entries.len() {
+        let frame_index = frames.entries[slot_index].index;
+        let Some(frame) = frames.entries[slot_index].frame.as_ref() else {
             continue;
         };
         if reference.retains(frame_index)
@@ -164,16 +167,21 @@ fn reclaim_unowned_frames(
             continue;
         }
         if frame.frame.handle_count() > 1
-            && !frames.iter().enumerate().any(|(other_index, other)| {
-                other_index != frame_index
-                    && other
-                        .as_ref()
-                        .is_some_and(|other| frame.frame.shares_samples(&other.frame))
-            })
+            && !frames
+                .entries
+                .iter()
+                .enumerate()
+                .any(|(other_index, other)| {
+                    other_index != slot_index
+                        && other
+                            .frame
+                            .as_ref()
+                            .is_some_and(|other| frame.frame.shares_samples(&other.frame))
+                })
         {
             continue;
         }
-        let Some(frame) = frames.get_mut(frame_index).and_then(Option::take) else {
+        let Some(frame) = frames.entries[slot_index].frame.take() else {
             continue;
         };
         let frame_bytes = retained_decoded_frame_bytes(&frame)?;
@@ -186,6 +194,7 @@ fn reclaim_unowned_frames(
                     "decode pipeline live-frame byte accounting underflowed",
                 )
             })?;
+        scheduler.forget(frame_index);
         ring.keep_frame_planes(frame.frame);
     }
     Ok(())
@@ -684,7 +693,7 @@ where
     })?;
     let num_ref_frames = usize::from(sequence_inter.num_ref_frames);
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
-    let mut frames = Vec::new();
+    let mut frames = FrameStore::new(retain_decoded_frames, ring.capacity());
     let mut scheduler = OutputScheduler::new(num_ref_frames);
     let mut emission_queue = output_schedule::EmissionQueue::default();
     let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
@@ -930,7 +939,7 @@ where
         key_envelope.offset,
         key_envelope.header.embedded_layer_id,
     )?;
-    frames.push(Some(key_frame));
+    frames.push(key_frame)?;
     let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
@@ -979,13 +988,13 @@ where
         reclaim_unowned_frames(
             &mut frames,
             &reference,
-            &scheduler,
+            &mut scheduler,
             &emission_queue,
             ring,
             &mut retained_frame_bytes,
         )?;
     }
-    if output_frame_limit_reached(options, scheduler.emitted.len()) {
+    if output_frame_limit_reached(options, scheduler.emitted_count) {
         emission_queue.flush(&frames, &mut emit)?;
         return if retain_decoded_frames {
             select_output_frames(frames, scheduler.emitted)
@@ -998,6 +1007,32 @@ where
     let mut pending_entropy = frame_pipeline::PendingEntropyQueue::default();
     let mut shared_sequence = None;
     for next_candidate in candidates {
+        if !frames.has_space() {
+            frame_pipeline::drain_entropy_before_barrier(
+                &mut pending_entropy,
+                scope,
+                admission,
+                &mut recon_lane,
+            );
+            ring.harvest_all(decode_scratch_eight, decode_scratch_ten);
+            emission_queue.flush(&frames, &mut emit)?;
+            loop {
+                reclaim_unowned_frames(
+                    &mut frames,
+                    &reference,
+                    &mut scheduler,
+                    &emission_queue,
+                    ring,
+                    &mut retained_frame_bytes,
+                )?;
+                if frames.has_space() {
+                    break;
+                }
+                if !splot_parallel::assist_pool_once() {
+                    std::thread::yield_now();
+                }
+            }
+        }
         match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
                 frame_pipeline::drain_entropy_before_barrier(
@@ -1038,7 +1073,7 @@ where
                     &flushed,
                     &mut emit,
                 )?;
-                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
                 }
                 reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
@@ -1070,7 +1105,7 @@ where
                 };
                 let next_output_frame_count = checked_add(
                     DecodeLimitName::MaxOutputFrames,
-                    scheduler.emitted.len() as u64,
+                    scheduler.emitted_count as u64,
                     1,
                 )?;
                 ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
@@ -1099,16 +1134,13 @@ where
                         .mark_sef_derive_output(slot, scheduler.already_emitted(source_index))?;
                 }
                 reference.note_show_existing();
-                let source = frames
-                    .get(source_index)
-                    .and_then(Option::as_ref)
-                    .ok_or_else(|| {
-                        unsupported_at(
-                            "sef_reference_frame_unavailable",
-                            sef_envelope.offset,
-                            "show-existing-frame output requires its retained decoded frame",
-                        )
-                    })?;
+                let source = frames.get(source_index).ok_or_else(|| {
+                    unsupported_at(
+                        "sef_reference_frame_unavailable",
+                        sef_envelope.offset,
+                        "show-existing-frame output requires its retained decoded frame",
+                    )
+                })?;
                 let sef_frame = PipelineFrame {
                     frame: inflight::PipelineFrameSlot::completed(source.wait_ready_frame()?),
                     display_grain,
@@ -1127,7 +1159,7 @@ where
                     &sef_frame,
                 )?;
                 let frame_index = frames.len();
-                frames.push(Some(sef_frame));
+                frames.push(sef_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
                 let ordering = sef_core.display_order_hint().ok_or_else(|| {
                     unsupported_at(
@@ -1156,13 +1188,13 @@ where
                     reclaim_unowned_frames(
                         &mut frames,
                         &reference,
-                        &scheduler,
+                        &mut scheduler,
                         &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
-                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
                 }
             }
@@ -1205,7 +1237,7 @@ where
                     &flushed,
                     &mut emit,
                 )?;
-                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
                 }
                 reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
@@ -1260,7 +1292,7 @@ where
                             &emitted,
                             &mut emit,
                         )?;
-                        if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                        if output_frame_limit_reached(options, scheduler.emitted_count) {
                             break;
                         }
                     }
@@ -1288,7 +1320,7 @@ where
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
                                 DecodeLimitName::MaxOutputFrames,
-                                scheduler.emitted.len() as u64,
+                                scheduler.emitted_count as u64,
                                 1,
                             )?;
                             ensure_output_frame_count_limit(
@@ -1521,7 +1553,7 @@ where
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
                                 DecodeLimitName::MaxOutputFrames,
-                                scheduler.emitted.len() as u64,
+                                scheduler.emitted_count as u64,
                                 1,
                             )?;
                             ensure_output_frame_count_limit(
@@ -1763,7 +1795,7 @@ where
                     retained_frame_bytes,
                     &inter_frame,
                 )?;
-                frames.push(Some(inter_frame));
+                frames.push(inter_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = inter_update.order_hint;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
@@ -1813,13 +1845,13 @@ where
                     reclaim_unowned_frames(
                         &mut frames,
                         &reference,
-                        &scheduler,
+                        &mut scheduler,
                         &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
-                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
                 }
             }
@@ -1912,7 +1944,7 @@ where
                         &flushed,
                         &mut emit,
                     )?;
-                    if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                    if output_frame_limit_reached(options, scheduler.emitted_count) {
                         break;
                     }
                     reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
@@ -1982,13 +2014,13 @@ where
                         reclaim_unowned_frames(
                             &mut frames,
                             &reference,
-                            &scheduler,
+                            &mut scheduler,
                             &emission_queue,
                             ring,
                             &mut retained_frame_bytes,
                         )?;
                     }
-                    if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                    if output_frame_limit_reached(options, scheduler.emitted_count) {
                         break;
                     }
                 }
@@ -2035,7 +2067,7 @@ where
                     key_envelope.offset,
                     key_envelope.header.embedded_layer_id,
                 )?;
-                frames.push(Some(key_frame));
+                frames.push(key_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);
@@ -2085,13 +2117,13 @@ where
                     reclaim_unowned_frames(
                         &mut frames,
                         &reference,
-                        &scheduler,
+                        &mut scheduler,
                         &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
-                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
                 }
             }
@@ -2111,7 +2143,7 @@ where
         admission,
         &mut recon_lane,
     );
-    if !output_frame_limit_reached(options, scheduler.emitted.len()) {
+    if !output_frame_limit_reached(options, scheduler.emitted_count) {
         let flushed = scheduler.flush_all();
         charge_emitted_outputs(
             options,
@@ -2127,7 +2159,7 @@ where
             reclaim_unowned_frames(
                 &mut frames,
                 &reference,
-                &scheduler,
+                &mut scheduler,
                 &emission_queue,
                 ring,
                 &mut retained_frame_bytes,

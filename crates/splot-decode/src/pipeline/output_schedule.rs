@@ -3,7 +3,7 @@
 
 //! Display-order scheduling and output resource accounting.
 
-use super::{PipelineFrame, unsupported, unsupported_at};
+use super::{FrameStore, PipelineFrame, unsupported, unsupported_at};
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
@@ -20,7 +20,7 @@ use crate::{DecodeLimitName, DecodeOptions};
 /// and it decides that from frame headers, before any of those frames' samples
 /// exist. Queueing the handover therefore changes only *when* a frame reaches
 /// `emit`, never which frame does or in what order — in particular
-/// `scheduler.emitted.len()`, which drives the `--limit` early exit, still
+/// `scheduler.emitted_count`, which drives the `--limit` early exit, still
 /// advances at exactly the point it did before, so the same frames decode.
 ///
 /// The driver drains the queue at every scheduling point, handing over the
@@ -45,7 +45,7 @@ impl EmissionQueue {
     /// Emits the queued prefix whose frames have settled, leaving the rest.
     fn drain_settled(
         &mut self,
-        frames: &[Option<PipelineFrame>],
+        frames: &FrameStore,
         emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
     ) -> Result<()> {
         self.drain(frames, emit, false)
@@ -54,7 +54,7 @@ impl EmissionQueue {
     /// Emits every queued frame, waiting for the filter phases still running.
     pub(super) fn flush(
         &mut self,
-        frames: &[Option<PipelineFrame>],
+        frames: &FrameStore,
         emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
     ) -> Result<()> {
         self.drain(frames, emit, true)
@@ -62,15 +62,12 @@ impl EmissionQueue {
 
     fn drain(
         &mut self,
-        frames: &[Option<PipelineFrame>],
+        frames: &FrameStore,
         emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
         wait: bool,
     ) -> Result<()> {
         while let Some(&frame_index) = self.pending.front() {
-            let frame = frames
-                .get(frame_index)
-                .and_then(Option::as_ref)
-                .ok_or_else(missing_display_frame)?;
+            let frame = frames.get(frame_index).ok_or_else(missing_display_frame)?;
             if !wait && !frame.frame.is_settled() {
                 break;
             }
@@ -103,7 +100,7 @@ fn missing_display_frame() -> crate::error::DecodeError {
 /// Returns the output-limit, output-effect, or `emit` diagnostic.
 pub(super) fn charge_emitted_outputs(
     options: &DecodeOptions,
-    frames: &[Option<PipelineFrame>],
+    frames: &FrameStore,
     scheduler: &OutputScheduler,
     queue: &mut EmissionQueue,
     newly: &[usize],
@@ -113,18 +110,15 @@ pub(super) fn charge_emitted_outputs(
         let requested = options
             .output_frame_limit()
             .map_or(u64::MAX, std::num::NonZeroU64::get);
-        let emitted_total = (scheduler.emitted.len() as u64).min(requested);
+        let emitted_total = (scheduler.emitted_count as u64).min(requested);
         ensure_output_frame_count_limit(options.limits(), emitted_total)?;
-        let first_new = scheduler.emitted.len() - newly.len();
+        let first_new = scheduler.emitted_count - newly.len();
         for (offset, &frame_index) in newly.iter().enumerate() {
             if (first_new + offset) as u64 >= requested {
                 break;
             }
             queue.drain_settled(frames, emit)?;
-            let frame = frames
-                .get(frame_index)
-                .and_then(Option::as_ref)
-                .ok_or_else(missing_display_frame)?;
+            let frame = frames.get(frame_index).ok_or_else(missing_display_frame)?;
             frame.validate_output_effects()?;
             queue.push(frame_index);
         }
@@ -148,6 +142,7 @@ pub(super) fn frame_is_output(core: &FrameHeaderCore) -> bool {
 pub(super) struct OutputScheduler {
     pub(super) pending: Vec<Option<(usize, u32)>>,
     pub(super) emitted: Vec<usize>,
+    pub(super) emitted_count: usize,
     open_loop_active: bool,
     open_loop_order_hint: Option<u32>,
 }
@@ -157,6 +152,7 @@ impl OutputScheduler {
         Self {
             pending: vec![None; num_slots],
             emitted: Vec::new(),
+            emitted_count: 0,
             open_loop_active: false,
             open_loop_order_hint: None,
         }
@@ -165,6 +161,7 @@ impl OutputScheduler {
     pub(super) fn emit(&mut self, frame_index: usize, newly: &mut Vec<usize>) {
         if !self.emitted.contains(&frame_index) {
             self.emitted.push(frame_index);
+            self.emitted_count += 1;
             newly.push(frame_index);
         }
         for slot in &mut self.pending {
@@ -243,6 +240,10 @@ impl OutputScheduler {
             first = false;
         }
         newly
+    }
+
+    pub(super) fn forget(&mut self, frame_index: usize) {
+        self.emitted.retain(|&emitted| emitted != frame_index);
     }
 
     pub(super) fn already_emitted(&self, frame_index: usize) -> bool {
@@ -351,15 +352,12 @@ const fn is_regular_frame_obu(obu_type: ObuType) -> bool {
 }
 
 pub(super) fn select_output_frames(
-    mut frames: Vec<Option<PipelineFrame>>,
+    mut frames: FrameStore,
     output_frame_indices: Vec<usize>,
 ) -> Result<Vec<PipelineFrame>> {
     let mut outputs = Vec::with_capacity(output_frame_indices.len());
     for index in output_frame_indices {
-        let output = frames
-            .get_mut(index)
-            .and_then(Option::take)
-            .ok_or_else(missing_display_frame)?;
+        let output = frames.take(index).ok_or_else(missing_display_frame)?;
         outputs.push(output);
     }
     Ok(outputs)
@@ -550,12 +548,13 @@ mod tests {
     fn a_refused_frame_does_not_suppress_the_frames_scheduled_ahead_of_it()
     -> core::result::Result<(), &'static str> {
         let options = DecodeOptions::default();
-        let frames = vec![
+        let frames = FrameStore::from(vec![
             Some(settled_frame(8, FrameOutputEffects::empty())?),
             Some(settled_frame(16, refused_output_effects())?),
-        ];
+        ]);
         let mut scheduler = OutputScheduler::new(2);
         scheduler.emitted = vec![0, 1];
+        scheduler.emitted_count = 2;
         let mut queue = EmissionQueue::default();
         let mut widths = Vec::new();
 
@@ -581,12 +580,46 @@ mod tests {
     }
 
     #[test]
+    fn streaming_slots_reuse_storage_without_reusing_frame_identity_or_output_count() {
+        let mut frames = FrameStore::new(false, 12);
+        let slots = frames.entries.len();
+        let storage = frames.entries.as_ptr();
+        let mut scheduler = OutputScheduler::new(1);
+        let mut newly = Vec::new();
+        for index in 0..slots {
+            frames
+                .push(settled_frame(8, FrameOutputEffects::empty()).unwrap())
+                .unwrap();
+            scheduler.emit(index, &mut newly);
+        }
+        assert!(!frames.has_space());
+        for retired in 0..1024 {
+            assert!(frames.take(retired).is_some());
+            scheduler.forget(retired);
+            let next = frames.len();
+            frames
+                .push(settled_frame(8, FrameOutputEffects::empty()).unwrap())
+                .unwrap();
+            newly.clear();
+            scheduler.emit(next, &mut newly);
+            scheduler.emit(next, &mut newly);
+            assert_eq!(newly, [next]);
+            assert!(frames.get(retired).is_none());
+            assert!(frames.get(next).is_some());
+            assert_eq!(frames.entries.as_ptr(), storage);
+            assert_eq!(frames.entries.len(), slots);
+            assert_eq!(scheduler.emitted.len(), slots);
+            assert_eq!(scheduler.emitted_count, next + 1);
+        }
+    }
+
+    #[test]
     fn emitted_sample_aliases_retire_without_losing_live_byte_accounting() {
         let source = settled_frame(8, FrameOutputEffects::empty()).unwrap();
         let mut retained_bytes = retained_decoded_frame_bytes(&source).unwrap();
         let source_bytes = retained_bytes;
         let external = source.frame.ready().unwrap();
-        let mut frames = vec![Some(source), None];
+        let mut frames = FrameStore::from(vec![Some(source), None]);
         let reference = crate::reference::buffer::RuntimeReferenceBuffer::new(1).unwrap();
         let mut scheduler = OutputScheduler::new(1);
         scheduler.pending[0] = Some((0, 0));
@@ -598,46 +631,46 @@ mod tests {
         for _ in 0..128 {
             let mut alias = settled_frame(8, FrameOutputEffects::empty()).unwrap();
             alias.frame =
-                PipelineFrameSlot::completed(frames[0].as_ref().unwrap().frame.ready().unwrap());
+                PipelineFrameSlot::completed(frames.get(0).unwrap().frame.ready().unwrap());
             assert_eq!(retained_decoded_frame_bytes(&alias).unwrap(), 0);
-            frames[1] = Some(alias);
+            frames.entries[1].frame = Some(alias);
             crate::pipeline::reclaim_unowned_frames(
                 &mut frames,
                 &reference,
-                &scheduler,
+                &mut scheduler,
                 &queue,
                 &mut ring,
                 &mut retained_bytes,
             )
             .unwrap();
-            assert!(frames[1].is_none());
+            assert!(frames.get(1).is_none());
             assert_eq!(retained_bytes, source_bytes);
         }
         scheduler.pending[0] = None;
         crate::pipeline::reclaim_unowned_frames(
             &mut frames,
             &reference,
-            &scheduler,
+            &mut scheduler,
             &queue,
             &mut ring,
             &mut retained_bytes,
         )
         .unwrap();
         assert!(
-            frames[0].is_some(),
+            frames.get(0).is_some(),
             "external samples still need accounting"
         );
         drop(external);
         crate::pipeline::reclaim_unowned_frames(
             &mut frames,
             &reference,
-            &scheduler,
+            &mut scheduler,
             &queue,
             &mut ring,
             &mut retained_bytes,
         )
         .unwrap();
-        assert!(frames.iter().all(Option::is_none));
+        assert!(frames.entries.iter().all(|entry| entry.frame.is_none()));
         assert_eq!(retained_bytes, 0);
     }
 

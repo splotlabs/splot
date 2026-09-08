@@ -343,7 +343,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,
     )?;
-    let (store, meta) = reference.build_store_eight(&frames)?;
+    let (store, meta) = reference.build_store_eight(&frames.into())?;
     let inter_state = std::sync::Arc::new(super::InterReferenceState::from_metadata(store, meta));
     let first_picture_in_tu = prefix
         .iter()
@@ -440,7 +440,7 @@ fn parse_inter_core_for_validation_inner(
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,
     )?;
-    let (store, meta) = reference.build_store_eight(&frames)?;
+    let (store, meta) = reference.build_store_eight(&frames.into())?;
     let inter_state = super::InterReferenceState::from_metadata(store, meta);
     let first_picture_in_tu = prefix
         .iter()
