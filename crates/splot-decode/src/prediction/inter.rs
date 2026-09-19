@@ -455,17 +455,12 @@ pub(crate) struct EntropyDependencies {
 }
 
 impl EntropyDependencies {
-    pub(crate) fn condition_iter(&self) -> impl Iterator<Item = splot_parallel::Condition<'_>> {
+    pub(crate) fn conditions(&self) -> impl Iterator<Item = splot_parallel::Condition<'_>> {
         self.cdfs
             .iter()
             .map(FrameCdfHandle::condition)
             .chain(self.ccso_grids.iter().map(CcsoGridHandle::condition))
             .chain(self.segment_ids.iter().map(SegmentIdMapHandle::condition))
-    }
-
-    /// Admission conditions for every selected CDF and CCSO source.
-    pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'_>> {
-        self.condition_iter().collect()
     }
 }
 

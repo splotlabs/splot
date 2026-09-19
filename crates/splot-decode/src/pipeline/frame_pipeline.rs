@@ -90,7 +90,7 @@ where
     scheduler.submit_iter(
         scope,
         order_key,
-        &mut dependencies.condition_iter(),
+        &mut dependencies.conditions(),
         splot_parallel::Job::Inline(T::parse_task(context)),
     );
     result
