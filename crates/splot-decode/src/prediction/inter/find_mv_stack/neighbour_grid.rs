@@ -358,6 +358,7 @@ pub(crate) struct NeighbourMvGrid {
 }
 
 impl NeighbourMvGrid {
+    #[cfg(test)]
     pub(crate) fn new_for_tile(
         mi_rows: core::ops::Range<usize>,
         mi_cols: core::ops::Range<usize>,

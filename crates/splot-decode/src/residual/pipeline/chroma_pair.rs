@@ -16,7 +16,7 @@ use super::{ResidualPlanePlan, ResidualReconstructionPlan};
 
 pub(super) fn can_hold_for_cctx_pair(
     plane: ResidualPlanePlan,
-    work_unit: &DecodeTileWorkUnit<'_>,
+    work_unit: &DecodeTileWorkUnit,
 ) -> bool {
     plane.plane_id == PlaneId::U
         && !plane.defer_reconstruction

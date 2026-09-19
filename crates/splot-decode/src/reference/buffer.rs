@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use crate::error::{DecodeReferenceStateError, Result};
 use crate::pipeline::PipelineFrame;
+use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::{
     CcsoGridHandle, FrameCdfHandle, MotionFieldHandle, SegmentIdMapHandle,
@@ -257,21 +258,21 @@ impl RuntimeReferenceBuffer {
 
     pub(crate) fn build_store_eight(
         &self,
-        frames: &[Option<PipelineFrame>],
+        frames: &FrameStore,
     ) -> Result<(ReferenceFrameStore<RefFrameSlot<u8>>, ReferenceMetadata)> {
         self.build_store(frames, PipelineFrame::slot_eight)
     }
 
     pub(crate) fn build_store_ten(
         &self,
-        frames: &[Option<PipelineFrame>],
+        frames: &FrameStore,
     ) -> Result<(ReferenceFrameStore<RefFrameSlot<u16>>, ReferenceMetadata)> {
         self.build_store(frames, PipelineFrame::slot_ten)
     }
 
     fn build_store<T: splot_recon::ReconSample>(
         &self,
-        frames: &[Option<PipelineFrame>],
+        frames: &FrameStore,
         frame_slot: impl Fn(&PipelineFrame) -> Result<RefFrameSlot<T>>,
     ) -> Result<(ReferenceFrameStore<RefFrameSlot<T>>, ReferenceMetadata)> {
         let num = self.slots.len();
@@ -286,14 +287,16 @@ impl RuntimeReferenceBuffer {
             let frame_index = slot
                 .frame_index
                 .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
-            let frame = frames
-                .get(frame_index)
-                .ok_or(DecodeReferenceStateError::FrameIndexOutOfRange {
+            if frame_index >= frames.len() {
+                return Err(DecodeReferenceStateError::FrameIndexOutOfRange {
                     slot: i,
                     frame_index,
                     frame_count: frames.len(),
-                })?
-                .as_ref()
+                }
+                .into());
+            }
+            let frame = frames
+                .get(frame_index)
                 .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
             let reference_slot = ReferenceSlot::new(i)?;
             let reference_frame = frame_slot(frame)?;

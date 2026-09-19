@@ -636,6 +636,47 @@ impl FrameSegmentIdMap {
         })
     }
 
+    pub(crate) fn reset(
+        &mut self,
+        mi_rows: usize,
+        mi_cols: usize,
+    ) -> Result<(), TileSegmentIdStateError> {
+        let cells =
+            mi_rows
+                .checked_mul(mi_cols)
+                .ok_or(TileSegmentIdStateError::ArithmeticOverflow {
+                    operation: "frame segment-id map size",
+                    left: mi_rows,
+                    right: mi_cols,
+                })?;
+        if mi_rows == 0 || mi_cols == 0 {
+            return Err(TileSegmentIdStateError::EmptyDimensions { mi_rows, mi_cols });
+        }
+        self.cells
+            .try_reserve(cells.saturating_sub(self.cells.len()))
+            .map_err(|source| TileSegmentIdStateError::Allocation { source })?;
+        self.cells.clear();
+        self.cells.resize(cells, 0);
+        self.mi_rows = mi_rows;
+        self.mi_cols = mi_cols;
+        Ok(())
+    }
+
+    pub(crate) fn copy_from(&mut self, source: &Self) -> Result<(), TileSegmentIdStateError> {
+        self.cells
+            .try_reserve(source.cells.len().saturating_sub(self.cells.len()))
+            .map_err(|source| TileSegmentIdStateError::Allocation { source })?;
+        self.mi_rows = source.mi_rows;
+        self.mi_cols = source.mi_cols;
+        self.cells.clone_from(&source.cells);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fill(&mut self, value: u8) {
+        self.cells.fill(value);
+    }
+
     pub(crate) fn dimensions(&self) -> (usize, usize) {
         (self.mi_rows, self.mi_cols)
     }

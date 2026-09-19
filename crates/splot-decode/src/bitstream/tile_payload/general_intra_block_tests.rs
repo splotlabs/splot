@@ -25,13 +25,11 @@ const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
 const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
-fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {
+fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit {
     make_test_work_unit(payload, CdfUpdateMode::Disabled)
 }
 
-fn symbols_at_block_start<'payload>(
-    work_unit: &DecodeTileWorkUnit<'payload>,
-) -> SymbolDecoder<'payload> {
+fn symbols_at_block_start<'payload>(work_unit: &DecodeTileWorkUnit) -> SymbolDecoder<'payload> {
     let mut symbols = symbol_decoder(work_unit.tile_bytes());
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
     cdfs.with_row_mut(
@@ -142,7 +140,7 @@ fn encode_luma_mode_path(path: LumaModeEofPath) -> Vec<u8> {
 
 #[allow(clippy::too_many_arguments)]
 fn decode_general_intra_luma_block_mode(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,
@@ -172,7 +170,7 @@ fn decode_general_intra_luma_block_mode(
 
 #[allow(clippy::too_many_arguments)]
 fn decode_general_intra_block_modes(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,

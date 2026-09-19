@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::super::{OwnedFilterJob, OwnedFilterSetup};
+use super::super::{OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::{DeblockedReadLease, DeblockedSource};
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Default)]
 struct AdmitCounter(AtomicUsize);
 
-impl<'job> splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>
+impl<'job> splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>
     for AdmitCounter
 {
     fn admit_ready(&self) -> usize {
@@ -22,18 +22,18 @@ impl<'job> splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTas
         0
     }
 
-    fn submit(
+    fn submit_iter(
         &self,
         _order_key: u64,
-        _conditions: &[splot_parallel::Condition<'_>],
-        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        _conditions: &mut dyn Iterator<Item = splot_parallel::Condition<'_>>,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
         drop(job);
     }
 
     fn spawn_ready(
         &self,
-        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
         drop(job);
     }
@@ -41,7 +41,7 @@ impl<'job> splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTas
     fn submit_ready_batch(
         &self,
         _order_key: u64,
-        jobs: Vec<splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>>,
+        jobs: Vec<splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>>,
     ) {
         drop(jobs);
     }
@@ -49,7 +49,7 @@ impl<'job> splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTas
     fn continue_ready(
         &self,
         _order_key: u64,
-        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask>,
+        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
         drop(job);
     }
@@ -250,7 +250,9 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
     core.deblocking_filter_params = Some(params);
     core.tile_info = None;
     assert_eq!(
-        crate::filters::gdf::stripe_ranges(&core, 32).unwrap(),
+        crate::filters::gdf::stripe_ranges(&core, 32)
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap(),
         [(0, 32)]
     );
     let records = deblock_records();
@@ -404,6 +406,7 @@ fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
     core.deblocking_filter_params = None;
     assert_eq!(
         crate::filters::gdf::stripe_ranges(&core, 128)
+            .collect::<crate::Result<Vec<_>>>()
             .unwrap()
             .len(),
         3,
@@ -651,7 +654,7 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
 }
 
 fn arc_owned_filter_setup() -> (
-    Arc<OwnedFilterSetup<'static, 'static, u16>>,
+    OwnedFilterShell<u16>,
     CurrentFrameWorkspace<u16>,
     Arc<crate::pipeline::frame_progress::FrameProgress<u16>>,
 ) {
@@ -663,7 +666,11 @@ fn arc_owned_filter_setup() -> (
         .into_owned_filter_setup_published(core, false, Arc::clone(&progress))
         .unwrap();
     let workspace = workspace.unwrap();
-    (Arc::new(setup), workspace, progress)
+    (Arc::new(Some(setup)), workspace, progress)
+}
+
+fn owned_setup(setup: &OwnedFilterShell<u16>) -> &OwnedFilterSetup<'static, 'static, u16> {
+    setup.as_ref().as_ref().unwrap()
 }
 
 #[test]
@@ -707,15 +714,16 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
 }
 
 fn owned_filter_jobs(
-    setup: &Arc<OwnedFilterSetup<'static, 'static, u16>>,
+    setup: &OwnedFilterShell<u16>,
     source: &DeblockedSource<u16>,
     order: &[usize],
 ) -> Vec<OwnedFilterJob<u16>> {
     order
         .iter()
         .map(|&stripe| {
-            let (start, end) = setup.stripe_ranges()[stripe];
-            setup.source_job(
+            let (start, end) = owned_setup(setup).stripe_ranges()[stripe];
+            OwnedFilterSetup::source_job(
+                setup,
                 stripe,
                 source
                     .lease(start, end, super::super::STRIPE_WINDOW_MARGIN)
@@ -743,13 +751,14 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
     let (setup, workspace, progress) = arc_owned_filter_setup();
     let mut source = DeblockedSource::new(workspace);
     assert!(source.publish_final_rows(128));
-    assert_eq!(setup.stripe_ranges().len(), 3);
+    assert_eq!(owned_setup(&setup).stripe_ranges().len(), 3);
     for job in owned_filter_jobs(&setup, &source, &[1, 0, 2]) {
         job.run().unwrap();
     }
     let restored = deblock_records();
-    setup
+    owned_setup(&setup)
         .restore_deblock_records(crate::filters::deblock::OwnedDeblockRecords {
+            grids: crate::filters::deblock::DeblockGridStorage::default(),
             blocks: restored.clone(),
             chroma: crate::filters::deblock::ChromaDeblockRecords::default(),
         })
@@ -757,13 +766,12 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
     drop(source);
 
     let freezes = AtomicUsize::new(0);
-    let (actual, records) = setup
-        .owned_finish()
-        .finish(|frame| {
-            freezes.fetch_add(1, Ordering::SeqCst);
-            frame
-        })
-        .unwrap();
+    let (outcome, shell) = OwnedFilterSetup::owned_finish(setup).finish(|frame| {
+        freezes.fetch_add(1, Ordering::SeqCst);
+        frame
+    });
+    let (actual, records) = outcome.unwrap();
+    assert!(shell.as_ref().is_none());
 
     assert_eq!(freezes.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -785,6 +793,110 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
 }
 
 #[test]
+fn owned_filter_shell_is_stable_across_consecutive_frames() {
+    let (setup, workspace, _) = arc_owned_filter_setup();
+    let shell = Arc::as_ptr(&setup);
+    let mut source = DeblockedSource::new(workspace);
+    assert!(source.publish_final_rows(128));
+    for job in owned_filter_jobs(&setup, &source, &[0, 1, 2]) {
+        job.run().unwrap();
+    }
+    drop(source);
+    let (outcome, mut setup) =
+        OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+    assert!(outcome.is_ok());
+    assert_eq!(Arc::as_ptr(&setup), shell);
+    assert!(setup.as_ref().is_none());
+
+    let core = Arc::new(switchable_core());
+    let sink = final_filter_sink_10bit();
+    let progress =
+        Arc::new(crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap());
+    let (next, workspace) = sink
+        .into_owned_filter_setup_published(core, false, progress)
+        .unwrap();
+    *Arc::get_mut(&mut setup).unwrap() = Some(next);
+    let mut source = DeblockedSource::new(workspace.unwrap());
+    assert!(source.publish_final_rows(128));
+    for job in owned_filter_jobs(&setup, &source, &[0, 1, 2]) {
+        job.run().unwrap();
+    }
+    drop(source);
+    let (outcome, setup) = OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+    assert!(outcome.is_ok());
+    assert_eq!(Arc::as_ptr(&setup), shell);
+    assert!(setup.as_ref().is_none());
+}
+
+#[test]
+fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() {
+    fn enabled_core() -> FrameHeaderCore {
+        let mut core = switchable_core();
+        core.cdef_params.as_mut().unwrap().cdef_frame_enable = true;
+        core
+    }
+
+    fn finish(
+        core: FrameHeaderCore,
+        records: crate::filters::wienerns_lr::FrameFilterRecords,
+    ) -> crate::filters::wienerns_lr::FrameFilterRecords {
+        let mut sink = final_filter_sink_10bit();
+        sink.filter_records = records;
+        let progress = Arc::new(
+            crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap(),
+        );
+        let (setup, workspace) = sink
+            .into_owned_filter_setup_published(Arc::new(core), false, progress)
+            .unwrap();
+        let setup = Arc::new(Some(setup));
+        let mut source = DeblockedSource::new(workspace.unwrap());
+        assert!(source.publish_final_rows(128));
+        let order = (0..owned_setup(&setup).stripe_ranges().len()).collect::<Vec<_>>();
+        for job in owned_filter_jobs(&setup, &source, &order) {
+            job.run().unwrap();
+        }
+        drop(source);
+        let (outcome, _) = OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+        outcome.unwrap().1
+    }
+
+    let mut records = crate::filters::wienerns_lr::FrameFilterRecords::default();
+    records.cdef_grid_values.reserve(32);
+    records.cdef_strengths.reserve(1);
+    records.tx_skip_grid_values.reserve(128);
+    for lut in &mut records.ccso_offset_luts {
+        lut.reserve(16);
+    }
+    let enabled = finish(enabled_core(), records);
+    let strengths = enabled.cdef_strengths.as_ptr();
+    let capacities = (
+        enabled.cdef_grid_values.capacity(),
+        enabled.cdef_strengths.capacity(),
+        enabled.tx_skip_grid_values.capacity(),
+        enabled.ccso_offset_luts.each_ref().map(Vec::capacity),
+    );
+
+    let mut disabled_core = switchable_core();
+    disabled_core.cdef_params = None;
+    disabled_core.lr_params = None;
+    let disabled = finish(disabled_core, enabled);
+    assert!(disabled.cdef_strengths.is_empty());
+    assert_eq!(disabled.cdef_strengths.as_ptr(), strengths);
+
+    let enabled = finish(enabled_core(), disabled);
+    assert_eq!(enabled.cdef_strengths.as_ptr(), strengths);
+    assert_eq!(
+        (
+            enabled.cdef_grid_values.capacity(),
+            enabled.cdef_strengths.capacity(),
+            enabled.tx_skip_grid_values.capacity(),
+            enabled.ccso_offset_luts.each_ref().map(Vec::capacity),
+        ),
+        capacities
+    );
+}
+
+#[test]
 fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     let (setup, workspace, _) = arc_owned_filter_setup();
     let mut source = DeblockedSource::new(workspace);
@@ -793,9 +905,9 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     duplicate.remove(0).run().unwrap();
     assert!(duplicate.remove(0).run().is_err());
     assert!(
-        setup
-            .owned_finish()
+        OwnedFilterSetup::owned_finish(setup)
             .finish(core::convert::identity)
+            .0
             .is_err(),
         "missing stripes must prevent terminal freeze"
     );
@@ -809,9 +921,9 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     }
     let lingering = Arc::clone(&setup);
     assert!(
-        setup
-            .owned_finish()
+        OwnedFilterSetup::owned_finish(setup)
             .finish(core::convert::identity)
+            .0
             .is_err(),
         "terminal freeze requires the sole Arc owner"
     );
@@ -1591,4 +1703,20 @@ fn lr_block_output_refuses_a_rectangle_wider_than_the_stripe() {
     source.height = 1;
     assert!(lr_block_destination(&mut plane, &source).is_err());
     assert!(plane.samples().iter().all(|sample| *sample == 9));
+}
+
+#[test]
+fn stripe_traversal_streams_ranges_and_stops_after_error() {
+    let mut core = switchable_core();
+    core.tile_info = None;
+    assert_eq!(
+        crate::filters::gdf::stripe_ranges(&core, 128)
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap(),
+        [(0, 56), (56, 120), (120, 128)]
+    );
+    let mut invalid = crate::filters::gdf::stripe_ranges(&core, 0);
+    assert!(invalid.next().unwrap().is_err());
+    assert!(invalid.next().is_none());
+    assert!(invalid.next().is_none());
 }

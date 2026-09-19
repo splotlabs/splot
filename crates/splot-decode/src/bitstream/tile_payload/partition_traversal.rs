@@ -40,7 +40,7 @@ use partition_children::child_calls;
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    LrTileRecords,
+    TileTraversalStorage,
 };
 #[cfg(test)]
 use tree_walk::{
@@ -320,7 +320,7 @@ struct TilePartitionBounds {
 }
 
 impl TilePartitionBounds {
-    fn from_work_unit(work_unit: &DecodeTileWorkUnit<'_>) -> Self {
+    fn from_work_unit(work_unit: &DecodeTileWorkUnit) -> Self {
         let row_range = work_unit.mi_row_range();
         let col_range = work_unit.mi_col_range();
         Self {
@@ -611,17 +611,14 @@ fn ensure_supported_traversal_frame(
 }
 
 fn symbol_decoder_for_work_unit<'payload>(
-    work_unit: &DecodeTileWorkUnit<'payload>,
+    work_unit: &DecodeTileWorkUnit,
+    tile_bytes: &'payload [u8],
 ) -> Result<SymbolDecoder<'payload>, TilePartitionTraversalError> {
     let config = SymbolDecoderConfig::new()
         .with_cdf_update_mode(work_unit.cdf().update_mode())
         .with_cdf_validation_mode(CdfValidationMode::Trusted);
-    SymbolDecoder::with_base_and_config(
-        work_unit.tile_bytes(),
-        work_unit.tile_byte_span().start,
-        config,
-    )
-    .map_err(TilePartitionTraversalError::from)
+    SymbolDecoder::with_base_and_config(tile_bytes, work_unit.tile_byte_span().start, config)
+        .map_err(TilePartitionTraversalError::from)
 }
 
 /// § 5.20.4 seeds `decode_partition`'s propagated `hasChroma` with 1. The

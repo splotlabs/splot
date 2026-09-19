@@ -2,10 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use std::sync::Arc;
-pub(crate) use tile::ParseProgress;
 pub(crate) use tile::TileWalkParams;
 pub(crate) use tile::publish_tile_geometry;
-pub(crate) use tile::{ReconRowBuffers, ReconRowCapacities};
+pub(crate) use tile::{InterReconScratchPool, ParseProgress};
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
@@ -46,13 +45,12 @@ use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, DecodedLeafPublication, FrameCdfSubset, FrameQmSegmentScope,
     FrameQuantizerSnapshot, FrameSegmentIdMap, GeneralIntraLeafMode, GeneralIntraMultiblockCursor,
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
-    SavedCdfSubset, TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector,
-    TileCdfSubset, TileCoeffContextState, TileCoeffStateError, TileFscModeState,
-    TileIntraJointModeState, TilePartitionFrontierError, TilePartitionTraversalError,
-    TilePartitionTraversalUnsupported, TileSegmentIdState, TileSegmentIdStateError,
-    TileUsesMrlsState, TransformToolResidualPolicy, chroma_subsampling,
-    current_frame_qm_segment_id, decode_general_intra_plane_coeffs, get_plane_residual_size,
-    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
+    TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector, TileCdfSubset,
+    TileCoeffContextState, TileCoeffStateError, TileFscModeState, TileIntraJointModeState,
+    TilePartitionFrontierError, TilePartitionTraversalError, TilePartitionTraversalUnsupported,
+    TileSegmentIdState, TileSegmentIdStateError, TileUsesMrlsState, TransformToolResidualPolicy,
+    chroma_subsampling, current_frame_qm_segment_id, decode_general_intra_plane_coeffs,
+    get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -160,7 +158,7 @@ enum WarpInterMode {
 pub(crate) struct InterFilterInputs {
     pub(crate) records: crate::filters::wienerns_lr::FrameFilterRecords,
     pub(crate) cdef_grid: crate::filters::cdef::CdefUnitGrid,
-    pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    pub(crate) ccso_grid: Option<Arc<crate::filters::ccso::CcsoUnitGrid>>,
     pub(crate) gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
     motion_field: TemporalMotionField,
 }
@@ -192,13 +190,6 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
 }
 
 impl<T: ReconSample> InterDecodeScratch<T> {
-    pub(crate) fn install_temporal_scratch(
-        &mut self,
-        scratch: super::find_mv_stack::TemporalMvScratch,
-    ) {
-        self.temporal_context = Some(TemporalMvContext::from_scratch(scratch));
-    }
-
     pub(in crate::prediction::inter) fn from_scheduled_tile_scratch(
         tile: tile::TileDecodeScratch<T>,
     ) -> Self {
@@ -244,6 +235,19 @@ impl<T: ReconSample> InterDecodeScratch<T> {
     pub(crate) fn frame_filter_records_capacity(&self) -> usize {
         self.frame_filter_records.deblock_blocks.capacity()
     }
+
+    #[cfg(test)]
+    pub(crate) fn derived_filter_record_capacities(&self) -> (usize, usize, usize, [usize; 3]) {
+        (
+            self.frame_filter_records.cdef_grid_values.capacity(),
+            self.frame_filter_records.cdef_strengths.capacity(),
+            self.frame_filter_records.tx_skip_grid_values.capacity(),
+            self.frame_filter_records
+                .ccso_offset_luts
+                .each_ref()
+                .map(Vec::capacity),
+        )
+    }
 }
 
 enum ReconCommand {
@@ -284,28 +288,16 @@ impl InterBlockSetup {
         TemporalPrelude,
         TemporalMotionField,
     ) {
-        let Self {
-            params,
-            prelude,
-            cdef_state,
-            gdf_state,
-            ccso_state,
-            motion_field,
-            initial_frame_cdfs,
-            qindex,
-        } = self;
         (
             InterParseSetup {
-                params,
-                cdef_state,
-                gdf_state,
-                ccso_state,
-                initial_frame_cdfs,
-                qindex,
+                params: self.params,
+                filter_states: Some((self.cdef_state, self.gdf_state, self.ccso_state)),
+                initial_frame_cdfs: self.initial_frame_cdfs,
+                qindex: self.qindex,
             },
-            params,
-            prelude,
-            motion_field,
+            self.params,
+            self.prelude,
+            self.motion_field,
         )
     }
 }
@@ -313,9 +305,7 @@ impl InterBlockSetup {
 /// The half of the pre-parse derivation the § 8.2 pass consumes.
 pub(crate) struct InterParseSetup {
     pub(crate) params: TileWalkParams,
-    pub(crate) cdef_state: CdefState,
-    pub(crate) gdf_state: GdfState,
-    pub(crate) ccso_state: CcsoState,
+    pub(crate) filter_states: Option<(CdefState, GdfState, CcsoState)>,
     pub(crate) initial_frame_cdfs: Arc<FrameCdfSubset>,
     pub(crate) qindex: u32,
 }
@@ -347,13 +337,16 @@ pub(crate) struct InterBlockFacts {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_inter_block_setup<T: ReconSample>(
-    work_units: &[DecodeTileWorkUnit<'_>],
+    work_units: &[DecodeTileWorkUnit],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
     facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
+    deferred_motion: bool,
+    products: &mut super::FrameProductWriters,
+    cdef_grid_values: Vec<Option<usize>>,
 ) -> Result<InterBlockSetup> {
     let InterBlockFacts {
         geometry,
@@ -412,11 +405,15 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         &reference.ref_order_hint,
     );
     let expected_tip_pair = derived_tip_reference_pair(core, &derived_order_hints);
-    let motion_field = geometry
-        .new_motion_field(&derived_order_hints)
-        .ok_or(inter_allocation!("inter temporal motion field"))?;
+    let motion_field = if deferred_motion {
+        geometry.motion_field_header(&derived_order_hints)
+    } else {
+        geometry
+            .new_motion_field(&derived_order_hints)
+            .ok_or(inter_allocation!("inter temporal motion field"))?
+    };
     let motion_layout = motion_field.layout();
-    let cdef_state = CdefState::new(mi_rows, mi_cols, sequence)?;
+    let cdef_state = CdefState::new_reusing(mi_rows, mi_cols, sequence, cdef_grid_values)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
     let ref_ccso_unit_grids = reference
         .ref_ccso_unit_grids
@@ -429,6 +426,15 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
                 .cloned()
         })
         .collect::<Vec<_>>();
+    let ccso_active = sequence
+        .filter
+        .as_ref()
+        .is_some_and(|filter| filter.enable_ccso)
+        && core
+            .ccso_params
+            .as_ref()
+            .and_then(|ccso| ccso.ccso_frame_flag)
+            .unwrap_or(false);
     let ccso_state = CcsoState::new(
         mi_rows,
         mi_cols,
@@ -437,6 +443,7 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         ref_frame_idx,
         &ref_ccso_unit_grids,
         first_tile_offset,
+        products.take_ccso_blocks(ccso_active)?,
     )?;
     let residual_tool_policy = TransformToolResidualPolicy::default();
     let enable_adaptive_mvd = sequence
@@ -493,22 +500,22 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
 /// subset, which the entropy pass alone settles.
 fn finish_frame_cdfs(
     initial: &Arc<FrameCdfSubset>,
-    work_units: &[DecodeTileWorkUnit<'_>],
+    work_units: &[DecodeTileWorkUnit],
     qindex: u32,
-) -> Arc<FrameCdfSubset> {
-    let mut saved_cdfs: Option<SavedCdfSubset> = None;
+    products: &mut super::FrameProductWriters,
+) -> Result<Arc<FrameCdfSubset>> {
+    let mut saved = false;
     for tile in work_units {
-        SavedCdfSubset::apply_completed_tile(
-            &mut saved_cdfs,
+        products.frame_cdfs()?.reset_saved_from_tile(
             initial.as_ref(),
             tile.tile_num(),
             tile.cdf().tile_cdfs(),
             tile.cdf().save_policy(),
+            &mut saved,
         );
     }
-    let mut frame_cdfs = FrameCdfSubset::frame_end_updated(initial.as_ref(), saved_cdfs);
-    frame_cdfs.replicate_coeff_q_context_for_base_q(qindex);
-    Arc::new(frame_cdfs)
+    products.frame_cdfs()?.finish_saved(initial, saved, qindex);
+    products.cdf_output()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -522,8 +529,9 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     workspace: CurrentFrameWorkspace<T>,
+    products: &mut super::FrameProductWriters,
 ) -> Result<InterBlockDecodeOutput<T>> {
-    let work_units = tile_plan.work_units_mut();
+    let (payload, extra_payloads, work_units) = tile_plan.payloads_and_work_units_mut();
     let setup = derive_inter_block_setup(
         work_units,
         sequence,
@@ -532,6 +540,9 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         facts,
         ref_frame_idx,
         reference,
+        false,
+        products,
+        Vec::new(),
     )?;
     let InterBlockSetup {
         params,
@@ -554,9 +565,17 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     )?;
     let mut tile_scratch = scratch.tile.take().unwrap_or_default();
     tile_scratch.buffers.clone_from(&scratch.buffers);
+    let previous = final_segment_ids(core, reference, params.mi_rows, params.mi_cols);
+    let segment_ids = if previous.is_some() {
+        None
+    } else {
+        Some(products.segment_ids(params.mi_rows, params.mi_cols)?)
+    };
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
         tile_scratch,
         &mut records,
+        payload,
+        extra_payloads,
         work_units,
         &params,
         sequence,
@@ -569,10 +588,11 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         gdf_state,
         ccso_state,
         motion_field,
+        segment_ids,
     )?;
     scratch.tile = Some(tile_scratch);
-    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
-    let ccso_grid = walked.ccso_state.into_grid()?;
+    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, products)?;
+    let ccso_grid = products.finish_ccso(walked.ccso_state)?;
     let filter_inputs = InterFilterInputs {
         records,
         cdef_grid: walked.cdef_state.into_grid()?,
@@ -580,13 +600,10 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         gdf_grid: walked.gdf_state.into_grid()?,
         motion_field: walked.motion_field,
     };
-    let segment_ids = final_segment_ids(
-        core,
-        reference,
-        params.mi_rows,
-        params.mi_cols,
-        walked.segment_ids,
-    );
+    if let Some(previous) = previous {
+        products.inherit_segment_ids(previous)?;
+    }
+    let segment_ids = products.finish_segment_ids()?;
     Ok(InterBlockDecodeOutput {
         workspace,
         frame_cdfs,
@@ -595,28 +612,35 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     })
 }
 
-fn final_segment_ids<T: ReconSample>(
+fn final_segment_ids<'a, T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
+    reference: &'a InterReferenceState<T>,
     mi_rows: usize,
     mi_cols: usize,
-    decoded: FrameSegmentIdMap,
-) -> Arc<FrameSegmentIdMap> {
+) -> Option<&'a Arc<FrameSegmentIdMap>> {
     if core
         .segmentation_params
         .as_ref()
         .is_some_and(|seg| seg.segmentation_enabled && !seg.segmentation_update_map)
         && let Some(previous) = super::previous_segment_ids(core, reference, mi_rows, mi_cols)
     {
-        return Arc::clone(previous);
+        return Some(previous);
     }
-    Arc::new(decoded)
+    None
 }
 
-fn frame_segment_id_map(mi_rows: usize, mi_cols: usize) -> Result<FrameSegmentIdMap> {
-    FrameSegmentIdMap::new(mi_rows, mi_cols).map_err(|error| match error {
+pub(crate) fn frame_segment_id_map(mi_rows: usize, mi_cols: usize) -> Result<FrameSegmentIdMap> {
+    FrameSegmentIdMap::new(mi_rows, mi_cols).map_err(|error| segment_map_error(&error))
+}
+
+pub(crate) fn segment_map_error(error: &TileSegmentIdStateError) -> crate::error::DecodeError {
+    match error {
         TileSegmentIdStateError::EmptyDimensions { mi_rows, mi_cols } => {
-            DecodeHeaderStateError::InvalidSegmentIdMapDimensions { mi_rows, mi_cols }.into()
+            DecodeHeaderStateError::InvalidSegmentIdMapDimensions {
+                mi_rows: *mi_rows,
+                mi_cols: *mi_cols,
+            }
+            .into()
         }
         TileSegmentIdStateError::ArithmeticOverflow {
             operation,
@@ -624,14 +648,14 @@ fn frame_segment_id_map(mi_rows: usize, mi_cols: usize) -> Result<FrameSegmentId
             right,
         } => DecodeHeaderStateError::SegmentIdMapSizeOverflow {
             operation,
-            left,
-            right,
+            left: *left,
+            right: *right,
         }
         .into(),
         TileSegmentIdStateError::Allocation { .. } => {
             inter_allocation!("inter frame segment id map")
         }
-    })
+    }
 }
 
 /// The frame-level inputs of the AV2 § 7.9 temporal prelude, captured so the
@@ -828,7 +852,7 @@ fn chroma_smooth_tile_ranges(
 
 #[allow(clippy::too_many_arguments)]
 fn read_segment_id(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     segment_id_state: &TileSegmentIdState,
     sequence: &SequenceHeader,
@@ -884,7 +908,7 @@ fn read_segment_id(
 
 #[allow(clippy::too_many_arguments)]
 fn read_inter_segment_id(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     segment_id_state: &mut TileSegmentIdState,
     previous_segment_ids: Option<&FrameSegmentIdMap>,
@@ -1070,7 +1094,7 @@ pub(super) fn frame_uses_temporal_mvs(core: &FrameHeaderCore) -> bool {
         == Some(true)
 }
 
-fn current_residual_lossless(work_unit: &DecodeTileWorkUnit<'_>) -> bool {
+fn current_residual_lossless(work_unit: &DecodeTileWorkUnit) -> bool {
     work_unit
         .coeff_frame_facts()
         .lossless_for_segment(current_frame_qm_segment_id())
@@ -1079,7 +1103,7 @@ fn current_residual_lossless(work_unit: &DecodeTileWorkUnit<'_>) -> bool {
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_block<T: ReconSample>(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
     sequence: &SequenceHeader,
@@ -2133,9 +2157,9 @@ mod deferred_recon;
 mod filter_records;
 mod frame_parse;
 pub(in crate::prediction::inter) use frame_parse::prepare_scheduled_recon;
-pub(crate) use frame_parse::{InterFrameParse, PendingFilterAttach, parse_inter_frame_blocks};
+pub(crate) use frame_parse::{InterFrameParse, InterFrameParser, PendingFilterAttach};
 pub(crate) use tile::ScheduledFrameProgress;
-pub(crate) use tile::ScheduledTileRecon;
+pub(crate) use tile::{ScheduledTileRecon, ScheduledTileWorkspace};
 mod interintra;
 mod intrabc;
 pub(crate) use intrabc::global_intrabc_enabled;

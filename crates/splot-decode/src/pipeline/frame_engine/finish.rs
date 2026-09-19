@@ -40,7 +40,7 @@ pub(crate) struct FrameWalk<T: ReconSample> {
     /// The frame's end-of-walk CDF subset.
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     /// The walk-parsed CCSO unit grid retained by the canonical `PipelineFrame`.
-    pub(crate) ccso_grid: Option<CcsoUnitGrid>,
+    pub(crate) ccso_grid: Option<std::sync::Arc<CcsoUnitGrid>>,
     pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
     /// The walk-derived temporal motion field.
     pub(crate) motion_field: TemporalMotionField,
@@ -241,10 +241,12 @@ impl<T: ReconSample> WalkedFrame<T> {
 ///
 /// Returns the filter chain's own diagnostic when a filter stage or the freeze
 /// fails.
-pub(crate) fn finish_walked_frame<T: ReconSample>(
+pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
     walked: WalkedFrame<T>,
     progress: Option<Arc<FrameProgress<T>>>,
-    admit: Option<&dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>>,
+    admit: Option<
+        &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
+    >,
     publish: impl FnOnce(SharedFrame<T>),
 ) -> Result<FrameFilterRecords> {
     let WalkedFrame {

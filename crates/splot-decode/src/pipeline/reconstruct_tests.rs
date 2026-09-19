@@ -32,6 +32,7 @@ fn all_zero_luma_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
         quant_range: 0..0,
+        zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -50,6 +51,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     let block = LumaCoeffBlock {
         eob: 7,
         quant_range: 0..quant.len(),
+        zero_tail: 0,
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
             most_probable_stx_set: None,
@@ -107,6 +109,7 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
     let block = LumaCoeffBlock {
         eob: 7,
         quant_range: 0..quant.len(),
+        zero_tail: 0,
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
             most_probable_stx_set: Some(5),
@@ -162,6 +165,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     let block = LumaCoeffBlock {
         eob: 1,
         quant_range: 0..quant.len(),
+        zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -285,6 +289,7 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
     let block = LumaCoeffBlock {
         eob: 1,
         quant_range: 0..quant.len(),
+        zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,
@@ -2102,6 +2107,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     let block = LumaCoeffBlock {
         eob: 10,
         quant_range: 0..quant.len(),
+        zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 3, // ADST_ADST

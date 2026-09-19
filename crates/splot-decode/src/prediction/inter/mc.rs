@@ -29,8 +29,8 @@ use splot_recon::math::{clip3, round2_i32};
 mod compound_average;
 mod optflow;
 mod refinemv;
-pub(crate) use optflow::CompoundMotionGrid;
 use optflow::{CompoundAverageOutput, MotionCell};
+pub(crate) use optflow::{CompoundMotionGrid, MotionRowStorage, StoredMotionGrid};
 pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
@@ -392,6 +392,10 @@ pub(super) struct CompoundBlockMetadata {
 }
 
 impl CompoundBlockMetadata {
+    pub(super) fn take_motion(&mut self) -> Option<CompoundMotionGrid> {
+        self.motion.take()
+    }
+
     /// Takes the motion grid's per-cell candidate list back for the caller's
     /// context, leaving the metadata otherwise intact.
     pub(super) fn take_grid_candidates(&mut self) -> Vec<[Mv; 2]> {
@@ -636,6 +640,7 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
     Ok(CompoundBlockOutput { metadata, samples })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn tip_batch_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,

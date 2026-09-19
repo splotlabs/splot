@@ -125,6 +125,16 @@ impl FrameDecodeGeometry {
         self.frame_is_intra
     }
 
+    pub(crate) fn motion_field_header(self, hints: &[Option<u32>]) -> TemporalMotionField {
+        let size = self.info.coded_luma_size();
+        TemporalMotionField::metadata_only(
+            self.motion_layout,
+            !self.frame_is_intra,
+            (size.width(), size.height()),
+            hints,
+        )
+    }
+
     pub(crate) fn new_motion_field(
         self,
         reference_order_hints: &[Option<u32>],
@@ -155,9 +165,15 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
     recycled: &mut splot_recon::FramePlaneSamples<T>,
+    initial_cdf_storage: Option<&mut Option<Arc<FrameCdfSubset>>>,
+    payload_scratch: &mut crate::bitstream::tile_payload::TilePayloadScratch,
 ) -> Result<InterWalkPrologue<'payload, T>> {
     let offset = frame_envelope.offset;
-    let initial_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?;
+    let initial_cdfs = if let Some(storage) = initial_cdf_storage {
+        resolve_initial_frame_cdfs_reusing(core, sequence, reference, candidate, offset, storage)?
+    } else {
+        resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?
+    };
     let frame_size = geometry.frame_size();
     let frame_width = frame_size.width;
     let frame_height = frame_size.height;
@@ -178,14 +194,16 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         return Err(DecodeHeaderStateError::InvalidInterReferenceMap.into());
     }
     let block_reference_select = tail.reference_select;
-    let tile_plan = crate::pipeline::derive_inter_tile_plan(
+    let tile_plan = crate::pipeline::derive_tile_plan_with(
         plan,
         candidate,
         bytes,
         sequence,
         core,
         options,
-        &initial_cdfs,
+        crate::pipeline::TileFactsKind::Inter,
+        Some(&initial_cdfs),
+        payload_scratch,
     )?;
     let tile_size = tile_plan
         .work_units()
@@ -305,6 +323,7 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
 pub(crate) struct DeferredInterWalk<T: ReconSample> {
     parse: InterFrameParse,
     parse_progress: Arc<super::ParseProgress>,
+    payload_scratch: crate::bitstream::tile_payload::TilePayloadScratch,
     marker: core::marker::PhantomData<T>,
 }
 
@@ -325,112 +344,150 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
     pub(crate) motion_field: super::find_mv_stack::TemporalMotionField,
 }
 
-/// Runs one inter frame's entropy pass and leaves its reconstruction owed.
-///
-/// The pass reads no reference sample and no projected motion field, so it
-/// waits on nothing and can run on a worker while the driver reconstructs the
-/// previous frame. It carries the frame's quantizer state explicitly, since
-/// those scopes are thread-local to whichever thread installed them.
-///
-/// # Errors
-///
-/// Returns the walk's own diagnostic when the header, tile plan, or entropy
-/// pass fails.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn parse_inter_frame_prologue<'payload, T: ReconSample>(
-    mut records: FrameFilterRecords,
-    plan: &DecodeStreamPlan,
-    candidate: &DecodePlannedObu,
-    bytes: &'payload [u8],
-    frame_envelope: ObuEnvelope<'payload>,
-    core: FrameHeaderCore,
-    sequence: &Arc<SequenceHeader>,
-    options: &DecodeOptions,
-    reference: InterReferenceState<T>,
-    bit_depth: BitDepth,
-    geometry: FrameDecodeGeometry,
-    motion: &MotionFieldHandle,
-    parse_progress: &Arc<super::ParseProgress>,
-) -> Result<(InterWalkEarly<T>, PendingInterWalk<'payload, T>)> {
-    let InterWalkPrologue {
-        mut tile_plan,
-        workspace,
-        setup,
-        facts,
-        ref_frame_idx,
-        quantizer_deltas,
-    } = derive_inter_walk_prologue(
-        plan,
-        candidate,
-        bytes,
-        frame_envelope,
-        &core,
-        sequence,
-        options,
-        &reference,
-        bit_depth,
-        geometry,
-        &mut T::reclaim_planes(&mut records.retired_planes)
-            .with_pool(records.buffers.as_ref().map(|buffers| buffers.planes())),
-    )?;
-    let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
-    let quantizer = FrameQuantizerSnapshot::capture();
-    let tile_count = tile_plan.work_units().len();
-    let [tile] = tile_plan.work_units_mut() else {
-        return Err(DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into());
-    };
-    let block_setup = super::block::derive_inter_block_setup(
-        std::slice::from_mut(tile),
-        sequence,
-        &core,
-        options,
-        facts,
-        ref_frame_idx.as_slice(),
-        &reference,
-    )?;
-    motion.publish_metadata(block_setup.motion_field_metadata());
-    let (parse_setup, params, prelude, motion_field) = block_setup.split();
-    block::publish_tile_geometry(
-        tile,
-        &params,
-        sequence,
-        &core,
-        &reference,
-        ref_frame_idx.as_slice(),
-        parse_progress,
-    )?;
-    let core = Arc::new(core);
-    let reference = Arc::new(reference);
-    let early = InterWalkEarly {
-        core: Arc::clone(&core),
-        motion: motion.clone(),
-        workspace,
-        setup,
-        sequence: Arc::clone(sequence),
-        reference: Arc::clone(&reference),
-        ref_frame_idx: ref_frame_idx.clone(),
-        quantizer,
-        parse_progress: Arc::clone(parse_progress),
-        params,
-        prelude,
-        motion_field,
-    };
-    let pending = PendingInterWalk {
-        tile_plan,
-        records,
-        core,
-        sequence: Arc::clone(sequence),
-        reference,
-        ref_frame_idx,
-        parse_progress: Arc::clone(parse_progress),
-        parse_setup,
-        quantizer_deltas,
-    };
-    Ok((early, pending))
+pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
+    pub(crate) records: FrameFilterRecords,
+    pub(crate) plan: &'payload DecodeStreamPlan,
+    pub(crate) candidate: &'payload DecodePlannedObu,
+    pub(crate) bytes: &'payload [u8],
+    pub(crate) frame_envelope: ObuEnvelope<'payload>,
+    pub(crate) core: FrameHeaderCore,
+    pub(crate) sequence: Arc<SequenceHeader>,
+    pub(crate) options: &'payload DecodeOptions,
+    pub(crate) reference: InterReferenceState<T>,
+    pub(crate) bit_depth: BitDepth,
+    pub(crate) geometry: FrameDecodeGeometry,
+    pub(crate) motion: MotionFieldHandle,
+    pub(crate) parse_progress: Arc<super::ParseProgress>,
+    pub(crate) quantizer: FrameQuantizerSnapshot,
+    pub(crate) products: FrameProductWriters,
 }
 
-/// The § 8.2 pass one inter frame still owes once its prologue has settled.
-///
+impl<'payload, T: ReconSample> InterFrameStart<'payload, T> {
+    pub(crate) fn run(
+        self,
+        reusable: &mut block::ScheduledTileWorkspace<T>,
+    ) -> Result<(InterWalkEarly<T>, PendingInterWalk<'payload, T>)> {
+        let Self {
+            mut records,
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            core,
+            sequence,
+            options,
+            reference,
+            bit_depth,
+            geometry,
+            motion,
+            parse_progress,
+            quantizer,
+            mut products,
+        } = self;
+        let _scopes = quantizer.install_frame();
+        let mut payload_scratch = core::mem::take(&mut reusable.payload);
+        let prologue = derive_inter_walk_prologue(
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            &core,
+            &sequence,
+            options,
+            &reference,
+            bit_depth,
+            geometry,
+            &mut T::reclaim_planes(&mut records.retired_planes)
+                .with_pool(records.buffers.as_ref().map(|buffers| buffers.planes())),
+            Some(reusable.initial_cdfs()),
+            &mut payload_scratch,
+        );
+        let InterWalkPrologue {
+            mut tile_plan,
+            workspace,
+            setup,
+            facts,
+            ref_frame_idx,
+            quantizer_deltas,
+        } = match prologue {
+            Ok(prologue) => prologue,
+            Err(error) => {
+                reusable.payload = payload_scratch;
+                return Err(error);
+            }
+        };
+        let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
+        let quantizer = FrameQuantizerSnapshot::capture();
+        let prepared = (|| {
+            let tile_count = tile_plan.work_units().len();
+            let [tile] = tile_plan.work_units_mut() else {
+                return Err(
+                    DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
+                );
+            };
+            let block_setup = super::block::derive_inter_block_setup(
+                std::slice::from_mut(tile),
+                &sequence,
+                &core,
+                options,
+                facts,
+                ref_frame_idx.as_slice(),
+                &reference,
+                true,
+                &mut products,
+                core::mem::take(&mut records.cdef_grid_values),
+            )?;
+            motion.publish_metadata(block_setup.motion_field_metadata());
+            let (parse_setup, params, prelude, motion_field) = block_setup.split();
+            block::publish_tile_geometry(
+                tile,
+                &params,
+                sequence.general.chroma_format_idc,
+                &parse_progress,
+            )?;
+            let parser = InterFrameParser::new(parse_setup);
+            let identities = reusable.install_identities(core, reference)?;
+            Ok((identities, parser, params, prelude, motion_field))
+        })();
+        let ((core, reference), parser, params, prelude, motion_field) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tile_plan.retire_into(&mut payload_scratch);
+                reusable.payload = payload_scratch;
+                return Err(error);
+            }
+        };
+        let early = InterWalkEarly {
+            core: Arc::clone(&core),
+            motion: motion.clone(),
+            workspace,
+            setup,
+            sequence: Arc::clone(&sequence),
+            reference: Arc::clone(&reference),
+            ref_frame_idx: ref_frame_idx.clone(),
+            quantizer: quantizer.clone(),
+            parse_progress: Arc::clone(&parse_progress),
+            params,
+            prelude,
+            motion_field,
+        };
+        let pending = PendingInterWalk {
+            tile_plan,
+            records,
+            core,
+            sequence: Arc::clone(&sequence),
+            reference,
+            ref_frame_idx,
+            parse_progress: Arc::clone(&parse_progress),
+            parser,
+            quantizer,
+            products,
+            payload_scratch,
+        };
+        Ok((early, pending))
+    }
+}
+
 /// Splitting the walk here lets the driver build the frame's admission
 /// batches from the published prologue before the pass reads its first unit,
 /// so the batches exist -- and can claim units -- while the pass runs. The
@@ -443,94 +500,103 @@ pub(crate) struct PendingInterWalk<'payload, T: ReconSample> {
     reference: Arc<InterReferenceState<T>>,
     ref_frame_idx: RefIdxBuf,
     parse_progress: Arc<super::ParseProgress>,
-    parse_setup: block::InterParseSetup,
-    quantizer_deltas: QuantizerDeltas,
+    parser: InterFrameParser<'payload>,
+    quantizer: FrameQuantizerSnapshot,
+    products: FrameProductWriters,
+    payload_scratch: crate::bitstream::tile_payload::TilePayloadScratch,
 }
 
 impl<T: ReconSample> PendingInterWalk<'_, T> {
-    /// Runs the owed entropy pass.
-    ///
-    /// # Errors
-    ///
-    /// Returns the pass's own diagnostic when the tile plan or entropy pass
-    /// fails.
-    pub(crate) fn run(self) -> Result<DeferredInterWalk<T>> {
-        let Self {
-            mut tile_plan,
-            records,
-            core,
-            sequence,
-            reference,
-            ref_frame_idx,
-            parse_progress,
-            parse_setup,
-            quantizer_deltas,
-        } = self;
-        let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
-        let tile_count = tile_plan.work_units().len();
-        let [tile] = tile_plan.work_units_mut() else {
-            parse_progress.fail();
+    /// Parses at most `units` units, returning whether entropy has ended.
+    pub(crate) fn parse_units(&mut self, units: core::num::NonZeroUsize) -> Result<bool> {
+        let _quantizer_scopes = self.quantizer.install_frame();
+        let tile_count = self.tile_plan.work_units().len();
+        let Some((tile_bytes, tile)) = self.tile_plan.single_tile_mut() else {
+            self.parse_progress.fail();
             return Err(
                 DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
             );
         };
-        let parse = match parse_inter_frame_blocks(
+        for _ in 0..units.get() {
+            match self.parser.parse_unit(
+                tile,
+                tile_bytes,
+                &self.sequence,
+                &self.core,
+                self.ref_frame_idx.as_slice(),
+                &self.reference,
+                &self.parse_progress,
+            ) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => {
+                    self.parse_progress.fail();
+                    return Err(error);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Finalizes entropy products after the last parsed unit.
+    pub(crate) fn finish(mut self) -> Result<DeferredInterWalk<T>> {
+        let _quantizer_scopes = self.quantizer.install_frame();
+        let tile_count = self.tile_plan.work_units().len();
+        let [tile] = self.tile_plan.work_units_mut() else {
+            self.parse_progress.fail();
+            return Err(
+                DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
+            );
+        };
+        let parse = match self.parser.finish(
             tile,
-            records,
-            &sequence,
-            &core,
-            ref_frame_idx.as_slice(),
-            &reference,
-            &parse_progress,
-            parse_setup,
+            self.records,
+            &self.core,
+            &self.reference,
+            &self.parse_progress,
+            self.products,
         ) {
             Ok(parse) => parse,
             Err(error) => {
-                parse_progress.fail();
+                self.parse_progress.fail();
                 return Err(error);
             }
         };
+        self.tile_plan.retire_into(&mut self.payload_scratch);
         Ok(DeferredInterWalk {
             parse,
-            parse_progress,
+            parse_progress: self.parse_progress,
+            payload_scratch: self.payload_scratch,
             marker: core::marker::PhantomData,
         })
+    }
+    pub(crate) fn run(mut self) -> Result<DeferredInterWalk<T>> {
+        while !self.parse_units(core::num::NonZeroUsize::MAX)? {}
+        self.finish()
     }
 }
 
 impl<T: ReconSample> DeferredInterWalk<T> {
+    pub(crate) fn publish_products(&mut self) -> Result<FrameProducts> {
+        self.parse.publish_products()
+    }
     /// Hands the scheduled frontier the filter state the pass settles last.
     pub(crate) fn attach_filters(
         self,
         pending: block::PendingFilterAttach<T>,
         reconstruction: &block::ScheduledTileRecon<T>,
+        filter_shell: crate::filters::wienerns_lr::recon::OwnedFilterShell<T>,
     ) -> Result<()> {
+        reconstruction.restore_payload_scratch(self.payload_scratch)?;
         self.parse
-            .attach_filters(pending, reconstruction, &self.parse_progress)
-    }
-
-    /// The frame's end-of-walk CDF subset, settled by the entropy pass.
-    pub(crate) const fn frame_cdfs(&self) -> &Arc<FrameCdfSubset> {
-        &self.parse.frame_cdfs
-    }
-
-    /// The walk-parsed CCSO unit grid published to the canonical `PipelineFrame`.
-    pub(crate) const fn ccso_grid(&self) -> Option<&crate::filters::ccso::CcsoUnitGrid> {
-        self.parse.ccso_grid.as_ref()
-    }
-
-    /// The segment id map published to the canonical `PipelineFrame`.
-    pub(crate) const fn segment_ids(
-        &self,
-    ) -> &Arc<crate::bitstream::tile_payload::FrameSegmentIdMap> {
-        &self.parse.segment_ids
+            .attach_filters(pending, reconstruction, &self.parse_progress, filter_shell)
     }
 }
 
 impl<T: ReconSample> InterWalkEarly<T> {
     /// Shares the reference motion handles that gate this frame's temporal
     /// prelude.
-    pub(crate) fn motion_dependencies(&self) -> Vec<MotionFieldHandle> {
+    pub(crate) fn motion_dependencies(&self) -> RefSlots<Option<MotionFieldHandle>> {
         self.reference
             .motion_dependencies(self.ref_frame_idx.as_slice())
     }
@@ -539,14 +605,12 @@ impl<T: ReconSample> InterWalkEarly<T> {
     /// everything the § 8.2 pass does not have to have finished for.
     pub(crate) fn prepare_scheduled(
         self,
-        mut decode_scratch: InterDecodeScratch<T>,
-        temporal_scratch: super::find_mv_stack::TemporalMvScratch,
+        decode_scratch: InterDecodeScratch<T>,
+        reusable: &mut block::ScheduledTileWorkspace<T>,
+        temporal: &mut Arc<super::find_mv_stack::TemporalMvContext>,
+        workers: Arc<block::InterReconScratchPool<T>>,
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-    ) -> Result<(
-        block::ScheduledTileRecon<T>,
-        super::find_mv_stack::TemporalMvScratch,
-        block::PendingFilterAttach<T>,
-    )> {
+    ) -> Result<(block::ScheduledTileRecon<T>, block::PendingFilterAttach<T>)> {
         let Self {
             core,
             motion,
@@ -562,9 +626,11 @@ impl<T: ReconSample> InterWalkEarly<T> {
             motion_field,
         } = self;
         let _quantizer_scopes = quantizer.install_frame();
-        decode_scratch.install_temporal_scratch(temporal_scratch);
-        let (reconstruction, temporal_scratch, pending) = block::prepare_scheduled_recon(
+        let (reconstruction, pending) = block::prepare_scheduled_recon(
             decode_scratch,
+            reusable,
+            temporal,
+            workers,
             setup,
             progress,
             sequence,
@@ -578,6 +644,6 @@ impl<T: ReconSample> InterWalkEarly<T> {
             prelude,
             motion_field,
         )?;
-        Ok((reconstruction, temporal_scratch, pending))
+        Ok((reconstruction, pending))
     }
 }

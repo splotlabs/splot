@@ -148,6 +148,7 @@ impl MotionCell {
 enum MotionCells {
     Inline(MotionCell),
     Heap(Vec<MotionCell>),
+    Shared(std::sync::Arc<MotionRowStorage>, core::ops::Range<usize>),
 }
 
 #[derive(Debug)]
@@ -161,6 +162,59 @@ enum RefinemvCandidates {
         candidates: Vec<[Mv; 2]>,
         unit_size: usize,
     },
+    Shared {
+        storage: std::sync::Arc<MotionRowStorage>,
+        range: core::ops::Range<usize>,
+        unit_size: usize,
+    },
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MotionRowStorage {
+    cells: Vec<MotionCell>,
+    candidates: Vec<[Mv; 2]>,
+}
+
+impl MotionRowStorage {
+    pub(crate) fn reset(&mut self) {
+        self.cells.clear();
+        self.candidates.clear();
+    }
+}
+
+pub(crate) struct StoredMotionGrid {
+    unit_size: usize,
+    columns: usize,
+    cells: core::ops::Range<usize>,
+    candidates: StoredCandidates,
+}
+
+enum StoredCandidates {
+    None,
+    Uniform([Mv; 2], usize),
+    PerCell(core::ops::Range<usize>, usize),
+}
+
+impl StoredMotionGrid {
+    pub(crate) fn view(self, storage: &std::sync::Arc<MotionRowStorage>) -> CompoundMotionGrid {
+        CompoundMotionGrid {
+            unit_size: self.unit_size,
+            columns: self.columns,
+            cells: MotionCells::Shared(std::sync::Arc::clone(storage), self.cells),
+            refinemv_candidates: match self.candidates {
+                StoredCandidates::None => RefinemvCandidates::None,
+                StoredCandidates::Uniform(candidates, unit_size) => RefinemvCandidates::Uniform {
+                    candidates,
+                    unit_size,
+                },
+                StoredCandidates::PerCell(range, unit_size) => RefinemvCandidates::Shared {
+                    storage: std::sync::Arc::clone(storage),
+                    range,
+                    unit_size,
+                },
+            },
+        }
+    }
 }
 
 /// Largest motion-grid subblock (refine-MV unit): 16x16 samples.
@@ -254,6 +308,7 @@ impl MotionCells {
         match self {
             Self::Inline(cell) => core::slice::from_ref(cell),
             Self::Heap(cells) => cells,
+            Self::Shared(storage, range) => storage.cells.get(range.clone()).unwrap_or_default(),
         }
     }
 }
@@ -275,11 +330,56 @@ pub(crate) struct CompoundMotionGrid {
 }
 
 impl CompoundMotionGrid {
+    pub(crate) fn store(
+        mut self,
+        storage: &mut MotionRowStorage,
+    ) -> Result<(StoredMotionGrid, Vec<[Mv; 2]>)> {
+        let start = storage.cells.len();
+        match &mut self.cells {
+            MotionCells::Inline(cell) => storage.cells.push(*cell),
+            MotionCells::Heap(cells) => storage.cells.append(cells),
+            MotionCells::Shared(_, _) => {
+                return Err(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
+            }
+        }
+        let mut spare = Vec::new();
+        let candidates = match &mut self.refinemv_candidates {
+            RefinemvCandidates::None => StoredCandidates::None,
+            RefinemvCandidates::Uniform {
+                candidates,
+                unit_size,
+            } => StoredCandidates::Uniform(*candidates, *unit_size),
+            RefinemvCandidates::PerCell {
+                candidates,
+                unit_size,
+            } => {
+                let first = storage.candidates.len();
+                storage.candidates.append(candidates);
+                spare = core::mem::take(candidates);
+                StoredCandidates::PerCell(first..storage.candidates.len(), *unit_size)
+            }
+            RefinemvCandidates::Shared { .. } => {
+                return Err(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
+            }
+        };
+        Ok((
+            StoredMotionGrid {
+                unit_size: self.unit_size,
+                columns: self.columns,
+                cells: start..storage.cells.len(),
+                candidates,
+            },
+            spare,
+        ))
+    }
+
     /// Takes the per-cell candidate list back so the caller's context keeps it.
     pub(crate) fn take_candidates(&mut self) -> Vec<[Mv; 2]> {
         match &mut self.refinemv_candidates {
             RefinemvCandidates::PerCell { candidates, .. } => core::mem::take(candidates),
-            RefinemvCandidates::None | RefinemvCandidates::Uniform { .. } => Vec::new(),
+            RefinemvCandidates::None
+            | RefinemvCandidates::Uniform { .. }
+            | RefinemvCandidates::Shared { .. } => Vec::new(),
         }
     }
 
@@ -322,7 +422,9 @@ impl CompoundMotionGrid {
     fn uniform_refinemv_candidates(&self) -> Option<[Mv; 2]> {
         match &self.refinemv_candidates {
             RefinemvCandidates::Uniform { candidates, .. } => Some(*candidates),
-            RefinemvCandidates::None | RefinemvCandidates::PerCell { .. } => None,
+            RefinemvCandidates::None
+            | RefinemvCandidates::PerCell { .. }
+            | RefinemvCandidates::Shared { .. } => None,
         }
     }
 
@@ -337,6 +439,16 @@ impl CompoundMotionGrid {
                 candidates,
                 unit_size,
             } => candidates
+                .get(index)
+                .copied()
+                .map(|candidates| (candidates, *unit_size)),
+            RefinemvCandidates::Shared {
+                storage,
+                range,
+                unit_size,
+            } => storage
+                .candidates
+                .get(range.clone())?
                 .get(index)
                 .copied()
                 .map(|candidates| (candidates, *unit_size)),
@@ -1387,6 +1499,41 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn row_arena_reuses_storage_only_after_motion_views_retire() {
+        let value = MotionCell::from_refinemv([Mv::ZERO; 2]);
+        let mut storage = std::sync::Arc::new(MotionRowStorage::default());
+        let mut address = None;
+        for count in [64, 1, 4].into_iter().cycle().take(1200) {
+            let arena = std::sync::Arc::get_mut(&mut storage).unwrap();
+            arena.reset();
+            let grid = CompoundMotionGrid {
+                unit_size: 8,
+                columns: count,
+                cells: MotionCells::Heap(vec![value; count]),
+                refinemv_candidates: RefinemvCandidates::PerCell {
+                    candidates: vec![[Mv::ZERO; 2]; count],
+                    unit_size: 8,
+                },
+            };
+            let (stored, spare) = grid.store(arena).unwrap();
+            assert!(spare.is_empty());
+            assert!(spare.capacity() >= count);
+            let current = (arena.cells.as_ptr(), arena.candidates.as_ptr());
+            assert_eq!(*address.get_or_insert(current), current);
+            let view = stored.view(&storage);
+            assert_eq!(view.cells.as_slice().as_ptr(), current.0);
+            assert_eq!(view.cells.as_slice().len(), count);
+            assert_eq!(
+                view.refinemv_candidates_at_index(count - 1),
+                Some(([Mv::ZERO; 2], 8))
+            );
+            assert!(std::sync::Arc::get_mut(&mut storage).is_none());
+            drop(view);
+            assert!(std::sync::Arc::get_mut(&mut storage).is_some());
+        }
+    }
 
     #[test]
     fn stored_mvs_round_refined_sixteenth_pel_values_to_eighth_pel() {

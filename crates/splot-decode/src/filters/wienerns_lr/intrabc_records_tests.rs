@@ -1247,3 +1247,27 @@ fn disabled_intrabc_state_skips_the_tile_grid() {
 fn intrabc_grid_cell_stays_compact() {
     assert_eq!(core::mem::size_of::<IntrabcGridCell>(), 8);
 }
+
+#[test]
+fn intrabc_tile_slot_reset_reuses_grid_and_clears_neighbours() {
+    let (sequence, _) = selectable_fixture();
+    let mut state =
+        TileIntrabcPreludeState::new_for_tile((16, 16), 0..16, 0..16, &sequence, true, true)
+            .unwrap();
+    let address = state.values.as_ptr();
+    for iteration in 0..1200 {
+        state
+            .record_block(0, 0, 4, 4, frontier_skip_neighbour())
+            .unwrap();
+        let enabled = iteration % 2 == 0;
+        state
+            .reset_for_tile((16, 16), 0..16, 0..16, &sequence, true, enabled)
+            .unwrap();
+        assert_eq!(state.values.as_ptr(), address);
+        assert_eq!(
+            state,
+            TileIntrabcPreludeState::new_for_tile((16, 16), 0..16, 0..16, &sequence, true, enabled)
+                .unwrap()
+        );
+    }
+}

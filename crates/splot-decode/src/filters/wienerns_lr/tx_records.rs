@@ -197,7 +197,7 @@ impl DeltaQState {
 
     pub(crate) fn read_for_block(
         &mut self,
-        work_unit: &mut DecodeTileWorkUnit<'_>,
+        work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
         frontier: &DecodeBlockFrontier,
         skip: bool,
@@ -280,16 +280,26 @@ impl CdefState {
         })
     }
 
-    pub(crate) fn new(mi_rows: usize, mi_cols: usize, sequence: &SequenceHeader) -> Result<Self> {
+    pub(crate) fn new_reusing(
+        mi_rows: usize,
+        mi_cols: usize,
+        sequence: &SequenceHeader,
+        mut values: Vec<Option<usize>>,
+    ) -> Result<Self> {
         let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
         let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
         let values_len = rows.checked_mul(cols).ok_or_else(selectable_state_error)?;
+        values.clear();
+        values
+            .try_reserve_exact(values_len)
+            .map_err(|_| selectable_allocation_error())?;
+        values.resize(values_len, None);
         Ok(Self {
             row_start: 0,
             col_start: 0,
             rows,
             cols,
-            values: vec![None; values_len],
+            values,
             sb_size4: intra_delta_q_sb_size4(sequence)?,
         })
     }
@@ -297,7 +307,7 @@ impl CdefState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn read_for_block(
         &mut self,
-        work_unit: &mut DecodeTileWorkUnit<'_>,
+        work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
         core: &FrameHeaderCore,
         frontier: &DecodeBlockFrontier,
@@ -707,7 +717,7 @@ impl SelectableLumaTxGrid {
 }
 
 pub(crate) fn derive_inter_luma_tx_records_for_block(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
     grid_size: (usize, usize),
@@ -781,7 +791,7 @@ fn frontier_4x4_extent(frontier: &DecodeBlockFrontier) -> Result<Block4x4Extent>
 
 #[allow(clippy::too_many_arguments)]
 fn read_tx_partition_symbols(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     grid: &SelectableLumaTxGrid,
     row: usize,
@@ -997,7 +1007,7 @@ fn apply_tx_partition(
 }
 
 fn read_tx_symbol_cdef(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     selector: TileCdfSelector,
     tile_offset: ByteOffset,
@@ -1006,7 +1016,7 @@ fn read_tx_symbol_cdef(
 }
 
 fn read_tx_symbol(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     selector: TileCdfSelector,
     tile_offset: ByteOffset,
@@ -1027,7 +1037,7 @@ fn read_tx_symbol(
 }
 
 fn read_delta_q_abs(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
 ) -> Result<usize> {

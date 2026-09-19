@@ -1024,12 +1024,13 @@ fn publish_unit_outputs<T: ReconSample>(
     output_stride: usize,
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<Option<mc::CompoundMotionGrid>> {
     if splot_parallel::on_worker_pool()
         && published_band_count(scratch) > 1
         && let mc::WorkspaceSink::Frame(workspace) = sink
     {
-        return publish_units_by_band(scratch, workspace, output_stride);
+        publish_units_by_band(scratch, workspace, output_stride)?;
+        return Ok(grid);
     }
     let mut best_candidates = core::mem::take(&mut scratch.grid_candidates);
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
@@ -1068,15 +1069,16 @@ fn publish_unit_outputs<T: ReconSample>(
                 let compound = params
                     .into_compound()
                     .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-                mc::predict_compound_average_block(sink, compound, grid.take(), tile_offset)?
-                    .publish(sink)?;
+                grid =
+                    mc::predict_compound_average_block(sink, compound, grid.take(), tile_offset)?
+                        .publish(sink)?;
             } else {
                 mc::motion_compensate_inter_block_into(sink, params, tile_offset)?;
             }
         }
     }
     scratch.grid_candidates = best_candidates;
-    Ok(())
+    Ok(grid)
 }
 
 fn resize_output_samples<T: ReconSample>(samples: &mut Vec<T>, len: usize) -> Result<()> {
@@ -1085,6 +1087,22 @@ fn resize_output_samples<T: ReconSample>(samples: &mut Vec<T>, len: usize) -> Re
         .map_err(|_| inter_allocation!("TIP compound output samples"))?;
     samples.resize(len, T::default());
     Ok(())
+}
+
+pub(super) fn keep_motion_candidates<T: ReconSample>(
+    scratch: &mut TipReconstructScratch<T>,
+    candidates: Vec<[Mv; 2]>,
+) {
+    keep_candidates(&mut scratch.grid_candidates, candidates);
+}
+
+pub(super) fn retire_motion_grid<T: ReconSample>(
+    scratch: &mut TipReconstructScratch<T>,
+    mut grid: Option<mc::CompoundMotionGrid>,
+) {
+    if let Some(grid) = grid.as_mut() {
+        keep_candidates(&mut scratch.grid_candidates, grid.take_candidates());
+    }
 }
 
 /// Reconstructs one § 7.13.5 TIP block into `sink` from the motion half's grid.
@@ -1114,7 +1132,7 @@ pub(super) fn predict<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<Option<mc::CompoundMotionGrid>> {
     let plan = tip_block_plan(
         sink.info(),
         placed,
@@ -1172,10 +1190,9 @@ pub(super) fn predict<T: ReconSample>(
     }
     if let Some(metadata) = batch_metadata.as_mut() {
         metadata.publish(&scratch.output_samples, sink)?;
-        let candidates = metadata.take_grid_candidates();
-        keep_candidates(&mut scratch.grid_candidates, candidates);
+        grid = metadata.take_motion();
     } else {
-        publish_unit_outputs(
+        grid = publish_unit_outputs(
             scratch,
             sink,
             &plan,
@@ -1200,7 +1217,7 @@ pub(super) fn predict<T: ReconSample>(
             bit_depth,
         )?;
     }
-    Ok(())
+    Ok(grid)
 }
 
 /// Luma rows per § 7.10.6 TIP-as-output prediction band.
@@ -1334,7 +1351,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             reference,
             offset,
         )?;
-        predict(
+        let grid = predict(
             &mut scratch,
             &mut residual_scratch,
             &mut sink,
@@ -1353,6 +1370,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             bit_depth,
             offset,
         )?;
+        retire_motion_grid(&mut scratch, grid);
         band_y += rows;
     }
     super::temporal::commit_temporal_motion_blocks(&mut motion_field, &temporal_records);

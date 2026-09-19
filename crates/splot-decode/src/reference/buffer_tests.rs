@@ -201,7 +201,7 @@ fn reference_refresh_preserves_full_and_lsb_order_hints() {
     assert_eq!(buf.slots[1].order_hint, 136);
     assert_eq!(buf.slots[1].order_hint_lsb, 8);
     let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
-    let metadata = buf.build_store_eight(&frames).unwrap().1;
+    let metadata = buf.build_store_eight(&frames.into()).unwrap().1;
     assert_eq!(metadata.ref_order_hint[1], 136);
     assert_eq!(metadata.ref_order_hint_lsbs[1], 8);
     assert!(metadata.ref_implicit_output_frame[1]);
@@ -218,7 +218,7 @@ fn reference_refresh_preserves_global_motion_predictor_state() {
     buf.update(1, &update, false);
 
     let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
-    let metadata = buf.build_store_eight(&frames).unwrap().1;
+    let metadata = buf.build_store_eight(&frames.into()).unwrap().1;
     assert_eq!(metadata.ref_num_total_refs[1], 2);
     assert_eq!(metadata.saved_global_motion_order_hints[1][..2], [7, 11]);
     assert_eq!(
@@ -277,7 +277,7 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
     let motion_field = Arc::clone(frame.motion_field.field().unwrap());
 
     let frames = vec![Some(frame)];
-    let metadata = buf.build_store_eight(&frames).unwrap().1;
+    let metadata = buf.build_store_eight(&frames.into()).unwrap().1;
 
     let stored_cdfs = metadata.ref_frame_cdfs[2]
         .as_ref()
@@ -376,7 +376,7 @@ fn valid_slot_without_frame_index_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.slots[0].valid = true;
 
-    let Err(error) = buf.build_store_eight(&[]) else {
+    let Err(error) = buf.build_store_eight(&Vec::new().into()) else {
         panic!("missing decoded-frame index must be rejected");
     };
 
@@ -394,7 +394,7 @@ fn valid_slot_with_out_of_range_frame_index_is_reference_state_error() {
     buf.slots[0].valid = true;
     buf.slots[0].frame_index = Some(3);
 
-    let Err(error) = buf.build_store_eight(&[]) else {
+    let Err(error) = buf.build_store_eight(&Vec::new().into()) else {
         panic!("out-of-range decoded-frame index must be rejected");
     };
 
@@ -415,7 +415,7 @@ fn valid_slot_with_missing_retained_frame_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.update(0, &key_update(), true);
 
-    let Err(error) = buf.build_store_eight(&[None]) else {
+    let Err(error) = buf.build_store_eight(&vec![None].into()) else {
         panic!("missing retained frame must be rejected");
     };
 
@@ -433,7 +433,7 @@ fn valid_slot_with_mismatched_storage_depth_keeps_its_diagnostic() {
     buf.update(0, &key_update(), true);
     let frames = vec![Some(pipeline_frame(64, 64))];
 
-    let Err(error) = buf.build_store_ten(&frames) else {
+    let Err(error) = buf.build_store_ten(&frames.into()) else {
         panic!("8-bit retained frame must not enter a 10-bit reference store");
     };
 
@@ -450,7 +450,7 @@ fn valid_slot_with_mismatched_frame_size_is_reference_state_error() {
     buf.update(0, &key_update(), true);
     let frames = vec![Some(pipeline_frame(32, 64))];
 
-    let Err(error) = buf.build_store_eight(&frames) else {
+    let Err(error) = buf.build_store_eight(&frames.into()) else {
         panic!("mismatched retained-frame size must be rejected");
     };
 

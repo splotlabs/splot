@@ -33,26 +33,27 @@ type EntropyEarly<T> = Arc<CompletionCell<Mutex<Option<inter::InterWalkEarly<T>>
 
 /// The two halves one scheduled entropy pass publishes: the pre-parse half the
 /// admission scheduler is built from, and the pass's own products.
-pub(super) struct EntropyHandles<T: splot_recon::ReconSample> {
+pub(super) struct EntropyHandles<'job, T: splot_recon::ReconSample> {
     early: EntropyEarly<T>,
     tail: EntropyResult<T>,
+    context: EntropySlot<'job, T>,
 }
 
 /// One scheduler-owned entropy pass whose reconstruction has not been promoted.
-pub(super) enum PendingEntropy {
+pub(super) enum PendingEntropy<'job> {
     Eight {
         frame_index: usize,
-        result: EntropyHandles<u8>,
+        result: EntropyHandles<'job, u8>,
         finish: PendingFinish<u8>,
     },
     Ten {
         frame_index: usize,
-        result: EntropyHandles<u16>,
+        result: EntropyHandles<'job, u16>,
         finish: PendingFinish<u16>,
     },
 }
 
-impl PendingEntropy {
+impl PendingEntropy<'_> {
     fn is_settled(&self) -> bool {
         match self {
             Self::Eight { result, .. } => result.early.get().is_some(),
@@ -62,78 +63,181 @@ impl PendingEntropy {
 }
 
 /// Ordered, bounded entropy contexts awaiting reconstruction admission.
-#[derive(Default)]
-pub(super) struct PendingEntropyQueue {
-    entries: VecDeque<PendingEntropy>,
-}
-
-impl PendingEntropyQueue {
-    pub(super) fn push(&mut self, pending: PendingEntropy) {
-        self.entries.push_back(pending);
-    }
-}
+pub(super) type PendingEntropyQueue<'job> = VecDeque<PendingEntropy<'job>>;
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn schedule_entropy<'scope, 'job, T, P>(
-    parse: P,
+pub(super) fn schedule_entropy<'scope, 'job, T: ScheduledScratchSample + Send + 'static>(
+    start: inter::InterFrameStart<'job, T>,
+    context: EntropySlot<'job, T>,
     frame_index: usize,
-    frame_cdfs: inter::FrameCdfHandle,
-    ccso_grid: inter::CcsoGridHandle,
-    segment_ids: inter::SegmentIdMapHandle,
     motion: inter::MotionFieldHandle,
     dependencies: &inter::EntropyDependencies,
-    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-) -> EntropyHandles<T>
+) -> EntropyHandles<'job, T>
 where
-    T: splot_recon::ReconSample + Send + 'static,
-    P: FnOnce(&dyn Fn(inter::InterWalkEarly<T>)) -> Result<inter::DeferredInterWalk<T>>
-        + Send
-        + 'job,
     'job: 'scope,
 {
-    let result = Arc::new(CompletionCell::new());
-    let result_for_job = Arc::clone(&result);
-    let early: EntropyEarly<T> = Arc::new(CompletionCell::new());
-    let early_for_job = Arc::clone(&early);
-    let failed_cdfs = frame_cdfs.clone();
-    let failed_ccso = ccso_grid.clone();
-    let failed_segment_ids = segment_ids.clone();
-    let failed_motion = motion;
-    let conditions = dependencies.conditions();
+    let result = EntropyHandles {
+        early: Arc::clone(&context.early),
+        tail: Arc::clone(&context.tail),
+        context: Arc::clone(&context),
+    };
+    *context.task.lock() = Some(EntropyTask { start, motion });
     let order_key = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
         .saturating_mul(ORDER_KEY_FRAME_STRIDE);
-    scheduler.submit(
+    scheduler.submit_iter(
         scope,
         order_key,
-        &conditions,
-        boxed_task(move |_| {
-            let parsed = parse(&|early| {
-                let _ = early_for_job.set(Mutex::new(Some(early)));
-            });
-            if let Ok(deferred) = &parsed {
-                frame_cdfs.publish(Arc::clone(deferred.frame_cdfs()));
-                ccso_grid.publish(deferred.ccso_grid().cloned().map(Arc::new));
-                segment_ids.publish(Arc::clone(deferred.segment_ids()));
-            } else {
-                failed_cdfs.fail();
-                failed_ccso.fail();
-                failed_segment_ids.fail();
-                failed_motion.fail();
-            }
-            let _ = result_for_job.set(Mutex::new(Some(parsed)));
-            let _ = early_for_job.set(Mutex::new(None));
-        }),
+        &mut dependencies.conditions(),
+        splot_parallel::Job::Inline(T::parse_task(context)),
     );
-    EntropyHandles {
-        early,
-        tail: result,
+    result
+}
+
+pub(crate) type EntropySlot<'job, T> = Arc<EntropyContext<'job, T>>;
+
+pub(crate) struct EntropyContext<'job, T: splot_recon::ReconSample> {
+    task: Mutex<Option<EntropyTask<'job, T>>>,
+    frame: Mutex<Option<Arc<ScheduledFrame<T>>>>,
+    workspace: Mutex<inter::ScheduledTileWorkspace<T>>,
+    temporal: Mutex<Arc<inter::TemporalMvContext>>,
+    workers: Arc<inter::InterReconScratchPool<T>>,
+    prepare: Mutex<Option<ScheduledPrepare<T>>>,
+    attach: Mutex<Option<ScheduledAttach<T>>>,
+    early: EntropyEarly<T>,
+    tail: EntropyResult<T>,
+}
+
+pub(super) struct EntropyContexts<'job, T: splot_recon::ReconSample> {
+    slots: Vec<EntropySlot<'job, T>>,
+    workers: Option<Arc<inter::InterReconScratchPool<T>>>,
+    next: usize,
+    depth: usize,
+}
+
+impl<'job, T: splot_recon::ReconSample> EntropyContexts<'job, T> {
+    pub(super) fn new(depth: usize) -> Self {
+        Self {
+            slots: Vec::new(),
+            workers: None,
+            next: 0,
+            depth: depth.max(1),
+        }
+    }
+
+    pub(super) fn claim(&mut self) -> EntropySlot<'job, T> {
+        let index = self.next;
+        self.next = (index + 1) % self.depth;
+        if index == self.slots.len() {
+            let workers = self.workers.get_or_insert_with(Arc::default);
+            self.slots.push(Arc::new(EntropyContext {
+                task: Mutex::new(None),
+                frame: Mutex::new(None),
+                workspace: Mutex::new(inter::ScheduledTileWorkspace::default()),
+                temporal: Mutex::new(Arc::new(inter::TemporalMvContext::empty())),
+                workers: Arc::clone(workers),
+                prepare: Mutex::new(None),
+                attach: Mutex::new(None),
+                early: Arc::new(CompletionCell::new()),
+                tail: Arc::new(CompletionCell::new()),
+            }));
+        }
+        loop {
+            if let Some(context) = Arc::get_mut(&mut self.slots[index])
+                && context.reset()
+            {
+                return Arc::clone(&self.slots[index]);
+            }
+            if !splot_parallel::assist_pool_once() {
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
+impl<T: splot_recon::ReconSample> EntropyContext<'_, T> {
+    fn reset(&mut self) -> bool {
+        let (Some(early), Some(tail)) =
+            (Arc::get_mut(&mut self.early), Arc::get_mut(&mut self.tail))
+        else {
+            return false;
+        };
+        if let Some(frame) = self.frame.get_mut() {
+            let Some(frame) = Arc::get_mut(frame) else {
+                return false;
+            };
+            if let Some(active) = frame.active.take() {
+                *self.workspace.get_mut() = active.reconstruction.retire();
+            }
+            frame.reset();
+        }
+        if Arc::get_mut(self.temporal.get_mut()).is_none() {
+            return false;
+        }
+        if !self.workspace.get_mut().producer_storage_reusable() {
+            return false;
+        }
+        if !self.workspace.get_mut().retire_reference_handles() {
+            return false;
+        }
+        early.reset();
+        tail.reset();
+        self.task.get_mut().take();
+        self.prepare.get_mut().take();
+        self.attach.get_mut().take();
+        true
+    }
+}
+
+impl<T: splot_recon::ReconSample> EntropyContexts<'_, T> {
+    pub(super) fn retire_completed(&mut self) {
+        for context in &mut self.slots {
+            if let Some(context) = Arc::get_mut(context) {
+                if let Some(frame) = context.frame.get_mut().as_mut().and_then(Arc::get_mut)
+                    && let Some(active) = frame.active.take()
+                {
+                    *context.workspace.get_mut() = active.reconstruction.retire();
+                }
+                context.workspace.get_mut().retire_reference_handles();
+            }
+        }
+    }
+}
+
+struct EntropyTask<'job, T: splot_recon::ReconSample> {
+    start: inter::InterFrameStart<'job, T>,
+    motion: inter::MotionFieldHandle,
+}
+
+impl<'job, T: ScheduledScratchSample + Send + 'static> EntropyTask<'job, T> {
+    fn run(context: &EntropyContext<'job, T>) {
+        let Some(task) = context.task.lock().take() else {
+            return;
+        };
+        let started = {
+            let mut workspace = context.workspace.lock();
+            task.start.run(&mut workspace)
+        };
+        let parsed = started
+            .and_then(|(early, pending)| {
+                let _ = context.early.set(Mutex::new(Some(early)));
+                pending.run()
+            })
+            .and_then(|mut deferred| {
+                deferred.publish_products()?;
+                Ok(deferred)
+            });
+        if parsed.is_err() {
+            task.motion.fail();
+        }
+        let _ = context.tail.set(Mutex::new(Some(parsed)));
+        let _ = context.early.set(Mutex::new(None));
     }
 }
 
 const ORDER_KEY_FRAME_STRIDE: u64 = 1 << 32;
-type TemporalScratchSlot = Arc<CompletionCell<Mutex<Option<inter::TemporalMvScratch>>>>;
 type ReconScratchSlot = Arc<CompletionCell<Mutex<Option<ScheduledReconScratch>>>>;
 
 pub(crate) enum ScheduledReconScratch {
@@ -164,11 +268,15 @@ pub(crate) enum ScheduledFilterJob {
 
 /// The job shapes the pipeline schedules for every unit of every frame.
 ///
-/// These four are the whole steady-state task load, so they are named here and
-/// live in the scheduler's slot rather than in a box of their own, the way
-/// dav2d dispatches a preallocated task record on its kind. Rarer jobs, which
-/// carry state no enum could name, still box.
-pub(crate) enum FrameTask {
+/// Entropy passes and reconstruction stages occupy typed scheduler records.
+/// Entropy inputs and publication cells belong to bounded frame contexts.
+pub(crate) enum FrameTask<'job> {
+    ParseEight(EntropySlot<'job, u8>),
+    ParseTen(EntropySlot<'job, u16>),
+    PrepareEight(EntropySlot<'job, u8>),
+    PrepareTen(EntropySlot<'job, u16>),
+    AttachEight(EntropySlot<'job, u8>),
+    AttachTen(EntropySlot<'job, u16>),
     Precompute {
         frame: ScheduledFrameRef,
         index: usize,
@@ -186,11 +294,22 @@ pub(crate) enum FrameTask {
         index: usize,
     },
     Filter(ScheduledFilterJob),
+    Output(ScheduledFrameRef),
 }
 
-impl<'job> splot_parallel::Task<'job> for FrameTask {
+impl<'job> splot_parallel::Task<'job> for FrameTask<'job> {
     fn run(self, admit: &dyn splot_parallel::Admit<'job, Self>) {
         match self {
+            Self::Output(frame) => match frame {
+                ScheduledFrameRef::Eight(frame) => frame.run_output(),
+                ScheduledFrameRef::Ten(frame) => frame.run_output(),
+            },
+            Self::ParseEight(context) => EntropyTask::run(&context),
+            Self::ParseTen(context) => EntropyTask::run(&context),
+            Self::PrepareEight(context) => ScheduledPrepare::run(&context, admit),
+            Self::PrepareTen(context) => ScheduledPrepare::run(&context, admit),
+            Self::AttachEight(context) => ScheduledAttach::run(&context, admit),
+            Self::AttachTen(context) => ScheduledAttach::run(&context, admit),
             Self::Precompute { frame, index } => match frame {
                 ScheduledFrameRef::Eight(frame) => frame.precompute(index, admit),
                 ScheduledFrameRef::Ten(frame) => frame.precompute(index, admit),
@@ -217,12 +336,15 @@ impl<'job> splot_parallel::Task<'job> for FrameTask {
 
 /// Wraps a job the task enum cannot name.
 pub(crate) fn boxed_task<'job>(
-    job: impl for<'a> FnOnce(&'a dyn splot_parallel::Admit<'job, FrameTask>) + Send + 'job,
-) -> splot_parallel::Job<'job, FrameTask> {
+    job: impl for<'a> FnOnce(&'a dyn splot_parallel::Admit<'job, FrameTask<'job>>) + Send + 'job,
+) -> splot_parallel::Job<'job, FrameTask<'job>> {
     splot_parallel::Job::Boxed(Box::new(job))
 }
 
 pub(crate) trait ScheduledScratchSample: splot_recon::ReconSample {
+    fn parse_task(task: EntropySlot<'_, Self>) -> FrameTask<'_>;
+    fn prepare_task(task: EntropySlot<'_, Self>) -> FrameTask<'_>;
+    fn attach_task(task: EntropySlot<'_, Self>) -> FrameTask<'_>;
     /// Names this depth's frame for a scheduled task.
     fn scheduled_frame_ref(frame: Arc<ScheduledFrame<Self>>) -> ScheduledFrameRef;
 
@@ -240,8 +362,17 @@ pub(crate) trait ScheduledScratchSample: splot_recon::ReconSample {
 }
 
 macro_rules! impl_scheduled_scratch_sample {
-    ($sample:ty, $variant:ident) => {
+    ($sample:ty, $variant:ident, $parse:ident, $prepare:ident, $attach:ident) => {
         impl ScheduledScratchSample for $sample {
+            fn parse_task(task: EntropySlot<'_, Self>) -> FrameTask<'_> {
+                FrameTask::$parse(task)
+            }
+            fn prepare_task(task: EntropySlot<'_, Self>) -> FrameTask<'_> {
+                FrameTask::$prepare(task)
+            }
+            fn attach_task(task: EntropySlot<'_, Self>) -> FrameTask<'_> {
+                FrameTask::$attach(task)
+            }
             fn scheduled_frame_ref(frame: Arc<ScheduledFrame<Self>>) -> ScheduledFrameRef {
                 ScheduledFrameRef::$variant(frame)
             }
@@ -274,16 +405,14 @@ macro_rules! impl_scheduled_scratch_sample {
     };
 }
 
-impl_scheduled_scratch_sample!(u8, Eight);
-impl_scheduled_scratch_sample!(u16, Ten);
+impl_scheduled_scratch_sample!(u8, Eight, ParseEight, PrepareEight, AttachEight);
+impl_scheduled_scratch_sample!(u16, Ten, ParseTen, PrepareTen, AttachTen);
 
 type PendingTipProducts<T> = (
     PipelineFrameSlot,
     PendingFinish<T>,
     inter::FrameDecodeGeometry,
-    inter::FrameCdfHandle,
-    inter::CcsoGridHandle,
-    inter::SegmentIdMapHandle,
+    inter::FrameProductWriters,
     inter::MotionFieldHandle,
 );
 
@@ -293,25 +422,16 @@ pub(super) fn reserve_tip_output<T: super::inflight::SpareFramePlanes>(
     sequence: &SequenceHeader,
     bit_depth: BitDepth,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
+    frames: &mut super::FrameStore,
     ring: &mut InflightRing,
     frame_index: usize,
 ) -> Result<PendingTipProducts<T>> {
     let geometry = inter::FrameDecodeGeometry::new(core, sequence, bit_depth, false)?;
+    let motion = frames.reserve_motion(geometry.motion_layout())?;
     let (slot, finish) =
-        super::inflight::reserve_pending_slot(geometry.info(), erase, ring, frame_index)?;
-    let frame_cdfs = inter::FrameCdfHandle::pending();
-    let ccso_grid = inter::CcsoGridHandle::pending();
-    let segment_ids = inter::SegmentIdMapHandle::pending();
-    let motion = inter::MotionFieldHandle::pending_with_layout(geometry.motion_layout());
-    Ok((
-        slot,
-        finish,
-        geometry,
-        frame_cdfs,
-        ccso_grid,
-        segment_ids,
-        motion,
-    ))
+        super::inflight::reserve_pending_slot(geometry.info(), erase, ring, frames, frame_index)?;
+    let products = frames.reserve_products()?;
+    Ok((slot, finish, geometry, products, motion))
 }
 
 /// Admits one reference-gated TIP output reconstruction without stopping the
@@ -321,52 +441,57 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
     reconstruct: P,
     frame_index: usize,
     dependencies: &[Condition<'_>],
-    frame_cdfs: inter::FrameCdfHandle,
-    ccso_grid: inter::CcsoGridHandle,
-    segment_ids: inter::SegmentIdMapHandle,
+    mut products: inter::FrameProductWriters,
     motion: inter::MotionFieldHandle,
     finish: PendingFinish<T>,
-    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     lane: &mut ReconAdmissionLane,
 ) where
     T: ScheduledScratchSample + Send + 'static,
-    P: FnOnce(&mut inter::InterDecodeScratch<T>) -> Result<inter::InterDecodeOutput<T>>
+    P: FnOnce(
+            &mut inter::InterDecodeScratch<T>,
+            &mut inter::FrameProductWriters,
+        ) -> Result<inter::InterDecodeOutput<T>>
         + Send
         + 'job,
     'job: 'scope,
 {
-    let (scratch_source, scratch_done) = lane.reserve_recon();
-    let mut conditions = dependencies.to_vec();
-    if let Some(gate) = scratch_source.as_deref() {
-        conditions.push(Condition::completion(gate));
-    }
+    let (scratch_source, scratch_done) = match lane.reserve_recon() {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(products);
+            motion.fail();
+            finish.fail(error);
+            return;
+        }
+    };
+    let mut conditions = dependencies
+        .iter()
+        .copied()
+        .chain(scratch_source.as_deref().map(Condition::completion));
     let scratch_for_job = scratch_source.clone();
     let order_key = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
         .saturating_mul(ORDER_KEY_FRAME_STRIDE);
-    scheduler.submit(
+    scheduler.submit_iter(
         scope,
         order_key,
-        &conditions,
+        &mut conditions,
         boxed_task(move |_| {
             let mut scratch = scratch_for_job
                 .as_deref()
                 .and_then(CompletionCell::get)
                 .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
                 .unwrap_or_default();
-            match reconstruct(&mut scratch) {
+            match reconstruct(&mut scratch, &mut products) {
                 Ok((frame, _, cdfs, ccso, field, segments)) => {
-                    frame_cdfs.publish(cdfs);
-                    ccso_grid.publish(ccso.map(Arc::new));
-                    segment_ids.publish(Arc::new(segments));
+                    products.settle(cdfs, ccso, segments);
                     motion.publish(field);
                     finish.complete_frame(frame);
                 }
                 Err(error) => {
-                    frame_cdfs.fail();
-                    ccso_grid.fail();
-                    segment_ids.fail();
+                    drop(products);
                     motion.fail();
                     finish.fail(error);
                 }
@@ -376,104 +501,144 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
     );
 }
 
+type LaneReservation<T> = (Option<Arc<CompletionCell<T>>>, Arc<CompletionCell<T>>);
+
 /// The frame-context admission bound for scheduled reconstruction.
 pub(super) struct ReconAdmissionLane {
     depth: usize,
     recon: VecDeque<ReconScratchSlot>,
     filters: VecDeque<Arc<CompletionCell<()>>>,
-    temporal: VecDeque<TemporalScratchSlot>,
+    recon_cells: Vec<ReconScratchSlot>,
+    filter_cells: Vec<Arc<CompletionCell<()>>>,
 }
 
 impl ReconAdmissionLane {
     pub(super) fn new(depth: usize) -> Self {
+        let depth = depth.max(1);
+        // Two identities per context (2D), in-flight job (D), and worker (W),
+        // plus D queued identities and the reservation in construction.
+
+        let cells = depth
+            .saturating_mul(7)
+            .saturating_add(
+                splot_parallel::current_pool_width()
+                    .max(1)
+                    .saturating_mul(2),
+            )
+            .saturating_add(1);
         Self {
-            depth: depth.max(1),
-            recon: VecDeque::new(),
-            filters: VecDeque::new(),
-            temporal: VecDeque::new(),
+            depth,
+            recon: VecDeque::with_capacity(depth),
+            filters: VecDeque::with_capacity(depth),
+            recon_cells: (0..cells)
+                .map(|_| Arc::new(CompletionCell::new()))
+                .collect(),
+            filter_cells: (0..cells)
+                .map(|_| Arc::new(CompletionCell::new()))
+                .collect(),
         }
     }
 
     fn reserve<T>(
         depth: usize,
         lane: &mut VecDeque<Arc<CompletionCell<T>>>,
-    ) -> (Option<Arc<CompletionCell<T>>>, Arc<CompletionCell<T>>) {
-        let gate = (lane.len() >= depth).then(|| Arc::clone(&lane[0]));
-        let done = Arc::new(CompletionCell::new());
+        cells: &mut [Arc<CompletionCell<T>>],
+    ) -> Result<LaneReservation<T>> {
+        let done = cells
+            .iter_mut()
+            .find_map(|cell| {
+                Arc::get_mut(cell)?.reset();
+                Some(Arc::clone(cell))
+            })
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        let gate = if lane.len() == depth {
+            lane.pop_front()
+        } else {
+            None
+        };
         lane.push_back(Arc::clone(&done));
-        while lane.len() > depth {
-            lane.pop_front();
-        }
-        (gate, done)
+        Ok((gate, done))
     }
 
-    fn reserve_recon(&mut self) -> (Option<ReconScratchSlot>, ReconScratchSlot) {
-        Self::reserve(self.depth, &mut self.recon)
+    fn reserve_recon(&mut self) -> Result<(Option<ReconScratchSlot>, ReconScratchSlot)> {
+        Self::reserve(self.depth, &mut self.recon, &mut self.recon_cells)
     }
 
-    fn reserve_filter(&mut self) -> (Option<Arc<CompletionCell<()>>>, Arc<CompletionCell<()>>) {
-        Self::reserve(self.depth, &mut self.filters)
-    }
-
-    fn reserve_temporal(&mut self) -> (Option<TemporalScratchSlot>, TemporalScratchSlot) {
-        Self::reserve(self.depth, &mut self.temporal)
+    fn reserve_filter(&mut self) -> Result<LaneReservation<()>> {
+        Self::reserve(self.depth, &mut self.filters, &mut self.filter_cells)
     }
 }
 
+#[derive(Default)]
 pub(crate) struct ScheduledFrame<T: splot_recon::ReconSample> {
-    reconstruction: inter::ScheduledTileRecon<T>,
-    finish: Mutex<Option<PendingFinish<T>>>,
-    motion: inter::MotionFieldHandle,
-    scratch_done: ReconScratchSlot,
-    filter_gate: Option<Arc<CompletionCell<()>>>,
-    filter_done: Arc<CompletionCell<()>>,
+    active: Option<ScheduledFrameState<T>>,
+    filter_shell: Mutex<Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>>,
     prepared: Vec<CompletionCell<()>>,
     frontier_done: Vec<CompletionCell<()>>,
     filtered: Vec<CompletionCell<()>>,
     filter_error: Mutex<Option<DecodeError>>,
-    filters_ready: Arc<CompletionCell<()>>,
+    filters_ready: CompletionCell<()>,
     failed: AtomicBool,
     order_base: u64,
 }
 
-impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
+struct ScheduledFrameState<T: splot_recon::ReconSample> {
+    reconstruction: inter::ScheduledTileRecon<T>,
+    finish: Mutex<Option<PendingFinish<T>>>,
+    output: Mutex<Option<ScheduledOutput<T>>>,
+    motion: inter::MotionFieldHandle,
+    scratch_done: ReconScratchSlot,
+    filter_gate: Option<Arc<CompletionCell<()>>>,
+    filter_done: Arc<CompletionCell<()>>,
+}
+
+struct ScheduledOutput<T: splot_recon::ReconSample> {
+    finish: PendingFinish<T>,
+    filter: crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>,
+}
+
+impl<T: splot_recon::ReconSample> ScheduledFrame<T> {
+    fn reset(&mut self) {
+        self.active.take();
+        for cell in self
+            .prepared
+            .iter_mut()
+            .chain(&mut self.frontier_done)
+            .chain(&mut self.filtered)
+        {
+            cell.reset();
+        }
+        self.filters_ready.reset();
+        self.filter_error.get_mut().take();
+        *self.failed.get_mut() = false;
+    }
+}
+
+impl<'job, T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn submit_batches(
         self: &Arc<Self>,
         batches: core::ops::Range<usize>,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
         let starts_commit = batches.start == 0 && !batches.is_empty();
-        let mut ready_key = None;
-        let mut ready = Vec::<splot_parallel::Job<'_, FrameTask>>::new();
-        let mut conditions = Vec::new();
         for index in batches {
-            self.reconstruction.conditions(index, &mut conditions);
-            let row = Arc::clone(self);
-            let job = splot_parallel::Job::Inline(FrameTask::Precompute {
-                frame: T::scheduled_frame_ref(row),
-                index,
-            });
-            if conditions.is_empty() {
-                ready_key.get_or_insert_with(|| self.batch_key(index, 1));
-                ready.push(job);
-            } else {
-                if let Some(order_key) = ready_key.take() {
-                    admit.submit_ready_batch(order_key, core::mem::take(&mut ready));
-                }
-                admit.submit(self.batch_key(index, 1), &conditions, job);
-            }
-        }
-        if let Some(order_key) = ready_key {
-            admit.submit_ready_batch(order_key, ready);
+            admit.submit_iter(
+                self.batch_key(index, 1),
+                &mut active.reconstruction.conditions(index),
+                splot_parallel::Job::Inline(FrameTask::Precompute {
+                    frame: T::scheduled_frame_ref(Arc::clone(self)),
+                    index,
+                }),
+            );
         }
         if starts_commit {
             let commit = Arc::clone(self);
             admit.submit(
                 self.batch_key(0, 2),
-                &[
-                    Condition::completion(&self.prepared[0]),
-                    Condition::completion(self.filters_ready.as_ref()),
-                ],
+                &[Condition::completion(&self.prepared[0])],
                 splot_parallel::Job::Inline(FrameTask::Commit {
                     frame: T::scheduled_frame_ref(commit),
                     index: 0,
@@ -485,7 +650,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn continue_commit(
         self: &Arc<Self>,
         index: usize,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
         let commit = Arc::clone(self);
         let job = splot_parallel::Job::Inline(FrameTask::Commit {
@@ -513,23 +678,22 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
 
     /// Submits the § 7.17 frontier link for one sealed superblock row.
     ///
-    /// The chain is ordered by the previous link alone: a link is submitted
-    /// exactly when the commit spine has sealed its rows, so its own source is
-    /// final before it exists.
+    /// The first link waits for entropy's filter records; later links wait for
+    /// their predecessor. The commit spine has already sealed each link's rows.
     fn submit_frontier(
         self: &Arc<Self>,
         batch: usize,
         row: usize,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
-        let conditions = row
+        let ready = row
             .checked_sub(1)
             .and_then(|previous| self.frontier_done.get(previous))
-            .map(Condition::completion);
+            .unwrap_or(&self.filters_ready);
         let frame = Arc::clone(self);
         admit.submit(
             self.batch_key(batch, 3),
-            conditions.as_slice(),
+            &[Condition::completion(ready)],
             splot_parallel::Job::Inline(FrameTask::Frontier {
                 frame: T::scheduled_frame_ref(frame),
                 row,
@@ -540,10 +704,13 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn frontier(
         self: &Arc<Self>,
         row: usize,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
         if !self.failed.load(Ordering::Acquire) {
-            match self.reconstruction.frontier(row) {
+            match active.reconstruction.frontier(row) {
                 Ok(progress) => self.publish_filters(progress, admit),
                 Err(error) => self.fail(error, admit),
             }
@@ -556,16 +723,16 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn submit_resolve(
         self: &Arc<Self>,
         index: usize,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
-        let mut conditions = Vec::new();
-        self.reconstruction
-            .resolve_conditions(index, &mut conditions);
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
         let resolve = Arc::clone(self);
         let index_key = u64::try_from(index).unwrap_or(u64::MAX / 2);
-        admit.submit(
+        admit.submit_iter(
             self.order_base.saturating_add(index_key),
-            &conditions,
+            &mut active.reconstruction.resolve_conditions(index),
             splot_parallel::Job::Inline(FrameTask::Resolve {
                 frame: T::scheduled_frame_ref(resolve),
                 index,
@@ -578,12 +745,15 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn resolve(
         self: &Arc<Self>,
         index: usize,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
         if self.failed.load(Ordering::Acquire) {
             return;
         }
-        let (batches, awaiting) = match self.reconstruction.resolve(index) {
+        let (batches, awaiting) = match active.reconstruction.resolve(index) {
             Ok(resolved) => resolved,
             Err(error) => {
                 self.fail(error, admit);
@@ -597,7 +767,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             admit.submit(
                 self.order_base.saturating_add(index_key),
                 &[Condition::watermark(
-                    self.reconstruction.parse_watermark(),
+                    active.reconstruction.parse_watermark(),
                     units,
                 )],
                 splot_parallel::Job::Inline(FrameTask::Resolve {
@@ -608,7 +778,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             return;
         }
         let next = index.saturating_add(1);
-        if next < self.reconstruction.resolve_len() {
+        if next < active.reconstruction.resolve_len() {
             self.submit_resolve(next, admit);
         }
     }
@@ -616,10 +786,13 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn precompute(
         self: &Arc<Self>,
         index: usize,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
         if !self.failed.load(Ordering::Acquire)
-            && let Err(error) = self.reconstruction.precompute(index)
+            && let Err(error) = active.reconstruction.precompute(index)
         {
             self.fail(error, admit);
         }
@@ -631,22 +804,25 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn commit(
         self: &Arc<Self>,
         index: usize,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
         if self.failed.load(Ordering::Acquire) {
             return;
         }
-        match self.reconstruction.commit(index) {
+        match active.reconstruction.commit(index) {
             Ok(progress) => {
                 if progress.recon_complete {
-                    let scratch = match self.reconstruction.take_scheduled_scratch() {
+                    let scratch = match active.reconstruction.take_scheduled_scratch() {
                         Ok(scratch) => scratch,
                         Err(error) => {
                             self.fail(error, admit);
                             return;
                         }
                     };
-                    let _ = self
+                    let _ = active
                         .scratch_done
                         .set(Mutex::new(Some(T::wrap_scheduled_scratch(scratch))));
                 }
@@ -657,7 +833,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             Err(error) => self.fail(error, admit),
         }
         let next = index.saturating_add(1);
-        if !self.failed.load(Ordering::Acquire) && next < self.reconstruction.len() {
+        if !self.failed.load(Ordering::Acquire) && next < active.reconstruction.len() {
             self.continue_commit(next, admit);
         }
     }
@@ -667,11 +843,14 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn publish_filters(
         self: &Arc<Self>,
         mut progress: inter::ScheduledFrameProgress<T>,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
         for filter in progress.filters.drain(..) {
             let stripe = filter.stripe();
-            if self.filtered.get(stripe).is_none() {
+            if stripe >= active.reconstruction.filter_count() {
                 self.fail(
                     unsupported(
                         "inter_admission_filter_index",
@@ -686,35 +865,47 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 T::scheduled_filter_job(Arc::clone(self), filter),
             )));
         }
-        self.reconstruction
+        active
+            .reconstruction
             .recycle_filter_jobs(core::mem::take(&mut progress.filters));
         let Some(filter) = progress.output else {
             return;
         };
-        let finish = self.finish.lock().take();
+        let finish = active.finish.lock().take();
         if let Some(finish) = finish {
-            let mut conditions = self
+            let mut conditions = active
                 .filter_gate
-                .as_deref()
-                .map(|gate| vec![Condition::completion(gate)])
-                .unwrap_or_default();
-            conditions.extend(self.filtered.iter().map(Condition::completion));
-            let filter_done = Arc::clone(&self.filter_done);
-            let frame = Arc::clone(self);
-            admit.submit(
+                .iter()
+                .map(|gate| Condition::completion(gate.as_ref()))
+                .chain(
+                    self.filtered[..active.reconstruction.filter_count()]
+                        .iter()
+                        .map(Condition::completion),
+                );
+            *active.output.lock() = Some(ScheduledOutput { finish, filter });
+            admit.submit_iter(
                 self.order_base + u64::from(u32::MAX),
-                &conditions,
-                boxed_task(move |_| {
-                    let error = frame.filter_error.lock().take();
-                    if let Some(error) = error {
-                        finish.fail(error);
-                    } else {
-                        finish.run_owned_finish(filter);
-                    }
-                    let _ = filter_done.set(());
-                }),
+                &mut conditions,
+                splot_parallel::Job::Inline(FrameTask::Output(T::scheduled_frame_ref(Arc::clone(
+                    self,
+                )))),
             );
         }
+    }
+
+    fn run_output(&self) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
+        let Some(ScheduledOutput { finish, filter }) = active.output.lock().take() else {
+            return;
+        };
+        if let Some(error) = self.filter_error.lock().take() {
+            finish.fail(error);
+        } else {
+            *self.filter_shell.lock() = Some(finish.run_owned_finish(filter));
+        }
+        let _ = active.filter_done.set(());
     }
 
     /// Runs one filter stripe and publishes it, recording the frame's first
@@ -735,15 +926,18 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn fail(
         &self,
         error: DecodeError,
-        admit: &dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>,
+        admit: &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     ) {
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
         if self.failed.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.reconstruction.fail_temporal();
-        self.motion.fail();
-        let _ = self.scratch_done.set(Mutex::new(None));
-        let _ = self.filter_done.set(());
+        active.reconstruction.fail_temporal();
+        active.motion.fail();
+        let _ = active.scratch_done.set(Mutex::new(None));
+        let _ = active.filter_done.set(());
         for completion in self
             .prepared
             .iter()
@@ -753,7 +947,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             let _ = completion.set(());
         }
         admit.admit_ready();
-        if let Some(finish) = self.finish.lock().take() {
+        if let Some(finish) = active.finish.lock().take() {
             finish.fail(error);
         }
     }
@@ -761,141 +955,235 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
 
 fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
     early: inter::InterWalkEarly<T>,
-    tail: EntropyResult<T>,
+    context: EntropySlot<'job, T>,
     finish: PendingFinish<T>,
     frame_index: usize,
-    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
 {
+    let tail = Arc::clone(&context.tail);
     let order_base = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
         .saturating_mul(ORDER_KEY_FRAME_STRIDE);
     let motion = early.motion.clone();
     let dependencies = early.motion_dependencies();
-    let (scratch_source, scratch_done) = lane.reserve_recon();
-    let (filter_gate, filter_done) = lane.reserve_filter();
-    let (temporal_gate, temporal_done) = lane.reserve_temporal();
+    let (scratch_source, scratch_done) = match lane.reserve_recon() {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            motion.fail();
+            finish.fail(error);
+            return;
+        }
+    };
+    let (filter_gate, filter_done) = match lane.reserve_filter() {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            let _ = scratch_done.set(Mutex::new(None));
+            motion.fail();
+            finish.fail(error);
+            return;
+        }
+    };
     let mut conditions = dependencies
         .iter()
+        .flatten()
         .map(inter::MotionFieldHandle::metadata_condition)
-        .collect::<Vec<_>>();
-    if let Some(gate) = scratch_source.as_deref() {
-        conditions.push(Condition::completion(gate));
-    }
-    if let Some(gate) = temporal_gate.as_deref() {
-        conditions.push(Condition::completion(gate));
-    }
-    let temporal_source = temporal_gate.clone();
+        .chain(scratch_source.as_deref().map(Condition::completion));
     let scheduled_scratch_source = scratch_source.clone();
     let scratch_done_for_job = Arc::clone(&scratch_done);
     let filter_done_for_job = Arc::clone(&filter_done);
-    scheduler.submit(
+    *context.prepare.lock() = Some(ScheduledPrepare {
+        early,
+        tail,
+        finish,
+        motion,
+        scheduled_scratch_source,
+        scratch_done_for_job,
+        filter_gate,
+        filter_done_for_job,
+        order_base,
+    });
+    scheduler.submit_iter(
         scope,
         order_base,
-        &conditions,
-        boxed_task(move |admit| {
-            let temporal_scratch = temporal_source
-                .as_deref()
-                .and_then(CompletionCell::get)
-                .and_then(|scratch| scratch.lock().take())
-                .unwrap_or_default();
-            let decode_scratch = scheduled_scratch_source
-                .as_deref()
-                .and_then(CompletionCell::get)
-                .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
-                .unwrap_or_default();
-            let settle_prepare_failure = |finish: PendingFinish<T>, error| {
-                let _ = temporal_done.set(Mutex::new(Some(inter::TemporalMvScratch::default())));
-                let _ = scratch_done_for_job.set(Mutex::new(None));
-                motion.fail();
-                let _ = filter_done_for_job.set(());
-                finish.fail(error);
-            };
-            let progress = finish.progress_handle();
-            // The scratch reaches here through a chain of `unwrap_or_default`s,
-            // so the pool is named per frame rather than inherited down it.
-            let mut decode_scratch = decode_scratch;
-            if let Some(buffers) = progress.buffers() {
-                decode_scratch.set_decode_buffers(buffers);
+        &mut conditions,
+        splot_parallel::Job::Inline(T::prepare_task(context)),
+    );
+}
+
+struct ScheduledPrepare<T: splot_recon::ReconSample> {
+    early: inter::InterWalkEarly<T>,
+    tail: EntropyResult<T>,
+    finish: PendingFinish<T>,
+    motion: inter::MotionFieldHandle,
+    scheduled_scratch_source: Option<ReconScratchSlot>,
+    scratch_done_for_job: ReconScratchSlot,
+    filter_gate: Option<Arc<CompletionCell<()>>>,
+    filter_done_for_job: Arc<CompletionCell<()>>,
+    order_base: u64,
+}
+
+impl<T: ScheduledScratchSample + Send + 'static> ScheduledPrepare<T> {
+    fn run<'job>(
+        context: &EntropySlot<'job, T>,
+        admit: &dyn splot_parallel::Admit<'job, FrameTask<'job>>,
+    ) {
+        let Some(Self {
+            early,
+            tail,
+            finish,
+            motion,
+            scheduled_scratch_source,
+            scratch_done_for_job,
+            filter_gate,
+            filter_done_for_job,
+            order_base,
+        }) = context.prepare.lock().take()
+        else {
+            return;
+        };
+
+        let decode_scratch = scheduled_scratch_source
+            .as_deref()
+            .and_then(CompletionCell::get)
+            .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
+            .unwrap_or_default();
+        let settle_prepare_failure = |finish: PendingFinish<T>, error| {
+            let _ = scratch_done_for_job.set(Mutex::new(None));
+            motion.fail();
+            let _ = filter_done_for_job.set(());
+            finish.fail(error);
+        };
+        let progress = finish.progress_handle();
+        let mut decode_scratch = decode_scratch;
+        if let Some(buffers) = progress.buffers() {
+            decode_scratch.set_decode_buffers(buffers);
+        }
+        let (scheduled, pending_filters) = match early.prepare_scheduled(
+            decode_scratch,
+            &mut context.workspace.lock(),
+            &mut context.temporal.lock(),
+            Arc::clone(&context.workers),
+            progress,
+        ) {
+            Ok((scheduled, pending)) => {
+                admit.admit_ready();
+                (scheduled, pending)
             }
-            let filters_ready = Arc::new(CompletionCell::new());
-            let (scheduled, pending_filters) =
-                match early.prepare_scheduled(decode_scratch, temporal_scratch, progress) {
-                    Ok((scheduled, temporal_scratch, pending)) => {
-                        let _ = temporal_done.set(Mutex::new(Some(temporal_scratch)));
-                        admit.admit_ready();
-                        (scheduled, pending)
-                    }
-                    Err(error) => {
-                        settle_prepare_failure(finish, error);
-                        return;
-                    }
-                };
-            let frame = Arc::new(ScheduledFrame {
-                prepared: (0..scheduled.len())
-                    .map(|_| CompletionCell::new())
-                    .collect(),
-                frontier_done: (0..scheduled.frontier_len())
-                    .map(|_| CompletionCell::new())
-                    .collect(),
-                filtered: (0..scheduled.filter_count())
-                    .map(|_| CompletionCell::new())
-                    .collect(),
-                filter_error: Mutex::new(None),
-                filters_ready: Arc::clone(&filters_ready),
+            Err(error) => {
+                settle_prepare_failure(finish, error);
+                return;
+            }
+        };
+        let frame = {
+            let mut slot = context.frame.lock();
+            let frame = slot.get_or_insert_with(|| Arc::new(ScheduledFrame::default()));
+            let Some(reused) = Arc::get_mut(frame) else {
+                settle_prepare_failure(finish, frame_task_scope());
+                return;
+            };
+            reused.prepared.resize_with(
+                reused.prepared.len().max(scheduled.len()),
+                CompletionCell::new,
+            );
+            reused.frontier_done.resize_with(
+                reused.frontier_done.len().max(scheduled.frontier_len()),
+                CompletionCell::new,
+            );
+            reused.filtered.resize_with(
+                reused.filtered.len().max(scheduled.filter_count()),
+                CompletionCell::new,
+            );
+            reused.order_base = order_base;
+            reused.active = Some(ScheduledFrameState {
                 reconstruction: scheduled,
                 finish: Mutex::new(Some(finish)),
+                output: Mutex::new(None),
                 motion,
                 scratch_done: scratch_done_for_job,
                 filter_gate,
                 filter_done: filter_done_for_job,
-                failed: AtomicBool::new(false),
-                order_base,
             });
-            {
-                let attach_frame = Arc::clone(&frame);
-                let attach_tail = Arc::clone(&tail);
-                let attach_ready = Arc::clone(&filters_ready);
-                admit.submit(
-                    order_base.saturating_add(1 << 19),
-                    &[Condition::completion(tail.as_ref())],
-                    boxed_task(move |admit| {
-                        let parsed = attach_tail.get().and_then(|slot| slot.lock().take());
-                        let outcome = match parsed {
-                            Some(Ok(deferred)) => deferred
-                                .attach_filters(pending_filters, &attach_frame.reconstruction),
-                            Some(Err(error)) => Err(error),
-                            None => Err(frame_task_scope()),
-                        };
-                        match outcome {
-                            Ok(()) => {
-                                let _ = attach_ready.set(());
-                            }
-                            Err(error) => {
-                                attach_frame.fail(error, admit);
-                                let _ = attach_ready.set(());
-                            }
-                        }
-                    }),
-                );
+            Arc::clone(frame)
+        };
+        *context.attach.lock() = Some(ScheduledAttach {
+            attach_frame: Arc::clone(&frame),
+            attach_tail: Arc::clone(&tail),
+            pending_filters,
+        });
+        admit.submit(
+            order_base.saturating_add(1 << 19),
+            &[Condition::completion(tail.as_ref())],
+            splot_parallel::Job::Inline(T::attach_task(Arc::clone(context))),
+        );
+        if frame
+            .active
+            .as_ref()
+            .is_none_or(|active| active.reconstruction.resolve_len() == 0)
+        {
+            frame.fail(
+                unsupported(
+                    "inter_admission_temporal_band_count",
+                    None,
+                    "scheduled temporal projection has no row bands",
+                ),
+                admit,
+            );
+        } else {
+            frame.submit_resolve(0, admit);
+        }
+    }
+}
+
+struct ScheduledAttach<T: splot_recon::ReconSample> {
+    attach_frame: Arc<ScheduledFrame<T>>,
+    attach_tail: EntropyResult<T>,
+    pending_filters: inter::PendingFilterAttach<T>,
+}
+
+impl<T: ScheduledScratchSample + Send + 'static> ScheduledAttach<T> {
+    fn run<'job>(
+        context: &EntropySlot<'job, T>,
+        admit: &dyn splot_parallel::Admit<'job, FrameTask<'job>>,
+    ) {
+        let Some(Self {
+            attach_frame,
+            attach_tail,
+            pending_filters,
+        }) = context.attach.lock().take()
+        else {
+            return;
+        };
+
+        let parsed = attach_tail.get().and_then(|slot| slot.lock().take());
+        let outcome = match parsed {
+            Some(Ok(deferred)) => match attach_frame.active.as_ref() {
+                Some(active) => {
+                    let filter_shell = attach_frame
+                        .filter_shell
+                        .lock()
+                        .take()
+                        .unwrap_or_else(|| Arc::new(None));
+                    deferred.attach_filters(pending_filters, &active.reconstruction, filter_shell)
+                }
+                None => Err(frame_task_scope()),
+            },
+            Some(Err(error)) => Err(error),
+            None => Err(frame_task_scope()),
+        };
+        match outcome {
+            Ok(()) => {
+                let _ = attach_frame.filters_ready.set(());
             }
-            if frame.reconstruction.resolve_len() == 0 {
-                frame.fail(
-                    unsupported(
-                        "inter_admission_temporal_band_count",
-                        None,
-                        "scheduled temporal projection has no row bands",
-                    ),
-                    admit,
-                );
-            } else {
-                frame.submit_resolve(0, admit);
+            Err(error) => {
+                attach_frame.fail(error, admit);
+                let _ = attach_frame.filters_ready.set(());
             }
-        }),
-    );
+        }
+    }
 }
 
 pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send + 'static>(
@@ -903,12 +1191,18 @@ pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send +
     walked: super::frame_engine::finish::WalkedFrame<T>,
     frame_index: usize,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
 {
-    let (gate, done) = lane.reserve_filter();
+    let (gate, done) = match lane.reserve_filter() {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            finish.fail(error);
+            return;
+        }
+    };
     let conditions = gate.as_deref().map(Condition::completion);
     let order_base = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
@@ -925,26 +1219,31 @@ pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send +
 }
 
 fn promote_front<'scope, 'job>(
-    entropy: &mut PendingEntropyQueue,
+    entropy: &mut PendingEntropyQueue<'job>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
 {
-    let Some(pending) = entropy.entries.pop_front() else {
+    let Some(pending) = entropy.pop_front() else {
         return;
     };
     match pending {
         PendingEntropy::Eight {
             frame_index,
-            result: EntropyHandles { early, tail },
+            result:
+                EntropyHandles {
+                    early,
+                    tail,
+                    context,
+                },
             finish,
         } => {
-            let settled = early.wait_with_pool_assist();
+            let settled = early.wait_with_assist(|| scheduler.assist_ready(scope));
             let early = settled.lock().take();
             if let Some(early) = early {
-                schedule_typed(early, tail, finish, frame_index, scheduler, scope, lane);
+                schedule_typed(early, context, finish, frame_index, scheduler, scope, lane);
             } else {
                 let error = tail
                     .get()
@@ -955,13 +1254,18 @@ fn promote_front<'scope, 'job>(
         }
         PendingEntropy::Ten {
             frame_index,
-            result: EntropyHandles { early, tail },
+            result:
+                EntropyHandles {
+                    early,
+                    tail,
+                    context,
+                },
             finish,
         } => {
-            let settled = early.wait_with_pool_assist();
+            let settled = early.wait_with_assist(|| scheduler.assist_ready(scope));
             let early = settled.lock().take();
             if let Some(early) = early {
-                schedule_typed(early, tail, finish, frame_index, scheduler, scope, lane);
+                schedule_typed(early, context, finish, frame_index, scheduler, scope, lane);
             } else {
                 let error = tail
                     .get()
@@ -974,22 +1278,18 @@ fn promote_front<'scope, 'job>(
 }
 
 fn drain_ready_entropy<'scope, 'job>(
-    entropy: &mut PendingEntropyQueue,
+    entropy: &mut PendingEntropyQueue<'job>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
 {
     loop {
-        while entropy
-            .entries
-            .front()
-            .is_some_and(PendingEntropy::is_settled)
-        {
+        while entropy.front().is_some_and(PendingEntropy::is_settled) {
             promote_front(entropy, scope, scheduler, lane);
         }
-        if entropy.entries.is_empty() || !splot_parallel::assist_pool_once() {
+        if entropy.is_empty() || !splot_parallel::assist_pool_once() {
             return;
         }
     }
@@ -997,34 +1297,34 @@ fn drain_ready_entropy<'scope, 'job>(
 
 /// Opens one bounded entropy-context slot before the caller reserves frame storage.
 pub(super) fn prepare_entropy_submission<'scope, 'job>(
-    entropy: &mut PendingEntropyQueue,
+    entropy: &mut PendingEntropyQueue<'job>,
     limit: usize,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
 {
     let limit = limit.max(1);
     drain_ready_entropy(entropy, scope, scheduler, lane);
-    while entropy.entries.len() >= limit {
+    while entropy.len() >= limit {
         promote_front(entropy, scope, scheduler, lane);
     }
 }
 
 /// Promotes every pending entropy context before a non-inter frame or output barrier.
 pub(super) fn drain_entropy_before_barrier<'scope, 'job>(
-    entropy: &mut PendingEntropyQueue,
+    entropy: &mut PendingEntropyQueue<'job>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope AdmissionScheduler<'job, FrameTask>,
+    scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     lane: &mut ReconAdmissionLane,
 ) where
     'job: 'scope,
 {
-    if entropy.entries.is_empty() {
+    if entropy.is_empty() {
         return;
     }
-    while !entropy.entries.is_empty() {
+    while !entropy.is_empty() {
         promote_front(entropy, scope, scheduler, lane);
     }
 }
@@ -1056,9 +1356,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn entropy_contexts_reuse_the_same_bounded_slots() {
+        let mut contexts = EntropyContexts::<u16>::new(12);
+        let addresses: Vec<_> = (0..12)
+            .map(|_| {
+                let slot = contexts.claim();
+                let frame = Arc::new(ScheduledFrame::<u16> {
+                    prepared: vec![CompletionCell::new()],
+                    frontier_done: vec![CompletionCell::new()],
+                    filtered: vec![CompletionCell::new()],
+                    ..Default::default()
+                });
+                let addresses = (
+                    Arc::as_ptr(&slot),
+                    Arc::as_ptr(&frame),
+                    std::ptr::from_ref(&frame.prepared[0]),
+                );
+                *slot.frame.lock() = Some(frame);
+                addresses
+            })
+            .collect();
+        for index in 0..1200 {
+            let slot = contexts.claim();
+            assert_eq!(Arc::as_ptr(&slot), addresses[index % 12].0);
+            let frame = slot.frame.lock();
+            let frame = frame.as_ref().unwrap();
+            assert_eq!(Arc::as_ptr(frame), addresses[index % 12].1);
+            assert_eq!(
+                std::ptr::from_ref(&frame.prepared[0]),
+                addresses[index % 12].2
+            );
+            for cell in [
+                &frame.prepared[0],
+                &frame.frontier_done[0],
+                &frame.filtered[0],
+                &frame.filters_ready,
+            ] {
+                assert!(!cell.is_set());
+                cell.set(()).unwrap();
+            }
+            assert!(slot.early.get().is_none());
+            assert!(slot.tail.get().is_none());
+            assert!(slot.early.set(Mutex::new(None)).is_ok());
+            assert!(slot.tail.set(Mutex::new(None)).is_ok());
+        }
+        assert_eq!(contexts.slots.len(), 12);
+    }
+
+    #[test]
+    fn frame_context_cannot_reset_while_a_task_holds_it() {
+        let mut contexts = EntropyContexts::<u16>::new(1);
+        let slot = contexts.claim();
+        let frame = Arc::new(ScheduledFrame::default());
+        *slot.frame.lock() = Some(Arc::clone(&frame));
+        drop(slot);
+        let context = Arc::get_mut(&mut contexts.slots[0]).unwrap();
+        assert!(!context.reset());
+        drop(frame);
+        let temporal = Arc::clone(context.temporal.get_mut());
+        assert!(!context.reset());
+        drop(temporal);
+        assert!(context.reset());
+    }
+
+    #[test]
     fn recon_lane_returns_the_same_typed_context_at_bounded_depth() {
         let mut lane = ReconAdmissionLane::new(1);
-        let (prior, first) = lane.reserve_recon();
+        let (prior, first) = lane.reserve_recon().expect("resident cell");
         assert!(prior.is_none());
         assert!(
             first
@@ -1068,7 +1432,7 @@ mod tests {
                 .is_ok()
         );
 
-        let (prior, _) = lane.reserve_recon();
+        let (prior, _) = lane.reserve_recon().expect("resident cell");
         assert_eq!(lane.recon.len(), 1);
         let prior = prior.expect("prior context");
         let stored = prior.get().expect("settled prior context");
@@ -1080,10 +1444,10 @@ mod tests {
     #[test]
     fn failed_recon_context_still_settles_the_lane() {
         let mut lane = ReconAdmissionLane::new(1);
-        let (_, failed) = lane.reserve_recon();
+        let (_, failed) = lane.reserve_recon().expect("resident cell");
         assert!(failed.set(Mutex::new(None)).is_ok());
 
-        let (prior, _) = lane.reserve_recon();
+        let (prior, _) = lane.reserve_recon().expect("resident cell");
         assert!(
             prior
                 .expect("failed prior context")
@@ -1092,5 +1456,43 @@ mod tests {
                 .lock()
                 .is_none()
         );
+    }
+    #[test]
+    fn admission_cells_reuse_only_after_readers_retire() {
+        let mut lane = ReconAdmissionLane::new(1);
+        let addresses = lane
+            .filter_cells
+            .iter()
+            .map(Arc::as_ptr)
+            .collect::<Vec<_>>();
+        let mut readers = VecDeque::new();
+        for _ in 0..1200 {
+            let (prior, done) = lane.reserve_filter().expect("resident cell");
+            assert!(done.get().is_none());
+            assert!(addresses.contains(&Arc::as_ptr(&done)));
+            if let Some(prior) = prior {
+                assert!(prior.get().is_some());
+                readers.push_back(prior);
+            }
+            assert!(done.set(()).is_ok());
+            while readers.len() > 2 {
+                readers.pop_front();
+            }
+            assert!(readers.iter().all(|reader| reader.get().is_some()));
+        }
+        assert_eq!(
+            lane.filter_cells
+                .iter()
+                .map(Arc::as_ptr)
+                .collect::<Vec<_>>(),
+            addresses
+        );
+        drop(readers);
+        let retained = lane.filter_cells.clone();
+        let previous = Arc::as_ptr(&lane.filters[0]);
+        assert!(lane.reserve_filter().is_err());
+        assert_eq!(Arc::as_ptr(&lane.filters[0]), previous);
+        drop(retained);
+        assert!(lane.reserve_filter().is_ok());
     }
 }

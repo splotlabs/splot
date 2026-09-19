@@ -19,24 +19,22 @@ use crate::{DecodeContext, DecodeRuntimeConfig};
 const Q80_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf");
 
-fn decode_intra_fixture_with_core(
-    mutate: impl FnOnce(&mut FrameHeaderCore),
-) -> crate::Result<(
+type IntraFixtureOutput = (
     SharedFrame<u8>,
     std::sync::Arc<FrameCdfSubset>,
-    Option<crate::filters::ccso::CcsoUnitGrid>,
-)> {
+    Option<std::sync::Arc<crate::filters::ccso::CcsoUnitGrid>>,
+);
+
+fn decode_intra_fixture_with_core(
+    mutate: impl FnOnce(&mut FrameHeaderCore),
+) -> crate::Result<IntraFixtureOutput> {
     decode_intra_fixture_with_core_on_threads(ThreadCount::from(1usize), mutate)
 }
 
 fn decode_intra_fixture_with_core_on_threads(
     threads: ThreadCount,
     mutate: impl FnOnce(&mut FrameHeaderCore),
-) -> crate::Result<(
-    SharedFrame<u8>,
-    std::sync::Arc<FrameCdfSubset>,
-    Option<crate::filters::ccso::CcsoUnitGrid>,
-)> {
+) -> crate::Result<IntraFixtureOutput> {
     let context = DecodeContext::new(DecodeRuntimeConfig::new(threads)).expect("context");
     let options = DecodeOptions::default();
     let plan = context.plan_bytes(Q80_FIXTURE, options).expect("plan");
@@ -65,6 +63,8 @@ fn decode_intra_fixture_with_core_on_threads(
         .expect("key");
     let mut core = parse_frame_core(key, &sequence).expect("core");
     mutate(&mut core);
+    let mut products =
+        crate::prediction::inter::FrameProductWriters::fresh().expect("fresh product writers");
     let walk = context.pool().install(|| {
         crate::pipeline::frame_engine::walk_frame::<u8>(
             &mut crate::prediction::inter::InterDecodeScratch::default(),
@@ -77,6 +77,7 @@ fn decode_intra_fixture_with_core_on_threads(
             &options,
             &crate::pipeline::frame_engine::FrameSetup::Intra,
             BitDepth::Eight,
+            &mut products,
         )
     })?;
     let WalkStage::Pending(walked) = walk.stage else {

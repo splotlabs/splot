@@ -94,10 +94,66 @@ fn whole_field_round_trips_published_band_cells() {
     let layout = field.layout();
     let metadata = field.metadata();
     let expected = field.cell(0, 0);
-    let bands = field.into_bands();
+    let bands: Vec<_> = field
+        .into_bands()
+        .into_iter()
+        .map(TemporalMotionBand::into_shared)
+        .collect();
+    let mut first = bands[0].clone();
     let rebuilt = TemporalMotionField::from_bands(layout, &metadata, bands).unwrap();
+    assert_eq!(
+        rebuilt.row(0).unwrap().as_ptr(),
+        first.row(0).unwrap().as_ptr()
+    );
 
     assert_eq!(rebuilt.cell(0, 0), expected);
+    let clear = TemporalMotionBlock::new(0, 0, 2, 2, 4, 4, 1, [None; 2], [Mv::ZERO; 2], [None; 2]);
+    first.record_blocks(&[]).unwrap();
+    let denied = first.record_blocks(&[clear, clear]);
+    assert_eq!(rebuilt.cell(0, 0), expected);
+    assert!(denied.is_err());
+    assert_eq!(first.row(0).unwrap().first().copied(), expected);
+    drop(rebuilt);
+    let address = first.row(0).unwrap().as_ptr();
+    let marked = TemporalMotionBlock::new(
+        0,
+        0,
+        2,
+        2,
+        4,
+        4,
+        1,
+        [Some(0), None],
+        [Mv { row: 8, col: -12 }, Mv::ZERO],
+        [None; 2],
+    );
+    first.record_blocks(&[clear, marked]).unwrap();
+    let cell = first.row(0).unwrap()[0];
+    assert_eq!(
+        cell.mvs.map(uncompress_tmvp_mv),
+        [Mv { row: 8, col: -12 }; 2]
+    );
+    first.record_blocks(&[marked, clear]).unwrap();
+    assert_eq!(first.row(0).unwrap().as_ptr(), address);
+    assert_ne!(first.row(0).unwrap().first().copied(), expected);
+}
+
+#[test]
+fn published_band_resets_keep_cell_capacity_after_readers_retire() {
+    let layout = MotionFieldLayout::new(40, 8, 16).unwrap();
+    let metadata = TemporalMotionField::empty().metadata();
+    let mut band = TemporalMotionBand::vacant(layout, &metadata);
+    band.reset(layout, &metadata, 0).unwrap();
+    band = band.into_shared();
+    let address = band.row(0).unwrap().as_ptr();
+    for _ in 0..1200 {
+        let reader = band.clone();
+        assert!(band.reset(layout, &metadata, 0).is_err());
+        assert_eq!(reader.row(0).unwrap().as_ptr(), address);
+        drop(reader);
+        band.reset(layout, &metadata, 0).unwrap();
+        assert_eq!(band.row(0).unwrap().as_ptr(), address);
+    }
 }
 
 #[test]
@@ -823,5 +879,59 @@ fn refresh_rejects_a_malformed_selected_projection_source() {
     ));
     if let Err(error) = result {
         assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
+}
+
+#[test]
+fn frame_temporal_storage_reuses_bands_and_clears_previous_products() {
+    let mut context = TemporalMvContext::empty();
+    let layout = MotionFieldLayout::new(64, 64, 16).unwrap();
+    let mut addresses = Vec::new();
+    for iteration in 0..1200 {
+        let plan = context
+            .begin_banded_refresh(
+                layout,
+                1,
+                TemporalProjectionConfig {
+                    frame_size: (256, 256),
+                    step: 1,
+                    unit_size8: 8,
+                    enable_tip: false,
+                    enable_trajectory: iteration % 2 == 0,
+                    reduced: false,
+                },
+                &[0],
+                &[true],
+                &[0],
+                &[None],
+                &[None],
+                None,
+                false,
+                false,
+            )
+            .unwrap();
+        for index in 0..plan.len() {
+            assert!(
+                context.banded.as_ref().unwrap().bands[index]
+                    .published
+                    .get()
+                    .is_none()
+            );
+            plan.project(&context, index, |_, _| None).unwrap();
+            let result = context.banded.as_ref().unwrap().bands[index]
+                .published
+                .get()
+                .unwrap()
+                .as_ref()
+                .unwrap();
+            assert!(result.field.iter().all(|cell| !cell.valid));
+            assert_eq!(context.trajectory_cell(0, result.row_base8, 0), None);
+            let address = result.field.as_ptr();
+            if iteration == 0 {
+                addresses.push(address);
+            } else {
+                assert_eq!(address, addresses[index]);
+            }
+        }
     }
 }

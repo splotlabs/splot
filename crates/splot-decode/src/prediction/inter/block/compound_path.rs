@@ -49,7 +49,7 @@ pub(super) fn read_reference_mode(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_compound_inter_block<T: ReconSample>(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     residual_scratch: &mut InterResidualParseScratch,
@@ -587,7 +587,7 @@ pub(super) struct ParsedCompoundBlock {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn finish_compound_inter_block<T: ReconSample>(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     residual_scratch: &mut InterResidualParseScratch,
@@ -961,7 +961,7 @@ fn wedge_temporal_allowed_lists(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     residual_scratch: &mut InterResidualParseScratch,

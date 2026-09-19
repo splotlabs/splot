@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use splot_recon::ReconSample;
 
-use super::super::find_mv_stack::{TemporalMotionBand, TemporalMotionBlock, TemporalMotionField};
+use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
 use super::super::{InterReferenceState, MotionFieldHandle, Mv};
 use parking_lot::Mutex;
 
@@ -108,7 +108,6 @@ pub(super) struct MotionFieldUnits {
 }
 
 struct MotionBandUnits {
-    field: Mutex<Option<TemporalMotionBand>>,
     owed: AtomicUsize,
 }
 
@@ -132,30 +131,46 @@ impl MotionFieldUnits {
         units: usize,
         units_per_row: usize,
         handle: MotionFieldHandle,
-    ) -> Self {
-        let bands = field
-            .into_bands()
-            .into_iter()
-            .enumerate()
-            .map(|(index, field)| {
-                let start = index.saturating_mul(units_per_row).min(units);
-                let end = start.saturating_add(units_per_row).min(units);
-                MotionBandUnits {
-                    field: Mutex::new(Some(field)),
-                    owed: AtomicUsize::new(end.saturating_sub(start)),
-                }
-            })
-            .collect::<Vec<_>>();
-        let this = Self {
-            field: Mutex::new(None),
-            owed: AtomicUsize::new(units),
-            units,
-            bands,
-            units_per_row,
-            handle: Some(handle),
-        };
-        this.publish_empty_bands();
-        this
+    ) -> crate::Result<Self> {
+        let mut this = Self::new(TemporalMotionField::empty());
+        this.reset_publishing(field, units, units_per_row, handle)?;
+        Ok(this)
+    }
+
+    pub(super) fn retire(&mut self) {
+        self.handle.take();
+        self.field.get_mut().take();
+    }
+
+    pub(super) fn reset_publishing(
+        &mut self,
+        field: TemporalMotionField,
+        units: usize,
+        units_per_row: usize,
+        handle: MotionFieldHandle,
+    ) -> crate::Result<()> {
+        if field.layout() != handle.layout() {
+            return Err(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
+        }
+        let metadata = field.metadata();
+        drop(field);
+        handle.begin_bands(&metadata)?;
+        self.bands
+            .resize_with(handle.layout().band_count(), || MotionBandUnits {
+                owed: AtomicUsize::new(0),
+            });
+        for (index, band) in self.bands.iter_mut().enumerate() {
+            let start = index.saturating_mul(units_per_row).min(units);
+            let end = start.saturating_add(units_per_row).min(units);
+            *band.owed.get_mut() = end.saturating_sub(start);
+        }
+        self.field.get_mut().take();
+        *self.owed.get_mut() = units;
+        self.units = units;
+        self.units_per_row = units_per_row;
+        self.handle = Some(handle);
+        self.publish_empty_bands();
+        Ok(())
     }
 
     /// Folds one run of records into the field, in the caller's own order.
@@ -169,23 +184,22 @@ impl MotionFieldUnits {
     }
 
     /// Folds one source unit into its exclusive full-width row-band owner.
-    pub(super) fn fold_unit(&self, ordinal: usize, records: &[TemporalMotionBlock]) {
+    pub(super) fn fold_unit(
+        &self,
+        ordinal: usize,
+        records: &[TemporalMotionBlock],
+    ) -> crate::Result<()> {
         if self.bands.is_empty() {
             self.fold(records);
-            return;
+            return Ok(());
         }
         if records.is_empty() || self.units_per_row == 0 {
-            return;
+            return Ok(());
         }
-        let Some(band) = self.bands.get(ordinal / self.units_per_row) else {
-            return;
-        };
-        let mut field = band.field.lock();
-        if let Some(field) = field.as_mut() {
-            for &record in records {
-                field.record_block(record);
-            }
+        if let Some(handle) = self.handle.as_ref() {
+            handle.fold_band(ordinal / self.units_per_row, records)?;
         }
+        Ok(())
     }
 
     /// Reports that every record of one unit has been folded in.
@@ -226,10 +240,8 @@ impl MotionFieldUnits {
             handle.fail();
             return;
         };
-        if band.owed.fetch_sub(1, Ordering::AcqRel) == 1
-            && let Some(field) = band.field.lock().take()
-        {
-            handle.publish_band(band_index, field);
+        if band.owed.fetch_sub(1, Ordering::AcqRel) == 1 {
+            handle.publish_builder_band(band_index);
         }
         if self.owed.fetch_sub(1, Ordering::AcqRel) != 1 {
             return;
@@ -253,10 +265,8 @@ impl MotionFieldUnits {
             return;
         };
         for (index, band) in self.bands.iter().enumerate() {
-            if band.owed.load(Ordering::Acquire) == 0
-                && let Some(field) = band.field.lock().take()
-            {
-                handle.publish_band(index, field);
+            if band.owed.load(Ordering::Acquire) == 0 {
+                handle.publish_builder_band(index);
             }
         }
         if self.owed.load(Ordering::Acquire) == 0 {
@@ -284,6 +294,29 @@ mod tests {
             [mv, Mv::ZERO],
             [None, None],
         )
+    }
+
+    #[test]
+    fn retired_motion_units_reuse_counters_and_release_publication() {
+        let mut field = TemporalMotionField::new(8, 8).expect("field");
+        field.set_reference_metadata(true, (32, 32), &[Some(0)]);
+        let layout = field.layout();
+        let mut handle = MotionFieldHandle::pending_with_layout(layout);
+        let mut units = MotionFieldUnits::publishing(field, 1, 1, handle.clone()).expect("units");
+        let counters = units.bands.as_ptr();
+        for _ in 0..1200 {
+            units.unit_landed_for(0);
+            assert!(handle.field().is_some());
+            units.retire();
+            assert!(handle.try_retire());
+            handle.reset_layout(layout).expect("reset layout");
+            let field = TemporalMotionField::metadata_only(layout, true, (32, 32), &[Some(0)]);
+            units
+                .reset_publishing(field, 1, 1, handle.clone())
+                .expect("reset units");
+            assert_eq!(units.bands.as_ptr(), counters);
+            assert!(handle.field().is_none());
+        }
     }
 
     #[test]
@@ -335,7 +368,8 @@ mod tests {
         let mut field = TemporalMotionField::new(2, 2).expect("motion field");
         field.set_reference_metadata(true, (8, 8), &[Some(1)]);
         let handle = MotionFieldHandle::pending_with_layout(field.layout());
-        let units = MotionFieldUnits::publishing(field, 1, 1, handle.clone());
+        let units =
+            MotionFieldUnits::publishing(field, 1, 1, handle.clone()).expect("motion units");
 
         units.unit_landed_for(1);
 

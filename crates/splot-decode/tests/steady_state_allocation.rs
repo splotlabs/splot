@@ -27,7 +27,7 @@ const EIGHT_FRAME: &[u8] = include_bytes!(
 /// The count is exact and repeatable on this path, so an increase is a
 /// regression to look at rather than a number to raise. Lowering it next to a
 /// reduction is the point of having it.
-const WARMED_DECODE_ALLOCATIONS: usize = 502;
+const WARMED_DECODE_ALLOCATIONS: usize = 491;
 
 fn context(threads: usize, frame_delay: FrameDelay) -> DecodeContext {
     DecodeContext::new(

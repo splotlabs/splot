@@ -442,7 +442,7 @@ pub(crate) enum GeneralIntraBlockModeError {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,
@@ -532,7 +532,7 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     joint_modes: &TileIntraJointModeState,
@@ -609,7 +609,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_general_intra_palette_y_mode(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     palette_state: &TileLumaPaletteState,
@@ -658,7 +658,7 @@ pub(crate) fn read_general_intra_palette_y_mode(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_general_intra_dip_mode_info(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     use_dip: &TileUseDipState,
@@ -691,7 +691,7 @@ pub(crate) fn read_general_intra_dip_mode_info(
 }
 
 pub(crate) fn read_lossless_luma_tx_size(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     block_size: BlockSize,
     fsc_mode: bool,
@@ -708,7 +708,7 @@ pub(crate) fn read_lossless_luma_tx_size(
 }
 
 pub(crate) fn read_lossless_tx_size(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     block_size: BlockSize,
     fsc_mode: bool,
@@ -781,7 +781,7 @@ fn read_palette_colors_y(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_chroma_block_mode(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     mode_context: GeneralIntraChromaModeContext,
@@ -868,7 +868,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
 }
 
 fn read_cfl_alphas(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
     block_size: BlockSize,

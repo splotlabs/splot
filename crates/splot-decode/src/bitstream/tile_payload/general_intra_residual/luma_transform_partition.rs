@@ -73,6 +73,7 @@ impl<T> LumaTransformPartitionUnits<T> {
         self.entries.iter().flatten().count()
     }
 
+    #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
         self.entries.iter().flatten()
     }
@@ -88,13 +89,6 @@ impl<T> LumaTransformPartitionUnits<T> {
             }
         }
         Ok(LumaTransformPartitionUnits { entries })
-    }
-
-    pub(crate) fn try_map<U, E>(
-        self,
-        mut map: impl FnMut(T) -> Result<U, E>,
-    ) -> Result<LumaTransformPartitionUnits<U>, E> {
-        self.try_filter_map(|value| map(value).map(Some))
     }
 }
 

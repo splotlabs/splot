@@ -3,10 +3,10 @@
 
 //! A one-shot completion slot for pipeline hand-off.
 use parking_lot::{Condvar, Mutex};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock, Weak};
 
-use crate::admission::Waiter;
+use crate::admission::{Waiter, WeakWaiter};
 use crate::pool::{
     PoolAssist, assist_installed_pool_or_wait, bind_installed_pool_progress,
     notify_bound_pool_progress, pool_progress_snapshot,
@@ -26,7 +26,7 @@ const SET: u8 = 2;
 pub struct CompletionCell<V> {
     value: OnceLock<V>,
     progress: PoolProgressBindings,
-    first_waiter: OnceLock<Weak<Waiter>>,
+    first_waiter: OnceLock<WeakWaiter>,
     admission_state: AtomicU8,
     wait: OnceLock<CompletionWait>,
 }
@@ -40,7 +40,7 @@ struct CompletionWait {
 #[derive(Debug)]
 struct WaitState {
     parked: usize,
-    additional_waiters: Vec<Weak<Waiter>>,
+    additional_waiters: Vec<WeakWaiter>,
 }
 
 impl<V> CompletionCell<V> {
@@ -53,6 +53,23 @@ impl<V> CompletionCell<V> {
             first_waiter: OnceLock::new(),
             admission_state: AtomicU8::new(EMPTY),
             wait: OnceLock::new(),
+        }
+    }
+
+    /// Borrows the value exclusively while no reader can access this cell.
+    pub fn get_mut(&mut self) -> Option<&mut V> {
+        self.value.get_mut()
+    }
+
+    /// Clears a retired publication while exclusive access excludes every reader.
+    pub fn reset(&mut self) {
+        self.value.take();
+        self.first_waiter.take();
+        *self.admission_state.get_mut() = EMPTY;
+        if let Some(wait) = self.wait.get_mut() {
+            let state = wait.state.get_mut();
+            state.parked = 0;
+            state.additional_waiters.clear();
         }
     }
 
@@ -76,24 +93,18 @@ impl<V> CompletionCell<V> {
         self.value.set(value)?;
         notify_bound_pool_progress(&self.progress);
         if self.admission_state.swap(SET, Ordering::AcqRel) == REGISTERED
-            && let Some(waiter) = self.first_waiter.get().and_then(Weak::upgrade)
+            && let Some(waiter) = self.first_waiter.get().and_then(WeakWaiter::upgrade)
         {
             waiter.satisfy();
         }
         let Some(wait) = self.wait.get() else {
             return Ok(());
         };
-        let (parked, waiters) = {
-            let mut state = wait.state.lock();
-            (
-                state.parked != 0,
-                core::mem::take(&mut state.additional_waiters),
-            )
-        };
-        if parked {
+        let mut state = wait.state.lock();
+        if state.parked != 0 {
             wait.cond.notify_all();
         }
-        for waiter in waiters {
+        for waiter in state.additional_waiters.drain(..) {
             if let Some(waiter) = waiter.upgrade() {
                 waiter.satisfy();
             }
@@ -101,12 +112,12 @@ impl<V> CompletionCell<V> {
         Ok(())
     }
 
-    pub(crate) fn register_waiter(&self, waiter: Arc<Waiter>) -> bool {
+    pub(crate) fn register_waiter(&self, waiter: Waiter) -> bool {
         bind_installed_pool_progress(&self.progress);
         if self.is_set() {
             return false;
         }
-        let weak = Arc::downgrade(&waiter);
+        let weak = waiter.downgrade();
         drop(waiter);
         let weak = match self.first_waiter.set(weak) {
             Ok(()) => {
@@ -147,11 +158,20 @@ impl<V> CompletionCell<V> {
     /// Runs pool jobs while the pipeline driver waits for the value.
     #[must_use]
     pub fn wait_with_pool_assist(&self) -> &V {
+        self.wait_with_assist(|| false)
+    }
+
+    /// Runs ready work supplied by the driver before assisting or parking its pool.
+    #[must_use]
+    pub fn wait_with_assist(&self, mut assist: impl FnMut() -> bool) -> &V {
         bind_installed_pool_progress(&self.progress);
         loop {
             let progress = pool_progress_snapshot();
             if let Some(value) = self.value.get() {
                 return value;
+            }
+            if assist() {
+                continue;
             }
             match assist_installed_pool_or_wait(&progress) {
                 PoolAssist::Executed | PoolAssist::Idle => {}
@@ -188,12 +208,56 @@ impl<V> Default for CompletionCell<V> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    use std::sync::Arc;
 
     use super::*;
     use crate::admission::{AdmissionScheduler, Condition};
     use crate::pool::{WorkerPool, ready_task_scope};
     use crate::thread_count::ThreadCount;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn reset_detaches_previous_admission_waiters() {
+        let mut cell = CompletionCell::new();
+        let visits = AtomicUsize::new(0);
+        let old: AdmissionScheduler<'_, crate::NoTask> = AdmissionScheduler::new();
+        let new: AdmissionScheduler<'_, crate::NoTask> = AdmissionScheduler::new();
+        WorkerPool::new(ThreadCount::from(12usize))
+            .unwrap()
+            .install(|| {
+                ready_task_scope(|scope| {
+                    for index in 0..12 {
+                        old.submit(
+                            scope,
+                            index,
+                            &[Condition::completion(&cell)],
+                            crate::Job::Boxed(Box::new(|_| {
+                                visits.fetch_add(100, Ordering::Relaxed);
+                            })),
+                        );
+                    }
+                    cell.reset();
+                    assert_eq!(cell.get(), None);
+                    new.submit(
+                        scope,
+                        0,
+                        &[Condition::completion(&cell)],
+                        crate::Job::Boxed(Box::new(|_| {
+                            visits.fetch_add(1, Ordering::Relaxed);
+                        })),
+                    );
+                    cell.set(7).unwrap();
+                    old.admit_ready(scope);
+                    new.admit_ready(scope);
+                })
+                .unwrap();
+            });
+        assert_eq!(visits.load(Ordering::Relaxed), 1);
+        assert!(old.finish().is_err());
+        new.finish().unwrap();
+        cell.reset();
+        assert_eq!(cell.set(8), Ok(()));
+    }
 
     #[test]
     fn cell_is_write_once() {

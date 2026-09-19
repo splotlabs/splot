@@ -5,15 +5,17 @@
 //!
 //! Feature tracking: `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY`.
 
+#[cfg(test)]
+use super::SavedCdfSubset;
 use super::{
-    FrameCdfSubset, SavedCdfSubset, TileCdfRows, TileCdfSavePolicy, TileCdfSubset, scale_cdf_count,
-    scale_cdf_rows,
+    FrameCdfSubset, TileCdfRows, TileCdfSavePolicy, TileCdfSubset, scale_cdf_count, scale_cdf_rows,
 };
 
 impl FrameCdfSubset {
     /// Builds the frame-end updated bank. `None` means no tile was saved,
     /// in which case the saved bank would still equal the untouched frame
     /// bank, so only the count scaling applies.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn frame_end_updated(frame: &Self, saved: Option<SavedCdfSubset>) -> Self {
         let mut rows = match saved {
@@ -23,13 +25,49 @@ impl FrameCdfSubset {
         rows.scale_counts_for_frame_end_update();
         Self { rows }
     }
+
+    pub(crate) fn reset_output_from(&mut self, frame: &Self, base_q_idx: u32) {
+        self.rows.clone_from(&frame.rows);
+        self.replicate_coeff_q_context_for_base_q(base_q_idx);
+    }
+
+    pub(crate) fn reset_saved_from_tile(
+        &mut self,
+        frame: &Self,
+        tile_num: u32,
+        tile: &TileCdfSubset,
+        policy: TileCdfSavePolicy,
+        saved: &mut bool,
+    ) {
+        if policy.copy_cdf {
+            self.rows.clone_from(&tile.rows);
+            *saved = true;
+        } else if policy.avg_cdf {
+            if !*saved {
+                self.rows.clone_from(&frame.rows);
+                *saved = true;
+            }
+            self.rows
+                .avg_from_tile(tile_num, &tile.rows, policy.num_log2);
+        }
+    }
+
+    pub(crate) fn finish_saved(&mut self, frame: &Self, saved: bool, base_q_idx: u32) {
+        if !saved {
+            self.rows.clone_from(&frame.rows);
+        }
+        self.rows.scale_counts_for_frame_end_update();
+        self.replicate_coeff_q_context_for_base_q(base_q_idx);
+    }
 }
 
+#[cfg(test)]
 impl SavedCdfSubset {
     /// Applies one completed tile under `policy`, materializing the saved
     /// bank only when the policy actually writes it: a copy policy replaces
     /// it with the tile bank outright, and an averaging policy first seeds
     /// it from the (still untouched) frame bank.
+    #[cfg(test)]
     pub(crate) fn apply_completed_tile(
         slot: &mut Option<SavedCdfSubset>,
         frame: &FrameCdfSubset,

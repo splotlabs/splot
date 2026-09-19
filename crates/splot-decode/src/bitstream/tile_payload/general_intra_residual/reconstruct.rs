@@ -102,6 +102,23 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
+    if !block.is_dense() {
+        return block.with_dense(|block| {
+            reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+                block,
+                prediction,
+                out,
+                qindex,
+                plane_id,
+                log2_width,
+                log2_height,
+                use_tcq,
+                luma_context,
+                dpcm,
+                bit_depth,
+            )
+        });
+    }
     let (plane_id, dpcm, secondary) = if let Some(luma_context) = luma_context {
         (
             PlaneId::Y,
@@ -162,6 +179,24 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<bool, GeneralIntraResidualError> {
+    if !block.is_dense() {
+        return block.with_dense(|block| {
+            reconstruct_general_intra_coeff_block_rect_into_frame(
+                workspace,
+                block,
+                prediction,
+                plane_id,
+                x,
+                y,
+                block_size,
+                qindex,
+                use_tcq,
+                luma_context,
+                dpcm,
+                bit_depth,
+            )
+        });
+    }
     if bit_depth != workspace.info().bit_depth() {
         return Ok(false);
     }
@@ -230,6 +265,13 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
+    if !block.is_dense() {
+        return block.with_dense(|block| {
+            reconstruct_inter_coeff_block_residual_rect_into(
+                sink, block, plane_id, x, y, block_size, qindex, use_tcq, use_ddt, bit_depth,
+            )
+        });
+    }
     let log2_width = u32::from(block_size.log2_width());
     let log2_height = u32::from(block_size.log2_height());
     let secondary =
@@ -384,6 +426,9 @@ pub(super) fn dequantize_coeff_block(
     params: &DequantBlockParams,
     out: &mut [i32],
 ) -> Result<(), GeneralIntraResidualError> {
+    if !block.is_dense() {
+        return block.with_dense(|block| dequantize_coeff_block(block, params, out));
+    }
     if block.eob == 0 {
         out.fill(0);
         return Ok(());

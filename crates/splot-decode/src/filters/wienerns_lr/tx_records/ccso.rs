@@ -81,6 +81,7 @@ impl CcsoState {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -89,12 +90,13 @@ impl CcsoState {
         ref_frame_idx: &[u32],
         ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
         tile_offset: ByteOffset,
+        blocks: [Vec<u8>; CCSO_PLANES],
     ) -> Result<Self> {
         let filter = sequence.filter.as_ref();
         let ccso = core.ccso_params.as_ref();
         let frame_flag = ccso.and_then(|c| c.ccso_frame_flag).unwrap_or(false);
         if !filter.is_some_and(|f| f.enable_ccso) || !frame_flag {
-            return Ok(Self::inactive());
+            return Ok(Self::inactive_with(blocks));
         }
         let shift = ccso_mi_width_log2(sequence, core)?;
         let grid = ccso_grid(mi_rows, mi_cols, shift)?;
@@ -106,38 +108,57 @@ impl CcsoState {
             ccso.and_then(|c| c.planes.get(plane))
                 .is_some_and(|params| params.sb_reuse_ccso)
         });
-        let mut state = Self::active(shift, plane_enabled, sb_reuse, grid);
+        let mut state = Self::active(shift, plane_enabled, sb_reuse, grid, blocks)?;
         state.load_reused_blocks(core, ref_frame_idx, ref_ccso_unit_grids, tile_offset)?;
         Ok(state)
     }
 
-    fn active(
+    pub(crate) fn active(
         shift: u32,
         plane_enabled: [bool; CCSO_PLANES],
         sb_reuse: [bool; CCSO_PLANES],
         grid: (usize, usize, usize),
-    ) -> Self {
+        mut blocks: [Vec<u8>; CCSO_PLANES],
+    ) -> Result<Self> {
         let (grid_rows, grid_cols, cells) = grid;
-        Self {
+        for (plane, values) in [
+            splot_recon::PlaneId::Y,
+            splot_recon::PlaneId::U,
+            splot_recon::PlaneId::V,
+        ]
+        .into_iter()
+        .zip(&mut blocks)
+        {
+            values.clear();
+            values
+                .try_reserve(cells)
+                .map_err(|_| ccso_allocation_error(plane))?;
+            values.resize(cells, 0);
+        }
+        Ok(Self {
             active: true,
             shift,
             plane_enabled,
             sb_reuse,
-            blocks: std::array::from_fn(|_| vec![0; cells]),
+            blocks,
             row_start: 0,
             col_start: 0,
             grid_rows,
             grid_cols,
-        }
+        })
     }
 
     pub(crate) fn inactive() -> Self {
+        Self::inactive_with(std::array::from_fn(|_| Vec::new()))
+    }
+
+    pub(crate) fn inactive_with(blocks: [Vec<u8>; CCSO_PLANES]) -> Self {
         Self {
             active: false,
             shift: 0,
             plane_enabled: [false; CCSO_PLANES],
             sb_reuse: [false; CCSO_PLANES],
-            blocks: [Vec::new(), Vec::new(), Vec::new()],
+            blocks,
             row_start: 0,
             col_start: 0,
             grid_rows: 0,
@@ -147,7 +168,7 @@ impl CcsoState {
 
     pub(crate) fn read_for_block(
         &mut self,
-        work_unit: &mut DecodeTileWorkUnit<'_>,
+        work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
         frontier: &DecodeBlockFrontier,
         tile_offset: ByteOffset,
@@ -321,24 +342,24 @@ impl CcsoState {
         Ok(())
     }
 
-    pub(crate) fn into_grid(mut self) -> Result<Option<CcsoUnitGrid>> {
-        if !self.active {
-            return Ok(None);
-        }
+    pub(crate) fn finish_into(
+        mut self,
+        mut output: Arc<CcsoUnitGrid>,
+    ) -> Result<(Arc<CcsoUnitGrid>, bool)> {
         if self.row_start != 0 || self.col_start != 0 {
             return Err(ccso_state_error());
         }
-        let blocks = core::mem::take(&mut self.blocks);
-        CcsoUnitGrid::new(
+        let grid = Arc::get_mut(&mut output).ok_or_else(ccso_state_error)?;
+        grid.reset(
             self.active,
             self.shift,
             self.plane_enabled,
-            blocks,
+            core::mem::take(&mut self.blocks),
             self.grid_rows,
             self.grid_cols,
         )
-        .map(Some)
-        .map_err(|_| ccso_state_error())
+        .map_err(|_| ccso_state_error())?;
+        Ok((output, self.active))
     }
 }
 

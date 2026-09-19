@@ -324,7 +324,7 @@ impl From<IntrabcBlockVector> for Mv {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TileIntrabcPreludeState {
     enabled: bool,
     mi_rows: usize,
@@ -375,6 +375,7 @@ impl IntrabcGridCell {
 }
 
 impl TileIntrabcPreludeState {
+    #[cfg(test)]
     pub(crate) fn new_for_tile(
         frame_mi_size: (usize, usize),
         tile_rows: Range<usize>,
@@ -383,6 +384,27 @@ impl TileIntrabcPreludeState {
         frame_is_intra_only: bool,
         enabled: bool,
     ) -> Result<Self> {
+        let mut state = Self::default();
+        state.reset_for_tile(
+            frame_mi_size,
+            tile_rows,
+            tile_cols,
+            sequence,
+            frame_is_intra_only,
+            enabled,
+        )?;
+        Ok(state)
+    }
+
+    pub(crate) fn reset_for_tile(
+        &mut self,
+        frame_mi_size: (usize, usize),
+        tile_rows: Range<usize>,
+        tile_cols: Range<usize>,
+        sequence: &SequenceHeader,
+        frame_is_intra_only: bool,
+        enabled: bool,
+    ) -> Result<()> {
         let (mi_rows, mi_cols) = frame_mi_size;
         let rows = tile_rows.end.saturating_sub(tile_rows.start);
         let cols = tile_cols.end.saturating_sub(tile_cols.start);
@@ -392,17 +414,17 @@ impl TileIntrabcPreludeState {
             0
         };
         let sb_size4 = intrabc_sb_size4(sequence, frame_is_intra_only)?;
-        Ok(Self {
-            enabled,
-            mi_rows,
-            mi_cols,
-            origin_row: tile_rows.start,
-            origin_col: tile_cols.start,
-            tile_rows: rows,
-            tile_cols: cols,
-            sb_size4,
-            values: vec![IntrabcGridCell::default(); values_len],
-        })
+        self.values.resize(values_len, IntrabcGridCell::default());
+        self.values.fill(IntrabcGridCell::default());
+        self.enabled = enabled;
+        self.mi_rows = mi_rows;
+        self.mi_cols = mi_cols;
+        self.origin_row = tile_rows.start;
+        self.origin_col = tile_cols.start;
+        self.tile_rows = rows;
+        self.tile_cols = cols;
+        self.sb_size4 = sb_size4;
+        Ok(())
     }
 
     pub(crate) fn record_block(

@@ -143,3 +143,31 @@ fn clear_overrides_below_left_corner_for_interior_superblock() {
     assert!(!state.flag(0, -1, corner_y));
     assert!(state.flag(0, -1, corner_y - 1));
 }
+
+#[test]
+fn tile_slot_reset_and_commit_copy_reuse_grids_without_stale_flags() {
+    let mut prepass = TileBlockDecodedState::new(3, 1, 1, 32, 64, 64).unwrap();
+    let mut commit = prepass.clone();
+    let prepass_addresses = prepass.planes.each_ref().map(|plane| plane.cells.as_ptr());
+    let commit_addresses = commit.planes.each_ref().map(|plane| plane.cells.as_ptr());
+    for iteration in 0..1200 {
+        let size = if iteration % 2 == 0 { 16 } else { 32 };
+        commit.clear_superblock(0, 0);
+        commit.force_decoded(0, 0, 0);
+        prepass.reset(3, 1, 1, size, 48, 48).unwrap();
+        commit.clone_from(&prepass);
+        assert_eq!(
+            commit,
+            TileBlockDecodedState::new(3, 1, 1, size, 48, 48).unwrap()
+        );
+        assert_eq!(
+            prepass.planes.each_ref().map(|plane| plane.cells.as_ptr()),
+            prepass_addresses
+        );
+        assert_eq!(
+            commit.planes.each_ref().map(|plane| plane.cells.as_ptr()),
+            commit_addresses
+        );
+        assert!(!commit.flag(0, 0, 0));
+    }
+}

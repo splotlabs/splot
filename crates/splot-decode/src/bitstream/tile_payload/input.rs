@@ -14,8 +14,7 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{FrameHeaderCore, FrameHeaderParseStatus};
 use splot_core::headers::sequence::SequenceTqEntropyConfig;
 use splot_core::headers::tile_group::{
-    TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome, parse_tile_group_framing,
-    parse_tile_group_structure,
+    TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome, parse_tile_group_structure,
 };
 use splot_core::span::ByteOffset;
 use splot_core::stream::BitstreamFormat;
@@ -24,7 +23,7 @@ use splot_core::types::ObuType;
 use super::cdf::{FrameCdfSubset, TileCdfPolicyInput};
 use super::{
     DecodeTilePayloadPlan, TileCoeffFrameFacts, TileFrameFacts, TileGridFacts,
-    TilePayloadBoundaryError, TilePayloadBoundaryInput, plan_tile_payload_boundary,
+    TilePayloadBoundaryError, TilePayloadBoundaryInput,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
@@ -452,8 +451,19 @@ impl fmt::Display for FrameCandidateTileUnsupportedReason {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
     input: &FrameCandidateTileBoundaryInput<'payload, '_>,
+) -> Result<DecodeTilePayloadPlan<'payload>, FrameCandidateTileBoundaryError> {
+    plan_derived_tile_payload_boundary_with_scratch(
+        input,
+        &mut super::TilePayloadScratch::default(),
+    )
+}
+
+pub(crate) fn plan_derived_tile_payload_boundary_with_scratch<'payload>(
+    input: &FrameCandidateTileBoundaryInput<'payload, '_>,
+    scratch: &mut super::TilePayloadScratch,
 ) -> Result<DecodeTilePayloadPlan<'payload>, FrameCandidateTileBoundaryError> {
     validate_candidate(
         input.plan,
@@ -493,7 +503,8 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
     }
 
     let tile_size_bytes = input.facts.tile_size_bytes.unwrap_or(1);
-    let framing = parse_tile_group_framing(
+    splot_core::headers::tile_group::parse_tile_group_framing_into(
+        &mut scratch.framing,
         payload,
         structure.tg_start,
         structure.tg_end,
@@ -519,10 +530,16 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
     if let Some(cdfs) = input.initial_cdfs.as_ref() {
         frame = frame.with_initial_cdfs(Arc::clone(cdfs));
     }
+    let super::TilePayloadScratch {
+        framing,
+        work_units,
+        continuation_work_units: _,
+        tile_cdfs,
+    } = scratch;
     let boundary_input = TilePayloadBoundaryInput::new(
         payload,
         payload_base,
-        &framing,
+        framing,
         TileGridFacts::new(
             input.facts.tile_cols,
             input.facts.tile_rows,
@@ -533,7 +550,16 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
         input.limits,
     );
 
-    Ok(plan_tile_payload_boundary(&boundary_input)?)
+    let mut plan =
+        super::plan_tile_payload_boundary_with_storage(&boundary_input, work_units, tile_cdfs)?;
+    let base = usize::try_from(payload_base.get()).map_err(|_| {
+        DecodeLimitError::HostAllocationTooLarge {
+            name: DecodeLimitName::MaxTilePayloadBytes,
+            actual: payload_base.get(),
+        }
+    })?;
+    plan.rebase_payload(input.input_bytes, base)?;
+    Ok(plan)
 }
 
 fn validate_candidate(

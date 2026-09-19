@@ -49,6 +49,10 @@ pub(crate) struct FrameFilterRecords {
     /// The decode's reusable storage, so a workspace built from
     /// `retired_planes` knows where it goes when its last holder releases it.
     pub(crate) buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
+    pub(crate) cdef_grid_values: Vec<Option<usize>>,
+    pub(crate) cdef_strengths: Vec<crate::filters::cdef::CdefFrameParams>,
+    pub(crate) tx_skip_grid_values: Vec<u8>,
+    pub(crate) ccso_offset_luts: [Vec<i32>; 3],
 }
 
 /// The per-stripe lists one frame's filter phase works through.
@@ -189,6 +193,10 @@ impl WienerNsLrTxSkipGrid {
         };
         Ok(i32::from(*value))
     }
+
+    pub(crate) fn into_values(self) -> Vec<u8> {
+        self.values
+    }
 }
 
 fn wienerns_lr_tx_skip_grid_len(rows: usize, cols: usize) -> ReconResult<usize> {
@@ -289,24 +297,42 @@ fn write_cdef_skip_record(
     })
 }
 
+pub(crate) fn derive_wienerns_lr_tx_skip_grid_reusing(
+    rows: usize,
+    cols: usize,
+    records: &[WienerNsLrTxSkipTransformRecord],
+    values: Vec<u8>,
+) -> ReconResult<WienerNsLrTxSkipGrid> {
+    derive_wienerns_lr_skip_grid(rows, cols, records, values, |record| {
+        record.skip_flag || record.eob == 0
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn derive_wienerns_lr_tx_skip_grid_retention(
     rows: usize,
     cols: usize,
     records: &[WienerNsLrTxSkipTransformRecord],
 ) -> ReconResult<WienerNsLrTxSkipGrid> {
-    derive_wienerns_lr_skip_grid(rows, cols, records, |record| {
-        record.skip_flag || record.eob == 0
-    })
+    derive_wienerns_lr_tx_skip_grid_reusing(rows, cols, records, Vec::new())
 }
 
 fn derive_wienerns_lr_skip_grid(
     rows: usize,
     cols: usize,
     records: &[WienerNsLrTxSkipTransformRecord],
+    mut values: Vec<u8>,
     value_of: impl Fn(&WienerNsLrTxSkipTransformRecord) -> bool,
 ) -> ReconResult<WienerNsLrTxSkipGrid> {
     let expected = wienerns_lr_tx_skip_grid_len(rows, cols)?;
-    let mut values = vec![WIENERNS_LR_TX_SKIP_UNWRITTEN; expected];
+    values.clear();
+    values
+        .try_reserve(expected)
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: splot_recon::PlaneId::Y,
+            context: "WienerNS LR transform-skip grid",
+        })?;
+    values.resize(expected, WIENERNS_LR_TX_SKIP_UNWRITTEN);
     let mut populated = 0usize;
     for record in records {
         let value = u8::from(value_of(record));

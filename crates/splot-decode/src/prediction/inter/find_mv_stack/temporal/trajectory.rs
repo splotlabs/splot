@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
 use splot_recon::math::round2_signed_i32;
 
 use super::{
@@ -423,6 +422,12 @@ pub(super) struct OwnedTrajectoryBand {
     row_count: usize,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct OwnedTrajectoryScratch {
+    positions: Vec<TrajectoryPositions>,
+    projection_offsets: Vec<i32>,
+}
+
 #[derive(Debug)]
 pub(super) struct OwnedTrajectoryFields {
     cells: Vec<PackedTrajectoryMv>,
@@ -430,6 +435,10 @@ pub(super) struct OwnedTrajectoryFields {
 }
 
 impl OwnedTrajectoryFields {
+    pub(super) fn clear(&mut self) {
+        self.reference_count = 0;
+    }
+
     pub(super) fn cell(&self, reference: usize, index: usize) -> Option<Mv> {
         if reference >= self.reference_count {
             return None;
@@ -446,6 +455,7 @@ impl OwnedTrajectoryFields {
 }
 
 impl OwnedTrajectoryBand {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         width8: usize,
         height8: usize,
@@ -454,6 +464,8 @@ impl OwnedTrajectoryBand {
         reference_count: usize,
         step: usize,
         unit_size8: usize,
+        fields: Option<OwnedTrajectoryFields>,
+        scratch: &mut OwnedTrajectoryScratch,
     ) -> crate::Result<Self> {
         if reference_count > MAX_TRAJECTORY_REFERENCES {
             return Err(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
@@ -470,17 +482,22 @@ impl OwnedTrajectoryBand {
                 context: "inter temporal trajectory band",
             })
         };
-        let mut fields = take_pooled_vec(total_cells);
+        let mut fields = fields
+            .map(|mut fields| core::mem::take(&mut fields.cells))
+            .unwrap_or_default();
+        fields.clear();
         fields
             .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         fields.resize(total_cells, PackedTrajectoryMv::INVALID);
-        let mut positions = take_pooled_vec(total_cells);
+        let mut positions = core::mem::take(&mut scratch.positions);
+        positions.clear();
         positions
             .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         positions.resize(total_cells, TrajectoryPositions::EMPTY);
-        let mut projection_offsets = take_pooled_vec(cell_count);
+        let mut projection_offsets = core::mem::take(&mut scratch.projection_offsets);
+        projection_offsets.clear();
         projection_offsets
             .try_reserve_exact(cell_count)
             .map_err(|_| allocation())?;
@@ -519,7 +536,7 @@ impl OwnedTrajectoryBand {
         })
     }
 
-    pub(super) fn finish(mut self) -> OwnedTrajectoryFields {
+    pub(super) fn finish(mut self, scratch: &mut OwnedTrajectoryScratch) -> OwnedTrajectoryFields {
         if self.step == 2 {
             for reference in 0..self.reference_count {
                 fill_band_field_gaps(
@@ -533,19 +550,12 @@ impl OwnedTrajectoryBand {
                 );
             }
         }
-        recycle_pooled_vec(core::mem::take(&mut self.positions));
-        recycle_pooled_vec(core::mem::take(&mut self.projection_offsets));
+        scratch.positions = core::mem::take(&mut self.positions);
+        scratch.projection_offsets = core::mem::take(&mut self.projection_offsets);
         OwnedTrajectoryFields {
             cells: core::mem::take(&mut self.fields),
             reference_count: self.reference_count,
         }
-    }
-}
-
-/// Returns a released band's trajectory cells to the per-thread pool.
-impl Drop for OwnedTrajectoryFields {
-    fn drop(&mut self) {
-        recycle_pooled_vec(core::mem::take(&mut self.cells));
     }
 }
 
@@ -1004,7 +1014,20 @@ mod tests {
 
     #[test]
     fn owned_band_rejects_more_than_seven_references() {
-        assert!(OwnedTrajectoryBand::new(1, 1, 0, 1, 8, 1, 8).is_err());
+        assert!(
+            OwnedTrajectoryBand::new(
+                1,
+                1,
+                0,
+                1,
+                8,
+                1,
+                8,
+                None,
+                &mut super::OwnedTrajectoryScratch::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]

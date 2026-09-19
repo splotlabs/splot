@@ -1286,6 +1286,22 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
 }
 
 #[test]
+fn output_reset_preserves_counts_and_reuses_the_destination_box() {
+    let mut initial = FrameCdfSubset::from_defaults();
+    initial.rows.do_split[0][0] = [20_000, 7, 20];
+    let mut expected = initial.clone();
+    expected.replicate_coeff_q_context_for_base_q(80);
+    let mut output = FrameCdfSubset::from_defaults();
+    let output_rows = std::ptr::from_ref(output.rows.as_ref());
+
+    output.reset_output_from(&initial, 80);
+
+    assert_eq!(output, expected);
+    assert_eq!(output.rows.do_split[0][0], [20_000, 7, 20]);
+    assert_eq!(std::ptr::from_ref(output.rows.as_ref()), output_rows);
+}
+
+#[test]
 fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
     let expected_frame = FrameCdfSubset::from_defaults();
     let mut boundary = TileCdfWorkUnitBoundary::new(
@@ -2187,4 +2203,21 @@ fn coeff_base_row_hands_off_to_symbol_decoder_update_mode() {
         );
         assert_ne!(symbol.consumed_bits(), consumed_before, "{selector:?}");
     }
+}
+
+#[test]
+fn frame_cdf_reset_preserves_rows_backing() {
+    let source = FrameCdfSubset::default_for_base_q(255);
+    let mut reused = FrameCdfSubset::from_defaults();
+    let rows = std::ptr::from_ref(reused.rows.as_ref());
+
+    reused.reset_from(&source);
+
+    assert_eq!(std::ptr::from_ref(reused.rows.as_ref()), rows);
+    assert_eq!(reused, source);
+
+    reused.reset_to_defaults();
+
+    assert_eq!(std::ptr::from_ref(reused.rows.as_ref()), rows);
+    assert_eq!(reused, FrameCdfSubset::from_defaults());
 }
