@@ -2241,12 +2241,12 @@ mod general_intra_lossless_smooth_tests;
 mod general_intra_tests;
 
 #[derive(Clone, Copy)]
-enum TileFactsKind {
+pub(crate) enum TileFactsKind {
     Intra,
     Inter,
 }
 #[allow(clippy::too_many_arguments)]
-fn derive_tile_plan_with<'payload>(
+pub(crate) fn derive_tile_plan_with<'payload>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &'payload [u8],
@@ -2482,30 +2482,6 @@ pub(crate) fn derive_tile_plan<'payload>(
         &mut scratch,
     )
 }
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn derive_inter_tile_plan<'payload>(
-    plan: &DecodeStreamPlan,
-    candidate: &DecodePlannedObu,
-    bytes: &'payload [u8],
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    options: &DecodeOptions,
-    initial_cdfs: &Arc<FrameCdfSubset>,
-    scratch: &mut crate::bitstream::tile_payload::TilePayloadScratch,
-) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> {
-    derive_tile_plan_with(
-        plan,
-        candidate,
-        bytes,
-        sequence,
-        core,
-        options,
-        TileFactsKind::Inter,
-        Some(initial_cdfs),
-        scratch,
-    )
-}
-
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;

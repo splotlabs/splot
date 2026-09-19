@@ -194,14 +194,15 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         return Err(DecodeHeaderStateError::InvalidInterReferenceMap.into());
     }
     let block_reference_select = tail.reference_select;
-    let tile_plan = crate::pipeline::derive_inter_tile_plan(
+    let tile_plan = crate::pipeline::derive_tile_plan_with(
         plan,
         candidate,
         bytes,
         sequence,
         core,
         options,
-        &initial_cdfs,
+        crate::pipeline::TileFactsKind::Inter,
+        Some(&initial_cdfs),
         payload_scratch,
     )?;
     let tile_size = tile_plan

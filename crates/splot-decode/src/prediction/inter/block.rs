@@ -288,28 +288,16 @@ impl InterBlockSetup {
         TemporalPrelude,
         TemporalMotionField,
     ) {
-        let Self {
-            params,
-            prelude,
-            cdef_state,
-            gdf_state,
-            ccso_state,
-            motion_field,
-            initial_frame_cdfs,
-            qindex,
-        } = self;
         (
             InterParseSetup {
-                params,
-                cdef_state: Some(cdef_state),
-                gdf_state: Some(gdf_state),
-                ccso_state: Some(ccso_state),
-                initial_frame_cdfs,
-                qindex,
+                params: self.params,
+                filter_states: Some((self.cdef_state, self.gdf_state, self.ccso_state)),
+                initial_frame_cdfs: self.initial_frame_cdfs,
+                qindex: self.qindex,
             },
-            params,
-            prelude,
-            motion_field,
+            self.params,
+            self.prelude,
+            self.motion_field,
         )
     }
 }
@@ -317,9 +305,7 @@ impl InterBlockSetup {
 /// The half of the pre-parse derivation the § 8.2 pass consumes.
 pub(crate) struct InterParseSetup {
     pub(crate) params: TileWalkParams,
-    pub(crate) cdef_state: Option<CdefState>,
-    pub(crate) gdf_state: Option<GdfState>,
-    pub(crate) ccso_state: Option<CcsoState>,
+    pub(crate) filter_states: Option<(CdefState, GdfState, CcsoState)>,
     pub(crate) initial_frame_cdfs: Arc<FrameCdfSubset>,
     pub(crate) qindex: u32,
 }

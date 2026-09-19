@@ -65,22 +65,18 @@ impl<'payload> InterFrameParser<'payload> {
             .params
             .context(sequence, core, reference, ref_frame_idx);
         if self.parser.is_none() {
+            let (cdef_state, gdf_state, ccso_state) = self
+                .setup
+                .filter_states
+                .take()
+                .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
             self.parser = Some(tile::TileParser::scheduled(
                 tile,
                 tile_bytes,
                 context,
-                self.setup
-                    .cdef_state
-                    .take()
-                    .ok_or_else(tile::invalid_inter_tile_scheduling_state)?,
-                self.setup
-                    .gdf_state
-                    .take()
-                    .ok_or_else(tile::invalid_inter_tile_scheduling_state)?,
-                self.setup
-                    .ccso_state
-                    .take()
-                    .ok_or_else(tile::invalid_inter_tile_scheduling_state)?,
+                cdef_state,
+                gdf_state,
+                ccso_state,
                 parse_progress,
             )?);
         }
@@ -101,9 +97,7 @@ impl<'payload> InterFrameParser<'payload> {
     ) -> Result<InterFrameParse> {
         let super::InterParseSetup {
             params,
-            cdef_state: _,
-            gdf_state: _,
-            ccso_state: _,
+            filter_states: _,
             initial_frame_cdfs,
             qindex,
         } = self.setup;
