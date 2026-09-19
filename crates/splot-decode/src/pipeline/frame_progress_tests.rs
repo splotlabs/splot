@@ -376,3 +376,38 @@ fn the_freeze_publishes_before_it_releases_the_workspace() {
         "a reader arriving mid-freeze blocks on the workspace lock, so what this hook publishes is visible before any read resumes"
     );
 }
+
+#[test]
+fn resetting_progress_retains_stripes_and_clears_terminal_publication() {
+    let geometry = info(8, 8, PixelFormat::Monochrome);
+    let mut progress = FrameProgress::<u8>::new(geometry).expect("frame progress");
+    let mut planes = splot_recon::FramePlaneSamples::default();
+    assert!(progress.begin(&[(0, 4), (4, 8)]));
+    let stripes = progress
+        .layout
+        .get()
+        .expect("stripe layout")
+        .lock()
+        .stripes
+        .as_ptr();
+    for cycle in 0..1200 {
+        progress.publish_terminal(cycle % 2 == 0);
+        progress
+            .reset(geometry, &mut planes)
+            .expect("reset progress");
+        assert_eq!(progress.published_luma_rows(), 0);
+        assert!(!progress.terminal_published.is_set());
+        assert!(progress.layout.get().is_none());
+        assert!(progress.begin(&[(0, 4), (4, 8)]));
+        assert_eq!(
+            progress
+                .layout
+                .get()
+                .expect("stripe layout")
+                .lock()
+                .stripes
+                .as_ptr(),
+            stripes
+        );
+    }
+}

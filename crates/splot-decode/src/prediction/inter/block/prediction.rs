@@ -115,7 +115,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     bit_depth: BitDepth,
     enable_ibp: bool,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<Option<mc::CompoundMotionGrid>> {
     let rect = placed.motion_compensation_rect();
     if let Some(prediction) = placed.block.interintra {
         super::predict_interintra_planes(
@@ -133,7 +133,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         .block_params(placed, rect)?
         .with_refinemv(use_refinemv)
         .with_switchable_refinemv(refinemv_switchable);
-    mc::predict_inter_block_from_grid(
+    let motion = mc::predict_inter_block_from_grid(
         &mut mc::WorkspaceSink::Frame(workspace),
         block_params,
         motion,
@@ -193,7 +193,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             bit_depth,
         )?;
     }
-    Ok(())
+    Ok(motion)
 }
 
 /// Reconstructs one deferable inter block (no interintra, no BAWP, no
@@ -215,13 +215,13 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<Option<mc::CompoundMotionGrid>> {
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
     let block_params = held
         .block_params(placed, placed.motion_compensation_rect())?
         .with_refinemv(use_refinemv)
         .with_switchable_refinemv(refinemv_switchable);
-    mc::predict_inter_block_from_grid(sink, block_params, motion, tile_offset)?;
+    let motion = mc::predict_inter_block_from_grid(sink, block_params, motion, tile_offset)?;
     drop(held);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
@@ -237,5 +237,5 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
             bit_depth,
         )?;
     }
-    Ok(())
+    Ok(motion)
 }

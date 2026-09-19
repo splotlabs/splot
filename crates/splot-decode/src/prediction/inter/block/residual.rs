@@ -123,7 +123,7 @@ impl InterLumaTxTypeMap {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_inter_residual(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     scratch: &mut InterResidualParseScratch,
@@ -306,7 +306,7 @@ fn intra_frame_needs_selectable_tx_partitions(core: &FrameHeaderCore) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn read_inter_residual_luma_chunk(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     blocks: &mut Vec<InterResidualBlock>,
@@ -377,7 +377,7 @@ fn read_inter_residual_luma_chunk(
 
 #[allow(clippy::too_many_arguments)]
 fn read_inter_residual_luma_records_for_chunk(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     blocks: &mut Vec<InterResidualBlock>,
@@ -437,7 +437,7 @@ fn read_inter_residual_luma_records_for_chunk(
 
 #[allow(clippy::too_many_arguments)]
 fn read_inter_residual_chroma_group(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     blocks: &mut Vec<InterResidualBlock>,
@@ -658,7 +658,7 @@ fn residual_allocation_error() -> crate::error::DecodeError {
 
 #[allow(clippy::too_many_arguments)]
 fn read_inter_residual_plane(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
@@ -701,7 +701,7 @@ pub(crate) fn max_tx_size(block_size: usize) -> Result<usize> {
 }
 
 fn inter_residual_tx_size(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     block_size: BlockSize,
     lossless: bool,

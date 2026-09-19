@@ -50,6 +50,7 @@ pub(crate) fn walk_frame<T: ReconSample>(
     options: &DecodeOptions,
     setup: &FrameSetup<'_, T>,
     bit_depth: BitDepth,
+    products: &mut inter::FrameProductWriters,
 ) -> Result<FrameWalk<T>> {
     match *setup {
         FrameSetup::Inter(reference) => inter::walk_inter_frame(
@@ -63,6 +64,7 @@ pub(crate) fn walk_frame<T: ReconSample>(
             options,
             reference,
             bit_depth,
+            products,
         ),
         FrameSetup::Intra => intra::walk_intra_frame::<T>(
             scratch,
@@ -74,6 +76,7 @@ pub(crate) fn walk_frame<T: ReconSample>(
             sequence,
             options,
             bit_depth,
+            products,
         ),
     }
 }

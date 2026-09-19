@@ -37,6 +37,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     bit_depth: BitDepth,
+    products: &mut crate::prediction::inter::FrameProductWriters,
 ) -> Result<FrameWalk<T>> {
     let offset = frame_envelope.offset;
     let frame_size = core.frame_size.ok_or_else(|| {
@@ -129,6 +130,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         &[],
         &reference,
         workspace,
+        products,
     )?;
 
     let setup = FilterSinkSetup {

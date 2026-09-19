@@ -84,8 +84,7 @@ fn decode_block_part(
 
 pub(crate) struct GeneralIntraPartitionTreeOutput<'payload> {
     pub(crate) symbols: SymbolDecoder<'payload>,
-    pub(crate) active_source_blocks: Vec<WienerNsLrSourceBlock>,
-    pub(crate) unit_filters: Vec<WienerNsLrUnitFilter>,
+    pub(crate) storage: TileTraversalStorage,
 }
 
 /// Parser-owned superblock-row boundary for `INFRA-DECODE-PARALLEL-STAGES`.
@@ -111,29 +110,40 @@ enum TilePartitionStackEntry {
     ExtendedSdpChromaBlock(TilePartitionCall),
 }
 
-/// The § 7.17 loop-restoration record lists one tile fills.
-///
-/// They live on the decoder's tile parse state and travel through the cursor,
-/// so a steady-state tile records into the lists the last one left behind.
+/// Tile-slot storage lent to partition traversal and returned after record merging.
 #[derive(Default)]
-pub(crate) struct LrTileRecords {
+pub(crate) struct TileTraversalStorage {
+    stack: Vec<TilePartitionStackEntry>,
     pub(crate) active_source_blocks: Vec<WienerNsLrSourceBlock>,
     pub(crate) unit_filters: Vec<WienerNsLrUnitFilter>,
 }
 
 impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
+    #[cfg(test)]
     pub(crate) fn new(
-        work_unit: &DecodeTileWorkUnit<'payload>,
+        work_unit: &DecodeTileWorkUnit,
         frame: TilePartitionFrameFacts,
         limits: DecodeLimits,
-        lr_records: LrTileRecords,
+        storage: TileTraversalStorage,
+    ) -> Result<Self, TilePartitionTraversalError> {
+        Self::new_with_bytes(work_unit, work_unit.tile_bytes(), frame, limits, storage)
+    }
+
+    pub(crate) fn new_with_bytes(
+        work_unit: &DecodeTileWorkUnit,
+        tile_bytes: &'payload [u8],
+        frame: TilePartitionFrameFacts,
+        limits: DecodeLimits,
+        storage: TileTraversalStorage,
     ) -> Result<Self, TilePartitionTraversalError> {
         ensure_supported_traversal_frame(frame)?;
-        let symbols = symbol_decoder_for_work_unit(work_unit)?;
-        let LrTileRecords {
+        let symbols = symbol_decoder_for_work_unit(work_unit, tile_bytes)?;
+        let TileTraversalStorage {
+            mut stack,
             mut active_source_blocks,
             mut unit_filters,
-        } = lr_records;
+        } = storage;
+        stack.clear();
         active_source_blocks.clear();
         unit_filters.clear();
         let lr_activity = WienerNsLrUnitActivity {
@@ -163,14 +173,14 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             limits,
             step_count: 0,
             sdp_state: SdpPartitionState::default(),
-            stack: Vec::new(),
+            stack,
         })
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn decode_next_superblock_with_publication<E, C, F, P>(
         &mut self,
-        work_unit: &mut DecodeTileWorkUnit<'payload>,
+        work_unit: &mut DecodeTileWorkUnit,
         mi_size_state: &mut TileMiSizeState,
         joint_modes: &mut TileIntraJointModeState,
         uses_mrls: &mut TileUsesMrlsState,
@@ -183,7 +193,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
     ) -> Result<Option<[usize; 2]>, GeneralIntraTreeWalkError<E>>
     where
         F: FnMut(
-            &mut DecodeTileWorkUnit<'payload>,
+            &mut DecodeTileWorkUnit,
             &mut SymbolDecoder<'payload>,
             &DecodeBlockFrontier,
             &TileIntraJointModeState,
@@ -328,14 +338,18 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let Self {
             symbols,
             lr_activity,
+            stack,
             y_modes,
             ..
         } = self;
         y_modes.recycle();
         GeneralIntraPartitionTreeOutput {
             symbols,
-            active_source_blocks: lr_activity.active_source_blocks,
-            unit_filters: lr_activity.unit_filters,
+            storage: TileTraversalStorage {
+                stack,
+                active_source_blocks: lr_activity.active_source_blocks,
+                unit_filters: lr_activity.unit_filters,
+            },
         }
     }
 }
@@ -568,41 +582,47 @@ mod row_cursor_tests {
     fn cursor_yields_each_superblock_in_raster_order() {
         let payload = [0_u8; 4096];
         let frame = frame();
-        let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
-        let mut states = parser_states(frame);
-        let mut superblocks = Vec::new();
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
-            &work,
-            frame,
-            DecodeLimits::DEFAULT,
-            LrTileRecords::default(),
-        )
-        .unwrap();
-        loop {
-            let superblock = cursor
-                .decode_next_superblock_with_publication(
-                    &mut work,
-                    &mut states.0,
-                    &mut states.1,
-                    &mut states.2,
-                    &mut states.3,
-                    &mut states.4,
-                    &mut states.5,
-                    &mut states.6,
-                    &mut |_, _, _, _, _, _, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
-                    &mut |_, ()| {},
-                )
-                .unwrap();
-            let Some(superblock) = superblock else {
-                break;
-            };
-            superblocks.push(superblock);
+        let mut storage = TileTraversalStorage::default();
+        let mut stack_address = None;
+        for _ in 0..32 {
+            let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
+            let mut states = parser_states(frame);
+            let mut superblocks = Vec::new();
+            let mut cursor =
+                GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT, storage)
+                    .unwrap();
+            loop {
+                let superblock = cursor
+                    .decode_next_superblock_with_publication(
+                        &mut work,
+                        &mut states.0,
+                        &mut states.1,
+                        &mut states.2,
+                        &mut states.3,
+                        &mut states.4,
+                        &mut states.5,
+                        &mut states.6,
+                        &mut |_, _, _, _, _, _, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
+                        &mut |_, ()| {},
+                    )
+                    .unwrap();
+                let Some(superblock) = superblock else {
+                    break;
+                };
+                superblocks.push(superblock);
+            }
+            assert_eq!(superblocks.len(), 64);
+            assert_eq!(superblocks[0], [0, 0]);
+            assert_eq!(superblocks[7], [0, 56]);
+            assert_eq!(superblocks[8], [8, 0]);
+            assert_eq!(superblocks[63], [56, 56]);
+            storage = cursor.into_output().storage;
+            assert!(storage.stack.capacity() > 0);
+            if let Some(address) = stack_address {
+                assert_eq!(storage.stack.as_ptr(), address);
+            }
+            stack_address = Some(storage.stack.as_ptr());
         }
-        assert_eq!(superblocks.len(), 64);
-        assert_eq!(superblocks[0], [0, 0]);
-        assert_eq!(superblocks[7], [0, 56]);
-        assert_eq!(superblocks[8], [8, 0]);
-        assert_eq!(superblocks[63], [56, 56]);
     }
 
     #[test]
@@ -615,7 +635,7 @@ mod row_cursor_tests {
             &work,
             frame,
             DecodeLimits::DEFAULT,
-            LrTileRecords::default(),
+            TileTraversalStorage::default(),
         )
         .unwrap();
         let mut calls = 0;
@@ -661,7 +681,7 @@ mod row_cursor_tests {
             &work,
             frame,
             DecodeLimits::DEFAULT,
-            LrTileRecords::default(),
+            TileTraversalStorage::default(),
         )
         .unwrap();
         let mut parts = Vec::new();
@@ -719,7 +739,7 @@ mod row_cursor_tests {
             &work,
             frame,
             DecodeLimits::DEFAULT,
-            LrTileRecords::default(),
+            TileTraversalStorage::default(),
         )
         .unwrap();
         let mut parts = Vec::new();
@@ -769,7 +789,7 @@ mod row_cursor_tests {
             &work,
             frame,
             DecodeLimits::DEFAULT,
-            LrTileRecords::default(),
+            TileTraversalStorage::default(),
         )
         .unwrap();
         let mut leaf_calls = 0;

@@ -342,7 +342,7 @@ fn record_chroma_smooth(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_one_general_intra_block(
-    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
+    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     sequence: &SequenceHeader,
@@ -583,7 +583,7 @@ pub(crate) fn decode_one_general_intra_block(
 #[allow(clippy::too_many_arguments)]
 fn parse_one_general_intra_chroma_part_block(
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
+    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     y_mode: crate::bitstream::tile_payload::IntraYMode,
@@ -653,7 +653,7 @@ fn parse_one_general_intra_chroma_part_block(
 #[allow(clippy::too_many_arguments)]
 fn parse_one_general_intra_rect_block(
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
+    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     modes: &GeneralIntraBlockModes,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
@@ -1011,7 +1011,7 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn parse_general_intra_residual_plan(
     residual_plan: GeneralIntraResidualPlan,
-    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
+    work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
     block_ctx: BlockCtx,

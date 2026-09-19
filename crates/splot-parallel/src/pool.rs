@@ -40,6 +40,19 @@ pub struct TaskScope<'handle, 'scope> {
 }
 
 impl<'scope> TaskScope<'_, 'scope> {
+    /// Starts one scoped callback on each worker of this pool.
+    pub fn broadcast<F>(&self, task: F)
+    where
+        F: for<'next> Fn(&TaskScope<'next, 'scope>) + Send + Sync + 'scope,
+    {
+        match self.inner {
+            Some(inner) => inner.spawn_broadcast(move |inner, _| {
+                task(&TaskScope { inner: Some(inner) });
+            }),
+            None => task(&TaskScope { inner: None }),
+        }
+    }
+
     /// Spawns a ready task. The task may spawn successors into the same scope.
     pub fn spawn<F>(&self, task: F)
     where

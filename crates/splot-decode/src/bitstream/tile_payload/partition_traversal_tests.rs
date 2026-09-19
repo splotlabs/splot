@@ -11,7 +11,7 @@ use super::super::cdf::{
     tile_cdf_save_policy,
 };
 use super::super::{SymbolInitBoundary, TileCoeffFrameFacts};
-use super::tree_walk::LrTileRecords;
+use super::tree_walk::TileTraversalStorage;
 use super::*;
 use crate::bitstream::tile_payload::encode_symbol_sequence;
 use crate::{DecodeLimitError, DecodeLimitThreshold};
@@ -114,7 +114,7 @@ fn frame_level_pc_wiener(unit_size: usize) -> TilePartitionLoopRestorationState 
     )
 }
 
-fn lr_unit_symbol_row(work_unit: &mut DecodeTileWorkUnit<'_>, row: TileCdfSelector) -> [u16; 3] {
+fn lr_unit_symbol_row(work_unit: &mut DecodeTileWorkUnit, row: TileCdfSelector) -> [u16; 3] {
     work_unit
         .cdf_mut()
         .tile_cdfs_mut()
@@ -122,7 +122,7 @@ fn lr_unit_symbol_row(work_unit: &mut DecodeTileWorkUnit<'_>, row: TileCdfSelect
         .unwrap()
 }
 
-pub(crate) fn make_work_unit(payload: &[u8], update_mode: CdfUpdateMode) -> DecodeTileWorkUnit<'_> {
+pub(crate) fn make_work_unit(payload: &[u8], update_mode: CdfUpdateMode) -> DecodeTileWorkUnit {
     make_work_unit_at(payload, update_mode, 0..64, 0..64)
 }
 
@@ -131,14 +131,16 @@ pub(crate) fn make_work_unit_at(
     update_mode: CdfUpdateMode,
     mi_row_range: Range<u32>,
     mi_col_range: Range<u32>,
-) -> DecodeTileWorkUnit<'_> {
+) -> DecodeTileWorkUnit {
     DecodeTileWorkUnit {
         tile_num: 0,
         tile_row: 0,
         tile_col: 0,
         mi_row_range,
         mi_col_range,
-        tile_bytes: payload,
+        payload_range: 0..payload.len(),
+        payload_index: 0,
+        test_tile_bytes: Box::leak(payload.to_vec().into_boxed_slice()),
         tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
         tile_size: payload.len() as u64,
         coeff_frame_facts: TileCoeffFrameFacts {
@@ -175,7 +177,7 @@ struct CapturedLeaf {
 }
 
 fn run_first_superblock<'payload>(
-    work_unit: &mut DecodeTileWorkUnit<'payload>,
+    work_unit: &mut DecodeTileWorkUnit,
     frame: TilePartitionFrameFacts,
     limits: DecodeLimits,
 ) -> Result<
@@ -203,8 +205,12 @@ fn run_first_superblock<'payload>(
     let mut uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len())
         .unwrap()
         .with_origin(tile_rows.start, tile_cols.start);
-    let mut cursor =
-        GeneralIntraPartitionTreeCursor::new(work_unit, frame, limits, LrTileRecords::default())?;
+    let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        work_unit,
+        frame,
+        limits,
+        TileTraversalStorage::default(),
+    )?;
     let mut frontiers = Vec::new();
     cursor.decode_next_superblock_with_publication(
         work_unit,
@@ -267,7 +273,7 @@ fn assert_cursor_unsupported(
         &work_unit,
         frame,
         DecodeLimits::DEFAULT,
-        LrTileRecords::default(),
+        TileTraversalStorage::default(),
     )
     .err()
     .unwrap();
@@ -782,7 +788,7 @@ fn read_lr_gate_precedes_partition_symbol_reads() {
         &work_unit,
         facts,
         DecodeLimits::DEFAULT,
-        LrTileRecords::default(),
+        TileTraversalStorage::default(),
     )
     .err()
     .unwrap();
@@ -916,11 +922,12 @@ fn switchable_luma_selection_controls_current_source_output() {
         assert_eq!(frontiers[0].symbol_count, expected_symbols + 1);
         assert_eq!(output.symbols.symbol_count(), expected_symbols + 1);
         assert_eq!(
-            output.active_source_blocks.is_empty(),
+            output.storage.active_source_blocks.is_empty(),
             !expected_type.is_active()
         );
         assert!(
             output
+                .storage
                 .active_source_blocks
                 .iter()
                 .all(|block| block.restoration_type == expected_type)
@@ -969,12 +976,13 @@ fn switchable_luma_without_frame_filter_reads_unit_wiener_filter() {
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(output.symbols.symbol_count(), 4);
-    assert_eq!(output.unit_filters.len(), 1);
-    assert_eq!(output.unit_filters[0].plane, 0);
-    assert_eq!(output.unit_filters[0].unit_row, 0);
-    assert_eq!(output.unit_filters[0].unit_col, 0);
+    assert_eq!(output.storage.unit_filters.len(), 1);
+    assert_eq!(output.storage.unit_filters[0].plane, 0);
+    assert_eq!(output.storage.unit_filters[0].unit_row, 0);
+    assert_eq!(output.storage.unit_filters[0].unit_col, 0);
     assert!(
         output
+            .storage
             .active_source_blocks
             .iter()
             .all(|block| block.unit_filter_index == Some(0))
@@ -1002,7 +1010,7 @@ fn switchable_lr_rejects_chroma_before_symbol_read() {
         &work_unit,
         facts,
         DecodeLimits::DEFAULT,
-        LrTileRecords::default(),
+        TileTraversalStorage::default(),
     )
     .err()
     .unwrap();
@@ -1028,8 +1036,8 @@ fn inactive_frame_level_wiener_ns_advances_current_cursor_without_source_output(
     assert_eq!(frontiers[0].symbol_count, 2);
     assert_eq!(output.symbols.symbol_count(), 2);
     assert!(output.symbols.consumed_bits().get() > 0);
-    assert!(output.active_source_blocks.is_empty());
-    assert!(output.unit_filters.is_empty());
+    assert!(output.storage.active_source_blocks.is_empty());
+    assert!(output.storage.unit_filters.is_empty());
 }
 
 #[test]
@@ -1040,9 +1048,9 @@ fn current_cursor_retains_active_frame_level_wiener_ns_source_blocks() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 64);
     assert_eq!(
-        output.active_source_blocks[0],
+        output.storage.active_source_blocks[0],
         WienerNsLrSourceBlock {
             restoration_type: LrUnitRestorationType::WienerNonsep,
             plane: 0,
@@ -1074,9 +1082,10 @@ fn current_cursor_retains_active_frame_level_pc_wiener_source_blocks() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 64);
     assert!(
         output
+            .storage
             .active_source_blocks
             .iter()
             .all(|block| block.restoration_type == LrUnitRestorationType::PcWiener)
@@ -1122,8 +1131,9 @@ fn active_lr_source_blocks_track_stripe_bounds() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 64);
     let second_stripe = output
+        .storage
         .active_source_blocks
         .iter()
         .find(|block| block.y == 56 && block.x == 0)
@@ -1143,9 +1153,9 @@ fn active_lr_source_bounds_clamp_to_tile_when_loopfilters_across_tiles_disabled(
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.active_source_blocks.len(), 32);
-    assert_eq!(output.active_source_blocks[0].luma_end_x, 127);
-    assert_eq!(output.active_source_blocks[0].luma_end_y, 127);
+    assert_eq!(output.storage.active_source_blocks.len(), 32);
+    assert_eq!(output.storage.active_source_blocks[0].luma_end_x, 127);
+    assert_eq!(output.storage.active_source_blocks[0].luma_end_y, 127);
 }
 
 #[test]
@@ -1190,9 +1200,10 @@ fn current_cursor_retains_sdp_chroma_lr_source_blocks() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert!(!output.active_source_blocks.is_empty());
+    assert!(!output.storage.active_source_blocks.is_empty());
     assert!(
         output
+            .storage
             .active_source_blocks
             .iter()
             .all(|block| block.plane == 1)
@@ -1210,7 +1221,7 @@ fn current_cursor_advances_every_covered_inactive_wiener_ns_unit() {
 
     assert_eq!(frontiers[0].symbol_count, 5);
     assert_eq!(output.symbols.symbol_count(), 5);
-    assert!(output.active_source_blocks.is_empty());
+    assert!(output.storage.active_source_blocks.is_empty());
 }
 
 #[test]
@@ -1258,7 +1269,7 @@ fn unsupported_gates_are_explicit() {
             &work_unit,
             extended_sdp,
             DecodeLimits::DEFAULT,
-            LrTileRecords::default()
+            TileTraversalStorage::default()
         )
         .is_ok()
     );
@@ -1277,7 +1288,7 @@ fn unsupported_gates_are_explicit() {
             &work_unit,
             inter,
             DecodeLimits::DEFAULT,
-            LrTileRecords::default()
+            TileTraversalStorage::default()
         )
         .is_ok()
     );

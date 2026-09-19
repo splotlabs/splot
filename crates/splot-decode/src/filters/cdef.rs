@@ -53,13 +53,17 @@ pub(crate) struct CdefFrameParams {
     pub(crate) damping: i32,
 }
 
-pub(crate) fn cdef_frame_strengths(core: &FrameHeaderCore) -> Option<Vec<CdefFrameParams>> {
+pub(crate) fn cdef_frame_strengths(
+    core: &FrameHeaderCore,
+    strengths: &mut Vec<CdefFrameParams>,
+) -> Option<()> {
+    strengths.clear();
     let cdef = core.cdef_params.as_ref()?;
     if !cdef.cdef_frame_enable {
         return None;
     }
     let damping = i32::from(cdef.cdef_damping?);
-    let mut strengths = Vec::with_capacity(cdef.strengths.len());
+    strengths.reserve(cdef.strengths.len());
     for set in cdef.strengths.as_slice() {
         strengths.push(CdefFrameParams {
             y_pri: i32::from(set.y_pri_strength),
@@ -69,7 +73,7 @@ pub(crate) fn cdef_frame_strengths(core: &FrameHeaderCore) -> Option<Vec<CdefFra
             damping,
         });
     }
-    Some(strengths)
+    Some(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,6 +91,10 @@ impl CdefUnitGrid {
     ) -> Result<Self, CdefError> {
         validate_grid_len(rows, cols, values.len())?;
         Ok(Self { rows, cols, values })
+    }
+
+    pub(crate) fn into_values(self) -> Vec<Option<usize>> {
+        self.values
     }
 
     fn strength_for_mi(&self, mi_row: usize, mi_col: usize) -> Result<Option<usize>, CdefError> {

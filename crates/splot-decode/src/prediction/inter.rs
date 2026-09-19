@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 pub(crate) use block::ParseProgress;
-pub(crate) use block::{ReconRowBuffers, ReconRowCapacities};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use std::sync::Arc;
@@ -76,7 +75,7 @@ fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> 
         core: Arc::new(core),
         frame_cdfs,
         ccso_grid,
-        segment_ids: Arc::new(segment_ids),
+        segment_ids,
         motion_field,
     }
 }
@@ -93,6 +92,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
+    products: &mut FrameProductWriters,
 ) -> Result<FrameWalk<T>> {
     if frame_envelope.header.obu_type == ObuType::BridgeFrame {
         reference
@@ -106,6 +106,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             options,
             reference,
             bit_depth,
+            products,
         )
         .map(completed_walk);
     }
@@ -128,14 +129,20 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             reference,
             bit_depth,
             geometry,
+            products,
         )
         .map(completed_walk);
     }
     if let Some(inter) = core.inter.as_ref() {
-        for dependency in reference.motion_dependencies(&inter.ref_frame_idx) {
+        for dependency in reference
+            .motion_dependencies(&inter.ref_frame_idx)
+            .iter()
+            .flatten()
+        {
             dependency.wait_field();
         }
     }
+    let mut payload_scratch = crate::bitstream::tile_payload::TilePayloadScratch::default();
     let frame_walk::InterWalkPrologue {
         tile_plan,
         workspace,
@@ -155,6 +162,8 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         bit_depth,
         geometry,
         &mut scratch.reclaim_retired_planes(),
+        None,
+        &mut payload_scratch,
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let InterBlockDecodeOutput {
@@ -172,6 +181,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         ref_frame_idx.as_slice(),
         reference,
         workspace,
+        products,
     )?;
     let core = Arc::new(core);
     Ok(setup.frame_walk(
@@ -195,6 +205,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
+    products: &mut FrameProductWriters,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
     let frame_size = geometry.frame_size();
@@ -209,20 +220,18 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
     let (frame, motion_field) =
         block::tip::reconstruct_output(scratch, sequence, &core, reference, geometry, offset)?;
-    let mut frame_cdfs = (*frame_cdfs).clone();
-    frame_cdfs
-        .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx));
-    let segment_ids = empty_segment_id_map(&core)?;
-    Ok((
-        frame,
-        core,
-        Arc::new(frame_cdfs),
-        None,
-        motion_field,
-        segment_ids,
-    ))
+    let qindex = core.quantization_params.map_or(0, |q| q.base_q_idx);
+    products
+        .frame_cdfs()?
+        .reset_output_from(&frame_cdfs, qindex);
+    let frame_cdfs = products.cdf_output()?;
+    let (mi_rows, mi_cols) = geometry.mi_dimensions();
+    products.segment_ids(mi_rows, mi_cols)?;
+    let segment_ids = products.finish_segment_ids()?;
+    Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_bridge_frame<T: ReconSample>(
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
@@ -231,6 +240,7 @@ fn decode_bridge_frame<T: ReconSample>(
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
+    products: &mut FrameProductWriters,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
     let frame_size = core
@@ -266,21 +276,25 @@ fn decode_bridge_frame<T: ReconSample>(
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
     let frame = bridge::reconstruct(source.samples()?, frame_size, visible, 0, offset)?;
-    let mut frame_cdfs = (*frame_cdfs).clone();
-    frame_cdfs
-        .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx));
-    let segment_ids = empty_segment_id_map(&core)?;
-    Ok((
-        frame,
-        core,
-        Arc::new(frame_cdfs),
-        None,
-        motion_field,
-        segment_ids,
-    ))
+    let qindex = core.quantization_params.map_or(0, |q| q.base_q_idx);
+    products
+        .frame_cdfs()?
+        .reset_output_from(&frame_cdfs, qindex);
+    let frame_cdfs = products.cdf_output()?;
+    let (mi_rows, mi_cols) = segment_id_map_dimensions(&core)?;
+    products.segment_ids(mi_rows, mi_cols)?;
+    let segment_ids = products.finish_segment_ids()?;
+    Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
 }
 
+#[cfg(test)]
 fn empty_segment_id_map(core: &FrameHeaderCore) -> Result<FrameSegmentIdMap> {
+    let (mi_rows, mi_cols) = segment_id_map_dimensions(core)?;
+    FrameSegmentIdMap::new(mi_rows, mi_cols)
+        .map_err(|_| DecodeHeaderStateError::MissingSegmentIdMap.into())
+}
+
+fn segment_id_map_dimensions(core: &FrameHeaderCore) -> Result<(usize, usize)> {
     let size = core
         .frame_size
         .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
@@ -292,8 +306,7 @@ fn empty_segment_id_map(core: &FrameHeaderCore) -> Result<FrameSegmentIdMap> {
     };
     let mi_rows = mi_dimension(size.height)?;
     let mi_cols = mi_dimension(size.width)?;
-    FrameSegmentIdMap::new(mi_rows, mi_cols)
-        .map_err(|_| DecodeHeaderStateError::MissingSegmentIdMap.into())
+    Ok((mi_rows, mi_cols))
 }
 
 fn frame_cdf_load(
@@ -376,6 +389,64 @@ fn resolve_initial_frame_cdfs(
     }
 }
 
+fn resolve_initial_frame_cdfs_reusing(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<impl ReconSample>,
+    candidate: &DecodePlannedObu,
+    offset: ByteOffset,
+    storage: &mut Option<Arc<FrameCdfSubset>>,
+) -> Result<Arc<FrameCdfSubset>> {
+    let cdf_load = frame_cdf_load(core, sequence, reference);
+    let primary = match cdf_load {
+        ResolvedCdfLoad::OutOfRangePrimary {
+            index,
+            reference_count,
+        } => {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    offset,
+                    candidate
+                        .ivf_frame()
+                        .map(DecodeIvfFrameContext::frame_index),
+                    SPEC_HEADER_SEMANTICS,
+                    format!(
+                        "primary reference index {index} is outside the active \
+                         {reference_count}-entry map"
+                    ),
+                ),
+            });
+        }
+        ResolvedCdfLoad::Default => None,
+        ResolvedCdfLoad::LoadSlot { primary, .. } => Some(reference.cdfs_for_slot(primary)?),
+    };
+    if storage.is_none() {
+        *storage = Some(Arc::new(FrameCdfSubset::from_defaults()));
+    }
+    let output = storage
+        .as_mut()
+        .and_then(Arc::get_mut)
+        .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+    if let Some(primary) = primary.as_deref() {
+        output.reset_from(primary);
+    } else {
+        output.reset_to_defaults();
+        output.replicate_coeff_q_context_for_base_q(
+            core.quantization_params.map_or(0, |q| q.base_q_idx),
+        );
+    }
+    if let ResolvedCdfLoad::LoadSlot {
+        blend: Some(blend), ..
+    } = cdf_load
+    {
+        output.blend_from_saved(reference.cdfs_for_slot(blend)?.as_ref());
+    }
+    storage
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
+}
+
 /// Exact pending entropy products one frame's tile parse may consume.
 pub(crate) struct EntropyDependencies {
     cdfs: Vec<FrameCdfHandle>,
@@ -384,14 +455,17 @@ pub(crate) struct EntropyDependencies {
 }
 
 impl EntropyDependencies {
-    /// Admission conditions for every selected CDF and CCSO source.
-    pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'_>> {
+    pub(crate) fn condition_iter(&self) -> impl Iterator<Item = splot_parallel::Condition<'_>> {
         self.cdfs
             .iter()
             .map(FrameCdfHandle::condition)
             .chain(self.ccso_grids.iter().map(CcsoGridHandle::condition))
             .chain(self.segment_ids.iter().map(SegmentIdMapHandle::condition))
-            .collect()
+    }
+
+    /// Admission conditions for every selected CDF and CCSO source.
+    pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'_>> {
+        self.condition_iter().collect()
     }
 }
 
@@ -399,7 +473,7 @@ impl EntropyDependencies {
 pub(crate) struct TipOutputDependencies<T: ReconSample> {
     samples: Vec<RefFrameSlot<T>>,
     entropy: EntropyDependencies,
-    motion: Vec<MotionFieldHandle>,
+    motion: RefSlots<Option<MotionFieldHandle>>,
 }
 
 impl<T: ReconSample> TipOutputDependencies<T> {
@@ -408,7 +482,12 @@ impl<T: ReconSample> TipOutputDependencies<T> {
             .iter()
             .map(RefFrameSlot::settled_condition)
             .chain(self.entropy.conditions())
-            .chain(self.motion.iter().map(MotionFieldHandle::field_condition))
+            .chain(
+                self.motion
+                    .iter()
+                    .flatten()
+                    .map(MotionFieldHandle::field_condition),
+            )
             .collect()
     }
 }
@@ -569,7 +648,7 @@ pub(crate) fn tip_output_dependencies<T: ReconSample>(
                 .shared_slots(),
         };
     let entropy = entropy_dependencies(core, sequence, reference);
-    let motion = core.inter.as_ref().map_or_else(Vec::new, |inter| {
+    let motion = core.inter.as_ref().map_or_else(RefSlots::default, |inter| {
         reference.motion_dependencies(&inter.ref_frame_idx)
     });
     TipOutputDependencies {
@@ -1094,9 +1173,9 @@ pub(crate) type InterDecodeOutput<T> = (
     DecodedFrame<T>,
     FrameHeaderCore,
     Arc<FrameCdfSubset>,
-    Option<crate::filters::ccso::CcsoUnitGrid>,
+    Option<Arc<crate::filters::ccso::CcsoUnitGrid>>,
     TemporalMotionField,
-    FrameSegmentIdMap,
+    Arc<FrameSegmentIdMap>,
 );
 
 #[derive(Clone, Debug)]
@@ -1181,6 +1260,16 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
 }
 
 impl<T: ReconSample> InterReferenceState<T> {
+    pub(crate) fn retire_handles(&mut self) {
+        self.store.clear();
+        self.lr_frame_filter_taps = RefSlots::default();
+        self.ref_frame_cdfs = RefSlots::default();
+        self.ref_ccso_params = RefSlots::default();
+        self.ref_ccso_unit_grids = RefSlots::default();
+        self.ref_segment_ids = RefSlots::default();
+        self.ref_motion_fields = RefSlots::default();
+    }
+
     /// Builds a reference-free state over a minimal empty store.
     ///
     /// # Errors
@@ -1302,12 +1391,13 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
     }
 
     /// Returns the admission conditions for every named reference settling.
-    pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'a>> {
+    pub(crate) fn conditions(
+        &self,
+    ) -> impl Iterator<Item = splot_parallel::Condition<'a>> + use<'a, T> {
         self.slots
-            .iter()
+            .into_iter()
             .flatten()
-            .map(|slot| slot.settled_condition())
-            .collect()
+            .map(RefFrameSlot::settled_condition)
     }
 
     /// Shares the named slots so a scheduler can register their conditions
@@ -1345,23 +1435,30 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
 
 impl<T: ReconSample> InterReferenceState<T> {
     /// Shares each distinct motion-field product named by a reference map.
-    pub(crate) fn motion_dependencies(&self, ref_frame_idx: &[u32]) -> Vec<MotionFieldHandle> {
+    pub(crate) fn motion_dependencies(
+        &self,
+        ref_frame_idx: &[u32],
+    ) -> RefSlots<Option<MotionFieldHandle>> {
         let mut seen = 0u16;
-        ref_frame_idx
-            .iter()
-            .filter_map(|&slot| {
-                let index = usize::try_from(slot).ok()?;
-                let dependency = self.ref_motion_fields.get(index)?;
-                let slot = ReferenceSlot::new(index).ok()?;
-                let bit = 1u16.checked_shl(u32::try_from(slot.index()).ok()?)?;
-                if seen & bit != 0 {
-                    return None;
-                }
-                seen |= bit;
-                dependency.as_ref()
-            })
-            .cloned()
-            .collect()
+        let mut dependencies = RefSlots::default();
+        dependencies.extend_within(
+            ref_frame_idx
+                .iter()
+                .filter_map(|&slot| {
+                    let index = usize::try_from(slot).ok()?;
+                    let dependency = self.ref_motion_fields.get(index)?;
+                    let slot = ReferenceSlot::new(index).ok()?;
+                    let bit = 1u16.checked_shl(u32::try_from(slot.index()).ok()?)?;
+                    if seen & bit != 0 {
+                        return None;
+                    }
+                    seen |= bit;
+                    dependency.as_ref()
+                })
+                .cloned()
+                .map(Some),
+        );
+        dependencies
     }
 
     /// Gates on the stored frames the named reference slots resolve to.
@@ -2125,17 +2222,18 @@ mod single_ref;
 
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
-    InterFrameParse, ScheduledFrameProgress, ScheduledTileRecon, decode_inter_blocks,
-    parse_inter_frame_blocks,
+    InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,
+    ScheduledFrameProgress, ScheduledTileRecon, ScheduledTileWorkspace, decode_inter_blocks,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
-    FixedStack, MotionFieldLayout, TemporalMotionField, TemporalMvScratch,
+    FixedStack, MotionFieldLayout, TemporalMotionField, TemporalMvContext,
 };
-pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
+pub(crate) use frame_products::{
+    CcsoGridHandle, FrameCdfHandle, FrameProductWriters, FrameProducts, SegmentIdMapHandle,
+};
 pub(crate) use frame_walk::{
-    DeferredInterWalk, FrameDecodeGeometry, InterWalkEarly, parse_inter_frame_prologue,
-    splittable_inter_frame,
+    DeferredInterWalk, FrameDecodeGeometry, InterFrameStart, InterWalkEarly, splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;
 

@@ -172,7 +172,7 @@ fn boundary_outcome(
         tile_num: unit.tile_num(),
         tile_row: unit.tile_row(),
         tile_col: unit.tile_col(),
-        tile_bytes_len: unit.tile_bytes().len(),
+        tile_bytes_len: unit.payload_range().len(),
         tile_size: unit.tile_size(),
         symbol_consumed_bits: unit.symbol().consumed_bits(),
         symbol_max_bits: unit.symbol().symbol_max_bits(),

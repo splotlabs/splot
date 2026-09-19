@@ -61,6 +61,7 @@ fn zero_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
         quant_range: 0..0,
+        zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,

@@ -285,8 +285,15 @@ fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
             source[stripe_start * width..stripe_end * width].to_vec(),
         )
         .unwrap();
-        let prepared =
-            prepare_ccso_plane(plane, &params, &grid, BitDepth::Eight, (sub_x, sub_y)).unwrap();
+        let prepared = prepare_ccso_plane(
+            plane,
+            &params,
+            &grid,
+            BitDepth::Eight,
+            (sub_x, sub_y),
+            Vec::new(),
+        )
+        .unwrap();
 
         ccso_apply(
             &mut expected,
@@ -322,9 +329,25 @@ fn ccso_offset_lut_rejects_out_of_range_offset_index() {
     let mut params = edge_plane(0, false, 2, 36);
     params.ccso_offset_idx[7] = 8;
     assert!(matches!(
-        ccso_offset_lut(&params, 36),
+        ccso_offset_lut(&params, 36, Vec::new()),
         Err(CcsoError::Params)
     ));
+}
+
+#[test]
+fn ccso_offset_lut_reuses_small_then_large_then_small_backing() {
+    let large_params = edge_plane(0, false, 2, 36);
+    let lut = vec![99];
+    let large = ccso_offset_lut(&large_params, 36, lut).unwrap();
+    assert_eq!(large.len(), 36);
+    let capacity = large.capacity();
+    assert!(capacity >= 36);
+
+    let small_params = edge_plane(0, true, 0, 1);
+    let small = ccso_offset_lut(&small_params, 1, large).unwrap();
+    assert_eq!(small.len(), 1);
+    assert_ne!(small[0], 99);
+    assert_eq!(small.capacity(), capacity);
 }
 
 #[test]
@@ -495,7 +518,8 @@ fn tiled_luma_ccso(
     .unwrap();
     let pre: Vec<u16> = (0..lw * lh).map(|i| ((i * 37 + 11) % 251) as u16).collect();
     let mut destination = StripePlane::from_samples(lw, lh, 0, pre.clone()).unwrap();
-    let prepared = prepare_ccso_plane(0, params, &grid, BitDepth::Eight, (0, 0)).unwrap();
+    let prepared =
+        prepare_ccso_plane(0, params, &grid, BitDepth::Eight, (0, 0), Vec::new()).unwrap();
     ccso_apply(
         &mut destination,
         FramePlane::window(&curr_luma, lw, lh, 0, lh).unwrap(),

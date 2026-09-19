@@ -10,6 +10,13 @@ mod tests {
     use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
     use splot_parallel::ThreadCount;
 
+    #[test]
+    fn parser_continuations_are_send_at_both_sample_depths() {
+        fn requires_send<T: Send>() {}
+        requires_send::<crate::prediction::inter::frame_walk::PendingInterWalk<'static, u8>>();
+        requires_send::<crate::prediction::inter::frame_walk::PendingInterWalk<'static, u16>>();
+    }
+
     const MULTIROW_FIXTURE: &[u8] = include_bytes!(
         "../../../../../../../tests/conformance/vectors/valid/\
          syn-2frame-multirow-inter-64x256-10bit-q100.ivf"

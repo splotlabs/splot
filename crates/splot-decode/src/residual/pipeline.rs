@@ -30,7 +30,9 @@ use plane_execution::{
     CctxRole, ParsedResidualPlane, ParsedResidualPlaneKind, ParsedTransformUnit,
     chroma_angle_delta_uv,
 };
-pub(crate) use plane_execution::{ParsedGeneralIntraResidual, ResidualPlaneArena};
+pub(crate) use plane_execution::{
+    ParsedGeneralIntraResidual, ResidualPlaneArena, ResidualPlaneSpan,
+};
 #[cfg(test)]
 use splot_core::tables::conversion::TX_WIDTH_LOG2;
 #[cfg(test)]

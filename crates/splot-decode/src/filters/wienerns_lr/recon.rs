@@ -29,14 +29,16 @@ const MI_SIZE: usize = 4;
 /// [`FrameProgress`]: crate::pipeline::frame_progress::FrameProgress
 struct FilteredFrameSink<'a, 'job, T: ReconSample> {
     progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-    admit: Option<&'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>>,
+    admit: Option<
+        &'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
+    >,
 }
 
 impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
     fn open(
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
         admit: Option<
-            &'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
+            &'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
         >,
         info: splot_recon::DecodedFrameInfo,
         ranges: &[(usize, usize)],
@@ -120,7 +122,7 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     luma_height: usize,
     filter_records: super::FrameFilterRecords,
     cdef_grid: Option<crate::filters::cdef::CdefUnitGrid>,
-    ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    ccso_grid: Option<std::sync::Arc<crate::filters::ccso::CcsoUnitGrid>>,
     gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
     tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
     gdf_reference: Option<crate::filters::gdf::GdfReferenceContext>,
@@ -148,7 +150,7 @@ pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
     cdef_grid: Option<crate::filters::cdef::CdefUnitGrid>,
     cdef_skip_grid: Option<crate::filters::cdef::CdefSkipGrid>,
     cdef_strengths: Option<Vec<crate::filters::cdef::CdefFrameParams>>,
-    ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    ccso_grid: Option<std::sync::Arc<crate::filters::ccso::CcsoUnitGrid>>,
     ccso_config: Option<crate::filters::ccso::CcsoFrameConfig>,
     gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
     tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
@@ -168,6 +170,8 @@ pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
     deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
 }
 
+pub(crate) type OwnedFilterShell<T> = Arc<Option<OwnedFilterSetup<'static, 'static, T>>>;
+
 /// One completed stripe whose index and samples move together into publication.
 pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
     stripe: usize,
@@ -177,14 +181,14 @@ pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
 
 /// One scheduled stripe with its deblocked read lease.
 pub(crate) struct OwnedFilterJob<T: ReconSample> {
-    setup: Arc<OwnedFilterSetup<'static, 'static, T>>,
+    setup: OwnedFilterShell<T>,
     stripe: usize,
     source: crate::filters::source::DeblockedReadLease<T>,
 }
 
 /// The sole setup owner after every scheduled stripe has settled.
 pub(crate) struct OwnedFilterFinish<T: ReconSample> {
-    setup: Arc<OwnedFilterSetup<'static, 'static, T>>,
+    setup: OwnedFilterShell<T>,
 }
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -322,7 +326,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.cdef_grid = grid;
     }
 
-    pub(crate) fn set_ccso_grid(&mut self, grid: Option<crate::filters::ccso::CcsoUnitGrid>) {
+    pub(crate) fn set_ccso_grid(
+        &mut self,
+        grid: Option<std::sync::Arc<crate::filters::ccso::CcsoUnitGrid>>,
+    ) {
         self.ccso_grid = grid;
     }
 
@@ -361,7 +368,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         disable_loopfilters_across_tiles: bool,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
         admit: Option<
-            &'progress dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask>,
+            &'progress dyn splot_parallel::Admit<
+                'job,
+                crate::pipeline::frame_pipeline::FrameTask<'job>,
+            >,
         >,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
@@ -399,7 +409,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
         let cdef_skip_grid = self.cdef_skip_grid(&core, mi_rows, mi_cols)?;
-        let cdef_strengths = crate::filters::cdef::cdef_frame_strengths(&core);
+        let cdef_strengths = crate::filters::cdef::cdef_frame_strengths(
+            &core,
+            &mut self.filter_records.cdef_strengths,
+        )
+        .map(|()| core::mem::take(&mut self.filter_records.cdef_strengths));
         let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
         let (lr_source_blocks, lr_plane_ends) =
@@ -418,7 +432,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .ccso_grid
             .as_ref()
             .map(|grid| {
-                crate::filters::ccso::prepare_ccso(&core, grid, self.bit_depth, subsampling)
+                crate::filters::ccso::prepare_ccso(
+                    &core,
+                    grid,
+                    self.bit_depth,
+                    subsampling,
+                    &mut self.filter_records.ccso_offset_luts,
+                )
             })
             .transpose()
             .map_err(|error| ccso_filter_error(&error))?;
@@ -484,13 +504,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn into_filtered_frame<R>(
+    pub(crate) fn into_filtered_frame<'job, R>(
         self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<&dyn splot_parallel::Admit<'_, crate::pipeline::frame_pipeline::FrameTask>>,
+        admit: Option<
+            &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
+        >,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
         let (mut setup, workspace) =
@@ -660,6 +682,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         &mut self,
     ) -> crate::filters::deblock::OwnedDeblockRecords {
         crate::filters::deblock::OwnedDeblockRecords {
+            grids: core::mem::take(&mut self.filter_records.deblock_grids),
             blocks: core::mem::take(&mut self.filter_records.deblock_blocks),
             chroma: core::mem::take(&mut self.filter_records.chroma_deblock_blocks),
         }
@@ -673,7 +696,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             luma_height: self.luma_height,
             pixel_format: self.pixel_format,
             cdef_grid: self.cdef_grid.as_ref(),
-            ccso_grid: self.ccso_grid.as_ref(),
+            ccso_grid: self.ccso_grid.as_deref(),
             gdf_grid: self.gdf_grid.as_ref(),
             tx_skip_grid: self.tx_skip_grid.as_ref(),
             gdf_reference: self.gdf_reference,
@@ -1061,8 +1084,21 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             return Err(lr_pipeline_state_error());
         }
         if let Some(records) = self.deblock_records.into_inner() {
+            self.filter_records.deblock_grids = records.grids;
             self.filter_records.deblock_blocks = records.blocks;
             self.filter_records.chroma_deblock_blocks = records.chroma;
+        }
+        if let Some(grid) = self.cdef_grid.take() {
+            self.filter_records.cdef_grid_values = grid.into_values();
+        }
+        if let Some(strengths) = self.cdef_strengths.take() {
+            self.filter_records.cdef_strengths = strengths;
+        }
+        if let Some(grid) = self.tx_skip_grid.take() {
+            self.filter_records.tx_skip_grid_values = grid.into_values();
+        }
+        if let Some(config) = self.ccso_config.take() {
+            config.return_offset_luts(&mut self.filter_records.ccso_offset_luts);
         }
         let frame = self.sink.freeze(publish)?;
         Ok((frame, self.filter_records))
@@ -1077,8 +1113,13 @@ impl<T: ReconSample> OwnedFilterJob<T> {
 
     /// Claims and runs one stripe, then publishes it exactly once.
     pub(crate) fn run(self) -> Result<()> {
-        let filtered = self.setup.run_borrowed_lease(self.stripe, &self.source)?;
-        self.setup.publish(filtered)
+        let setup = self
+            .setup
+            .as_ref()
+            .as_ref()
+            .ok_or_else(lr_pipeline_state_error)?;
+        let filtered = setup.run_borrowed_lease(self.stripe, &self.source)?;
+        setup.publish(filtered)
     }
 }
 
@@ -1087,28 +1128,32 @@ impl<T: ReconSample> OwnedFilterFinish<T> {
     pub(crate) fn finish<R>(
         self,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
-    ) -> Result<(R, super::FrameFilterRecords)> {
-        let setup = Arc::try_unwrap(self.setup).map_err(|_| lr_pipeline_state_error())?;
-        setup.finish(publish)
+    ) -> (Result<(R, super::FrameFilterRecords)>, OwnedFilterShell<T>) {
+        let mut setup = self.setup;
+        let result = Arc::get_mut(&mut setup)
+            .ok_or_else(lr_pipeline_state_error)
+            .and_then(|setup| setup.take().ok_or_else(lr_pipeline_state_error))
+            .and_then(|setup| setup.finish(publish));
+        (result, setup)
     }
 }
 
 impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
     pub(crate) fn source_job(
-        self: &Arc<Self>,
+        setup: &OwnedFilterShell<T>,
         stripe: usize,
         source: crate::filters::source::DeblockedReadLease<T>,
     ) -> OwnedFilterJob<T> {
         OwnedFilterJob {
-            setup: Arc::clone(self),
+            setup: Arc::clone(setup),
             stripe,
             source,
         }
     }
 
     /// Transfers terminal ownership to the exactly-once freeze job.
-    pub(crate) fn owned_finish(self: Arc<Self>) -> OwnedFilterFinish<T> {
-        OwnedFilterFinish { setup: self }
+    pub(crate) fn owned_finish(setup: OwnedFilterShell<T>) -> OwnedFilterFinish<T> {
+        OwnedFilterFinish { setup }
     }
 }
 
@@ -1225,7 +1270,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             luma_height: self.luma_height,
             pixel_format: self.info.pixel_format(),
             cdef_grid: self.cdef_grid.as_ref(),
-            ccso_grid: self.ccso_grid.as_ref(),
+            ccso_grid: self.ccso_grid.as_deref(),
             gdf_grid: self.gdf_grid.as_ref(),
             tx_skip_grid: self.tx_skip_grid.as_ref(),
             gdf_reference: self.gdf_reference,
@@ -1281,10 +1326,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if self.tx_skip_grid.is_some() {
             return Ok(());
         }
-        let grid = super::derive_wienerns_lr_tx_skip_grid_retention(
+        let grid = super::derive_wienerns_lr_tx_skip_grid_reusing(
             mi_rows,
             mi_cols,
             &self.filter_records.tx_skip_records,
+            core::mem::take(&mut self.filter_records.tx_skip_grid_values),
         )
         .map_err(|_| lr_pipeline_state_error())?;
         self.tx_skip_grid = Some(grid);

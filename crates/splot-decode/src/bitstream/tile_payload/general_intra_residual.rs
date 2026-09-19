@@ -452,6 +452,7 @@ pub(crate) struct IntraIstSyntax {
 pub(crate) struct LumaCoeffBlock {
     pub(crate) eob: usize,
     pub(crate) quant_range: core::ops::Range<usize>,
+    pub(crate) zero_tail: usize,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
     pub(crate) cctx_type: Option<usize>,
     pub(crate) plane_tx_type: usize,
@@ -465,6 +466,7 @@ impl LumaCoeffBlock {
         Self {
             eob: 0,
             quant_range: 0..0,
+            zero_tail: 0,
             intra_ist: None,
             cctx_type: None,
             plane_tx_type,
@@ -476,8 +478,13 @@ impl LumaCoeffBlock {
     /// Appends `coeffs` to `arena` and records the span they landed in.
     fn with_coeffs(mut self, arena: &mut Vec<i32>, coeffs: &[i32]) -> Self {
         let start = arena.len();
-        arena.extend_from_slice(coeffs);
+        let prefix = coeffs
+            .iter()
+            .rposition(|&value| value != 0)
+            .map_or(0, |index| index + 1);
+        arena.extend_from_slice(&coeffs[..prefix]);
         self.quant_range = start..arena.len();
+        self.zero_tail = coeffs.len() - prefix;
         self
     }
 }
@@ -509,6 +516,28 @@ impl<'a> CoeffBlock<'a> {
             .get(block.quant_range.clone())
             .ok_or(GeneralIntraResidualError::CoeffSpanOutOfRange)?;
         Ok(Self { block, quant })
+    }
+    fn is_dense(self) -> bool {
+        self.quant.len() == self.quant_range.len().saturating_add(self.zero_tail)
+    }
+
+    fn with_dense<R>(
+        self,
+        reconstruct: impl FnOnce(CoeffBlock<'_>) -> Result<R, GeneralIntraResidualError>,
+    ) -> Result<R, GeneralIntraResidualError> {
+        let len = self.quant_range.len().saturating_add(self.zero_tail);
+        if len > MAX_ADJUSTED_COEFFS || self.quant.len() > len {
+            return Err(GeneralIntraResidualError::QuantLength {
+                expected: MAX_ADJUSTED_COEFFS,
+                actual: len.max(self.quant.len()),
+            });
+        }
+        let mut quant = [0; MAX_ADJUSTED_COEFFS];
+        quant[..self.quant.len()].copy_from_slice(self.quant);
+        reconstruct(CoeffBlock {
+            block: self.block,
+            quant: &quant[..len],
+        })
     }
 }
 
@@ -605,7 +634,7 @@ fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub(crate) fn decode_general_intra_luma_partition_coeffs(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
@@ -973,7 +1002,7 @@ fn block_size_table_usize(
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub(crate) fn decode_general_intra_plane_coeffs(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
@@ -1108,7 +1137,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_staged_transform_tool_nonzero_coeffs(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
@@ -1220,6 +1249,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     Ok(LumaCoeffBlock {
         eob,
         quant_range: 0..0,
+        zero_tail: 0,
         intra_ist: metadata.intra_ist,
         cctx_type: metadata.cctx_type,
         plane_tx_type,

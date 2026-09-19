@@ -8,19 +8,26 @@
 //!
 //! Feature tracking: `INFRA-DECODE-FRAME-PIPELINING`.
 
-use super::{PipelineFrame, unsupported};
+use super::PipelineFrame;
 use crate::Result;
+use crate::prediction::inter::{
+    FrameProductWriters, FrameProducts, MotionFieldHandle, MotionFieldLayout,
+};
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 
 pub(crate) struct FrameEntry {
     pub(super) index: usize,
     pub(super) frame: Option<PipelineFrame>,
+    motion: Option<MotionFieldHandle>,
+    products: Option<FrameProducts>,
+    pub(super) retired: Option<super::inflight::PipelineFrameSlot>,
 }
 
 pub(crate) struct FrameStore {
     pub(super) entries: Vec<FrameEntry>,
     count: usize,
     retain: bool,
+    reserved: Option<usize>,
 }
 
 impl FrameStore {
@@ -35,10 +42,14 @@ impl FrameStore {
                 .map(|_| FrameEntry {
                     index: 0,
                     frame: None,
+                    motion: None,
+                    products: None,
+                    retired: None,
                 })
                 .collect(),
             count: 0,
             retain,
+            reserved: None,
         }
     }
 
@@ -46,8 +57,57 @@ impl FrameStore {
         self.count
     }
 
-    pub(super) fn has_space(&self) -> bool {
-        self.retain || self.entries.iter().any(|entry| entry.frame.is_none())
+    pub(super) fn has_space(&mut self) -> bool {
+        self.reserved.is_some() || self.retain || self.entries.iter_mut().any(FrameEntry::available)
+    }
+
+    pub(super) fn reserve(&mut self) -> Result<usize> {
+        if let Some(index) = self.reserved {
+            return Ok(index);
+        }
+        let index = if self.retain {
+            self.entries.push(FrameEntry {
+                index: self.count,
+                frame: None,
+                motion: None,
+                products: None,
+                retired: None,
+            });
+            self.entries.len() - 1
+        } else {
+            self.entries
+                .iter_mut()
+                .position(FrameEntry::available)
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?
+        };
+        self.reserved = Some(index);
+        Ok(index)
+    }
+
+    pub(super) fn take_retired(&mut self) -> Result<Option<super::inflight::PipelineFrameSlot>> {
+        let index = self.reserve()?;
+        Ok(self.entries[index].retired.take())
+    }
+
+    pub(super) fn reserve_motion(
+        &mut self,
+        layout: MotionFieldLayout,
+    ) -> Result<MotionFieldHandle> {
+        let index = self.reserve()?;
+        let motion = self.entries[index]
+            .motion
+            .get_or_insert_with(|| MotionFieldHandle::pending_with_layout(layout));
+        motion.reset_layout(layout)?;
+        Ok(motion.clone())
+    }
+
+    pub(super) fn reserve_products(&mut self) -> Result<FrameProductWriters> {
+        let index = self.reserve()?;
+        self.entries[index]
+            .products
+            .get_or_insert_default()
+            .claim()
+            .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
     }
 
     pub(crate) fn get(&self, index: usize) -> Option<&PipelineFrame> {
@@ -77,26 +137,11 @@ impl FrameStore {
     }
 
     pub(super) fn push(&mut self, frame: PipelineFrame) -> Result<()> {
-        let entry = FrameEntry {
-            index: self.count,
-            frame: Some(frame),
-        };
-        if self.retain {
-            self.entries.push(entry);
-        } else {
-            let free = self
-                .entries
-                .iter_mut()
-                .find(|entry| entry.frame.is_none())
-                .ok_or_else(|| {
-                    unsupported(
-                        "frame_slot_unavailable",
-                        None,
-                        "decode pipeline admitted a frame without a free metadata slot",
-                    )
-                })?;
-            *free = entry;
-        }
+        let index = self.reserve()?;
+        let entry = &mut self.entries[index];
+        entry.index = self.count;
+        entry.frame = Some(frame);
+        self.reserved = None;
         self.count += 1;
         Ok(())
     }
@@ -110,9 +155,31 @@ impl From<Vec<Option<PipelineFrame>>> for FrameStore {
             entries: frames
                 .into_iter()
                 .enumerate()
-                .map(|(index, frame)| FrameEntry { index, frame })
+                .map(|(index, frame)| FrameEntry {
+                    index,
+                    frame,
+                    motion: None,
+                    products: None,
+                    retired: None,
+                })
                 .collect(),
             retain: true,
+            reserved: None,
         }
+    }
+}
+
+impl FrameEntry {
+    fn available(&mut self) -> bool {
+        self.frame.is_none()
+            && self
+                .retired
+                .as_ref()
+                .is_none_or(super::inflight::PipelineFrameSlot::can_reuse)
+            && self
+                .motion
+                .as_mut()
+                .is_none_or(MotionFieldHandle::try_retire)
+            && self.products.as_ref().is_none_or(FrameProducts::can_reuse)
     }
 }

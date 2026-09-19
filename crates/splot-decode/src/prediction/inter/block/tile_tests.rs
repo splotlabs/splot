@@ -58,6 +58,7 @@ fn tile_symbol_exit_accepts_writer_output_and_reports_eof_as_malformed() {
 fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
     let offset = ByteOffset::new(43);
     let row = ReconRow {
+        residual_source: None,
         ordinal: 0,
         residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
@@ -65,6 +66,7 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
         motion_grids: Vec::new(),
+        motion_storage: None,
         flag_log: Vec::new(),
         filter_records: TileFilterRecords::default(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
@@ -163,7 +165,7 @@ fn recon_entries_keep_contiguous_superblock_order() {
 fn reconstruction_pools_reuse_owned_storage() {
     let rows = {
         let mut pool = ReconRowBufferPool::default();
-        pool.reset(0, None);
+        pool.reset(0);
         pool
     };
     let mut buffers = ReconRowBuffers::default();
@@ -174,10 +176,14 @@ fn reconstruction_pools_reuse_owned_storage() {
     assert_eq!(reused.temporal.capacity(), 8);
     assert!(core::ptr::eq(reused.temporal.as_ptr(), pointer));
 
-    let mut workers = InterReconScratchPool::<u8>::default();
+    let workers = InterReconScratchPool::<u8>::default();
     workers.ensure_workers(1);
-    let first = workers.with_scratch(core::ptr::from_mut);
-    let second = workers.with_scratch(core::ptr::from_mut);
+    let first = workers
+        .with_scratch(core::ptr::from_mut)
+        .expect("available scratch");
+    let second = workers
+        .with_scratch(core::ptr::from_mut)
+        .expect("available scratch");
     assert_eq!(first, second);
 }
 
@@ -285,31 +291,271 @@ fn corrupted_multi_tile_payload_has_the_same_error_across_worker_widths() {
 }
 
 #[test]
-fn concurrent_decodes_do_not_take_each_other_s_row_buffers() {
+fn frame_slots_retain_their_row_payloads_across_reset() {
     use crate::support::decode_buffers::DecodeBuffers;
 
-    let decoding = DecodeBuffers::new();
-    let other_decode = DecodeBuffers::new();
-    let mut spent = super::ReconRowBuffers::default();
-    spent.residual_coeffs.reserve(4096);
-    let retained = spent.residual_coeffs.capacity();
-    decoding.retain_rows(spent);
+    let mut decoding = super::ParseProgress::default();
+    let other_decode = super::ParseProgress::default();
+    let mut retained = Vec::new();
+    for capacity in [4096, 8192] {
+        let mut spent = super::ReconRowBuffers::default();
+        spent.residual_coeffs.reserve(capacity);
+        retained.push(spent.residual_coeffs.as_ptr());
+        decoding.row_buffers.get_mut().push(Some(spent));
+    }
+    for _ in 0..128 {
+        decoding.reset(&DecodeBuffers::new());
+        assert!(other_decode.take_row_buffers(0).is_err());
+        assert!(decoding.take_row_buffers(2).is_err());
+        assert!(
+            decoding
+                .return_row_buffers(0, super::ReconRowBuffers::default())
+                .is_err()
+        );
+        for index in [1, 0] {
+            let payload = decoding.take_row_buffers(index).expect("retained row slot");
+            assert_eq!(payload.residual_coeffs.as_ptr(), retained[index]);
+            assert!(decoding.take_row_buffers(index).is_err());
+            decoding
+                .return_row_buffers(index, payload)
+                .expect("vacant row slot");
+        }
+    }
+}
 
+#[test]
+fn frame_geometry_waits_for_readers_then_reuses_hidden_backing() {
+    use crate::support::decode_buffers::DecodeBuffers;
+
+    let buffers = DecodeBuffers::new();
+    let mut progress = super::ParseProgress::default();
+    assert!(progress.reset(&buffers));
+    progress
+        .publish_geometry(
+            super::tile::TileGeometry {
+                tile_offset: ByteOffset::new(3),
+                mi_rows: 0..2,
+                mi_cols: 0..3,
+                unit_count: 2,
+            },
+            0,
+        )
+        .expect("first geometry publication");
+    let held = progress.geometry().expect("published geometry");
+    let identity = Arc::as_ptr(&held);
+    assert!(!progress.reset(&buffers));
     assert_eq!(
-        other_decode.take_rows().residual_coeffs.capacity(),
-        0,
-        "a second decode must not be served from the first one's row buffers"
+        progress
+            .geometry()
+            .expect("held geometry remains visible")
+            .tile_offset,
+        ByteOffset::new(3)
     );
-    assert_eq!(
-        decoding.take_rows().residual_coeffs.capacity(),
-        retained,
-        "and the first decode still has its own"
-    );
+    drop(held);
+
+    assert!(progress.reset(&buffers));
+    assert!(progress.geometry().is_none());
+    progress
+        .publish_geometry(
+            super::tile::TileGeometry {
+                tile_offset: ByteOffset::new(9),
+                mi_rows: 1..5,
+                mi_cols: 2..7,
+                unit_count: 4,
+            },
+            0,
+        )
+        .expect("reused geometry publication");
+    let reused = progress.geometry().expect("republished geometry");
+    assert_eq!(Arc::as_ptr(&reused), identity);
+    assert_eq!(reused.tile_offset, ByteOffset::new(9));
+    assert_eq!(reused.unit_count, 4);
 }
 
 #[test]
 fn a_tile_row_pool_without_a_decode_still_hands_out_buffers() {
     let mut pool = super::ReconRowBufferPool::default();
-    pool.reset(2, None);
+    pool.reset(2);
     assert_eq!(pool.take().residual_coeffs.capacity(), 0);
+}
+
+#[cfg(test)]
+#[test]
+fn reconstruction_scratch_is_bounded_while_all_workers_hold_it() {
+    let workers = InterReconScratchPool::<u16>::default();
+    workers.ensure_workers(12);
+    let barrier = std::sync::Barrier::new(13);
+    std::thread::scope(|scope| {
+        let mut joins = Vec::new();
+        for _ in 0..12 {
+            let workers = &workers;
+            let barrier = &barrier;
+            joins.push(scope.spawn(move || {
+                workers.with_scratch(|_| {
+                    barrier.wait();
+                    barrier.wait();
+                })
+            }));
+        }
+        barrier.wait();
+        workers.ensure_workers(12);
+        let allocated = workers.available.lock().0;
+        let exhausted = workers.with_scratch(|_| ()).is_err();
+        barrier.wait();
+        for join in joins {
+            join.join().expect("worker").expect("scratch");
+        }
+        assert_eq!(allocated, 12);
+        assert!(exhausted);
+    });
+    let pool = workers.available.lock();
+    assert_eq!(pool.0, 12);
+    assert_eq!(pool.1.len(), 12);
+}
+
+#[test]
+fn superblock_coefficients_reserve_plane_coverage_once() {
+    for (chroma, samples) in [
+        (ChromaFormatIdc::Monochrome, 4096),
+        (ChromaFormatIdc::Yuv420, 6144),
+        (ChromaFormatIdc::Yuv422, 8192),
+        (ChromaFormatIdc::Yuv444, 12288),
+    ] {
+        let capacity = superblock_coefficient_capacity(16, chroma).expect("coefficient bound");
+        assert_eq!(capacity, samples);
+        let mut row = ReconRowBuffers::default();
+        row.reserve_coefficients(capacity)
+            .expect("reserve coefficients");
+        let storage = row.residual_coeffs.as_ptr();
+        for cycle in 0..1200 {
+            row.residual_coeffs.clear();
+            row.reserve_coefficients(capacity)
+                .expect("reuse coefficients");
+            row.residual_coeffs
+                .resize(if cycle % 2 == 0 { samples } else { 16 }, 1);
+            assert_eq!(row.residual_coeffs.as_ptr(), storage);
+        }
+    }
+    assert!(superblock_coefficient_capacity(usize::MAX, ChromaFormatIdc::Yuv444).is_err());
+}
+
+#[cfg(test)]
+#[test]
+fn frame_coefficient_snapshots_release_the_lock_and_pin_retirement() {
+    let buffers = crate::support::decode_buffers::DecodeBuffers::default();
+    let mut progress = ParseProgress::default();
+    progress.residuals.lock().coefficients.reserve_exact(64);
+    let storage = progress.residuals.lock().coefficients.as_ptr();
+    let mut snapshot = Vec::new();
+    snapshot.reserve_exact(16);
+    let snapshot_storage = snapshot.as_ptr();
+    for cycle in 0..1200 {
+        assert!(progress.reset(&buffers));
+        progress
+            .residuals
+            .lock()
+            .coefficients
+            .extend_from_slice(&[1, cycle, 3, 4]);
+        let source = RowResiduals {
+            frame: Arc::clone(&progress.residuals),
+            planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
+            range: 1..4,
+            capacity: 16,
+        };
+        source.copy_into(&mut snapshot).expect("snapshot");
+        assert_eq!(snapshot, [cycle, 3, 4]);
+        assert_eq!(snapshot.as_ptr(), snapshot_storage);
+        assert!(!progress.reset(&buffers));
+        source
+            .copy_into(&mut snapshot)
+            .expect("retained publication");
+        assert_eq!(snapshot, [cycle, 3, 4]);
+        assert!(progress.residuals.try_lock().is_some());
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    progress
+                        .residuals
+                        .lock()
+                        .coefficients
+                        .extend_from_slice(&[9; 16]);
+                })
+                .join()
+                .expect("concurrent append");
+        });
+        assert_eq!(snapshot, [cycle, 3, 4]);
+        assert_eq!(progress.residuals.lock().coefficients.as_ptr(), storage);
+        drop(source);
+    }
+    let source = RowResiduals {
+        frame: Arc::clone(&progress.residuals),
+        planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
+        range: 0..65,
+        capacity: 64,
+    };
+    assert!(source.copy_into(&mut snapshot).is_err());
+    let source = RowResiduals {
+        range: 0..4,
+        capacity: 3,
+        ..source
+    };
+    assert!(source.copy_into(&mut snapshot).is_err());
+    drop(source);
+    assert!(progress.reset(&buffers));
+}
+
+#[test]
+fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
+    let mut progress = ParseProgress::default();
+    let buffers = crate::support::decode_buffers::DecodeBuffers::default();
+    let mut records = TileFilterRecords::default();
+    records.deblock_blocks.reserve_exact(32);
+    records.chroma_deblock_blocks.reserve_records(32);
+    records.tx_skip_records.reserve_exact(32);
+    let storage = records.tx_skip_records.as_ptr();
+    for cycle in 0..1200 {
+        assert!(progress.reset(&buffers));
+        records.tx_skip_records.push(
+            crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord {
+                row: cycle,
+                col: 0,
+                rows: 1,
+                cols: 1,
+                skip_flag: false,
+                eob: 1,
+            },
+        );
+        let row = ReconRow {
+            residual_source: None,
+            ordinal: cycle,
+            residual_coeffs: Vec::new(),
+            superblocks: Vec::new(),
+            entries: Vec::new(),
+            residual_blocks: Vec::new(),
+            temporal: Vec::new(),
+            motion_grids: Vec::new(),
+            motion_storage: None,
+            flag_log: Vec::new(),
+            filter_records: records,
+            residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
+            motion_folded: false,
+            motion_derived: false,
+            failure: ReconRowFailure::None,
+        };
+        records = progress.publish_row(row);
+        assert!(records.tx_skip_records.is_empty());
+        assert_eq!(records.tx_skip_records.as_ptr(), storage);
+        assert!(records.deblock_blocks.capacity() >= 32);
+        assert!(records.chroma_deblock_blocks.capacity() >= 32);
+        let delayed_row = progress.take_row(0).expect("published row");
+        assert_eq!(delayed_row.filter_records.deblock_blocks.capacity(), 0);
+        assert_eq!(
+            delayed_row.filter_records.chroma_deblock_blocks.capacity(),
+            0
+        );
+        assert_eq!(delayed_row.filter_records.tx_skip_records.capacity(), 0);
+        let frame = progress.records.lock();
+        assert_eq!(frame.tx_skip_records.len(), 1);
+        assert_eq!(frame.tx_skip_records[0].row, cycle);
+    }
 }

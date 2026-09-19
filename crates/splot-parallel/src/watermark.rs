@@ -4,7 +4,6 @@
 //! A monotonic progress watermark with threshold admission.
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::BinaryHeap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
@@ -16,7 +15,7 @@ use crate::progress::PoolProgressBindings;
 #[derive(Debug)]
 struct ThresholdWaiter {
     threshold: usize,
-    waiter: Arc<Waiter>,
+    waiter: Waiter,
 }
 
 impl PartialEq for ThresholdWaiter {
@@ -78,34 +77,26 @@ impl WatermarkCell {
         self.value.load(Ordering::Acquire)
     }
 
-    /// Raises the watermark and fires newly satisfied waiters.
-    ///
-    /// Callbacks run after the waiter lock is released.
+    /// Raises the watermark and queues newly satisfied jobs.
     pub fn publish(&self, value: usize) -> usize {
         if self.value.fetch_max(value, Ordering::AcqRel) >= value {
             return self.current();
         }
         notify_bound_pool_progress(&self.progress);
-        let fired = {
-            let mut waiters = self.waiters.lock();
-            let mut fired = Vec::new();
-            while waiters
-                .peek()
-                .is_some_and(|Reverse(entry)| entry.threshold <= value)
-            {
-                if let Some(Reverse(entry)) = waiters.pop() {
-                    fired.push(entry.waiter);
-                }
+        let mut waiters = self.waiters.lock();
+        while waiters
+            .peek()
+            .is_some_and(|Reverse(entry)| entry.threshold <= value)
+        {
+            if let Some(Reverse(entry)) = waiters.pop() {
+                entry.waiter.satisfy();
             }
-            fired
-        };
-        for waiter in fired {
-            waiter.satisfy();
         }
+        drop(waiters);
         self.current()
     }
 
-    pub(crate) fn register(&self, threshold: usize, waiter: Arc<Waiter>) -> bool {
+    pub(crate) fn register(&self, threshold: usize, waiter: Waiter) -> bool {
         bind_installed_pool_progress(&self.progress);
         let mut waiters = self.waiters.lock();
         if self.value.load(Ordering::Acquire) >= threshold {
@@ -119,6 +110,7 @@ impl WatermarkCell {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    use std::sync::Arc;
 
     use super::*;
     use crate::{AdmissionScheduler, Condition, ThreadCount, WorkerPool, ready_task_scope};

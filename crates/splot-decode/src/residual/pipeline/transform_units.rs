@@ -58,7 +58,7 @@ impl ResidualReconstructionPlan {
 impl ResidualPlanePlan {
     pub(super) fn lossless_transform_unit_tx_size(
         self,
-        work_unit: &DecodeTileWorkUnit<'_>,
+        work_unit: &DecodeTileWorkUnit,
     ) -> Option<usize> {
         if work_unit
             .coeff_frame_facts()

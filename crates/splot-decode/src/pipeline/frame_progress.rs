@@ -381,6 +381,7 @@ pub(crate) struct FrameProgress<T: ReconSample> {
     buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
     workspace: RwLock<Option<DirectWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
+    spare_stripes: Mutex<Vec<StripeProgress>>,
     published_luma_rows: WatermarkCell,
     terminal_published: CompletionCell<()>,
     luma_height: usize,
@@ -420,11 +421,31 @@ impl<T: ReconSample> FrameProgress<T> {
             buffers,
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
+            spare_stripes: Mutex::new(Vec::new()),
             published_luma_rows: WatermarkCell::new(),
             terminal_published: CompletionCell::new(),
             luma_height: info.coded_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
         })
+    }
+
+    pub(crate) fn reset(
+        &mut self,
+        info: DecodedFrameInfo,
+        recycled: &mut splot_recon::FramePlaneSamples<T>,
+    ) -> Result<()> {
+        let workspace =
+            DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?);
+        if let Some(layout) = self.layout.take() {
+            *self.spare_stripes.get_mut() = layout.into_inner().stripes;
+        }
+        self.spare_stripes.get_mut().clear();
+        *self.workspace.get_mut() = Some(workspace);
+        self.published_luma_rows.reset();
+        self.terminal_published.reset();
+        self.luma_height = info.coded_luma_size().height();
+        self.subsampling_y = usize::from(info.pixel_format().subsampling_y());
+        Ok(())
     }
 
     #[cfg(test)]
@@ -465,7 +486,10 @@ impl<T: ReconSample> FrameProgress<T> {
             }
             next = end;
         }
-        let mut stripes = Vec::new();
+        if self.layout.get().is_some() {
+            return false;
+        }
+        let mut stripes = core::mem::take(&mut *self.spare_stripes.lock());
         if stripes.try_reserve_exact(ranges.len()).is_err() {
             return false;
         }

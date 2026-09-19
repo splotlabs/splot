@@ -580,6 +580,30 @@ mod tests {
     }
 
     #[test]
+    fn reference_reservation_inserts_into_the_claimed_physical_slot() {
+        let mut frames = FrameStore::new(false, 1);
+        let layout = MotionFieldLayout::new(4, 4, 16).unwrap();
+        assert_eq!(frames.reserve().unwrap(), 0);
+        assert_eq!(frames.reserve().unwrap(), 0);
+        let first = frames.reserve_motion(layout).unwrap();
+        assert!(frames.reserve_motion(layout).is_err());
+        let mut frame = settled_frame(8, FrameOutputEffects::empty()).unwrap();
+        frame.motion_field = first.clone();
+        frames.push(frame).unwrap();
+        drop(frames.take(0));
+        assert_eq!(frames.reserve().unwrap(), 1);
+        let second = frames.reserve_motion(layout).unwrap();
+        let mut frame = settled_frame(16, FrameOutputEffects::empty()).unwrap();
+        frame.motion_field = second;
+        frames.push(frame).unwrap();
+        assert!(frames.entries[0].frame.is_none());
+        assert_eq!(frames.entries[1].index, 1);
+        assert!(frames.entries[1].frame.is_some());
+        drop(first);
+        assert!(frames.has_space());
+    }
+
+    #[test]
     fn streaming_slots_reuse_storage_without_reusing_frame_identity_or_output_count() {
         let mut frames = FrameStore::new(false, 12);
         let slots = frames.entries.len();
@@ -597,6 +621,8 @@ mod tests {
             assert!(frames.take(retired).is_some());
             scheduler.forget(retired);
             let next = frames.len();
+            let reserved = frames.reserve().unwrap();
+            assert_eq!(frames.reserve().unwrap(), reserved);
             frames
                 .push(settled_frame(8, FrameOutputEffects::empty()).unwrap())
                 .unwrap();

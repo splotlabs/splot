@@ -72,10 +72,32 @@ fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Opti
 pub(crate) fn stripe_ranges(
     core: &FrameHeaderCore,
     luma_height: usize,
-) -> Result<Vec<(usize, usize)>> {
-    let mut ranges = Vec::new();
-    stripe_ranges_into(core, luma_height, &mut ranges)?;
-    Ok(ranges)
+) -> impl Iterator<Item = Result<(usize, usize)>> + '_ {
+    let mut next = Some(0);
+    std::iter::from_fn(move || {
+        let y = next.take()?;
+        let range = (|| {
+            if luma_height == 0 {
+                return Err(gdf_state_error());
+            }
+            let (tile_start, tile_end) = core
+                .tile_info
+                .as_ref()
+                .map_or(Ok((0, luma_height - 1)), |tile| {
+                    tile_axis_bounds(&tile.mi_row_starts, y, luma_height)
+                })?;
+            let tile_end = tile_end.checked_add(1).ok_or_else(gdf_state_error)?;
+            let end =
+                gdf_stripe_end_for_tile(y, tile_start, tile_end).ok_or_else(gdf_state_error)?;
+            Ok((y, end))
+        })();
+        if let Ok((_, end)) = range
+            && end < luma_height
+        {
+            next = Some(end);
+        }
+        Some(range)
+    })
 }
 
 /// Lays a frame's stripe ranges into a list a previous frame left behind.
@@ -85,21 +107,8 @@ pub(crate) fn stripe_ranges_into(
     ranges: &mut Vec<(usize, usize)>,
 ) -> Result<()> {
     ranges.clear();
-    if luma_height == 0 {
-        return Err(gdf_state_error());
-    }
-    let mut y = 0;
-    while y < luma_height {
-        let (tile_start, tile_end) = core
-            .tile_info
-            .as_ref()
-            .map_or(Ok((0, luma_height - 1)), |tile| {
-                tile_axis_bounds(&tile.mi_row_starts, y, luma_height)
-            })?;
-        let tile_end = tile_end.checked_add(1).ok_or_else(gdf_state_error)?;
-        let end = gdf_stripe_end_for_tile(y, tile_start, tile_end).ok_or_else(gdf_state_error)?;
-        ranges.push((y, end));
-        y = end;
+    for range in stripe_ranges(core, luma_height) {
+        ranges.push(range?);
     }
     Ok(())
 }

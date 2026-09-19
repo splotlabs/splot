@@ -138,7 +138,7 @@ impl GdfState {
 
     pub(crate) fn read_for_block(
         &mut self,
-        work_unit: &mut DecodeTileWorkUnit<'_>,
+        work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
         frontier: &DecodeBlockFrontier,
         tile_offset: ByteOffset,

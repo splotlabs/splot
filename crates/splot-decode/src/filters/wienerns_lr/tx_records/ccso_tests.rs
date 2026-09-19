@@ -8,7 +8,14 @@ use super::*;
 fn active_luma_ccso_state(mi_rows: usize, mi_cols: usize) -> CcsoState {
     let shift = 8 - MI_SIZE_LOG2;
     let grid = ccso_grid(mi_rows, mi_cols, shift).unwrap();
-    CcsoState::active(shift, [true, false, false], [false; CCSO_PLANES], grid)
+    CcsoState::active(
+        shift,
+        [true, false, false],
+        [false; CCSO_PLANES],
+        grid,
+        std::array::from_fn(|_| Vec::new()),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -76,7 +83,14 @@ fn ccso_state_rejects_out_of_grid_access() {
 
 #[test]
 fn ccso_tile_merge_copies_only_the_owned_region() {
-    let mut frame = CcsoState::active(4, [true, false, false], [false; CCSO_PLANES], (1, 2, 2));
+    let mut frame = CcsoState::active(
+        4,
+        [true, false, false],
+        [false; CCSO_PLANES],
+        (1, 2, 2),
+        std::array::from_fn(|_| Vec::new()),
+    )
+    .unwrap();
     let mut left = frame.try_for_tile(0..16, 0..16).unwrap();
     let mut right = frame.try_for_tile(0..16, 16..32).unwrap();
     left.blocks[0] = vec![1];

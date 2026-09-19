@@ -455,15 +455,17 @@ fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
          syn-2frame-multirow-inter-64x256-10bit-q100.ivf"
     );
     let (_, core) = crate::prediction::inter::test_support::fixture_sequence_and_key_core(fixture);
+    let core = Arc::new(core);
     let mut owned_plan = FrameDeblock::prepare_owned(
         OwnedDeblockRecords {
+            grids: crate::filters::deblock::DeblockGridStorage::default(),
             blocks: owned_blocks,
             chroma: ChromaDeblockRecords::default(),
         },
         mi_rows,
         mi_cols,
         params,
-        Arc::new(core),
+        Arc::clone(&core),
         false,
         DeblockQuantDeltas::ZERO,
         (1, 1),
@@ -486,11 +488,43 @@ fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
     copy_source_to_workspace(&owned_source, &mut owned);
     assert_workspace_samples_eq(&owned, &borrowed);
     assert!(borrowed_plan.finish().is_none());
-    let records = owned_plan.finish().unwrap();
+    let mut records = owned_plan.finish().unwrap();
     assert_eq!(records.blocks.len(), blocks.len());
     assert_eq!(records.blocks.as_ptr(), owned_pointer);
     assert_eq!(records.blocks.capacity(), owned_capacity);
     assert!(records.chroma.is_empty());
+    let addresses = |storage: &DeblockGridStorage| {
+        (
+            storage.cells.as_ptr(),
+            storage.candidates.as_ptr(),
+            storage
+                .chroma
+                .each_ref()
+                .map(|(cells, flags)| (cells.as_ptr(), flags.as_ptr())),
+        )
+    };
+    let original = addresses(&records.grids);
+    for iteration in 0..1200 {
+        let active = if iteration % 2 == 0 {
+            [true, true, false, false]
+        } else {
+            [true; 4]
+        };
+        let plan = FrameDeblock::prepare_owned(
+            records,
+            mi_rows,
+            mi_cols,
+            filter(active),
+            Arc::clone(&core),
+            false,
+            DeblockQuantDeltas::ZERO,
+            (1, 1),
+        )
+        .unwrap()
+        .unwrap();
+        records = plan.finish().unwrap();
+        assert_eq!(addresses(&records.grids), original);
+    }
 }
 
 #[test]

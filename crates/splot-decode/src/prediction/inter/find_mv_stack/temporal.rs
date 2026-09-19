@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_parallel::CompletionCell;
+use parking_lot::Mutex;
 use splot_recon::math::{round2_signed, round2_signed_i32};
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::{
     Mv, MvBlockContext, NeighbourCell, NeighbourMvGrid, RelativeProbe, TIP_REF_FRAME,
@@ -15,7 +15,10 @@ pub(crate) use band::TemporalMotionBand;
 use selection::projection_queue;
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
-use trajectory::{OwnedTrajectoryBand, OwnedTrajectoryFields, TrajectoryBand, TrajectoryState};
+use trajectory::{
+    OwnedTrajectoryBand, OwnedTrajectoryFields, OwnedTrajectoryScratch, TrajectoryBand,
+    TrajectoryState,
+};
 
 mod band;
 mod selection;
@@ -279,6 +282,7 @@ impl TemporalMotionField {
     }
 
     /// This field's cells split into bands the caller then fills in.
+    #[cfg(test)]
     pub(crate) fn into_bands(mut self) -> Vec<TemporalMotionBand> {
         let layout = self.layout();
         let metadata = self.metadata();
@@ -294,10 +298,7 @@ impl TemporalMotionField {
                 layout,
                 metadata: metadata.clone(),
                 row_base8: index.saturating_mul(layout.band_rows8),
-                cells: BandCells {
-                    owned: cells.to_vec(),
-                    shared: None,
-                },
+                cells: BandCells::Owned(cells.to_vec()),
             })
             .collect()
     }
@@ -322,10 +323,7 @@ impl TemporalMotionField {
                 layout,
                 metadata: metadata.clone(),
                 row_base8: index.saturating_mul(layout.band_rows8),
-                cells: BandCells {
-                    owned: Vec::new(),
-                    shared: Some((Arc::clone(field), start..start + chunk.len())),
-                },
+                cells: BandCells::Shared(Arc::clone(field), start..start + chunk.len()),
             });
         }
     }
@@ -337,6 +335,58 @@ impl TemporalMotionField {
         }
     }
 
+    pub(crate) fn retire_bands(&mut self) {
+        match &mut self.storage {
+            TemporalMotionStorage::Bands(bands) => bands.clear(),
+            TemporalMotionStorage::Contiguous(_) => {
+                self.storage = TemporalMotionStorage::Bands(Vec::new());
+            }
+        }
+    }
+
+    pub(crate) fn reset_from_bands(
+        &mut self,
+        layout: MotionFieldLayout,
+        metadata: &TemporalMotionFieldMetadata,
+        bands: impl Iterator<Item = TemporalMotionBand>,
+    ) -> bool {
+        self.retire_bands();
+        let TemporalMotionStorage::Bands(storage) = &mut self.storage else {
+            return false;
+        };
+        storage.extend(bands.map(TemporalMotionBand::into_shared));
+        let count = storage.iter().try_fold(0usize, |count, band| {
+            count.checked_add(band.cells.cells().len())
+        });
+        if count != layout.width8.checked_mul(layout.height8) {
+            return false;
+        }
+        self.width8 = layout.width8;
+        self.height8 = layout.height8;
+        self.band_rows8 = layout.band_rows8;
+        self.is_inter = metadata.is_inter;
+        self.frame_size = metadata.frame_size;
+        self.ref_order_hints = metadata.ref_order_hints;
+        true
+    }
+
+    pub(crate) fn metadata_only(
+        layout: MotionFieldLayout,
+        is_inter: bool,
+        frame_size: (usize, usize),
+        hints: &[Option<u32>],
+    ) -> Self {
+        let mut field = Self::empty();
+        field.width8 = layout.width8;
+        field.height8 = layout.height8;
+        field.band_rows8 = layout.band_rows8;
+        field.is_inter = is_inter;
+        field.frame_size = Some(frame_size);
+        field.ref_order_hints.extend_within(hints.iter().copied());
+        field
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_bands(
         layout: MotionFieldLayout,
         metadata: &TemporalMotionFieldMetadata,
@@ -352,7 +402,12 @@ impl TemporalMotionField {
             width8: layout.width8,
             height8: layout.height8,
             band_rows8: layout.band_rows8,
-            storage: TemporalMotionStorage::Bands(bands),
+            storage: TemporalMotionStorage::Bands(
+                bands
+                    .into_iter()
+                    .map(TemporalMotionBand::into_shared)
+                    .collect(),
+            ),
             pending_ref_hints: None,
             is_inter: metadata.is_inter,
             frame_size: metadata.frame_size,
@@ -715,27 +770,27 @@ pub(crate) struct TemporalMvContext {
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
     tip: Option<TipReferencePair>,
-    banded: Option<Arc<BandedTemporalContext>>,
+    banded: Option<BandedTemporalContext>,
 }
 
 #[derive(Debug)]
 struct BandedTemporalContext {
     layout: MotionFieldLayout,
-    bands: Vec<CompletionCell<Option<Arc<TemporalBandResult>>>>,
+    bands: Vec<TemporalBandSlot>,
+    scratch: Mutex<TemporalMvScratch>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
+struct TemporalBandSlot {
+    published: OnceLock<Option<TemporalBandResult>>,
+    spare: Mutex<Option<TemporalBandResult>>,
+}
+
+#[derive(Debug, Default)]
 struct TemporalBandResult {
     row_base8: usize,
     field: Vec<ProjectedTemporalMotionCell>,
     trajectories: Option<OwnedTrajectoryFields>,
-}
-
-/// Returns a released band's projected cells to the per-thread pool.
-impl Drop for TemporalBandResult {
-    fn drop(&mut self) {
-        crate::support::reusable_scratch::recycle_pooled_vec(core::mem::take(&mut self.field));
-    }
 }
 
 pub(crate) struct TemporalBandPlan {
@@ -761,6 +816,7 @@ impl BandedTemporalContext {
         let band = self
             .bands
             .get(y8 / self.layout.band_rows8())?
+            .published
             .get()?
             .as_ref()?;
         let row = y8.checked_sub(band.row_base8)?;
@@ -776,6 +832,7 @@ impl BandedTemporalContext {
         let band = self
             .bands
             .get(y8 / self.layout.band_rows8())?
+            .published
             .get()?
             .as_ref()?;
         let row = y8.checked_sub(band.row_base8)?;
@@ -790,7 +847,7 @@ impl BandedTemporalContext {
 
     fn fail(&self) {
         for band in &self.bands {
-            let _ = band.set(None);
+            let _ = band.published.set(None);
         }
     }
 }
@@ -804,29 +861,40 @@ impl TemporalBandPlan {
         self.layout.rows8(index)
     }
 
-    /// Collects the reference bands this band's projection reads into `out`.
-    ///
-    /// Into a caller's buffer, because the list is read once and dropped, and
-    /// the callers ask per unit.
-    pub(crate) fn requirements(&self, index: usize, out: &mut Vec<(usize, usize)>) {
-        out.clear();
-        for projection in &self.projections {
-            if index >= projection.source_layout.band_count() {
-                continue;
-            }
-            let requirement = (projection.slot, index);
-            if !out.contains(&requirement) {
-                out.push(requirement);
-            }
-        }
+    /// Reference bands read by this projection, with duplicate slots removed.
+    pub(crate) fn requirements(&self, index: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.projections
+            .iter()
+            .enumerate()
+            .filter(move |(position, projection)| {
+                index < projection.source_layout.band_count()
+                    && !self.projections[..*position].iter().any(|previous| {
+                        previous.slot == projection.slot
+                            && index < previous.source_layout.band_count()
+                    })
+            })
+            .map(move |(_, projection)| (projection.slot, index))
     }
 
-    pub(crate) fn project(
+    pub(crate) fn project<'a>(
         &self,
         context: &TemporalMvContext,
         index: usize,
-        mut source_band: impl FnMut(usize, usize) -> Option<TemporalMotionBand>,
+        mut source_band: impl FnMut(usize, usize) -> Option<&'a TemporalMotionBand>,
     ) -> crate::Result<()> {
+        let banded = context
+            .banded
+            .as_ref()
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        let band = banded
+            .bands
+            .get(index)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+        if let Some(published) = band.published.get() {
+            return published.as_ref().map(|_| ()).ok_or_else(|| {
+                crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into()
+            });
+        }
         let rows = self.rows8(index);
         if rows.is_empty() {
             return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
@@ -836,7 +904,9 @@ impl TemporalBandPlan {
         let cells = width8
             .checked_mul(row_count)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-        let mut field_cells = crate::support::reusable_scratch::take_pooled_vec(cells);
+        let mut storage = band.spare.lock().take().unwrap_or_default();
+        let mut field_cells = core::mem::take(&mut storage.field);
+        field_cells.clear();
         field_cells.try_reserve_exact(cells).map_err(|_| {
             crate::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
                 plane: splot_recon::PlaneId::Y,
@@ -850,6 +920,7 @@ impl TemporalBandPlan {
             height8: self.layout.height8(),
             row_base: rows.start,
         };
+        let mut scratch = banded.scratch.lock();
         let mut trajectories = if self.config.enable_trajectory {
             Some(OwnedTrajectoryBand::new(
                 width8,
@@ -859,6 +930,8 @@ impl TemporalBandPlan {
                 context.ref_order_hints.len(),
                 self.config.step,
                 self.config.unit_size8,
+                storage.trajectories.take(),
+                &mut scratch.trajectory,
             )?)
         } else {
             None
@@ -884,7 +957,7 @@ impl TemporalBandPlan {
             };
             project_temporal_motion_field(
                 &projection.source,
-                &source,
+                source,
                 rows.clone(),
                 self.config.step,
                 self.config.unit_size8,
@@ -899,12 +972,15 @@ impl TemporalBandPlan {
         };
         if self.tip_mode {
             if let Some(references) = self.tip {
-                let mut projection = ProjectedTemporalMotionField::default();
-                let mut average = ProjectedTemporalMotionField::default();
+                let TemporalMvScratch {
+                    projection,
+                    average,
+                    ..
+                } = &mut *scratch;
                 prepare_tip_field(
                     &mut field,
-                    &mut projection,
-                    &mut average,
+                    projection,
+                    average,
                     references,
                     self.config.step,
                     self.config.unit_size8,
@@ -917,17 +993,16 @@ impl TemporalBandPlan {
         let result = TemporalBandResult {
             row_base8: rows.start,
             field: core::mem::take(&mut field.cells),
-            trajectories: trajectories.map(OwnedTrajectoryBand::finish),
+            trajectories: trajectories
+                .map(|trajectory| trajectory.finish(&mut scratch.trajectory))
+                .or_else(|| {
+                    storage.trajectories.map(|mut fields| {
+                        fields.clear();
+                        fields
+                    })
+                }),
         };
-        let banded = context
-            .banded
-            .as_ref()
-            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-        let band = banded
-            .bands
-            .get(index)
-            .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-        let _ = band.set(Some(Arc::new(result)));
+        let _ = band.published.set(Some(result));
         Ok(())
     }
 
@@ -938,10 +1013,11 @@ impl TemporalBandPlan {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct TemporalMvScratch {
+#[derive(Debug, Default)]
+struct TemporalMvScratch {
     projection: ProjectedTemporalMotionField,
     average: ProjectedTemporalMotionField,
+    trajectory: OwnedTrajectoryScratch,
 }
 
 #[derive(Clone, Copy)]
@@ -987,21 +1063,6 @@ pub(crate) struct TemporalProjectionConfig {
 }
 
 impl TemporalMvContext {
-    pub(crate) fn from_scratch(scratch: TemporalMvScratch) -> Self {
-        Self {
-            projection_scratch: scratch.projection,
-            average_scratch: scratch.average,
-            ..Self::empty()
-        }
-    }
-
-    pub(crate) fn take_scratch(&mut self) -> TemporalMvScratch {
-        TemporalMvScratch {
-            projection: core::mem::take(&mut self.projection_scratch),
-            average: core::mem::take(&mut self.average_scratch),
-        }
-    }
-
     pub(crate) fn empty() -> Self {
         Self {
             current_order_hint: 0,
@@ -1287,12 +1348,21 @@ impl TemporalMvContext {
         self.current_order_hint = current_order_hint;
         self.trajectories = None;
         self.tip = tip;
-        self.banded = Some(Arc::new(BandedTemporalContext {
+        let banded = self.banded.get_or_insert_with(|| BandedTemporalContext {
             layout: target_layout,
-            bands: (0..target_layout.band_count())
-                .map(|_| CompletionCell::new())
-                .collect(),
-        }));
+            bands: Vec::new(),
+            scratch: Mutex::new(TemporalMvScratch::default()),
+        });
+        banded.layout = target_layout;
+        banded.bands.resize_with(
+            banded.bands.len().max(target_layout.band_count()),
+            TemporalBandSlot::default,
+        );
+        for band in &mut banded.bands {
+            if let Some(Some(result)) = band.published.take() {
+                *band.spare.get_mut() = Some(result);
+            }
+        }
         Some(TemporalBandPlan {
             projections: prepared,
             config,

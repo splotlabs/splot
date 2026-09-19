@@ -281,6 +281,14 @@ impl FrameCdfSubset {
             .replicate_bounded_coeff_q_context(CoeffCdfQContext::from_base_q_idx(base_q_idx));
     }
 
+    pub(crate) fn reset_from(&mut self, source: &Self) {
+        self.rows.clone_from(&source.rows);
+    }
+
+    pub(crate) fn reset_to_defaults(&mut self) {
+        *self.rows = TileCdfRows::from_defaults();
+    }
+
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
         self.rows.blend_from_saved(&saved.rows);
     }
@@ -298,6 +306,10 @@ pub(crate) struct TileCdfSubset {
 }
 
 impl TileCdfSubset {
+    pub(crate) fn reset_from_frame(&mut self, frame: &FrameCdfSubset) {
+        self.rows.clone_from(&frame.rows);
+    }
+
     #[inline]
     pub(crate) fn with_row_mut<R>(
         &mut self,
@@ -308,11 +320,14 @@ impl TileCdfSubset {
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(crate) struct SavedCdfSubset {
     rows: Box<TileCdfRows>,
 }
 
+#[cfg(test)]
 impl SavedCdfSubset {
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn from_frame(frame: &FrameCdfSubset) -> Self {
         Self {
@@ -329,19 +344,36 @@ pub(crate) struct TileCdfWorkUnitBoundary {
 }
 
 impl TileCdfWorkUnitBoundary {
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn new(
         update_mode: CdfUpdateMode,
         save_policy: TileCdfSavePolicy,
         frame_cdfs: Arc<FrameCdfSubset>,
     ) -> Self {
-        let tile_cdfs = frame_cdfs.tile_copy();
+        Self::with_storage(update_mode, save_policy, frame_cdfs, None)
+    }
+
+    pub(crate) fn with_storage(
+        update_mode: CdfUpdateMode,
+        save_policy: TileCdfSavePolicy,
+        frame_cdfs: Arc<FrameCdfSubset>,
+        mut tile_cdfs: Option<TileCdfSubset>,
+    ) -> Self {
+        if let Some(tile_cdfs) = tile_cdfs.as_mut() {
+            tile_cdfs.reset_from_frame(&frame_cdfs);
+        }
+        let tile_cdfs = tile_cdfs.unwrap_or_else(|| frame_cdfs.tile_copy());
         Self {
             update_mode,
             save_policy,
             frame_cdfs,
             tile_cdfs,
         }
+    }
+
+    pub(crate) fn into_storage(self) -> TileCdfSubset {
+        self.tile_cdfs
     }
     #[must_use]
     pub(crate) const fn update_mode(&self) -> CdfUpdateMode {

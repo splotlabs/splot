@@ -696,8 +696,8 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         cctx_role: CctxRole::None,
     };
 
-    assert!(!parsed(vec![unit(false), unit(true)]).u_nonzero());
-    assert!(parsed(vec![unit(true), unit(false)]).u_nonzero());
+    assert!(!parsed(1..3).u_nonzero(&[None, Some(unit(false)), Some(unit(true))]));
+    assert!(parsed(1..3).u_nonzero(&[None, Some(unit(true)), Some(unit(false))]));
 }
 
 #[test]
@@ -989,8 +989,9 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
         lossless: false,
     };
 
+    let mut units = Vec::new();
     let parsed = plane
-        .retain_partitioned_luma(visible, None, &mut deblock)
+        .retain_partitioned_luma(visible, None, &mut deblock, &mut units)
         .expect("visible transform unit has valid geometry");
     assert_eq!(deblock_blocks.len(), 1);
     assert_eq!(
@@ -1057,8 +1058,10 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
                 chroma_left_smooth: false,
             },
             LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::Dc, 0),
+            &mut units,
         )
         .expect("visible transform unit reconstructs");
+    assert!(units.iter().all(Option::is_none));
 
     assert_eq!(block_decoded, expected_decoded);
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 32, 32), Ok(128));
@@ -1327,6 +1330,7 @@ fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
     crate::bitstream::tile_payload::LumaCoeffBlock {
         eob: 0,
         quant_range: 0..0,
+        zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: 0,

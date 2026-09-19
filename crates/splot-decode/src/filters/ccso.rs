@@ -29,6 +29,34 @@ pub(crate) struct CcsoUnitGrid {
 }
 
 impl CcsoUnitGrid {
+    pub(crate) fn spare() -> Self {
+        Self {
+            active: false,
+            shift: 0,
+            plane_enabled: [false; CCSO_PLANES],
+            blocks: std::array::from_fn(|_| Vec::new()),
+            grid_rows: 0,
+            grid_cols: 0,
+        }
+    }
+
+    pub(crate) fn take_blocks(&mut self) -> [Vec<u8>; CCSO_PLANES] {
+        core::mem::take(&mut self.blocks)
+    }
+
+    pub(crate) fn reset(
+        &mut self,
+        active: bool,
+        shift: u32,
+        plane_enabled: [bool; CCSO_PLANES],
+        blocks: [Vec<u8>; CCSO_PLANES],
+        grid_rows: usize,
+        grid_cols: usize,
+    ) -> Result<(), CcsoError> {
+        *self = Self::new(active, shift, plane_enabled, blocks, grid_rows, grid_cols)?;
+        Ok(())
+    }
+
     pub(crate) fn new(
         active: bool,
         shift: u32,
@@ -127,6 +155,7 @@ pub(crate) fn prepare_ccso(
     grid: &CcsoUnitGrid,
     bit_depth: BitDepth,
     subsampling: (usize, usize),
+    offset_luts: &mut [Vec<i32>; CCSO_PLANES],
 ) -> Result<CcsoFrameConfig, CcsoError> {
     let mut planes = std::array::from_fn(|_| None);
     if !grid.active() {
@@ -149,6 +178,7 @@ pub(crate) fn prepare_ccso(
             grid,
             bit_depth,
             subsampling,
+            core::mem::take(&mut offset_luts[plane]),
         )?);
     }
     Ok(CcsoFrameConfig { planes })
@@ -160,6 +190,7 @@ fn prepare_ccso_plane(
     grid: &CcsoUnitGrid,
     bit_depth: BitDepth,
     subsampling: (usize, usize),
+    offset_lut: Vec<i32>,
 ) -> Result<CcsoPlaneConfig, CcsoError> {
     let (sub_x, sub_y) = if plane_id(plane) == PlaneId::Y {
         (0, 0)
@@ -196,10 +227,11 @@ fn prepare_ccso_plane(
     if params.ccso_offset_idx.len() != expected_offsets {
         return Err(CcsoError::Params);
     }
-    let offset_lut = ccso_offset_lut(params, expected_offsets).map_err(|error| match error {
-        CcsoError::Allocation(_) => CcsoError::Allocation(plane_id(plane)),
-        other => other,
-    })?;
+    let offset_lut =
+        ccso_offset_lut(params, expected_offsets, offset_lut).map_err(|error| match error {
+            CcsoError::Allocation(_) => CcsoError::Allocation(plane_id(plane)),
+            other => other,
+        })?;
     let mut offset_lut_simd = [[0u8; 16]; 5];
     if offset_lut.len() > offset_lut_simd.len() * 16 {
         return Err(CcsoError::Params);
@@ -228,6 +260,16 @@ fn prepare_ccso_plane(
         offset_lut,
         offset_lut_simd,
     })
+}
+
+impl CcsoFrameConfig {
+    pub(crate) fn return_offset_luts(self, offset_luts: &mut [Vec<i32>; CCSO_PLANES]) {
+        for (target, config) in offset_luts.iter_mut().zip(self.planes) {
+            if let Some(config) = config {
+                *target = config.offset_lut;
+            }
+        }
+    }
 }
 
 pub(crate) fn ccso_stripe<T: ReconSample>(
@@ -280,7 +322,7 @@ fn ccso_plane<T: ReconSample>(
         usize::from(pixel_format.subsampling_x()),
         usize::from(pixel_format.subsampling_y()),
     );
-    let prepared = prepare_ccso_plane(plane, params, grid, bit_depth, subsampling)?;
+    let prepared = prepare_ccso_plane(plane, params, grid, bit_depth, subsampling, Vec::new())?;
     let source = FramePlane::new(workspace, plane_id).ok_or(CcsoError::Workspace)?;
     let width = source.width();
     let height = source.frame_height();
@@ -536,9 +578,10 @@ fn ccso_simd_row<L: ReconSample>(
 fn ccso_offset_lut(
     params: &CcsoPlaneParams,
     expected_offsets: usize,
+    mut lut: Vec<i32>,
 ) -> Result<Vec<i32>, CcsoError> {
     let scale = i32::from(params.ccso_scale_idx.ok_or(CcsoError::Params)?) + 1;
-    let mut lut = Vec::new();
+    lut.clear();
     lut.try_reserve_exact(expected_offsets)
         .map_err(|_| CcsoError::Allocation(PlaneId::Y))?;
     for &offset_idx in &params.ccso_offset_idx {

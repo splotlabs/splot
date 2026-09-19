@@ -259,6 +259,7 @@ struct PlaneJob<'a, T> {
 }
 
 pub(crate) struct OwnedDeblockRecords {
+    pub(crate) grids: DeblockGridStorage,
     pub(crate) blocks: Vec<DeblockBlock>,
     pub(crate) chroma: ChromaDeblockRecords,
 }
@@ -396,7 +397,7 @@ impl<'a> FrameDeblock<'a> {
     /// deblock records.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_owned(
-        records: OwnedDeblockRecords,
+        mut records: OwnedDeblockRecords,
         mi_rows: usize,
         mi_cols: usize,
         filter: DeblockingFilterParams,
@@ -409,8 +410,8 @@ impl<'a> FrameDeblock<'a> {
             return Ok(None);
         }
         let (sub_x, sub_y) = chroma_subsampling;
-        let mut storage = DeblockGridStorage::default();
-        let grid = build_mi_grid(&records.blocks, mi_rows, mi_cols, &mut storage)?;
+        let storage = &mut records.grids;
+        let grid = build_mi_grid(&records.blocks, mi_rows, mi_cols, storage)?;
         let mut chroma = [None, None];
         for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
             if filter.apply_deblocking_filter[plane + 2] {
@@ -720,10 +721,18 @@ impl<'a> FrameDeblock<'a> {
         }
     }
 
-    pub(crate) fn finish(self) -> Option<OwnedDeblockRecords> {
+    pub(crate) fn finish(mut self) -> Option<OwnedDeblockRecords> {
+        let mut grids = match &mut self.records {
+            DeblockRecords::Borrowed { .. } => return None,
+            DeblockRecords::Owned(records) => core::mem::take(&mut records.grids),
+        };
+        self.release_grids(&mut grids);
         match self.records {
             DeblockRecords::Borrowed { .. } => None,
-            DeblockRecords::Owned(records) => Some(records),
+            DeblockRecords::Owned(mut records) => {
+                records.grids = grids;
+                Some(records)
+            }
         }
     }
 }

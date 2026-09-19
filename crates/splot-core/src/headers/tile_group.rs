@@ -436,6 +436,15 @@ pub struct TileGroupFraming {
 }
 
 impl TileGroupFraming {
+    /// Empty reusable storage for [`parse_tile_group_framing_into`].
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            tiles: Vec::new(),
+            defect: None,
+        }
+    }
+
     /// Builds the framing for one tile occupying the whole payload (§ 5.20.1).
     /// A zero-length tile has [`TileFramingDefect::ZeroSizeTile`], matching the parser.
     #[must_use]
@@ -482,9 +491,32 @@ pub fn parse_tile_group_framing(
     tile_size_bytes: u32,
     is_bridge: bool,
 ) -> TileGroupFraming {
+    let mut framing = TileGroupFraming::empty();
+    parse_tile_group_framing_into(
+        &mut framing,
+        payload,
+        tg_start,
+        tg_end,
+        tile_size_bytes,
+        is_bridge,
+    );
+    framing
+}
+
+/// Parses tile framing into storage retained by the caller.
+pub fn parse_tile_group_framing_into(
+    framing: &mut TileGroupFraming,
+    payload: &[u8],
+    tg_start: u32,
+    tg_end: u32,
+    tile_size_bytes: u32,
+    is_bridge: bool,
+) {
     let region_len = payload.len() as u64;
     let tsb = u64::from(tile_size_bytes.clamp(1, 4));
-    let mut tiles = Vec::new();
+    framing.tiles.clear();
+    framing.defect = None;
+    let tiles = &mut framing.tiles;
 
     let max_tiles = crate::tile::MAX_TILE_COLS * crate::tile::MAX_TILE_ROWS;
     let tg_end = tg_end.min(tg_start.saturating_add(max_tiles - 1));
@@ -493,10 +525,7 @@ pub fn parse_tile_group_framing(
     let mut sz = region_len;
 
     if tg_end < tg_start {
-        return TileGroupFraming {
-            tiles,
-            defect: None,
-        };
+        return;
     }
 
     tiles
@@ -514,13 +543,11 @@ pub fn parse_tile_group_framing(
                 tile_size: sz,
             });
             if sz == 0 && !is_bridge {
-                return TileGroupFraming {
-                    tiles,
-                    defect: Some(TileFramingDefect::ZeroSizeTile {
-                        tile_num,
-                        tile_data_offset: pos,
-                    }),
-                };
+                framing.defect = Some(TileFramingDefect::ZeroSizeTile {
+                    tile_num,
+                    tile_data_offset: pos,
+                });
+                return;
             }
             break;
         }
@@ -537,14 +564,12 @@ pub fn parse_tile_group_framing(
 
         let size_field_offset = pos;
         if pos.saturating_add(tsb) > region_len {
-            return TileGroupFraming {
-                tiles,
-                defect: Some(TileFramingDefect::SizeFieldTruncated {
-                    tile_num,
-                    size_field_offset,
-                    available: region_len.saturating_sub(pos),
-                }),
-            };
+            framing.defect = Some(TileFramingDefect::SizeFieldTruncated {
+                tile_num,
+                size_field_offset,
+                available: region_len.saturating_sub(pos),
+            });
+            return;
         }
 
         let mut tile_size_minus_1 = 0u64;
@@ -556,16 +581,14 @@ pub fn parse_tile_group_framing(
 
         let claimed = tile_size.saturating_add(tsb);
         if claimed > sz {
-            return TileGroupFraming {
-                tiles,
-                defect: Some(TileFramingDefect::TileSizeOverflowsPayload {
-                    tile_num,
-                    size_field_offset,
-                    tile_size,
-                    tile_size_bytes: tsb,
-                    remaining: sz,
-                }),
-            };
+            framing.defect = Some(TileFramingDefect::TileSizeOverflowsPayload {
+                tile_num,
+                size_field_offset,
+                tile_size,
+                tile_size_bytes: tsb,
+                remaining: sz,
+            });
+            return;
         }
 
         tiles.push(TileFraming {
@@ -576,11 +599,6 @@ pub fn parse_tile_group_framing(
         });
         pos += claimed;
         sz -= claimed;
-    }
-
-    TileGroupFraming {
-        tiles,
-        defect: None,
     }
 }
 
@@ -1123,6 +1141,29 @@ mod tests {
         assert_eq!(t.size_field_offset, None);
         assert_eq!(t.tile_data_offset, 0);
         assert_eq!(t.tile_size, 5);
+    }
+
+    #[test]
+    fn framing_into_reuses_storage_and_replaces_prior_defect() {
+        let mut framing = TileGroupFraming::empty();
+        parse_tile_group_framing_into(&mut framing, &[], 0, 0, 1, false);
+        assert!(matches!(
+            framing.defect,
+            Some(TileFramingDefect::ZeroSizeTile { .. })
+        ));
+
+        let capacity = framing.tiles.capacity();
+        parse_tile_group_framing_into(&mut framing, &[0x80], 0, 0, 1, false);
+        assert_eq!(framing.defect, None);
+        assert_eq!(framing.tiles.len(), 1);
+        assert!(framing.tiles.capacity() >= capacity);
+
+        parse_tile_group_framing_into(&mut framing, &[], 0, 1, 1, false);
+        assert!(matches!(
+            framing.defect,
+            Some(TileFramingDefect::SizeFieldTruncated { .. })
+        ));
+        assert!(framing.tiles.is_empty());
     }
 
     #[test]

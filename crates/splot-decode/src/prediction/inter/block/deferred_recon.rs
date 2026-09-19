@@ -49,6 +49,8 @@ pub(super) struct InterReconCommand {
 #[derive(Default)]
 #[repr(align(64))]
 pub(super) struct InterReconScratch<T: ReconSample> {
+    pub(super) coefficients: Vec<i32>,
+    pub(super) plane_records: crate::residual::pipeline::ResidualPlaneArena,
     general_intra: crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     tip: TipReconstructScratch<T>,
     temporal: Vec<TemporalMotionBlock>,
@@ -286,7 +288,7 @@ impl InterReconCommand {
         tip_scratch: &mut TipReconstructScratch<T>,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
-    ) -> Result<()> {
+    ) -> Result<Option<mc::CompoundMotionGrid>> {
         let _segment_scope = FrameQmSegmentScope::install(self.segment_id);
         if matches!(self.kind, PendingKind::Tip) {
             return tip::predict(
@@ -378,6 +380,7 @@ impl InterReconCommand {
             interintra_scratch,
             residual_scratch,
         )
+        .map(|grid| tip::retire_motion_grid(tip_scratch, grid))
     }
 }
 
@@ -411,6 +414,11 @@ impl<T: ReconSample> InterReconScratch<T> {
         })
     }
 
+    /// Lends the worker's temporary record storage to one motion pass.
+    pub(super) fn swap_temporal_records(&mut self, records: &mut Vec<TemporalMotionBlock>) {
+        core::mem::swap(&mut self.temporal, records);
+    }
+
     /// Derives one command's motion into `temporal_records`, writing no sample.
     pub(super) fn motion(
         &mut self,
@@ -418,9 +426,19 @@ impl<T: ReconSample> InterReconScratch<T> {
         sink: &WorkspaceSink<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
-    ) -> Result<Option<mc::CompoundMotionGrid>> {
+        storage: &mut mc::MotionRowStorage,
+    ) -> Result<Option<mc::StoredMotionGrid>> {
         let Self { tip, mc, .. } = self;
-        mc.with_installed(|| command.derive_motion(sink, temporal_records, shared, tip))
+        mc.with_installed(|| {
+            command
+                .derive_motion(sink, temporal_records, shared, tip)?
+                .map(|grid| {
+                    let (stored, candidates) = grid.store(storage)?;
+                    tip::keep_motion_candidates(tip, candidates);
+                    Ok(stored)
+                })
+                .transpose()
+        })
     }
 
     /// Reconstructs one command from the grid its motion half derived.
@@ -434,7 +452,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
-    ) -> Result<()> {
+    ) -> Result<Option<mc::CompoundMotionGrid>> {
         let Self {
             tip,
             interintra,
@@ -536,7 +554,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     ) -> Result<()> {
         let mut temporal = core::mem::take(&mut self.temporal);
         temporal.clear();
-        let result = self.reconstruct_logged(
+        let mut result = self.reconstruct_logged(
             command,
             &mut WorkspaceSink::Frame(workspace),
             block_decoded,
@@ -556,7 +574,7 @@ impl<T: ReconSample> InterReconScratch<T> {
             bit_depth,
         );
         if result.is_ok() {
-            motion.fold_unit(ordinal, &temporal);
+            result = motion.fold_unit(ordinal, &temporal);
         }
         temporal.clear();
         self.temporal = temporal;
@@ -812,6 +830,7 @@ mod tests {
             coeffs: LumaCoeffBlock {
                 eob: 0,
                 quant_range: 0..0,
+                zero_tail: 0,
                 intra_ist: None,
                 cctx_type: None,
                 plane_tx_type: 0,

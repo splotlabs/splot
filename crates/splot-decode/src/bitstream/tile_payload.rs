@@ -45,7 +45,7 @@ pub(crate) use cdf::block_context::{
 pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
 pub(crate) use cdf::{
     COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, FrameCdfSubset,
-    MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
+    MvCdfSelector, TileCdfSelector, TileCdfSubset,
 };
 #[cfg(test)]
 pub(crate) use coeff_loop::{
@@ -82,10 +82,12 @@ pub(crate) use general_intra_residual::{
 pub(crate) use general_intra_residual::{
     IntraIstSyntax, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
+#[cfg(test)]
+pub(crate) use input::plan_derived_tile_payload_boundary;
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
-    TileGroupPositionFacts, plan_derived_tile_payload_boundary,
+    TileGroupPositionFacts, plan_derived_tile_payload_boundary_with_scratch,
 };
 pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
@@ -103,7 +105,7 @@ pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
     DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraTreeWalkError, LrTileRecords,
+    GeneralIntraTreeWalkError, TileTraversalStorage,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -318,18 +320,87 @@ impl TileCoeffFrameFacts {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTilePayloadPlan<'a> {
-    work_units: Vec<DecodeTileWorkUnit<'a>>,
+    payload: &'a [u8],
+    extra_payloads: Vec<&'a [u8]>,
+    work_units: Vec<DecodeTileWorkUnit>,
     reaches_last_tile_group: bool,
 }
 
 impl<'a> DecodeTilePayloadPlan<'a> {
     #[must_use]
-    pub(crate) fn work_units(&self) -> &[DecodeTileWorkUnit<'a>] {
+    pub(crate) fn work_units(&self) -> &[DecodeTileWorkUnit] {
         &self.work_units
     }
 
-    pub(crate) fn work_units_mut(&mut self) -> &mut [DecodeTileWorkUnit<'a>] {
+    pub(crate) fn work_units_mut(&mut self) -> &mut [DecodeTileWorkUnit] {
         &mut self.work_units
+    }
+
+    pub(crate) fn payloads_and_work_units_mut(
+        &mut self,
+    ) -> (&'a [u8], &[&'a [u8]], &mut [DecodeTileWorkUnit]) {
+        (self.payload, &self.extra_payloads, &mut self.work_units)
+    }
+
+    pub(crate) fn single_tile_mut(&mut self) -> Option<(&'a [u8], &mut DecodeTileWorkUnit)> {
+        let payload = self.payload;
+        let extra_payloads = &self.extra_payloads;
+        let [tile] = self.work_units.as_mut_slice() else {
+            return None;
+        };
+        let source = if tile.payload_index == 0 {
+            Some(payload)
+        } else {
+            extra_payloads.get(tile.payload_index - 1).copied()
+        };
+        let bytes = source?.get(tile.payload_range.clone())?;
+        Some((bytes, tile))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolved_tile_bytes(&self, tile: &DecodeTileWorkUnit) -> Option<&'a [u8]> {
+        let source = if tile.payload_index == 0 {
+            Some(self.payload)
+        } else {
+            self.extra_payloads.get(tile.payload_index - 1).copied()
+        };
+        source?.get(tile.payload_range.clone())
+    }
+
+    pub(crate) fn retire_into(mut self, scratch: &mut TilePayloadScratch) {
+        scratch.tile_cdfs.clear();
+        for tile in self.work_units.drain(..) {
+            scratch.tile_cdfs.push(tile.cdf.into_storage());
+        }
+        core::mem::swap(&mut scratch.work_units, &mut self.work_units);
+    }
+
+    pub(crate) fn rebase_payload(
+        &mut self,
+        payload: &'a [u8],
+        base: usize,
+    ) -> Result<(), TilePayloadBoundaryError> {
+        for tile in &mut self.work_units {
+            tile.payload_range.start = tile.payload_range.start.checked_add(base).ok_or(
+                DecodeLimitError::ArithmeticOverflow {
+                    name: DecodeLimitName::MaxTilePayloadBytes,
+                    op: DecodeLimitOp::Add,
+                    left: tile.payload_range.start as u64,
+                    right: base as u64,
+                },
+            )?;
+            tile.payload_range.end = tile.payload_range.end.checked_add(base).ok_or(
+                DecodeLimitError::ArithmeticOverflow {
+                    name: DecodeLimitName::MaxTilePayloadBytes,
+                    op: DecodeLimitOp::Add,
+                    left: tile.payload_range.end as u64,
+                    right: base as u64,
+                },
+            )?;
+        }
+        self.payload = payload;
+        self.extra_payloads.clear();
+        Ok(())
     }
 
     #[must_use]
@@ -341,6 +412,7 @@ impl<'a> DecodeTilePayloadPlan<'a> {
     pub(crate) fn append_continuation(
         &mut self,
         mut continuation: DecodeTilePayloadPlan<'a>,
+        retained: &mut Vec<DecodeTileWorkUnit>,
     ) -> Result<(), TilePayloadBoundaryError> {
         let expected = self
             .work_units
@@ -352,20 +424,56 @@ impl<'a> DecodeTilePayloadPlan<'a> {
                 TilePayloadMalformed::NonContiguousTileGroups { expected, actual },
             ));
         }
+        if core::ptr::eq(self.payload, continuation.payload)
+            && continuation.extra_payloads.is_empty()
+        {
+            for tile in &mut continuation.work_units {
+                tile.payload_index = 0;
+            }
+        } else {
+            let payload_base = self.extra_payloads.len().saturating_add(1);
+            self.extra_payloads.push(continuation.payload);
+            self.extra_payloads.append(&mut continuation.extra_payloads);
+            for tile in &mut continuation.work_units {
+                tile.payload_index = tile.payload_index.saturating_add(payload_base);
+            }
+        }
         self.work_units.append(&mut continuation.work_units);
         self.reaches_last_tile_group = continuation.reaches_last_tile_group;
+        core::mem::swap(retained, &mut continuation.work_units);
         Ok(())
     }
 }
 
+pub(crate) struct TilePayloadScratch {
+    pub(crate) framing: TileGroupFraming,
+    pub(crate) work_units: Vec<DecodeTileWorkUnit>,
+    pub(crate) continuation_work_units: Vec<DecodeTileWorkUnit>,
+    pub(crate) tile_cdfs: Vec<TileCdfSubset>,
+}
+
+impl Default for TilePayloadScratch {
+    fn default() -> Self {
+        Self {
+            framing: TileGroupFraming::empty(),
+            work_units: Vec::new(),
+            continuation_work_units: Vec::new(),
+            tile_cdfs: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DecodeTileWorkUnit<'a> {
+pub(crate) struct DecodeTileWorkUnit {
     tile_num: u32,
     tile_row: u32,
     tile_col: u32,
     mi_row_range: core::ops::Range<u32>,
     mi_col_range: core::ops::Range<u32>,
-    tile_bytes: &'a [u8],
+    payload_range: core::ops::Range<usize>,
+    payload_index: usize,
+    #[cfg(test)]
+    test_tile_bytes: &'static [u8],
     tile_byte_span: ByteSpan,
     tile_size: u64,
     coeff_frame_facts: TileCoeffFrameFacts,
@@ -373,7 +481,18 @@ pub(crate) struct DecodeTileWorkUnit<'a> {
     cdf: TileCdfWorkUnitBoundary,
 }
 
-impl<'a> DecodeTileWorkUnit<'a> {
+impl DecodeTileWorkUnit {
+    #[cfg(test)]
+    pub(crate) const fn tile_bytes(&self) -> &'static [u8] {
+        self.test_tile_bytes
+    }
+    pub(crate) const fn payload_index(&self) -> usize {
+        self.payload_index
+    }
+
+    pub(crate) fn payload_range(&self) -> core::ops::Range<usize> {
+        self.payload_range.clone()
+    }
     #[must_use]
     pub(crate) const fn tile_num(&self) -> u32 {
         self.tile_num
@@ -399,11 +518,6 @@ impl<'a> DecodeTileWorkUnit<'a> {
     #[must_use]
     pub(crate) fn mi_col_range(&self) -> core::ops::Range<u32> {
         self.mi_col_range.clone()
-    }
-
-    #[must_use]
-    pub(crate) const fn tile_bytes(&self) -> &'a [u8] {
-        self.tile_bytes
     }
 
     #[must_use]
@@ -590,8 +704,18 @@ impl fmt::Display for TilePayloadUnsupported {
     }
 }
 
+#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) fn plan_tile_payload_boundary<'a>(
     input: &TilePayloadBoundaryInput<'a, '_>,
+) -> Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
+    let mut scratch = TilePayloadScratch::default();
+    plan_tile_payload_boundary_with_storage(input, &mut scratch.work_units, &mut scratch.tile_cdfs)
+}
+
+pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
+    input: &TilePayloadBoundaryInput<'a, '_>,
+    retained_work_units: &mut Vec<DecodeTileWorkUnit>,
+    retained_tile_cdfs: &mut Vec<TileCdfSubset>,
 ) -> Result<DecodeTilePayloadPlan<'a>, TilePayloadBoundaryError> {
     input.limits.ensure_mul(
         DecodeLimitName::MaxTileCount,
@@ -663,7 +787,14 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         .frame
         .cdf_policy
         .with_tile_grid(input.grid.tile_cols, input.grid.tile_rows);
-    let mut work_units = Vec::with_capacity(input.framing.tiles.len());
+    let mut work_units = core::mem::take(retained_work_units);
+    work_units.clear();
+    work_units
+        .try_reserve(input.framing.tiles.len())
+        .map_err(|_| DecodeLimitError::HostAllocationTooLarge {
+            name: DecodeLimitName::MaxTileCount,
+            actual: input.framing.tiles.len() as u64,
+        })?;
     for tile in &input.framing.tiles {
         let (tile_row, tile_col, mi_row_range, mi_col_range) =
             grid_ranges(input.grid, tile.tile_num)?;
@@ -693,15 +824,36 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             cdf_update_mode,
         };
         let save_policy = tile_cdf_save_policy(cdf_policy, tile.tile_num)?;
-        let cdf =
-            TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, Arc::clone(&frame_cdfs));
+        let cdf = TileCdfWorkUnitBoundary::with_storage(
+            cdf_update_mode,
+            save_policy,
+            Arc::clone(&frame_cdfs),
+            retained_tile_cdfs.pop(),
+        );
+        let payload_start = usize::try_from(tile.tile_data_offset).map_err(|_| {
+            DecodeLimitError::HostAllocationTooLarge {
+                name: DecodeLimitName::MaxTilePayloadBytes,
+                actual: tile.tile_data_offset,
+            }
+        })?;
+        let payload_end = payload_start.checked_add(tile_bytes.len()).ok_or(
+            DecodeLimitError::ArithmeticOverflow {
+                name: DecodeLimitName::MaxTilePayloadBytes,
+                op: DecodeLimitOp::Add,
+                left: payload_start as u64,
+                right: tile_bytes.len() as u64,
+            },
+        )?;
         work_units.push(DecodeTileWorkUnit {
             tile_num: tile.tile_num,
             tile_row,
             tile_col,
             mi_row_range,
             mi_col_range,
-            tile_bytes,
+            payload_range: payload_start..payload_end,
+            payload_index: 0,
+            #[cfg(test)]
+            test_tile_bytes: Box::leak(tile_bytes.to_vec().into_boxed_slice()),
             tile_byte_span,
             tile_size: tile.tile_size,
             coeff_frame_facts: input.frame.coeff_frame_facts,
@@ -710,6 +862,8 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         });
     }
     Ok(DecodeTilePayloadPlan {
+        payload: input.payload,
+        extra_payloads: Vec::new(),
         work_units,
         reaches_last_tile_group: input.frame.is_last_tile_group,
     })

@@ -22,8 +22,7 @@ use super::*;
 
 /// Derives one unit's motion and folds its records into the frame's field.
 ///
-/// A unit whose derivation fails is left exactly as the parse pass produced it
-/// — no grid, no record, unlanded — so the reconstruction pass derives its own.
+/// Failure leaves the unit unpublished; temporary records return to the worker.
 pub(super) fn derive_unit_motion<T: ReconSample>(
     row: &mut ReconRow,
     surface: Option<&mut splot_recon::OwnedFrameRect<T>>,
@@ -36,16 +35,25 @@ pub(super) fn derive_unit_motion<T: ReconSample>(
         row.motion_folded = true;
         return;
     }
-    if let Some(surface) = surface {
+    scratch.swap_temporal_records(&mut row.temporal);
+    row.temporal.clear();
+    let derived = if let Some(surface) = surface {
         let sink = mc::WorkspaceSink::OwnedRect(surface);
-        if !derive_row_motion(row, scratch, &sink, shared) {
-            return;
+        derive_row_motion(row, scratch, &sink, shared)
+    } else {
+        true
+    };
+    if derived {
+        if let Err(error) = motion.fold_unit(row.ordinal, &row.temporal) {
+            row.record_terminal_error(error);
+        } else {
+            row.motion_derived = true;
+            row.motion_folded = true;
+            motion.unit_landed_for(row.ordinal);
         }
     }
-    row.motion_derived = true;
-    row.motion_folded = true;
-    motion.fold_unit(row.ordinal, &row.temporal);
-    motion.unit_landed_for(row.ordinal);
+    row.temporal.clear();
+    scratch.swap_temporal_records(&mut row.temporal);
 }
 
 /// Derives every inter entry's grid and records, reporting whether all landed.
@@ -64,24 +72,30 @@ fn derive_row_motion<T: ReconSample>(
     });
     let _ = row.temporal.try_reserve(capacity);
     let mut failure = None;
+    row.motion_grids.clear();
+    let storage = row
+        .motion_storage
+        .get_or_insert_with(|| std::sync::Arc::new(mc::MotionRowStorage::default()));
+    let Some(storage) = std::sync::Arc::get_mut(storage) else {
+        row.record_terminal_error(super::invalid_inter_tile_scheduling_state());
+        return false;
+    };
+    storage.reset();
     for entry in &mut row.entries {
+        entry.temporal = 0..0;
         let Some(ReconCommand::Inter(command)) = entry.command() else {
             if let Some(clear) = entry.temporal_clear_record(
                 shared.mi_rows,
                 shared.mi_cols,
                 shared.current_order_hint,
             ) {
-                let start = row.temporal.len();
                 row.temporal.push(clear);
-                entry.temporal = start..row.temporal.len();
             }
             continue;
         };
-        let start = row.temporal.len();
-        match scratch.motion(command, sink, &mut row.temporal, shared) {
+        match scratch.motion(command, sink, &mut row.temporal, shared, storage) {
             Ok(grid) => {
                 entry.store_motion(grid, &mut row.motion_grids);
-                entry.temporal = start..row.temporal.len();
             }
             Err(error) => {
                 failure = Some(error);

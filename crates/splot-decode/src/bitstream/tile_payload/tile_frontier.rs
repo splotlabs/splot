@@ -17,10 +17,9 @@ use super::partition_allowed::PartitionFeatureFlags;
 pub(crate) use super::partition_traversal::GeneralIntraPartitionTreeOutput as GeneralIntraMultiblockOutput;
 use super::partition_traversal::{
     DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, LrTileRecords,
-    TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
-    TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
-    TilePartitionTraversalError,
+    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, TilePartitionFrameFacts,
+    TilePartitionLoopRestorationFrameState, TilePartitionLoopRestorationPlaneTool,
+    TilePartitionLoopRestorationState, TilePartitionTraversalError, TileTraversalStorage,
 };
 use crate::DecodeLimits;
 
@@ -73,11 +72,12 @@ pub(crate) struct GeneralIntraMultiblockCursor<'payload> {
 
 impl<'payload> GeneralIntraMultiblockCursor<'payload> {
     pub(crate) fn new(
-        work_unit: &DecodeTileWorkUnit<'payload>,
+        work_unit: &DecodeTileWorkUnit,
+        tile_bytes: &'payload [u8],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         limits: DecodeLimits,
-        lr_records: LrTileRecords,
+        lr_records: TileTraversalStorage,
     ) -> Result<Self, TilePartitionFrontierError> {
         let frame = minimal_partition_frame_facts(sequence, core)?;
         let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
@@ -104,7 +104,9 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             TileLumaPaletteState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
         let uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len())?
             .with_origin(tile_rows.start, tile_cols.start);
-        let tree = GeneralIntraPartitionTreeCursor::new(work_unit, frame, limits, lr_records)?;
+        let tree = GeneralIntraPartitionTreeCursor::new_with_bytes(
+            work_unit, tile_bytes, frame, limits, lr_records,
+        )?;
         Ok(Self {
             tree,
             mi_size_state,
@@ -119,13 +121,13 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
 
     pub(crate) fn decode_next_superblock<E, C, F, P>(
         &mut self,
-        work_unit: &mut DecodeTileWorkUnit<'payload>,
+        work_unit: &mut DecodeTileWorkUnit,
         on_leaf: &mut F,
         on_published: &mut P,
     ) -> Result<Option<[usize; 2]>, GeneralIntraMultiblockError<E>>
     where
         F: FnMut(
-            &mut DecodeTileWorkUnit<'payload>,
+            &mut DecodeTileWorkUnit,
             &mut SymbolDecoder<'payload>,
             &DecodeBlockFrontier,
             &TileIntraJointModeState,

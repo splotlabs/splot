@@ -70,9 +70,21 @@ fn motion_dependencies_deduplicate_slots_and_ignore_invalid_indices() {
     reference.ref_motion_fields[15] = Some(last.clone());
     let deps = reference.motion_dependencies(&[15, 15, 0, 15]);
     let ptr = |item: &MotionFieldHandle| std::sync::Arc::as_ptr(item.field().unwrap());
-    assert!(deps.iter().map(ptr).eq([ptr(&last), ptr(&zero)]));
+    assert!(deps.iter().flatten().map(ptr).eq([ptr(&last), ptr(&zero)]));
     assert!(reference.motion_dependencies(&[1]).is_empty());
     assert!(reference.motion_dependencies(&[16, u32::MAX]).is_empty());
+    for field in &mut reference.ref_motion_fields {
+        *field = Some(handle());
+    }
+    let indices = (0..16).chain(0..16).collect::<Vec<_>>();
+    let all = reference.motion_dependencies(&indices);
+    assert_eq!(all.len(), ReferenceSlot::MAX_SLOTS);
+    assert!(
+        all.iter()
+            .flatten()
+            .map(ptr)
+            .eq(reference.ref_motion_fields.iter().flatten().map(ptr))
+    );
     reference.ref_motion_fields.truncate(8);
     assert!(reference.motion_dependencies(&[15]).is_empty());
 }
@@ -358,6 +370,7 @@ fn decode_inter_frame_after_core_mutation_inner(
     )?;
     mutate(&mut core);
     super::validate_inter_frame_core(&core, &sequence)?;
+    let mut products = super::FrameProductWriters::fresh().expect("fresh product writers");
     let walk = crate::pipeline::frame_engine::walk_frame(
         &mut super::InterDecodeScratch::default(),
         &plan,
@@ -369,6 +382,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         &options,
         &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
         BitDepth::Eight,
+        &mut products,
     )?;
     let crate::pipeline::frame_engine::finish::WalkStage::Pending(walked) = walk.stage else {
         panic!("inter fixture unexpectedly completed without its filter phase");
@@ -467,6 +481,7 @@ fn luma_coeff_block(quant: &[i32], eob: usize, cctx_type: Option<usize>) -> Luma
     LumaCoeffBlock {
         eob,
         quant_range: 0..quant.len(),
+        zero_tail: 0,
         intra_ist: None,
         cctx_type,
         plane_tx_type: 0,

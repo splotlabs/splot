@@ -5,7 +5,10 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 use splot_recon::ReconError;
 
-use super::super::{derive_cdef_skip_grid, derive_wienerns_lr_tx_skip_grid_retention};
+use super::super::{
+    WienerNsLrTxSkipLookup, derive_cdef_skip_grid, derive_wienerns_lr_tx_skip_grid_retention,
+    derive_wienerns_lr_tx_skip_grid_reusing,
+};
 use super::*;
 use crate::bitstream::tile_payload::{encode_symbol_sequence, make_test_work_unit};
 
@@ -33,6 +36,41 @@ const CONFLICTING_TX_SKIP_RECORDS: [WienerNsLrTxSkipTransformRecord; 2] = [
         eob: 3,
     },
 ];
+
+#[test]
+fn tx_skip_grid_reuses_small_then_large_then_small_backing() {
+    let record = WienerNsLrTxSkipTransformRecord {
+        row: 0,
+        col: 0,
+        rows: 2,
+        cols: 3,
+        skip_flag: true,
+        eob: 0,
+    };
+    let values = vec![7];
+    let large = derive_wienerns_lr_tx_skip_grid_reusing(2, 3, &[record], values).unwrap();
+    assert_eq!(
+        large.lookup(WienerNsLrTxSkipLookup { row: 1, col: 2 }),
+        Ok(1)
+    );
+    let values = large.into_values();
+    let capacity = values.capacity();
+    assert!(capacity >= 6);
+
+    let small_record = WienerNsLrTxSkipTransformRecord {
+        rows: 1,
+        cols: 1,
+        skip_flag: false,
+        eob: 1,
+        ..record
+    };
+    let small = derive_wienerns_lr_tx_skip_grid_reusing(1, 1, &[small_record], values).unwrap();
+    assert_eq!(
+        small.lookup(WienerNsLrTxSkipLookup { row: 0, col: 0 }),
+        Ok(0)
+    );
+    assert_eq!(small.into_values().capacity(), capacity);
+}
 
 #[test]
 fn inter_partition_reader_uses_sequence_selected_reduced_cdf() {

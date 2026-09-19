@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
+
 use super::cdf::{TileCdfError, TileCdfPolicyInput, TileCdfSelector};
 use super::*;
 use crate::{DecodeContext, DecodeLimitThreshold, DecodeRuntimeConfig};
@@ -243,6 +245,169 @@ fn multiple_tiles_are_retained_as_work_units() {
         ByteSpan::new(ByteOffset::new(258), 1)
     );
     assert!(!second.cdf().save_policy().copy_cdf);
+}
+
+#[test]
+fn continuation_preserves_distinct_payload_owners_and_offsets() {
+    let first_payload = [0x80];
+    let second_payload = [0x00];
+    let first_framing = parse_tile_group_framing(&first_payload, 0, 0, 1, false);
+    let second_framing = parse_tile_group_framing(&second_payload, 1, 1, 1, false);
+    let grid = TileGridFacts::new(2, 1, &[0, 16, 32], &[0, 8]);
+    let first_frame = TileFrameFacts::new(ObuType::ClosedLoopKey, true, false, 42, false);
+    let second_frame = TileFrameFacts::new(ObuType::ClosedLoopKey, true, true, 42, false);
+    let mut first = plan_tile_payload_boundary(&TilePayloadBoundaryInput::new(
+        &first_payload,
+        ByteOffset::new(17),
+        &first_framing,
+        grid,
+        first_frame,
+        DecodeLimits::unlimited(),
+    ))
+    .unwrap();
+    let second = plan_tile_payload_boundary(&TilePayloadBoundaryInput::new(
+        &second_payload,
+        ByteOffset::new(901),
+        &second_framing,
+        grid,
+        second_frame,
+        DecodeLimits::unlimited(),
+    ))
+    .unwrap();
+
+    first.append_continuation(second, &mut Vec::new()).unwrap();
+    assert_eq!(
+        first.resolved_tile_bytes(&first.work_units()[0]),
+        Some(&[0x80][..])
+    );
+    assert_eq!(
+        first.resolved_tile_bytes(&first.work_units()[1]),
+        Some(&[0x00][..])
+    );
+    assert_eq!(first.work_units()[0].tile_byte_span().start.get(), 17);
+    assert_eq!(first.work_units()[1].tile_byte_span().start.get(), 901);
+}
+
+#[test]
+fn retired_scratch_reuses_tile_cdf_without_retaining_initial_frame_arc() {
+    let payload = [0x80];
+    let framing = one_tile_framing(&payload);
+    let initial = Arc::new(FrameCdfSubset::from_defaults());
+    let frame = base_frame().with_initial_cdfs(Arc::clone(&initial));
+    let input = input_with_frame(&payload, &framing, frame, DecodeLimits::unlimited());
+    let mut scratch = TilePayloadScratch::default();
+    let retained_count = Arc::strong_count(&initial);
+    let first = plan_tile_payload_boundary_with_storage(
+        &input,
+        &mut scratch.work_units,
+        &mut scratch.tile_cdfs,
+    )
+    .unwrap();
+    let cdf = std::ptr::from_ref(first.work_units()[0].cdf().tile_cdfs());
+    assert_eq!(Arc::strong_count(&initial), retained_count + 1);
+    first.retire_into(&mut scratch);
+    assert_eq!(Arc::strong_count(&initial), retained_count);
+
+    let second = plan_tile_payload_boundary_with_storage(
+        &input,
+        &mut scratch.work_units,
+        &mut scratch.tile_cdfs,
+    )
+    .unwrap();
+    assert_eq!(
+        std::ptr::from_ref(second.work_units()[0].cdf().tile_cdfs()),
+        cdf
+    );
+}
+
+#[test]
+fn continuation_work_unit_storage_survives_repeated_cycles() {
+    let first_payload = [0x80];
+    let second_payload = [0x00];
+    let first_framing = parse_tile_group_framing(&first_payload, 0, 0, 1, false);
+    let second_framing = parse_tile_group_framing(&second_payload, 1, 1, 1, false);
+    let grid = TileGridFacts::new(2, 1, &[0, 16, 32], &[0, 8]);
+    let first_frame = TileFrameFacts::new(ObuType::ClosedLoopKey, true, false, 42, false);
+    let second_frame = TileFrameFacts::new(ObuType::ClosedLoopKey, true, true, 42, false);
+    let first_input = TilePayloadBoundaryInput::new(
+        &first_payload,
+        ByteOffset::new(17),
+        &first_framing,
+        grid,
+        first_frame,
+        DecodeLimits::unlimited(),
+    );
+    let second_input = TilePayloadBoundaryInput::new(
+        &second_payload,
+        ByteOffset::new(901),
+        &second_framing,
+        grid,
+        second_frame,
+        DecodeLimits::unlimited(),
+    );
+    let mut scratch = TilePayloadScratch::default();
+
+    let mut first = plan_tile_payload_boundary_with_storage(
+        &first_input,
+        &mut scratch.work_units,
+        &mut scratch.tile_cdfs,
+    )
+    .unwrap();
+    core::mem::swap(
+        &mut scratch.work_units,
+        &mut scratch.continuation_work_units,
+    );
+    let second = plan_tile_payload_boundary_with_storage(
+        &second_input,
+        &mut scratch.work_units,
+        &mut scratch.tile_cdfs,
+    )
+    .unwrap();
+    first
+        .append_continuation(second, &mut scratch.continuation_work_units)
+        .unwrap();
+    let continuation_ptr = scratch.continuation_work_units.as_ptr();
+    first.retire_into(&mut scratch);
+
+    let mut first = plan_tile_payload_boundary_with_storage(
+        &first_input,
+        &mut scratch.work_units,
+        &mut scratch.tile_cdfs,
+    )
+    .unwrap();
+    core::mem::swap(
+        &mut scratch.work_units,
+        &mut scratch.continuation_work_units,
+    );
+    let second = plan_tile_payload_boundary_with_storage(
+        &second_input,
+        &mut scratch.work_units,
+        &mut scratch.tile_cdfs,
+    )
+    .unwrap();
+    assert_eq!(second.work_units.as_ptr(), continuation_ptr);
+    first
+        .append_continuation(second, &mut scratch.continuation_work_units)
+        .unwrap();
+    assert_eq!(first.work_units.len(), 2);
+}
+
+#[test]
+fn retained_work_unit_vector_grows_from_smaller_capacity() {
+    let payload = [0x00, 0x80, 0x00];
+    let framing = parse_tile_group_framing(&payload, 0, 1, 1, false);
+    let grid = TileGridFacts::new(2, 1, &[0, 16, 32], &[0, 8]);
+    let input = input_with_grid(&payload, &framing, grid, DecodeLimits::unlimited());
+    let mut scratch = TilePayloadScratch::default();
+    scratch.work_units.reserve_exact(1);
+
+    let plan = plan_tile_payload_boundary_with_storage(
+        &input,
+        &mut scratch.work_units,
+        &mut scratch.tile_cdfs,
+    )
+    .unwrap();
+    assert_eq!(plan.work_units().len(), 2);
 }
 
 #[test]

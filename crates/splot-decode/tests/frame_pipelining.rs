@@ -150,6 +150,15 @@ fn hash_report_matches_depth_one_at_every_capacity() {
 }
 
 #[test]
+fn scheduled_context_reuse_retires_active_temporal_owner() {
+    let expected = collect_raw(&depth_one(), EIGHT_FRAME, DecodeOptions::default())
+        .expect("depth-one eight-frame decode");
+    let actual = collect_raw_with_timeout(4, FrameDelay::from(2usize), EIGHT_FRAME.to_vec())
+        .expect("scheduled contexts retire active temporal owners");
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn y4m_output_matches_depth_one() {
     let mut expected = Vec::new();
     depth_one()
