@@ -22,7 +22,6 @@ use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 use super::plan::MAX_DEFERRED_CHROMA_PLANES;
 use super::transform_units::tx_size_log2;
 use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePlan, chroma_pair};
-use crate::support::reusable_scratch::recycle_pooled_vec;
 
 /// One block's planes, as a range of the row's arena.
 ///
@@ -286,7 +285,7 @@ impl ResidualPlanePlan {
                 coeffs_arena,
                 units,
             );
-            recycle_pooled_vec(palette_color_map.unwrap_or_default());
+            super::palette::recycle_palette_map(palette_color_map);
             return parsed;
         }
         if let Some(tx_partition_context) = tx_partition_context {
@@ -303,7 +302,7 @@ impl ResidualPlanePlan {
                 coeffs_arena,
                 units,
             );
-            recycle_pooled_vec(palette_color_map.unwrap_or_default());
+            super::palette::recycle_palette_map(palette_color_map);
             return parsed;
         }
         let mut coeffs = crate::bitstream::tile_payload::decode_general_intra_plane_coeffs(
@@ -651,7 +650,7 @@ impl ParsedResidualPlane {
                     intra_edge,
                     luma_context,
                 )?;
-                recycle_pooled_vec(palette_color_map.unwrap_or_default());
+                super::palette::recycle_palette_map(palette_color_map);
                 self.plane.publish_luma_transform(block_decoded);
                 Ok(())
             }
@@ -673,7 +672,7 @@ impl ParsedResidualPlane {
                         intra_edge,
                         luma_context,
                     )?;
-                    recycle_pooled_vec(unit.palette_color_map.unwrap_or_default());
+                    super::palette::recycle_palette_map(unit.palette_color_map);
                     let (log2_width, log2_height) = tx_size_log2(unit.block.tx_size)?;
                     let width4 = (1usize << log2_width) >> 2;
                     let height4 = (1usize << log2_height) >> 2;
@@ -703,7 +702,7 @@ impl ParsedResidualPlane {
                         intra_edge,
                         luma_context,
                     )?;
-                    recycle_pooled_vec(unit.palette_color_map.unwrap_or_default());
+                    super::palette::recycle_palette_map(unit.palette_color_map);
                     plan.publish_luma_transform(block_decoded);
                 }
                 Ok(())

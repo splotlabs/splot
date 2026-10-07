@@ -11,7 +11,6 @@ use crate::bitstream::tile_payload::{
 
 use super::RectLumaPlan;
 use super::transform_units::tx_size_log2;
-use crate::support::reusable_scratch::take_pooled_vec;
 
 use super::{ResidualPlanePlan, ResidualReconstructionPlan};
 
@@ -21,6 +20,29 @@ const PALETTE_ROW_COPY_PREVIOUS: u8 = 2;
 const PALETTE_ROW_COPY_LAST: u8 = 1;
 const PALETTE_DIRECTION_REASON: &str = "palette_direction";
 const PALETTE_UNIFORM_REASON: &str = "palette_color_idx_uniform";
+
+/// Spare palette color maps. The worker that parses a block is often not the
+/// one that reconstructs it, so the spares are shared rather than per thread.
+static SPARE_PALETTE_MAPS: parking_lot::Mutex<Vec<Vec<u8>>> = parking_lot::Mutex::new(Vec::new());
+
+/// Spares kept; a map beyond this many in flight is freed.
+const MAX_SPARE_PALETTE_MAPS: usize = 64;
+
+fn take_palette_map() -> Vec<u8> {
+    SPARE_PALETTE_MAPS.lock().pop().unwrap_or_default()
+}
+
+/// Gives a reconstructed block's color map back for the next palette block.
+pub(super) fn recycle_palette_map(map: Option<Vec<u8>>) {
+    let Some(mut map) = map else {
+        return;
+    };
+    map.clear();
+    let mut spares = SPARE_PALETTE_MAPS.lock();
+    if spares.len() < MAX_SPARE_PALETTE_MAPS {
+        spares.push(map);
+    }
+}
 
 impl ResidualPlanePlan {
     pub(super) fn palette_color_map_for_unit(
@@ -60,7 +82,7 @@ impl ResidualPlanePlan {
                 context: "palette transform extent",
             });
         }
-        let mut unit_map = take_pooled_vec::<u8>(unit_width.saturating_mul(unit_height));
+        let mut unit_map = take_palette_map();
         for row in 0..unit_height {
             let start = (local_y + row) * parent_width + local_x;
             let end = start + unit_width;
@@ -85,7 +107,7 @@ impl ResidualPlanePlan {
         let frame_height = self.block_ctx.frame_mi_rows().saturating_mul(4);
         let cols = plane_width.min(frame_width.saturating_sub(self.x));
         let rows = plane_height.min(frame_height.saturating_sub(self.y));
-        let mut color_map = take_pooled_vec::<u8>(plane_width.saturating_mul(plane_height));
+        let mut color_map = take_palette_map();
         color_map.resize(plane_width.saturating_mul(plane_height), 0);
         let direction = if plane_width < 64 && plane_height < 64 {
             read_palette_literal(symbols, 1, PALETTE_DIRECTION_REASON)? != 0
