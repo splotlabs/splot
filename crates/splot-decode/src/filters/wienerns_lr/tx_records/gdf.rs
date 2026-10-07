@@ -30,7 +30,14 @@ pub(crate) struct GdfState {
 }
 
 impl GdfState {
-    pub(crate) fn for_tile(&self, mi_rows: Range<usize>, mi_cols: Range<usize>) -> Result<Self> {
+    /// Lays out one tile's state, on the grid a spent tile state left when
+    /// `spare` carries one.
+    pub(crate) fn for_tile(
+        &self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+        spare: Option<Self>,
+    ) -> Result<Self> {
         if !self.active {
             return Ok(Self::inactive());
         }
@@ -44,7 +51,8 @@ impl GdfState {
         let len = grid_rows
             .checked_mul(grid_cols)
             .ok_or_else(gdf_state_error)?;
-        let mut values = Vec::new();
+        let mut values = spare.map(|spare| spare.values).unwrap_or_default();
+        values.clear();
         values
             .try_reserve_exact(len)
             .map_err(|_| gdf_allocation_error())?;

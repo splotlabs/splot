@@ -546,7 +546,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         reference,
         false,
         products,
-        Vec::new(),
+        core::mem::take(&mut scratch.frame_filter_records.cdef_grid_values),
     )?;
     let InterBlockSetup {
         params,

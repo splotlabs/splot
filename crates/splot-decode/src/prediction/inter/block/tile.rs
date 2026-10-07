@@ -534,6 +534,7 @@ impl<'payload> TileParser<'payload> {
                 traversal: crate::bitstream::tile_payload::TileTraversalStorage::default(),
                 block_decoded: TileBlockDecodedState::default(),
                 commit_block_decoded: TileBlockDecodedState::default(),
+                spent_filters: None,
             },
         )
     }
@@ -1024,6 +1025,9 @@ pub(in crate::prediction::inter) struct TileParseState {
     /// The tile's block-decoded grid, and the copy the commit spine reads.
     block_decoded: TileBlockDecodedState,
     commit_block_decoded: TileBlockDecodedState,
+    /// The CDEF, GDF and CCSO tile states the last tile merged, whose grids
+    /// the next tile's states are laid out on.
+    spent_filters: Option<(CdefState, GdfState, CcsoState)>,
 }
 
 #[derive(Default)]
@@ -1768,6 +1772,7 @@ fn luma_rect<T: ReconSample>(
     )?)
 }
 
+#[cfg(test)]
 fn superblock_luma_rects<T: ReconSample>(
     mi_rows: &Range<usize>,
     mi_cols: &Range<usize>,
@@ -1911,43 +1916,38 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 .max(1),
         );
         let row_buffers = core::mem::take(&mut parse_state.row_buffers);
+        let (spent_cdef, spent_gdf, spent_ccso) = match parse_state.spent_filters.take() {
+            Some((cdef, gdf, ccso)) => (Some(cdef), Some(gdf), Some(ccso)),
+            None => (None, None, None),
+        };
         let mut parser = TileParser::new(
             tile,
             tile_bytes,
             &context,
-            cdef_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
-            gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
-            ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
+            cdef_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), spent_cdef)?,
+            gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), spent_gdf)?,
+            ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), spent_ccso)?,
             parse_state,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
         let info = workspace.info();
-        let rects = if global_intrabc {
-            Vec::new()
-        } else {
-            superblock_luma_rects(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4)?
-        };
-        let surface_source = match reusable_surface_source
+        let mut surface_source = reusable_surface_source
             .filter(|source| std::sync::Arc::strong_count(source) == 1)
-        {
-            Some(mut source) => {
-                if let Some(inner) = std::sync::Arc::get_mut(&mut source) {
-                    inner.get_mut().reset(info, rects, recycled_surfaces);
-                    source
-                } else {
-                    std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
-                        info,
-                        rects,
-                        recycled_surfaces,
-                    )))
-                }
-            }
-            None => std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
-                info,
-                rects,
-                recycled_surfaces,
-            ))),
+            .unwrap_or_else(|| {
+                std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
+                    info,
+                    Vec::new(),
+                    Vec::new(),
+                )))
+            });
+        let Some(source) = std::sync::Arc::get_mut(&mut surface_source) else {
+            return Err(invalid_inter_tile_scheduling_state());
         };
+        let rects = source.get_mut().reset(info, recycled_surfaces);
+        rects.clear();
+        if !global_intrabc {
+            superblock_luma_rects_into(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4, rects)?;
+        }
         let commit = TileCommit::direct(
             ordered,
             workspace,
@@ -2011,6 +2011,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &mut output.traversal.unit_filters,
         )?;
         parse_state.traversal = core::mem::take(&mut output.traversal);
+        parse_state.spent_filters = Some((output.cdef_state, output.gdf_state, output.ccso_state));
     }
     if !decoded_any {
         return Err(no_decoded_block_error());

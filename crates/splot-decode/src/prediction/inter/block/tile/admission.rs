@@ -395,16 +395,16 @@ impl<T: ReconSample> SurfaceSource<T> {
         Self { info, rects, free }
     }
 
-    /// Lays this source out for another tile, keeping its free surfaces.
+    /// Lays this source out for another tile and lends its rectangle list,
+    /// which the caller fills for the new tile.
     pub(super) fn reset(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
-        rects: Vec<splot_recon::PlaneRect>,
         free: Vec<splot_recon::OwnedFrameRect<T>>,
-    ) {
+    ) -> &mut Vec<splot_recon::PlaneRect> {
         self.info = info;
-        self.rects = rects;
         self.free = free;
+        &mut self.rects
     }
 
     /// Hands out the surface for `unit`, whose rectangle the frame fixed when
@@ -1829,17 +1829,16 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .surfaces
         .take()
         .unwrap_or_else(|| Arc::new(Mutex::new(SurfaceSource::new(info, Vec::new(), Vec::new()))));
-    let source = Arc::get_mut(&mut surface_source)
+    let rects = Arc::get_mut(&mut surface_source)
         .ok_or_else(invalid_inter_tile_scheduling_state)?
-        .get_mut();
-    source.info = info;
-    source.free = surfaces;
+        .get_mut()
+        .reset(info, surfaces);
     super::superblock_luma_rects_into(
         &geometry.mi_rows,
         &geometry.mi_cols,
         &workspace,
         params.sb_h4,
-        &mut source.rects,
+        rects,
     )?;
     let resolve_state = TileResolveState::new(&sequence);
     let sealed = if core
