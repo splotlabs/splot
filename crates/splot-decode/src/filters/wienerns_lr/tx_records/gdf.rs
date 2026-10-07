@@ -39,7 +39,10 @@ impl GdfState {
         spare: Option<Self>,
     ) -> Result<Self> {
         if !self.active {
-            return Ok(Self::inactive());
+            let mut inactive = Self::inactive();
+            inactive.values = spare.map(|spare| spare.values).unwrap_or_default();
+            inactive.values.clear();
+            return Ok(inactive);
         }
         let unit_mi = self.block_size / 4;
         let row_start = mi_rows.start / unit_mi;

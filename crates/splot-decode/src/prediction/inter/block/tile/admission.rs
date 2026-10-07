@@ -132,6 +132,8 @@ struct ScheduledFrontier<T: ReconSample> {
     sealed: Option<crate::filters::source::DeblockedSource<T>>,
     sealed_rows: usize,
     terminal_workspace: Option<crate::filters::source::DeblockedSource<T>>,
+    /// The emptied source cell the terminal workspace is wrapped in.
+    terminal_shell: Option<crate::filters::source::DeblockedShell>,
     deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
     filter: Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
     next_filter_stripe: usize,
@@ -1593,7 +1595,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             if frontier.sealed.is_some() {
                 drop(workspace);
             } else {
-                let mut source = crate::filters::source::DeblockedSource::new(workspace);
+                let mut source = crate::filters::source::DeblockedSource::new_in(
+                    frontier.terminal_shell.take(),
+                    workspace,
+                );
                 if frontier.deblock.is_none()
                     && !source.publish_final_rows(self.info.storage_luma_size().height())
                 {
@@ -1889,6 +1894,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             sealed,
             sealed_rows: 0,
             terminal_workspace: None,
+            terminal_shell: reusable.deblocked_shell.take(),
             deblock: None,
             filter: None,
             next_filter_stripe: 0,

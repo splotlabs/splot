@@ -48,6 +48,7 @@ unsafe impl<T: ReconSample> Send for DeblockedStorage<T> {}
 unsafe impl<T: ReconSample> Sync for DeblockedStorage<T> {}
 
 impl<T: ReconSample> DeblockedSource<T> {
+    #[cfg(test)]
     pub(crate) fn new(workspace: CurrentFrameWorkspace<T>) -> Self {
         Self::new_in(None, workspace)
     }
