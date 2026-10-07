@@ -15,10 +15,11 @@
 use std::sync::Mutex;
 /// Spare buffers held per sample depth.
 ///
-/// One frame's worth of planes is three buffers, and a decode keeps at most a
-/// few frames' workspaces in flight per depth, so this bounds the retained
-/// storage at a handful of frames while still covering the deepest pipeline.
-const MAX_SPARE_BUFFERS: usize = 24;
+/// One workspace is three buffers and a frame in flight holds up to three
+/// workspaces. Sixteen workspaces cover a ten-worker pipeline, so retired
+/// buffers are kept instead of freed and allocated again; peak RSS is unchanged
+/// because the spares never exceed the peak in flight.
+const MAX_SPARE_BUFFERS: usize = 48;
 
 /// Buffers below this are tile- or test-sized rather than frame-sized, and
 /// pooling them would only crowd out the ones worth keeping.

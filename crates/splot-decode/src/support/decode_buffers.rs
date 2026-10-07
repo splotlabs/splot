@@ -13,7 +13,12 @@ use crate::filters::wienerns_lr::FrameFilterRecordCapacities;
 pub(crate) struct DecodeBuffers {
     planes: Arc<splot_recon::PlanePool>,
     tile_records: Mutex<FrameFilterRecordCapacities>,
+    /// Per superblock unit, the row-list capacities its spent buffers reached.
+    row_capacities: Mutex<Vec<RowCapacities>>,
 }
+
+/// The capacities of one superblock unit's growable row lists.
+pub(crate) type RowCapacities = [usize; 6];
 
 impl DecodeBuffers {
     /// Opens the storage for one decode.
@@ -35,5 +40,26 @@ impl DecodeBuffers {
     /// Notes the record capacities one spent tile reached.
     pub(crate) fn note_tile_record_capacities(&self, reached: FrameFilterRecordCapacities) {
         self.tile_records.lock().cover(reached);
+    }
+
+    /// The row-list capacities any frame's buffers reached for `unit`.
+    pub(crate) fn row_capacities(&self, unit: usize) -> RowCapacities {
+        self.row_capacities
+            .lock()
+            .get(unit)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Notes the row-list capacities one spent unit reached, so every frame
+    /// in flight sizes that unit's lists once instead of growing them apart.
+    pub(crate) fn note_row_capacities(&self, unit: usize, reached: RowCapacities) {
+        let mut table = self.row_capacities.lock();
+        if table.len() <= unit {
+            table.resize(unit + 1, RowCapacities::default());
+        }
+        for (held, reached) in table[unit].iter_mut().zip(reached) {
+            *held = (*held).max(reached);
+        }
     }
 }

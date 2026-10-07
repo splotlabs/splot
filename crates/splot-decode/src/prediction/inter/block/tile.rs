@@ -907,6 +907,38 @@ pub(crate) struct ReconRowBuffers {
 }
 
 impl ReconRowBuffers {
+    fn capacities(&self) -> crate::support::decode_buffers::RowCapacities {
+        [
+            self.superblocks.capacity(),
+            self.entries.capacity(),
+            self.residual_blocks.capacity(),
+            self.temporal.capacity(),
+            self.motion_grids.capacity(),
+            self.flag_log.capacity(),
+        ]
+    }
+
+    fn reserve_to(&mut self, reached: crate::support::decode_buffers::RowCapacities) -> Result<()> {
+        fn reserve<E>(list: &mut Vec<E>, capacity: usize) -> Result<()> {
+            list.try_reserve_exact(capacity.saturating_sub(list.len()))
+                .map_err(|_| inter_allocation!("superblock row lists"))
+        }
+        let [
+            superblocks,
+            entries,
+            residual_blocks,
+            temporal,
+            motion_grids,
+            flag_log,
+        ] = reached;
+        reserve(&mut self.superblocks, superblocks)?;
+        reserve(&mut self.entries, entries)?;
+        reserve(&mut self.residual_blocks, residual_blocks)?;
+        reserve(&mut self.temporal, temporal)?;
+        reserve(&mut self.motion_grids, motion_grids)?;
+        reserve(&mut self.flag_log, flag_log)
+    }
+
     fn reserve_coefficients(&mut self, capacity: usize) -> Result<()> {
         self.residual_coeffs
             .try_reserve_exact(capacity.saturating_sub(self.residual_coeffs.len()))
@@ -1390,6 +1422,8 @@ pub(crate) struct TileGeometry {
 #[derive(Default)]
 pub(crate) struct ParseProgress {
     row_buffers: Mutex<Vec<Option<ReconRowBuffers>>>,
+    /// The decode's storage, whose per-unit capacities size the row buffers.
+    buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
     residuals: Arc<Mutex<FrameResiduals>>,
     coefficient_scratch: Mutex<Vec<i32>>,
     plane_scratch: Mutex<crate::residual::pipeline::ResidualPlaneArena>,
@@ -1412,7 +1446,7 @@ impl ParseProgress {
     /// Resets a retired frame's parse state while keeping its backing storage.
     pub(crate) fn reset(
         &mut self,
-        buffers: &crate::support::decode_buffers::DecodeBuffers,
+        buffers: &Arc<crate::support::decode_buffers::DecodeBuffers>,
     ) -> bool {
         let geometry = self.geometry.get_mut();
         let geometry_reusable = match geometry {
@@ -1441,6 +1475,7 @@ impl ParseProgress {
         let records = self.records.get_mut();
         records.clear();
         records.reserve_from(buffers.tile_record_capacities());
+        self.buffers = Some(Arc::clone(buffers));
         true
     }
 
@@ -1548,14 +1583,22 @@ impl ParseProgress {
     }
 
     fn take_row_buffers(&self, index: usize) -> Result<ReconRowBuffers> {
-        self.row_buffers
+        let mut row = self
+            .row_buffers
             .lock()
             .get_mut(index)
             .and_then(Option::take)
-            .ok_or_else(invalid_inter_tile_scheduling_state)
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        if let Some(buffers) = &self.buffers {
+            row.reserve_to(buffers.row_capacities(index))?;
+        }
+        Ok(row)
     }
 
     pub(super) fn return_row_buffers(&self, index: usize, buffers: ReconRowBuffers) -> Result<()> {
+        if let Some(shared) = &self.buffers {
+            shared.note_row_capacities(index, buffers.capacities());
+        }
         let mut rows = self.row_buffers.lock();
         let slot = rows
             .get_mut(index)
