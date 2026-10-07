@@ -1414,6 +1414,7 @@ fn impossible_tip_output_runtime_inputs_are_typed_state_errors() {
         };
         let error = super::super::block::tip::reconstruct_output(
             &mut super::super::InterDecodeScratch::default(),
+            splot_recon::FramePlaneSamples::default(),
             &sequence,
             &core,
             &reference,
@@ -1446,6 +1447,7 @@ fn unpublished_tip_output_motion_field_is_a_typed_reference_state_error() {
 
     let error = super::super::block::tip::reconstruct_output(
         &mut super::super::InterDecodeScratch::default(),
+        splot_recon::FramePlaneSamples::default(),
         &sequence,
         &core,
         &reference,

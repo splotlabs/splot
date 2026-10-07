@@ -1249,6 +1249,7 @@ const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     decode_scratch: &mut super::InterDecodeScratch<T>,
+    mut recycled: splot_recon::FramePlaneSamples<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
@@ -1273,7 +1274,6 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     if sequence.partition.is_none() {
         return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
     }
-    let mut recycled = decode_scratch.reclaim_retired_planes();
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
     let temporal = decode_scratch
         .temporal_context

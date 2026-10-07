@@ -1025,6 +1025,8 @@ where
     let mut shared_sequence = None;
     let mut entropy_eight = frame_pipeline::EntropyContexts::new(ring.capacity());
     let mut entropy_ten = frame_pipeline::EntropyContexts::new(ring.capacity());
+    let mut tip_eight = Vec::new();
+    let mut tip_ten = Vec::new();
     for next_candidate in candidates {
         entropy_eight.retire_completed();
         entropy_ten.retire_completed();
@@ -1476,20 +1478,16 @@ where
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
-                                move |scratch, writers| {
-                                    inter::decode_tip_output_frame(
-                                        scratch,
-                                        next_candidate,
-                                        inter_envelope,
-                                        task_core,
-                                        &shared,
-                                        options,
-                                        &inter_state,
-                                        BitDepth::Eight,
-                                        geometry,
-                                        writers,
-                                    )
+                                frame_pipeline::TipOutputJob {
+                                    candidate: next_candidate,
+                                    envelope: inter_envelope,
+                                    core: task_core,
+                                    sequence: shared,
+                                    options,
+                                    reference: inter_state,
+                                    geometry,
                                 },
+                                frame_pipeline::claim_tip_output_cell(&mut tip_eight),
                                 frame_index,
                                 &dependencies,
                                 products,
@@ -1703,20 +1701,16 @@ where
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
-                                move |scratch, writers| {
-                                    inter::decode_tip_output_frame(
-                                        scratch,
-                                        next_candidate,
-                                        inter_envelope,
-                                        task_core,
-                                        &shared,
-                                        options,
-                                        &inter_state,
-                                        BitDepth::Ten,
-                                        geometry,
-                                        writers,
-                                    )
+                                frame_pipeline::TipOutputJob {
+                                    candidate: next_candidate,
+                                    envelope: inter_envelope,
+                                    core: task_core,
+                                    sequence: shared,
+                                    options,
+                                    reference: inter_state,
+                                    geometry,
                                 },
+                                frame_pipeline::claim_tip_output_cell(&mut tip_ten),
                                 frame_index,
                                 &dependencies,
                                 products,

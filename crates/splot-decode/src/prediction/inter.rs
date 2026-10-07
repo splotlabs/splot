@@ -119,8 +119,10 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait()?;
+        let planes = scratch.reclaim_retired_planes();
         return decode_tip_output_frame(
             scratch,
+            planes,
             candidate,
             frame_envelope,
             core,
@@ -197,6 +199,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
+    planes: splot_recon::FramePlaneSamples<T>,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     core: Arc<FrameHeaderCore>,
@@ -218,8 +221,9 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
         sequence.general.chroma_format_idc,
     )?;
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
-    let (frame, motion_field) =
-        block::tip::reconstruct_output(scratch, sequence, &core, reference, geometry, offset)?;
+    let (frame, motion_field) = block::tip::reconstruct_output(
+        scratch, planes, sequence, &core, reference, geometry, offset,
+    )?;
     let qindex = core.quantization_params.map_or(0, |q| q.base_q_idx);
     products
         .frame_cdfs()?

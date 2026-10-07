@@ -669,6 +669,21 @@ impl<T: ReconSample> FrameProgress<T> {
         })
     }
 
+    /// Takes the filtered workspace's planes from a frame that is published
+    /// whole instead of filtered, so its reconstruction writes into them.
+    pub(crate) fn take_unfiltered_planes(&self) -> Option<splot_recon::FramePlaneSamples<T>> {
+        if self.layout.get().is_some() {
+            return None;
+        }
+        let workspace = self.workspace.write().take()?;
+        Some(
+            workspace
+                .into_workspace()
+                .into_plane_samples()
+                .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes())),
+        )
+    }
+
     /// Freezes the filtered workspace and publishes the frozen frame, both
     /// under the exclusive lock.
     ///
