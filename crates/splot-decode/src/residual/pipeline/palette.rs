@@ -11,6 +11,7 @@ use crate::bitstream::tile_payload::{
 
 use super::RectLumaPlan;
 use super::transform_units::tx_size_log2;
+use crate::support::reusable_scratch::take_pooled_vec;
 
 use super::{ResidualPlanePlan, ResidualReconstructionPlan};
 
@@ -59,7 +60,7 @@ impl ResidualPlanePlan {
                 context: "palette transform extent",
             });
         }
-        let mut unit_map = Vec::with_capacity(unit_width.saturating_mul(unit_height));
+        let mut unit_map = take_pooled_vec::<u8>(unit_width.saturating_mul(unit_height));
         for row in 0..unit_height {
             let start = (local_y + row) * parent_width + local_x;
             let end = start + unit_width;
@@ -84,7 +85,8 @@ impl ResidualPlanePlan {
         let frame_height = self.block_ctx.frame_mi_rows().saturating_mul(4);
         let cols = plane_width.min(frame_width.saturating_sub(self.x));
         let rows = plane_height.min(frame_height.saturating_sub(self.y));
-        let mut color_map = vec![0u8; plane_width.saturating_mul(plane_height)];
+        let mut color_map = take_pooled_vec::<u8>(plane_width.saturating_mul(plane_height));
+        color_map.resize(plane_width.saturating_mul(plane_height), 0);
         let direction = if plane_width < 64 && plane_height < 64 {
             read_palette_literal(symbols, 1, PALETTE_DIRECTION_REASON)? != 0
         } else {

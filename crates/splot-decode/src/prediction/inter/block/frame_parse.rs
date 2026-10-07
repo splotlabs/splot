@@ -283,3 +283,23 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         },
     ))
 }
+
+#[cfg(test)]
+impl<T: ReconSample> InterDecodeScratch<T> {
+    pub(crate) fn frame_filter_records_capacity(&self) -> usize {
+        self.frame_filter_records
+            .last()
+            .map_or(0, |records| records.deblock_blocks.capacity())
+    }
+
+    pub(crate) fn derived_filter_record_capacities(&self) -> (usize, usize, usize, [usize; 3]) {
+        let empty = crate::filters::wienerns_lr::FrameFilterRecords::default();
+        let records = self.frame_filter_records.last().unwrap_or(&empty);
+        (
+            records.cdef_grid_values.capacity(),
+            records.cdef_strengths.capacity(),
+            records.tx_skip_grid_values.capacity(),
+            records.ccso_offset_luts.each_ref().map(Vec::capacity),
+        )
+    }
+}

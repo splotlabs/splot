@@ -185,7 +185,8 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     /// which a placeholder would build and discard on every frame.
     tile: Option<tile::TileDecodeScratch<T>>,
     temporal_context: Option<TemporalMvContext>,
-    frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
+    /// One record set per frame in flight, so none is dropped and rebuilt.
+    frame_filter_records: Vec<crate::filters::wienerns_lr::FrameFilterRecords>,
     /// The payload plan's framing, work units and tile CDFs, kept across frames.
     pub(in crate::prediction::inter) payload: crate::bitstream::tile_payload::TilePayloadScratch,
     /// The fused walk's initial CDF cell, reset in place for each frame.
@@ -210,14 +211,18 @@ impl<T: ReconSample> InterDecodeScratch<T> {
     pub(crate) fn take_frame_filter_records(
         &mut self,
     ) -> crate::filters::wienerns_lr::FrameFilterRecords {
-        let mut records = core::mem::take(&mut self.frame_filter_records);
+        let mut records = self.frame_filter_records.pop().unwrap_or_default();
         records.buffers.clone_from(&self.buffers);
         records
     }
 
     /// Takes back the plane buffers the last frame's filter phase retired.
     pub(crate) fn reclaim_retired_planes(&mut self) -> splot_recon::FramePlaneSamples<T> {
-        T::reclaim_planes(&mut self.frame_filter_records.retired_planes)
+        let retired = self
+            .frame_filter_records
+            .last_mut()
+            .map(|records| &mut records.retired_planes);
+        T::reclaim_planes(retired.unwrap_or(&mut splot_recon::RetiredFramePlanes::default()))
             .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes()))
     }
 
@@ -233,25 +238,7 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         &mut self,
         records: crate::filters::wienerns_lr::FrameFilterRecords,
     ) {
-        self.frame_filter_records = records;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn frame_filter_records_capacity(&self) -> usize {
-        self.frame_filter_records.deblock_blocks.capacity()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn derived_filter_record_capacities(&self) -> (usize, usize, usize, [usize; 3]) {
-        (
-            self.frame_filter_records.cdef_grid_values.capacity(),
-            self.frame_filter_records.cdef_strengths.capacity(),
-            self.frame_filter_records.tx_skip_grid_values.capacity(),
-            self.frame_filter_records
-                .ccso_offset_luts
-                .each_ref()
-                .map(Vec::capacity),
-        )
+        self.frame_filter_records.push(records);
     }
 }
 
@@ -534,6 +521,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     products: &mut super::FrameProductWriters,
 ) -> Result<InterBlockDecodeOutput<T>> {
     let (payload, extra_payloads, work_units) = tile_plan.payloads_and_work_units_mut();
+    let mut records = scratch.take_frame_filter_records();
     let setup = derive_inter_block_setup(
         work_units,
         sequence,
@@ -544,7 +532,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         reference,
         false,
         products,
-        core::mem::take(&mut scratch.frame_filter_records.cdef_grid_values),
+        core::mem::take(&mut records.cdef_grid_values),
     )?;
     let InterBlockSetup {
         params,
@@ -556,7 +544,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         initial_frame_cdfs,
         qindex,
     } = setup;
-    let mut records = core::mem::take(&mut scratch.frame_filter_records);
     let temporal_context = prelude.run(
         scratch
             .temporal_context
