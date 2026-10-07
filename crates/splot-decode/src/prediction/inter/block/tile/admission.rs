@@ -305,6 +305,9 @@ pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
     reference: Option<Arc<InterReferenceState<T>>>,
     initial_cdfs: Option<Arc<FrameCdfSubset>>,
+    /// The last filter phase's emptied deblocked-source cell, parked between
+    /// the walk's start and its prepare.
+    pub(crate) deblocked_shell: Option<crate::filters::source::DeblockedShell>,
 }
 
 impl<T: ReconSample> ScheduledTileWorkspace<T> {
@@ -1157,6 +1160,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             filters,
             reference: Some(self.recon.reference),
             initial_cdfs: self.recon.initial_cdfs,
+            deblocked_shell: None,
         }
     }
 
@@ -1543,12 +1547,14 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             );
             frontier.next_filter_stripe += 1;
         }
-        drop(frontier.sealed.take());
-        drop(frontier.terminal_workspace.take());
+        let source = frontier
+            .sealed
+            .take()
+            .or(frontier.terminal_workspace.take());
         Ok(ScheduledFrameProgress {
             filters,
             output: Some(
-                crate::filters::wienerns_lr::recon::OwnedFilterSetup::owned_finish(filter),
+                crate::filters::wienerns_lr::recon::OwnedFilterSetup::owned_finish(filter, source),
             ),
         })
     }
@@ -1833,7 +1839,10 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
         });
         let workspace = CurrentFrameWorkspace::new_recycled_from(info, &mut spare)?;
-        Some(crate::filters::source::DeblockedSource::new(workspace))
+        Some(crate::filters::source::DeblockedSource::new_in(
+            reusable.deblocked_shell.take(),
+            workspace,
+        ))
     } else {
         None
     };

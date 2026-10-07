@@ -386,6 +386,7 @@ impl<'payload, T: ReconSample> InterFrameStart<'payload, T> {
             mut products,
         } = self;
         let _scopes = quantizer.install_frame();
+        reusable.deblocked_shell = records.deblocked_shell.take();
         let mut payload_scratch = core::mem::take(&mut reusable.payload);
         let prologue = derive_inter_walk_prologue(
             plan,

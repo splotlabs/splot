@@ -38,7 +38,9 @@ impl CcsoState {
         spare: Option<Self>,
     ) -> Result<Self> {
         if !self.active {
-            return Ok(Self::inactive());
+            let mut blocks = spare.map(|spare| spare.blocks).unwrap_or_default();
+            blocks.iter_mut().for_each(Vec::clear);
+            return Ok(Self::inactive_with(blocks));
         }
         let unit_mi = 1usize
             .checked_shl(self.shift)
@@ -155,6 +157,7 @@ impl CcsoState {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn inactive() -> Self {
         Self::inactive_with(std::array::from_fn(|_| Vec::new()))
     }

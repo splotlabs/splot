@@ -766,7 +766,7 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
     drop(source);
 
     let freezes = AtomicUsize::new(0);
-    let (outcome, shell) = OwnedFilterSetup::owned_finish(setup).finish(|frame| {
+    let (outcome, shell) = OwnedFilterSetup::owned_finish(setup, None).finish(|frame| {
         freezes.fetch_add(1, Ordering::SeqCst);
         frame
     });
@@ -803,7 +803,7 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     }
     drop(source);
     let (outcome, mut setup) =
-        OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+        OwnedFilterSetup::owned_finish(setup, None).finish(core::convert::identity);
     assert!(outcome.is_ok());
     assert_eq!(Arc::as_ptr(&setup), shell);
     assert!(setup.as_ref().is_none());
@@ -822,7 +822,8 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
         job.run().unwrap();
     }
     drop(source);
-    let (outcome, setup) = OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+    let (outcome, setup) =
+        OwnedFilterSetup::owned_finish(setup, None).finish(core::convert::identity);
     assert!(outcome.is_ok());
     assert_eq!(Arc::as_ptr(&setup), shell);
     assert!(setup.as_ref().is_none());
@@ -856,7 +857,8 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
             job.run().unwrap();
         }
         drop(source);
-        let (outcome, _) = OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+        let (outcome, _) =
+            OwnedFilterSetup::owned_finish(setup, None).finish(core::convert::identity);
         outcome.unwrap().1
     }
 
@@ -905,7 +907,7 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     duplicate.remove(0).run().unwrap();
     assert!(duplicate.remove(0).run().is_err());
     assert!(
-        OwnedFilterSetup::owned_finish(setup)
+        OwnedFilterSetup::owned_finish(setup, None)
             .finish(core::convert::identity)
             .0
             .is_err(),
@@ -921,7 +923,7 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     }
     let lingering = Arc::clone(&setup);
     assert!(
-        OwnedFilterSetup::owned_finish(setup)
+        OwnedFilterSetup::owned_finish(setup, None)
             .finish(core::convert::identity)
             .0
             .is_err(),

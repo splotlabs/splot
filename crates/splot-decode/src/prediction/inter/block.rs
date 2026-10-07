@@ -419,17 +419,14 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
     let motion_layout = motion_field.layout();
     let cdef_state = CdefState::new_reusing(mi_rows, mi_cols, sequence, cdef_grid_values)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
-    let ref_ccso_unit_grids = reference
-        .ref_ccso_unit_grids
-        .iter()
-        .map(|handle| {
-            handle
-                .as_ref()
-                .and_then(CcsoGridHandle::product)
-                .and_then(Option::as_ref)
-                .cloned()
-        })
-        .collect::<Vec<_>>();
+    let mut ref_ccso_unit_grids = RefSlots::default();
+    ref_ccso_unit_grids.extend_within(reference.ref_ccso_unit_grids.iter().map(|handle| {
+        handle
+            .as_ref()
+            .and_then(CcsoGridHandle::product)
+            .and_then(Option::as_ref)
+            .cloned()
+    }));
     let ccso_active = sequence
         .filter
         .as_ref()

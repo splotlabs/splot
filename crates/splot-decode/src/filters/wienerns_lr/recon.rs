@@ -189,6 +189,8 @@ pub(crate) struct OwnedFilterJob<T: ReconSample> {
 /// The sole setup owner after every scheduled stripe has settled.
 pub(crate) struct OwnedFilterFinish<T: ReconSample> {
     setup: OwnedFilterShell<T>,
+    /// The deblocked source the stripes read, emptied once they have settled.
+    source: Option<crate::filters::source::DeblockedSource<T>>,
 }
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -1142,10 +1144,13 @@ impl<T: ReconSample> OwnedFilterFinish<T> {
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> (Result<(R, super::FrameFilterRecords)>, OwnedFilterShell<T>) {
         let mut setup = self.setup;
-        let result = Arc::get_mut(&mut setup)
+        let mut result = Arc::get_mut(&mut setup)
             .ok_or_else(lr_pipeline_state_error)
             .and_then(|setup| setup.take().ok_or_else(lr_pipeline_state_error))
             .and_then(|setup| setup.finish(publish));
+        if let (Ok((_, records)), Some(source)) = (result.as_mut(), self.source) {
+            records.deblocked_shell = source.into_parts().1;
+        }
         (result, setup)
     }
 }
@@ -1164,8 +1169,11 @@ impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
     }
 
     /// Transfers terminal ownership to the exactly-once freeze job.
-    pub(crate) fn owned_finish(setup: OwnedFilterShell<T>) -> OwnedFilterFinish<T> {
-        OwnedFilterFinish { setup }
+    pub(crate) fn owned_finish(
+        setup: OwnedFilterShell<T>,
+        source: Option<crate::filters::source::DeblockedSource<T>>,
+    ) -> OwnedFilterFinish<T> {
+        OwnedFilterFinish { setup, source }
     }
 }
 
