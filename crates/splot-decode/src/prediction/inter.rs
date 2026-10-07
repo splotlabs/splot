@@ -2215,7 +2215,7 @@ pub(crate) use block::{
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
-    FixedStack, MotionFieldLayout, TemporalMotionField, TemporalMvContext,
+    FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
 };
 pub(crate) use frame_products::{
     CcsoGridHandle, FrameCdfHandle, FrameProductWriters, FrameProducts, SegmentIdMapHandle,

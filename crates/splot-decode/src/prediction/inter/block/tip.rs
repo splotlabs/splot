@@ -1275,9 +1275,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
     }
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
-    let temporal = decode_scratch
-        .temporal_context
-        .get_or_insert_with(TemporalMvContext::empty);
+    let buffers = decode_scratch.buffers.clone().unwrap_or_default();
+    let (mut temporal, mut temporal_records) = buffers.take_tip_temporal();
+    let temporal = &mut temporal;
     temporal.refresh_from_references(
         (mi_rows, mi_cols),
         current_order_hint,
@@ -1352,7 +1352,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             residual: None,
         },
     };
-    let (mut scratch, mut temporal_records) = core::mem::take(&mut decode_scratch.tip_output);
+    let mut scratch = core::mem::take(&mut decode_scratch.tip_output);
     temporal_records.clear();
     let mut residual_scratch = InterResidualReconScratch::default();
     let mut sink = mc::WorkspaceSink::Frame(&mut workspace);
@@ -1427,7 +1427,11 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         )
         .map_err(|_| DecodeHeaderStateError::IncompleteTipOutput)?;
     }
-    decode_scratch.tip_output = (scratch, temporal_records);
+    decode_scratch.tip_output = scratch;
+    buffers.park_tip_temporal((
+        core::mem::replace(temporal, TemporalMvContext::empty()),
+        temporal_records,
+    ));
     Ok((workspace.freeze()?, motion_field))
 }
 

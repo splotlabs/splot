@@ -8,6 +8,11 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::filters::wienerns_lr::FrameFilterRecordCapacities;
+use crate::prediction::inter::{TemporalMotionBlock, TemporalMvContext};
+
+/// The TIP output walk's temporal context and motion records.
+pub(crate) type TipTemporal = (TemporalMvContext, Vec<TemporalMotionBlock>);
+
 /// The storage one decode's finished work leaves for the work behind it.
 #[derive(Default)]
 pub(crate) struct DecodeBuffers {
@@ -15,6 +20,9 @@ pub(crate) struct DecodeBuffers {
     tile_records: Mutex<FrameFilterRecordCapacities>,
     /// Per superblock unit, the row-list capacities its spent buffers reached.
     row_capacities: Mutex<Vec<RowCapacities>>,
+    /// One TIP walk's temporal state for the whole decode: TIP output frames
+    /// are rare, so a copy per reconstruction lane is memory nobody reads.
+    tip_temporal: Mutex<Option<TipTemporal>>,
 }
 
 /// The capacities of one superblock unit's growable row lists.
@@ -61,5 +69,18 @@ impl DecodeBuffers {
         for (held, reached) in table[unit].iter_mut().zip(reached) {
             *held = (*held).max(reached);
         }
+    }
+
+    /// Takes the decode's TIP temporal state, or a new one if a walk holds it.
+    pub(crate) fn take_tip_temporal(&self) -> TipTemporal {
+        self.tip_temporal
+            .lock()
+            .take()
+            .unwrap_or_else(|| (TemporalMvContext::empty(), Vec::new()))
+    }
+
+    /// Gives the TIP temporal state back for the next TIP output frame.
+    pub(crate) fn park_tip_temporal(&self, state: TipTemporal) {
+        *self.tip_temporal.lock() = Some(state);
     }
 }
