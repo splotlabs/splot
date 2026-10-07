@@ -64,16 +64,32 @@ impl DecodeBuffers {
         }
     }
 
-    /// Takes the decode's TIP temporal state, or a new one if a walk holds it.
-    pub(crate) fn take_tip_temporal(&self) -> TipTemporal {
-        self.tip_temporal
-            .lock()
-            .take()
-            .unwrap_or_else(|| (TemporalMvContext::empty(), Vec::new()))
+    /// Lends the decode's TIP temporal state to one walk, or a new one when
+    /// another walk holds it or there are no decode buffers.
+    pub(crate) fn lend_tip_temporal(buffers: Option<&Self>) -> TipTemporalLease<'_> {
+        let (temporal, records) = buffers
+            .and_then(|buffers| buffers.tip_temporal.lock().take())
+            .unwrap_or_else(|| (TemporalMvContext::empty(), Vec::new()));
+        TipTemporalLease {
+            buffers,
+            temporal,
+            records,
+        }
     }
+}
 
-    /// Gives the TIP temporal state back for the next TIP output frame.
-    pub(crate) fn park_tip_temporal(&self, state: TipTemporal) {
-        *self.tip_temporal.lock() = Some(state);
+/// The TIP temporal state lent to one walk, given back however the walk ends.
+pub(crate) struct TipTemporalLease<'a> {
+    buffers: Option<&'a DecodeBuffers>,
+    pub(crate) temporal: TemporalMvContext,
+    pub(crate) records: Vec<TemporalMotionBlock>,
+}
+
+impl Drop for TipTemporalLease<'_> {
+    fn drop(&mut self) {
+        if let Some(buffers) = self.buffers {
+            let temporal = core::mem::replace(&mut self.temporal, TemporalMvContext::empty());
+            *buffers.tip_temporal.lock() = Some((temporal, core::mem::take(&mut self.records)));
+        }
     }
 }

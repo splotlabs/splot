@@ -48,21 +48,14 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
                 let frame = output.ready_frame()?;
                 let display_grain = output.display_grain.clone();
                 if splot_parallel::current_pool_width() <= 1 {
-                    return write_display_frame(
-                        &frame,
-                        display_grain.as_ref(),
-                        &mut *writer.lock(),
-                    );
+                    return write_display_frame(&frame, display_grain.as_ref(), &writer);
                 }
                 let writer = &writer;
                 let output_error = &output_error;
                 let done = Arc::new(CompletionCell::new());
                 outstanding = Some(Arc::clone(&done));
                 scope.spawn(move |_| {
-                    let result = catch_unwind(AssertUnwindSafe(|| {
-                        write_display_frame(&frame, display_grain.as_ref(), &mut *writer.lock())
-                    }))
-                    .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")));
+                    let result = write_display_frame(&frame, display_grain.as_ref(), writer);
                     if let Err(error) = result {
                         let mut failure = output_error.lock();
                         if failure.is_none() {
@@ -86,21 +79,27 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     Ok(())
 }
 
+/// Writes one displayed frame, turning a panicking writer into an error at
+/// every pool width.
 fn write_display_frame(
     frame: &PipelineDecodedFrame,
     display_grain: Option<&crate::pipeline::ActiveFilmGrain>,
-    writer: &mut impl Write,
+    writer: &Mutex<impl Write>,
 ) -> Result<()> {
-    match frame {
-        PipelineDecodedFrame::Eight(frame) => {
-            let display = film_grain::frame_for_output(frame.get(), display_grain)?;
-            write_raw_frame(display.as_ref(), writer)
+    catch_unwind(AssertUnwindSafe(|| {
+        let writer = &mut *writer.lock();
+        match frame {
+            PipelineDecodedFrame::Eight(frame) => {
+                let display = film_grain::frame_for_output(frame.get(), display_grain)?;
+                write_raw_frame(display.as_ref(), writer)
+            }
+            PipelineDecodedFrame::Ten(frame) => {
+                let display = film_grain::frame_for_output(frame.get(), display_grain)?;
+                write_raw_frame(display.as_ref(), writer)
+            }
         }
-        PipelineDecodedFrame::Ten(frame) => {
-            let display = film_grain::frame_for_output(frame.get(), display_grain)?;
-            write_raw_frame(display.as_ref(), writer)
-        }
-    }
+    }))
+    .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")))
 }
 
 pub(crate) fn discard_raw_stream_from_plan(

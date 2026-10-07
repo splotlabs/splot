@@ -54,12 +54,18 @@ impl DecodeSession {
         self.frame_delay
     }
 
-    /// Takes the last decode's state when it was built for `depth`. A
-    /// concurrent decode on the same context gets new state instead.
+    /// Takes the last decode's state when it was built for `depth` and the
+    /// current pool width, which size its cell pools. A concurrent decode on
+    /// the same context gets new state instead.
     pub(super) fn take(&self, depth: NonZeroUsize) -> RetainedDecode {
+        let width = splot_parallel::current_pool_width();
         match self.retained.lock().take() {
-            Some(retained) if retained.ring.capacity() == depth.get() => retained,
-            _ => RetainedDecode::new(depth),
+            Some(retained)
+                if retained.ring.capacity() == depth.get() && retained.width == width =>
+            {
+                retained
+            }
+            _ => RetainedDecode::new(depth, width),
         }
     }
 
@@ -71,6 +77,7 @@ impl DecodeSession {
 
 /// The storage one decode leaves for the next decode on its context.
 pub(super) struct RetainedDecode {
+    width: usize,
     pub(super) scratch_eight: InterDecodeScratch<u8>,
     pub(super) scratch_ten: InterDecodeScratch<u16>,
     pub(super) ring: InflightRing,
@@ -81,13 +88,14 @@ pub(super) struct RetainedDecode {
 }
 
 impl RetainedDecode {
-    fn new(depth: NonZeroUsize) -> Self {
+    fn new(depth: NonZeroUsize, width: usize) -> Self {
         let buffers = DecodeBuffers::new();
         let mut scratch_eight = InterDecodeScratch::default();
         let mut scratch_ten = InterDecodeScratch::default();
         scratch_eight.set_decode_buffers(&buffers);
         scratch_ten.set_decode_buffers(&buffers);
         Self {
+            width,
             scratch_eight,
             scratch_ten,
             ring: InflightRing::new(depth, buffers),
@@ -107,7 +115,7 @@ impl RetainedDecode {
         }
         for entry in &mut self.frames.entries {
             if let Some(frame) = entry.frame.take() {
-                entry.retired = Some(self.ring.release_frame_planes(frame.frame));
+                entry.retired = Some(self.ring.keep_frame_planes(frame.frame, true));
             }
         }
         self.frames.count = 0;

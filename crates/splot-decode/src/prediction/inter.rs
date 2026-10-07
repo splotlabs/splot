@@ -129,7 +129,6 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             sequence,
             options,
             reference,
-            bit_depth,
             geometry,
             products,
         )
@@ -206,10 +205,10 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
-    bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
     products: &mut FrameProductWriters,
 ) -> Result<InterDecodeOutput<T>> {
+    let bit_depth = geometry.info().bit_depth();
     let offset = frame_envelope.offset;
     let frame_size = geometry.frame_size();
     ensure_runtime_limits(

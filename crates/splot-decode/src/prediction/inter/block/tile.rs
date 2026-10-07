@@ -905,11 +905,18 @@ impl ReconRowBuffers {
     /// geometric bound, as dav2d sizes its frame-thread block arrays: every
     /// leaf and transform block covers at least 16 samples. The bound is far
     /// above typical content, but the allocator commits pages only as they
-    /// are written, so content never has to grow these lists.
+    /// are written, so content never has to grow these lists. The block lists
+    /// are only a hint: where the address space is refused they grow instead.
     fn reserve_unit(&mut self, coefficients: usize) -> Result<()> {
         reserve_list(&mut self.residual_coeffs, coefficients)?;
-        reserve_list(&mut self.entries, coefficients / 16)?;
-        reserve_list(&mut self.residual_blocks, coefficients / 16)
+        let blocks = coefficients / 16;
+        let _ = self
+            .entries
+            .try_reserve_exact(blocks.saturating_sub(self.entries.len()));
+        let _ = self
+            .residual_blocks
+            .try_reserve_exact(blocks.saturating_sub(self.residual_blocks.len()));
+        Ok(())
     }
 }
 

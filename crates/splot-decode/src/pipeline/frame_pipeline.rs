@@ -132,18 +132,10 @@ pub(crate) struct EntropyStorage<T: splot_recon::ReconSample> {
 }
 
 /// The entropy storage one decode leaves for the next on its context.
+#[derive(Default)]
 pub(crate) struct RetainedEntropy<T: splot_recon::ReconSample> {
     storage: Vec<EntropyStorage<T>>,
     workers: Option<Arc<inter::InterReconScratchPool<T>>>,
-}
-
-impl<T: splot_recon::ReconSample> Default for RetainedEntropy<T> {
-    fn default() -> Self {
-        Self {
-            storage: Vec::new(),
-            workers: None,
-        }
-    }
 }
 
 impl<'job, T: splot_recon::ReconSample> EntropyContexts<'job, T> {
@@ -598,7 +590,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ParkedTipOutput<'_, T> {
             &sequence,
             options,
             &reference,
-            geometry.info().bit_depth(),
             geometry,
             &mut products,
         ) {

@@ -624,7 +624,7 @@ fn keep_spare<T: ReconSample>(
 ) {
     if spares.len() < capacity {
         spares.push(retired);
-    } else if overflow.is_some() {
+    } else {
         retired.with_pool(overflow).release();
     }
 }
@@ -711,22 +711,15 @@ impl InflightRing {
     ///
     /// A frame still shared by any reader keeps its own buffers: the samples
     /// are only taken when this handle is the last one holding them.
-    pub(crate) fn keep_frame_planes(&mut self, slot: PipelineFrameSlot) -> PipelineFrameSlot {
-        self.retire_frame_planes(slot, false)
-    }
-
-    /// Retires a frame the last decode left in the store: the decode's pool
-    /// takes whatever planes the ring's spares have no room for.
-    pub(crate) fn release_frame_planes(&mut self, slot: PipelineFrameSlot) -> PipelineFrameSlot {
-        self.retire_frame_planes(slot, true)
-    }
-
-    fn retire_frame_planes(
+    ///
+    /// With `release`, the decode's pool takes whatever planes the spares have
+    /// no room for: a new decode retires the frames the last one left at once.
+    pub(crate) fn keep_frame_planes(
         &mut self,
         mut slot: PipelineFrameSlot,
-        pool: bool,
+        release: bool,
     ) -> PipelineFrameSlot {
-        let overflow = pool.then(|| self.buffers.planes());
+        let overflow = release.then(|| self.buffers.planes());
         match &mut slot {
             PipelineFrameSlot::Eight(slot) => {
                 if let Some(frame) = slot.retire_frame() {

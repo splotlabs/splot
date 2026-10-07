@@ -22,6 +22,10 @@ use crate::runtime::DecodeRuntimeConfig;
 /// discard-output paths for the supported decode envelope (tracked in
 /// `docs/DECODER-SUPPORT-MATRIX.toml`). It does not touch the filesystem or
 /// invoke any external decoder.
+///
+/// A context keeps the decoder state of its last successful decode, sized
+/// for the largest stream it has decoded, so the next call reuses it instead
+/// of allocating it again. Drop the context to release that memory.
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
