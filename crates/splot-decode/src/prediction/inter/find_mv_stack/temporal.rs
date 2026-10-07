@@ -798,7 +798,12 @@ struct TemporalBandResult {
 }
 
 pub(crate) struct TemporalBandPlan {
-    projections: Vec<ScheduledTemporalProjection>,
+    /// Bounded by the projection queue, so the list is inline; every entry is
+    /// `Some`, the `Option` only supplies the `Default` an inline list needs.
+    projections: splot_core::tile::InlineVec<
+        Option<ScheduledTemporalProjection>,
+        { selection::MFMV_STACK_SIZE },
+    >,
     config: TemporalProjectionConfig,
     layout: MotionFieldLayout,
     tip: Option<TipReferencePair>,
@@ -869,13 +874,17 @@ impl TemporalBandPlan {
     pub(crate) fn requirements(&self, index: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.projections
             .iter()
+            .flatten()
             .enumerate()
             .filter(move |(position, projection)| {
                 index < projection.source_layout.band_count()
-                    && !self.projections[..*position].iter().any(|previous| {
-                        previous.slot == projection.slot
-                            && index < previous.source_layout.band_count()
-                    })
+                    && !self.projections[..*position]
+                        .iter()
+                        .flatten()
+                        .any(|previous| {
+                            previous.slot == projection.slot
+                                && index < previous.source_layout.band_count()
+                        })
             })
             .map(move |(_, projection)| (projection.slot, index))
     }
@@ -940,7 +949,7 @@ impl TemporalBandPlan {
         } else {
             None
         };
-        for projection in &self.projections {
+        for projection in self.projections.iter().flatten() {
             if index >= projection.source_layout.band_count() {
                 continue;
             }
@@ -1320,7 +1329,7 @@ impl TemporalMvContext {
             ref_motion_metadata,
             ref_motion_layouts,
         );
-        let mut prepared = Vec::with_capacity(projections.len());
+        let mut prepared = splot_core::tile::InlineVec::default();
         for projection in projections.iter().copied() {
             let slot = usize::try_from(*ref_frame_idx.get(projection.ref_index)?).ok()?;
             let source_order_hint = self
@@ -1343,11 +1352,11 @@ impl TemporalMvContext {
                 projection.target_ref,
                 &self.ref_order_hints,
             )?;
-            prepared.push(ScheduledTemporalProjection {
+            prepared.push(Some(ScheduledTemporalProjection {
                 slot,
                 source,
                 source_layout,
-            });
+            }))?;
         }
         self.current_order_hint = current_order_hint;
         self.trajectories = None;
