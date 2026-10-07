@@ -65,7 +65,6 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         entries: Vec::new(),
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
-        motion_grids: Vec::new(),
         motion_storage: None,
         flag_log: Vec::new(),
         filter_records: TileFilterRecords::default(),
@@ -424,13 +423,13 @@ fn superblock_coefficients_reserve_plane_coverage_once() {
         let capacity = superblock_coefficient_capacity(16, chroma).expect("coefficient bound");
         assert_eq!(capacity, samples);
         let mut row = ReconRowBuffers::default();
-        row.reserve_coefficients(capacity)
-            .expect("reserve coefficients");
+        row.reserve_unit(capacity).expect("reserve coefficients");
+        assert!(row.entries.capacity() >= capacity / 16);
+        assert!(row.residual_blocks.capacity() >= capacity / 16);
         let storage = row.residual_coeffs.as_ptr();
         for cycle in 0..1200 {
             row.residual_coeffs.clear();
-            row.reserve_coefficients(capacity)
-                .expect("reuse coefficients");
+            row.reserve_unit(capacity).expect("reuse coefficients");
             row.residual_coeffs
                 .resize(if cycle % 2 == 0 { samples } else { 16 }, 1);
             assert_eq!(row.residual_coeffs.as_ptr(), storage);
@@ -533,7 +532,6 @@ fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
             entries: Vec::new(),
             residual_blocks: Vec::new(),
             temporal: Vec::new(),
-            motion_grids: Vec::new(),
             motion_storage: None,
             flag_log: Vec::new(),
             filter_records: records,

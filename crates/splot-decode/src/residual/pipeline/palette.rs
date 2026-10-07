@@ -28,8 +28,15 @@ static SPARE_PALETTE_MAPS: parking_lot::Mutex<Vec<Vec<u8>>> = parking_lot::Mutex
 /// Spares kept; a map beyond this many in flight is freed.
 const MAX_SPARE_PALETTE_MAPS: usize = 64;
 
+/// A color map covers one palette plane, which is at most a 64x64 transform.
+const MAX_PALETTE_MAP_SAMPLES: usize = 64 * 64;
+
+/// Takes a spare color map, or a new one sized so it never has to grow.
 fn take_palette_map() -> Vec<u8> {
-    SPARE_PALETTE_MAPS.lock().pop().unwrap_or_default()
+    SPARE_PALETTE_MAPS
+        .lock()
+        .pop()
+        .unwrap_or_else(|| Vec::with_capacity(MAX_PALETTE_MAP_SAMPLES))
 }
 
 /// Gives a reconstructed block's color map back for the next palette block.

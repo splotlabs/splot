@@ -72,7 +72,6 @@ fn derive_row_motion<T: ReconSample>(
     });
     let _ = row.temporal.try_reserve(capacity);
     let mut failure = None;
-    row.motion_grids.clear();
     let storage = row
         .motion_storage
         .get_or_insert_with(|| std::sync::Arc::new(mc::MotionRowStorage::default()));
@@ -95,7 +94,7 @@ fn derive_row_motion<T: ReconSample>(
         };
         match scratch.motion(command, sink, &mut row.temporal, shared, storage) {
             Ok(grid) => {
-                entry.store_motion(grid, &mut row.motion_grids);
+                entry.store_motion(grid);
             }
             Err(error) => {
                 failure = Some(error);
@@ -107,7 +106,6 @@ fn derive_row_motion<T: ReconSample>(
         return true;
     };
     row.temporal.clear();
-    row.motion_grids.clear();
     for entry in &mut row.entries {
         entry.motion = None;
         entry.temporal = 0..0;
