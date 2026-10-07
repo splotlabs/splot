@@ -190,19 +190,20 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     pub(in crate::prediction::inter) payload: crate::bitstream::tile_payload::TilePayloadScratch,
     /// The fused walk's initial CDF cell, reset in place for each frame.
     pub(in crate::prediction::inter) initial_cdfs: Option<Arc<FrameCdfSubset>>,
+    /// The TIP output walk's scratch and temporal records, kept across frames.
+    tip_output: (tip::TipReconstructScratch<T>, Vec<TemporalMotionBlock>),
     /// The reusable storage this decode's retired work leaves behind.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
 
 impl<T: ReconSample> InterDecodeScratch<T> {
-    pub(in crate::prediction::inter) fn from_scheduled_tile_scratch(
+    pub(in crate::prediction::inter) fn with_scheduled_tile(
+        mut self,
         tile: tile::TileDecodeScratch<T>,
     ) -> Self {
-        Self {
-            buffers: tile.buffers.clone(),
-            tile: Some(tile),
-            ..Self::default()
-        }
+        self.buffers.clone_from(&tile.buffers);
+        self.tile = Some(tile);
+        self
     }
 
     /// Lends the recycled filter-record buffers to one frame's walk.

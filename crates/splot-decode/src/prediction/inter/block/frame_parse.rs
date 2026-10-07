@@ -243,16 +243,9 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
     prelude: TemporalPrelude,
     motion_field: TemporalMotionField,
 ) -> Result<(tile::ScheduledTileRecon<T>, PendingFilterAttach<T>)> {
-    let InterDecodeScratch {
-        tile,
-        temporal_context: _,
-        frame_filter_records: _,
-        payload: _,
-        initial_cdfs: _,
-        buffers,
-    } = scratch;
-    let mut tile = tile.unwrap_or_default();
-    tile.buffers = buffers;
+    let mut parked = scratch;
+    let mut tile = parked.tile.take().unwrap_or_default();
+    tile.buffers.clone_from(&parked.buffers);
     let context =
         Arc::get_mut(temporal).ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
     let temporal_plan =
@@ -263,6 +256,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         .try_fold(0, |count, range| range.map(|_| count + 1))?;
     let tile = tile::prepare_scheduled_tile(
         tile,
+        parked,
         reusable,
         workers,
         *params,

@@ -487,6 +487,9 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
                 .and_then(CompletionCell::get)
                 .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
                 .unwrap_or_default();
+            if let Some(buffers) = finish.progress_handle().buffers() {
+                scratch.set_decode_buffers(buffers);
+            }
             match reconstruct(&mut scratch, &mut products) {
                 Ok((frame, _, cdfs, ccso, field, segments)) => {
                     products.settle(cdfs, ccso, segments);

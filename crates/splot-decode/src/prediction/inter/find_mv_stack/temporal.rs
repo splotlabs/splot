@@ -1983,34 +1983,32 @@ fn run_band_projections(
             );
         }
     };
-    if splot_parallel::current_pool_width() <= 1 {
-        let mut trajectory_bands = trajectories.and_then(|state| state.bands(band_rows));
-        for mut band in field.bands(band_rows) {
-            run(
-                &mut band,
-                trajectory_bands.as_mut().and_then(Iterator::next).as_mut(),
-            );
-        }
-        return;
-    }
     let mut trajectory_bands = trajectories.and_then(|state| state.bands(band_rows));
     let mut field_bands = field.bands(band_rows);
-    let scheduled = splot_parallel::ready_task_scope(|scope| {
-        for mut band in &mut field_bands {
-            let mut rows = trajectory_bands.as_mut().and_then(Iterator::next);
-            let run = &run;
-            scope.spawn(move |_| run(&mut band, rows.as_mut()));
+    loop {
+        let mut slots: [BandSlot<'_, '_>; BAND_FAN_OUT] = core::array::from_fn(|_| None);
+        let mut filled = 0;
+        for (slot, band) in slots.iter_mut().zip(&mut field_bands) {
+            *slot = Some((band, trajectory_bands.as_mut().and_then(Iterator::next)));
+            filled += 1;
         }
-    });
-    if scheduled.is_err() {
-        for mut band in field_bands {
-            run(
-                &mut band,
-                trajectory_bands.as_mut().and_then(Iterator::next).as_mut(),
-            );
+        if filled == 0 {
+            return;
         }
+        let Ok(()) =
+            splot_parallel::join_each(&mut slots[..filled], &|slot: &mut BandSlot<'_, '_>| {
+                if let Some((band, rows)) = slot {
+                    run(band, rows.as_mut());
+                }
+                Ok::<(), core::convert::Infallible>(())
+            });
     }
 }
+
+/// Bands fanned out per round; a taller field runs several rounds.
+const BAND_FAN_OUT: usize = 32;
+
+type BandSlot<'f, 't> = Option<(ProjectedFieldBand<'f>, Option<TrajectoryBand<'t>>)>;
 
 /// Whole-field projection of one source, for direct unit tests.
 #[cfg(test)]

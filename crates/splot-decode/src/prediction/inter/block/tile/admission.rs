@@ -266,6 +266,8 @@ struct TileRecon<T: ReconSample> {
     frontier_rows: usize,
     commit: Mutex<Option<TileCommit<T>>>,
     scratch: Mutex<Option<TileDecodeScratch<T>>>,
+    /// The rest of the frame's decode scratch, parked until the tile returns.
+    parked: Mutex<Option<super::super::InterDecodeScratch<T>>>,
     workers: Arc<InterReconScratchPool<T>>,
     prepass_block_decoded: TileBlockDecodedState,
     motion: MotionFieldUnits,
@@ -1560,12 +1562,14 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     pub(crate) fn take_scheduled_scratch(&self) -> Result<super::super::InterDecodeScratch<T>> {
-        self.recon
+        let tile = self
+            .recon
             .scratch
             .lock()
             .take()
-            .ok_or_else(invalid_inter_tile_scheduling_state)
-            .map(super::super::InterDecodeScratch::from_scheduled_tile_scratch)
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        let parked = self.recon.parked.lock().take().unwrap_or_default();
+        Ok(parked.with_scheduled_tile(tile))
     }
 
     /// Commits one precomputed unit after its predecessor has completed.
@@ -1742,6 +1746,7 @@ fn prepare_scheduled_motion(
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
+    parked: super::super::InterDecodeScratch<T>,
     reusable: &mut ScheduledTileWorkspace<T>,
     workers: Arc<InterReconScratchPool<T>>,
     params: TileWalkParams,
@@ -1866,6 +1871,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
             })),
             scratch: Mutex::new(None),
+            parked: Mutex::new(Some(parked)),
             workers,
             prepass_block_decoded,
             motion,
