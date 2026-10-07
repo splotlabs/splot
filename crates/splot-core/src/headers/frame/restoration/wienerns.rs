@@ -81,22 +81,12 @@ pub struct WienerNsFrameFilterBank {
 /// Classes a frame-level Wiener NS bank may carry (`DECODE_NUM_FILTER_CLASSES`).
 pub const MAX_WIENER_NS_CLASSES: usize = 16;
 
-impl Default for WienerNsFrameFilterClass {
-    fn default() -> Self {
-        static EMPTY: std::sync::OnceLock<std::sync::Arc<[i16]>> = std::sync::OnceLock::new();
-        Self {
-            match_index: 0,
-            merged: false,
-            ref_bank: 0,
-            subset: None,
-            wiener_ns_uv_sym: false,
-            coeffs: std::sync::Arc::clone(EMPTY.get_or_init(|| std::sync::Arc::from(Vec::new()))),
-        }
-    }
-}
+/// One class's `FrameLrWienerNs` coefficients, held inline: a chroma class
+/// codes the most, `WIENER_NS_CHROMA_COEFFS`.
+pub type WienerNsCoeffs = crate::tile::InlineVec<i16, WIENER_NS_CHROMA_COEFFS>;
 
 /// One class from a resolved frame-level Wiener NS filter bank.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WienerNsFrameFilterClass {
     /// The frame-filter match index selected before the merge flags, or the class ordinal
     /// for a bank copied by the frame-header temporal-prediction arm.
@@ -111,10 +101,7 @@ pub struct WienerNsFrameFilterClass {
     /// `wiener_ns_uv_sym`, only meaningful for chroma classes with `subset > 0`.
     pub wiener_ns_uv_sym: bool,
     /// The parsed `FrameLrWienerNs[plane][c]` coefficients.
-    /// Shared, not owned: a temporal copy and the decoder's per-frame tap
-    /// table both take this bank, and copying the coefficients for each one
-    /// cost an allocation per class per frame.
-    pub coeffs: std::sync::Arc<[i16]>,
+    pub coeffs: WienerNsCoeffs,
 }
 
 /// Parses a § 5.18 frame-level Wiener-NS filter bank. `ref_taps` are the
@@ -172,7 +159,8 @@ pub(super) fn parse_frame_wiener_ns_filter(
             subset = Some(read_subset);
         }
 
-        let mut coeffs = vec![0i16; n_coeffs];
+        let mut coeffs = WienerNsCoeffs::default();
+        coeffs.extend_within(core::iter::repeat_n(0, n_coeffs));
         let mut j = 0usize;
         while j < n_coeffs {
             let mut value = filter_match_coeff(
@@ -220,7 +208,7 @@ pub(super) fn parse_frame_wiener_ns_filter(
                 ref_bank: 0,
                 subset,
                 wiener_ns_uv_sym,
-                coeffs: std::sync::Arc::from(coeffs),
+                coeffs,
             })
             .ok_or(crate::error::Error::Unimplemented {
                 feature: "wienerns_filter_bank_classes",
@@ -236,13 +224,13 @@ fn read_match_indices(
     num_classes: usize,
     num_ref_filters: usize,
     nopcw: bool,
-) -> Result<Vec<usize>> {
+) -> Result<crate::tile::InlineVec<usize, MAX_WIENER_NS_CLASSES>> {
     let group_counts = [
         num_classes,
         capped_reference_filter_count(plane, num_classes, num_ref_filters, nopcw),
         sampled_pc_wiener_filter_count(plane, num_classes, num_ref_filters, nopcw),
     ];
-    let mut match_indices = Vec::with_capacity(num_classes);
+    let mut match_indices = crate::tile::InlineVec::default();
 
     for c in 0..num_classes {
         let pred_group = if c == 0 {
@@ -286,7 +274,11 @@ fn read_match_indices(
             )?;
             usize::try_from(decoded).unwrap_or(base)
         };
-        match_indices.push(match_index);
+        match_indices
+            .push(match_index)
+            .ok_or(crate::error::Error::Unimplemented {
+                feature: "wienerns_filter_bank_classes",
+            })?;
     }
     Ok(match_indices)
 }
@@ -323,10 +315,17 @@ fn capped_reference_filter_count(
     num_ref_filters.min(allowed)
 }
 
-fn read_merged_flags(reader: &mut BitReader<'_>, num_classes: usize) -> Result<Vec<bool>> {
-    let mut merged = Vec::with_capacity(num_classes);
+fn read_merged_flags(
+    reader: &mut BitReader<'_>,
+    num_classes: usize,
+) -> Result<crate::tile::InlineVec<bool, MAX_WIENER_NS_CLASSES>> {
+    let mut merged = crate::tile::InlineVec::default();
     for _ in 0..num_classes {
-        merged.push(reader.read_flag()?);
+        merged
+            .push(reader.read_flag()?)
+            .ok_or(crate::error::Error::Unimplemented {
+                feature: "wienerns_filter_bank_classes",
+            })?;
     }
     Ok(merged)
 }

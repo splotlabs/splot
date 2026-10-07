@@ -72,7 +72,7 @@ fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> 
     let (frame, core, frame_cdfs, ccso_grid, motion_field, segment_ids) = output;
     FrameWalk {
         stage: WalkStage::complete(frame),
-        core: Arc::new(core),
+        core,
         frame_cdfs,
         ccso_grid,
         segment_ids,
@@ -87,7 +87,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     candidate: &DecodePlannedObu,
     bytes: &[u8],
     frame_envelope: ObuEnvelope<'_>,
-    core: FrameHeaderCore,
+    core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
@@ -184,7 +184,6 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         workspace,
         products,
     )?;
-    let core = Arc::new(core);
     Ok(setup.frame_walk(
         workspace,
         filter_inputs,
@@ -200,7 +199,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
-    core: FrameHeaderCore,
+    core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
@@ -236,7 +235,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
 fn decode_bridge_frame<T: ReconSample>(
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
-    core: FrameHeaderCore,
+    core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
@@ -450,8 +449,9 @@ fn resolve_initial_frame_cdfs_reusing(
 
 /// Exact pending entropy products one frame's tile parse may consume.
 pub(crate) struct EntropyDependencies {
-    cdfs: Vec<FrameCdfHandle>,
-    ccso_grids: Vec<CcsoGridHandle>,
+    /// The primary and optional blend CDF slots.
+    cdfs: [Option<FrameCdfHandle>; 2],
+    ccso_grids: [Option<CcsoGridHandle>; 3],
     segment_ids: Option<SegmentIdMapHandle>,
 }
 
@@ -459,23 +459,30 @@ impl EntropyDependencies {
     pub(crate) fn conditions(&self) -> impl Iterator<Item = splot_parallel::Condition<'_>> {
         self.cdfs
             .iter()
+            .flatten()
             .map(FrameCdfHandle::condition)
-            .chain(self.ccso_grids.iter().map(CcsoGridHandle::condition))
+            .chain(
+                self.ccso_grids
+                    .iter()
+                    .flatten()
+                    .map(CcsoGridHandle::condition),
+            )
             .chain(self.segment_ids.iter().map(SegmentIdMapHandle::condition))
     }
 }
 
 /// Owned product handles that gate one asynchronous TIP output frame.
 pub(crate) struct TipOutputDependencies<T: ReconSample> {
-    samples: Vec<RefFrameSlot<T>>,
+    samples: RefSlots<Option<RefFrameSlot<T>>>,
     entropy: EntropyDependencies,
     motion: RefSlots<Option<MotionFieldHandle>>,
 }
 
 impl<T: ReconSample> TipOutputDependencies<T> {
-    pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'_>> {
+    pub(crate) fn conditions(&self) -> impl Iterator<Item = splot_parallel::Condition<'_>> {
         self.samples
             .iter()
+            .flatten()
             .map(RefFrameSlot::settled_condition)
             .chain(self.entropy.conditions())
             .chain(
@@ -484,7 +491,6 @@ impl<T: ReconSample> TipOutputDependencies<T> {
                     .flatten()
                     .map(MotionFieldHandle::field_condition),
             )
-            .collect()
     }
 }
 
@@ -494,21 +500,18 @@ pub(crate) fn entropy_dependencies(
     sequence: &SequenceHeader,
     reference: &InterReferenceState<impl ReconSample>,
 ) -> EntropyDependencies {
-    let mut cdfs = Vec::new();
+    let mut cdfs = [None, None];
     if let ResolvedCdfLoad::LoadSlot { primary, blend } = frame_cdf_load(core, sequence, reference)
     {
-        for slot in [Some(primary), blend].into_iter().flatten() {
-            if let Some(handle) = reference
-                .ref_frame_cdfs
-                .get(slot as usize)
+        for (held, slot) in cdfs.iter_mut().zip([Some(primary), blend]) {
+            *held = slot
+                .and_then(|slot| reference.ref_frame_cdfs.get(slot as usize))
                 .and_then(Option::as_ref)
-            {
-                cdfs.push(handle.clone());
-            }
+                .cloned();
         }
     }
 
-    let mut ccso_grids = Vec::new();
+    let mut ccso_grids = [None, None, None];
     if sequence
         .filter
         .as_ref()
@@ -520,7 +523,7 @@ pub(crate) fn entropy_dependencies(
             == Some(true)
         && let (Some(inter), Some(ccso)) = (core.inter.as_ref(), core.ccso_params.as_ref())
     {
-        for plane in &ccso.planes {
+        for (held, plane) in ccso_grids.iter_mut().zip(&ccso.planes) {
             if !plane.sb_reuse_ccso {
                 continue;
             }
@@ -533,7 +536,7 @@ pub(crate) fn entropy_dependencies(
                 .get(*slot as usize)
                 .and_then(Option::as_ref)
             {
-                ccso_grids.push(handle.clone());
+                *held = Some(handle.clone());
             }
         }
     }
@@ -1163,7 +1166,7 @@ pub(crate) struct BawpSyntax {
 
 pub(crate) type InterDecodeOutput<T> = (
     DecodedFrame<T>,
-    FrameHeaderCore,
+    Arc<FrameHeaderCore>,
     Arc<FrameCdfSubset>,
     Option<Arc<crate::filters::ccso::CcsoUnitGrid>>,
     TemporalMotionField,
@@ -1246,7 +1249,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: RefSlots<SlotFrameFilterTaps>,
     pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: RefSlots<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
+    pub(crate) ref_ccso_params: RefSlots<Option<splot_core::headers::frame::CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
     pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
     pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
@@ -1388,12 +1391,10 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
 
     /// Shares the named slots so a scheduler can register their conditions
     /// before moving the complete reference state into the admitted job.
-    pub(crate) fn shared_slots(&self) -> Vec<RefFrameSlot<T>> {
-        self.slots
-            .iter()
-            .flatten()
-            .map(|slot| slot.share())
-            .collect()
+    pub(crate) fn shared_slots(&self) -> RefSlots<Option<RefFrameSlot<T>>> {
+        let mut shared = RefSlots::default();
+        shared.extend_within(self.slots.iter().flatten().map(|slot| Some(slot.share())));
+        shared
     }
 
     /// Blocks the calling driver thread until every named reference frame has
@@ -1491,14 +1492,11 @@ impl<T: ReconSample> InterReferenceState<T> {
             .ok_or(DecodeReferenceStateError::MissingCdfContext { slot }.into())
     }
 
-    fn ccso_params_for_slot(
-        &self,
-        slot: u32,
-    ) -> Result<Arc<splot_core::headers::frame::CcsoParams>> {
+    fn ccso_params_for_slot(&self, slot: u32) -> Result<&splot_core::headers::frame::CcsoParams> {
         let slot = usize::try_from(slot).unwrap_or(usize::MAX);
         self.ref_ccso_params
             .get(slot)
-            .and_then(Clone::clone)
+            .and_then(Option::as_ref)
             .ok_or(DecodeReferenceStateError::MissingCcsoParams { slot }.into())
     }
 

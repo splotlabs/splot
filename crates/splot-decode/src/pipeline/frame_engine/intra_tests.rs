@@ -72,7 +72,7 @@ fn decode_intra_fixture_with_core_on_threads(
             &candidate,
             Q80_FIXTURE,
             key,
-            core,
+            std::sync::Arc::new(core),
             &sequence,
             &options,
             &crate::pipeline::frame_engine::FrameSetup::Intra,

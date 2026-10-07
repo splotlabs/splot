@@ -7,6 +7,7 @@ use super::*;
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame};
 use crate::test_support::decoded_frame;
 use splot_recon::SharedFrame;
+use std::sync::Arc;
 
 fn key_update() -> FrameRefUpdate {
     FrameRefUpdate {
@@ -25,7 +26,7 @@ fn key_update() -> FrameRefUpdate {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [1, 0, 0],
-        lr_frame_filter_taps: None,
+        lr_frame_filter_taps: Default::default(),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -48,7 +49,7 @@ fn inter_update() -> FrameRefUpdate {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0, 0, 0],
-        lr_frame_filter_taps: None,
+        lr_frame_filter_taps: Default::default(),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -239,19 +240,17 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
     frame.frame_cdfs = crate::prediction::inter::FrameCdfHandle::settled(Arc::clone(&frame_cdfs));
 
     let mut reader = splot_core::bitio::BitReader::new(&[], splot_core::span::ByteOffset::new(0));
-    let ccso_params = Arc::new(
-        splot_core::headers::frame::parse_ccso_params(
-            &mut reader,
-            false,
-            3,
-            &splot_core::headers::frame::CoreSeqCcsoView {
-                enable_ccso: false,
-                single_picture_header_flag: false,
-            },
-        )
-        .unwrap(),
-    );
-    frame.ccso_params = Some(Arc::clone(&ccso_params));
+    let ccso_params = splot_core::headers::frame::parse_ccso_params(
+        &mut reader,
+        false,
+        3,
+        &splot_core::headers::frame::CoreSeqCcsoView {
+            enable_ccso: false,
+            single_picture_header_flag: false,
+        },
+    )
+    .unwrap();
+    frame.ccso_params = Some(ccso_params.clone());
 
     let ccso_grid = Arc::new(
         crate::filters::ccso::CcsoUnitGrid::new(
@@ -284,10 +283,7 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
         .and_then(crate::prediction::inter::FrameCdfHandle::product)
         .unwrap();
     assert!(Arc::ptr_eq(stored_cdfs, &frame_cdfs));
-    assert!(Arc::ptr_eq(
-        metadata.ref_ccso_params[2].as_ref().unwrap(),
-        &ccso_params
-    ));
+    assert_eq!(metadata.ref_ccso_params[2].as_ref(), Some(&ccso_params));
     let stored_grid = metadata.ref_ccso_unit_grids[2]
         .as_ref()
         .and_then(crate::prediction::inter::CcsoGridHandle::product)

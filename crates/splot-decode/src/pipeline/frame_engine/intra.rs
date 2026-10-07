@@ -33,7 +33,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
     candidate: &DecodePlannedObu,
     bytes: &[u8],
     frame_envelope: ObuEnvelope<'_>,
-    core: FrameHeaderCore,
+    core: std::sync::Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     bit_depth: BitDepth,
@@ -147,7 +147,6 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
             .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
         deblock_quant_deltas: deblock_quant_deltas(sequence, &core),
     };
-    let core = std::sync::Arc::new(core);
     Ok(setup.frame_walk(
         workspace,
         filter_inputs,

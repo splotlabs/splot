@@ -8,8 +8,6 @@
 //! temporal Wiener banks and CCSO reuse. Frame-level Wiener NS coefficients are parsed
 //! by [`wienerns`]; entropy-coded restoration-unit filters and reconstruction live elsewhere.
 
-use std::sync::Arc;
-
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::frame::size::ceil_log2;
@@ -18,7 +16,9 @@ use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 mod wienerns;
 
 use wienerns::parse_frame_wiener_ns_filter;
-pub use wienerns::{MAX_WIENER_NS_CLASSES, WienerNsFrameFilterBank, WienerNsFrameFilterClass};
+pub use wienerns::{
+    MAX_WIENER_NS_CLASSES, WienerNsCoeffs, WienerNsFrameFilterBank, WienerNsFrameFilterClass,
+};
 
 /// `RESTORATION_TILESIZE_MAX` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`):
 /// maximum size of a loop-restoration tile. Exposed `pub(crate)` so the § 5.18.7.11 writer
@@ -192,10 +192,10 @@ pub struct LrGeometry {
     pub subsampling_y: u8,
 }
 
-/// Retained frame-level Wiener-NS filter taps for one reference slot, shared
-/// from the decoder's § 7.23 reference buffer. `None` marks a slot with no
-/// frame-level filter, avoiding an allocation for the common empty case.
-pub type SlotFrameFilterTaps = Option<Arc<[Vec<Arc<[i16]>>; 3]>>;
+/// Retained frame-level Wiener-NS filter taps for one reference slot, per
+/// plane, from the decoder's § 7.23 reference buffer. Empty planes mark a
+/// slot with no frame-level filter.
+pub type SlotFrameFilterTaps = [crate::tile::InlineVec<WienerNsCoeffs, MAX_WIENER_NS_CLASSES>; 3];
 
 /// Reference-frame Wiener-NS state used by the inter `lr_params()` temporal-copy arm.
 ///
@@ -521,7 +521,6 @@ fn copy_temporal_frame_filter(
     let Some(classes) = references
         .filter_taps_by_slot
         .and_then(|slots| slots.get(slot))
-        .and_then(Option::as_deref)
         .and_then(|planes| planes.get(ref_plane))
         .filter(|classes| classes.len() >= class_count)
     else {
@@ -538,7 +537,7 @@ fn copy_temporal_frame_filter(
                 ref_bank: 0,
                 subset: None,
                 wiener_ns_uv_sym: false,
-                coeffs: Arc::clone(coeffs),
+                coeffs: *coeffs,
             }),
     ) else {
         return;
@@ -1043,16 +1042,8 @@ mod tests {
         let mut r = reader(&data);
         let counts = [[1, 0, 0], [2, 0, 0]];
         let taps = [
-            Some(Arc::new([
-                vec![Arc::from(vec![1; 16])],
-                Vec::new(),
-                Vec::new(),
-            ])),
-            Some(Arc::new([
-                vec![Arc::from(vec![3; 16]), Arc::from(vec![7; 16])],
-                Vec::new(),
-                Vec::new(),
-            ])),
+            slot_taps([&[&[1; 16]], &[], &[]]),
+            slot_taps([&[&[3; 16], &[7; 16]], &[], &[]]),
         ];
         let params = parse_lr_params_for_inter(
             &mut r,
@@ -1076,14 +1067,22 @@ mod tests {
         assert_eq!(bank.classes[1].coeffs.as_ref(), [7; 16].as_slice());
     }
 
+    fn slot_taps(planes: [&[&[i16]]; 3]) -> SlotFrameFilterTaps {
+        planes.map(|classes| {
+            let mut bank = crate::tile::InlineVec::default();
+            bank.extend_within(classes.iter().map(|coeffs| {
+                let mut class = WienerNsCoeffs::default();
+                class.extend_within(coeffs.iter().copied());
+                class
+            }));
+            bank
+        })
+    }
+
     #[test]
     fn temporal_filter_copy_uses_alternate_chroma_and_rejects_short_bank() {
         let counts = [[2, 0, 1]];
-        let taps = [Some(Arc::new([
-            Vec::new(),
-            Vec::new(),
-            vec![Arc::from(vec![9; 8])],
-        ]))];
+        let taps = [slot_taps([&[], &[], &[&[9; 8]]])];
         let references = LrTemporalReferenceView::new(&[0], Some(&counts), Some(&taps));
         let mut chroma = LrPlaneParams {
             restoration_type: FrameRestorationType::WienerNonsep,

@@ -13,13 +13,16 @@ use crate::Result;
 use crate::prediction::inter::{
     FrameProductWriters, FrameProducts, MotionFieldHandle, MotionFieldLayout,
 };
+use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::MAX_REF_FRAMES;
+use std::sync::Arc;
 
 pub(crate) struct FrameEntry {
     pub(super) index: usize,
     pub(super) frame: Option<PipelineFrame>,
     motion: Option<MotionFieldHandle>,
     products: Option<FrameProducts>,
+    core: Option<Arc<FrameHeaderCore>>,
     pub(super) retired: Option<super::inflight::PipelineFrameSlot>,
 }
 
@@ -44,6 +47,7 @@ impl FrameStore {
                     frame: None,
                     motion: None,
                     products: None,
+                    core: None,
                     retired: None,
                 })
                 .collect(),
@@ -71,6 +75,7 @@ impl FrameStore {
                 frame: None,
                 motion: None,
                 products: None,
+                core: None,
                 retired: None,
             });
             self.entries.len() - 1
@@ -118,6 +123,19 @@ impl FrameStore {
             .products
             .get_or_insert_default()
             .claim()
+            .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
+    }
+
+    /// Shares `core` through this frame's header cell, rewriting it in place
+    /// once the previous frame's readers have dropped it.
+    pub(super) fn share_core(&mut self, core: FrameHeaderCore) -> Result<Arc<FrameHeaderCore>> {
+        let index = self.reserve()?;
+        let cell = &mut self.entries[index].core;
+        match cell.as_mut().and_then(Arc::get_mut) {
+            Some(held) => *held = core,
+            None => *cell = Some(Arc::new(core)),
+        }
+        cell.clone()
             .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
     }
 
@@ -171,6 +189,7 @@ impl From<Vec<Option<PipelineFrame>>> for FrameStore {
                     frame,
                     motion: None,
                     products: None,
+                    core: None,
                     retired: None,
                 })
                 .collect(),

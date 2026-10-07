@@ -241,6 +241,16 @@ impl<T: Default, const N: usize> InlineVec<T, N> {
     }
 }
 
+impl<T: Copy, const N: usize> InlineVec<T, N> {
+    /// An empty list, for `const` contexts that cannot call `Default`.
+    pub const fn empty(fill: T) -> Self {
+        Self {
+            values: [fill; N],
+            len: 0,
+        }
+    }
+}
+
 impl<T, const N: usize> InlineVec<T, N> {
     /// Appends one item, or `None` when the list is already full.
     pub fn push(&mut self, item: T) -> Option<()> {

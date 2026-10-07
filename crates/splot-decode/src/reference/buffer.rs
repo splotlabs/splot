@@ -13,10 +13,9 @@ use splot_core::headers::frame::{
     SlotFrameFilterTaps,
 };
 use splot_core::headers::sequence::MAX_REF_FRAMES;
+use splot_core::tile::InlineVec;
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
-
-use std::sync::Arc;
 
 use crate::error::{DecodeReferenceStateError, Result};
 use crate::pipeline::PipelineFrame;
@@ -69,7 +68,7 @@ impl Slot {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0; 3],
-        lr_frame_filter_taps: None,
+        lr_frame_filter_taps: [InlineVec::empty(InlineVec::empty(0)); 3],
         frame_index: None,
         long_term_id: None,
         embedded_layer_id: EmbeddedLayerId::from_bits(0),
@@ -94,7 +93,7 @@ impl Slot {
             saved_order_hints: update.saved_order_hints,
             saved_gm_params: update.saved_gm_params,
             lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
-            lr_frame_filter_taps: update.lr_frame_filter_taps.clone(),
+            lr_frame_filter_taps: update.lr_frame_filter_taps,
             frame_index: Some(frame_index),
             long_term_id: update.long_term_id,
             embedded_layer_id: update.embedded_layer_id,
@@ -428,7 +427,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: RefSlots<SlotFrameFilterTaps>,
     pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
-    pub(crate) ref_ccso_params: RefSlots<Option<Arc<CcsoParams>>>,
+    pub(crate) ref_ccso_params: RefSlots<Option<CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
     pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
     pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
@@ -464,8 +463,7 @@ impl ReferenceMetadata {
         self.saved_global_motion_params.push(slot.saved_gm_params);
         self.lr_frame_filter_class_counts
             .push(slot.lr_frame_filter_class_counts);
-        self.lr_frame_filter_taps
-            .push(slot.lr_frame_filter_taps.clone());
+        self.lr_frame_filter_taps.push(slot.lr_frame_filter_taps);
         self.ref_frame_cdfs
             .push(frame.map(|frame| frame.frame_cdfs.clone()));
         self.ref_ccso_params

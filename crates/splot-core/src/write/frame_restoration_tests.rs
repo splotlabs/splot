@@ -303,7 +303,7 @@ mod tests {
                         ref_bank: 0,
                         subset: None,
                         wiener_ns_uv_sym: false,
-                        coeffs: std::sync::Arc::from(vec![0; 16]),
+                        coeffs: crate::headers::frame::WienerNsCoeffs::from_iter_checked([0; 16]).expect("fits"),
                     }]).expect("fits"),
                 }),
             }]).expect("fits"),

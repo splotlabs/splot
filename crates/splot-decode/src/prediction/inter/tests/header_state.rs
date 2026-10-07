@@ -720,8 +720,8 @@ fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
         let plane = &mut core.ccso_params.as_mut().expect("CCSO state").planes[0];
         plane.reuse_ccso = reuse_ccso;
         plane.sb_reuse_ccso = sb_reuse_ccso;
-        reference.ref_ccso_params = RefSlots::from_iter_checked([Some(std::sync::Arc::new(saved))])
-            .expect("reference slots fit");
+        reference.ref_ccso_params =
+            RefSlots::from_iter_checked([Some(saved)]).expect("reference slots fit");
         let error =
             super::super::resolve_ccso_reference_reuse(&mut core, &reference, offset, Some(2))
                 .expect_err("missing or disabled saved CCSO plane");

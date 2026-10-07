@@ -377,7 +377,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         inter_candidate,
         bytes,
         inter_envelope,
-        core,
+        std::sync::Arc::new(core),
         &sequence,
         &options,
         &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),

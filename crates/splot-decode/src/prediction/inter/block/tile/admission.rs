@@ -303,7 +303,6 @@ pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     motion: Option<MotionFieldUnits>,
     batches: Vec<core::ops::Range<usize>>,
     filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
-    core: Option<Arc<FrameHeaderCore>>,
     reference: Option<Arc<InterReferenceState<T>>>,
     initial_cdfs: Option<Arc<FrameCdfSubset>>,
 }
@@ -321,38 +320,24 @@ impl<T: ReconSample> ScheduledTileWorkspace<T> {
     }
 
     pub(crate) fn identities_reusable(&mut self) -> bool {
-        self.core
+        self.reference
             .as_mut()
-            .is_none_or(|core| Arc::get_mut(core).is_some())
-            && self
-                .reference
-                .as_mut()
-                .is_none_or(|reference| Arc::get_mut(reference).is_some())
+            .is_none_or(|reference| Arc::get_mut(reference).is_some())
     }
 
     pub(crate) fn install_identities(
         &mut self,
-        core: FrameHeaderCore,
+        core: Arc<FrameHeaderCore>,
         reference: InterReferenceState<T>,
     ) -> Result<(Arc<FrameHeaderCore>, Arc<InterReferenceState<T>>)> {
         if !self.identities_reusable() {
             return Err(invalid_inter_tile_scheduling_state());
-        }
-        if let Some(output) = self.core.as_mut() {
-            *Arc::get_mut(output).ok_or_else(invalid_inter_tile_scheduling_state)? = core;
-        } else {
-            self.core = Some(Arc::new(core));
         }
         if let Some(output) = self.reference.as_mut() {
             *Arc::get_mut(output).ok_or_else(invalid_inter_tile_scheduling_state)? = reference;
         } else {
             self.reference = Some(Arc::new(reference));
         }
-        let core = self
-            .core
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
         let reference = self
             .reference
             .as_ref()
@@ -1170,7 +1155,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             motion: Some(self.recon.motion),
             batches: self.recon.batches,
             filters,
-            core: Some(self.recon.core),
             reference: Some(self.recon.reference),
             initial_cdfs: self.recon.initial_cdfs,
         }

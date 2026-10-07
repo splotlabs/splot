@@ -1353,7 +1353,7 @@ fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
     luma.frame_filter_bank.as_mut().unwrap().classes.truncate(1);
 
     let luma = &mut cell_core.lr_params.as_mut().unwrap().planes[0];
-    let class = luma.frame_filter_bank.as_ref().unwrap().classes[0].clone();
+    let class = luma.frame_filter_bank.as_ref().unwrap().classes[0];
     luma.frame_filter_bank.as_mut().unwrap().classes.push(class);
     luma.num_filter_classes = Some(2);
 

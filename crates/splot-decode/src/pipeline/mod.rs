@@ -457,6 +457,7 @@ where
         scheduler.assist_ready(scope)
     });
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
+    let core = frames.share_core(core)?;
     let mut product_writers = frames.reserve_products()?;
     let (frame, frame_cdfs, ccso_params, ccso_grid, segment_ids, motion_field) =
         match sequence.general.bit_depth_idc {
@@ -539,7 +540,7 @@ where
         output_effects,
         frame_cdfs,
         motion_field: frames.settle_motion(motion_field)?,
-        ccso_params: ccso_params.map(Arc::new),
+        ccso_params,
         ccso_grid,
         segment_ids,
         frame_rate_numerator: frame_rate.numerator,
@@ -836,7 +837,7 @@ where
                     key_candidate,
                     bytes,
                     key_envelope,
-                    key_core.clone(),
+                    frames.share_core(key_core.clone())?,
                     &sequence,
                     options,
                     &frame_engine::FrameSetup::Inter(&state),
@@ -864,7 +865,7 @@ where
                     output_effects: key_output_effects,
                     frame_cdfs,
                     motion_field: frames.settle_motion(walk.motion_field)?,
-                    ccso_params: ccso_params.map(Arc::new),
+                    ccso_params,
                     ccso_grid,
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
@@ -889,7 +890,7 @@ where
                     key_candidate,
                     bytes,
                     key_envelope,
-                    key_core.clone(),
+                    frames.share_core(key_core.clone())?,
                     &sequence,
                     options,
                     &frame_engine::FrameSetup::Inter(&state),
@@ -917,7 +918,7 @@ where
                     output_effects: key_output_effects,
                     frame_cdfs,
                     motion_field: frames.settle_motion(walk.motion_field)?,
-                    ccso_params: ccso_params.map(Arc::new),
+                    ccso_params,
                     ccso_grid,
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
@@ -1338,6 +1339,7 @@ where
                             first_picture_in_tu,
                             ivf_frame_index,
                         )?;
+                        let inter_core = frames.share_core(inter_core)?;
                         let user_qm = output_effect_state.prepare_frame(
                             inter_envelope,
                             &inter_core,
@@ -1410,12 +1412,8 @@ where
                                 inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
                             let writers = frames.reserve_products()?;
                             let publications = writers.handles();
-                            let products = (
-                                slot,
-                                Arc::new(inter_core.clone()),
-                                publications,
-                                motion.clone(),
-                            );
+                            let products =
+                                (slot, Arc::clone(&inter_core), publications, motion.clone());
                             let result = frame_pipeline::schedule_entropy(
                                 inter::InterFrameStart {
                                     records,
@@ -1473,9 +1471,8 @@ where
                                 &sequence,
                                 &inter_state,
                             );
-                            let conditions = dependencies.conditions();
-                            let task_core = inter_core.clone();
-                            let core = Arc::new(inter_core);
+                            let task_core = Arc::clone(&inter_core);
+                            let core = inter_core;
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
@@ -1494,7 +1491,7 @@ where
                                     )
                                 },
                                 frame_index,
-                                &conditions,
+                                &dependencies,
                                 products,
                                 motion.clone(),
                                 finish,
@@ -1569,6 +1566,7 @@ where
                             first_picture_in_tu,
                             ivf_frame_index,
                         )?;
+                        let inter_core = frames.share_core(inter_core)?;
                         let user_qm = output_effect_state.prepare_frame(
                             inter_envelope,
                             &inter_core,
@@ -1641,12 +1639,8 @@ where
                                 inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
                             let writers = frames.reserve_products()?;
                             let publications = writers.handles();
-                            let products = (
-                                slot,
-                                Arc::new(inter_core.clone()),
-                                publications,
-                                motion.clone(),
-                            );
+                            let products =
+                                (slot, Arc::clone(&inter_core), publications, motion.clone());
                             let result = frame_pipeline::schedule_entropy(
                                 inter::InterFrameStart {
                                     records,
@@ -1704,9 +1698,8 @@ where
                                 &sequence,
                                 &inter_state,
                             );
-                            let conditions = dependencies.conditions();
-                            let task_core = inter_core.clone();
-                            let core = Arc::new(inter_core);
+                            let task_core = Arc::clone(&inter_core);
+                            let core = inter_core;
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
@@ -1725,7 +1718,7 @@ where
                                     )
                                 },
                                 frame_index,
-                                &conditions,
+                                &dependencies,
                                 products,
                                 motion.clone(),
                                 finish,
@@ -1807,7 +1800,7 @@ where
                     output_effects: inter_output_effects,
                     frame_cdfs: products.frame_cdfs,
                     motion_field,
-                    ccso_params: inter_core.ccso_params.clone().map(Arc::new),
+                    ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate_numerator: inter_frame_rate.numerator,

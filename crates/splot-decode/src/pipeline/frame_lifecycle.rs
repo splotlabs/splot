@@ -7,7 +7,6 @@ use super::{unsupported, unsupported_at, unsupported_feature_at};
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
-use std::sync::Arc;
 
 use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film_grain};
 use splot_core::headers::frame::{
@@ -75,7 +74,7 @@ pub(crate) struct PipelineFrame {
     pub(crate) output_effects: super::output_effects::FrameOutputEffects,
     pub(crate) frame_cdfs: inter::FrameCdfHandle,
     pub(crate) motion_field: inter::MotionFieldHandle,
-    pub(crate) ccso_params: Option<Arc<splot_core::headers::frame::CcsoParams>>,
+    pub(crate) ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
     pub(crate) frame_rate_numerator: u32,
@@ -555,9 +554,10 @@ pub(crate) fn frame_ref_update_from_core(
 }
 
 fn lr_frame_filter_taps(core: &FrameHeaderCore) -> splot_core::headers::frame::SlotFrameFilterTaps {
-    let lr = core.lr_params.as_ref()?;
-    let mut taps: [Vec<Arc<[i16]>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let mut any = false;
+    let mut taps = splot_core::headers::frame::SlotFrameFilterTaps::default();
+    let Some(lr) = core.lr_params.as_ref() else {
+        return taps;
+    };
     for (plane, params) in lr.planes.iter().enumerate().take(3) {
         if !params.frame_filters_on {
             continue;
@@ -565,14 +565,9 @@ fn lr_frame_filter_taps(core: &FrameHeaderCore) -> splot_core::headers::frame::S
         let Some(bank) = params.frame_filter_bank.as_ref() else {
             continue;
         };
-        taps[plane] = bank
-            .classes
-            .iter()
-            .map(|class| Arc::clone(&class.coeffs))
-            .collect();
-        any = any || !taps[plane].is_empty();
+        taps[plane].extend_within(bank.classes.iter().map(|class| class.coeffs));
     }
-    any.then(|| Arc::new(taps))
+    taps
 }
 
 fn lr_frame_filter_class_counts(core: &FrameHeaderCore) -> [u8; 3] {

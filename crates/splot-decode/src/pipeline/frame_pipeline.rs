@@ -440,7 +440,7 @@ pub(super) fn reserve_tip_output<T: super::inflight::SpareFramePlanes>(
 pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
     reconstruct: P,
     frame_index: usize,
-    dependencies: &[Condition<'_>],
+    dependencies: &inter::TipOutputDependencies<T>,
     mut products: inter::FrameProductWriters,
     motion: inter::MotionFieldHandle,
     finish: PendingFinish<T>,
@@ -467,8 +467,7 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
         }
     };
     let mut conditions = dependencies
-        .iter()
-        .copied()
+        .conditions()
         .chain(scratch_source.as_deref().map(Condition::completion));
     let scratch_for_job = scratch_source.clone();
     let order_key = u64::try_from(frame_index)
