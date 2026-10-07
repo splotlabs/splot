@@ -112,7 +112,7 @@ impl MotionFieldHandle {
             self.fail();
             return;
         };
-        *storage = field;
+        storage.replace_keeping_bands(field);
         let mut cells = self.0.bands.iter().take(self.0.layout.band_count());
         TemporalMotionField::shared_bands(&shared, |band| {
             if let Some(cell) = cells.next() {
