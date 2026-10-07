@@ -22,6 +22,10 @@ struct DeblockedPlaneStorage<T> {
     height: usize,
 }
 
+/// An emptied [`DeblockedSource`] cell, erased to its bit depth so the
+/// filter records can carry it to the next frame.
+pub(crate) type DeblockedShell = Arc<dyn core::any::Any + Send + Sync>;
+
 /// One contiguous reconstructed workspace whose final deblocked prefix may be
 /// read by filter jobs while deblock continues below that prefix.
 pub(crate) struct DeblockedSource<T: ReconSample> {
@@ -44,7 +48,16 @@ unsafe impl<T: ReconSample> Send for DeblockedStorage<T> {}
 unsafe impl<T: ReconSample> Sync for DeblockedStorage<T> {}
 
 impl<T: ReconSample> DeblockedSource<T> {
-    pub(crate) fn new(mut workspace: CurrentFrameWorkspace<T>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(workspace: CurrentFrameWorkspace<T>) -> Self {
+        Self::new_in(None, workspace)
+    }
+
+    /// Builds the source in `shell` when it is this bit depth's emptied cell.
+    pub(crate) fn new_in(
+        shell: Option<DeblockedShell>,
+        mut workspace: CurrentFrameWorkspace<T>,
+    ) -> Self {
         let info = workspace.info();
         let geometry = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
             workspace
@@ -72,14 +85,25 @@ impl<T: ReconSample> DeblockedSource<T> {
                 height: size.height(),
             });
         }
+        let filled = DeblockedStorage {
+            workspace: Some(workspace),
+            info,
+            planes,
+            #[cfg(test)]
+            recycled: None,
+        };
+        let storage = match shell.and_then(|shell| shell.downcast::<DeblockedStorage<T>>().ok()) {
+            Some(mut storage) => match Arc::get_mut(&mut storage) {
+                Some(held) => {
+                    *held = filled;
+                    storage
+                }
+                None => Arc::new(filled),
+            },
+            None => Arc::new(filled),
+        };
         Self {
-            storage: Arc::new(DeblockedStorage {
-                workspace: Some(workspace),
-                info,
-                planes,
-                #[cfg(test)]
-                recycled: None,
-            }),
+            storage,
             final_luma_rows: 0,
         }
     }
@@ -100,8 +124,19 @@ impl<T: ReconSample> DeblockedSource<T> {
     ///
     /// The filter phase is the last reader of the frame it filtered, so this is
     /// where its sample buffers become the next frame's.
+    #[cfg(test)]
     pub(crate) fn into_workspace(self) -> Option<CurrentFrameWorkspace<T>> {
-        Arc::into_inner(self.storage)?.workspace.take()
+        self.into_parts().0
+    }
+
+    /// Takes the workspace back and keeps the emptied cell for [`Self::new_in`].
+    pub(crate) fn into_parts(self) -> (Option<CurrentFrameWorkspace<T>>, Option<DeblockedShell>) {
+        let mut storage = self.storage;
+        let Some(held) = Arc::get_mut(&mut storage) else {
+            return (None, None);
+        };
+        held.planes = [None, None, None];
+        (held.workspace.take(), Some(storage))
     }
 
     pub(crate) fn info(&self) -> splot_recon::DecodedFrameInfo {

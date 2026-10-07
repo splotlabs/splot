@@ -29,13 +29,18 @@ pub(crate) struct CcsoState {
 }
 
 impl CcsoState {
+    /// Lays out one tile's state, on the grids a spent tile state left when
+    /// `spare` carries one.
     pub(crate) fn try_for_tile(
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
+        spare: Option<Self>,
     ) -> Result<Self> {
         if !self.active {
-            return Ok(Self::inactive());
+            let mut blocks = spare.map(|spare| spare.blocks).unwrap_or_default();
+            blocks.iter_mut().for_each(Vec::clear);
+            return Ok(Self::inactive_with(blocks));
         }
         let unit_mi = 1usize
             .checked_shl(self.shift)
@@ -49,30 +54,34 @@ impl CcsoState {
         let len = grid_rows
             .checked_mul(grid_cols)
             .ok_or_else(ccso_state_error)?;
-        let copy_region = |source: &[u8], plane: splot_recon::PlaneId| -> Result<Vec<u8>> {
-            let mut blocks = Vec::new();
-            blocks
-                .try_reserve_exact(len)
-                .map_err(|_| ccso_allocation_error(plane))?;
-            for row in row_start..row_end {
-                let start = row
-                    .checked_mul(self.grid_cols)
-                    .and_then(|start| start.checked_add(col_start))
-                    .ok_or_else(ccso_state_error)?;
-                let end = start.checked_add(grid_cols).ok_or_else(ccso_state_error)?;
-                blocks.extend_from_slice(source.get(start..end).ok_or_else(ccso_state_error)?);
-            }
-            Ok(blocks)
-        };
+        let [mut spare_y, mut spare_u, mut spare_v] =
+            spare.map(|spare| spare.blocks).unwrap_or_default();
+        let copy_region =
+            |source: &[u8], plane: splot_recon::PlaneId, blocks: &mut Vec<u8>| -> Result<Vec<u8>> {
+                let mut blocks = core::mem::take(blocks);
+                blocks.clear();
+                blocks
+                    .try_reserve_exact(len)
+                    .map_err(|_| ccso_allocation_error(plane))?;
+                for row in row_start..row_end {
+                    let start = row
+                        .checked_mul(self.grid_cols)
+                        .and_then(|start| start.checked_add(col_start))
+                        .ok_or_else(ccso_state_error)?;
+                    let end = start.checked_add(grid_cols).ok_or_else(ccso_state_error)?;
+                    blocks.extend_from_slice(source.get(start..end).ok_or_else(ccso_state_error)?);
+                }
+                Ok(blocks)
+            };
         Ok(Self {
             active: self.active,
             shift: self.shift,
             plane_enabled: self.plane_enabled,
             sb_reuse: self.sb_reuse,
             blocks: [
-                copy_region(&self.blocks[0], splot_recon::PlaneId::Y)?,
-                copy_region(&self.blocks[1], splot_recon::PlaneId::U)?,
-                copy_region(&self.blocks[2], splot_recon::PlaneId::V)?,
+                copy_region(&self.blocks[0], splot_recon::PlaneId::Y, &mut spare_y)?,
+                copy_region(&self.blocks[1], splot_recon::PlaneId::U, &mut spare_u)?,
+                copy_region(&self.blocks[2], splot_recon::PlaneId::V, &mut spare_v)?,
             ],
             row_start,
             col_start,
@@ -148,6 +157,7 @@ impl CcsoState {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn inactive() -> Self {
         Self::inactive_with(std::array::from_fn(|_| Vec::new()))
     }

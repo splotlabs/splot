@@ -70,8 +70,8 @@ fn cdef_fill_units_uses_cdef_aligned_origin_and_block_extent() {
 #[test]
 fn cdef_tile_merge_copies_only_the_owned_region() {
     let mut frame = cdef_state(1, 2, 16);
-    let mut left = frame.try_for_tile(0..16, 0..16).unwrap();
-    let mut right = frame.try_for_tile(0..16, 16..32).unwrap();
+    let mut left = frame.try_for_tile(0..16, 0..16, None).unwrap();
+    let mut right = frame.try_for_tile(0..16, 16..32, None).unwrap();
     left.values = vec![Some(1)];
     right.values = vec![Some(2)];
 

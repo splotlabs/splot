@@ -53,6 +53,7 @@ impl MotionFieldHandle {
     }
 
     /// Names a field that is already derived.
+    #[cfg(test)]
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
         let layout = field.layout();
         let metadata = field.metadata();
@@ -111,7 +112,7 @@ impl MotionFieldHandle {
             self.fail();
             return;
         };
-        *storage = field;
+        storage.replace_keeping_bands(field);
         let mut cells = self.0.bands.iter().take(self.0.layout.band_count());
         TemporalMotionField::shared_bands(&shared, |band| {
             if let Some(cell) = cells.next() {

@@ -1466,7 +1466,7 @@ impl CcsoPlaneParamsView {
             ccso_ext_filter: plane.ccso_ext_filter,
             ccso_edge_clf: plane.ccso_edge_clf,
             ccso_max_band_log2: plane.ccso_max_band_log2,
-            ccso_offset_idx: plane.ccso_offset_idx.clone(),
+            ccso_offset_idx: plane.ccso_offset_idx.to_vec(),
         }
     }
 }

@@ -2074,7 +2074,7 @@ fn frame_header_core_inter_missing_lr_reference_taps_is_a_coverage_stop() {
     let (rv, roh, rw, rh) = one_valid_ref_64();
     let filter_counts = [[1, 0, 0]; NUM_REF_FRAMES];
     let filter_taps: [crate::headers::frame::restoration::SlotFrameFilterTaps; NUM_REF_FRAMES] =
-        std::array::from_fn(|_| None);
+        Default::default();
     let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh)
         .with_lr_frame_filter_class_counts(&filter_counts)
         .with_lr_frame_filter_taps(&filter_taps);

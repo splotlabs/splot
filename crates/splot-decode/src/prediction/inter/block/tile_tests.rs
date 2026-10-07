@@ -442,7 +442,7 @@ fn superblock_coefficients_reserve_plane_coverage_once() {
 #[cfg(test)]
 #[test]
 fn frame_coefficient_snapshots_release_the_lock_and_pin_retirement() {
-    let buffers = crate::support::decode_buffers::DecodeBuffers::default();
+    let buffers = crate::support::decode_buffers::DecodeBuffers::new();
     let mut progress = ParseProgress::default();
     progress.residuals.lock().coefficients.reserve_exact(64);
     let storage = progress.residuals.lock().coefficients.as_ptr();
@@ -507,7 +507,7 @@ fn frame_coefficient_snapshots_release_the_lock_and_pin_retirement() {
 #[test]
 fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
     let mut progress = ParseProgress::default();
-    let buffers = crate::support::decode_buffers::DecodeBuffers::default();
+    let buffers = crate::support::decode_buffers::DecodeBuffers::new();
     let mut records = TileFilterRecords::default();
     records.deblock_blocks.reserve_exact(32);
     records.chroma_deblock_blocks.reserve_records(32);

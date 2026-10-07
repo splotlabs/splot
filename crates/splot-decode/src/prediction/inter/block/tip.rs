@@ -963,12 +963,9 @@ fn publish_units_by_band<T: ReconSample>(
             band.bottom - band.top,
         )?);
     }
-    let surfaces = workspace.rect_surfaces(band_rects)?;
-    surfaces
-        .into_par_iter()
-        .zip(bands.par_iter())
-        .try_for_each(|(mut surface, band)| -> Result<()> {
-            let mut sink = mc::WorkspaceSink::Rect(&mut surface);
+    let publish_band =
+        |surface: &mut splot_recon::CurrentFrameRect<'_, T>, band: &PublishedBand| -> Result<()> {
+            let mut sink = mc::WorkspaceSink::Rect(surface);
             let members = units
                 .get(band.first_unit..band.first_unit.saturating_add(band.units))
                 .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
@@ -990,7 +987,29 @@ fn publish_units_by_band<T: ReconSample>(
                 metadata.publish(samples, &mut sink)?;
             }
             Ok(())
-        })?;
+        };
+    let publish_slot =
+        |slot: &mut Option<(splot_recon::CurrentFrameRect<'_, T>, &PublishedBand)>| {
+            slot.as_mut()
+                .map_or(Ok(()), |(surface, band)| publish_band(surface, band))
+        };
+    let mut slots: [Option<_>; 32] = core::array::from_fn(|_| None);
+    let mut filled = 0;
+    let mut next_band = bands.iter();
+    workspace.for_each_rect_surface(band_rects, |surface| {
+        let band = next_band
+            .next()
+            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+        slots[filled] = Some((surface, band));
+        filled += 1;
+        if filled == slots.len() {
+            splot_parallel::join_each(&mut slots, &publish_slot)?;
+            slots.fill_with(|| None);
+            filled = 0;
+        }
+        Ok::<(), crate::DecodeError>(())
+    })?;
+    splot_parallel::join_each(&mut slots[..filled], &publish_slot)?;
     release_unit_metadata(scratch);
     Ok(())
 }
@@ -1254,6 +1273,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     if sequence.partition.is_none() {
         return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
     }
+    let mut recycled = decode_scratch.reclaim_retired_planes();
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
     let temporal = decode_scratch
         .temporal_context
@@ -1294,7 +1314,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let global_mv = inter
         .tip_global_mv
         .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-    let mut workspace = CurrentFrameWorkspace::<T>::new_recycled(info)?; // § 7.10.6 predicts every coded sample of the frame below before `freeze`
+    let mut workspace = CurrentFrameWorkspace::<T>::new_recycled_from(info, &mut recycled)?; // § 7.10.6 predicts every coded sample of the frame below before `freeze`
     let mut motion_field = geometry
         .new_motion_field(temporal.reference_order_hints())
         .ok_or(ReconError::WorkspaceAllocationFailed {
@@ -1332,9 +1352,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             residual: None,
         },
     };
-    let mut scratch = TipReconstructScratch::default();
+    let (mut scratch, mut temporal_records) = core::mem::take(&mut decode_scratch.tip_output);
+    temporal_records.clear();
     let mut residual_scratch = InterResidualReconScratch::default();
-    let mut temporal_records = Vec::new();
     let mut sink = mc::WorkspaceSink::Frame(&mut workspace);
     let mut band_y = 0;
     while band_y < height {
@@ -1407,6 +1427,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         )
         .map_err(|_| DecodeHeaderStateError::IncompleteTipOutput)?;
     }
+    decode_scratch.tip_output = (scratch, temporal_records);
     Ok((workspace.freeze()?, motion_field))
 }
 

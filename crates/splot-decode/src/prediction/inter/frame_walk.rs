@@ -351,7 +351,7 @@ pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) candidate: &'payload DecodePlannedObu,
     pub(crate) bytes: &'payload [u8],
     pub(crate) frame_envelope: ObuEnvelope<'payload>,
-    pub(crate) core: FrameHeaderCore,
+    pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
     pub(crate) options: &'payload DecodeOptions,
     pub(crate) reference: InterReferenceState<T>,
@@ -386,6 +386,7 @@ impl<'payload, T: ReconSample> InterFrameStart<'payload, T> {
             mut products,
         } = self;
         let _scopes = quantizer.install_frame();
+        reusable.deblocked_shell = records.deblocked_shell.take();
         let mut payload_scratch = core::mem::take(&mut reusable.payload);
         let prologue = derive_inter_walk_prologue(
             plan,

@@ -96,7 +96,7 @@ fn a_slot_another_owner_still_holds_is_not_the_driver_s_to_retire() {
     let frame = decoded_frame(4, 4);
     let (slot, writer) = RefFrameSlot::pending(frame.info()).expect("pending slot");
     let reference = slot.share();
-    writer.complete(SharedFrame::new(frame));
+    writer.complete(frame);
 
     assert!(
         !slot.is_sole_handle(),
@@ -176,7 +176,7 @@ fn pending_slot_publishes_samples_to_try_frozen_and_wait_ready() {
     assert!(slot.ready().is_err());
     assert_eq!(slot.info(), info);
 
-    writer.complete(SharedFrame::new(frame));
+    writer.complete(frame);
 
     assert!(slot.is_settled());
     assert_eq!(slot.try_frozen().map(DecodedFrame::info), Some(info));
@@ -322,7 +322,7 @@ fn a_completed_writer_leaves_the_published_samples_in_place() {
     let info = frame.info();
     let (slot, writer) = RefFrameSlot::pending(info).expect("pending slot");
 
-    writer.complete(SharedFrame::new(frame));
+    writer.complete(frame);
 
     assert_eq!(slot.try_frozen().map(DecodedFrame::info), Some(info));
     assert_eq!(
@@ -337,7 +337,7 @@ fn pending_slot_geometry_matches_the_published_frame() {
     let info = frame.info();
     let (slot, writer) = RefFrameSlot::pending(info).expect("pending slot");
 
-    writer.complete(SharedFrame::new(frame));
+    writer.complete(frame);
 
     assert_eq!(slot.info(), slot.try_frozen().unwrap().info());
 }
@@ -351,9 +351,9 @@ fn ring_admission_harvests_the_oldest_entry_first() {
     let (first, first_report) = pending_entry(&mut ring, 0);
     let (second, second_report) = pending_entry(&mut ring, 1);
     let (third, third_report) = pending_entry(&mut ring, 2);
-    first.complete(SharedFrame::new(decoded_frame(4, 4)));
-    second.complete(SharedFrame::new(decoded_frame(4, 4)));
-    third.complete(SharedFrame::new(decoded_frame(4, 4)));
+    first.complete(decoded_frame(4, 4));
+    second.complete(decoded_frame(4, 4));
+    third.complete(decoded_frame(4, 4));
     drop((first_report, second_report, third_report));
     assert_eq!(ring.entries.len(), 3);
 
@@ -374,7 +374,7 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     let mut ring = InflightRing::new(nz(2), test_plane_pool());
 
     let (first, first_report) = pending_entry(&mut ring, 0);
-    first.complete(SharedFrame::new(decoded_frame(4, 4)));
+    first.complete(decoded_frame(4, 4));
     drop(first_report);
     ring.reserve(&mut eight, &mut ten, &|| false);
 
@@ -384,7 +384,7 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     );
 
     let (second, second_report) = pending_entry(&mut ring, 1);
-    second.complete(SharedFrame::new(decoded_frame(4, 4)));
+    second.complete(decoded_frame(4, 4));
     drop(second_report);
     assert_eq!(ring.entries.len(), 2);
 
@@ -450,7 +450,7 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
         lut.reserve(16);
     }
     report.outcome.records = Some(records);
-    writer.complete(SharedFrame::new(decoded_frame(4, 4)));
+    writer.complete(decoded_frame(4, 4));
     assert!(
         ring.entries
             .front()

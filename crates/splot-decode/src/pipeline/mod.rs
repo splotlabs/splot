@@ -457,6 +457,7 @@ where
         scheduler.assist_ready(scope)
     });
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
+    let core = frames.share_core(core)?;
     let mut product_writers = frames.reserve_products()?;
     let (frame, frame_cdfs, ccso_params, ccso_grid, segment_ids, motion_field) =
         match sequence.general.bit_depth_idc {
@@ -538,8 +539,8 @@ where
         display_grain,
         output_effects,
         frame_cdfs,
-        motion_field: inter::MotionFieldHandle::settled(motion_field),
-        ccso_params: ccso_params.map(Arc::new),
+        motion_field: frames.settle_motion(motion_field)?,
+        ccso_params,
         ccso_grid,
         segment_ids,
         frame_rate_numerator: frame_rate.numerator,
@@ -836,7 +837,7 @@ where
                     key_candidate,
                     bytes,
                     key_envelope,
-                    key_core.clone(),
+                    frames.share_core(key_core.clone())?,
                     &sequence,
                     options,
                     &frame_engine::FrameSetup::Inter(&state),
@@ -863,8 +864,8 @@ where
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs,
-                    motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
-                    ccso_params: ccso_params.map(Arc::new),
+                    motion_field: frames.settle_motion(walk.motion_field)?,
+                    ccso_params,
                     ccso_grid,
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
@@ -889,7 +890,7 @@ where
                     key_candidate,
                     bytes,
                     key_envelope,
-                    key_core.clone(),
+                    frames.share_core(key_core.clone())?,
                     &sequence,
                     options,
                     &frame_engine::FrameSetup::Inter(&state),
@@ -916,8 +917,8 @@ where
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs,
-                    motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
-                    ccso_params: ccso_params.map(Arc::new),
+                    motion_field: frames.settle_motion(walk.motion_field)?,
+                    ccso_params,
                     ccso_grid,
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
@@ -959,7 +960,7 @@ where
     let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
-    let evicted = scheduler.refresh(
+    scheduler.refresh(
         key_update.refresh_frame_flags,
         0,
         key_hint,
@@ -971,7 +972,7 @@ where
         &frames,
         &scheduler,
         &mut emission_queue,
-        &evicted,
+        scheduler.newly(),
         &mut emit,
     )?;
     reference.update(0, &key_update, is_key_or_switch(&key_core));
@@ -990,13 +991,13 @@ where
         key_implicit,
     );
     if key_immediate && !scheduler.already_emitted(0) {
-        let emitted = scheduler.on_immediate(0, key_hint);
+        scheduler.on_immediate(0, key_hint);
         charge_emitted_outputs(
             options,
             &frames,
             &scheduler,
             &mut emission_queue,
-            &emitted,
+            scheduler.newly(),
             &mut emit,
         )?;
     }
@@ -1203,13 +1204,13 @@ where
                     true,
                     false,
                 );
-                let emitted = scheduler.on_immediate(frame_index, ordering);
+                scheduler.on_immediate(frame_index, ordering);
                 charge_emitted_outputs(
                     options,
                     &frames,
                     &scheduler,
                     &mut emission_queue,
-                    &emitted,
+                    scheduler.newly(),
                     &mut emit,
                 )?;
                 if !retain_decoded_frames {
@@ -1338,6 +1339,7 @@ where
                             first_picture_in_tu,
                             ivf_frame_index,
                         )?;
+                        let inter_core = frames.share_core(inter_core)?;
                         let user_qm = output_effect_state.prepare_frame(
                             inter_envelope,
                             &inter_core,
@@ -1410,12 +1412,8 @@ where
                                 inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
                             let writers = frames.reserve_products()?;
                             let publications = writers.handles();
-                            let products = (
-                                slot,
-                                Arc::new(inter_core.clone()),
-                                publications,
-                                motion.clone(),
-                            );
+                            let products =
+                                (slot, Arc::clone(&inter_core), publications, motion.clone());
                             let result = frame_pipeline::schedule_entropy(
                                 inter::InterFrameStart {
                                     records,
@@ -1473,9 +1471,8 @@ where
                                 &sequence,
                                 &inter_state,
                             );
-                            let conditions = dependencies.conditions();
-                            let task_core = inter_core.clone();
-                            let core = Arc::new(inter_core);
+                            let task_core = Arc::clone(&inter_core);
+                            let core = inter_core;
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
@@ -1494,7 +1491,7 @@ where
                                     )
                                 },
                                 frame_index,
-                                &conditions,
+                                &dependencies,
                                 products,
                                 motion.clone(),
                                 finish,
@@ -1554,7 +1551,7 @@ where
                                 slot,
                                 inter_core,
                                 products,
-                                inter::MotionFieldHandle::settled(walk.motion_field),
+                                frames.settle_motion(walk.motion_field)?,
                             )
                         }
                     }
@@ -1569,6 +1566,7 @@ where
                             first_picture_in_tu,
                             ivf_frame_index,
                         )?;
+                        let inter_core = frames.share_core(inter_core)?;
                         let user_qm = output_effect_state.prepare_frame(
                             inter_envelope,
                             &inter_core,
@@ -1641,12 +1639,8 @@ where
                                 inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
                             let writers = frames.reserve_products()?;
                             let publications = writers.handles();
-                            let products = (
-                                slot,
-                                Arc::new(inter_core.clone()),
-                                publications,
-                                motion.clone(),
-                            );
+                            let products =
+                                (slot, Arc::clone(&inter_core), publications, motion.clone());
                             let result = frame_pipeline::schedule_entropy(
                                 inter::InterFrameStart {
                                     records,
@@ -1704,9 +1698,8 @@ where
                                 &sequence,
                                 &inter_state,
                             );
-                            let conditions = dependencies.conditions();
-                            let task_core = inter_core.clone();
-                            let core = Arc::new(inter_core);
+                            let task_core = Arc::clone(&inter_core);
+                            let core = inter_core;
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
@@ -1725,7 +1718,7 @@ where
                                     )
                                 },
                                 frame_index,
-                                &conditions,
+                                &dependencies,
                                 products,
                                 motion.clone(),
                                 finish,
@@ -1785,7 +1778,7 @@ where
                                 slot,
                                 inter_core,
                                 products,
-                                inter::MotionFieldHandle::settled(walk.motion_field),
+                                frames.settle_motion(walk.motion_field)?,
                             )
                         }
                     }
@@ -1807,7 +1800,7 @@ where
                     output_effects: inter_output_effects,
                     frame_cdfs: products.frame_cdfs,
                     motion_field,
-                    ccso_params: inter_core.ccso_params.clone().map(Arc::new),
+                    ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate_numerator: inter_frame_rate.numerator,
@@ -1824,7 +1817,7 @@ where
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
                 let inter_key_or_switch = is_key_or_switch(&inter_core);
-                let evicted = scheduler.refresh(
+                scheduler.refresh(
                     inter_update.refresh_frame_flags,
                     frame_index,
                     inter_hint,
@@ -1836,7 +1829,7 @@ where
                     &frames,
                     &scheduler,
                     &mut emission_queue,
-                    &evicted,
+                    scheduler.newly(),
                     &mut emit,
                 )?;
                 reference.update(frame_index, &inter_update, inter_key_or_switch);
@@ -1854,13 +1847,13 @@ where
                     inter_implicit,
                 );
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
-                    let emitted = scheduler.on_immediate(frame_index, inter_hint);
+                    scheduler.on_immediate(frame_index, inter_hint);
                     charge_emitted_outputs(
                         options,
                         &frames,
                         &scheduler,
                         &mut emission_queue,
-                        &emitted,
+                        scheduler.newly(),
                         &mut emit,
                     )?;
                 }
@@ -2096,7 +2089,7 @@ where
                 let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);
                 let key_immediate = key_core.immediate_output_frame == Some(true);
-                let evicted = scheduler.refresh(
+                scheduler.refresh(
                     key_update.refresh_frame_flags,
                     frame_index,
                     key_hint,
@@ -2108,7 +2101,7 @@ where
                     &frames,
                     &scheduler,
                     &mut emission_queue,
-                    &evicted,
+                    scheduler.newly(),
                     &mut emit,
                 )?;
                 reference.update(frame_index, &key_update, is_key_or_switch(&key_core));
@@ -2127,13 +2120,13 @@ where
                     key_implicit,
                 );
                 if key_immediate && !scheduler.already_emitted(frame_index) {
-                    let emitted = scheduler.on_immediate(frame_index, key_hint);
+                    scheduler.on_immediate(frame_index, key_hint);
                     charge_emitted_outputs(
                         options,
                         &frames,
                         &scheduler,
                         &mut emission_queue,
-                        &emitted,
+                        scheduler.newly(),
                         &mut emit,
                     )?;
                 }
@@ -2273,10 +2266,10 @@ pub(crate) fn derive_tile_plan_with<'payload>(
     .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
     let candidates = frame_tile_group_candidates(plan, candidate);
-    let recorded_header = record_frame_header(envelope, core)?;
-    let group_count = candidates.len();
+    let group_count = candidates.clone().count();
+    let recorded_header = record_frame_header(envelope, core, group_count > 1)?;
     let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> = None;
-    for (group_index, group_candidate) in candidates.into_iter().enumerate() {
+    for (group_index, group_candidate) in candidates.enumerate() {
         if group_index != 0 {
             core::mem::swap(
                 &mut scratch.work_units,
@@ -2289,7 +2282,13 @@ pub(crate) fn derive_tile_plan_with<'payload>(
         } else {
             facts.with_tile_group_structure_start_bits(continuation_structure_start_bits(
                 group_envelope,
-                &recorded_header,
+                recorded_header.as_ref().ok_or_else(|| {
+                    unsupported_at(
+                        "frame_header_copy_source_truncated",
+                        envelope.offset,
+                        "first tile-group frame header was not recorded for continuation validation",
+                    )
+                })?,
             )?)
         };
         let mut input = FrameCandidateTileBoundaryInput::new(
@@ -2330,27 +2329,20 @@ pub(crate) fn derive_tile_plan_with<'payload>(
 fn frame_tile_group_candidates<'a>(
     plan: &'a DecodeStreamPlan,
     candidate: &'a DecodePlannedObu,
-) -> Vec<&'a DecodePlannedObu> {
-    let mut groups = vec![candidate];
-    for planned in plan.obus().skip(candidate.index() as usize + 1) {
-        if planned.ivf_frame() != candidate.ivf_frame() {
-            break;
-        }
-        if planned.obu_type() == ObuType::Padding {
-            continue;
-        }
-        if planned.role().is_frame_continuation()
-            && planned.obu_type() == candidate.obu_type()
-            && planned.header().temporal_layer_id == candidate.header().temporal_layer_id
-            && planned.header().embedded_layer_id == candidate.header().embedded_layer_id
-            && planned.header().extended_layer_id == candidate.header().extended_layer_id
-        {
-            groups.push(planned);
-            continue;
-        }
-        break;
-    }
-    groups
+) -> impl Iterator<Item = &'a DecodePlannedObu> + Clone {
+    let continuations = plan
+        .obus()
+        .skip(candidate.index() as usize + 1)
+        .take_while(move |planned| planned.ivf_frame() == candidate.ivf_frame())
+        .filter(|planned| planned.obu_type() != ObuType::Padding)
+        .take_while(move |planned| {
+            planned.role().is_frame_continuation()
+                && planned.obu_type() == candidate.obu_type()
+                && planned.header().temporal_layer_id == candidate.header().temporal_layer_id
+                && planned.header().embedded_layer_id == candidate.header().embedded_layer_id
+                && planned.header().extended_layer_id == candidate.header().extended_layer_id
+        });
+    core::iter::once(candidate).chain(continuations)
 }
 
 fn planned_envelope<'a>(bytes: &'a [u8], planned: &DecodePlannedObu) -> Result<ObuEnvelope<'a>> {
@@ -2392,10 +2384,13 @@ fn planned_envelope<'a>(bytes: &'a [u8], planned: &DecodePlannedObu) -> Result<O
     })
 }
 
+/// Checks the first tile group's frame header and, only when continuation
+/// groups will compare against it, keeps a copy of its bits.
 fn record_frame_header(
     envelope: ObuEnvelope<'_>,
     core: &FrameHeaderCore,
-) -> Result<RecordedFrameHeaderBits> {
+    continuations: bool,
+) -> Result<Option<RecordedFrameHeaderBits>> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     if reader.read_bit().ok() != Some(1) {
         return Err(unsupported_at(
@@ -2404,13 +2399,23 @@ fn record_frame_header(
             "coded frame must begin with is_first_tile_group equal to 1",
         ));
     }
-    RecordedFrameHeaderBits::record(&mut reader, core.consumed_bits).map_err(|_| {
+    let truncated = || {
         unsupported_at(
             "frame_header_copy_source_truncated",
             envelope.offset,
             "first tile-group frame header could not be recorded for continuation validation",
         )
-    })
+    };
+    if !continuations {
+        return if reader.remaining_bits() < core.consumed_bits {
+            Err(truncated())
+        } else {
+            Ok(None)
+        };
+    }
+    RecordedFrameHeaderBits::record(&mut reader, core.consumed_bits)
+        .map(Some)
+        .map_err(|_| truncated())
 }
 
 fn continuation_structure_start_bits(

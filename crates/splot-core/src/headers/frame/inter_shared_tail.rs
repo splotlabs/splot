@@ -339,22 +339,13 @@ fn lr_reference_filter_entries<'a>(
         let (Some(planes), Some(counts)) = (slot_taps.get(slot), slot_counts.get(slot)) else {
             continue;
         };
-        let planes = planes.as_deref();
         for class in 0..usize::from(counts[0]) {
-            let _ = entries[0].push(
-                planes
-                    .and_then(|p| p[0].get(class))
-                    .map(std::sync::Arc::as_ref),
-            );
+            let _ = entries[0].push(planes[0].get(class).map(|coeffs| &**coeffs));
         }
         for (plane, checks) in [(1usize, [1usize, 2usize]), (2, [2, 1])] {
             for check in checks {
                 if counts[check] > 0 {
-                    let _ = entries[plane].push(
-                        planes
-                            .and_then(|p| p[check].first())
-                            .map(std::sync::Arc::as_ref),
-                    );
+                    let _ = entries[plane].push(planes[check].first().map(|coeffs| &**coeffs));
                 }
             }
         }
@@ -588,7 +579,7 @@ mod tests {
         let sizes = [64u32];
         let base_q = [100u32];
         let class_counts = [[1u8, 0, 0]];
-        let taps: [SlotFrameFilterTaps; 1] = [None];
+        let taps: [SlotFrameFilterTaps; 1] = Default::default();
         let state = FrameReferenceStateView::from_slots_with_base_q_idx(
             &valid, &hints, &sizes, &sizes, &base_q,
         )

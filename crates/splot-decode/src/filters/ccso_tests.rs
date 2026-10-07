@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::test_support::yuv420_workspace;
+use splot_core::headers::frame::CcsoOffsets;
 use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
 fn bo_plane(offset_idx: u8) -> CcsoPlaneParams {
@@ -19,7 +20,7 @@ fn bo_plane(offset_idx: u8) -> CcsoPlaneParams {
         ccso_ext_filter: Some(0),
         ccso_edge_clf: Some(false),
         ccso_max_band_log2: Some(1),
-        ccso_offset_idx: vec![offset_idx; 2],
+        ccso_offset_idx: CcsoOffsets::from_iter_checked([offset_idx; 2]).unwrap_or_default(),
     }
 }
 
@@ -55,7 +56,8 @@ fn edge_plane(
         ccso_ext_filter: Some(ext_filter),
         ccso_edge_clf: Some(edge_clf),
         ccso_max_band_log2: Some(max_band_log2),
-        ccso_offset_idx: (0..offset_count).map(|i| (i % 8) as u8).collect(),
+        ccso_offset_idx: CcsoOffsets::from_iter_checked((0..offset_count).map(|i| (i % 8) as u8))
+            .unwrap_or_default(),
     }
 }
 
@@ -572,7 +574,7 @@ fn ccso_honours_tile_column_clamp_for_diagonal_taps() {
 #[test]
 fn ccso_bo_only_honours_tile_column_clamp() {
     let mut params = bo_plane(1);
-    params.ccso_offset_idx = vec![1, 4];
+    params.ccso_offset_idx = CcsoOffsets::from_iter_checked([1, 4]).unwrap_or_default();
     let (actual, expected) = tiled_luma_ccso(&params, 3, (128, 8), Some((&[0, 2], &[0, 20, 32])));
     assert_luma_matches(&actual, &expected, 128, "bo_only");
 }

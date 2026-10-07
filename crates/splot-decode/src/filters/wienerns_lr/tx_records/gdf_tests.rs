@@ -69,8 +69,8 @@ fn gdf_tile_merge_copies_only_the_owned_region() {
         grid_cols: 2,
         values: vec![2; 2],
     };
-    let mut left = frame.for_tile(0..16, 0..16).unwrap();
-    let mut right = frame.for_tile(0..16, 16..32).unwrap();
+    let mut left = frame.for_tile(0..16, 0..16, None).unwrap();
+    let mut right = frame.for_tile(0..16, 16..32, None).unwrap();
     left.values = vec![0];
     right.values = vec![0];
 

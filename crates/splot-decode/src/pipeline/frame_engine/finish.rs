@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
+use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample};
 
 use crate::Result;
 use crate::bitstream::tile_payload::FrameCdfSubset;
@@ -48,24 +48,24 @@ pub(crate) struct FrameWalk<T: ReconSample> {
 
 /// How far one frame's samples got during its walk.
 ///
-/// Both payloads are boxed: a reconstruction workspace is large, so an unboxed
-/// variant would dominate the size of every walk output.
+/// Held inline: the stage moves once per frame, which costs less than boxing it.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum WalkStage<T: ReconSample> {
     /// The filter stages are still owed; [`finish_walked_frame`] runs them.
-    Pending(Box<WalkedFrame<T>>),
+    Pending(WalkedFrame<T>),
     /// The frame has no filter phase and left the walk final.
-    Complete(Box<DecodedFrame<T>>),
+    Complete(DecodedFrame<T>),
 }
 
 impl<T: ReconSample> WalkStage<T> {
     /// Records that a frame still owes its filter phase.
     pub(crate) fn pending(walked: WalkedFrame<T>) -> Self {
-        Self::Pending(Box::new(walked))
+        Self::Pending(walked)
     }
 
     /// Records that a frame left the walk without owing a filter phase.
     pub(crate) fn complete(frame: DecodedFrame<T>) -> Self {
-        Self::Complete(Box::new(frame))
+        Self::Complete(frame)
     }
 }
 
@@ -247,7 +247,7 @@ pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
     admit: Option<
         &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     >,
-    publish: impl FnOnce(SharedFrame<T>),
+    publish: impl FnOnce(DecodedFrame<T>),
 ) -> Result<FrameFilterRecords> {
     let WalkedFrame {
         sink,
@@ -261,7 +261,7 @@ pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
         deblock_quant_deltas,
         progress,
         admit,
-        |frame| publish(SharedFrame::new(frame)),
+        publish,
     )?;
     Ok(filter_records)
 }

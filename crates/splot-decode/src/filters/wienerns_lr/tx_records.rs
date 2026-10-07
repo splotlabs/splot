@@ -247,10 +247,13 @@ impl DeltaQState {
 }
 
 impl CdefState {
+    /// Lays out one tile's state, on the grid a spent tile state left when
+    /// `spare` carries one.
     pub(crate) fn try_for_tile(
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
+        spare: Option<Self>,
     ) -> Result<Self> {
         let row_start = mi_rows.start / CDEF_UNIT_MI;
         let col_start = mi_cols.start / CDEF_UNIT_MI;
@@ -265,7 +268,8 @@ impl CdefState {
         let rows = row_end.saturating_sub(row_start);
         let cols = col_end.saturating_sub(col_start);
         let len = rows.checked_mul(cols).ok_or_else(selectable_state_error)?;
-        let mut values = Vec::new();
+        let mut values = spare.map(|spare| spare.values).unwrap_or_default();
+        values.clear();
         values
             .try_reserve_exact(len)
             .map_err(|_| selectable_allocation_error())?;

@@ -243,14 +243,9 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
     prelude: TemporalPrelude,
     motion_field: TemporalMotionField,
 ) -> Result<(tile::ScheduledTileRecon<T>, PendingFilterAttach<T>)> {
-    let InterDecodeScratch {
-        tile,
-        temporal_context: _,
-        frame_filter_records: _,
-        buffers,
-    } = scratch;
-    let mut tile = tile.unwrap_or_default();
-    tile.buffers = buffers;
+    let mut parked = scratch;
+    let mut tile = parked.tile.take().unwrap_or_default();
+    tile.buffers.clone_from(&parked.buffers);
     let context =
         Arc::get_mut(temporal).ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
     let temporal_plan =
@@ -261,6 +256,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         .try_fold(0, |count, range| range.map(|_| count + 1))?;
     let tile = tile::prepare_scheduled_tile(
         tile,
+        parked,
         reusable,
         workers,
         *params,
@@ -286,4 +282,24 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
             progress,
         },
     ))
+}
+
+#[cfg(test)]
+impl<T: ReconSample> InterDecodeScratch<T> {
+    pub(crate) fn frame_filter_records_capacity(&self) -> usize {
+        self.frame_filter_records
+            .last()
+            .map_or(0, |records| records.deblock_blocks.capacity())
+    }
+
+    pub(crate) fn derived_filter_record_capacities(&self) -> (usize, usize, usize, [usize; 3]) {
+        let empty = crate::filters::wienerns_lr::FrameFilterRecords::default();
+        let records = self.frame_filter_records.last().unwrap_or(&empty);
+        (
+            records.cdef_grid_values.capacity(),
+            records.cdef_strengths.capacity(),
+            records.tx_skip_grid_values.capacity(),
+            records.ccso_offset_luts.each_ref().map(Vec::capacity),
+        )
+    }
 }

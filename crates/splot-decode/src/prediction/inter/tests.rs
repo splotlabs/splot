@@ -377,7 +377,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         inter_candidate,
         bytes,
         inter_envelope,
-        core,
+        std::sync::Arc::new(core),
         &sequence,
         &options,
         &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
@@ -388,7 +388,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         panic!("inter fixture unexpectedly completed without its filter phase");
     };
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
-    finish_walked_frame(*walked, None, None, |frame| writer.complete(frame))?;
+    finish_walked_frame(walked, None, None, |frame| writer.complete(frame))?;
     slot.ready()
 }
 

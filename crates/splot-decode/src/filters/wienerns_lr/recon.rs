@@ -189,6 +189,8 @@ pub(crate) struct OwnedFilterJob<T: ReconSample> {
 /// The sole setup owner after every scheduled stripe has settled.
 pub(crate) struct OwnedFilterFinish<T: ReconSample> {
     setup: OwnedFilterShell<T>,
+    /// The deblocked source the stripes read, emptied once they have settled.
+    source: Option<crate::filters::source::DeblockedSource<T>>,
 }
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -554,7 +556,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     .prime_vertical_pass(&mut workspace, bit_depth)
                     .map_err(|_| lr_pipeline_state_error())?;
             }
-            let mut source = crate::filters::source::DeblockedSource::new(workspace);
+            let mut source = crate::filters::source::DeblockedSource::new_in(
+                setup.filter_records.deblocked_shell.take(),
+                workspace,
+            );
             if sections.is_none() && !source.publish_final_rows(setup.luma_height) {
                 return Err(lr_pipeline_state_error());
             }
@@ -628,12 +633,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
             }
             setup.stripe_outcomes = slots;
-            retired = retire_source(source);
+            retired = retire_source(source, &mut setup.filter_records.deblocked_shell);
             if let Some(error) = failure {
                 return Err(error);
             }
         } else {
-            let mut source = crate::filters::source::DeblockedSource::new(workspace);
+            let mut source = crate::filters::source::DeblockedSource::new_in(
+                setup.filter_records.deblocked_shell.take(),
+                workspace,
+            );
             if let Some(sections) = sections.as_mut() {
                 sections
                     .advance_source(&mut source, mi_rows, bit_depth)
@@ -654,7 +662,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 setup.publish(filtered)?;
             }
             drop(lease);
-            retired = retire_source(source);
+            retired = retire_source(source, &mut setup.filter_records.deblocked_shell);
         }
         if let Some(mut sections) = sections {
             sections.release_grids(&mut setup.filter_records.deblock_grids);
@@ -672,9 +680,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 /// where those buffers become free again.
 fn retire_source<T: ReconSample>(
     source: crate::filters::source::DeblockedSource<T>,
+    shell: &mut Option<crate::filters::source::DeblockedShell>,
 ) -> splot_recon::RetiredFramePlanes {
-    source
-        .into_workspace()
+    let (workspace, emptied) = source.into_parts();
+    *shell = emptied;
+    workspace
         .map(|workspace| T::retire_planes(workspace.into_plane_samples()))
         .unwrap_or_default()
 }
@@ -1134,10 +1144,13 @@ impl<T: ReconSample> OwnedFilterFinish<T> {
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> (Result<(R, super::FrameFilterRecords)>, OwnedFilterShell<T>) {
         let mut setup = self.setup;
-        let result = Arc::get_mut(&mut setup)
+        let mut result = Arc::get_mut(&mut setup)
             .ok_or_else(lr_pipeline_state_error)
             .and_then(|setup| setup.take().ok_or_else(lr_pipeline_state_error))
             .and_then(|setup| setup.finish(publish));
+        if let (Ok((_, records)), Some(source)) = (result.as_mut(), self.source) {
+            records.deblocked_shell = source.into_parts().1;
+        }
         (result, setup)
     }
 }
@@ -1156,8 +1169,11 @@ impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
     }
 
     /// Transfers terminal ownership to the exactly-once freeze job.
-    pub(crate) fn owned_finish(setup: OwnedFilterShell<T>) -> OwnedFilterFinish<T> {
-        OwnedFilterFinish { setup }
+    pub(crate) fn owned_finish(
+        setup: OwnedFilterShell<T>,
+        source: Option<crate::filters::source::DeblockedSource<T>>,
+    ) -> OwnedFilterFinish<T> {
+        OwnedFilterFinish { setup, source }
     }
 }
 

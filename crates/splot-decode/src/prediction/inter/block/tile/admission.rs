@@ -132,6 +132,8 @@ struct ScheduledFrontier<T: ReconSample> {
     sealed: Option<crate::filters::source::DeblockedSource<T>>,
     sealed_rows: usize,
     terminal_workspace: Option<crate::filters::source::DeblockedSource<T>>,
+    /// The emptied source cell the terminal workspace is wrapped in.
+    terminal_shell: Option<crate::filters::source::DeblockedShell>,
     deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
     filter: Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
     next_filter_stripe: usize,
@@ -266,6 +268,8 @@ struct TileRecon<T: ReconSample> {
     frontier_rows: usize,
     commit: Mutex<Option<TileCommit<T>>>,
     scratch: Mutex<Option<TileDecodeScratch<T>>>,
+    /// The rest of the frame's decode scratch, parked until the tile returns.
+    parked: Mutex<Option<super::super::InterDecodeScratch<T>>>,
     workers: Arc<InterReconScratchPool<T>>,
     prepass_block_decoded: TileBlockDecodedState,
     motion: MotionFieldUnits,
@@ -303,9 +307,11 @@ pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     motion: Option<MotionFieldUnits>,
     batches: Vec<core::ops::Range<usize>>,
     filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
-    core: Option<Arc<FrameHeaderCore>>,
     reference: Option<Arc<InterReferenceState<T>>>,
     initial_cdfs: Option<Arc<FrameCdfSubset>>,
+    /// The last filter phase's emptied deblocked-source cell, parked between
+    /// the walk's start and its prepare.
+    pub(crate) deblocked_shell: Option<crate::filters::source::DeblockedShell>,
 }
 
 impl<T: ReconSample> ScheduledTileWorkspace<T> {
@@ -321,38 +327,24 @@ impl<T: ReconSample> ScheduledTileWorkspace<T> {
     }
 
     pub(crate) fn identities_reusable(&mut self) -> bool {
-        self.core
+        self.reference
             .as_mut()
-            .is_none_or(|core| Arc::get_mut(core).is_some())
-            && self
-                .reference
-                .as_mut()
-                .is_none_or(|reference| Arc::get_mut(reference).is_some())
+            .is_none_or(|reference| Arc::get_mut(reference).is_some())
     }
 
     pub(crate) fn install_identities(
         &mut self,
-        core: FrameHeaderCore,
+        core: Arc<FrameHeaderCore>,
         reference: InterReferenceState<T>,
     ) -> Result<(Arc<FrameHeaderCore>, Arc<InterReferenceState<T>>)> {
         if !self.identities_reusable() {
             return Err(invalid_inter_tile_scheduling_state());
-        }
-        if let Some(output) = self.core.as_mut() {
-            *Arc::get_mut(output).ok_or_else(invalid_inter_tile_scheduling_state)? = core;
-        } else {
-            self.core = Some(Arc::new(core));
         }
         if let Some(output) = self.reference.as_mut() {
             *Arc::get_mut(output).ok_or_else(invalid_inter_tile_scheduling_state)? = reference;
         } else {
             self.reference = Some(Arc::new(reference));
         }
-        let core = self
-            .core
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
         let reference = self
             .reference
             .as_ref()
@@ -395,16 +387,16 @@ impl<T: ReconSample> SurfaceSource<T> {
         Self { info, rects, free }
     }
 
-    /// Lays this source out for another tile, keeping its free surfaces.
+    /// Lays this source out for another tile and lends its rectangle list,
+    /// which the caller fills for the new tile.
     pub(super) fn reset(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
-        rects: Vec<splot_recon::PlaneRect>,
         free: Vec<splot_recon::OwnedFrameRect<T>>,
-    ) {
+    ) -> &mut Vec<splot_recon::PlaneRect> {
         self.info = info;
-        self.rects = rects;
         self.free = free;
+        &mut self.rects
     }
 
     /// Hands out the surface for `unit`, whose rectangle the frame fixed when
@@ -909,6 +901,10 @@ impl<'a, 'c: 'a, T: ReconSample> splot_parallel::Task<'a> for BatchJob<'a, 'c, T
     }
 }
 
+/// Parses one tile and reconstructs its batches.
+///
+/// A lone worker runs each admitted batch job at once and in order, so once
+/// every reference row is settled it runs them directly and builds no scheduler.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_ordinary_tile<T: ReconSample>(
     parser: &mut TileParser<'_>,
@@ -955,14 +951,19 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         context,
         row_buffers,
     };
-    let scheduler: AdmissionScheduler<'_, BatchJob<'_, '_, T>> = AdmissionScheduler::new();
     let pool_width = splot_parallel::current_pool_width();
+    let inline = pool_width <= 1 && row_gate.is_ready();
+    let scheduler: Option<AdmissionScheduler<'_, BatchJob<'_, '_, T>>> =
+        (!inline).then(AdmissionScheduler::new);
     let admission_window = if pool_width > 1 {
         pool_width.saturating_sub(1).saturating_mul(3)
     } else {
         1
     };
-    let mut references_settled = false;
+    let mut references_settled = inline;
+    if inline && let Err(value) = row_gate.wait() {
+        record_first_error(&error, value);
+    }
     let mut submitted_batches = 0usize;
     let mut reached_last = false;
     let parse_result = splot_parallel::ready_task_scope(|scope| {
@@ -1012,6 +1013,24 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             if let Some(slot) = shared.pending.lock().get_mut(batch_index) {
                 *slot = Some(ready);
             }
+            let Some(scheduler) = scheduler.as_ref() else {
+                for stage in [BatchStage::Precompute, BatchStage::Commit] {
+                    let job = BatchJob {
+                        shared: &shared,
+                        index: batch_index,
+                        stage,
+                    };
+                    match stage {
+                        BatchStage::Precompute => job.precompute(),
+                        BatchStage::Commit => job.commit(),
+                    }
+                }
+                submitted_batches = batch_index.saturating_add(1);
+                if batch_last {
+                    break;
+                }
+                continue;
+            };
             scheduler.submit_iter(
                 scope,
                 (batch_index as u64).saturating_mul(4).saturating_add(1),
@@ -1090,7 +1109,9 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                     record_first_error(&error, value);
                 }
             }
-            scheduler.admit_ready(scope);
+            if let Some(scheduler) = scheduler.as_ref() {
+                scheduler.admit_ready(scope);
+            }
             if terminal.is_none_or(CompletionCell::is_set) {
                 break;
             }
@@ -1103,7 +1124,9 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             splot_parallel::assist_pool_or_park(&progress);
         }
     })?;
-    let scheduler_result = scheduler.finish();
+    let scheduler_result = scheduler
+        .as_ref()
+        .map_or(Ok(()), AdmissionScheduler::finish);
     drop(scheduler);
     if let Some(error) = error.into_inner() {
         return Err(error);
@@ -1139,9 +1162,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             motion: Some(self.recon.motion),
             batches: self.recon.batches,
             filters,
-            core: Some(self.recon.core),
             reference: Some(self.recon.reference),
             initial_cdfs: self.recon.initial_cdfs,
+            deblocked_shell: None,
         }
     }
 
@@ -1528,23 +1551,27 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             );
             frontier.next_filter_stripe += 1;
         }
-        drop(frontier.sealed.take());
-        drop(frontier.terminal_workspace.take());
+        let source = frontier
+            .sealed
+            .take()
+            .or(frontier.terminal_workspace.take());
         Ok(ScheduledFrameProgress {
             filters,
             output: Some(
-                crate::filters::wienerns_lr::recon::OwnedFilterSetup::owned_finish(filter),
+                crate::filters::wienerns_lr::recon::OwnedFilterSetup::owned_finish(filter, source),
             ),
         })
     }
 
     pub(crate) fn take_scheduled_scratch(&self) -> Result<super::super::InterDecodeScratch<T>> {
-        self.recon
+        let tile = self
+            .recon
             .scratch
             .lock()
             .take()
-            .ok_or_else(invalid_inter_tile_scheduling_state)
-            .map(super::super::InterDecodeScratch::from_scheduled_tile_scratch)
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        let parked = self.recon.parked.lock().take().unwrap_or_default();
+        Ok(parked.with_scheduled_tile(tile))
     }
 
     /// Commits one precomputed unit after its predecessor has completed.
@@ -1568,7 +1595,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             if frontier.sealed.is_some() {
                 drop(workspace);
             } else {
-                let mut source = crate::filters::source::DeblockedSource::new(workspace);
+                let mut source = crate::filters::source::DeblockedSource::new_in(
+                    frontier.terminal_shell.take(),
+                    workspace,
+                );
                 if frontier.deblock.is_none()
                     && !source.publish_final_rows(self.info.storage_luma_size().height())
                 {
@@ -1721,6 +1751,7 @@ fn prepare_scheduled_motion(
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
+    parked: super::super::InterDecodeScratch<T>,
     reusable: &mut ScheduledTileWorkspace<T>,
     workers: Arc<InterReconScratchPool<T>>,
     params: TileWalkParams,
@@ -1798,17 +1829,16 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .surfaces
         .take()
         .unwrap_or_else(|| Arc::new(Mutex::new(SurfaceSource::new(info, Vec::new(), Vec::new()))));
-    let source = Arc::get_mut(&mut surface_source)
+    let rects = Arc::get_mut(&mut surface_source)
         .ok_or_else(invalid_inter_tile_scheduling_state)?
-        .get_mut();
-    source.info = info;
-    source.free = surfaces;
+        .get_mut()
+        .reset(info, surfaces);
     super::superblock_luma_rects_into(
         &geometry.mi_rows,
         &geometry.mi_cols,
         &workspace,
         params.sb_h4,
-        &mut source.rects,
+        rects,
     )?;
     let resolve_state = TileResolveState::new(&sequence);
     let sealed = if core
@@ -1819,7 +1849,10 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
         });
         let workspace = CurrentFrameWorkspace::new_recycled_from(info, &mut spare)?;
-        Some(crate::filters::source::DeblockedSource::new(workspace))
+        Some(crate::filters::source::DeblockedSource::new_in(
+            reusable.deblocked_shell.take(),
+            workspace,
+        ))
     } else {
         None
     };
@@ -1843,6 +1876,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                 frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
             })),
             scratch: Mutex::new(None),
+            parked: Mutex::new(Some(parked)),
             workers,
             prepass_block_decoded,
             motion,
@@ -1860,6 +1894,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             sealed,
             sealed_rows: 0,
             terminal_workspace: None,
+            terminal_shell: reusable.deblocked_shell.take(),
             deblock: None,
             filter: None,
             next_filter_stripe: 0,

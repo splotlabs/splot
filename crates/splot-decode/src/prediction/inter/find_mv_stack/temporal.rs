@@ -100,6 +100,8 @@ pub(crate) struct TemporalMotionField {
     is_inter: bool,
     frame_size: Option<(usize, usize)>,
     ref_order_hints: RefOrderHints,
+    /// The cleared band list, kept while the field is contiguous.
+    spare_bands: Vec<TemporalMotionBand>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,6 +190,7 @@ impl TemporalMotionField {
             is_inter: false,
             frame_size: None,
             ref_order_hints: empty_ref_order_hints(),
+            spare_bands: Vec::new(),
         }
     }
 
@@ -204,6 +207,7 @@ impl TemporalMotionField {
             is_inter: false,
             frame_size: None,
             ref_order_hints: empty_ref_order_hints(),
+            spare_bands: Vec::new(),
         })
     }
 
@@ -226,6 +230,7 @@ impl TemporalMotionField {
             is_inter,
             frame_size: Some(frame_size),
             ref_order_hints: owned_ref_order_hints,
+            spare_bands: Vec::new(),
         })
     }
 
@@ -339,9 +344,24 @@ impl TemporalMotionField {
         match &mut self.storage {
             TemporalMotionStorage::Bands(bands) => bands.clear(),
             TemporalMotionStorage::Contiguous(_) => {
-                self.storage = TemporalMotionStorage::Bands(Vec::new());
+                let bands = TemporalMotionStorage::Bands(core::mem::take(&mut self.spare_bands));
+                if let TemporalMotionStorage::Contiguous(cells) =
+                    core::mem::replace(&mut self.storage, bands)
+                {
+                    crate::support::reusable_scratch::recycle_pooled_vec(cells);
+                }
             }
         }
+    }
+
+    /// Replaces this field with `field`, keeping the cleared band list.
+    pub(crate) fn replace_keeping_bands(&mut self, mut field: Self) {
+        field.spare_bands = match &mut self.storage {
+            TemporalMotionStorage::Bands(bands) => core::mem::take(bands),
+            TemporalMotionStorage::Contiguous(_) => core::mem::take(&mut self.spare_bands),
+        };
+        field.spare_bands.clear();
+        *self = field;
     }
 
     pub(crate) fn reset_from_bands(
@@ -412,6 +432,7 @@ impl TemporalMotionField {
             is_inter: metadata.is_inter,
             frame_size: metadata.frame_size,
             ref_order_hints: metadata.ref_order_hints,
+            spare_bands: Vec::new(),
         })
     }
 
@@ -794,7 +815,12 @@ struct TemporalBandResult {
 }
 
 pub(crate) struct TemporalBandPlan {
-    projections: Vec<ScheduledTemporalProjection>,
+    /// Bounded by the projection queue, so the list is inline; every entry is
+    /// `Some`, the `Option` only supplies the `Default` an inline list needs.
+    projections: splot_core::tile::InlineVec<
+        Option<ScheduledTemporalProjection>,
+        { selection::MFMV_STACK_SIZE },
+    >,
     config: TemporalProjectionConfig,
     layout: MotionFieldLayout,
     tip: Option<TipReferencePair>,
@@ -865,13 +891,17 @@ impl TemporalBandPlan {
     pub(crate) fn requirements(&self, index: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.projections
             .iter()
+            .flatten()
             .enumerate()
             .filter(move |(position, projection)| {
                 index < projection.source_layout.band_count()
-                    && !self.projections[..*position].iter().any(|previous| {
-                        previous.slot == projection.slot
-                            && index < previous.source_layout.band_count()
-                    })
+                    && !self.projections[..*position]
+                        .iter()
+                        .flatten()
+                        .any(|previous| {
+                            previous.slot == projection.slot
+                                && index < previous.source_layout.band_count()
+                        })
             })
             .map(move |(_, projection)| (projection.slot, index))
     }
@@ -936,7 +966,7 @@ impl TemporalBandPlan {
         } else {
             None
         };
-        for projection in &self.projections {
+        for projection in self.projections.iter().flatten() {
             if index >= projection.source_layout.band_count() {
                 continue;
             }
@@ -1316,7 +1346,7 @@ impl TemporalMvContext {
             ref_motion_metadata,
             ref_motion_layouts,
         );
-        let mut prepared = Vec::with_capacity(projections.len());
+        let mut prepared = splot_core::tile::InlineVec::default();
         for projection in projections.iter().copied() {
             let slot = usize::try_from(*ref_frame_idx.get(projection.ref_index)?).ok()?;
             let source_order_hint = self
@@ -1339,11 +1369,11 @@ impl TemporalMvContext {
                 projection.target_ref,
                 &self.ref_order_hints,
             )?;
-            prepared.push(ScheduledTemporalProjection {
+            prepared.push(Some(ScheduledTemporalProjection {
                 slot,
                 source,
                 source_layout,
-            });
+            }))?;
         }
         self.current_order_hint = current_order_hint;
         self.trajectories = None;
@@ -1972,81 +2002,30 @@ fn run_band_projections(
     };
     let mut trajectory_bands = trajectories.and_then(|state| state.bands(band_rows));
     let mut field_bands = field.bands(band_rows);
-    let mut trajectory_slots = trajectory_bands
-        .as_deref_mut()
-        .map_or_else(Vec::new, |bands| bands.iter_mut().map(Some).collect());
-    let scheduled = if splot_parallel::current_pool_width() <= 1 {
-        for (index, band) in field_bands.iter_mut().enumerate() {
-            let rows = trajectory_slots.get_mut(index).and_then(Option::take);
-            run(band, rows);
+    loop {
+        let mut slots: [BandSlot<'_, '_>; BAND_FAN_OUT] = core::array::from_fn(|_| None);
+        let mut filled = 0;
+        for (slot, band) in slots.iter_mut().zip(&mut field_bands) {
+            *slot = Some((band, trajectory_bands.as_mut().and_then(Iterator::next)));
+            filled += 1;
         }
-        Ok(())
-    } else {
-        splot_parallel::ready_task_scope(|scope| {
-            for (index, band) in field_bands.iter_mut().enumerate() {
-                let rows = trajectory_slots.get_mut(index).and_then(Option::take);
-                let run = &run;
-                scope.spawn(move |_| run(band, rows));
-            }
-        })
-    };
-    if scheduled.is_err() {
-        for (index, band) in field_bands.iter_mut().enumerate() {
-            run(
-                band,
-                trajectory_bands
-                    .as_mut()
-                    .and_then(|bands| bands.get_mut(index)),
-            );
+        if filled == 0 {
+            return;
         }
+        let Ok(()) =
+            splot_parallel::join_each(&mut slots[..filled], &|slot: &mut BandSlot<'_, '_>| {
+                if let Some((band, rows)) = slot {
+                    run(band, rows.as_mut());
+                }
+                Ok::<(), core::convert::Infallible>(())
+            });
     }
 }
 
-/// Whole-field projection of one source, for direct unit tests.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn project_whole_temporal_motion_field(
-    source: &TemporalMotionField,
-    source_order_hint: u32,
-    current_order_hint: u32,
-    projection_step: usize,
-    tmvp_unit_size8: usize,
-    source_ref: usize,
-    side: usize,
-    target_ref: Option<usize>,
-    ref_order_hints: &[Option<u32>],
-    trajectories: Option<&mut TrajectoryState>,
-    output: &mut ProjectedTemporalMotionField,
-) {
-    let config = TemporalProjectionConfig {
-        frame_size: (0, 0),
-        step: projection_step,
-        unit_size8: tmvp_unit_size8,
-        enable_tip: false,
-        enable_trajectory: trajectories.is_some(),
-        reduced: false,
-    };
-    let prepared = TemporalProjectionSource::new(
-        &source.metadata(),
-        source.layout(),
-        source_order_hint,
-        current_order_hint,
-        source_ref,
-        side,
-        target_ref,
-        ref_order_hints,
-    );
-    let prepared = prepared.map(|source_info| PreparedTemporalProjection {
-        source: source_info,
-        field: source,
-    });
-    run_band_projections(
-        core::slice::from_ref(&prepared),
-        config,
-        trajectories,
-        output,
-    );
-}
+/// Bands fanned out per round; a taller field runs several rounds.
+const BAND_FAN_OUT: usize = 32;
+
+type BandSlot<'f, 't> = Option<(ProjectedFieldBand<'f>, Option<TrajectoryBand<'t>>)>;
 
 /// One unit-aligned row band of a projected motion field.
 struct ProjectedFieldBand<'a> {
@@ -2057,18 +2036,17 @@ struct ProjectedFieldBand<'a> {
 }
 
 impl ProjectedTemporalMotionField {
-    fn bands(&mut self, band_rows: usize) -> Vec<ProjectedFieldBand<'_>> {
+    fn bands(&mut self, band_rows: usize) -> impl Iterator<Item = ProjectedFieldBand<'_>> {
         let (width8, height8) = (self.width8, self.height8);
         self.cells
             .chunks_mut(band_rows.saturating_mul(width8).max(1))
             .enumerate()
-            .map(|(index, cells)| ProjectedFieldBand {
+            .map(move |(index, cells)| ProjectedFieldBand {
                 cells,
                 width8,
                 height8,
                 row_base: index * band_rows,
             })
-            .collect()
     }
 }
 

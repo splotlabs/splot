@@ -279,6 +279,42 @@ pub fn assist_pool_once() -> bool {
     matches!(assist_installed_pool(), PoolAssist::Executed)
 }
 
+/// Runs `a` and `b`, in parallel when called on a splot worker.
+///
+/// Unlike [`ready_task_scope`], this allocates nothing: `b` waits on the
+/// caller's stack until a worker steals it or the caller runs it itself.
+fn join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA + Send,
+    B: FnOnce() -> RB + Send,
+    RA: Send,
+    RB: Send,
+{
+    match INSTALLED_POOL.with(|installed| installed.borrow().upgrade()) {
+        Some(pool) if on_worker_pool() => pool.join(a, b),
+        _ => (a(), b()),
+    }
+}
+
+/// Runs `each` on every item, halving the slice across the pool with stack-held joins.
+///
+/// # Errors
+/// Returns the first error in slice order.
+pub fn join_each<T: Send, E: Send>(
+    items: &mut [T],
+    each: &(impl Fn(&mut T) -> Result<(), E> + Sync),
+) -> Result<(), E> {
+    match items {
+        [] => Ok(()),
+        [item] => each(item),
+        _ => {
+            let (left, right) = items.split_at_mut(items.len() / 2);
+            let (left, right) = join(|| join_each(left, each), || join_each(right, each));
+            left.and(right)
+        }
+    }
+}
+
 /// The width of the pool this call runs on, or `1` off a worker thread.
 #[must_use]
 pub fn current_pool_width() -> usize {

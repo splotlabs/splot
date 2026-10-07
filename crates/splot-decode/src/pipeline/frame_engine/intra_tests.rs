@@ -72,7 +72,7 @@ fn decode_intra_fixture_with_core_on_threads(
             &candidate,
             Q80_FIXTURE,
             key,
-            core,
+            std::sync::Arc::new(core),
             &sequence,
             &options,
             &crate::pipeline::frame_engine::FrameSetup::Intra,
@@ -84,12 +84,9 @@ fn decode_intra_fixture_with_core_on_threads(
         panic!("an intra frame always owes its filter phase");
     };
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
-    context.pool().install(|| {
-        finish_walked_frame(*walked, None, None, |frame| {
-            assert_eq!(frame.handle_count(), 1);
-            writer.complete(frame);
-        })
-    })?;
+    context
+        .pool()
+        .install(|| finish_walked_frame(walked, None, None, |frame| writer.complete(frame)))?;
     Ok((slot.ready()?, walk.frame_cdfs, walk.ccso_grid))
 }
 

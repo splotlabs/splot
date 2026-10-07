@@ -6,6 +6,51 @@
 use super::*;
 use splot_parallel::{ThreadCount, WorkerPool};
 
+/// Whole-field projection of one source, for direct unit tests.
+#[allow(clippy::too_many_arguments)]
+fn project_whole_temporal_motion_field(
+    source: &TemporalMotionField,
+    source_order_hint: u32,
+    current_order_hint: u32,
+    projection_step: usize,
+    tmvp_unit_size8: usize,
+    source_ref: usize,
+    side: usize,
+    target_ref: Option<usize>,
+    ref_order_hints: &[Option<u32>],
+    trajectories: Option<&mut TrajectoryState>,
+    output: &mut ProjectedTemporalMotionField,
+) {
+    let config = TemporalProjectionConfig {
+        frame_size: (0, 0),
+        step: projection_step,
+        unit_size8: tmvp_unit_size8,
+        enable_tip: false,
+        enable_trajectory: trajectories.is_some(),
+        reduced: false,
+    };
+    let prepared = TemporalProjectionSource::new(
+        &source.metadata(),
+        source.layout(),
+        source_order_hint,
+        current_order_hint,
+        source_ref,
+        side,
+        target_ref,
+        ref_order_hints,
+    );
+    let prepared = prepared.map(|source_info| PreparedTemporalProjection {
+        source: source_info,
+        field: source,
+    });
+    run_band_projections(
+        core::slice::from_ref(&prepared),
+        config,
+        trajectories,
+        output,
+    );
+}
+
 #[test]
 fn temporal_motion_block_stays_compact() {
     assert_eq!(size_of::<TemporalMotionBlock>(), 120);

@@ -8,8 +8,6 @@
 //! temporal Wiener banks and CCSO reuse. Frame-level Wiener NS coefficients are parsed
 //! by [`wienerns`]; entropy-coded restoration-unit filters and reconstruction live elsewhere.
 
-use std::sync::Arc;
-
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::frame::size::ceil_log2;
@@ -18,7 +16,9 @@ use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 mod wienerns;
 
 use wienerns::parse_frame_wiener_ns_filter;
-pub use wienerns::{MAX_WIENER_NS_CLASSES, WienerNsFrameFilterBank, WienerNsFrameFilterClass};
+pub use wienerns::{
+    MAX_WIENER_NS_CLASSES, WienerNsCoeffs, WienerNsFrameFilterBank, WienerNsFrameFilterClass,
+};
 
 /// `RESTORATION_TILESIZE_MAX` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`):
 /// maximum size of a loop-restoration tile. Exposed `pub(crate)` so the § 5.18.7.11 writer
@@ -48,6 +48,13 @@ pub(crate) const CCSO_INPUT_INTERVAL: u32 = 3;
 /// `CCSO_BAND_NUM` (AV2 § 3): maximum number of bands allowed in CCSO. The § 6.17.7.8
 /// conformance bound is `1 << ccso_max_band_log2 <= CCSO_BAND_NUM`.
 pub const CCSO_BAND_NUM: u32 = 64;
+
+/// The longest `ccso_offset_idx` table the § 5.18.7.12 syntax can code: `f(3)` lets
+/// `ccso_bo_only` reach `maxBand = 1 << 7` with `maxEdgeInterval = 1`.
+pub const MAX_CCSO_OFFSETS: usize = 128;
+
+/// One plane's `ccso_offset_idx` table, held inline.
+pub type CcsoOffsets = crate::tile::InlineVec<u8, MAX_CCSO_OFFSETS>;
 
 /// `CCSO_Quant_Sz[4][4]` (AV2 § 7, mirror 07-decoding-process.md:12097): the CCSO
 /// quantization step looked up by `[ccso_scale_idx][ccso_quant_idx]`; a step of `0`
@@ -185,10 +192,10 @@ pub struct LrGeometry {
     pub subsampling_y: u8,
 }
 
-/// Retained frame-level Wiener-NS filter taps for one reference slot, shared
-/// from the decoder's § 7.23 reference buffer. `None` marks a slot with no
-/// frame-level filter, avoiding an allocation for the common empty case.
-pub type SlotFrameFilterTaps = Option<Arc<[Vec<Arc<[i16]>>; 3]>>;
+/// Retained frame-level Wiener-NS filter taps for one reference slot, per
+/// plane, from the decoder's § 7.23 reference buffer. Empty planes mark a
+/// slot with no frame-level filter.
+pub type SlotFrameFilterTaps = [crate::tile::InlineVec<WienerNsCoeffs, MAX_WIENER_NS_CLASSES>; 3];
 
 /// Reference-frame Wiener-NS state used by the inter `lr_params()` temporal-copy arm.
 ///
@@ -514,7 +521,6 @@ fn copy_temporal_frame_filter(
     let Some(classes) = references
         .filter_taps_by_slot
         .and_then(|slots| slots.get(slot))
-        .and_then(Option::as_deref)
         .and_then(|planes| planes.get(ref_plane))
         .filter(|classes| classes.len() >= class_count)
     else {
@@ -531,7 +537,7 @@ fn copy_temporal_frame_filter(
                 ref_bank: 0,
                 subset: None,
                 wiener_ns_uv_sym: false,
-                coeffs: Arc::clone(coeffs),
+                coeffs: *coeffs,
             }),
     ) else {
         return;
@@ -635,7 +641,7 @@ pub struct CcsoPlaneParams {
     /// `maxEdgeInterval * maxEdgeInterval * maxBand`). Empty when `ccso_planes[plane] == 0`
     /// (no offsets are coded). These were previously read and discarded; they are surfaced so
     /// the § 5.18.7.12 writer can reproduce them byte-exactly.
-    pub ccso_offset_idx: Vec<u8>,
+    pub ccso_offset_idx: CcsoOffsets,
 }
 
 /// Parsed `ccso_params()` (AV2 v1.0.0 § 5.18.7.12) on the intra path.
@@ -779,9 +785,13 @@ fn parse_ccso_params_with_references(
             let max_band = 1u32 << u32::from(ccso_max_band_log2);
 
             let offset_count = (max_edge_interval * max_edge_interval * max_band) as usize;
-            let mut ccso_offset_idx = Vec::with_capacity(offset_count);
+            let mut ccso_offset_idx = CcsoOffsets::default();
             for _ in 0..offset_count {
-                ccso_offset_idx.push(read_tu(reader, 7)? as u8);
+                ccso_offset_idx.push(read_tu(reader, 7)? as u8).ok_or(
+                    crate::error::Error::Unimplemented {
+                        feature: "ccso_offset_idx_count",
+                    },
+                )?;
             }
 
             plane_params.ccso_bo_only = Some(ccso_bo_only);
@@ -1032,16 +1042,8 @@ mod tests {
         let mut r = reader(&data);
         let counts = [[1, 0, 0], [2, 0, 0]];
         let taps = [
-            Some(Arc::new([
-                vec![Arc::from(vec![1; 16])],
-                Vec::new(),
-                Vec::new(),
-            ])),
-            Some(Arc::new([
-                vec![Arc::from(vec![3; 16]), Arc::from(vec![7; 16])],
-                Vec::new(),
-                Vec::new(),
-            ])),
+            slot_taps([&[&[1; 16]], &[], &[]]),
+            slot_taps([&[&[3; 16], &[7; 16]], &[], &[]]),
         ];
         let params = parse_lr_params_for_inter(
             &mut r,
@@ -1065,14 +1067,22 @@ mod tests {
         assert_eq!(bank.classes[1].coeffs.as_ref(), [7; 16].as_slice());
     }
 
+    fn slot_taps(planes: [&[&[i16]]; 3]) -> SlotFrameFilterTaps {
+        planes.map(|classes| {
+            let mut bank = crate::tile::InlineVec::default();
+            bank.extend_within(classes.iter().map(|coeffs| {
+                let mut class = WienerNsCoeffs::default();
+                class.extend_within(coeffs.iter().copied());
+                class
+            }));
+            bank
+        })
+    }
+
     #[test]
     fn temporal_filter_copy_uses_alternate_chroma_and_rejects_short_bank() {
         let counts = [[2, 0, 1]];
-        let taps = [Some(Arc::new([
-            Vec::new(),
-            Vec::new(),
-            vec![Arc::from(vec![9; 8])],
-        ]))];
+        let taps = [slot_taps([&[], &[], &[&[9; 8]]])];
         let references = LrTemporalReferenceView::new(&[0], Some(&counts), Some(&taps));
         let mut chroma = LrPlaneParams {
             restoration_type: FrameRestorationType::WienerNonsep,
@@ -1216,7 +1226,7 @@ mod tests {
         assert_eq!(params.planes[0].ccso_ext_filter, Some(0));
         assert_eq!(params.planes[0].ccso_edge_clf, Some(false));
         assert_eq!(params.planes[0].ccso_max_band_log2, Some(0));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0]);
         assert!(!params.planes[1].ccso_planes);
         assert!(params.planes[1].ccso_offset_idx.is_empty());
     }
@@ -1239,7 +1249,7 @@ mod tests {
         let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 1).unwrap();
         assert_eq!(params.planes.len(), 3);
         assert_eq!(params.planes[0].ccso_bo_only, Some(true));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0]);
         assert_eq!(params.planes[0].ccso_ref_idx, None);
     }
 
@@ -1281,7 +1291,7 @@ mod tests {
         let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 3).unwrap();
         assert_eq!(params.planes.len(), 3);
         assert_eq!(params.planes[0].ccso_ref_idx, Some(2));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0]);
     }
 
     #[test]
@@ -1307,7 +1317,7 @@ mod tests {
         assert_eq!(params.planes[0].ccso_scale_idx, Some(1));
         assert_eq!(params.planes[0].ccso_ext_filter, Some(5));
         assert_eq!(params.planes[0].ccso_edge_clf, Some(true));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![1, 1, 1, 1]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [1, 1, 1, 1]);
     }
 
     #[test]
@@ -1329,7 +1339,7 @@ mod tests {
         let mut r = reader(&data);
         let params = parse_ccso_params(&mut r, false, 3, &ccso_enabled()).unwrap();
         assert_eq!(params.planes[0].ccso_edge_clf, Some(false));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0u8; 9]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0u8; 9]);
     }
 
     #[test]
@@ -1349,7 +1359,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_ccso_params(&mut r, false, 3, &ccso_enabled()).unwrap();
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0, 1, 2, 7]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0, 1, 2, 7]);
     }
 
     #[test]

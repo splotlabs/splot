@@ -13,6 +13,13 @@ pub struct PlaneSize {
 }
 
 impl PlaneSize {
+    /// The size of a plane that holds no samples, used only for an emptied
+    /// [`crate::SharedFrame`] allocation that is never read.
+    pub(crate) const EMPTY: Self = Self {
+        width: 0,
+        height: 0,
+    };
+
     /// Creates a positive plane size.
     ///
     /// # Errors
@@ -57,6 +64,14 @@ pub struct PlaneRect {
 }
 
 impl PlaneRect {
+    /// The rectangle of a plane that holds no samples; see [`PlaneSize::EMPTY`].
+    pub(crate) const EMPTY: Self = Self {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    };
+
     /// Creates a positive visible rectangle.
     ///
     /// # Errors

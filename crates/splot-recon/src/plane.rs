@@ -21,6 +21,16 @@ pub struct Plane<T: ReconSample> {
 }
 
 impl<T: ReconSample> Plane<T> {
+    /// A plane that holds no samples and allocates nothing.
+    pub(crate) const fn vacant() -> Self {
+        Self {
+            storage_size: crate::PlaneSize::EMPTY,
+            stride_samples: 0,
+            visible_rect: crate::PlaneRect::EMPTY,
+            samples: Vec::new(),
+        }
+    }
+
     /// Creates a plane from owned sample storage.
     ///
     /// `storage_size` describes the full rectangular backing storage.

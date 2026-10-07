@@ -53,6 +53,8 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) cdef_strengths: Vec<crate::filters::cdef::CdefFrameParams>,
     pub(crate) tx_skip_grid_values: Vec<u8>,
     pub(crate) ccso_offset_luts: [Vec<i32>; 3],
+    /// The last filter phase's emptied deblocked-source cell.
+    pub(crate) deblocked_shell: Option<crate::filters::source::DeblockedShell>,
 }
 
 /// The per-stripe lists one frame's filter phase works through.

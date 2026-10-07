@@ -91,8 +91,8 @@ fn ccso_tile_merge_copies_only_the_owned_region() {
         std::array::from_fn(|_| Vec::new()),
     )
     .unwrap();
-    let mut left = frame.try_for_tile(0..16, 0..16).unwrap();
-    let mut right = frame.try_for_tile(0..16, 16..32).unwrap();
+    let mut left = frame.try_for_tile(0..16, 0..16, None).unwrap();
+    let mut right = frame.try_for_tile(0..16, 16..32, None).unwrap();
     left.blocks[0] = vec![1];
     right.blocks[0] = vec![1];
 

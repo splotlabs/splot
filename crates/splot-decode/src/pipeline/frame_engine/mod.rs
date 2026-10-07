@@ -45,7 +45,7 @@ pub(crate) fn walk_frame<T: ReconSample>(
     candidate: &DecodePlannedObu,
     bytes: &[u8],
     frame_envelope: ObuEnvelope<'_>,
-    core: FrameHeaderCore,
+    core: std::sync::Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     setup: &FrameSetup<'_, T>,

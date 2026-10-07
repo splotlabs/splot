@@ -303,7 +303,7 @@ mod tests {
                         ref_bank: 0,
                         subset: None,
                         wiener_ns_uv_sym: false,
-                        coeffs: std::sync::Arc::from(vec![0; 16]),
+                        coeffs: crate::headers::frame::WienerNsCoeffs::from_iter_checked([0; 16]).expect("fits"),
                     }]).expect("fits"),
                 }),
             }]).expect("fits"),
@@ -593,7 +593,7 @@ mod tests {
         bits.bit(0); // ccso_planes[2]
         let data = bits.into_bytes();
         let p = ccso_round_trip(&data, 3, ccso_enabled());
-        assert_eq!(p.planes[0].ccso_offset_idx, vec![0, 1, 2, 7]);
+        assert_eq!(p.planes[0].ccso_offset_idx[..], [0, 1, 2, 7]);
     }
 
     #[test]
@@ -666,7 +666,7 @@ mod tests {
             ccso_ext_filter: None,
             ccso_edge_clf: None,
             ccso_max_band_log2: None,
-            ccso_offset_idx: Vec::new(),
+            ccso_offset_idx: crate::headers::frame::CcsoOffsets::default(),
         }
     }
 
@@ -682,7 +682,7 @@ mod tests {
             ccso_ext_filter: Some(0),
             ccso_edge_clf: Some(false),
             ccso_max_band_log2: Some(max_band_log2),
-            ccso_offset_idx: offsets,
+            ccso_offset_idx: crate::headers::frame::CcsoOffsets::from_iter_checked(offsets).expect("fits"),
         }
     }
 
@@ -872,7 +872,7 @@ mod tests {
             ccso_ext_filter: Some(0),
             ccso_edge_clf: Some(false),
             ccso_max_band_log2: Some(0),
-            ccso_offset_idx: vec![0; 9],
+            ccso_offset_idx: crate::headers::frame::CcsoOffsets::from_iter_checked([0; 9]).expect("fits"),
         }
     }
 

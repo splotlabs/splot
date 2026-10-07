@@ -697,7 +697,7 @@ fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
         ccso_ext_filter: None,
         ccso_edge_clf: None,
         ccso_max_band_log2: None,
-        ccso_offset_idx: Vec::new(),
+        ccso_offset_idx: splot_core::headers::frame::CcsoOffsets::default(),
     };
     core.ccso_params
         .as_mut()
@@ -720,8 +720,8 @@ fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
         let plane = &mut core.ccso_params.as_mut().expect("CCSO state").planes[0];
         plane.reuse_ccso = reuse_ccso;
         plane.sb_reuse_ccso = sb_reuse_ccso;
-        reference.ref_ccso_params = RefSlots::from_iter_checked([Some(std::sync::Arc::new(saved))])
-            .expect("reference slots fit");
+        reference.ref_ccso_params =
+            RefSlots::from_iter_checked([Some(saved)]).expect("reference slots fit");
         let error =
             super::super::resolve_ccso_reference_reuse(&mut core, &reference, offset, Some(2))
                 .expect_err("missing or disabled saved CCSO plane");
@@ -1590,7 +1590,7 @@ fn ras_slot_conformance_precedes_ccso_reference_reuse() {
             ccso_ext_filter: None,
             ccso_edge_clf: None,
             ccso_max_band_log2: None,
-            ccso_offset_idx: Vec::new(),
+            ccso_offset_idx: splot_core::headers::frame::CcsoOffsets::default(),
         });
     let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
 

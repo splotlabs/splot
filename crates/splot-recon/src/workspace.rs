@@ -1031,8 +1031,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         &mut self,
         luma_rects: &[PlaneRect],
     ) -> Result<Vec<CurrentFrameRect<'_, T>>> {
-        let info = self.info;
-        let pixel_format = info.pixel_format();
         let mut output = Vec::new();
         output.try_reserve_exact(luma_rects.len()).map_err(|_| {
             ReconError::WorkspaceAllocationFailed {
@@ -1040,6 +1038,26 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 context: "rectangle surfaces",
             }
         })?;
+        self.for_each_rect_surface(luma_rects, |surface| {
+            output.push(surface);
+            Ok::<(), ReconError>(())
+        })?;
+        Ok(output)
+    }
+
+    /// Hands each band of [`Self::rect_surfaces`] to `each` in order, without
+    /// collecting them, for a caller that fills the bands one after another.
+    ///
+    /// # Errors
+    /// Returns the first error of `each`, or the [`ReconError`]s of
+    /// [`Self::rect_surfaces`].
+    pub fn for_each_rect_surface<'a, E: From<ReconError>>(
+        &'a mut self,
+        luma_rects: &[PlaneRect],
+        mut each: impl FnMut(CurrentFrameRect<'a, T>) -> core::result::Result<(), E>,
+    ) -> core::result::Result<(), E> {
+        let info = self.info;
+        let pixel_format = info.pixel_format();
         let Self { y, u, v, .. } = self;
         let mut y_split = PlaneBandSplit::new(y);
         let mut u_split = u.as_mut().map(PlaneBandSplit::new);
@@ -1054,7 +1072,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 )?),
                 None => None,
             };
-            output.push(CurrentFrameRect {
+            each(CurrentFrameRect {
                 info,
                 y: y_split.take(rect)?,
                 u: match (u_split.as_mut(), chroma) {
@@ -1065,9 +1083,9 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                     (Some(split), Some(chroma)) => Some(split.take(chroma)?),
                     _ => None,
                 },
-            });
+            })?;
         }
-        Ok(output)
+        Ok(())
     }
 
     /// Hands this workspace's sample buffers to the next frame that needs them.
