@@ -169,6 +169,15 @@ impl<T: ReconSample> FramePlaneSamples<T> {
         self
     }
 
+    /// Returns the buffers to the pool this set names, or frees them.
+    pub fn release(mut self) {
+        if let Some(pool) = self.pool.take() {
+            for plane in &mut self.planes {
+                pool.recycle(core::mem::take(plane));
+            }
+        }
+    }
+
     /// Takes the buffer kept for `plane`, leaving nothing behind.
     #[must_use]
     pub fn take(&mut self, plane: PlaneId) -> Vec<T> {

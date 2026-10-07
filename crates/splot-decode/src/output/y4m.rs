@@ -5,7 +5,6 @@
 //!
 //! Feature tracking: `DECODE-Y4M-RUNTIME-OUTPUT`.
 
-use core::num::NonZeroUsize;
 use std::io::Write;
 
 use splot_core::ivf::IvfHeader;
@@ -22,7 +21,7 @@ pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
-    frame_delay: NonZeroUsize,
+    session: &crate::pipeline::DecodeSession,
     output: W,
 ) -> Result<W> {
     let mut target = Some(output);
@@ -34,7 +33,7 @@ pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
         parsed,
         options,
         plan,
-        frame_delay,
+        session,
         |header| preflight_y4m_source(header, frame_rate_override),
         |output| {
             let frame_rate = match frame_rate_override {

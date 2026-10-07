@@ -614,14 +614,18 @@ impl SpareFramePlanes for u16 {
     }
 }
 
-/// Keeps `retired` when the ring is not already holding a full cycle of spares.
+/// Keeps `retired` when the ring is not already holding a full cycle of spares,
+/// otherwise hands it to `overflow`'s pool when the caller names one.
 fn keep_spare<T: ReconSample>(
     spares: &mut Vec<splot_recon::FramePlaneSamples<T>>,
     capacity: usize,
     retired: splot_recon::FramePlaneSamples<T>,
+    overflow: Option<&Arc<splot_recon::PlanePool>>,
 ) {
     if spares.len() < capacity {
         spares.push(retired);
+    } else if overflow.is_some() {
+        retired.with_pool(overflow).release();
     }
 }
 
@@ -707,7 +711,22 @@ impl InflightRing {
     ///
     /// A frame still shared by any reader keeps its own buffers: the samples
     /// are only taken when this handle is the last one holding them.
-    pub(crate) fn keep_frame_planes(&mut self, mut slot: PipelineFrameSlot) -> PipelineFrameSlot {
+    pub(crate) fn keep_frame_planes(&mut self, slot: PipelineFrameSlot) -> PipelineFrameSlot {
+        self.retire_frame_planes(slot, false)
+    }
+
+    /// Retires a frame the last decode left in the store: the decode's pool
+    /// takes whatever planes the ring's spares have no room for.
+    pub(crate) fn release_frame_planes(&mut self, slot: PipelineFrameSlot) -> PipelineFrameSlot {
+        self.retire_frame_planes(slot, true)
+    }
+
+    fn retire_frame_planes(
+        &mut self,
+        mut slot: PipelineFrameSlot,
+        pool: bool,
+    ) -> PipelineFrameSlot {
+        let overflow = pool.then(|| self.buffers.planes());
         match &mut slot {
             PipelineFrameSlot::Eight(slot) => {
                 if let Some(frame) = slot.retire_frame() {
@@ -715,6 +734,7 @@ impl InflightRing {
                         &mut self.spare_eight,
                         self.capacity,
                         frame.into_plane_samples(),
+                        overflow,
                     );
                 }
             }
@@ -724,6 +744,7 @@ impl InflightRing {
                         &mut self.spare_ten,
                         self.capacity,
                         frame.into_plane_samples(),
+                        overflow,
                     );
                 }
             }

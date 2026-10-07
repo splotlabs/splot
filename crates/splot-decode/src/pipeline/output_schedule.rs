@@ -361,7 +361,7 @@ const fn is_regular_frame_obu(obu_type: ObuType) -> bool {
 }
 
 pub(super) fn select_output_frames(
-    mut frames: FrameStore,
+    frames: &mut FrameStore,
     output_frame_indices: Vec<usize>,
 ) -> Result<Vec<PipelineFrame>> {
     let mut outputs = Vec::with_capacity(output_frame_indices.len());

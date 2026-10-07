@@ -648,6 +648,11 @@ impl ReconAdmissionLane {
         }
     }
 
+    /// Whether every gate this lane would hand the next frame has settled.
+    pub(super) fn is_settled(&self) -> bool {
+        self.recon.iter().all(|cell| cell.is_set()) && self.filters.iter().all(|cell| cell.is_set())
+    }
+
     fn reserve<T>(
         depth: usize,
         lane: &mut VecDeque<Arc<CompletionCell<T>>>,

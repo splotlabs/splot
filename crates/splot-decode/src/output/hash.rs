@@ -27,10 +27,10 @@ pub(crate) fn decode_hash_report_from_plan(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
-    frame_delay: NonZeroUsize,
+    session: &crate::pipeline::DecodeSession,
 ) -> Result<DecodeHashReport> {
     let report_frames =
-        decode_hash_frames_pipelined(bytes, parsed, options, plan, resolved_threads, frame_delay)?;
+        decode_hash_frames_pipelined(bytes, parsed, options, plan, resolved_threads, session)?;
 
     Ok(DecodeHashReport::raw_intermediate_output(
         resolved_threads.to_string(),
@@ -63,10 +63,10 @@ fn decode_hash_frames_pipelined(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
-    frame_delay: NonZeroUsize,
+    session: &crate::pipeline::DecodeSession,
 ) -> Result<Vec<DecodeHashFrame>> {
     let completed = Mutex::new(Vec::new());
-    let outstanding_capacity = hash_backlog_capacity(resolved_threads, frame_delay);
+    let outstanding_capacity = hash_backlog_capacity(resolved_threads, session.frame_delay());
     splot_parallel::ready_task_scope(|scope| {
         let mut emitted = 0u64;
         let mut outstanding: VecDeque<Arc<CompletionCell<()>>> = VecDeque::new();
@@ -75,7 +75,7 @@ fn decode_hash_frames_pipelined(
             parsed,
             options,
             plan,
-            frame_delay,
+            session,
             |_| Ok(()),
             |output| {
                 let ready = output.ready_frame()?;

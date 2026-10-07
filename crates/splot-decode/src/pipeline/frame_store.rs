@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Logical frame identities over reusable streaming metadata slots.
+//! Logical frame identities over reusable streaming metadata slots, and the
+//! decoder state a context keeps between its decode calls.
 //!
 //! References and pending displays each hold at most `MAX_REF_FRAMES`. A full
 //! table stops admission until outstanding work and queued emission drain.
@@ -13,9 +14,105 @@ use crate::Result;
 use crate::prediction::inter::{
     FrameProductWriters, FrameProducts, MotionFieldHandle, MotionFieldLayout,
 };
+use core::num::NonZeroUsize;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 use std::sync::Arc;
+
+use parking_lot::Mutex;
+
+use super::frame_pipeline::ReconAdmissionLane;
+use super::inflight::InflightRing;
+use crate::prediction::inter::InterDecodeScratch;
+use crate::support::decode_buffers::DecodeBuffers;
+
+/// The frame-pipelining depth of one context and the decoder state it keeps
+/// between decode calls, as dav2d keeps its frame contexts.
+pub(crate) struct DecodeSession {
+    frame_delay: NonZeroUsize,
+    retained: Mutex<Option<RetainedDecode>>,
+}
+
+impl core::fmt::Debug for DecodeSession {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("DecodeSession")
+            .field("frame_delay", &self.frame_delay)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DecodeSession {
+    pub(crate) fn new(frame_delay: NonZeroUsize) -> Self {
+        Self {
+            frame_delay,
+            retained: Mutex::new(None),
+        }
+    }
+
+    pub(crate) const fn frame_delay(&self) -> NonZeroUsize {
+        self.frame_delay
+    }
+
+    /// Takes the last decode's state when it was built for `depth`. A
+    /// concurrent decode on the same context gets new state instead.
+    pub(super) fn take(&self, depth: NonZeroUsize) -> RetainedDecode {
+        match self.retained.lock().take() {
+            Some(retained) if retained.ring.capacity() == depth.get() => retained,
+            _ => RetainedDecode::new(depth),
+        }
+    }
+
+    /// Keeps the state of a decode that finished, for the next call.
+    pub(super) fn keep(&self, retained: RetainedDecode) {
+        *self.retained.lock() = Some(retained);
+    }
+}
+
+/// The storage one decode leaves for the next decode on its context.
+pub(super) struct RetainedDecode {
+    pub(super) scratch_eight: InterDecodeScratch<u8>,
+    pub(super) scratch_ten: InterDecodeScratch<u16>,
+    pub(super) ring: InflightRing,
+    pub(super) lane: ReconAdmissionLane,
+    pub(super) frames: FrameStore,
+}
+
+impl RetainedDecode {
+    fn new(depth: NonZeroUsize) -> Self {
+        let buffers = DecodeBuffers::new();
+        let mut scratch_eight = InterDecodeScratch::default();
+        let mut scratch_ten = InterDecodeScratch::default();
+        scratch_eight.set_decode_buffers(&buffers);
+        scratch_ten.set_decode_buffers(&buffers);
+        Self {
+            scratch_eight,
+            scratch_ten,
+            ring: InflightRing::new(depth, buffers),
+            lane: ReconAdmissionLane::new(depth.get()),
+            frames: FrameStore::new(false, depth.get()),
+        }
+    }
+
+    /// Opens the state for a new decode: the last decode's frames retire into
+    /// their slots, and a lane still gated on unsettled work starts over.
+    pub(super) fn begin(&mut self, retain: bool) {
+        let depth = self.ring.capacity();
+        if retain || self.frames.retain {
+            self.frames = FrameStore::new(retain, depth);
+        }
+        for entry in &mut self.frames.entries {
+            if let Some(frame) = entry.frame.take() {
+                entry.retired = Some(self.ring.release_frame_planes(frame.frame));
+            }
+        }
+        self.frames.count = 0;
+        self.frames.reserved = None;
+        if !self.lane.is_settled() {
+            self.lane = ReconAdmissionLane::new(depth);
+        }
+    }
+}
 
 pub(crate) struct FrameEntry {
     pub(super) index: usize,
