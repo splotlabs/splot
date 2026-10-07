@@ -526,6 +526,8 @@ pub(crate) struct InflightRing {
     failure: Option<(usize, DecodeError)>,
     spare_eight: Vec<splot_recon::FramePlaneSamples<u8>>,
     spare_ten: Vec<splot_recon::FramePlaneSamples<u16>>,
+    finish_eight: Vec<Arc<FinishCell<u8>>>,
+    finish_ten: Vec<Arc<FinishCell<u16>>>,
     parse_slots: Vec<Arc<ParseProgress>>,
     next_parse_slot: usize,
     buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
@@ -541,6 +543,39 @@ pub(crate) struct InflightRing {
 pub(crate) trait SpareFramePlanes: ReconSample {
     fn take_slot(slot: PipelineFrameSlot) -> Option<RefFrameSlot<Self>>;
     fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>>;
+    fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>>;
+    fn finish_task<'job>(finish: ParkedFinish<Self>) -> super::frame_pipeline::FrameTask<'job>;
+}
+
+/// One frame's owed filter phase, parked in a ring-owned cell until its
+/// scheduler task takes it.
+pub(crate) type FinishCell<T> = Mutex<Option<(PendingFinish<T>, WalkedFrame<T>)>>;
+
+/// The scheduler task for one parked filter phase.
+///
+/// A task dropped unrun drops the parked phase, which settles the frame's
+/// slot as failed instead of leaving it pending in the ring.
+pub(crate) struct ParkedFinish<T: ReconSample> {
+    cell: Arc<FinishCell<T>>,
+    done: Arc<CompletionCell<()>>,
+}
+
+impl<T: ReconSample> ParkedFinish<T> {
+    pub(crate) fn run<'job>(
+        self,
+        admit: &dyn splot_parallel::Admit<'job, super::frame_pipeline::FrameTask<'job>>,
+    ) {
+        if let Some((finish, walked)) = self.cell.lock().take() {
+            finish.run_finish(walked, Some(admit));
+        }
+        let _ = self.done.set(());
+    }
+}
+
+impl<T: ReconSample> Drop for ParkedFinish<T> {
+    fn drop(&mut self) {
+        drop(self.cell.lock().take());
+    }
 }
 
 impl SpareFramePlanes for u8 {
@@ -553,6 +588,12 @@ impl SpareFramePlanes for u8 {
     fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>> {
         &mut ring.spare_eight
     }
+    fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>> {
+        &mut ring.finish_eight
+    }
+    fn finish_task<'job>(finish: ParkedFinish<Self>) -> super::frame_pipeline::FrameTask<'job> {
+        super::frame_pipeline::FrameTask::FinishEight(finish)
+    }
 }
 
 impl SpareFramePlanes for u16 {
@@ -564,6 +605,12 @@ impl SpareFramePlanes for u16 {
     }
     fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>> {
         &mut ring.spare_ten
+    }
+    fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>> {
+        &mut ring.finish_ten
+    }
+    fn finish_task<'job>(finish: ParkedFinish<Self>) -> super::frame_pipeline::FrameTask<'job> {
+        super::frame_pipeline::FrameTask::FinishTen(finish)
     }
 }
 
@@ -597,6 +644,8 @@ impl InflightRing {
             failure: None,
             spare_eight: Vec::new(),
             spare_ten: Vec::new(),
+            finish_eight: Vec::new(),
+            finish_ten: Vec::new(),
             parse_slots: Vec::new(),
             next_parse_slot: 0,
         }
@@ -610,6 +659,29 @@ impl InflightRing {
                 Some(Arc::clone(cell))
             })
             .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
+    }
+
+    /// Parks one frame's owed filter phase in a free cell of its sample type.
+    pub(crate) fn park_finish<T: SpareFramePlanes>(
+        &mut self,
+        finish: PendingFinish<T>,
+        walked: WalkedFrame<T>,
+        done: Arc<CompletionCell<()>>,
+    ) -> ParkedFinish<T> {
+        let cells = T::finish_cells(self);
+        let parked = Some((finish, walked));
+        for cell in cells.iter_mut() {
+            if let Some(free) = Arc::get_mut(cell) {
+                *free.get_mut() = parked;
+                return ParkedFinish {
+                    cell: Arc::clone(cell),
+                    done,
+                };
+            }
+        }
+        let cell = Arc::new(Mutex::new(parked));
+        cells.push(Arc::clone(&cell));
+        ParkedFinish { cell, done }
     }
 
     /// Claims a parse slot after the ring has harvested its preceding frame.
@@ -771,17 +843,25 @@ where
         WalkStage::Complete(frame) => {
             let slot = match frames.take_retired()?.and_then(T::take_slot) {
                 Some(mut slot) => {
-                    let frame = SharedFrame::new_in(slot.shell.take(), *frame);
+                    let frame = SharedFrame::new_in(slot.shell.take(), frame);
                     slot.reuse_completed(frame)?
                 }
-                None => RefFrameSlot::completed(SharedFrame::new(*frame)),
+                None => RefFrameSlot::completed(SharedFrame::new(frame)),
             };
             return Ok(erase(slot));
         }
         WalkStage::Pending(walked) => walked,
     };
     let (slot, pending) = reserve_pending_slot(walked.info(), erase, ring, frames, frame_index)?;
-    super::frame_pipeline::schedule_finish(pending, *walked, frame_index, scope, scheduler, lane);
+    super::frame_pipeline::schedule_finish(
+        pending,
+        walked,
+        frame_index,
+        scope,
+        scheduler,
+        lane,
+        ring,
+    );
     Ok(slot)
 }
 

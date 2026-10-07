@@ -188,6 +188,8 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
     /// The payload plan's framing, work units and tile CDFs, kept across frames.
     pub(in crate::prediction::inter) payload: crate::bitstream::tile_payload::TilePayloadScratch,
+    /// The fused walk's initial CDF cell, reset in place for each frame.
+    pub(in crate::prediction::inter) initial_cdfs: Option<Arc<FrameCdfSubset>>,
     /// The reusable storage this decode's retired work leaves behind.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
@@ -199,9 +201,7 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         Self {
             buffers: tile.buffers.clone(),
             tile: Some(tile),
-            temporal_context: None,
-            frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
-            payload: crate::bitstream::tile_payload::TilePayloadScratch::default(),
+            ..Self::default()
         }
     }
 

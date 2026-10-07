@@ -86,7 +86,7 @@ fn decode_intra_fixture_with_core_on_threads(
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
     context
         .pool()
-        .install(|| finish_walked_frame(*walked, None, None, |frame| writer.complete(frame)))?;
+        .install(|| finish_walked_frame(walked, None, None, |frame| writer.complete(frame)))?;
     Ok((slot.ready()?, walk.frame_cdfs, walk.ccso_grid))
 }
 

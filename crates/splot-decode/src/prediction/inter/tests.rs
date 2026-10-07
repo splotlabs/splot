@@ -388,7 +388,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         panic!("inter fixture unexpectedly completed without its filter phase");
     };
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
-    finish_walked_frame(*walked, None, None, |frame| writer.complete(frame))?;
+    finish_walked_frame(walked, None, None, |frame| writer.complete(frame))?;
     slot.ready()
 }
 

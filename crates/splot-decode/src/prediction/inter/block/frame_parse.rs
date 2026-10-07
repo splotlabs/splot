@@ -248,6 +248,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         temporal_context: _,
         frame_filter_records: _,
         payload: _,
+        initial_cdfs: _,
         buffers,
     } = scratch;
     let mut tile = tile.unwrap_or_default();

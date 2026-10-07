@@ -295,6 +295,8 @@ pub(crate) enum FrameTask<'job> {
     },
     Filter(ScheduledFilterJob),
     Output(ScheduledFrameRef),
+    FinishEight(super::inflight::ParkedFinish<u8>),
+    FinishTen(super::inflight::ParkedFinish<u16>),
 }
 
 impl<'job> splot_parallel::Task<'job> for FrameTask<'job> {
@@ -304,6 +306,8 @@ impl<'job> splot_parallel::Task<'job> for FrameTask<'job> {
                 ScheduledFrameRef::Eight(frame) => frame.run_output(),
                 ScheduledFrameRef::Ten(frame) => frame.run_output(),
             },
+            Self::FinishEight(finish) => finish.run(admit),
+            Self::FinishTen(finish) => finish.run(admit),
             Self::ParseEight(context) => EntropyTask::run(&context),
             Self::ParseTen(context) => EntropyTask::run(&context),
             Self::PrepareEight(context) => ScheduledPrepare::run(&context, admit),
@@ -1185,13 +1189,14 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledAttach<T> {
     }
 }
 
-pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send + 'static>(
+pub(super) fn schedule_finish<'job, 'scope, T: super::inflight::SpareFramePlanes + Send>(
     finish: PendingFinish<T>,
     walked: super::frame_engine::finish::WalkedFrame<T>,
     frame_index: usize,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
     lane: &mut ReconAdmissionLane,
+    ring: &mut InflightRing,
 ) where
     'job: 'scope,
 {
@@ -1210,10 +1215,7 @@ pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send +
         scope,
         order_base + u64::from(u32::MAX),
         conditions.as_slice(),
-        boxed_task(move |admit| {
-            finish.run_finish(walked, Some(admit));
-            let _ = done.set(());
-        }),
+        splot_parallel::Job::Inline(T::finish_task(ring.park_finish(finish, walked, done))),
     );
 }
 

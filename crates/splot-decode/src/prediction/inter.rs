@@ -162,7 +162,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         bit_depth,
         geometry,
         &mut scratch.reclaim_retired_planes(),
-        None,
+        Some(&mut scratch.initial_cdfs),
         &mut payload_scratch,
     )?;
     scratch.payload = payload_scratch;

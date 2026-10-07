@@ -554,7 +554,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     .prime_vertical_pass(&mut workspace, bit_depth)
                     .map_err(|_| lr_pipeline_state_error())?;
             }
-            let mut source = crate::filters::source::DeblockedSource::new(workspace);
+            let mut source = crate::filters::source::DeblockedSource::new_in(
+                setup.filter_records.deblocked_shell.take(),
+                workspace,
+            );
             if sections.is_none() && !source.publish_final_rows(setup.luma_height) {
                 return Err(lr_pipeline_state_error());
             }
@@ -628,12 +631,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
             }
             setup.stripe_outcomes = slots;
-            retired = retire_source(source);
+            retired = retire_source(source, &mut setup.filter_records.deblocked_shell);
             if let Some(error) = failure {
                 return Err(error);
             }
         } else {
-            let mut source = crate::filters::source::DeblockedSource::new(workspace);
+            let mut source = crate::filters::source::DeblockedSource::new_in(
+                setup.filter_records.deblocked_shell.take(),
+                workspace,
+            );
             if let Some(sections) = sections.as_mut() {
                 sections
                     .advance_source(&mut source, mi_rows, bit_depth)
@@ -654,7 +660,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 setup.publish(filtered)?;
             }
             drop(lease);
-            retired = retire_source(source);
+            retired = retire_source(source, &mut setup.filter_records.deblocked_shell);
         }
         if let Some(mut sections) = sections {
             sections.release_grids(&mut setup.filter_records.deblock_grids);
@@ -672,9 +678,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 /// where those buffers become free again.
 fn retire_source<T: ReconSample>(
     source: crate::filters::source::DeblockedSource<T>,
+    shell: &mut Option<crate::filters::source::DeblockedShell>,
 ) -> splot_recon::RetiredFramePlanes {
-    source
-        .into_workspace()
+    let (workspace, emptied) = source.into_parts();
+    *shell = emptied;
+    workspace
         .map(|workspace| T::retire_planes(workspace.into_plane_samples()))
         .unwrap_or_default()
 }
