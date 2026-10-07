@@ -105,12 +105,7 @@ impl<T: ReconSample> DirectWorkspace<T> {
     fn new(mut workspace: CurrentFrameWorkspace<T>) -> Self {
         let info = workspace.info();
         let mut planes = [None, None, None];
-        let sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
-            workspace
-                .plane(plane)
-                .map(splot_recon::CurrentFramePlane::storage_size)
-                .ok()
-        });
+        let sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(&workspace);
         {
             let mut frame = workspace.as_frame_mut();
             for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
