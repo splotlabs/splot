@@ -560,6 +560,11 @@ fn decode_frames_from_plan_impl<'job>(
         .min(NonZeroUsize::new(splot_parallel::current_pool_width()).unwrap_or(NonZeroUsize::MIN));
     let mut retained = session.take(pipeline_capacity);
     retained.begin(retain_decoded_frames);
+    let depth = pipeline_capacity.get();
+    let mut entropy_eight =
+        frame_pipeline::EntropyContexts::new(depth, core::mem::take(&mut retained.entropy_eight));
+    let mut entropy_ten =
+        frame_pipeline::EntropyContexts::new(depth, core::mem::take(&mut retained.entropy_ten));
     let admission: splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>> =
         splot_parallel::AdmissionScheduler::new();
     let decoded = splot_parallel::ready_task_scope(|scope| {
@@ -570,6 +575,7 @@ fn decode_frames_from_plan_impl<'job>(
                 options,
                 plan,
                 &mut retained,
+                (&mut entropy_eight, &mut entropy_ten),
                 preflight,
                 retain_decoded_frames,
                 emit,
@@ -579,9 +585,16 @@ fn decode_frames_from_plan_impl<'job>(
         })
     })??;
     admission.finish()?;
+    retained.entropy_eight = entropy_eight.into_retained();
+    retained.entropy_ten = entropy_ten.into_retained();
     session.keep(retained);
     Ok(decoded)
 }
+
+type EntropyPair<'a, 'job> = (
+    &'a mut frame_pipeline::EntropyContexts<'job, u8>,
+    &'a mut frame_pipeline::EntropyContexts<'job, u16>,
+);
 
 /// Runs one decode over its retained storage, and resolves the run's outcome
 /// against the filter phases the ring collected.
@@ -596,6 +609,7 @@ fn drive_frames<'job, 'scope>(
     options: &'job DecodeOptions,
     plan: &'job DecodeStreamPlan,
     retained: &mut frame_store::RetainedDecode,
+    entropy: EntropyPair<'_, 'job>,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
@@ -611,6 +625,7 @@ where
         ring,
         lane,
         frames,
+        ..
     } = retained;
     let decoded = decode_frames_in_order(
         parsed,
@@ -625,6 +640,7 @@ where
         ring,
         lane,
         frames,
+        entropy,
         scratch_eight,
         scratch_ten,
     );
@@ -651,6 +667,7 @@ fn decode_frames_in_order<'job, 'scope>(
     ring: &mut inflight::InflightRing,
     recon_lane: &mut frame_pipeline::ReconAdmissionLane,
     frames: &mut FrameStore,
+    (entropy_eight, entropy_ten): EntropyPair<'_, 'job>,
     decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
     decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
 ) -> Result<Vec<PipelineFrame>>
@@ -1019,8 +1036,6 @@ where
     let mut decoding_initial_tu = true;
     let mut pending_entropy = frame_pipeline::PendingEntropyQueue::default();
     let mut shared_sequence = None;
-    let mut entropy_eight = frame_pipeline::EntropyContexts::new(ring.capacity());
-    let mut entropy_ten = frame_pipeline::EntropyContexts::new(ring.capacity());
     let mut tip_eight = Vec::new();
     let mut tip_ten = Vec::new();
     for next_candidate in candidates {

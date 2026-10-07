@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::frame_pipeline::ReconAdmissionLane;
+use super::frame_pipeline::{ReconAdmissionLane, RetainedEntropy};
 use super::inflight::InflightRing;
 use crate::prediction::inter::InterDecodeScratch;
 use crate::support::decode_buffers::DecodeBuffers;
@@ -76,6 +76,8 @@ pub(super) struct RetainedDecode {
     pub(super) ring: InflightRing,
     pub(super) lane: ReconAdmissionLane,
     pub(super) frames: FrameStore,
+    pub(super) entropy_eight: RetainedEntropy<u8>,
+    pub(super) entropy_ten: RetainedEntropy<u16>,
 }
 
 impl RetainedDecode {
@@ -91,6 +93,8 @@ impl RetainedDecode {
             ring: InflightRing::new(depth, buffers),
             lane: ReconAdmissionLane::new(depth.get()),
             frames: FrameStore::new(false, depth.get()),
+            entropy_eight: RetainedEntropy::default(),
+            entropy_ten: RetainedEntropy::default(),
         }
     }
 

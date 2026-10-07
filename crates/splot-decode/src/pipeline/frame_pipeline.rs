@@ -115,15 +115,65 @@ pub(super) struct EntropyContexts<'job, T: splot_recon::ReconSample> {
     workers: Option<Arc<inter::InterReconScratchPool<T>>>,
     next: usize,
     depth: usize,
+    /// Storage the last decode on this context left, for the slots this one opens.
+    spare: Vec<EntropyStorage<T>>,
+}
+
+/// The storage of one entropy context, kept between decode calls.
+///
+/// The scheduled frame itself is not kept: its completion cells are sized
+/// for one stream's geometry, and a smaller next stream would wait on cells
+/// nobody sets. Its reconstruction storage is retired into the workspace.
+pub(crate) struct EntropyStorage<T: splot_recon::ReconSample> {
+    workspace: inter::ScheduledTileWorkspace<T>,
+    temporal: Arc<inter::TemporalMvContext>,
+    early: EntropyEarly<T>,
+    tail: EntropyResult<T>,
+}
+
+/// The entropy storage one decode leaves for the next on its context.
+pub(crate) struct RetainedEntropy<T: splot_recon::ReconSample> {
+    storage: Vec<EntropyStorage<T>>,
+    workers: Option<Arc<inter::InterReconScratchPool<T>>>,
+}
+
+impl<T: splot_recon::ReconSample> Default for RetainedEntropy<T> {
+    fn default() -> Self {
+        Self {
+            storage: Vec::new(),
+            workers: None,
+        }
+    }
 }
 
 impl<'job, T: splot_recon::ReconSample> EntropyContexts<'job, T> {
-    pub(super) fn new(depth: usize) -> Self {
+    pub(super) fn new(depth: usize, retained: RetainedEntropy<T>) -> Self {
         Self {
             slots: Vec::new(),
-            workers: None,
+            workers: retained.workers,
             next: 0,
             depth: depth.max(1),
+            spare: retained.storage,
+        }
+    }
+
+    /// Keeps the storage of every slot no task still holds.
+    pub(super) fn into_retained(mut self) -> RetainedEntropy<T> {
+        self.retire_completed();
+        let storage = self
+            .slots
+            .into_iter()
+            .filter_map(|slot| Arc::try_unwrap(slot).ok())
+            .map(|context| EntropyStorage {
+                workspace: context.workspace.into_inner(),
+                temporal: context.temporal.into_inner(),
+                early: context.early,
+                tail: context.tail,
+            })
+            .collect();
+        RetainedEntropy {
+            storage,
+            workers: self.workers,
         }
     }
 
@@ -132,16 +182,22 @@ impl<'job, T: splot_recon::ReconSample> EntropyContexts<'job, T> {
         self.next = (index + 1) % self.depth;
         if index == self.slots.len() {
             let workers = self.workers.get_or_insert_with(Arc::default);
+            let storage = self.spare.pop().unwrap_or_else(|| EntropyStorage {
+                workspace: inter::ScheduledTileWorkspace::default(),
+                temporal: Arc::new(inter::TemporalMvContext::empty()),
+                early: Arc::new(CompletionCell::new()),
+                tail: Arc::new(CompletionCell::new()),
+            });
             self.slots.push(Arc::new(EntropyContext {
                 task: Mutex::new(None),
                 frame: Mutex::new(None),
-                workspace: Mutex::new(inter::ScheduledTileWorkspace::default()),
-                temporal: Mutex::new(Arc::new(inter::TemporalMvContext::empty())),
+                workspace: Mutex::new(storage.workspace),
+                temporal: Mutex::new(storage.temporal),
                 workers: Arc::clone(workers),
                 prepare: Mutex::new(None),
                 attach: Mutex::new(None),
-                early: Arc::new(CompletionCell::new()),
-                tail: Arc::new(CompletionCell::new()),
+                early: storage.early,
+                tail: storage.tail,
             }));
         }
         loop {
@@ -1469,7 +1525,7 @@ mod tests {
 
     #[test]
     fn entropy_contexts_reuse_the_same_bounded_slots() {
-        let mut contexts = EntropyContexts::<u16>::new(12);
+        let mut contexts = EntropyContexts::<u16>::new(12, RetainedEntropy::default());
         let addresses: Vec<_> = (0..12)
             .map(|_| {
                 let slot = contexts.claim();
@@ -1517,7 +1573,7 @@ mod tests {
 
     #[test]
     fn frame_context_cannot_reset_while_a_task_holds_it() {
-        let mut contexts = EntropyContexts::<u16>::new(1);
+        let mut contexts = EntropyContexts::<u16>::new(1, RetainedEntropy::default());
         let slot = contexts.claim();
         let frame = Arc::new(ScheduledFrame::default());
         *slot.frame.lock() = Some(Arc::clone(&frame));
