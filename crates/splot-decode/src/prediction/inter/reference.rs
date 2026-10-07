@@ -24,7 +24,7 @@
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    DecodedFrame, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample, ReferencePlaneView,
+    DecodedFrame, DecodedFrameInfo, PlaneId, PlaneSize, ReconSample, ReferencePlaneView,
     SubpelPredictParams,
 };
 
@@ -107,7 +107,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         }
     }
 
-    /// Borrows one reference plane over its visible rectangle, together with the
+    /// Borrows one reference plane over its reconstruction storage, together with the
     /// § 7.13.3.23 reference mode-info dimensions warp bounds are derived from.
     ///
     /// `last_row` is the last row of this plane the caller's prediction can
@@ -117,7 +117,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     /// # Errors
     ///
     /// Returns a capability diagnostic when the reference is missing a plane or
-    /// its storage does not cover the visible rectangle, and a fail-closed
+    /// its storage does not cover the reconstruction extent, and a fail-closed
     /// diagnostic when a still-filtering reference has not published `last_row`.
     pub(crate) fn plane_view(
         self,
@@ -125,41 +125,27 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         last_row: i32,
         offset: ByteOffset,
     ) -> Result<(ReferencePlaneView<'a, T>, i32, i32)> {
-        let Some((samples, stride, visible, readable_rows)) = self.plane_storage(plane) else {
+        let Some((samples, stride, size, readable_rows)) = self.plane_storage(plane) else {
             return Err(missing_plane(offset));
         };
-        self.ensure_published(plane, last_row, visible, offset)?;
-        let view = visible
-            .y()
-            .checked_mul(stride)
-            .and_then(|row| row.checked_add(visible.x()))
-            .and_then(|start| samples.get(start..))
-            .ok_or(())
-            .and_then(|samples| {
-                match readable_rows {
-                    Some(rows) => ReferencePlaneView::from_published_strided(
-                        samples,
-                        stride,
-                        visible.width(),
-                        visible.height(),
-                        rows.saturating_sub(visible.y()),
-                    ),
-                    None => ReferencePlaneView::from_strided(
-                        samples,
-                        stride,
-                        visible.width(),
-                        visible.height(),
-                    ),
-                }
-                .map_err(|_| ())
-            })
-            .map_err(|()| plane_geometry(offset))?;
+        self.ensure_published(plane, last_row, size, offset)?;
+        let view = match readable_rows {
+            Some(rows) => ReferencePlaneView::from_published_strided(
+                samples,
+                stride,
+                size.width(),
+                size.height(),
+                rows,
+            ),
+            None => ReferencePlaneView::from_strided(samples, stride, size.width(), size.height()),
+        }
+        .map_err(|_| plane_geometry(offset))?;
 
-        let Some((_, _, luma_visible, _)) = self.plane_storage(PlaneId::Y) else {
+        let Some((_, _, luma_size, _)) = self.plane_storage(PlaneId::Y) else {
             return Err(missing_plane(offset));
         };
-        let ref_mi_cols = luma_visible.width().div_ceil(4) as i32;
-        let ref_mi_rows = luma_visible.height().div_ceil(4) as i32;
+        let ref_mi_cols = luma_size.width().div_ceil(4) as i32;
+        let ref_mi_rows = luma_size.height().div_ceil(4) as i32;
 
         Ok((view, ref_mi_cols, ref_mi_rows))
     }
@@ -169,7 +155,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         self,
         plane: PlaneId,
         last_row: i32,
-        visible: PlaneRect,
+        size: PlaneSize,
         offset: ByteOffset,
     ) -> Result<()> {
         let Some(published) = self.published else {
@@ -182,22 +168,21 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         };
         let needed = (last_row.max(0) as usize)
             .saturating_add(1)
-            .min(visible.height())
-            .saturating_add(visible.y());
+            .min(size.height());
         if needed <= published {
             return Ok(());
         }
         Err(unpublished_rows(offset))
     }
 
-    /// Borrows one plane's backing samples, stride, and visible rectangle.
-    fn plane_storage(self, plane: PlaneId) -> Option<(&'a [T], usize, PlaneRect, Option<usize>)> {
+    /// Borrows one plane's backing samples, stride, and reconstruction size.
+    fn plane_storage(self, plane: PlaneId) -> Option<(&'a [T], usize, PlaneSize, Option<usize>)> {
         match self.source {
             SampleSource::Frozen(frame) => frame.plane(plane).map(|plane| {
                 (
                     plane.samples(),
                     plane.stride_samples(),
-                    plane.visible_rect(),
+                    plane.storage_size(),
                     None,
                 )
             }),
@@ -213,7 +198,7 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
                     (
                         plane.samples,
                         plane.stride,
-                        plane.visible,
+                        plane.size,
                         Some(plane.samples.len() / plane.stride),
                     )
                 })
@@ -404,12 +389,12 @@ fn forced_band<T: ReconSample>(frame: &DecodedFrame<T>) -> Option<PublishedRows>
     if !FORCE_BANDED_READS.load(core::sync::atomic::Ordering::Relaxed) {
         return None;
     }
-    let luma = frame.y().visible_size().height();
+    let luma = frame.y().storage_size().height();
     Some(PublishedRows {
         luma,
         chroma: frame
             .plane(PlaneId::U)
-            .map_or(luma, |plane| plane.visible_rect().height()),
+            .map_or(luma, |plane| plane.storage_size().height()),
     })
 }
 

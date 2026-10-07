@@ -54,6 +54,23 @@ fn workspace_with_format(
 }
 
 #[test]
+fn finalized_lease_includes_reconstructed_padding_beyond_coded_height() {
+    let info = workspace(18, 14)
+        .info()
+        .with_storage_luma_size(PlaneSize::new(24, 16).expect("storage size"))
+        .expect("padded frame info");
+    let workspace = CurrentFrameWorkspace::new(info, 117u16).expect("workspace");
+    let mut source = DeblockedSource::new(workspace);
+    assert!(source.publish_final_rows(14));
+    assert!(source.lease(8, 16, 0).is_none());
+    assert!(source.publish_final_rows(16));
+    let lease = source.lease(8, 16, 0).expect("padded stripe lease");
+    let planes = lease.planes().expect("leased planes");
+    assert_eq!(planes.y.row(15), Some([117; 24].as_slice()));
+    assert_eq!(planes.u.expect("chroma").row(7), Some([117; 12].as_slice()));
+}
+
+#[test]
 fn finalized_leases_cover_first_middle_and_terminal_margins_for_all_formats() {
     let ranges = [(0, 56), (56, 120), (120, 129)];
     for format in [

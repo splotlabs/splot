@@ -970,7 +970,8 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
         reference_size.height() as i32,
         frame_size.width() as i32,
         frame_size.height() as i32,
-    );
+    )
+    .with_reference_storage(reference.info().storage_luma_size(), 0, 0);
     let bounds = refinemv_area.map(|(candidate, width, height)| {
         super::refinemv::reference_area_bounds(
             rect.luma_x as i32,
@@ -1109,9 +1110,9 @@ pub(super) fn predict_uniform_motion_compound_average_into<
     if prediction.block_w > subblock_w || prediction.block_h > subblock_h {
         return Ok(false);
     }
-    let coded_luma_size = sink.info().coded_luma_size();
-    let frame_w = (coded_luma_size.width().div_ceil(4) * 4) >> sub_x;
-    let frame_h = (coded_luma_size.height().div_ceil(4) * 4) >> sub_y;
+    let storage_luma_size = sink.info().storage_luma_size();
+    let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
+    let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let Some(scalings) = super::compound_uniform_scalings(
         Some(motion),
         prediction.plane_x,
@@ -1196,9 +1197,9 @@ pub(super) fn predict_motion_grid_compound_average_into<
         }
         .into());
     }
-    let coded_luma_size = sink.info().coded_luma_size();
-    let frame_w = (coded_luma_size.width().div_ceil(4) * 4) >> sub_x;
-    let frame_h = (coded_luma_size.height().div_ceil(4) * 4) >> sub_y;
+    let storage_luma_size = sink.info().storage_luma_size();
+    let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
+    let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
     let process_row = |cell_row: usize,

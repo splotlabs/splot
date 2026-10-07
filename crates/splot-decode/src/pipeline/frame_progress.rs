@@ -32,7 +32,7 @@ use core::slice;
 use std::sync::{Arc, OnceLock};
 
 use splot_parallel::{CompletionCell, Condition, WatermarkCell};
-use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, PlaneRect, ReconSample};
+use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, PlaneSize, ReconSample};
 
 use crate::error::{DecodeError, Result};
 use crate::pipeline::unsupported;
@@ -87,7 +87,7 @@ struct PlaneStorage<T> {
     len: usize,
     stride: usize,
     height: usize,
-    visible: PlaneRect,
+    size: PlaneSize,
 }
 
 struct DirectWorkspace<T: ReconSample> {
@@ -105,6 +105,7 @@ impl<T: ReconSample> DirectWorkspace<T> {
     fn new(mut workspace: CurrentFrameWorkspace<T>) -> Self {
         let info = workspace.info();
         let mut planes = [None, None, None];
+        let sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(&workspace);
         {
             let mut frame = workspace.as_frame_mut();
             for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
@@ -112,7 +113,9 @@ impl<T: ReconSample> DirectWorkspace<T> {
                     continue;
                 };
                 let stride = view.stride_samples();
-                let visible = view.visible_rect();
+                let Some(size) = sizes[plane.index()] else {
+                    continue;
+                };
                 let samples = view.samples_mut();
                 let len = samples.len();
                 let (samples, direct_samples) = if let Some(samples) = T::u16_slice_mut(samples) {
@@ -137,7 +140,7 @@ impl<T: ReconSample> DirectWorkspace<T> {
                     len,
                     stride,
                     height: len / stride,
-                    visible,
+                    size,
                 });
             }
         }
@@ -179,7 +182,7 @@ impl<T: ReconSample> DirectWorkspace<T> {
         Some(PublishedPlane {
             samples,
             stride: storage.stride,
-            visible: storage.visible,
+            size: storage.size,
         })
     }
 
@@ -350,7 +353,7 @@ trait DirectLeaseRelease: Send + Sync {
 pub(crate) struct PublishedPlane<'a, T> {
     pub(crate) samples: &'a [T],
     pub(crate) stride: usize,
-    pub(crate) visible: PlaneRect,
+    pub(crate) size: PlaneSize,
 }
 
 #[derive(Clone, Copy)]
@@ -424,7 +427,7 @@ impl<T: ReconSample> FrameProgress<T> {
             spare_stripes: Mutex::new(Vec::new()),
             published_luma_rows: WatermarkCell::new(),
             terminal_published: CompletionCell::new(),
-            luma_height: info.coded_luma_size().height(),
+            luma_height: info.storage_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
         })
     }
@@ -443,7 +446,7 @@ impl<T: ReconSample> FrameProgress<T> {
         *self.workspace.get_mut() = Some(workspace);
         self.published_luma_rows.reset();
         self.terminal_published.reset();
-        self.luma_height = info.coded_luma_size().height();
+        self.luma_height = info.storage_luma_size().height();
         self.subsampling_y = usize::from(info.pixel_format().subsampling_y());
         Ok(())
     }

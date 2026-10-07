@@ -20,8 +20,8 @@ pub(crate) fn decoded_frame_storage_budget(
     chroma_format: ChromaFormatIdc,
     bytes_per_sample: u64,
 ) -> Result<DecodedFrameStorageBudget> {
-    let width = u64::from(frame_size.width);
-    let height = u64::from(frame_size.height);
+    let width = u64::from(frame_size.width).div_ceil(8) * 8;
+    let height = u64::from(frame_size.height).div_ceil(8) * 8;
     let sample_limit = DecodeLimitName::MaxLumaSamplesPerFrame;
     let byte_limit = DecodeLimitName::MaxDecodedFrameBytes;
     let luma_samples = checked_mul(sample_limit, width, height)?;
@@ -40,6 +40,28 @@ pub(crate) fn decoded_frame_storage_budget(
         chroma_samples_per_plane,
         decoded_bytes,
     })
+}
+
+#[cfg(test)]
+#[test]
+fn frame_budget_charges_reconstruction_padding_before_allocation() -> Result<()> {
+    for bytes_per_sample in [1, 2] {
+        let budget = decoded_frame_storage_budget(
+            FrameSize::new(480, 270),
+            ChromaFormatIdc::Yuv420,
+            bytes_per_sample,
+        )?;
+        assert_eq!(budget.luma_samples, 480 * 272);
+        assert_eq!(budget.chroma_samples_per_plane, 240 * 136);
+        assert_eq!(budget.decoded_bytes, 195_840 * bytes_per_sample);
+    }
+    assert!(matches!(
+        decoded_frame_storage_budget(FrameSize::new(480, 270), ChromaFormatIdc::Yuv420, u64::MAX),
+        Err(crate::DecodeError::Limit {
+            source: DecodeLimitError::ArithmeticOverflow { .. }
+        })
+    ));
+    Ok(())
 }
 
 pub(crate) fn checked_add(

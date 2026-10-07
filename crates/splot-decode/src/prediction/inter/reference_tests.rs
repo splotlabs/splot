@@ -34,6 +34,71 @@ const WIDTH: usize = 64;
 const HEIGHT: usize = 128;
 const OFFSET: ByteOffset = ByteOffset::new(0);
 
+#[test]
+fn reference_reads_mi_storage_outside_the_output_crop() {
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        PlaneSize::new(270, 270).unwrap(),
+        PlaneRect::new(2, 2, 266, 266).unwrap(),
+    )
+    .unwrap()
+    .with_storage_luma_size(PlaneSize::new(272, 272).unwrap())
+    .unwrap();
+    let mut workspace = CurrentFrameWorkspace::new(info, 0u8).unwrap();
+    workspace
+        .set_reconstructed_sample(PlaneId::Y, 0, 0, 31)
+        .unwrap();
+    workspace
+        .set_reconstructed_sample(PlaneId::Y, 271, 271, 201)
+        .unwrap();
+    let frame = workspace.freeze().unwrap();
+    let reference = ReferenceSamples::settled(&frame);
+    let (view, cols, rows) = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
+    assert_eq!((cols, rows), (68, 68));
+    assert_eq!((view.width(), view.height()), (272, 272));
+    assert_eq!(view.sample(0, 0), 31);
+    assert_eq!(view.sample(271, 271), 201);
+    assert_eq!(
+        reference.info().coded_luma_size(),
+        PlaneSize::new(270, 270).unwrap()
+    );
+}
+
+#[test]
+fn reference_waits_for_mi_padding_rows_to_be_published() {
+    let info = info(270, 270)
+        .with_storage_luma_size(PlaneSize::new(272, 272).unwrap())
+        .unwrap();
+    let progress = std::sync::Arc::new(FrameProgress::<u8>::new(info).unwrap());
+    assert!(progress.begin(&[(0, 270), (270, 272)]));
+    for (stripe, value) in [(0, 11), (1, 77)] {
+        let mut lease = progress.direct_stripe(stripe).unwrap();
+        lease
+            .take_target()
+            .unwrap()
+            .take(PlaneId::Y)
+            .unwrap()
+            .u8_samples_mut()
+            .unwrap()
+            .fill(value);
+        assert!(lease.submit());
+        let published = progress.read().unwrap();
+        let reference = ReferenceSamples::publishing(&published).unwrap();
+        let (view, _, _) = reference.plane_view(PlaneId::Y, 269, OFFSET).unwrap();
+        assert_eq!((view.width(), view.height()), (272, 272));
+        assert_eq!(view.sample(269, 271), 11);
+        if stripe == 0 {
+            assert!(reference.plane_view(PlaneId::Y, 270, OFFSET).is_err());
+        } else {
+            let (view, _, _) = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
+            assert_eq!(view.sample(271, 271), 77);
+        }
+    }
+    assert_eq!(progress.published_luma_rows(), 272);
+}
+
 fn collect_raw(
     context: &DecodeContext,
     bytes: &[u8],

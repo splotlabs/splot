@@ -915,7 +915,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Creates a workspace from decoded-frame metadata and an initial fill.
     ///
     /// Plane geometry is derived from [`DecodedFrameInfo`]. Y storage uses the
-    /// coded luma size, chroma storage is derived from AV2 §6.4.1 subsampling,
+    /// reconstruction luma size, chroma storage follows AV2 §6.4.1 subsampling,
     /// and monochrome workspaces allocate only Y.
     ///
     /// # Errors
@@ -937,7 +937,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         recycled: &mut FramePlaneSamples<T>,
     ) -> Result<Self> {
         validate_sample_type::<T>(info.bit_depth())?;
-        let luma_size = info.coded_luma_size();
+        let luma_size = info.storage_luma_size();
         let luma_rect = info.visible_luma_rect();
         let pool = recycled.pool.clone();
         let pool = pool.as_ref();

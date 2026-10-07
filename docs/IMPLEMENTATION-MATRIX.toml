@@ -5677,31 +5677,47 @@ id = "CONF-PUBLIC-VECTORS"
 name = "Public AV2 vector corpus integration"
 category = "conformance"
 kind = "conformance"
-spec_sections = []
-sources = ["https://github.com/AOMediaCodec"]
+spec_sections = ["5.18.4.4", "7.13.2.1", "7.13.2.7", "7.14.3", "7.14.6", "7.17.2", "7.20.2", "7.23"]
+sources = ["https://github.com/EwoutH/AV2/tree/73aeca5d04c9bc47b202a3d2e66d07f9c7af4746/samples"]
 crate = "xtask"
-module = "xtask/src/main.rs"
+module = "scripts/check-external-vectors.py"
 change_id = "fetch-public-vectors"
 owner = "conformance"
 risk = "medium"
-notes = "Future public-vector integration. Use only redistributable vectors; do not vendor samples with unclear licensing."
+notes = "CI fetches nine EwoutH/AV2 IVF samples at a pinned revision. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revision. The shared external runner checks complete output at 1 and 8 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external. Each sample contains 130 displayed frames despite its 600f filename."
 
 [feature.status]
-mapped = "todo"
-types = "todo"
+mapped = "done"
+types = "not-applicable"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = []
-commands = []
-fixtures = []
+tests = [
+    "crates/splot-decode/src/pipeline/reconstruct/edge_tests.rs::middle_directional_clamps_right_edge_columns",
+    "crates/splot-decode/src/pipeline/reconstruct/edge_tests.rs::secondary_mrl_blends_only_prediction_units_larger_than_4x4",
+    "crates/splot-decode/src/pipeline/reconstruct/edge_tests.rs::middle_directional_mrl_top_row_clamps_bottom_edge_rows",
+    "crates/splot-decode/src/residual/pipeline/tests.rs::cctx_prediction_clips_frame_edges_and_preserves_band_bounds",
+    "crates/splot-decode/src/support/pipeline_limits.rs::frame_budget_charges_reconstruction_padding_before_allocation",
+    "crates/splot-recon/src/workspace_tests.rs::workspace_keeps_mi_storage_separate_from_header_size_and_crop",
+    "crates/splot-recon/src/frame.rs::tests::supplied_planes_must_match_declared_reconstruction_storage",
+    "crates/splot-decode/src/prediction/inter/reference_tests.rs::reference_waits_for_mi_padding_rows_to_be_published",
+    "crates/splot-decode/src/prediction/inter/mv_scaling_tests.rs::reference_storage_bounds_preserve_header_scaling",
+    "crates/splot-decode/src/filters/source_tests.rs::finalized_lease_includes_reconstructed_padding_beyond_coded_height",
+]
+commands = [
+    "python3 scripts/check-external-vectors.py ewouth-av2 .work/ewouth-av2",
+    "python3 scripts/check-external-vectors.py dav2d .work/dav2d-test-data",
+    "cargo test -p splot-decode --lib middle_directional --locked",
+    "cargo test -p splot-decode --lib cctx_prediction_clips_frame_edges_and_preserves_band_bounds --locked",
+]
+fixtures = ["tests/conformance/ewouth-av2.toml"]
 diagnostics = []
 
 [[feature]]
@@ -11393,11 +11409,12 @@ id = "DECODE-ACTIVE-INTRA-TOOL-FRONTIER"
 name = "active intra tool frontier"
 category = "infrastructure"
 kind = "bitstream-syntax"
-spec_sections = ["5.20.5.3", "5.20.5.5", "5.20.7.27", "8.3.2", "9.3"]
+spec_sections = ["5.20.5.3", "5.20.5.5", "5.20.7.27", "7.13.2.7", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
     "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
 ]
@@ -11430,6 +11447,7 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::directional_luma_mrl_zero_is_consumed_when_mrls_are_enabled",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::active_mrl_metadata_is_retained_after_mrl_sec_index_is_consumed",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::mrl_symbols_use_retained_neighbour_contexts",
+    "crates/splot-decode/src/pipeline/reconstruct/edge_tests.rs::secondary_mrl_blends_only_prediction_units_larger_than_4x4",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",
@@ -15113,6 +15131,7 @@ tests = [
     "crates/splot-decode/src/output/hash.rs::tests::standalone_open_loop_key_matches_expected_output_hash",
     "crates/splot-decode/src/output/hash.rs::tests::bridge_celu_matches_expected_output_hashes",
     "crates/splot-decode/src/output/hash.rs::tests::scaled_bridge_matches_expected_output_hashes",
+    "crates/splot-decode/src/prediction/inter/bridge.rs::tests::bridge_reconstruction_preserves_mi_padding_for_later_references",
     "crates/splot-decode/src/output/hash.rs::tests::single_picture_bridge_matches_expected_output_hashes",
     "crates/splot-decode/src/pipeline/mod_tests.rs::in_band_long_term_prelude_accepts_hidden_clk_then_olk_in_sequential_slots",
     "crates/splot-decode/src/pipeline/mod_tests.rs::in_band_long_term_prelude_rejects_missing_or_visible_reference",

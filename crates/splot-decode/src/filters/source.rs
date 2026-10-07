@@ -200,7 +200,7 @@ impl<T: ReconSample> DeblockedSource<T> {
     }
 
     pub(crate) fn publish_final_rows(&mut self, rows: usize) -> bool {
-        let rows = rows.min(self.storage.info.coded_luma_size().height());
+        let rows = rows.min(self.storage.info.storage_luma_size().height());
         if rows < self.final_luma_rows {
             return false;
         }
@@ -245,7 +245,7 @@ impl<T: ReconSample> DeblockedSource<T> {
         luma_end: usize,
         margin: usize,
     ) -> Option<[Option<(usize, usize)>; 3]> {
-        let luma_height = self.storage.info.coded_luma_size().height();
+        let luma_height = self.storage.info.storage_luma_size().height();
         let needed = luma_end
             .checked_add(margin << usize::from(self.storage.info.pixel_format().subsampling_y()))?
             .min(luma_height);

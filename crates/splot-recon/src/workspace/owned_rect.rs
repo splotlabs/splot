@@ -190,7 +190,7 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         Option<OwnedFramePlaneRect>,
         Option<OwnedFramePlaneRect>,
     )> {
-        let luma = info.coded_luma_size();
+        let luma = info.storage_luma_size();
         let y_size = PlaneSize::new(luma.width(), luma.height())?;
         let chroma_size = info.pixel_format().chroma_size(luma)?;
         let chroma_rect = match chroma_size {

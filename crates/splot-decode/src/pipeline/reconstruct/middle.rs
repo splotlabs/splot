@@ -202,15 +202,15 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         let left_col = x
             .checked_sub(1)
             .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
-        let max_y = workspace
-            .plane(plane_id)?
-            .storage_size()
+        let storage = workspace.plane(plane_id)?.storage_size();
+        let max_x = storage.width().saturating_sub(1);
+        let max_y = storage
             .height()
             .checked_sub(1)
             .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
         let corner = workspace.reconstructed_sample(plane_id, left_col, above_row)?;
         let above_idif = build_two_sided_middle_idif_edge(width, filters.above, corner, |i| {
-            workspace.reconstructed_sample(plane_id, x.saturating_add(i), above_row)
+            workspace.reconstructed_sample(plane_id, x.saturating_add(i).min(max_x), above_row)
         })?;
         let left_idif = build_two_sided_middle_idif_edge(height, filters.left, corner, |i| {
             workspace.reconstructed_sample(plane_id, left_col, y.saturating_add(i).min(max_y))
@@ -468,12 +468,20 @@ fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, left_col, y)?;
+    let max_y = workspace
+        .plane(PlaneId::Y)?
+        .storage_size()
+        .height()
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
     build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
         if logical < 0 {
             return Ok(seed);
         }
         let logical = logical.unsigned_abs() as usize;
-        let row = y.saturating_add(logical.min(height.saturating_sub(1)));
+        let row = y
+            .saturating_add(logical.min(height.saturating_sub(1)))
+            .min(max_y);
         Ok(workspace.reconstructed_sample(PlaneId::Y, left_col, row)?)
     })
 }
@@ -507,6 +515,12 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+    let max_x = workspace
+        .plane(PlaneId::Y)?
+        .storage_size()
+        .width()
+        .checked_sub(1)
+        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
     build_two_sided_middle_mrl_idif_edge(width, mrl_index, |logical| {
         let column = if logical < 0 {
             if have_left {
@@ -519,6 +533,7 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
         } else {
             let logical = logical.unsigned_abs() as usize;
             x.saturating_add(logical.min(width.saturating_sub(1)))
+                .min(max_x)
         };
         Ok(workspace.reconstructed_sample(PlaneId::Y, column, above_row)?)
     })

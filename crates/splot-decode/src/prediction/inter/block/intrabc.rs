@@ -98,7 +98,7 @@ impl IntrabcReconPrediction {
         if cw == 0 || ch == 0 {
             return Ok(None);
         }
-        let scaling = derive_plane_scaling(
+        let mut scaling = derive_plane_scaling(
             cx as i32,
             cy as i32,
             info.block_mv.row,
@@ -110,6 +110,8 @@ impl IntrabcReconPrediction {
             frame_size.width as i32,
             frame_size.height as i32,
         );
+        scaling.last_x = prediction.scaling.last_x >> sub_x;
+        scaling.last_y = prediction.scaling.last_y >> sub_y;
         let target = PlaneRect::new(cx, cy, cw, ch)?;
         Ok(Some(IntrabcChromaPrediction { target, scaling }))
     }

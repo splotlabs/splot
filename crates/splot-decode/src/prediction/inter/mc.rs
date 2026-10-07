@@ -972,7 +972,8 @@ fn plane_prediction<T: ReconSample>(
         reference_size.height() as i32,
         frame_size.width() as i32,
         frame_size.height() as i32,
-    );
+    )
+    .with_reference_storage(reference.info().storage_luma_size(), sub_x, sub_y);
 
     let params = SubpelPredictParams {
         interp,
@@ -1023,7 +1024,8 @@ fn predict_warp_plane<T: ReconSample>(
         reference_size.height() as i32,
         frame_size.width() as i32,
         frame_size.height() as i32,
-    );
+    )
+    .with_reference_storage(reference.info().storage_luma_size(), sub_x, sub_y);
     let last_row = warp_plane_last_row(
         warp_params,
         (plane_x, plane_y, block_w, block_h),
@@ -1144,9 +1146,9 @@ fn predict_compound_plane_output<T: ReconSample>(
     offset: ByteOffset,
     samples: &mut [T],
 ) -> Result<()> {
-    let coded_luma_size = sink.info().coded_luma_size();
-    let frame_w = (coded_luma_size.width().div_ceil(4) * 4) >> sub_x;
-    let frame_h = (coded_luma_size.height().div_ceil(4) * 4) >> sub_y;
+    let storage_luma_size = sink.info().storage_luma_size();
+    let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
+    let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let block = CompoundMcBlock {
         reference0,
         reference1,
@@ -1632,7 +1634,8 @@ fn compound_subpel_plane<'a, T: ReconSample>(
         reference_size0.height() as i32,
         frame_size.width() as i32,
         frame_size.height() as i32,
-    );
+    )
+    .with_reference_storage(block.reference0.info().storage_luma_size(), sub_x, sub_y);
     let scaling1 = derive_plane_scaling(
         plane_x as i32,
         plane_y as i32,
@@ -1644,7 +1647,8 @@ fn compound_subpel_plane<'a, T: ReconSample>(
         reference_size1.height() as i32,
         frame_size.width() as i32,
         frame_size.height() as i32,
-    );
+    )
+    .with_reference_storage(block.reference1.info().storage_luma_size(), sub_x, sub_y);
     let last_row = |scaling: PlaneScaling| {
         compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y)
     };
@@ -1824,7 +1828,8 @@ fn compound_ref_intermediate<T: ReconSample>(
         reference_size.height() as i32,
         frame_size.width() as i32,
         frame_size.height() as i32,
-    );
+    )
+    .with_reference_storage(reference.info().storage_luma_size(), sub_x, sub_y);
     let last_row = warp_params.map_or_else(
         || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
         |warp_params| {

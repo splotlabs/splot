@@ -11,6 +11,7 @@ use crate::bitstream::tile_payload::{
 use crate::tile::block_context::{BlockCtx, TxShape};
 
 mod chroma_pair;
+pub(crate) use chroma_pair::read_cctx_prediction;
 mod deblock_recorder;
 mod palette;
 mod plan;

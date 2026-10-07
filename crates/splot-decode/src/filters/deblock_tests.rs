@@ -1351,6 +1351,61 @@ fn unchanged_border_taps_do_not_require_in_frame_write_coordinates() {
 }
 
 #[test]
+fn partial_edge_lanes_match_the_in_frame_part_of_a_complete_edge() {
+    for perp in [PerpLine::new(8, 12, 1, 0), PerpLine::new(16, 8, 0, 1)] {
+        let run = |width, height| {
+            let mut workspace = yuv420_workspace(width, height, 100);
+            for y in 0..height {
+                for x in 0..width {
+                    if (perp.dx == 1 && x >= perp.x) || (perp.dy == 1 && y >= perp.y) {
+                        workspace
+                            .set_reconstructed_sample(PlaneId::Y, x, y, 108)
+                            .unwrap();
+                    }
+                }
+            }
+            with_plane_ctx(&mut workspace, PlaneId::Y, |ctx| {
+                apply_edge_samples(
+                    ctx,
+                    perp,
+                    MI_SIZE,
+                    DeblockSampleFilter {
+                        boundary: GATHER_HALF,
+                        q_thr: 100,
+                        max_width_neg: 2,
+                        max_width_pos: 2,
+                        q_thresh_mult: Q_THRESH_MULTS[1],
+                        w_mult_neg: W_MULT[1],
+                        w_mult_pos: W_MULT[1],
+                        prev_lossless: false,
+                        curr_lossless: false,
+                        bit_depth: BitDepth::Eight,
+                    },
+                )
+                .unwrap();
+            });
+            workspace
+        };
+        let complete = run(20, 16);
+        let partial = run(18, 14);
+        assert_ne!(
+            partial
+                .reconstructed_sample(PlaneId::Y, perp.x, perp.y)
+                .unwrap(),
+            108
+        );
+        for y in 0..14 {
+            for x in 0..18 {
+                assert_eq!(
+                    partial.reconstructed_sample(PlaneId::Y, x, y),
+                    complete.reconstructed_sample(PlaneId::Y, x, y),
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn deblock_bounds_use_coded_plane_storage_for_partial_edge_frame() {
     let workspace = yuv420_workspace(18, 14, 100);
     assert_eq!(

@@ -2064,3 +2064,64 @@ fn visible_samples<T: ReconSample>(frame: &DecodedFrame<T>, plane: PlaneId) -> V
         .flat_map(|row| row.iter().copied())
         .collect()
 }
+
+#[test]
+fn prediction_reads_padded_reference_samples_and_masks_at_storage_edges() {
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        PlaneSize::new(10, 10).expect("coded size"),
+        PlaneRect::new(0, 0, 10, 10).expect("visible rect"),
+    )
+    .expect("frame info")
+    .with_storage_luma_size(PlaneSize::new(16, 16).expect("storage size"))
+    .expect("storage bounds");
+    let mut reference = CurrentFrameWorkspace::new(info, 20u8).expect("reference workspace");
+    reference
+        .write_rect(
+            PlaneId::Y,
+            PlaneRect::new(12, 12, 4, 4).expect("padding rect"),
+            &[100; 16],
+            4,
+        )
+        .expect("padding samples");
+    let reference = reference.freeze().expect("reference frame");
+    let samples = ReferenceSamples::settled(&reference);
+    let rect = McBlockRect::from_luma_rect(0, 0, 4, 4);
+    for compound in [false, true] {
+        let mut output = CurrentFrameWorkspace::new(info, 0u8).expect("output workspace");
+        let block = if compound {
+            InterBlockParams::compound_average(
+                samples,
+                samples,
+                rect,
+                Mv { row: 96, col: 96 },
+                Mv::ZERO,
+                InterpolationFilter::EightTap,
+                CompoundBlend::average_with_implicit_mask(true),
+            )
+        } else {
+            InterBlockParams::single(
+                samples,
+                rect,
+                Mv { row: 96, col: 96 },
+                InterpolationFilter::EightTap,
+            )
+        }
+        .with_chroma(false);
+        motion_compensate_inter_block_into(
+            &mut WorkspaceSink::Frame(&mut output),
+            block,
+            ByteOffset::new(0),
+        )
+        .expect("prediction");
+        let expected = if compound { 60 } else { 100 };
+        for row in 0..4 {
+            assert_eq!(
+                &output.samples(PlaneId::Y).expect("luma")[row * 16..row * 16 + 4],
+                &[expected; 4]
+            );
+        }
+    }
+}

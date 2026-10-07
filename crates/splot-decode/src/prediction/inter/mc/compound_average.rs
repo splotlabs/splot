@@ -41,7 +41,7 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
         return Ok(false);
     }
 
-    let coded_luma_size = sink.info().coded_luma_size();
+    let storage_luma_size = sink.info().storage_luma_size();
     let mut translations = [None, None, None];
     let mut translation_count = 0;
     for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
@@ -49,8 +49,8 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
             continue;
         }
         let translation = translational_compound_plane(sink, block, plane, sub_x, sub_y, offset)?;
-        let frame_w = (coded_luma_size.width().div_ceil(4) * 4) >> sub_x;
-        let frame_h = (coded_luma_size.height().div_ceil(4) * 4) >> sub_y;
+        let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
+        let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
         if !compound_average_weights_are_uniform(
             implicit_mask,
             cwp_weight,

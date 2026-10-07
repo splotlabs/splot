@@ -293,6 +293,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         luma_height: usize,
         bit_depth: BitDepth,
     ) -> Self {
+        let (luma_width, luma_height) = plane_sizes[PlaneId::Y.index()]
+            .map_or((luma_width, luma_height), |size| {
+                (size.width(), size.height())
+            });
         Self {
             workspace: None,
             info,

@@ -231,20 +231,20 @@ fn read_frame_sample<T: ReconSample>(
     let Some(plane_ref) = frame.plane(plane) else {
         return Err(ReconError::MissingChromaPlane { plane });
     };
-    let coded_size = coded_plane_size(frame.info(), plane)?;
-    if x >= coded_size.width() || y >= coded_size.height() {
+    let storage_size = storage_plane_size(frame.info(), plane)?;
+    if x >= storage_size.width() || y >= storage_size.height() {
         return Err(ReconError::LoopRestorationSourceSampleOutOfBounds {
             plane,
             x,
             y,
-            width: coded_size.width(),
-            height: coded_size.height(),
+            width: storage_size.width(),
+            height: storage_size.height(),
         });
     }
-    if plane_ref.stride_samples() < coded_size.width() {
+    if plane_ref.stride_samples() < storage_size.width() {
         return Err(ReconError::StrideTooSmall {
             stride_samples: plane_ref.stride_samples(),
-            storage_width: coded_size.width(),
+            storage_width: storage_size.width(),
         });
     }
 
@@ -283,12 +283,12 @@ fn read_frame_sample<T: ReconSample>(
     Ok(*sample)
 }
 
-fn coded_plane_size(info: DecodedFrameInfo, plane: PlaneId) -> Result<PlaneSize> {
+fn storage_plane_size(info: DecodedFrameInfo, plane: PlaneId) -> Result<PlaneSize> {
     match plane {
-        PlaneId::Y => Ok(info.coded_luma_size()),
+        PlaneId::Y => Ok(info.storage_luma_size()),
         PlaneId::U | PlaneId::V => info
             .pixel_format()
-            .chroma_size(info.coded_luma_size())?
+            .chroma_size(info.storage_luma_size())?
             .ok_or(ReconError::MissingChromaPlane { plane }),
     }
 }
@@ -694,7 +694,9 @@ mod tests {
 
     #[test]
     fn sample_value_reads_coded_storage_coordinates_despite_visible_rect_origin() {
-        let frame_info = info(PixelFormat::Monochrome, size(4, 4), rect(1, 1, 2, 2));
+        let frame_info = info(PixelFormat::Monochrome, size(3, 3), rect(1, 1, 2, 2))
+            .with_storage_luma_size(size(4, 4))
+            .unwrap();
         let curr_y = [0_u8; 16];
         let cdef_y = [0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33];
         let curr = monochrome_frame::<u8>(frame_info, &curr_y, 4, rect(1, 1, 2, 2));
