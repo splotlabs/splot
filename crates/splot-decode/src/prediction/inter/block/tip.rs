@@ -1314,6 +1314,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         predict_chroma: sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
         sub8x8_chroma: false,
         interintra_chroma: false,
+        interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability::new(true, true); 2],
         block: InterBlock {
             ref_frame0: TIP_REF_FRAME,
             ref_frame1: None,

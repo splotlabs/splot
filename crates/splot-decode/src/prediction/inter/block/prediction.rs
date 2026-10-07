@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::pipeline::reconstruct::IntraEdgeAvailability;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PlacedInterGeometry {
@@ -16,6 +17,7 @@ pub(super) struct PlacedInterGeometry {
     pub(super) predict_chroma: bool,
     pub(super) sub8x8_chroma: bool,
     pub(super) interintra_chroma: bool,
+    pub(super) interintra_edges: [IntraEdgeAvailability; 2],
 }
 
 pub(super) const fn leaf_predicts_chroma(chroma_planes: bool, luma_part: bool) -> bool {
@@ -44,8 +46,8 @@ fn is_thin_4xn_nx4_block(size: BlockSize) -> bool {
 
 pub(super) fn placed_inter_geometry(
     frontier: &DecodeBlockFrontier,
-    n4w: usize,
-    n4h: usize,
+    work_unit: &DecodeTileWorkUnit,
+    (n4w, n4h): (usize, usize),
     chroma_planes: bool,
 ) -> Result<PlacedInterGeometry> {
     let luma_x = frontier.c * 4;
@@ -76,6 +78,16 @@ pub(super) fn placed_inter_geometry(
         && frontier.is_mixed_region()
         && frontier.chroma_offset;
     let predict_chroma = leaf_predicts_chroma(chroma_planes, frontier.is_luma_part());
+    let tile_row_start = work_unit.mi_row_range().start as usize;
+    let tile_col_start = work_unit.mi_col_range().start as usize;
+    let chroma_ref = frontier.chroma_ref_geometry();
+    let interintra_edges = [
+        IntraEdgeAvailability::new(frontier.r > tile_row_start, frontier.c > tile_col_start),
+        IntraEdgeAvailability::new(
+            frontier.has_chroma && chroma_ref.row() > tile_row_start,
+            frontier.has_chroma && chroma_ref.col() > tile_col_start,
+        ),
+    ];
     Ok(PlacedInterGeometry {
         luma_x,
         luma_y,
@@ -92,6 +104,7 @@ pub(super) fn placed_inter_geometry(
                 frontier.chroma_ref_geometry().size(),
             ),
         interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
+        interintra_edges,
     })
 }
 

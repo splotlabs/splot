@@ -1182,6 +1182,7 @@ pub(crate) struct PlacedInterBlock {
     pub(crate) predict_chroma: bool,
     pub(crate) sub8x8_chroma: bool,
     pub(crate) interintra_chroma: bool,
+    pub(crate) interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability; 2],
     pub(crate) block: InterBlock,
 }
 

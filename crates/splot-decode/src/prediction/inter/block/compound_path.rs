@@ -677,8 +677,8 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     )?;
     let placed_geometry = placed_inter_geometry(
         frontier,
-        n4w,
-        n4h,
+        work_unit,
+        (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
     )?;
     let reference_pair = CompoundBlockSyntax {

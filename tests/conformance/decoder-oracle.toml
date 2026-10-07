@@ -15,6 +15,12 @@ avm_revision = "457cd58681a747465661baccb1f32095bc5b7774"
 vectors_dir = "tests/conformance/vectors/valid"
 
 [[fixture]]
+id = "syn-2frame-interintra-dc-tile-edge-128x32-10bit-q180"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.inter_intra", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
+ivf_sha256 = "6a0f9671735d032615d9e335e38f306d7069a7f534426ca854b7d42fc070a673"
+avm_raw_sha256 = "c095be80ce9f958fbba8ccc266fa1506b152c156adda8559072e0cf2acc357e6"
+
+[[fixture]]
 id = "syn-2frame-inter-444-64x64-q128"
 features = ["coeff.all_zero", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.non420_chroma", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single"]
 ivf_sha256 = "e658f1dfa59c2f7f35ae4ca43f6fac06e9c5394c976b16d00986616bd29f7544"

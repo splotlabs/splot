@@ -780,6 +780,9 @@ mod tests {
                 predict_chroma: false,
                 sub8x8_chroma: false,
                 interintra_chroma: false,
+                interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability::new(
+                    true, true,
+                ); 2],
                 block: InterBlock {
                     ref_frame0: 0,
                     ref_frame1: None,

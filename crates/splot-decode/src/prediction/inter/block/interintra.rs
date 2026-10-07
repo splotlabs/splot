@@ -8,10 +8,10 @@
 //! Feature tracking: `INFRA-DECODE-SERIAL-HOT-PATHS`.
 
 use splot_recon::{
-    BitDepth, CurrentFrameIntraEdges, CurrentFrameWorkspace, InterIntraMode,
-    IntraCardinalDirection, IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode,
-    PlaneId as ReconPlaneId, ReconError, ReconSample, apply_intra_ibp_dc_rect,
-    predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
+    BitDepth, CurrentFrameWorkspace, InterIntraMode, IntraCardinalDirection, IntraDcEdges,
+    IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode, PlaneId as ReconPlaneId,
+    ReconError, ReconSample, apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_value,
 };
 
 use super::super::{PlacedInterBlock, mc};
@@ -25,7 +25,7 @@ use crate::pipeline::reconstruct::{
 
 fn interintra_cardinal_edge<'a, T: ReconSample>(
     mode: InterIntraMode,
-    edges: &'a CurrentFrameIntraEdges<T>,
+    edges: IntraDcEdges<'a, T>,
     len: usize,
     bit_depth: BitDepth,
     fallback: &'a mut Vec<T>,
@@ -181,6 +181,11 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                 }
                 _ => DecodeError::from(error),
             })?;
+        let availability = placed.interintra_edges[usize::from(plane != ReconPlaneId::Y)];
+        let dc_edges = IntraDcEdges::new(
+            availability.left.then(|| edges.left_samples()).flatten(),
+            availability.above.then(|| edges.above_samples()).flatten(),
+        );
         let sample_start = scratch.samples.len();
         let sample_end = sample_start
             .checked_add(size.sample_count())
@@ -189,10 +194,10 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
         let samples = &mut scratch.samples[sample_start..];
         match mode {
             InterIntraMode::Dc => {
-                let dc = predict_intra_dc_rect_value(bit_depth, size, edges.as_dc_edges())?;
+                let dc = predict_intra_dc_rect_value(bit_depth, size, dc_edges)?;
                 samples.fill(dc);
                 if enable_ibp && !(w == 4 && h == 4) {
-                    apply_intra_ibp_dc_rect(bit_depth, size, edges.as_dc_edges(), samples, w)?;
+                    apply_intra_ibp_dc_rect(bit_depth, size, dc_edges, samples, w)?;
                 }
             }
             InterIntraMode::Vertical | InterIntraMode::Horizontal => {
@@ -201,7 +206,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                         IntraCardinalDirection::Vertical,
                         interintra_cardinal_edge(
                             mode,
-                            &edges,
+                            dc_edges,
                             w,
                             bit_depth,
                             &mut scratch.fallback_edge,
@@ -212,7 +217,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                         IntraCardinalDirection::Horizontal,
                         interintra_cardinal_edge(
                             mode,
-                            &edges,
+                            dc_edges,
                             h,
                             bit_depth,
                             &mut scratch.fallback_edge,
@@ -234,6 +239,8 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                 let y4 = ((luma_y / MI_SIZE) & sb_mask) >> sub_y;
                 let w4 = (w / MI_SIZE).max(1);
                 let h4 = (h / MI_SIZE).max(1);
+                let (available_left_samples, available_above_samples) =
+                    availability.available_sample_limits();
                 predict_intra_smooth_over_available_edges_into(
                     workspace,
                     SmoothIntraPredictionRequest {
@@ -242,8 +249,8 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                         y,
                         block_size: size,
                         mode: IntraSmoothMode::Smooth,
-                        available_left_samples: None,
-                        available_above_samples: None,
+                        available_left_samples,
+                        available_above_samples,
                         num4_above_right: block_decoded.count_top_right_avail(
                             plane.index(),
                             x4,

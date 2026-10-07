@@ -1442,6 +1442,11 @@ occurrences in the mission stream's first 32 coded frames)."""
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-interintra-dc-tile-edge-128x32-10bit-q180.ivf"
+description = "Two-frame 10-bit 4:2:0 stream with two 64-pixel-wide tiles, encoded from an original synthetic formula by clean AVM revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03. The right tile uses inter-intra DC prediction at its left edge. AV2 § 7.13.2.1 (docs/spec/av2/1.0.0/07-decoding-process.md) excludes samples across that tile edge. Before the fix, splot read the bright left tile and emitted raw SHA-256 08bb584bf33095db0fe58db44b10b672a34ff046ea51cb01f5eef172261992ab. The deterministic 193-byte IVF decodes to the complete 24,576-byte AVM raw SHA-256 c095be80ce9f958fbba8ccc266fa1506b152c156adda8559072e0cf2acc357e6. The pinned source recipe, producer hashes, build flags, and two-run check are in tools/decoder-fixtures/generate.py; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-444-intra-64x64.ivf"
 description = "Tiny AVM seq.chroma.444 fixture; validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte."
 expect = "clean"

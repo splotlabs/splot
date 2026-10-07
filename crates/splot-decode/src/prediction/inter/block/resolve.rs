@@ -340,6 +340,7 @@ fn resolve_pending_inter(
         predict_chroma: geometry.predict_chroma,
         sub8x8_chroma: geometry.sub8x8_chroma,
         interintra_chroma: geometry.interintra_chroma,
+        interintra_edges: geometry.interintra_edges,
         block,
     };
     Ok(deferred_recon::InterReconCommand::new(
