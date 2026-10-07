@@ -56,6 +56,7 @@ fn placed(luma_y: usize, luma_h: usize, mv_row: i32) -> PlacedInterBlock {
         predict_chroma: true,
         sub8x8_chroma: false,
         interintra_chroma: false,
+        interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability::new(true, true); 2],
         block: InterBlock {
             ref_frame0: 0,
             ref_frame1: None,

@@ -1134,6 +1134,61 @@ fn interintra_chroma_fallback_edges_use_each_planes_neighbour() -> TestResult {
 }
 
 #[test]
+fn interintra_ignores_unavailable_tile_edges_on_each_plane() -> TestResult {
+    use crate::pipeline::reconstruct::IntraEdgeAvailability;
+
+    for luma_above in [false, true] {
+        let mut workspace =
+            CurrentFrameWorkspace::<u8>::new(frame_info(16, 16, PixelFormat::Yuv420)?, 40)?;
+        let mut placed = placed_luma_block(8, 8, 8, 8, InterIntraMode::Dc);
+        placed.interintra_chroma = true;
+        placed.interintra_edges = [
+            IntraEdgeAvailability::new(luma_above, !luma_above),
+            IntraEdgeAvailability::new(!luma_above, luma_above),
+        ];
+        for (plane, x, y, side) in [
+            (PlaneId::Y, 8, 8, 8),
+            (PlaneId::U, 4, 4, 4),
+            (PlaneId::V, 4, 4, 4),
+        ] {
+            let availability = placed.interintra_edges[usize::from(plane != PlaneId::Y)];
+            let unavailable_edge = if availability.above {
+                PlaneRect::new(x - 1, y, 1, side)?
+            } else {
+                PlaneRect::new(x, y - 1, side, 1)?
+            };
+            workspace.fill_rect(plane, unavailable_edge, 200)?;
+        }
+        let block_decoded = TileBlockDecodedState::new(3, 1, 1, 16, 4, 4)?;
+        let mut scratch = InterIntraScratch::default();
+        for mode in [
+            InterIntraMode::Dc,
+            InterIntraMode::Vertical,
+            InterIntraMode::Horizontal,
+            InterIntraMode::Smooth,
+        ] {
+            predict_interintra_planes(
+                &mut scratch,
+                &workspace,
+                &placed,
+                &block_decoded,
+                mode,
+                true,
+                BitDepth::Eight,
+            )?;
+            assert_eq!(scratch.planes().count(), 3);
+            for (plane, samples) in scratch.planes() {
+                assert!(
+                    samples.iter().all(|sample| *sample == 40),
+                    "{mode:?} {plane:?} luma_above={luma_above}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn interintra_scratch_reuses_pixel_and_fallback_edge_storage() -> TestResult {
     let workspace = CurrentFrameWorkspace::<u8>::new(monochrome_info(8, 8)?, 128)?;
     let block_decoded = TileBlockDecodedState::new(1, 1, 1, 16, 16, 16)?;
@@ -1242,6 +1297,7 @@ fn placed_luma_block(
         predict_chroma: false,
         sub8x8_chroma: false,
         interintra_chroma: false,
+        interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability::new(true, true); 2],
         block: InterBlock {
             ref_frame0: 0,
             ref_frame1: None,

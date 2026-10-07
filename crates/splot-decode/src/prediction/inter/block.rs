@@ -1171,8 +1171,8 @@ fn decode_block<T: ReconSample>(
     let mi_col = frontier.c;
     let placed_geometry = placed_inter_geometry(
         frontier,
-        n4w,
-        n4h,
+        work_unit,
+        (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
     )?;
     let mut block_ctx = MvBlockContext {

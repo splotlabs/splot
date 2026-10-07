@@ -259,6 +259,16 @@ COVERAGE = [
              "-map", "[out]", "-frames:v", "2", "-f", "rawvideo",
          ],
      }),
+    ("syn-2frame-interintra-dc-tile-edge-128x32-10bit-q180", "", "yuv420p10le", "--i420",
+     TX_PARTITION_INTER + ["--bit-depth=10", "--input-bit-depth=10",
+      "--enable-interintra-comp=1", "--enable-smooth-interintra=1",
+      "--enable-tx-partition=0", "--tile-columns=1"], "0", "180", {
+         "format": "y4m", "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=128x32:rate=1:duration=2,format=yuv420p10le,geq=lum='if(lt(X,64),850,if(eq(N,0),220+mod(X*7+Y*11,160),(512+220+mod(X*7+Y*11,160))/2))':cb=512:cr=512",
+             "-pix_fmt", "yuv420p10le", "-strict", "-1",
+         ],
+     }),
     ("syn-sb256-intra-129x16-q180", "color=c=gray:size=129x16:rate=1:duration=1",
      "yuv420p", "--i420", SB256_INTRA, "0", "180", {
          "format": "y4m",
@@ -357,6 +367,17 @@ PINNED_RECIPE_HASHES = {
         "avm_i420_raw_sha256": "9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3",
         "trace_sha256": "32453fd5d10f17eec9f69551cb3408d2794e91bfb658965ac64761bb538ab2a3",
         "full_set_control_ivf_sha256": "176aa168708fd3afbe5b842ef364bafa19d1e07c4b58ddcdad6793cdec020ec6",
+        "reproducibility_runs": 2,
+    },
+    "syn-2frame-interintra-dc-tile-edge-128x32-10bit-q180": {
+        "avm_revision": "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03",
+        "avm_build_flags": "-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 -DCONFIG_TENSORFLOW_LITE=0",
+        "ffmpeg_version": "9.0.2",
+        "source_sha256": "2fc81e3b7504f7e7cf049b7daf96b61d57490139d29f06fce3daac24c5e3de65",
+        "ivf_sha256": "6a0f9671735d032615d9e335e38f306d7069a7f534426ca854b7d42fc070a673",
+        "avm_i420_raw_sha256": "c095be80ce9f958fbba8ccc266fa1506b152c156adda8559072e0cf2acc357e6",
+        "avmenc_sha256": "74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92",
+        "avmdec_sha256": "f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b",
         "reproducibility_runs": 2,
     },
     "syn-sb256-intra-129x16-q180": {
