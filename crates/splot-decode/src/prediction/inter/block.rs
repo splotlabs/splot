@@ -737,8 +737,8 @@ impl TemporalPrelude {
 }
 
 type ScheduledMotionFieldInputs = (
-    Vec<Option<super::find_mv_stack::TemporalMotionFieldMetadata>>,
-    Vec<Option<MotionFieldLayout>>,
+    crate::reference::buffer::RefSlots<Option<super::find_mv_stack::TemporalMotionFieldMetadata>>,
+    crate::reference::buffer::RefSlots<Option<MotionFieldLayout>>,
 );
 
 fn scheduled_motion_field_inputs(
@@ -755,21 +755,21 @@ fn scheduled_motion_field_inputs(
             return Err(DecodeReferenceStateError::MissingMotionFieldPublication.into());
         }
     }
-    Ok((
+    let metadata =
+        crate::reference::buffer::RefSlots::from_iter_checked(fields.iter().map(|field| {
+            field
+                .as_ref()
+                .and_then(MotionFieldHandle::metadata)
+                .cloned()
+        }));
+    let layouts = crate::reference::buffer::RefSlots::from_iter_checked(
         fields
             .iter()
-            .map(|field| {
-                field
-                    .as_ref()
-                    .and_then(MotionFieldHandle::metadata)
-                    .cloned()
-            })
-            .collect(),
-        fields
-            .iter()
-            .map(|field| field.as_ref().map(MotionFieldHandle::layout))
-            .collect(),
-    ))
+            .map(|field| field.as_ref().map(MotionFieldHandle::layout)),
+    );
+    metadata
+        .zip(layouts)
+        .ok_or(DecodeReferenceStateError::MissingMotionFieldPublication.into())
 }
 
 /// Runs the AV2 § 7.9 temporal prelude: reference motion-field projection and

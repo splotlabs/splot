@@ -1283,41 +1283,34 @@ impl<T: ReconSample> InterReferenceState<T> {
     pub(crate) fn resolve_motion_fields(
         &self,
         ref_frame_idx: &[u32],
-    ) -> Result<Vec<Option<Arc<TemporalMotionField>>>> {
-        for &selected in ref_frame_idx {
-            if self
-                .ref_motion_fields
-                .get(selected as usize)
-                .and_then(Option::as_ref)
-                .and_then(MotionFieldHandle::field)
-                .is_none()
-            {
-                return Err(DecodeReferenceStateError::MissingMotionFieldPublication.into());
-            }
+    ) -> Result<RefSlots<Option<Arc<TemporalMotionField>>>> {
+        let mut resolved = RefSlots::default();
+        for (index, slot) in self.ref_motion_fields.iter().enumerate() {
+            let selected = ref_frame_idx
+                .iter()
+                .any(|&selected| selected as usize == index);
+            let field = match slot {
+                Some(handle) if selected => {
+                    Some(Arc::clone(handle.field().ok_or(
+                        DecodeReferenceStateError::MissingMotionFieldPublication,
+                    )?))
+                }
+                None if selected => {
+                    return Err(DecodeReferenceStateError::MissingMotionFieldPublication.into());
+                }
+                None | Some(_) => None,
+            };
+            resolved
+                .push(field)
+                .ok_or(DecodeReferenceStateError::MissingMotionFieldPublication)?;
         }
-        self.ref_motion_fields
+        if ref_frame_idx
             .iter()
-            .enumerate()
-            .map(|(index, slot)| match slot {
-                Some(handle)
-                    if ref_frame_idx
-                        .iter()
-                        .any(|&selected| selected as usize == index) =>
-                {
-                    handle
-                        .field()
-                        .map(|field| Some(Arc::clone(field)))
-                        .ok_or(DecodeReferenceStateError::MissingMotionFieldPublication.into())
-                }
-                None if ref_frame_idx
-                    .iter()
-                    .any(|&selected| selected as usize == index) =>
-                {
-                    Err(DecodeReferenceStateError::MissingMotionFieldPublication.into())
-                }
-                None | Some(_) => Ok(None),
-            })
-            .collect()
+            .any(|&selected| selected as usize >= self.ref_motion_fields.len())
+        {
+            return Err(DecodeReferenceStateError::MissingMotionFieldPublication.into());
+        }
+        Ok(resolved)
     }
 
     pub(crate) fn from_metadata(

@@ -1970,33 +1970,30 @@ fn run_band_projections(
             );
         }
     };
+    if splot_parallel::current_pool_width() <= 1 {
+        let mut trajectory_bands = trajectories.and_then(|state| state.bands(band_rows));
+        for mut band in field.bands(band_rows) {
+            run(
+                &mut band,
+                trajectory_bands.as_mut().and_then(Iterator::next).as_mut(),
+            );
+        }
+        return;
+    }
     let mut trajectory_bands = trajectories.and_then(|state| state.bands(band_rows));
     let mut field_bands = field.bands(band_rows);
-    let mut trajectory_slots = trajectory_bands
-        .as_deref_mut()
-        .map_or_else(Vec::new, |bands| bands.iter_mut().map(Some).collect());
-    let scheduled = if splot_parallel::current_pool_width() <= 1 {
-        for (index, band) in field_bands.iter_mut().enumerate() {
-            let rows = trajectory_slots.get_mut(index).and_then(Option::take);
-            run(band, rows);
+    let scheduled = splot_parallel::ready_task_scope(|scope| {
+        for mut band in &mut field_bands {
+            let mut rows = trajectory_bands.as_mut().and_then(Iterator::next);
+            let run = &run;
+            scope.spawn(move |_| run(&mut band, rows.as_mut()));
         }
-        Ok(())
-    } else {
-        splot_parallel::ready_task_scope(|scope| {
-            for (index, band) in field_bands.iter_mut().enumerate() {
-                let rows = trajectory_slots.get_mut(index).and_then(Option::take);
-                let run = &run;
-                scope.spawn(move |_| run(band, rows));
-            }
-        })
-    };
+    });
     if scheduled.is_err() {
-        for (index, band) in field_bands.iter_mut().enumerate() {
+        for mut band in field_bands {
             run(
-                band,
-                trajectory_bands
-                    .as_mut()
-                    .and_then(|bands| bands.get_mut(index)),
+                &mut band,
+                trajectory_bands.as_mut().and_then(Iterator::next).as_mut(),
             );
         }
     }
@@ -2057,18 +2054,17 @@ struct ProjectedFieldBand<'a> {
 }
 
 impl ProjectedTemporalMotionField {
-    fn bands(&mut self, band_rows: usize) -> Vec<ProjectedFieldBand<'_>> {
+    fn bands(&mut self, band_rows: usize) -> impl Iterator<Item = ProjectedFieldBand<'_>> {
         let (width8, height8) = (self.width8, self.height8);
         self.cells
             .chunks_mut(band_rows.saturating_mul(width8).max(1))
             .enumerate()
-            .map(|(index, cells)| ProjectedFieldBand {
+            .map(move |(index, cells)| ProjectedFieldBand {
                 cells,
                 width8,
                 height8,
                 row_base: index * band_rows,
             })
-            .collect()
     }
 }
 

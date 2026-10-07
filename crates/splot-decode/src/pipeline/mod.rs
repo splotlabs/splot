@@ -538,7 +538,7 @@ where
         display_grain,
         output_effects,
         frame_cdfs,
-        motion_field: inter::MotionFieldHandle::settled(motion_field),
+        motion_field: frames.settle_motion(motion_field)?,
         ccso_params: ccso_params.map(Arc::new),
         ccso_grid,
         segment_ids,
@@ -863,7 +863,7 @@ where
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs,
-                    motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
+                    motion_field: frames.settle_motion(walk.motion_field)?,
                     ccso_params: ccso_params.map(Arc::new),
                     ccso_grid,
                     segment_ids,
@@ -916,7 +916,7 @@ where
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs,
-                    motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
+                    motion_field: frames.settle_motion(walk.motion_field)?,
                     ccso_params: ccso_params.map(Arc::new),
                     ccso_grid,
                     segment_ids,
@@ -1554,7 +1554,7 @@ where
                                 slot,
                                 inter_core,
                                 products,
-                                inter::MotionFieldHandle::settled(walk.motion_field),
+                                frames.settle_motion(walk.motion_field)?,
                             )
                         }
                     }
@@ -1785,7 +1785,7 @@ where
                                 slot,
                                 inter_core,
                                 products,
-                                inter::MotionFieldHandle::settled(walk.motion_field),
+                                frames.settle_motion(walk.motion_field)?,
                             )
                         }
                     }

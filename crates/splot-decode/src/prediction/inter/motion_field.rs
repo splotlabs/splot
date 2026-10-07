@@ -53,6 +53,7 @@ impl MotionFieldHandle {
     }
 
     /// Names a field that is already derived.
+    #[cfg(test)]
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
         let layout = field.layout();
         let metadata = field.metadata();

@@ -271,7 +271,10 @@ impl TrajectoryState {
     /// the TMVP unit row of the position it was sampled from, so the bands
     /// partition every write the § 7.9.3 scan makes. Returns `None` when a grid
     /// is not sized to this state's geometry, leaving the caller whole-field.
-    pub(super) fn bands(&mut self, band_rows: usize) -> Option<Vec<TrajectoryBand<'_>>> {
+    pub(super) fn bands(
+        &mut self,
+        band_rows: usize,
+    ) -> Option<impl Iterator<Item = TrajectoryBand<'_>>> {
         let Self {
             cells,
             reference_count,
@@ -284,9 +287,7 @@ impl TrajectoryState {
         } = self;
         let reference_count = *reference_count;
         let (width8, height8) = (*width8, *height8);
-        let step_mask = *step - 1;
-        let unit_mask = *unit_size8 - 1;
-        let unit_shift = unit_size8.trailing_zeros();
+        let (step, unit_size8) = (*step, *unit_size8);
         let total = width8.checked_mul(height8)?;
         let stride = band_rows.checked_mul(width8)?;
         if band_rows == 0
@@ -299,36 +300,46 @@ impl TrajectoryState {
             return None;
         }
         let mut field_bands = cells.chunks_mut(stride.checked_mul(reference_count)?.max(1));
-        let mut bands = projection_offsets
-            .chunks_mut(stride.max(1))
-            .enumerate()
-            .map(|(index, projection_offsets)| TrajectoryBand {
-                fields: field_bands.next().unwrap_or_default(),
-                reference_count,
-                positions: BandSlices::new(),
-                projection_offsets,
-                row_base: index * band_rows,
-                step: *step,
-                step_mask,
-                unit_size8: *unit_size8,
-                unit_mask,
-                unit_shift,
-                width8,
-                height8,
-            })
-            .collect::<Vec<_>>();
-        for slots in positions.iter_mut() {
-            for (band, slots) in bands.iter_mut().zip(slots.chunks_mut(stride.max(1))) {
-                band.positions.push(slots)?;
-            }
-        }
-        Some(bands)
+        let mut references = positions.iter_mut();
+        let mut position_bands: [Option<core::slice::ChunksMut<'_, TrajectoryPositions>>;
+            MAX_TRAJECTORY_REFERENCES] = core::array::from_fn(|_| {
+            references
+                .next()
+                .map(|slots| slots.chunks_mut(stride.max(1)))
+        });
+        Some(
+            projection_offsets
+                .chunks_mut(stride.max(1))
+                .enumerate()
+                .map(move |(index, projection_offsets)| {
+                    let mut positions = BandSlices::new();
+                    for slots in position_bands.iter_mut().flatten() {
+                        if let Some(slots) = slots.next() {
+                            let _ = positions.push(slots);
+                        }
+                    }
+                    TrajectoryBand {
+                        fields: field_bands.next().unwrap_or_default(),
+                        reference_count,
+                        positions,
+                        projection_offsets,
+                        row_base: index * band_rows,
+                        step,
+                        step_mask: step - 1,
+                        unit_size8,
+                        unit_mask: unit_size8 - 1,
+                        unit_shift: unit_size8.trailing_zeros(),
+                        width8,
+                        height8,
+                    }
+                }),
+        )
     }
 
     #[cfg(test)]
     pub(super) fn whole_band(&mut self) -> Option<TrajectoryBand<'_>> {
         let height8 = self.height8;
-        self.bands(height8).and_then(|mut bands| bands.pop())
+        self.bands(height8).and_then(|mut bands| bands.next())
     }
 
     pub(super) fn fill_gaps(&mut self) {

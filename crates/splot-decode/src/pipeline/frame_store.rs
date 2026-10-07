@@ -101,6 +101,17 @@ impl FrameStore {
         Ok(motion.clone())
     }
 
+    /// Publishes an already derived field through this frame's reusable
+    /// handle, so a fused walk builds no handle, band list or field cell.
+    pub(super) fn settle_motion(
+        &mut self,
+        field: crate::prediction::inter::TemporalMotionField,
+    ) -> Result<MotionFieldHandle> {
+        let motion = self.reserve_motion(field.layout())?;
+        motion.publish(field);
+        Ok(motion)
+    }
+
     pub(super) fn reserve_products(&mut self) -> Result<FrameProductWriters> {
         let index = self.reserve()?;
         self.entries[index]
