@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
+use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample};
 
 use crate::Result;
 use crate::bitstream::tile_payload::FrameCdfSubset;
@@ -247,7 +247,7 @@ pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
     admit: Option<
         &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
     >,
-    publish: impl FnOnce(SharedFrame<T>),
+    publish: impl FnOnce(DecodedFrame<T>),
 ) -> Result<FrameFilterRecords> {
     let WalkedFrame {
         sink,
@@ -261,7 +261,7 @@ pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
         deblock_quant_deltas,
         progress,
         admit,
-        |frame| publish(SharedFrame::new(frame)),
+        publish,
     )?;
     Ok(filter_records)
 }

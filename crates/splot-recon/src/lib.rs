@@ -88,7 +88,8 @@ pub use error::{ReconError, Result};
 pub use film_grain::apply_film_grain;
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{
-    DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, RetiredFramePlanes, SharedFrame,
+    DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, RetiredFramePlanes,
+    SharedFrame, SharedFrameShell,
 };
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
 pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput, visible_byte_len};

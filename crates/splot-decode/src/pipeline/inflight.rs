@@ -63,6 +63,8 @@ pub(crate) struct RefFrameSlot<T: ReconSample> {
     progress: Option<Arc<FrameProgress<T>>>,
     progressive: bool,
     info: DecodedFrameInfo,
+    /// The emptied handle of the frame this slot last retired, for the next.
+    shell: Option<splot_recon::SharedFrameShell<T>>,
 }
 
 impl<T: ReconSample> RefFrameSlot<T> {
@@ -74,6 +76,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
             progress: None,
             progressive: false,
             info,
+            shell: None,
         }
     }
 
@@ -98,12 +101,14 @@ impl<T: ReconSample> RefFrameSlot<T> {
             cell: Arc::clone(&cell),
             progress: Arc::clone(&progress),
             info,
+            shell: None,
         };
         let slot = Self {
             cell,
             progress: Some(progress),
             progressive: true,
             info,
+            shell: None,
         };
         Ok((slot, writer))
     }
@@ -138,6 +143,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
             cell: Arc::clone(&self.cell),
             progress: Arc::clone(progress),
             info,
+            shell: self.shell.take(),
         };
         Ok((self, writer))
     }
@@ -171,10 +177,12 @@ impl<T: ReconSample> RefFrameSlot<T> {
         let cell = Arc::get_mut(&mut self.cell)?;
         let value = core::mem::replace(cell.get_mut()?, SlotValue::Failed);
         cell.reset();
-        match value {
-            SlotValue::Ready(frame) => frame.into_frame(),
-            SlotValue::Failed => None,
-        }
+        let SlotValue::Ready(frame) = value else {
+            return None;
+        };
+        let (frame, shell) = frame.into_frame_and_shell()?;
+        self.shell = Some(shell);
+        Some(frame)
     }
 
     /// Whether this is the only handle to the slot, so
@@ -196,6 +204,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
             progress: self.progress.clone(),
             progressive: self.progressive,
             info: self.info,
+            shell: None,
         }
     }
 
@@ -308,6 +317,7 @@ pub(crate) struct FrameSlotWriter<T: ReconSample> {
     cell: Arc<CompletionCell<SlotValue<T>>>,
     progress: Arc<FrameProgress<T>>,
     info: DecodedFrameInfo,
+    shell: Option<splot_recon::SharedFrameShell<T>>,
 }
 
 impl<T: ReconSample> FrameSlotWriter<T> {
@@ -316,8 +326,9 @@ impl<T: ReconSample> FrameSlotWriter<T> {
     /// The geometry the slot published before the samples must be the geometry
     /// the finished frame reports, since reference-store bookkeeping and
     /// retained-byte accounting already read it.
-    pub(crate) fn complete(self, frame: SharedFrame<T>) {
-        debug_assert_eq!(frame.get().info(), self.info);
+    pub(crate) fn complete(mut self, frame: DecodedFrame<T>) {
+        debug_assert_eq!(frame.info(), self.info);
+        let frame = SharedFrame::new_in(self.shell.take(), frame);
         let _ = self.cell.set(SlotValue::Ready(frame));
         self.progress.publish_terminal(true);
     }
@@ -758,10 +769,12 @@ where
 {
     let walked = match stage {
         WalkStage::Complete(frame) => {
-            let frame = SharedFrame::new(*frame);
             let slot = match frames.take_retired()?.and_then(T::take_slot) {
-                Some(slot) => slot.reuse_completed(frame)?,
-                None => RefFrameSlot::completed(frame),
+                Some(mut slot) => {
+                    let frame = SharedFrame::new_in(slot.shell.take(), *frame);
+                    slot.reuse_completed(frame)?
+                }
+                None => RefFrameSlot::completed(SharedFrame::new(*frame)),
             };
             return Ok(erase(slot));
         }
@@ -843,7 +856,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
             progress: _,
             report,
         } = self;
-        writer.complete(SharedFrame::new(frame));
+        writer.complete(frame);
         drop(report);
     }
 
@@ -882,7 +895,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
             progress: _,
             mut report,
         } = self;
-        let (outcome, shell) = filter.finish(|frame| writer.complete(SharedFrame::new(frame)));
+        let (outcome, shell) = filter.finish(|frame| writer.complete(frame));
         match outcome {
             Ok(((), records)) => {
                 report.outcome.records = Some(records);

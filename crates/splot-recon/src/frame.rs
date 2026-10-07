@@ -338,6 +338,14 @@ impl<T: ReconSample> DecodedFrame<T> {
     }
 }
 
+/// The emptied allocation of a retired [`SharedFrame`].
+///
+/// A reference frame's handle is retired once per frame and a new one wraps
+/// the next frame, so the frame slot keeps this to do that without allocating.
+/// It holds no samples and cannot be read.
+#[derive(Debug)]
+pub struct SharedFrameShell<T: ReconSample>(Arc<DecodedFrame<T>>);
+
 /// An immutable decoded frame shared without copying its pixels.
 ///
 /// `SharedFrame` is the only way to give a second owner access to a decoded
@@ -378,6 +386,37 @@ impl<T: ReconSample> SharedFrame<T> {
     /// Borrows the shared frame as an immutable [`FrameRef`] without copying.
     pub fn as_frame_ref(&self) -> FrameRef<'_, T> {
         self.inner.as_frame_ref()
+    }
+
+    /// Takes the frame back when this is its last handle, keeping the handle's
+    /// allocation so [`Self::new_in`] can wrap a later frame without one.
+    ///
+    /// Returns `None` while any other handle is still sharing the storage.
+    #[must_use]
+    pub fn into_frame_and_shell(self) -> Option<(DecodedFrame<T>, SharedFrameShell<T>)> {
+        let mut inner = self.inner;
+        let frame = Arc::get_mut(&mut inner)?;
+        let vacant = DecodedFrame {
+            info: frame.info,
+            planes: FramePlanes::new(crate::plane::Plane::vacant(), None, None),
+        };
+        let taken = core::mem::replace(frame, vacant);
+        Some((taken, SharedFrameShell(inner)))
+    }
+
+    /// Wraps an owned decoded frame, in a retired handle's allocation when
+    /// `shell` carries one.
+    pub fn new_in(shell: Option<SharedFrameShell<T>>, frame: DecodedFrame<T>) -> Self {
+        let Some(SharedFrameShell(mut inner)) = shell else {
+            return Self::new(frame);
+        };
+        match Arc::get_mut(&mut inner) {
+            Some(slot) => {
+                *slot = frame;
+                Self { inner }
+            }
+            None => Self::new(frame),
+        }
     }
 
     /// Takes the frame back when this is its last handle.
