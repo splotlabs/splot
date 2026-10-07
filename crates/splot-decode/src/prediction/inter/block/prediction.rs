@@ -54,8 +54,8 @@ pub(super) fn placed_inter_geometry(
     let luma_y = frontier.r * 4;
     let luma_w = n4w * 4;
     let luma_h = n4h * 4;
+    let chroma_ref = frontier.chroma_ref_geometry();
     let (chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h) = if frontier.has_chroma {
-        let chroma_ref = frontier.chroma_ref_geometry();
         let chroma_n4w = chroma_ref
             .size()
             .num_4x4_wide()
@@ -80,7 +80,6 @@ pub(super) fn placed_inter_geometry(
     let predict_chroma = leaf_predicts_chroma(chroma_planes, frontier.is_luma_part());
     let tile_row_start = work_unit.mi_row_range().start as usize;
     let tile_col_start = work_unit.mi_col_range().start as usize;
-    let chroma_ref = frontier.chroma_ref_geometry();
     let interintra_edges = [
         IntraEdgeAvailability::new(frontier.r > tile_row_start, frontier.c > tile_col_start),
         IntraEdgeAvailability::new(
@@ -99,10 +98,7 @@ pub(super) fn placed_inter_geometry(
         chroma_luma_h,
         predict_chroma,
         sub8x8_chroma: predict_chroma
-            && sub8x8_chroma_disables_compound(
-                frontier.b_size,
-                frontier.chroma_ref_geometry().size(),
-            ),
+            && sub8x8_chroma_disables_compound(frontier.b_size, chroma_ref.size()),
         interintra_chroma: frontier.has_chroma && !mixed_offset_chroma,
         interintra_edges,
     })
