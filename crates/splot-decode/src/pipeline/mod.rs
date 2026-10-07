@@ -2273,10 +2273,10 @@ pub(crate) fn derive_tile_plan_with<'payload>(
     .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
     let candidates = frame_tile_group_candidates(plan, candidate);
-    let recorded_header = record_frame_header(envelope, core)?;
-    let group_count = candidates.len();
+    let group_count = candidates.clone().count();
+    let recorded_header = record_frame_header(envelope, core, group_count > 1)?;
     let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> = None;
-    for (group_index, group_candidate) in candidates.into_iter().enumerate() {
+    for (group_index, group_candidate) in candidates.enumerate() {
         if group_index != 0 {
             core::mem::swap(
                 &mut scratch.work_units,
@@ -2289,7 +2289,13 @@ pub(crate) fn derive_tile_plan_with<'payload>(
         } else {
             facts.with_tile_group_structure_start_bits(continuation_structure_start_bits(
                 group_envelope,
-                &recorded_header,
+                recorded_header.as_ref().ok_or_else(|| {
+                    unsupported_at(
+                        "frame_header_copy_source_truncated",
+                        envelope.offset,
+                        "first tile-group frame header was not recorded for continuation validation",
+                    )
+                })?,
             )?)
         };
         let mut input = FrameCandidateTileBoundaryInput::new(
@@ -2330,27 +2336,20 @@ pub(crate) fn derive_tile_plan_with<'payload>(
 fn frame_tile_group_candidates<'a>(
     plan: &'a DecodeStreamPlan,
     candidate: &'a DecodePlannedObu,
-) -> Vec<&'a DecodePlannedObu> {
-    let mut groups = vec![candidate];
-    for planned in plan.obus().skip(candidate.index() as usize + 1) {
-        if planned.ivf_frame() != candidate.ivf_frame() {
-            break;
-        }
-        if planned.obu_type() == ObuType::Padding {
-            continue;
-        }
-        if planned.role().is_frame_continuation()
-            && planned.obu_type() == candidate.obu_type()
-            && planned.header().temporal_layer_id == candidate.header().temporal_layer_id
-            && planned.header().embedded_layer_id == candidate.header().embedded_layer_id
-            && planned.header().extended_layer_id == candidate.header().extended_layer_id
-        {
-            groups.push(planned);
-            continue;
-        }
-        break;
-    }
-    groups
+) -> impl Iterator<Item = &'a DecodePlannedObu> + Clone {
+    let continuations = plan
+        .obus()
+        .skip(candidate.index() as usize + 1)
+        .take_while(move |planned| planned.ivf_frame() == candidate.ivf_frame())
+        .filter(|planned| planned.obu_type() != ObuType::Padding)
+        .take_while(move |planned| {
+            planned.role().is_frame_continuation()
+                && planned.obu_type() == candidate.obu_type()
+                && planned.header().temporal_layer_id == candidate.header().temporal_layer_id
+                && planned.header().embedded_layer_id == candidate.header().embedded_layer_id
+                && planned.header().extended_layer_id == candidate.header().extended_layer_id
+        });
+    core::iter::once(candidate).chain(continuations)
 }
 
 fn planned_envelope<'a>(bytes: &'a [u8], planned: &DecodePlannedObu) -> Result<ObuEnvelope<'a>> {
@@ -2392,10 +2391,13 @@ fn planned_envelope<'a>(bytes: &'a [u8], planned: &DecodePlannedObu) -> Result<O
     })
 }
 
+/// Checks the first tile group's frame header and, only when continuation
+/// groups will compare against it, keeps a copy of its bits.
 fn record_frame_header(
     envelope: ObuEnvelope<'_>,
     core: &FrameHeaderCore,
-) -> Result<RecordedFrameHeaderBits> {
+    continuations: bool,
+) -> Result<Option<RecordedFrameHeaderBits>> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     if reader.read_bit().ok() != Some(1) {
         return Err(unsupported_at(
@@ -2404,13 +2406,23 @@ fn record_frame_header(
             "coded frame must begin with is_first_tile_group equal to 1",
         ));
     }
-    RecordedFrameHeaderBits::record(&mut reader, core.consumed_bits).map_err(|_| {
+    let truncated = || {
         unsupported_at(
             "frame_header_copy_source_truncated",
             envelope.offset,
             "first tile-group frame header could not be recorded for continuation validation",
         )
-    })
+    };
+    if !continuations {
+        return if reader.remaining_bits() < core.consumed_bits {
+            Err(truncated())
+        } else {
+            Ok(None)
+        };
+    }
+    RecordedFrameHeaderBits::record(&mut reader, core.consumed_bits)
+        .map(Some)
+        .map_err(|_| truncated())
 }
 
 fn continuation_structure_start_bits(

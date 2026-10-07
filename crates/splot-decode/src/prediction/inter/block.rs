@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use crate::reference::buffer::RefSlots;
 use std::sync::Arc;
 pub(crate) use tile::TileWalkParams;
 pub(crate) use tile::publish_tile_geometry;
@@ -185,6 +186,8 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     tile: Option<tile::TileDecodeScratch<T>>,
     temporal_context: Option<TemporalMvContext>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
+    /// The payload plan's framing, work units and tile CDFs, kept across frames.
+    pub(in crate::prediction::inter) payload: crate::bitstream::tile_payload::TilePayloadScratch,
     /// The reusable storage this decode's retired work leaves behind.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }
@@ -198,6 +201,7 @@ impl<T: ReconSample> InterDecodeScratch<T> {
             tile: Some(tile),
             temporal_context: None,
             frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
+            payload: crate::bitstream::tile_payload::TilePayloadScratch::default(),
         }
     }
 
@@ -604,6 +608,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         products.inherit_segment_ids(previous)?;
     }
     let segment_ids = products.finish_segment_ids()?;
+    tile_plan.retire_into(&mut scratch.payload);
     Ok(InterBlockDecodeOutput {
         workspace,
         frame_cdfs,
@@ -737,8 +742,8 @@ impl TemporalPrelude {
 }
 
 type ScheduledMotionFieldInputs = (
-    crate::reference::buffer::RefSlots<Option<super::find_mv_stack::TemporalMotionFieldMetadata>>,
-    crate::reference::buffer::RefSlots<Option<MotionFieldLayout>>,
+    RefSlots<Option<super::find_mv_stack::TemporalMotionFieldMetadata>>,
+    RefSlots<Option<MotionFieldLayout>>,
 );
 
 fn scheduled_motion_field_inputs(
@@ -755,20 +760,14 @@ fn scheduled_motion_field_inputs(
             return Err(DecodeReferenceStateError::MissingMotionFieldPublication.into());
         }
     }
-    let metadata =
-        crate::reference::buffer::RefSlots::from_iter_checked(fields.iter().map(|field| {
-            field
-                .as_ref()
-                .and_then(MotionFieldHandle::metadata)
-                .cloned()
-        }));
-    let layouts = crate::reference::buffer::RefSlots::from_iter_checked(
-        fields
-            .iter()
-            .map(|field| field.as_ref().map(MotionFieldHandle::layout)),
-    );
-    metadata
-        .zip(layouts)
+    let metadata = fields
+        .iter()
+        .map(|f| f.as_ref().and_then(MotionFieldHandle::metadata).cloned());
+    let layouts = fields
+        .iter()
+        .map(|f| f.as_ref().map(MotionFieldHandle::layout));
+    RefSlots::from_iter_checked(metadata)
+        .zip(RefSlots::from_iter_checked(layouts))
         .ok_or(DecodeReferenceStateError::MissingMotionFieldPublication.into())
 }
 

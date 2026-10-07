@@ -142,7 +142,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             dependency.wait_field();
         }
     }
-    let mut payload_scratch = crate::bitstream::tile_payload::TilePayloadScratch::default();
+    let mut payload_scratch = core::mem::take(&mut scratch.payload);
     let frame_walk::InterWalkPrologue {
         tile_plan,
         workspace,
@@ -165,6 +165,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         None,
         &mut payload_scratch,
     )?;
+    scratch.payload = payload_scratch;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let InterBlockDecodeOutput {
         workspace,
