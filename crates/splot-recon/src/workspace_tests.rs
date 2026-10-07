@@ -13,6 +13,39 @@ use crate::{
     predict_intra_dc_rect_into, reconstruct_add_residual,
 };
 
+#[test]
+fn workspace_keeps_mi_storage_separate_from_header_size_and_crop() {
+    let coded = size(270, 270);
+    let visible = rect(0, 0, 270, 270);
+    let original = info(BitDepth::Eight, PixelFormat::Yuv420, coded, visible);
+    assert_eq!(original.storage_luma_size(), coded);
+    assert!(original.with_storage_luma_size(size(269, 272)).is_err());
+    let padded = original.with_storage_luma_size(size(272, 272)).unwrap();
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(padded, 0).unwrap();
+    assert_eq!(workspace.info().coded_luma_size(), coded);
+    assert_eq!(workspace.info().visible_luma_rect(), visible);
+    assert_eq!(
+        workspace.plane(PlaneId::Y).unwrap().storage_size(),
+        size(272, 272)
+    );
+    assert_eq!(
+        workspace.plane(PlaneId::U).unwrap().storage_size(),
+        size(136, 136)
+    );
+    workspace
+        .set_reconstructed_sample(PlaneId::Y, 271, 271, 41)
+        .unwrap();
+    workspace
+        .set_reconstructed_sample(PlaneId::U, 135, 135, 73)
+        .unwrap();
+    let owned = OwnedFrameRect::<u8>::new(padded, rect(264, 264, 8, 8), 5).unwrap();
+    assert_eq!(owned.luma_rect(), rect(264, 264, 8, 8));
+    let frame = workspace.freeze().unwrap();
+    assert_eq!(frame.y().storage_size(), size(272, 272));
+    assert_eq!(frame.y().visible_rect(), visible);
+    assert_eq!(frame.y().samples()[271 * 272 + 271], 41);
+}
+
 fn size(width: usize, height: usize) -> PlaneSize {
     PlaneSize::new(width, height).unwrap()
 }

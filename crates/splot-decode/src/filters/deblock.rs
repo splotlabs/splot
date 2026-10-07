@@ -1746,6 +1746,11 @@ fn apply_edge_samples<T: ReconSample>(
     params: DeblockSampleFilter,
 ) -> Result<(), DeblockError> {
     let PerpLine { x, y, dx, dy } = perp;
+    let lanes = lanes.min(if dx == 1 {
+        plane_ctx.height.saturating_sub(y)
+    } else {
+        plane_ctx.width.saturating_sub(x)
+    });
     if lanes == 0 {
         return Ok(());
     }

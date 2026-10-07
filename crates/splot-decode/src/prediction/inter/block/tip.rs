@@ -671,7 +671,7 @@ fn tip_block_plan<T: ReconSample>(
                     &reference.ref_frame_height,
                     offsets,
                 ));
-    let frame_size = info.coded_luma_size();
+    let frame_size = info.storage_luma_size();
     let block_w = placed
         .luma_w
         .min(frame_size.width().saturating_sub(placed.luma_x));
@@ -921,8 +921,8 @@ fn publish_units_by_band<T: ReconSample>(
     workspace: &mut splot_recon::CurrentFrameWorkspace<T>,
     output_stride: usize,
 ) -> Result<()> {
-    let height = workspace.info().coded_luma_size().height();
-    let width = workspace.info().coded_luma_size().width();
+    let height = workspace.info().storage_luma_size().height();
+    let width = workspace.info().storage_luma_size().width();
     let TipReconstructScratch {
         units,
         output_samples,
@@ -1243,8 +1243,8 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         .as_ref()
         .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let ref_frame_idx = &inter.ref_frame_idx;
-    let width = info.coded_luma_size().width();
-    let height = info.coded_luma_size().height();
+    let width = info.storage_luma_size().width();
+    let height = info.storage_luma_size().height();
     let (mi_rows, mi_cols) = geometry.mi_dimensions();
     let sb_h4 = geometry.sb_h4();
     let projection_step = tmvp_projection_step(core);
@@ -1262,7 +1262,10 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         (mi_rows, mi_cols),
         current_order_hint,
         TemporalProjectionConfig {
-            frame_size: (width, height),
+            frame_size: (
+                info.coded_luma_size().width(),
+                info.coded_luma_size().height(),
+            ),
             step: projection_step,
             unit_size8: tmvp_unit_size8(projection_step, sb_h4),
             enable_tip: sequence

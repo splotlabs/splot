@@ -1375,7 +1375,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         };
         let end = rows
             .saturating_mul(self.recon.params.sb_h4.saturating_mul(4).max(1))
-            .min(self.info.coded_luma_size().height());
+            .min(self.info.storage_luma_size().height());
         if end > *sealed_rows {
             sealed.copy_rows_from(&commit.workspace, *sealed_rows..end)?;
             *sealed_rows = end;
@@ -1432,7 +1432,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 sealed_rows.is_none_or(|rows| {
                     deblock
                         .data_reach_luma_rows(safe_mi_end.get())
-                        .min(self.info.coded_luma_size().height())
+                        .min(self.info.storage_luma_size().height())
                         <= rows
                 }),
                 "the frontier read a row the spine had not sealed"
@@ -1570,7 +1570,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             } else {
                 let mut source = crate::filters::source::DeblockedSource::new(workspace);
                 if frontier.deblock.is_none()
-                    && !source.publish_final_rows(self.info.coded_luma_size().height())
+                    && !source.publish_final_rows(self.info.storage_luma_size().height())
                 {
                     return Err(invalid_inter_tile_scheduling_state());
                 }

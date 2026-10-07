@@ -1087,11 +1087,7 @@ fn read_inter_residual_prediction<T: ReconSample>(
     rect: PlaneRect,
     prediction: &mut Vec<T>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    prediction.clear();
-    prediction.reserve(rect.width() * rect.height());
-    for row in sink.rect_rows(block.plane, rect)? {
-        prediction.extend_from_slice(row);
-    }
+    crate::residual::pipeline::read_cctx_prediction(sink, block.plane, rect, prediction)?;
     Ok(())
 }
 

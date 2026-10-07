@@ -18,6 +18,7 @@ pub struct DecodedFrameInfo {
     bit_depth: BitDepth,
     pixel_format: PixelFormat,
     coded_luma_size: PlaneSize,
+    storage_luma_size: PlaneSize,
     visible_luma_rect: PlaneRect,
 }
 
@@ -44,6 +45,7 @@ impl DecodedFrameInfo {
             bit_depth,
             pixel_format,
             coded_luma_size,
+            storage_luma_size: coded_luma_size,
             visible_luma_rect,
         })
     }
@@ -66,6 +68,28 @@ impl DecodedFrameInfo {
     /// Returns the coded luma frame size from AV2 § 6.17.4.1.
     pub const fn coded_luma_size(self) -> PlaneSize {
         self.coded_luma_size
+    }
+
+    /// Sets reconstruction storage dimensions without changing the header size or crop.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::VisibleRectOutOfBounds`] if storage cannot contain
+    /// the coded frame.
+    pub fn with_storage_luma_size(mut self, storage: PlaneSize) -> Result<Self> {
+        PlaneRect::new(
+            0,
+            0,
+            self.coded_luma_size.width(),
+            self.coded_luma_size.height(),
+        )?
+        .ensure_within(storage)?;
+        self.storage_luma_size = storage;
+        Ok(self)
+    }
+
+    /// Returns the complete reconstruction storage size, including MI padding.
+    pub const fn storage_luma_size(self) -> PlaneSize {
+        self.storage_luma_size
     }
 
     /// Returns the visible luma crop rectangle.

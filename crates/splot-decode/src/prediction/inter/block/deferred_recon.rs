@@ -608,7 +608,7 @@ pub(super) fn prepass_write_is_contained(
     let Some(side) = sb_h4.checked_mul(4) else {
         return false;
     };
-    let luma = info.coded_luma_size();
+    let luma = info.storage_luma_size();
     if !clipped_rect_is_inside_band(
         luma_x,
         luma_y,

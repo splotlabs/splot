@@ -6,6 +6,184 @@
 use super::*;
 
 #[test]
+fn secondary_mrl_blends_only_prediction_units_larger_than_4x4() {
+    for (log2_width, log2_height, expected, calls) in
+        [(2, 2, 76, 1), (2, 3, 113, 2), (3, 2, 113, 2)]
+    {
+        let mut workspace =
+            new_general_intra_workspace::<u8>(16, 16, BitDepth::Eight, PixelFormat::Yuv420)
+                .unwrap();
+        let block_size = IntraRectBlockSize::new(log2_width, log2_height).unwrap();
+        let mut actual_calls = 0;
+        let prediction = super::super::sink::build_mrl_luma_prediction(
+            &mut workspace,
+            block_size,
+            true,
+            |_, secondary, output| {
+                actual_calls += 1;
+                output.fill(if secondary { 150 } else { 76 });
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(actual_calls, calls);
+        assert!(prediction.iter().all(|&sample| sample == expected));
+    }
+}
+
+#[test]
+fn middle_directional_clamps_right_edge_columns() {
+    for mrl_index in [None, Some(3)] {
+        for have_left in [true, false] {
+            let mut outputs = Vec::new();
+            for frame_width in [270, 272] {
+                let mut workspace = new_general_intra_workspace::<u8>(
+                    frame_width,
+                    32,
+                    BitDepth::Eight,
+                    PixelFormat::Yuv420,
+                )
+                .unwrap();
+                for row in 0..32 {
+                    for column in 0..frame_width {
+                        workspace
+                            .set_reconstructed_sample(
+                                PlaneId::Y,
+                                column,
+                                row,
+                                ((column.min(269) + row * 3) % 200 + 20) as u8,
+                            )
+                            .unwrap();
+                    }
+                }
+                let availability = IntraEdgeAvailability {
+                    above: true,
+                    left: have_left,
+                };
+                if let Some(mrl_index) = mrl_index {
+                    reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+                        &mut workspace,
+                        all_zero_luma_block().view(&[]),
+                        113,
+                        264,
+                        16,
+                        3,
+                        3,
+                        0,
+                        mrl_index,
+                        mrl_index,
+                        false,
+                        true,
+                        false,
+                        None,
+                        availability,
+                        BitDepth::Eight,
+                    )
+                    .unwrap();
+                } else {
+                    reconstruct_general_intra_middle_neighbour_rect_block_into(
+                        &mut workspace,
+                        all_zero_luma_block().view(&[]),
+                        113,
+                        PlaneId::Y,
+                        264,
+                        16,
+                        3,
+                        3,
+                        0,
+                        false,
+                        None,
+                        None,
+                        BitDepth::Eight,
+                        availability,
+                        TwoSidedMiddleEdgeFilters {
+                            above: OneSidedEdgeFilter::default(),
+                            left: OneSidedEdgeFilter::default(),
+                        },
+                    )
+                    .unwrap();
+                }
+                let mut output = Vec::new();
+                for row in 16..24 {
+                    for column in 264..270 {
+                        output.push(
+                            workspace
+                                .reconstructed_sample(PlaneId::Y, column, row)
+                                .unwrap(),
+                        );
+                    }
+                }
+                outputs.push(output);
+            }
+            assert_eq!(
+                outputs[0], outputs[1],
+                "MRL {mrl_index:?}, left {have_left}"
+            );
+        }
+    }
+}
+
+#[test]
+fn middle_directional_mrl_top_row_clamps_bottom_edge_rows() {
+    let mut outputs = Vec::new();
+    for frame_height in [6, 8] {
+        let mut workspace = new_general_intra_workspace::<u8>(
+            32,
+            frame_height,
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+        )
+        .unwrap();
+        for row in 0..frame_height {
+            for column in 0..32 {
+                workspace
+                    .set_reconstructed_sample(
+                        PlaneId::Y,
+                        column,
+                        row,
+                        (column + row.min(5) * 3 + 20) as u8,
+                    )
+                    .unwrap();
+            }
+        }
+        reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+            &mut workspace,
+            all_zero_luma_block().view(&[]),
+            157,
+            16,
+            0,
+            3,
+            3,
+            0,
+            3,
+            0,
+            true,
+            true,
+            false,
+            None,
+            IntraEdgeAvailability {
+                above: false,
+                left: true,
+            },
+            BitDepth::Eight,
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        for row in 0..6 {
+            for column in 16..24 {
+                output.push(
+                    workspace
+                        .reconstructed_sample(PlaneId::Y, column, row)
+                        .unwrap(),
+                );
+            }
+        }
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+}
+
+#[test]
 fn horizontal_cardinal_mrl_tx32_clamps_bottom_edge_rows() {
     let mut workspace =
         new_general_intra_workspace::<u8>(64, 32, BitDepth::Eight, PixelFormat::Yuv420).unwrap();

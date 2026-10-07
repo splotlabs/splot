@@ -774,6 +774,10 @@ fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
 
     assert_eq!(prediction.target, PlaneRect::new(0, 8, 16, 8).unwrap());
     assert_eq!(prediction.source, PlaneRect::new(0, 0, 16, 8).unwrap());
+    assert_eq!(
+        (prediction.scaling.last_x, prediction.scaling.last_y),
+        (15, 15)
+    );
     assert!(!prediction.fractional);
     assert_eq!(prediction.scaling.start_x >> 10, 0);
     assert_eq!(prediction.scaling.start_y >> 10, 0);

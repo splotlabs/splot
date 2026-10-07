@@ -117,7 +117,8 @@ fn prediction_luma_rows(
             reference_size.height() as i32,
             frame_size.width() as i32,
             frame_size.height() as i32,
-        );
+        )
+        .with_reference_storage(reference.storage_luma_size(), sub_x, sub_y);
         let params = SubpelPredictParams {
             interp: splot_recon::InterpolationFilter::EightTap,
             w: width,
@@ -171,7 +172,7 @@ fn the_chroma_plane_sets_the_bound_of_an_unshifted_block() {
 }
 
 #[test]
-fn a_cropped_reference_gate_uses_storage_row_coordinates() {
+fn a_cropped_reference_gate_uses_the_full_storage_origin() {
     let frame = info(FRAME_WIDTH, FRAME_HEIGHT);
     let reference = cropped_info(FRAME_WIDTH, FRAME_HEIGHT, 8);
     let block = placed(64, 64, 0);
@@ -185,13 +186,13 @@ fn a_cropped_reference_gate_uses_storage_row_coordinates() {
             block.block.mv,
             ListReach::default(),
         ),
-        Some(144),
-        "the visible-local 136-row prediction starts eight storage rows down"
+        Some(136),
+        "the output crop does not change reference sample coordinates"
     );
 }
 
 #[test]
-fn a_cropped_reference_gate_offsets_the_bawp_template() {
+fn a_cropped_reference_gate_keeps_the_bawp_template_origin() {
     let frame = info(FRAME_WIDTH, FRAME_HEIGHT);
     let reference = cropped_info(FRAME_WIDTH, FRAME_HEIGHT, 8);
     let block = placed(64, 8, 8 * 40);
@@ -209,8 +210,8 @@ fn a_cropped_reference_gate_offsets_the_bawp_template() {
                 ..ListReach::default()
             },
         ),
-        Some(208),
-        "the visible-local BAWP bound starts eight storage rows down"
+        Some(200),
+        "the output crop does not change BAWP sample coordinates"
     );
 }
 
@@ -412,5 +413,17 @@ fn a_bawp_list_bound_covers_the_template_below_its_reference_position() {
     assert!(
         moved.is_some_and(|rows| rows >= 120),
         "the template must not be dropped when the subpel read is shorter"
+    );
+}
+
+#[test]
+fn a_reference_gate_waits_for_padded_reconstruction_rows() {
+    let frame = info(480, 270)
+        .with_storage_luma_size(PlaneSize::new(480, 272).expect("storage size"))
+        .expect("storage bounds");
+    let block = placed(256, 16, 0);
+    assert_eq!(
+        published_rows(frame, &block, Mv::ZERO, ListReach::default()),
+        Some(272)
     );
 }

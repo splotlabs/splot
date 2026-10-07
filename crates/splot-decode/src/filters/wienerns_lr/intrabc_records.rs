@@ -908,7 +908,8 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
         frame_height,
         frame_width,
         frame_height,
-    );
+    )
+    .with_reference_storage(domain.storage, 0, 0);
     Ok(IntrabcPredictionGeometry {
         scaling,
         fractional,

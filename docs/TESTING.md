@@ -13,6 +13,10 @@
    output hashes, but CI runs only `splot` against the committed hashes.
 6. Local differential testing: AVM is the oracle, but live AVM runs are local and
    opt-in.
+7. External streams: CI fetches pinned dav2d test data and EwoutH/AV2 samples.
+   `scripts/check-external-vectors.py` checks complete decoded output against
+   recorded hashes. `tests/conformance/ewouth-av2.toml` records AVM SHA-256
+   hashes and output sizes for all nine samples at 1 and 8 threads.
 
 ## Commands
 

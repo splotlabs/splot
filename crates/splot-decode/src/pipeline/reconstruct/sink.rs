@@ -258,7 +258,7 @@ pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
         T::default(),
     )?;
     predict(workspace, false, &mut prediction)?;
-    if blend_secondary {
+    if blend_secondary && (block_size.width() != 4 || block_size.height() != 4) {
         let mut secondary = workspace.take_intra_prediction_buffer(
             IntraPredictionScratchBuffer::Secondary,
             PlaneId::Y,

@@ -8,6 +8,63 @@ use splot_core::symbol::Symbol;
 use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT_LOG2};
 use splot_recon::{BitDepth, DpcmDirection};
 
+#[test]
+fn cctx_prediction_clips_frame_edges_and_preserves_band_bounds() -> crate::Result<()> {
+    use splot_recon::{CurrentFrameSurface, PixelFormat, PlaneRect, ReconError};
+
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+        8,
+        6,
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+    )?;
+    workspace.write_rect(PlaneId::U, PlaneRect::new(2, 1, 2, 2)?, &[7, 8, 9, 10], 2)?;
+    let mut prediction = vec![255; 16];
+    read_cctx_prediction(
+        &CurrentFrameSurface::Frame(&mut workspace),
+        PlaneId::U,
+        PlaneRect::new(2, 1, 4, 4)?,
+        &mut prediction,
+    )?;
+    assert_eq!(
+        prediction,
+        [7, 8, 0, 0, 9, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+
+    assert!(matches!(
+        read_cctx_prediction(
+            &CurrentFrameSurface::Frame(&mut workspace),
+            PlaneId::U,
+            PlaneRect::new(4, 1, 4, 4)?,
+            &mut prediction,
+        ),
+        Err(ReconError::WorkspaceRectOutOfBounds { .. })
+    ));
+
+    let mut bands =
+        workspace.rect_surfaces(&[PlaneRect::new(0, 0, 8, 2)?, PlaneRect::new(0, 2, 8, 4)?])?;
+    read_cctx_prediction(
+        &CurrentFrameSurface::Rect(&mut bands[1]),
+        PlaneId::U,
+        PlaneRect::new(2, 1, 4, 4)?,
+        &mut prediction,
+    )?;
+    assert_eq!(
+        prediction,
+        [7, 8, 0, 0, 9, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+    assert!(matches!(
+        read_cctx_prediction(
+            &CurrentFrameSurface::Rect(&mut bands[0]),
+            PlaneId::U,
+            PlaneRect::new(2, 0, 4, 4)?,
+            &mut prediction,
+        ),
+        Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
+    ));
+    Ok(())
+}
+
 impl GeneralIntraResidualPlan {
     fn plane_plan(&self, plane_id: PlaneId) -> Option<ResidualPlanePlan> {
         self.planes

@@ -110,65 +110,33 @@ jobs:
       - name: Verify upstream AVM corpus hashes
         env:
           TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
+        run: python3 scripts/check-external-vectors.py dav2d "$TEST_DATA_DIR"
+
+  ewouth-av2-samples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Clone pinned AV2 samples
+        env:
+          TEST_DATA_DIR: ${{ runner.temp }}/ewouth-av2
         run: |
-          python3 - <<'PY'
-          import hashlib
-          import os
-          import pathlib
-          import re
-          import subprocess
-          import tempfile
+          revision=$(python3 -c 'import tomllib; print(tomllib.load(open("tests/conformance/ewouth-av2.toml", "rb"))["revision"])')
+          git clone --no-checkout https://github.com/EwoutH/AV2.git "$TEST_DATA_DIR"
+          git -C "$TEST_DATA_DIR" checkout --detach "$revision"
 
-          root = pathlib.Path(os.environ["TEST_DATA_DIR"])
-          manifest = (root / "avm/meson.build").read_text()
-          pattern = re.compile(
-              r"\['([^']+)',\s*files\('([^']+)'\),\s*'([0-9a-f]{32})'\]"
-          )
-          entries = pattern.findall(manifest)
-          if not entries:
-              raise SystemExit("upstream AVM manifest contains no test entries")
+      - name: Build splot
+        run: cargo build --release -p splot-cli --locked
 
-          names = [name for name, _, _ in entries]
-          paths = [path for _, path, _ in entries]
-          if len(names) != len(set(names)):
-              raise SystemExit("upstream AVM manifest contains duplicate test names")
-          if len(paths) != len(set(paths)):
-              raise SystemExit("upstream AVM manifest contains duplicate test paths")
-
-          avm_root = root / "avm"
-          listed = set(paths)
-          present = {
-              path.relative_to(avm_root).as_posix()
-              for path in avm_root.rglob("*.obu")
-          }
-          missing = sorted(listed - present)
-          unlisted = sorted(present - listed)
-          if missing or unlisted:
-              raise SystemExit(
-                  f"upstream AVM manifest/file mismatch: missing={missing}, unlisted={unlisted}"
-              )
-
-          with tempfile.TemporaryDirectory() as temp:
-              for name, relative, expected in sorted(entries):
-                  output = pathlib.Path(temp) / f"{name}.raw"
-                  subprocess.run(
-                      [
-                          "target/release/splot",
-                          "decode",
-                          "--quiet",
-                          "--threads=1",
-                          "--output-format=raw",
-                          f"--output={output}",
-                          avm_root / relative,
-                      ],
-                      check=True,
-                  )
-                  actual = hashlib.md5(output.read_bytes(), usedforsecurity=False).hexdigest()
-                  if actual != expected:
-                      raise SystemExit(f"{name}: expected {expected}, got {actual}")
-                  print(f"{name}: {actual}")
-          print(f"verified all {len(entries)} upstream AVM streams")
-          PY
+      - name: Verify complete sample output against AVM hashes
+        env:
+          TEST_DATA_DIR: ${{ runner.temp }}/ewouth-av2
+        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR"
 
   # Advisories are informational because the database changes independently of PRs.
   supply-chain:

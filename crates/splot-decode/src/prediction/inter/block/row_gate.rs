@@ -351,15 +351,8 @@ fn block_published_rows(
 ) -> Option<u32> {
     let reference_size = reference.coded_luma_size();
     let frame_size = frame.coded_luma_size();
-    let mut rows = if reach.bawp == 0 {
-        0
-    } else {
-        let visible_y = u32::try_from(reference.visible_luma_rect().y()).unwrap_or(u32::MAX);
-        reach
-            .bawp
-            .saturating_add(visible_y)
-            .min(reference_size.height() as u32)
-    };
+    let storage_height = reference.storage_luma_size().height() as u32;
+    let mut rows = reach.bawp.min(storage_height);
     for (plane, sub_x, sub_y) in mc_planes(frame.pixel_format()) {
         if plane == PlaneId::V || (plane != PlaneId::Y && !predict_chroma) {
             continue;
@@ -376,7 +369,8 @@ fn block_published_rows(
             reference_size.height() as i32,
             frame_size.width() as i32,
             frame_size.height() as i32,
-        );
+        )
+        .with_reference_storage(reference.storage_luma_size(), sub_x, sub_y);
         let mut last = if reach.compound {
             compound_last_row(scaling.start_y, scaling.step_y, height, scaling.last_y)
         } else {
@@ -394,16 +388,8 @@ fn block_published_rows(
                 scaling.last_y,
             ));
         }
-        let plane_visible_y =
-            u32::try_from(reference.visible_luma_rect().y() >> sub_y).unwrap_or(u32::MAX);
-        let plane_rows = (last.max(0) as u32)
-            .saturating_add(1)
-            .saturating_add(plane_visible_y);
-        rows = rows.max(
-            plane_rows
-                .saturating_mul(1 << sub_y)
-                .min(reference_size.height() as u32),
-        );
+        let plane_rows = (last.max(0) as u32).saturating_add(1);
+        rows = rows.max(plane_rows.saturating_mul(1 << sub_y).min(storage_height));
     }
     Some(rows)
 }

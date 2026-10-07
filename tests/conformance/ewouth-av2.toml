@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+# CONF-PUBLIC-VECTORS. CI fetches these samples. No sample bytes are vendored.
+# Hash command: avmdec --rawvideo --summary --threads=1 -o OUTPUT INPUT
+# Frame counts come from the AVM summary, not the filenames.
+
+schema_version = 1
+source = "https://github.com/EwoutH/AV2"
+revision = "73aeca5d04c9bc47b202a3d2e66d07f9c7af4746"
+encoder_revision = "01803db6afa5a0616702a3814fc5934ab9e99adf"
+avm_revision = "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03"
+avm_version = "1.0.0-63-g3efe9fa8e"
+threads = [1, 8]
+
+[[stream]]
+path = "BlueSky_360p25_v2_qp110_600f.ivf"
+input_sha256 = "f7a0b3e33f4847fcd38782f4d1786b8f02382f915e65d59b36286982b628fabb"
+avm_raw_sha256 = "b769e0296e01f0f757268f809b3097325145666886fc5a880bf8f3b024e6b49c"
+raw_bytes = 44928000
+output_frames = 130
+
+[[stream]]
+path = "BlueSky_360p25_v2_qp160_600f.ivf"
+input_sha256 = "05a113f0c2719530b8e50ad907d4cbe737985adf42724dea625e48fd478357ab"
+avm_raw_sha256 = "4af10016b4e419f5e05a568f1beae014510a3a47029e9769bab5f05e16c4b24b"
+raw_bytes = 44928000
+output_frames = 130
+
+[[stream]]
+path = "BlueSky_360p25_v2_qp210_600f.ivf"
+input_sha256 = "e50a76d63a1ef07185b48ef0d818d2424ba562474551b1a1011edcdb81f12e60"
+avm_raw_sha256 = "d846c8def2bdae39ae8061df416180aab48b600e6bb4bec7e72ce15a55ea9162"
+raw_bytes = 44928000
+output_frames = 130
+
+[[stream]]
+path = "FourPeople_480x270_60_qp110_600f.ivf"
+input_sha256 = "2786f5a93cba921d3bd1781aba34aad5ebed89f53ca123f2e65a3824be42cdf5"
+avm_raw_sha256 = "1ba31f4b78e2f1a78b72e7be09d4d25e37ecfeb51a7c3f96b300eec652db5230"
+raw_bytes = 25272000
+output_frames = 130
+
+[[stream]]
+path = "FourPeople_480x270_60_qp160_600f.ivf"
+input_sha256 = "946efcd63c61418c8eef0b52f2def391b23bdaf35b3f79ce6ab952941ca36445"
+avm_raw_sha256 = "a0ee99cf7ac17a54d548c86bdcf802daf5f1f72725fa8de6528c6fed2c9dfcbe"
+raw_bytes = 25272000
+output_frames = 130
+
+[[stream]]
+path = "FourPeople_480x270_60_qp210_600f.ivf"
+input_sha256 = "e7fd3676044bd69a9b96e8702ffac88cb2e5f7735e131a659f522812c008a0f5"
+avm_raw_sha256 = "52c5d84c5a7de70cb346500fdee24764f5d1460f9915cfbc7056ac713946c130"
+raw_bytes = 25272000
+output_frames = 130
+
+[[stream]]
+path = "Vertical_Bayshore_270x480_2997_qp110_600f.ivf"
+input_sha256 = "fb138751d111b8869ddb4f64f7da454fcfbad5b5e244c935059229d343c3607d"
+avm_raw_sha256 = "b1e1fcf33c471d426f121ec1060d9c33695130d902d61d32339fdffb8a878d1c"
+raw_bytes = 25272000
+output_frames = 130
+
+[[stream]]
+path = "Vertical_Bayshore_270x480_2997_qp160_600f.ivf"
+input_sha256 = "42e3c6f0bdc751ece810b973b8553088775b15f7127174a464796b7fb686c91d"
+avm_raw_sha256 = "e38d53a4b81bcd4300ff821046e3f785e092d223cb51860bb60a006123897a55"
+raw_bytes = 25272000
+output_frames = 130
+
+[[stream]]
+path = "Vertical_Bayshore_270x480_2997_qp210_600f.ivf"
+input_sha256 = "49e815280e961ec9ba7b8a5634a89c12cbd4dca422102ea9ef8b1fd8024e2950"
+avm_raw_sha256 = "bba14544b3ffd0c208a7382b29f2ee788a2a8b7ed8fea7ce302bcaf70c5f313d"
+raw_bytes = 25272000
+output_frames = 130

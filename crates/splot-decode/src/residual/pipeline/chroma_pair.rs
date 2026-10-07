@@ -256,27 +256,17 @@ fn plane_rect(
 }
 
 fn read_plane_prediction<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+    workspace: &mut CurrentFrameWorkspace<T>,
     plane: ResidualPlanePlan,
     out: &mut Vec<T>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let (rect, width) = plane_rect(plane)?;
-    let expected = width.checked_mul(rect.height()).ok_or(
-        GeneralIntraResidualError::InvalidReconstructionState {
-            context: "CCTX prediction sample count",
-        },
+    let (rect, _) = plane_rect(plane)?;
+    read_cctx_prediction(
+        &splot_recon::CurrentFrameSurface::Frame(workspace),
+        plane.plane_id,
+        rect,
+        out,
     )?;
-    out.clear();
-    out.reserve(expected);
-    for row in workspace.rect_rows(plane.plane_id, rect)? {
-        out.extend_from_slice(row);
-    }
-    if out.len() != expected {
-        return Err(GeneralIntraResidualError::PredictionLength {
-            expected,
-            actual: out.len(),
-        });
-    }
     Ok(())
 }
 
@@ -287,5 +277,45 @@ fn write_plane_block<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let (rect, width) = plane_rect(plane)?;
     workspace.write_rect(plane.plane_id, rect, samples, width)?;
+    Ok(())
+}
+
+pub(crate) fn read_cctx_prediction<T: ReconSample>(
+    surface: &splot_recon::CurrentFrameSurface<'_, '_, T>,
+    plane: PlaneId,
+    rect: PlaneRect,
+    out: &mut Vec<T>,
+) -> splot_recon::Result<()> {
+    let storage = surface.plane_storage_size(plane)?;
+    if rect.x() >= storage.width() || rect.y() >= storage.height() {
+        return Err(splot_recon::ReconError::WorkspaceRectOutOfBounds {
+            plane,
+            storage,
+            rect,
+        });
+    }
+    let clipped = PlaneRect::new(
+        rect.x(),
+        rect.y(),
+        rect.width().min(storage.width() - rect.x()),
+        rect.height().min(storage.height() - rect.y()),
+    )?;
+    let rows = surface.rect_rows(plane, clipped)?;
+    let samples = rect.width().checked_mul(rect.height()).ok_or(
+        splot_recon::ReconError::ArithmeticOverflow {
+            context: "CCTX prediction sample count",
+        },
+    )?;
+    out.clear();
+    out.try_reserve_exact(samples).map_err(|_| {
+        splot_recon::ReconError::WorkspaceAllocationFailed {
+            plane,
+            context: "CCTX prediction samples",
+        }
+    })?;
+    out.resize(samples, T::default());
+    for (target, row) in out.chunks_exact_mut(rect.width()).zip(rows) {
+        target[..row.len()].copy_from_slice(row);
+    }
     Ok(())
 }

@@ -159,3 +159,19 @@ fn unscaled_fast_path_matches_general_equation() {
         }
     }
 }
+
+#[test]
+fn reference_storage_bounds_preserve_header_scaling() {
+    let scaling = derive_plane_scaling(3, 5, -7, 11, 1, 1, 270, 478, 320, 480);
+    let padded = scaling.with_reference_storage(PlaneSize::new(272, 480).unwrap(), 1, 1);
+    assert_eq!(padded.last_x, 135);
+    assert_eq!(padded.last_y, 239);
+    assert_eq!(
+        padded,
+        PlaneScaling {
+            last_x: 135,
+            last_y: 239,
+            ..scaling
+        }
+    );
+}

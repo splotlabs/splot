@@ -25,6 +25,9 @@ fn frame_decode_geometry_uses_av2_mi_rounding_and_motion_layout() {
     assert_eq!(geometry.mi_dimensions(), (14, 14));
     assert_eq!(geometry.motion_layout().width8(), 7);
     assert_eq!(geometry.motion_layout().height8(), 7);
+    assert_eq!(geometry.info().coded_luma_size().width(), 51);
+    assert_eq!(geometry.info().storage_luma_size().width(), 56);
+    assert_eq!(geometry.info().visible_luma_rect().width(), 51);
 }
 
 #[test]

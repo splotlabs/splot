@@ -86,7 +86,8 @@ impl FrameDecodeGeometry {
             pixel_format,
             PlaneSize::new(frame_size.width as usize, frame_size.height as usize)?,
             visible,
-        )?;
+        )?
+        .with_storage_luma_size(PlaneSize::new(mi_cols * 4, mi_rows * 4)?)?;
         let sb_h4 = block::frame_superblock_h4(partition.seq_sb_size(), frame_is_intra);
         let motion_layout = MotionFieldLayout::new(mi_rows, mi_cols, sb_h4)
             .ok_or(DecodeHeaderStateError::InvalidInterTileConstructionState)?;

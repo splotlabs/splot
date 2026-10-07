@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_recon::PlaneSize;
 use splot_recon::math::{round2_signed, round2_signed_i32};
 
 const REF_SCALE_SHIFT: u32 = 14;
@@ -24,6 +25,17 @@ pub(crate) struct PlaneScaling {
 impl PlaneScaling {
     pub(crate) const fn is_scaled(self) -> bool {
         self.scale_x != 1 << REF_SCALE_SHIFT || self.scale_y != 1 << REF_SCALE_SHIFT
+    }
+
+    pub(crate) fn with_reference_storage(
+        mut self,
+        luma_size: PlaneSize,
+        sub_x: u32,
+        sub_y: u32,
+    ) -> Self {
+        self.last_x = (luma_size.width().div_ceil(1 << sub_x) - 1) as i32;
+        self.last_y = (luma_size.height().div_ceil(1 << sub_y) - 1) as i32;
+        self
     }
 
     #[inline]
