@@ -470,9 +470,23 @@ impl<'a> FrameDeblock<'a> {
         let luma_bands = dimensions[0].map_or(0, |(_, height)| {
             height.div_ceil(VERTICAL_BAND_MI_ROWS * MI_SIZE)
         });
+        let parallel = self.plane_parallel
+            && splot_parallel::on_worker_pool()
+            && splot_parallel::current_pool_width() > 1;
         let mut jobs = Vec::new();
-        jobs.try_reserve(luma_bands.saturating_mul(3).saturating_add(3))
-            .map_err(|_| DeblockError::Workspace)?;
+        if parallel {
+            jobs.try_reserve(luma_bands.saturating_mul(3).saturating_add(3))
+                .map_err(|_| DeblockError::Workspace)?;
+        }
+        let this = &*self;
+        let mut submit = |job| {
+            if parallel {
+                jobs.push(job);
+                Ok(())
+            } else {
+                this.run_plane_job(job)
+            }
+        };
         for (plane, samples) in [Some(y), u, v].into_iter().enumerate() {
             let (Some(samples), Some((width, height))) = (samples, dimensions[plane]) else {
                 continue;
@@ -510,7 +524,7 @@ impl<'a> FrameDeblock<'a> {
                     continue;
                 }
                 let y_origin = band * band_rows;
-                jobs.push(PlaneJob {
+                submit(PlaneJob {
                     band: PlaneBand {
                         row_count: samples.len() / stride,
                         storage: PlaneRows { samples, stride },
@@ -526,11 +540,11 @@ impl<'a> FrameDeblock<'a> {
                         }),
                         None,
                     ],
-                });
+                })?;
             }
         }
         let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
-        if jobs.len() > 1 && self.plane_parallel && splot_parallel::on_worker_pool() {
+        if jobs.len() > 1 {
             jobs.into_par_iter().try_for_each(run)?;
         } else {
             jobs.into_iter().try_for_each(run)?;

@@ -142,6 +142,9 @@ pub(super) fn frame_is_output(core: &FrameHeaderCore) -> bool {
 pub(super) struct OutputScheduler {
     pub(super) pending: Vec<Option<(usize, u32)>>,
     pub(super) emitted: Vec<usize>,
+    /// The frames the last `refresh` or `on_immediate` released, kept so the
+    /// per-frame calls reuse one list.
+    newly: Vec<usize>,
     pub(super) emitted_count: usize,
     open_loop_active: bool,
     open_loop_order_hint: Option<u32>,
@@ -152,6 +155,7 @@ impl OutputScheduler {
         Self {
             pending: vec![None; num_slots],
             emitted: Vec::new(),
+            newly: Vec::new(),
             emitted_count: 0,
             open_loop_active: false,
             open_loop_order_hint: None,
@@ -190,29 +194,33 @@ impl OutputScheduler {
     pub(super) fn output_successive(&mut self, ordering: u32, newly: &mut Vec<usize>) {
         let mut target = ordering.saturating_add(1);
         loop {
-            let matches: Vec<usize> = self
-                .pending
-                .iter()
-                .flatten()
-                .filter(|(_, held)| *held == target)
-                .map(|(frame_index, _)| *frame_index)
-                .collect();
-            if matches.is_empty() {
+            let held = |(_, at): &&(usize, u32)| *at == target;
+            if !self.pending.iter().flatten().any(|slot| held(&slot)) {
                 return;
             }
-            for frame_index in matches {
+            while let Some(&(frame_index, _)) = self.pending.iter().flatten().find(held) {
                 self.emit(frame_index, newly);
             }
             target = target.saturating_add(1);
         }
     }
 
-    pub(super) fn on_immediate(&mut self, frame_index: usize, ordering: u32) -> Vec<usize> {
-        let mut newly = Vec::new();
-        self.flush_lower_than(ordering, &mut newly);
-        self.emit(frame_index, &mut newly);
-        self.output_successive(ordering, &mut newly);
-        newly
+    /// The frames the last [`Self::refresh`] or [`Self::on_immediate`] released.
+    pub(super) fn newly(&self) -> &[usize] {
+        &self.newly
+    }
+
+    pub(super) fn on_immediate(&mut self, frame_index: usize, ordering: u32) {
+        let mut newly = core::mem::take(&mut self.newly);
+        newly.clear();
+        self.immediate_into(frame_index, ordering, &mut newly);
+        self.newly = newly;
+    }
+
+    fn immediate_into(&mut self, frame_index: usize, ordering: u32, newly: &mut Vec<usize>) {
+        self.flush_lower_than(ordering, newly);
+        self.emit(frame_index, newly);
+        self.output_successive(ordering, newly);
     }
 
     pub(super) fn refresh(
@@ -222,8 +230,9 @@ impl OutputScheduler {
         ordering: u32,
         implicit: bool,
         is_key_or_switch: bool,
-    ) -> Vec<usize> {
-        let mut newly = Vec::new();
+    ) {
+        let mut newly = core::mem::take(&mut self.newly);
+        newly.clear();
         let mut first = true;
         for slot in 0..self.pending.len() {
             if (refresh_frame_flags >> slot) & 1 == 0 {
@@ -239,7 +248,7 @@ impl OutputScheduler {
                 .then_some((frame_index, ordering));
             first = false;
         }
-        newly
+        self.newly = newly;
     }
 
     pub(super) fn forget(&mut self, frame_index: usize) {
@@ -319,7 +328,7 @@ impl OutputScheduler {
             let Some((frame_index, ordering)) = next else {
                 break;
             };
-            newly.extend(self.on_immediate(frame_index, ordering));
+            self.immediate_into(frame_index, ordering, &mut newly);
         }
         for &slot in slots {
             if let Some(pending) = self.pending.get_mut(slot) {
@@ -703,7 +712,8 @@ mod tests {
     #[test]
     fn new_sequence_flushes_pending_output_and_recreates_slots() {
         let mut scheduler = OutputScheduler::new(2);
-        assert!(scheduler.refresh(0b11, 7, 5, true, false).is_empty());
+        scheduler.refresh(0b11, 7, 5, true, false);
+        assert!(scheduler.newly().is_empty());
 
         let flushed = scheduler.start_new_sequence(4);
 

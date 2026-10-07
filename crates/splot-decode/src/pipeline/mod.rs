@@ -959,7 +959,7 @@ where
     let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
-    let evicted = scheduler.refresh(
+    scheduler.refresh(
         key_update.refresh_frame_flags,
         0,
         key_hint,
@@ -971,7 +971,7 @@ where
         &frames,
         &scheduler,
         &mut emission_queue,
-        &evicted,
+        scheduler.newly(),
         &mut emit,
     )?;
     reference.update(0, &key_update, is_key_or_switch(&key_core));
@@ -990,13 +990,13 @@ where
         key_implicit,
     );
     if key_immediate && !scheduler.already_emitted(0) {
-        let emitted = scheduler.on_immediate(0, key_hint);
+        scheduler.on_immediate(0, key_hint);
         charge_emitted_outputs(
             options,
             &frames,
             &scheduler,
             &mut emission_queue,
-            &emitted,
+            scheduler.newly(),
             &mut emit,
         )?;
     }
@@ -1203,13 +1203,13 @@ where
                     true,
                     false,
                 );
-                let emitted = scheduler.on_immediate(frame_index, ordering);
+                scheduler.on_immediate(frame_index, ordering);
                 charge_emitted_outputs(
                     options,
                     &frames,
                     &scheduler,
                     &mut emission_queue,
-                    &emitted,
+                    scheduler.newly(),
                     &mut emit,
                 )?;
                 if !retain_decoded_frames {
@@ -1824,7 +1824,7 @@ where
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
                 let inter_key_or_switch = is_key_or_switch(&inter_core);
-                let evicted = scheduler.refresh(
+                scheduler.refresh(
                     inter_update.refresh_frame_flags,
                     frame_index,
                     inter_hint,
@@ -1836,7 +1836,7 @@ where
                     &frames,
                     &scheduler,
                     &mut emission_queue,
-                    &evicted,
+                    scheduler.newly(),
                     &mut emit,
                 )?;
                 reference.update(frame_index, &inter_update, inter_key_or_switch);
@@ -1854,13 +1854,13 @@ where
                     inter_implicit,
                 );
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
-                    let emitted = scheduler.on_immediate(frame_index, inter_hint);
+                    scheduler.on_immediate(frame_index, inter_hint);
                     charge_emitted_outputs(
                         options,
                         &frames,
                         &scheduler,
                         &mut emission_queue,
-                        &emitted,
+                        scheduler.newly(),
                         &mut emit,
                     )?;
                 }
@@ -2096,7 +2096,7 @@ where
                 let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);
                 let key_immediate = key_core.immediate_output_frame == Some(true);
-                let evicted = scheduler.refresh(
+                scheduler.refresh(
                     key_update.refresh_frame_flags,
                     frame_index,
                     key_hint,
@@ -2108,7 +2108,7 @@ where
                     &frames,
                     &scheduler,
                     &mut emission_queue,
-                    &evicted,
+                    scheduler.newly(),
                     &mut emit,
                 )?;
                 reference.update(frame_index, &key_update, is_key_or_switch(&key_core));
@@ -2127,13 +2127,13 @@ where
                     key_implicit,
                 );
                 if key_immediate && !scheduler.already_emitted(frame_index) {
-                    let emitted = scheduler.on_immediate(frame_index, key_hint);
+                    scheduler.on_immediate(frame_index, key_hint);
                     charge_emitted_outputs(
                         options,
                         &frames,
                         &scheduler,
                         &mut emission_queue,
-                        &emitted,
+                        scheduler.newly(),
                         &mut emit,
                     )?;
                 }

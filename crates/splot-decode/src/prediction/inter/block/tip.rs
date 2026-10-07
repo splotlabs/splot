@@ -963,12 +963,9 @@ fn publish_units_by_band<T: ReconSample>(
             band.bottom - band.top,
         )?);
     }
-    let surfaces = workspace.rect_surfaces(band_rects)?;
-    surfaces
-        .into_par_iter()
-        .zip(bands.par_iter())
-        .try_for_each(|(mut surface, band)| -> Result<()> {
-            let mut sink = mc::WorkspaceSink::Rect(&mut surface);
+    let publish_band =
+        |surface: &mut splot_recon::CurrentFrameRect<'_, T>, band: &PublishedBand| -> Result<()> {
+            let mut sink = mc::WorkspaceSink::Rect(surface);
             let members = units
                 .get(band.first_unit..band.first_unit.saturating_add(band.units))
                 .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
@@ -990,7 +987,22 @@ fn publish_units_by_band<T: ReconSample>(
                 metadata.publish(samples, &mut sink)?;
             }
             Ok(())
+        };
+    if splot_parallel::current_pool_width() <= 1 {
+        let mut next_band = bands.iter();
+        workspace.for_each_rect_surface(band_rects, |mut surface| {
+            let band = next_band
+                .next()
+                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+            publish_band(&mut surface, band)
         })?;
+    } else {
+        workspace
+            .rect_surfaces(band_rects)?
+            .into_par_iter()
+            .zip(bands.par_iter())
+            .try_for_each(|(mut surface, band)| publish_band(&mut surface, band))?;
+    }
     release_unit_metadata(scratch);
     Ok(())
 }
