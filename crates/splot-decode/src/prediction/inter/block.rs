@@ -178,6 +178,9 @@ impl InterFilterInputs {
     }
 }
 
+/// Record sets kept for frames in flight; a set beyond this many is freed.
+const MAX_SPARE_FILTER_RECORDS: usize = 16;
+
 #[derive(Default)]
 pub(crate) struct InterDecodeScratch<T: ReconSample> {
     /// Held in an `Option` so taking it for a frame leaves nothing behind:
@@ -238,7 +241,9 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         &mut self,
         records: crate::filters::wienerns_lr::FrameFilterRecords,
     ) {
-        self.frame_filter_records.push(records);
+        if self.frame_filter_records.len() < MAX_SPARE_FILTER_RECORDS {
+            self.frame_filter_records.push(records);
+        }
     }
 }
 

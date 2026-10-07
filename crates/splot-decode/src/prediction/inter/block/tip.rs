@@ -988,38 +988,28 @@ fn publish_units_by_band<T: ReconSample>(
             }
             Ok(())
         };
-    if splot_parallel::current_pool_width() <= 1 {
-        let mut next_band = bands.iter();
-        workspace.for_each_rect_surface(band_rects, |mut surface| {
-            let band = next_band
-                .next()
-                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-            publish_band(&mut surface, band)
-        })?;
-    } else {
-        let publish_slot =
-            |slot: &mut Option<(splot_recon::CurrentFrameRect<'_, T>, &PublishedBand)>| {
-                slot.as_mut()
-                    .map_or(Ok(()), |(surface, band)| publish_band(surface, band))
-            };
-        let mut slots: [Option<_>; 32] = core::array::from_fn(|_| None);
-        let mut filled = 0;
-        let mut next_band = bands.iter();
-        workspace.for_each_rect_surface(band_rects, |surface| {
-            let band = next_band
-                .next()
-                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-            slots[filled] = Some((surface, band));
-            filled += 1;
-            if filled == slots.len() {
-                splot_parallel::join_each(&mut slots, &publish_slot)?;
-                slots.fill_with(|| None);
-                filled = 0;
-            }
-            Ok::<(), crate::DecodeError>(())
-        })?;
-        splot_parallel::join_each(&mut slots[..filled], &publish_slot)?;
-    }
+    let publish_slot =
+        |slot: &mut Option<(splot_recon::CurrentFrameRect<'_, T>, &PublishedBand)>| {
+            slot.as_mut()
+                .map_or(Ok(()), |(surface, band)| publish_band(surface, band))
+        };
+    let mut slots: [Option<_>; 32] = core::array::from_fn(|_| None);
+    let mut filled = 0;
+    let mut next_band = bands.iter();
+    workspace.for_each_rect_surface(band_rects, |surface| {
+        let band = next_band
+            .next()
+            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+        slots[filled] = Some((surface, band));
+        filled += 1;
+        if filled == slots.len() {
+            splot_parallel::join_each(&mut slots, &publish_slot)?;
+            slots.fill_with(|| None);
+            filled = 0;
+        }
+        Ok::<(), crate::DecodeError>(())
+    })?;
+    splot_parallel::join_each(&mut slots[..filled], &publish_slot)?;
     release_unit_metadata(scratch);
     Ok(())
 }

@@ -419,15 +419,6 @@ impl<T: ReconSample> SharedFrame<T> {
         }
     }
 
-    /// Takes the frame back when this is its last handle.
-    ///
-    /// Returns `None` while any other handle is still sharing the storage, so a
-    /// caller reclaiming a frame's buffers cannot take them from a live reader.
-    #[must_use]
-    pub fn into_frame(self) -> Option<DecodedFrame<T>> {
-        Arc::into_inner(self.inner)
-    }
-
     /// Returns the number of live handles sharing this frame storage.
     pub fn handle_count(&self) -> usize {
         Arc::strong_count(&self.inner)

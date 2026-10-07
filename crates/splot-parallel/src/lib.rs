@@ -40,7 +40,7 @@ pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;
 pub use pool::{
     PoolProgressSnapshot, TaskScope, WorkerPool, assist_pool_once, assist_pool_or_park,
-    current_pool_width, join, join_each, on_worker_pool, pool_progress_snapshot, ready_task_scope,
+    current_pool_width, join_each, on_worker_pool, pool_progress_snapshot, ready_task_scope,
 };
 pub use thread_count::ThreadCount;
 pub use watermark::WatermarkCell;

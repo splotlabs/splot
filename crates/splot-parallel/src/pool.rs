@@ -283,7 +283,7 @@ pub fn assist_pool_once() -> bool {
 ///
 /// Unlike [`ready_task_scope`], this allocates nothing: `b` waits on the
 /// caller's stack until a worker steals it or the caller runs it itself.
-pub fn join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
+fn join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
 where
     A: FnOnce() -> RA + Send,
     B: FnOnce() -> RB + Send,
@@ -296,7 +296,7 @@ where
     }
 }
 
-/// Runs `each` on every item, halving the slice across the pool with [`join`].
+/// Runs `each` on every item, halving the slice across the pool with stack-held joins.
 ///
 /// # Errors
 /// Returns the first error in slice order.
