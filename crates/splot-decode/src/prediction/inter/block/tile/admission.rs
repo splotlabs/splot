@@ -909,6 +909,10 @@ impl<'a, 'c: 'a, T: ReconSample> splot_parallel::Task<'a> for BatchJob<'a, 'c, T
     }
 }
 
+/// Parses one tile and reconstructs its batches.
+///
+/// A lone worker runs each admitted batch job at once and in order, so once
+/// every reference row is settled it runs them directly and builds no scheduler.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_ordinary_tile<T: ReconSample>(
     parser: &mut TileParser<'_>,
@@ -955,14 +959,19 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         context,
         row_buffers,
     };
-    let scheduler: AdmissionScheduler<'_, BatchJob<'_, '_, T>> = AdmissionScheduler::new();
     let pool_width = splot_parallel::current_pool_width();
+    let inline = pool_width <= 1 && row_gate.is_ready();
+    let scheduler: Option<AdmissionScheduler<'_, BatchJob<'_, '_, T>>> =
+        (!inline).then(AdmissionScheduler::new);
     let admission_window = if pool_width > 1 {
         pool_width.saturating_sub(1).saturating_mul(3)
     } else {
         1
     };
-    let mut references_settled = false;
+    let mut references_settled = inline;
+    if inline && let Err(value) = row_gate.wait() {
+        record_first_error(&error, value);
+    }
     let mut submitted_batches = 0usize;
     let mut reached_last = false;
     let parse_result = splot_parallel::ready_task_scope(|scope| {
@@ -1012,6 +1021,24 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             if let Some(slot) = shared.pending.lock().get_mut(batch_index) {
                 *slot = Some(ready);
             }
+            let Some(scheduler) = scheduler.as_ref() else {
+                for stage in [BatchStage::Precompute, BatchStage::Commit] {
+                    let job = BatchJob {
+                        shared: &shared,
+                        index: batch_index,
+                        stage,
+                    };
+                    match stage {
+                        BatchStage::Precompute => job.precompute(),
+                        BatchStage::Commit => job.commit(),
+                    }
+                }
+                submitted_batches = batch_index.saturating_add(1);
+                if batch_last {
+                    break;
+                }
+                continue;
+            };
             scheduler.submit_iter(
                 scope,
                 (batch_index as u64).saturating_mul(4).saturating_add(1),
@@ -1090,7 +1117,9 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                     record_first_error(&error, value);
                 }
             }
-            scheduler.admit_ready(scope);
+            if let Some(scheduler) = scheduler.as_ref() {
+                scheduler.admit_ready(scope);
+            }
             if terminal.is_none_or(CompletionCell::is_set) {
                 break;
             }
@@ -1103,7 +1132,9 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             splot_parallel::assist_pool_or_park(&progress);
         }
     })?;
-    let scheduler_result = scheduler.finish();
+    let scheduler_result = scheduler
+        .as_ref()
+        .map_or(Ok(()), AdmissionScheduler::finish);
     drop(scheduler);
     if let Some(error) = error.into_inner() {
         return Err(error);

@@ -339,7 +339,11 @@ impl TemporalMotionField {
         match &mut self.storage {
             TemporalMotionStorage::Bands(bands) => bands.clear(),
             TemporalMotionStorage::Contiguous(_) => {
-                self.storage = TemporalMotionStorage::Bands(Vec::new());
+                if let TemporalMotionStorage::Contiguous(cells) =
+                    core::mem::replace(&mut self.storage, TemporalMotionStorage::Bands(Vec::new()))
+                {
+                    crate::support::reusable_scratch::recycle_pooled_vec(cells);
+                }
             }
         }
     }
