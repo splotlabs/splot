@@ -49,6 +49,13 @@ pub(crate) const CCSO_INPUT_INTERVAL: u32 = 3;
 /// conformance bound is `1 << ccso_max_band_log2 <= CCSO_BAND_NUM`.
 pub const CCSO_BAND_NUM: u32 = 64;
 
+/// The longest `ccso_offset_idx` table the § 5.18.7.12 syntax can code: `f(3)` lets
+/// `ccso_bo_only` reach `maxBand = 1 << 7` with `maxEdgeInterval = 1`.
+pub const MAX_CCSO_OFFSETS: usize = 128;
+
+/// One plane's `ccso_offset_idx` table, held inline.
+pub type CcsoOffsets = crate::tile::InlineVec<u8, MAX_CCSO_OFFSETS>;
+
 /// `CCSO_Quant_Sz[4][4]` (AV2 § 7, mirror 07-decoding-process.md:12097): the CCSO
 /// quantization step looked up by `[ccso_scale_idx][ccso_quant_idx]`; a step of `0`
 /// suppresses the `ccso_edge_clf` read (§ 5.18.7.12, mirror :7552).
@@ -635,7 +642,7 @@ pub struct CcsoPlaneParams {
     /// `maxEdgeInterval * maxEdgeInterval * maxBand`). Empty when `ccso_planes[plane] == 0`
     /// (no offsets are coded). These were previously read and discarded; they are surfaced so
     /// the § 5.18.7.12 writer can reproduce them byte-exactly.
-    pub ccso_offset_idx: Vec<u8>,
+    pub ccso_offset_idx: CcsoOffsets,
 }
 
 /// Parsed `ccso_params()` (AV2 v1.0.0 § 5.18.7.12) on the intra path.
@@ -779,9 +786,13 @@ fn parse_ccso_params_with_references(
             let max_band = 1u32 << u32::from(ccso_max_band_log2);
 
             let offset_count = (max_edge_interval * max_edge_interval * max_band) as usize;
-            let mut ccso_offset_idx = Vec::with_capacity(offset_count);
+            let mut ccso_offset_idx = CcsoOffsets::default();
             for _ in 0..offset_count {
-                ccso_offset_idx.push(read_tu(reader, 7)? as u8);
+                ccso_offset_idx.push(read_tu(reader, 7)? as u8).ok_or(
+                    crate::error::Error::Unimplemented {
+                        feature: "ccso_offset_idx_count",
+                    },
+                )?;
             }
 
             plane_params.ccso_bo_only = Some(ccso_bo_only);
@@ -1216,7 +1227,7 @@ mod tests {
         assert_eq!(params.planes[0].ccso_ext_filter, Some(0));
         assert_eq!(params.planes[0].ccso_edge_clf, Some(false));
         assert_eq!(params.planes[0].ccso_max_band_log2, Some(0));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0]);
         assert!(!params.planes[1].ccso_planes);
         assert!(params.planes[1].ccso_offset_idx.is_empty());
     }
@@ -1239,7 +1250,7 @@ mod tests {
         let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 1).unwrap();
         assert_eq!(params.planes.len(), 3);
         assert_eq!(params.planes[0].ccso_bo_only, Some(true));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0]);
         assert_eq!(params.planes[0].ccso_ref_idx, None);
     }
 
@@ -1281,7 +1292,7 @@ mod tests {
         let params = parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 3).unwrap();
         assert_eq!(params.planes.len(), 3);
         assert_eq!(params.planes[0].ccso_ref_idx, Some(2));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0]);
     }
 
     #[test]
@@ -1307,7 +1318,7 @@ mod tests {
         assert_eq!(params.planes[0].ccso_scale_idx, Some(1));
         assert_eq!(params.planes[0].ccso_ext_filter, Some(5));
         assert_eq!(params.planes[0].ccso_edge_clf, Some(true));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![1, 1, 1, 1]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [1, 1, 1, 1]);
     }
 
     #[test]
@@ -1329,7 +1340,7 @@ mod tests {
         let mut r = reader(&data);
         let params = parse_ccso_params(&mut r, false, 3, &ccso_enabled()).unwrap();
         assert_eq!(params.planes[0].ccso_edge_clf, Some(false));
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0u8; 9]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0u8; 9]);
     }
 
     #[test]
@@ -1349,7 +1360,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         let params = parse_ccso_params(&mut r, false, 3, &ccso_enabled()).unwrap();
-        assert_eq!(params.planes[0].ccso_offset_idx, vec![0, 1, 2, 7]);
+        assert_eq!(params.planes[0].ccso_offset_idx[..], [0, 1, 2, 7]);
     }
 
     #[test]

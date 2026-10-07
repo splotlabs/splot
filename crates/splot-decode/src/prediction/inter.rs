@@ -1902,7 +1902,7 @@ fn resolve_ccso_reference_reuse(
         plane.ccso_ext_filter = ref_plane.ccso_ext_filter;
         plane.ccso_edge_clf = ref_plane.ccso_edge_clf;
         plane.ccso_max_band_log2 = ref_plane.ccso_max_band_log2;
-        plane.ccso_offset_idx.clone_from(&ref_plane.ccso_offset_idx);
+        plane.ccso_offset_idx = ref_plane.ccso_offset_idx;
     }
     Ok(())
 }

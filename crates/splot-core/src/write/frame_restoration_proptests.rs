@@ -251,7 +251,8 @@ mod proptests {
                         ccso_ext_filter,
                         ccso_edge_clf,
                         ccso_max_band_log2,
-                        ccso_offset_idx,
+                        ccso_offset_idx: crate::headers::frame::CcsoOffsets::from_iter_checked(ccso_offset_idx)
+                            .expect("proptest offset count is bounded"),
                     },
                 );
             let planes = crate::tile::InlineVec::from_iter_checked(planes)

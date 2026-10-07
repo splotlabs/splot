@@ -697,7 +697,7 @@ fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
         ccso_ext_filter: None,
         ccso_edge_clf: None,
         ccso_max_band_log2: None,
-        ccso_offset_idx: Vec::new(),
+        ccso_offset_idx: splot_core::headers::frame::CcsoOffsets::default(),
     };
     core.ccso_params
         .as_mut()
@@ -1590,7 +1590,7 @@ fn ras_slot_conformance_precedes_ccso_reference_reuse() {
             ccso_ext_filter: None,
             ccso_edge_clf: None,
             ccso_max_band_log2: None,
-            ccso_offset_idx: Vec::new(),
+            ccso_offset_idx: splot_core::headers::frame::CcsoOffsets::default(),
         });
     let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
 
