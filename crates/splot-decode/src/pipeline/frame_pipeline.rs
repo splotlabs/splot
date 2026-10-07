@@ -567,8 +567,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ParkedTipOutput<'_, T> {
         if let Some(buffers) = progress.buffers() {
             scratch.set_decode_buffers(buffers);
         }
-        // A TIP output frame is never filtered, so the workspace its pending
-        // slot opened for the filter phase is free to reconstruct into.
         let planes = progress
             .take_unfiltered_planes()
             .unwrap_or_else(|| scratch.reclaim_retired_planes());
