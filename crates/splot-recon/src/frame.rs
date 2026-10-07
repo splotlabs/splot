@@ -210,7 +210,7 @@ impl<T: ReconSample> DecodedFrame<T> {
     /// `info` and the AV2 § 6.4.1 subsampling facts for its pixel format.
     ///
     /// # Errors
-    /// Returns a [`ReconError`] if plane presence, visible plane sizes, sample
+    /// Returns a [`ReconError`] if plane presence, storage or visible sizes, sample
     /// type, or sample ranges do not match the requested decoded frame format.
     pub fn try_new(info: DecodedFrameInfo, planes: FramePlanes<T>) -> Result<Self> {
         validate_sample_type::<T>(info.bit_depth)?;
@@ -240,6 +240,23 @@ impl<T: ReconSample> DecodedFrame<T> {
                 validate_plane_size(PlaneId::V, chroma_visible_size, v_plane.visible_size())?;
                 validate_plane_samples(PlaneId::U, u_plane, info.bit_depth.max_sample())?;
                 validate_plane_samples(PlaneId::V, v_plane, info.bit_depth.max_sample())?;
+            }
+        }
+
+        let chroma_storage = info.pixel_format.chroma_size(info.storage_luma_size)?;
+        for (plane, expected) in [
+            (PlaneId::Y, Some(info.storage_luma_size)),
+            (PlaneId::U, chroma_storage),
+            (PlaneId::V, chroma_storage),
+        ] {
+            if let (Some(expected), Some(actual)) = (expected, planes.plane(plane))
+                && expected != actual.storage_size()
+            {
+                return Err(ReconError::PlaneStorageSizeMismatch {
+                    plane,
+                    expected,
+                    actual: actual.storage_size(),
+                });
             }
         }
 
@@ -551,6 +568,50 @@ mod tests {
         assert_eq!(frame.output_index().get(), 3);
         assert_eq!(frame.u().map(Plane::visible_size), Some(size(3, 2)));
         assert_eq!(frame.v().map(Plane::visible_size), Some(size(3, 2)));
+    }
+
+    #[test]
+    fn supplied_planes_must_match_declared_reconstruction_storage() {
+        let info = info(
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            size(4, 4),
+            rect(0, 0, 4, 4),
+        )
+        .with_storage_luma_size(size(8, 8))
+        .unwrap();
+        for mismatch in [None, Some(PlaneId::Y), Some(PlaneId::U), Some(PlaneId::V)] {
+            let plane = |id| {
+                let visible = if id == PlaneId::Y { 4 } else { 2 };
+                let storage = if mismatch == Some(id) {
+                    visible
+                } else {
+                    visible * 2
+                };
+                Plane::from_vec(
+                    size(storage, storage),
+                    storage,
+                    rect(0, 0, visible, visible),
+                    vec![0_u8; storage * storage],
+                )
+                .unwrap()
+            };
+            let frame = DecodedFrame::try_new(
+                info,
+                FramePlanes::new(
+                    plane(PlaneId::Y),
+                    Some(plane(PlaneId::U)),
+                    Some(plane(PlaneId::V)),
+                ),
+            );
+            if let Some(plane) = mismatch {
+                assert!(matches!(frame, Err(ReconError::PlaneStorageSizeMismatch {
+                    plane: actual_plane, expected, actual,
+                }) if actual_plane == plane && expected.width() == actual.width() * 2));
+            } else {
+                assert_eq!(frame.unwrap().info().storage_luma_size(), size(8, 8));
+            }
+        }
     }
 
     #[test]

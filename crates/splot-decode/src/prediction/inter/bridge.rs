@@ -41,6 +41,18 @@ pub(crate) fn reconstruct<T: ReconSample>(
         }
     })?;
     let luma_size = PlaneSize::new(width, height)?;
+    let storage_width =
+        width
+            .checked_next_multiple_of(8)
+            .ok_or(splot_recon::ReconError::ArithmeticOverflow {
+                context: "bridge storage width",
+            })?;
+    let storage_height =
+        height
+            .checked_next_multiple_of(8)
+            .ok_or(splot_recon::ReconError::ArithmeticOverflow {
+                context: "bridge storage height",
+            })?;
     visible.ensure_within(luma_size)?;
     let reference_info = reference.info();
     let info = DecodedFrameInfo::new(
@@ -49,13 +61,14 @@ pub(crate) fn reconstruct<T: ReconSample>(
         reference_info.pixel_format(),
         luma_size,
         visible,
-    )?;
+    )?
+    .with_storage_luma_size(PlaneSize::new(storage_width, storage_height)?)?;
     let mut workspace = CurrentFrameWorkspace::new_recycled(info)?; // the § 7.23 copy below covers the whole frame rect
     motion_compensate_inter_block_into(
         &mut WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::single(
             reference,
-            McBlockRect::from_luma_rect(0, 0, width, height),
+            McBlockRect::from_luma_rect(0, 0, storage_width, storage_height),
             Mv::ZERO,
             InterpolationFilter::EightTapSharp,
         )
@@ -101,7 +114,55 @@ pub(crate) fn motion_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use splot_recon::{BitDepth, FramePlanes, PixelFormat, Plane};
+    use splot_recon::{BitDepth, FramePlanes, PixelFormat, Plane, PlaneId};
+
+    #[test]
+    fn bridge_reconstruction_preserves_mi_padding_for_later_references() -> Result<()> {
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            PlaneSize::new(10, 14)?,
+            PlaneRect::new(0, 0, 10, 14)?,
+        )?
+        .with_storage_luma_size(PlaneSize::new(16, 16)?)?;
+        let mut source = CurrentFrameWorkspace::new(info, 0u8)?;
+        for (plane, side) in [(PlaneId::Y, 16), (PlaneId::U, 8), (PlaneId::V, 8)] {
+            let samples: Vec<u8> = (0..side * side).map(|i| (i % 251) as u8).collect();
+            source.write_rect(plane, PlaneRect::new(0, 0, side, side)?, &samples, side)?;
+        }
+        let source = source.freeze()?;
+        let bridge = reconstruct(
+            ReferenceSamples::settled(&source),
+            FrameSize::new(10, 14),
+            info.visible_luma_rect(),
+            1,
+            ByteOffset::new(0),
+        )?;
+        assert_eq!(bridge.coded_luma_size(), info.coded_luma_size());
+        assert_eq!(bridge.info().storage_luma_size(), info.storage_luma_size());
+        assert_eq!(bridge.info().visible_luma_rect(), info.visible_luma_rect());
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            assert_eq!(bridge.plane(plane), source.plane(plane));
+        }
+
+        let from_source = reconstruct(
+            ReferenceSamples::settled(&source),
+            FrameSize::new(8, 8),
+            PlaneRect::new(0, 0, 8, 8)?,
+            2,
+            ByteOffset::new(0),
+        )?;
+        let from_bridge = reconstruct(
+            ReferenceSamples::settled(&bridge),
+            FrameSize::new(8, 8),
+            PlaneRect::new(0, 0, 8, 8)?,
+            2,
+            ByteOffset::new(0),
+        )?;
+        assert_eq!(from_bridge, from_source);
+        Ok(())
+    }
 
     #[test]
     fn bridge_reconstruction_scales_the_selected_reference() -> Result<()> {
@@ -133,7 +194,8 @@ mod tests {
 
         assert_eq!(bridge.output_index(), OutputIndex::new(11));
         assert_eq!(bridge.coded_luma_size(), PlaneSize::new(2, 3)?);
-        assert_ne!(bridge.y().samples(), &[0, 1, 4, 5, 8, 9]);
+        let visible: Vec<_> = bridge.y().visible_rows().flatten().copied().collect();
+        assert_ne!(visible, &[0, 1, 4, 5, 8, 9]);
         Ok(())
     }
 }

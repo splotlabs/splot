@@ -127,6 +127,16 @@ pub enum ReconError {
         /// Actual visible size.
         actual: PlaneSize,
     },
+    /// A plane's storage size does not match the decoded-frame metadata.
+    #[error("plane {} storage size mismatch: expected {}x{}, got {}x{}", .plane.name(), .expected.width(), .expected.height(), .actual.width(), .actual.height())]
+    PlaneStorageSizeMismatch {
+        /// Plane whose storage size was checked.
+        plane: PlaneId,
+        /// Expected storage size.
+        expected: PlaneSize,
+        /// Actual storage size.
+        actual: PlaneSize,
+    },
     /// The sample storage type cannot represent the requested bit depth.
     #[error("sample type {sample_type} cannot represent {}-bit decoded output", .bit_depth.bits())]
     SampleTypeUnsupportedBitDepth {
