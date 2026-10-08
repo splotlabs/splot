@@ -1051,7 +1051,7 @@ fn current_cursor_retains_active_frame_level_wiener_ns_source_blocks() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.storage.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 5);
     assert_eq!(
         output.storage.active_source_blocks[0],
         WienerNsLrSourceBlock {
@@ -1066,7 +1066,7 @@ fn current_cursor_retains_active_frame_level_wiener_ns_source_blocks() {
             x: 0,
             y: 0,
             width: 256,
-            height: 4,
+            height: 56,
             luma_start_x: 0,
             luma_end_x: 255,
             luma_start_y: 0,
@@ -1085,7 +1085,7 @@ fn current_cursor_retains_active_frame_level_pc_wiener_source_blocks() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.storage.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 5);
     assert!(
         output
             .storage
@@ -1134,7 +1134,7 @@ fn active_lr_source_blocks_track_stripe_bounds() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.storage.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 5);
     let second_stripe = output
         .storage
         .active_source_blocks
@@ -1156,7 +1156,7 @@ fn active_lr_source_bounds_clamp_to_tile_when_loopfilters_across_tiles_disabled(
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.storage.active_source_blocks.len(), 32);
+    assert_eq!(output.storage.active_source_blocks.len(), 3);
     assert_eq!(output.storage.active_source_blocks[0].luma_end_x, 127);
     assert_eq!(output.storage.active_source_blocks[0].luma_end_y, 127);
 }

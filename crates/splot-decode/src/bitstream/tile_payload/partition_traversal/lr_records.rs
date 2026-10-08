@@ -113,11 +113,15 @@ impl WienerNsLrUnitActivity {
         block: WienerNsLrSourceBlock,
         limits: DecodeLimits,
     ) -> Result<(), TilePartitionTraversalError> {
-        if let Some(last) = self.active_source_blocks.last_mut()
-            && let Some(width) = last.merged_width_with(&block)
-        {
-            last.width = width;
-            return Ok(());
+        if let Some(last) = self.active_source_blocks.last_mut() {
+            if let Some(width) = last.merged_width_with(&block) {
+                last.width = width;
+                return Ok(());
+            }
+            if let Some(height) = last.merged_height_with(&block) {
+                last.height = height;
+                return Ok(());
+            }
         }
         let next_len = checked_add(
             "lr_active_source_blocks",
