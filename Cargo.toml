@@ -91,6 +91,9 @@ if_not_else = "allow"
 # LTO remains off to avoid its release build-time cost.
 [profile.release]
 overflow-checks = false
+# One unit keeps hot-kernel code generation independent of unrelated edits;
+# with 16 units the same decode source moved 1T time by about 0.5-0.9%.
+codegen-units = 1
 
 [profile.dev]
 overflow-checks = true
