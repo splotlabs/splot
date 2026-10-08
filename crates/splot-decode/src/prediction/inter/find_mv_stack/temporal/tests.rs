@@ -52,6 +52,7 @@ fn project_whole_temporal_motion_field(
 #[test]
 fn temporal_motion_block_stays_compact() {
     assert_eq!(size_of::<TemporalMotionBlock>(), 120);
+    assert_eq!(size_of::<ProjectedTemporalMotionCell>(), 8);
 }
 
 #[test]
@@ -527,14 +528,14 @@ fn backward_projection_preserves_source_to_current_direction() {
 
     assert_eq!(
         output.cell(8, 25),
-        Some(ProjectedTemporalMotionCell {
-            valid: true,
-            mv: Mv {
+        Some(ProjectedTemporalMotionCell::new(
+            true,
+            Mv {
                 row: -10,
                 col: -232,
             },
-            ref_offset: 5,
-        })
+            5
+        ))
     );
     assert!(!output.cell(8, 27).unwrap().valid);
     assert_eq!(output, project(4));
@@ -566,11 +567,7 @@ fn projection_records_zero_offset_reference() {
 
     assert_eq!(
         output.cell(0, 0),
-        Some(ProjectedTemporalMotionCell {
-            valid: true,
-            mv: Mv::ZERO,
-            ref_offset: 0,
-        })
+        Some(ProjectedTemporalMotionCell::new(true, Mv::ZERO, 0))
     );
 }
 
@@ -757,14 +754,14 @@ fn tip_temporal_scaling_clamps_to_the_reference_mv_domain() {
     assert!(context.prepare_tip(references, 1, 8, false).is_ok());
     assert_eq!(
         context.field.cell(0, 0),
-        Some(ProjectedTemporalMotionCell {
-            valid: true,
-            mv: Mv {
+        Some(ProjectedTemporalMotionCell::new(
+            true,
+            Mv {
                 row: -REFMVS_LIMIT,
                 col: REFMVS_LIMIT,
             },
-            ref_offset: 9,
-        })
+            9
+        ))
     );
 }
 
@@ -807,11 +804,7 @@ fn tip_newly_averaged_sample_keeps_the_scaled_reference_offset() {
     let cell = context.field.cell(0, 11).unwrap();
     assert_eq!(
         cell,
-        ProjectedTemporalMotionCell {
-            valid: true,
-            mv: Mv { row: 18, col: -36 },
-            ref_offset: 9,
-        }
+        ProjectedTemporalMotionCell::new(true, Mv { row: 18, col: -36 }, 9)
     );
 }
 

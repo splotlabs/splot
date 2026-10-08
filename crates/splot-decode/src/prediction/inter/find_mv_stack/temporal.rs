@@ -691,11 +691,39 @@ impl TemporalBlockMotion {
     }
 }
 
+/// One § 7.9.3 `MotionFieldMvs` cell in 8 bytes.
+///
+/// A projected vector is a decompressed saved vector (at most 2048 in
+/// magnitude) or is clipped to `REFMVS_LIMIT`, and an offset is an order-hint
+/// distance, so both fit `i16`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct ProjectedTemporalMotionCell {
     valid: bool,
-    mv: Mv,
-    ref_offset: i32,
+    ref_offset: i16,
+    mv: [i16; 2],
+}
+
+impl ProjectedTemporalMotionCell {
+    fn new(valid: bool, mv: Mv, ref_offset: i32) -> Self {
+        debug_assert!(i16::try_from(mv.row).is_ok() && i16::try_from(mv.col).is_ok());
+        debug_assert!(i16::try_from(ref_offset).is_ok());
+        Self {
+            valid,
+            ref_offset: ref_offset as i16,
+            mv: [mv.row as i16, mv.col as i16],
+        }
+    }
+
+    fn mv(self) -> Mv {
+        Mv {
+            row: i32::from(self.mv[0]),
+            col: i32::from(self.mv[1]),
+        }
+    }
+
+    fn ref_offset(self) -> i32 {
+        i32::from(self.ref_offset)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -763,11 +791,7 @@ impl ProjectedTemporalMotionField {
             return;
         };
         if let Some(cell) = self.cells.get_mut(index) {
-            *cell = ProjectedTemporalMotionCell {
-                valid,
-                mv,
-                ref_offset,
-            };
+            *cell = ProjectedTemporalMotionCell::new(valid, mv, ref_offset);
         }
     }
 }
@@ -1466,8 +1490,8 @@ impl TemporalMvContext {
         let cell = self.projected_cell(y8, x8)?;
         let projected = if cell.valid {
             [
-                project_mv(cell.mv, references.past_offset, references.ref_offset),
-                project_mv(cell.mv, references.future_offset, references.ref_offset),
+                project_mv(cell.mv(), references.past_offset, references.ref_offset),
+                project_mv(cell.mv(), references.future_offset, references.ref_offset),
             ]
         } else {
             [Mv::ZERO; 2]
@@ -1551,7 +1575,7 @@ impl TemporalMvContext {
             self.current_order_hint as i32,
             i32::try_from(dst_hint).ok()?,
         );
-        Some(project_mv(cell.mv, ref_to_dst, cell.ref_offset))
+        Some(project_mv(cell.mv(), ref_to_dst, cell.ref_offset()))
     }
 
     pub(super) fn derive_spatial_mv(
@@ -1717,17 +1741,17 @@ fn prepare_tip_field(
         for (x8, cell) in row.iter_mut().enumerate() {
             *cell = if y8 % projection_step == 0 && x8 % projection_step == 0 {
                 let projected = cell.valid.then(|| {
-                    let mv = project_tmvp_mv(cell.mv, references.ref_offset, cell.ref_offset);
+                    let mv = project_tmvp_mv(cell.mv(), references.ref_offset, cell.ref_offset());
                     Mv {
                         row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                         col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                     }
                 });
-                ProjectedTemporalMotionCell {
-                    valid: projected.is_some(),
-                    mv: projected.unwrap_or(Mv::ZERO),
-                    ref_offset: references.ref_offset,
-                }
+                ProjectedTemporalMotionCell::new(
+                    projected.is_some(),
+                    projected.unwrap_or(Mv::ZERO),
+                    references.ref_offset,
+                )
             } else {
                 ProjectedTemporalMotionCell::default()
             };
@@ -1810,8 +1834,8 @@ fn average_tip_motion(
                     let mut add = |candidate: usize| {
                         let cell = field.cells[candidate];
                         if cell.valid {
-                            sum.row += cell.mv.row;
-                            sum.col += cell.mv.col;
+                            sum.row += cell.mv().row;
+                            sum.col += cell.mv().col;
                             count += 1;
                         }
                     };
@@ -1831,14 +1855,14 @@ fn average_tip_motion(
                     averaged.cells[index] = if count == 0 {
                         ProjectedTemporalMotionCell::default()
                     } else {
-                        ProjectedTemporalMotionCell {
-                            valid: true,
-                            mv: Mv {
+                        ProjectedTemporalMotionCell::new(
+                            true,
+                            Mv {
                                 row: divide_tip_average(sum.row, count),
                                 col: divide_tip_average(sum.col, count),
                             },
-                            ref_offset: field.cells[index].ref_offset,
-                        }
+                            field.cells[index].ref_offset(),
+                        )
                     };
                 }
             }
@@ -1904,9 +1928,9 @@ fn fill_temporal_sampling_gap(
                 continue;
             };
             let mv = if candidate_y == 0 && candidate_x == 0 {
-                source.mv
+                source.mv()
             } else {
-                let mv = project_mv(source.mv, anchor.ref_offset, source.ref_offset);
+                let mv = project_mv(source.mv(), anchor.ref_offset(), source.ref_offset());
                 Mv {
                     row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                     col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
@@ -1930,7 +1954,7 @@ fn fill_temporal_sampling_gap(
             row: average(sum.row),
             col: average(sum.col),
         },
-        anchor.ref_offset,
+        anchor.ref_offset(),
         true,
     );
 }
@@ -2231,13 +2255,9 @@ fn project_temporal_motion_field(
             };
             let replace = !output_cell.valid
                 || (target_order_hint == Some(saved_target_hint)
-                    && output_cell.ref_offset != ref_offset);
+                    && output_cell.ref_offset() != ref_offset);
             if replace {
-                *output_cell = ProjectedTemporalMotionCell {
-                    valid: true,
-                    mv,
-                    ref_offset,
-                };
+                *output_cell = ProjectedTemporalMotionCell::new(true, mv, ref_offset);
             }
         }
     }
