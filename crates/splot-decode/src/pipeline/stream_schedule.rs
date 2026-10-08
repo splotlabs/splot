@@ -88,43 +88,30 @@ impl<'a> RuntimeStream<'a> {
         }
     }
 
-    /// The unit holding an inter-ordered `candidate`, checking each IVF
-    /// record read on the way.
-    pub(super) fn inter_unit(
+    /// The unit holding `candidate`, checking each IVF record read on the way
+    /// as a key frame unit when `key`, else in inter order.
+    pub(super) fn unit(
         &mut self,
         candidate: &DecodePlannedObu,
         storage: &mut Vec<ObuEnvelope<'static>>,
+        key: bool,
     ) -> Result<UnitBytes> {
         match self {
             Self::AnnexB { unit, .. } => Ok((*unit).clone()),
             Self::Ivf { records, .. } => records.seek_offset(
                 candidate.offset(),
                 storage,
-                require_following_ivf_record_obu_order,
-                || missing_inter_ivf_obu(candidate),
-            ),
-        }
-    }
-
-    /// The unit holding a key-frame `candidate`, checking each IVF record read
-    /// on the way as a key frame unit.
-    pub(super) fn key_unit(
-        &mut self,
-        candidate: &DecodePlannedObu,
-        storage: &mut Vec<ObuEnvelope<'static>>,
-    ) -> Result<UnitBytes> {
-        match self {
-            Self::AnnexB { unit, .. } => Ok((*unit).clone()),
-            Self::Ivf { records, .. } => records.seek_offset(
-                candidate.offset(),
-                storage,
-                |obus, _| require_key_ivf_obu_order(obus),
+                if key {
+                    |obus, _| require_key_ivf_obu_order(obus)
+                } else {
+                    require_following_ivf_record_obu_order
+                },
                 || {
-                    unsupported_at(
-                        "missing_key_ivf_obu",
-                        candidate.offset(),
-                        "the planned key candidate offset was not found in the parsed IVF payloads",
-                    )
+                    if key {
+                        missing_key_ivf_obu(candidate)
+                    } else {
+                        missing_inter_ivf_obu(candidate)
+                    }
                 },
             ),
         }
@@ -192,6 +179,14 @@ fn missing_inter_ivf_obu(candidate: &DecodePlannedObu) -> crate::DecodeError {
     )
 }
 
+fn missing_key_ivf_obu(candidate: &DecodePlannedObu) -> crate::DecodeError {
+    unsupported_at(
+        "missing_key_ivf_obu",
+        candidate.offset(),
+        "the planned key candidate offset was not found in the parsed IVF payloads",
+    )
+}
+
 /// The prefix and frame OBU of an inter `candidate` inside IVF record `record`.
 pub(crate) fn ivf_inter_envelope<'a>(
     obus: &'a [ObuEnvelope<'a>],
@@ -254,16 +249,10 @@ fn ivf_key_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
 ) -> Result<(ObuEnvelope<'a>, &'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
-    let Some(position) = obus
+    let position = obus
         .iter()
         .position(|envelope| envelope.offset == candidate.offset())
-    else {
-        return Err(unsupported_at(
-            "missing_key_ivf_obu",
-            candidate.offset(),
-            "the planned key candidate offset was not found in the parsed IVF payloads",
-        ));
-    };
+        .ok_or_else(|| missing_key_ivf_obu(candidate))?;
     let ([_, sequence_envelope, key_envelope], _) = require_key_frame_unit(obus)?;
     if key_envelope.offset != candidate.offset() {
         return Err(unsupported_at(
