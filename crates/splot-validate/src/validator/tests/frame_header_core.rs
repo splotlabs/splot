@@ -482,6 +482,17 @@ fn validator_accepts_ccso_max_band_within_range() {
 }
 
 #[test]
+fn validator_retains_wiener_dictionary_counts_before_ccso() {
+    let data = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/conformance/vectors/valid/",
+        "syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
+    ));
+    let report = Validator::new(false).validate_bytes(data);
+    assert!(report.errors().next().is_none(), "report was: {report}");
+}
+
+#[test]
 fn validator_flags_frame_size_exceeds_max_when_truncated_inside_deblocking() {
     let seq = FrameCoreSeq {
         order_hint_bits_minus_1: 1,

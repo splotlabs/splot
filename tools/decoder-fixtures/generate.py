@@ -274,9 +274,311 @@ COVERAGE = [
          "format": "y4m",
          "control_replace": {"--sb-size=256": "--sb-size=128"},
      }),
+    ("syn-2frame-interintra-column-422-128x32-8bit-q180", "", "yuv422p", "--i422",
+     TX_PARTITION_INTER + [
+      "--bit-depth=8", "--input-bit-depth=8", "--i422", "--enable-interintra-comp=1",
+      "--enable-smooth-interintra=1", "--enable-tx-partition=0", "--tile-columns=1"], "0", "180", {
+         "format": "y4m",
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=128x32:rate=1:duration=2,format=yuv422p,geq=lum='if(lt(X,64),212,if(eq(N,0),55+mod(X*7+Y*11,40),(128+55+mod(X*7+Y*11,40))/2))':cb=128:cr=128",
+             "-pix_fmt", "yuv422p", "-strict", "-1",
+         ],
+     }),
+    ("syn-2frame-interintra-row-420-64x128-10bit-q180", "", "yuv420p10le", "--i420",
+     TX_PARTITION_INTER + [
+      "--bit-depth=10", "--input-bit-depth=10", "--i420", "--enable-interintra-comp=1",
+      "--enable-smooth-interintra=1", "--enable-tx-partition=0", "--tile-rows=1"], "0", "180", {
+         "format": "y4m",
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=64x128:rate=1:duration=2,format=yuv420p10le,geq=lum='if(lt(Y,64),848,if(eq(N,0),220+mod(X*7+Y*11,160),(512+220+mod(X*7+Y*11,160))/2))':cb=512:cr=512",
+             "-pix_fmt", "yuv420p10le", "-strict", "-1",
+         ],
+     }),
+    ("syn-2frame-interintra-both-444-128x128-10bit-q180", "", "yuv444p10le", "--i444",
+     TX_PARTITION_INTER + [
+      "--bit-depth=10", "--input-bit-depth=10", "--i444", "--enable-interintra-comp=1",
+      "--enable-smooth-interintra=1", "--enable-tx-partition=0", "--tile-columns=1",
+      "--tile-rows=1"], "0", "180", {
+         "format": "y4m",
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=128x128:rate=1:duration=2,format=yuv444p10le,geq=lum='if(lt(X,64)+lt(Y,64),848,if(eq(N,0),220+mod(X*7+Y*11,160),(512+220+mod(X*7+Y*11,160))/2))':cb=512:cr=512",
+             "-pix_fmt", "yuv444p10le", "-strict", "-1",
+         ],
+     }),
+    ("syn-2frame-interintra-ibp-row-422-64x128-10bit-q180", "", "yuv422p10le", "--i422",
+     TX_PARTITION_INTER + [
+      "--bit-depth=10", "--input-bit-depth=10", "--i422", "--enable-interintra-comp=1",
+      "--enable-smooth-interintra=1", "--enable-tx-partition=0", "--min-partition-size=8",
+      "--max-partition-size=64", "--enable-ibp=1", "--enable-interintra-wedge=1",
+      "--tile-rows=1"], "0", "180", {
+         "format": "y4m",
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=64x128:rate=1:duration=2,format=yuv422p10le,geq=lum='if(lt(Y,64),848,if(eq(N,0),220+mod(X*7+Y*11,160),(512+220+mod(X*7+Y*11,160))/2))':cb='512-48+mod(X*7+Y*3+N*2,96)':cr='512-40+mod(X*3+Y*7+N*3,80)'",
+             "-pix_fmt", "yuv422p10le", "-strict", "-1",
+         ],
+     }),
+    ("syn-mrl-padded-422-68x68-10bit-q120", "", "yuv422p10le", "--i422",
+     TX_PARTITION_INTRA + [
+      "--bit-depth=10", "--input-bit-depth=10", "--i422", "--min-partition-size=4",
+      "--max-partition-size=64", "--enable-mrls=1", "--enable-angle-delta=1",
+      "--enable-tx-partition=1"], "0", "120", {
+         "format": "y4m",
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=68x68:rate=1:duration=1,format=yuv422p10le,geq=lum='128+mod(X*3+Y*7+floor(X/7)*19+floor(Y/11)*23,768)':cb='512+64*sin(X/9+Y/11)':cr='512+64*cos(X/7-Y/13)'",
+             "-pix_fmt", "yuv422p10le", "-strict", "-1",
+         ],
+     }),
+    ("syn-mrl-padded-444-67x67-10bit-q120", "", "yuv444p10le", "--i444",
+     TX_PARTITION_INTRA + [
+      "--bit-depth=10", "--input-bit-depth=10", "--i444", "--min-partition-size=4",
+      "--max-partition-size=64", "--enable-mrls=1", "--enable-angle-delta=1",
+      "--enable-tx-partition=1"], "0", "120", {
+         "format": "y4m",
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=67x67:rate=1:duration=1,format=yuv444p10le,geq=lum='128+mod(X*3+Y*7+floor(X/7)*19+floor(Y/11)*23,768)':cb='512+64*sin(X/9+Y/11)':cr='512+64*cos(X/7-Y/13)'",
+             "-pix_fmt", "yuv444p10le", "-strict", "-1",
+         ],
+     }),
+    ("syn-mrl-padded-420-132x68-10bit-q120", "", "yuv420p10le", "--i420",
+     TX_PARTITION_INTRA + [
+      "--bit-depth=10", "--input-bit-depth=10", "--i420", "--min-partition-size=8",
+      "--max-partition-size=64", "--enable-mrls=1", "--enable-angle-delta=1",
+      "--enable-tx-partition=1", "--tile-columns=1", "--tile-rows=0"], "0", "120", {
+         "format": "y4m",
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=132x68:rate=1:duration=1,format=yuv420p10le,geq=lum='128+mod(X*3+Y*7+floor(X/7)*19+floor(Y/11)*23,768)':cb='512+64*sin(X/9+Y/11)':cr='512+64*cos(X/7-Y/13)'",
+             "-pix_fmt", "yuv420p10le", "-strict", "-1",
+         ],
+     }),
+    ("syn-3frame-padded-filters-420-134x70-10bit-q150", "", "yuv420p10le", "--i420",
+     TX_PARTITION_INTER + [
+      "--limit=3", "--bit-depth=10", "--input-bit-depth=10", "--min-partition-size=4",
+      "--enable-deblocking=1", "--enable-cdef=1", "--enable-restoration=1",
+      "--enable-wiener-nonsep=1", "--enable-pc-wiener=1", "--enable-ccso=1", "--i420"], "0", "150", {
+         "format": "rawvideo",
+         "width": 134, "height": 70,
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=134x70:rate=1:duration=3,format=yuv420p10le,geq=lum='64+mod(X*13+Y*17+0+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)':cb='64+mod(X*13+Y*17+73+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)':cr='64+mod(X*13+Y*17+146+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)'",
+             "-pix_fmt", "yuv420p10le", "-frames:v", "3", "-f", "rawvideo",
+         ],
+     }),
+    ("syn-3frame-padded-filters-422-134x69-10bit-q150", "", "yuv422p10le", "--i422",
+     TX_PARTITION_INTER + [
+      "--limit=3", "--bit-depth=10", "--input-bit-depth=10", "--min-partition-size=4",
+      "--enable-deblocking=1", "--enable-cdef=1", "--enable-restoration=1",
+      "--enable-wiener-nonsep=1", "--enable-pc-wiener=1", "--enable-ccso=1", "--i422"], "0", "150", {
+         "format": "rawvideo",
+         "width": 134, "height": 69,
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=134x69:rate=1:duration=3,format=yuv422p10le,geq=lum='64+mod(X*13+Y*17+0+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)':cb='64+mod(X*13+Y*17+73+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)':cr='64+mod(X*13+Y*17+146+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)'",
+             "-pix_fmt", "yuv422p10le", "-frames:v", "3", "-f", "rawvideo",
+         ],
+     }),
+    ("syn-3frame-padded-cctx-422-134x69-10bit-q180", "", "yuv422p10le", "--i422",
+     TX_PARTITION_INTER + [
+      "--limit=3", "--bit-depth=10", "--input-bit-depth=10", "--min-partition-size=4",
+      "--enable-cctx=1", "--enable-chroma-dctonly=0", "--i422"], "0", "180", {
+         "format": "rawvideo",
+         "width": 134, "height": 69,
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=134x69:rate=1:duration=3,format=yuv422p10le,geq=lum='64+mod(X*13+Y*17+0+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)':cb='64+mod(X*13+Y*17+73+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)':cr='64+mod(X*13+Y*17+146+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)'",
+             "-pix_fmt", "yuv422p10le", "-frames:v", "3", "-f", "rawvideo",
+         ],
+     }),
+    ("syn-3frame-padded-cctx-444-131x67-10bit-q180", "", "yuv444p10le", "--i444",
+     TX_PARTITION_INTER + [
+      "--limit=3", "--bit-depth=10", "--input-bit-depth=10", "--min-partition-size=4",
+      "--enable-cctx=1", "--enable-chroma-dctonly=0", "--i444"], "0", "180", {
+         "format": "rawvideo",
+         "width": 131, "height": 67,
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=131x67:rate=1:duration=3,format=yuv444p10le,geq=lum='64+mod(X*13+Y*17+0+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)':cb='64+mod(X*13+Y*17+73+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)':cr='64+mod(X*13+Y*17+146+N*29+mod(floor(X/5)+floor(Y/7)+N,2)*97,896)'",
+             "-pix_fmt", "yuv444p10le", "-frames:v", "3", "-f", "rawvideo",
+         ],
+     }),
+    ("syn-3frame-padded-interintra-444-131x67-10bit-q180", "", "yuv444p10le", "--i444",
+     TX_PARTITION_INTER + [
+      "--limit=3", "--bit-depth=10", "--input-bit-depth=10", "--min-partition-size=4",
+      "--enable-deblocking=1", "--enable-cdef=1", "--enable-restoration=1",
+      "--enable-wiener-nonsep=1", "--enable-pc-wiener=1", "--enable-ccso=1",
+      "--enable-interintra-comp=1", "--enable-smooth-interintra=1", "--i444"], "0", "180", {
+         "format": "rawvideo",
+         "width": 131, "height": 67,
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=131x67:rate=1:duration=3,format=yuv444p10le,geq=lum='if(lt(X,64),850,if(eq(N,0),220+mod(X*7+Y*11+0,160),if(eq(N,1),floor((512+220+mod(X*7+Y*11+0,160))/2),floor((512+3*(220+mod(X*7+Y*11+0,160)))/4))))':cb='if(lt(X,64),850,if(eq(N,0),220+mod(X*7+Y*11+23,160),if(eq(N,1),floor((512+220+mod(X*7+Y*11+23,160))/2),floor((512+3*(220+mod(X*7+Y*11+23,160)))/4))))':cr='if(lt(X,64),850,if(eq(N,0),220+mod(X*7+Y*11+46,160),if(eq(N,1),floor((512+220+mod(X*7+Y*11+46,160))/2),floor((512+3*(220+mod(X*7+Y*11+46,160)))/4))))'",
+             "-pix_fmt", "yuv444p10le", "-frames:v", "3", "-f", "rawvideo",
+         ],
+     }),
+    ("syn-mrl-4x4-10bit-96x96-q60", "", "yuv420p10le", "--i420",
+     TX_PARTITION_INTRA + [
+      "--bit-depth=10", "--input-bit-depth=10", "--min-partition-size=4", "--enable-mrls=1",
+      "--enable-angle-delta=1", "--enable-ext-partitions=1", "--enable-rect-partitions=1",
+      "--enable-uneven-4way-partitions=1"], "0", "60", {
+         "format": "y4m",
+         "ffmpeg_args": [
+             "-f", "lavfi", "-i",
+             "nullsrc=size=96x96:rate=1:duration=1,format=yuv420p10le,geq=lum='128+4*mod(X*3+Y*7+floor(X/7)*19+floor(Y/11)*23,192)':cb='480+4*mod(X*3+Y*5,17)':cr='480+4*mod(X*7-Y*3+1632,17)'",
+             "-pix_fmt", "yuv420p10le", "-strict", "-1",
+         ],
+     }),
 ]
 
 PINNED_RECIPE_HASHES = {
+    'syn-2frame-interintra-column-422-128x32-8bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': '88a2eaa3e757882f63431507b2e0218ca9b5c8804b461f613dcade538f63cf0f',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': '7de34492add5bfd353859c31bc89fce12c44ef02c48ba1c4012ac06ed0432dab',
+     'reproducibility_runs': 2,
+     'source_sha256': 'ee9fba9b0faf0f85a9d32282523dd6a9983e1879f2137b8b75e16224e2f9e5eb'},
+    'syn-2frame-interintra-row-420-64x128-10bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': 'c3cfe2d7f942e3618c65c48e57a6501693623cd774549d638e7904a6f8e35a35',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': 'fa58cc6d44911d9b58791bc8f589d96d89e668a7eafc8f8598b6e36ca5479ff0',
+     'reproducibility_runs': 2,
+     'source_sha256': '39442485f328d74042db852ac09ace6253e31706610a333570a765a8d803c6bd'},
+    'syn-2frame-interintra-both-444-128x128-10bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': 'c2bc2fc81ff2be8a99584ff7270c9333c75e2c40d4df0448aab40c209746fc6e',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': '373579e0bdc9a9ac0a2e414771cea31907a53e863c81e561581f04f6ddd7afa6',
+     'reproducibility_runs': 2,
+     'source_sha256': '941924faf8983342f4613395d802551d3f474a9cbb8bf02a7a343b9b67006844'},
+    'syn-2frame-interintra-ibp-row-422-64x128-10bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': '3576e95c10614b15d79bef40987141b19113bcbab4bbf2cbea5240261d89b76f',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': '7e0d6d70cab36785512e671017cf2db61d3e6a580cb432d38b5f8d0543e7b232',
+     'reproducibility_runs': 2,
+     'source_sha256': '0c62f096160f398484548266c22bfcef9445e013704c69d7cb2e9401c4bf3068'},
+    'syn-mrl-padded-422-68x68-10bit-q120': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': '00224c9fcf29c1904a955196330cfdf729ba12bcfac391cf30ca8ab8295c8cc9',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': 'b18bf75f9bc4825034ceac7971602e400906f260909c2020dce744a9555f5717',
+     'reproducibility_runs': 2,
+     'source_sha256': 'ca959dc5706baee4c7c5551e53fb9030ff1fdbc9e01abb8ad90a11b85f3011ef'},
+    'syn-mrl-padded-444-67x67-10bit-q120': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': '1d03e5c85f4542facb672568ae893e8c80194f322f9ccac111e128fccd1882c1',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': '53ff44b12489cfc3e8209df5ab176598163ad553f77063f5d4e3879ff1734e42',
+     'reproducibility_runs': 2,
+     'source_sha256': '731ec172176db63e8c4d5dcd0cd1f10fce99fb6829089cd8d940c6dd23499bf1'},
+    'syn-mrl-padded-420-132x68-10bit-q120': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': '3442207e009c26293cf3cf7564e69d17c893c9876b4de401995882b4168edc4f',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': 'c512ef01431e9e8afa08b7042b3ba02425297cb76c0ee0214ca71329aa7659c7',
+     'reproducibility_runs': 2,
+     'source_sha256': '472096706c2a598acf5b3bcc2714d0a125720c2fa2b6b04803496e8a12de7b13'},
+    'syn-3frame-padded-filters-420-134x70-10bit-q150': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': 'e2608005529f5ac86c99b79b9b8c69b49b57d54e544384bf4b6bb5119a202d73',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': '63f0cd595373e6f202f0fb77bf69edbb93a426d4b3b392fae43f5b9a3e9d99d6',
+     'reproducibility_runs': 2,
+     'source_sha256': '7f32191bff2aac81669e07f2ab198ebcb230bbf5bffcf785404249e27ac060ed'},
+    'syn-3frame-padded-filters-422-134x69-10bit-q150': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': '88ed1eec0b69461416d840c759eaf37570b283d3c02ed18c482aa1a75a4f1a9f',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': '81b16691fe5feef6ac15bf3e7bd20c0586df974ec4af11e354cc515440d4f7ad',
+     'reproducibility_runs': 2,
+     'source_sha256': '12e0acf672c9e8855529e7eaa111639468fd82a19766fd077a6ee04d9c8b829f'},
+    'syn-3frame-padded-cctx-422-134x69-10bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': '6b9fc6eab85ea9b0f2f6e3dce8e64bf1f6902ff1a83c4522c2fd0275fd57cfee',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': '843f89c2eedc1bab309a8643ba36b18ae0d07c495825345df4afc34b6c8b2489',
+     'reproducibility_runs': 2,
+     'source_sha256': '12e0acf672c9e8855529e7eaa111639468fd82a19766fd077a6ee04d9c8b829f'},
+    'syn-3frame-padded-cctx-444-131x67-10bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': 'c66d23139f6c7b6ad04f51e03d539295b438daace86cbfe3b56825fe21076d2d',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': 'fa894f856b7f9dbf443b9f4ca2d47a860c5b9820fd02cd49be68fa3460007ec9',
+     'reproducibility_runs': 2,
+     'source_sha256': 'ba4fc0b0f7bfb7b80d1fb88fb73bd9cdc4bbd800095a85ced48dee1c0cc25ac5'},
+    'syn-3frame-padded-interintra-444-131x67-10bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': 'cf2d93911b23cb4e6855b3f9450e0c4b0cea9ea718b3343e877762ebb1bdeaf7',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': 'c54e8168589ec6149f024e5a00efa19f4b47511b0735ec2ec75bdaf12c2743b4',
+     'reproducibility_runs': 2,
+     'source_sha256': '9f75a42779981c2bed03a1db8d0f92b7020d55855e2e04c077de05ec2aa0d748'},
+    'syn-mrl-4x4-10bit-96x96-q60': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
+                        '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
+                        '-DCONFIG_TENSORFLOW_LITE=0',
+     'avm_i420_raw_sha256': '046b59b49e06a0611ef3a3531fc32ec8c04e72cc7af247ecedee475a2c885a95',
+     'avm_revision': '3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03',
+     'avmdec_sha256': 'f2a0b098952b22ef0c790e34092ad64a61387e88d5a4c70060c4ee41b92bab1b',
+     'avmenc_sha256': '74658eef64861d052d4c77f03b8b9d8eaaa32b43ff165e629cfd3c6db96d2e92',
+     'ffmpeg_version': '9.0.2',
+     'ivf_sha256': 'c1b090687fc173f9d42c2ad83f486154a1ecf545040385221a73f1385bb7f21d',
+     'reproducibility_runs': 2,
+     'source_sha256': 'df4b5f15652eb2008e983a102c32c803608687e46b17981763dccfeeec85ef75'},
     "syn-profile31-mono-intra-16x16": {
         "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
         "source_sha256": "83dc7abaa81f46324b7a47fa89b127c1f8891ff2b3d97e4736ac25e45aadb1c6",

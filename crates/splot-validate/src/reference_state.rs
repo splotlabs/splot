@@ -70,6 +70,8 @@ pub(crate) struct SlotFacts {
     /// `long_term_id_in_use(RefLongTermId[ ref_frame_idx[i] ])` check (mirror :4615-4616)
     /// reads this for the slots a RAS frame selects.
     pub(crate) long_term_id: Option<u32>,
+    /// Per-plane retained Wiener-NS class counts used by the § 5.18 filter dictionary.
+    pub(crate) lr_frame_filter_class_counts: [u8; 3],
 }
 
 /// One extended layer's reference buffer, matching its CVS reset scope (§ 7.3.6).
@@ -162,6 +164,7 @@ pub(crate) struct ReferenceStateScratch {
     order_hint_lsbs: [u32; NUM_REF_FRAMES],
     implicit_output_frame: [bool; NUM_REF_FRAMES],
     immediate_output_frame: [bool; NUM_REF_FRAMES],
+    lr_frame_filter_class_counts: [[u8; 3]; NUM_REF_FRAMES],
 }
 
 impl ReferenceStateScratch {
@@ -176,6 +179,7 @@ impl ReferenceStateScratch {
         .with_quantizer_delta_state(&self.chroma_ac_deltas)
         .with_primary_reference_state(&self.counter, &self.frame_is_inter)
         .with_long_term_id_state(&self.long_term_id)
+        .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
         .with_single_layer_order_hint_state(
             &self.order_hint_lsbs,
             &self.implicit_output_frame,
@@ -312,6 +316,7 @@ impl ReferenceStateTracker {
                     scratch.order_hint_lsbs[i] = facts.order_hint_lsb;
                     scratch.implicit_output_frame[i] = facts.implicit_output_frame;
                     scratch.immediate_output_frame[i] = facts.immediate_output_frame;
+                    scratch.lr_frame_filter_class_counts[i] = facts.lr_frame_filter_class_counts;
                 }
                 SlotState::Unknown | SlotState::ProvenInvalid => {
                     scratch.valid[i] = false;
@@ -326,6 +331,7 @@ impl ReferenceStateTracker {
                     scratch.order_hint_lsbs[i] = 0;
                     scratch.implicit_output_frame[i] = false;
                     scratch.immediate_output_frame[i] = false;
+                    scratch.lr_frame_filter_class_counts[i] = [0; 3];
                 }
             }
         }
@@ -371,6 +377,7 @@ pub(crate) fn slot_facts(
         immediate_output_frame: output_flags.1?,
         frame_is_inter: frame_type? == FrameType::Inter,
         long_term_id: long_term_id.and_then(|id| u32::try_from(id).ok()),
+        lr_frame_filter_class_counts: [0; 3],
     })
 }
 
@@ -401,6 +408,7 @@ mod tests {
             immediate_output_frame: false,
             frame_is_inter: false,
             long_term_id: None,
+            lr_frame_filter_class_counts: [0; 3],
         }
     }
 
@@ -559,6 +567,7 @@ mod tests {
                     order_hint_lsb: 11,
                     width: 64,
                     height: 48,
+                    lr_frame_filter_class_counts: [3, 1, 0],
                     ..facts(11)
                 },
             },
@@ -569,7 +578,12 @@ mod tests {
         assert_eq!(scratch.order_hint[0], 11);
         assert_eq!(scratch.width[0], 64);
         assert_eq!(scratch.height[0], 48);
+        assert_eq!(scratch.lr_frame_filter_class_counts[0], [3, 1, 0]);
         assert!(!scratch.valid[1]);
+        assert_eq!(scratch.lr_frame_filter_class_counts[1], [0; 3]);
+        tracker.apply(XL, FrameRefUpdate::PoisonAll);
+        let view = tracker.view_into(XL, &mut scratch).unwrap();
+        assert_eq!(view.lr_frame_filter_class_counts.unwrap()[0], [0; 3]);
         let absent = tracker.view_into(ExtendedLayerId::from_bits(2), &mut scratch);
         assert!(absent.is_none());
     }
