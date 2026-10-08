@@ -707,9 +707,9 @@ struct ProjectedTemporalMotionField {
 
 /// Returns a spent projection grid to the per-thread pool.
 ///
-/// A band's projection and averaging grids are frame-sized and live only for
-/// the projection that builds them, and `prepare_tip_field` swaps its result
-/// out through one of them, so this is where all three become free again.
+/// A band's averaging grid is frame-sized and lives only for the projection
+/// that builds it, and `prepare_tip_field` swaps its result out through it, so
+/// this is where both become free again.
 impl Drop for ProjectedTemporalMotionField {
     fn drop(&mut self) {
         crate::support::reusable_scratch::recycle_pooled_vec(core::mem::take(&mut self.cells));
@@ -786,7 +786,6 @@ pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
     field: ProjectedTemporalMotionField,
-    projection_scratch: ProjectedTemporalMotionField,
     average_scratch: ProjectedTemporalMotionField,
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
@@ -1002,15 +1001,9 @@ impl TemporalBandPlan {
         };
         if self.tip_mode {
             if let Some(references) = self.tip {
-                let TemporalMvScratch {
-                    projection,
-                    average,
-                    ..
-                } = &mut *scratch;
                 prepare_tip_field(
                     &mut field,
-                    projection,
-                    average,
+                    &mut scratch.average,
                     references,
                     self.config.step,
                     self.config.unit_size8,
@@ -1045,7 +1038,6 @@ impl TemporalBandPlan {
 
 #[derive(Debug, Default)]
 struct TemporalMvScratch {
-    projection: ProjectedTemporalMotionField,
     average: ProjectedTemporalMotionField,
     trajectory: OwnedTrajectoryScratch,
 }
@@ -1098,7 +1090,6 @@ impl TemporalMvContext {
             current_order_hint: 0,
             ref_order_hints: Vec::new(),
             field: ProjectedTemporalMotionField::default(),
-            projection_scratch: ProjectedTemporalMotionField::default(),
             average_scratch: ProjectedTemporalMotionField::default(),
             trajectories: None,
             trajectory_scratch: None,
@@ -1434,7 +1425,6 @@ impl TemporalMvContext {
         };
         prepare_tip_field(
             &mut self.field,
-            &mut self.projection_scratch,
             &mut self.average_scratch,
             references,
             projection_step,
@@ -1715,51 +1705,40 @@ fn sorted_reference_hints(
 }
 
 fn prepare_tip_field(
-    source: &mut ProjectedTemporalMotionField,
-    projection: &mut ProjectedTemporalMotionField,
+    field: &mut ProjectedTemporalMotionField,
     average: &mut ProjectedTemporalMotionField,
     references: TipReferencePair,
     projection_step: usize,
     tmvp_unit_size8: usize,
     fill_holes: bool,
 ) -> crate::Result<()> {
-    let mi_rows = source
-        .height8
-        .checked_mul(2)
-        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-    let mi_cols = source
-        .width8
-        .checked_mul(2)
-        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-    projection.reset(mi_rows, mi_cols)?;
-    debug_assert_eq!(projection.width8, source.width8);
-    debug_assert_eq!(projection.height8, source.height8);
-    for y8 in (0..projection.height8).step_by(projection_step) {
-        let row_start = y8 * projection.width8;
-        for x8 in (0..projection.width8).step_by(projection_step) {
-            let index = row_start + x8;
-            let source = source.cells[index];
-            let projected = source.valid.then(|| {
-                let mv = project_tmvp_mv(source.mv, references.ref_offset, source.ref_offset);
-                Mv {
-                    row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                    col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+    let width8 = field.width8.max(1);
+    for (y8, row) in field.cells.chunks_mut(width8).enumerate() {
+        for (x8, cell) in row.iter_mut().enumerate() {
+            *cell = if y8 % projection_step == 0 && x8 % projection_step == 0 {
+                let projected = cell.valid.then(|| {
+                    let mv = project_tmvp_mv(cell.mv, references.ref_offset, cell.ref_offset);
+                    Mv {
+                        row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                        col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                    }
+                });
+                ProjectedTemporalMotionCell {
+                    valid: projected.is_some(),
+                    mv: projected.unwrap_or(Mv::ZERO),
+                    ref_offset: references.ref_offset,
                 }
-            });
-            projection.cells[index] = ProjectedTemporalMotionCell {
-                valid: projected.is_some(),
-                mv: projected.unwrap_or(Mv::ZERO),
-                ref_offset: references.ref_offset,
+            } else {
+                ProjectedTemporalMotionCell::default()
             };
         }
     }
     if fill_holes {
-        fill_tip_holes(projection, projection_step, tmvp_unit_size8);
-        average_tip_motion(projection, average, projection_step, tmvp_unit_size8)?;
-        std::mem::swap(projection, average);
+        fill_tip_holes(field, projection_step, tmvp_unit_size8);
+        average_tip_motion(field, average, projection_step, tmvp_unit_size8)?;
+        std::mem::swap(field, average);
     }
-    fill_temporal_sampling_gaps(projection, projection_step, tmvp_unit_size8);
-    std::mem::swap(source, projection);
+    fill_temporal_sampling_gaps(field, projection_step, tmvp_unit_size8);
     Ok(())
 }
 

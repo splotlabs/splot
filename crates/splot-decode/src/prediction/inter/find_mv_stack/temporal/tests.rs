@@ -116,7 +116,6 @@ fn tip_context(
         current_order_hint,
         ref_order_hints,
         field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
-        projection_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
         average_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
         trajectories: None,
         trajectory_scratch: None,
