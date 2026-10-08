@@ -1313,7 +1313,7 @@ impl TemporalMvContext {
                 }))
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         }
-        run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field);
+        run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field)?;
         if let Some(trajectories) = trajectories.as_mut() {
             trajectories.fill_gaps();
         }
@@ -1987,7 +1987,7 @@ fn run_band_projections(
     config: TemporalProjectionConfig,
     trajectories: Option<&mut TrajectoryState>,
     field: &mut ProjectedTemporalMotionField,
-) {
+) -> crate::Result<()> {
     let band_rows = projection_band_rows(field.height8, config);
     let run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
         let rows8 = band.row_base..band.row_base + band_rows;
@@ -2013,14 +2013,27 @@ fn run_band_projections(
             .as_mut()
             .map(|(grids, scratch)| (grids, scratch.iter_mut()));
         for (slot, band) in slots.iter_mut().take(width).zip(&mut field_bands) {
-            let rows = rounds
-                .as_mut()
-                .and_then(|(grids, scratch)| grids.next_band(scratch.next()?));
+            let rows = match rounds.as_mut() {
+                Some((grids, scratch)) => Some(
+                    scratch
+                        .next()
+                        .and_then(|scratch| grids.next_band(scratch))
+                        .ok_or_else(|| {
+                            crate::DecodeError::from(
+                                splot_recon::ReconError::WorkspaceAllocationFailed {
+                                    plane: splot_recon::PlaneId::Y,
+                                    context: "inter trajectory band scratch",
+                                },
+                            )
+                        })?,
+                ),
+                None => None,
+            };
             *slot = Some((band, rows));
             filled += 1;
         }
         if filled == 0 {
-            return;
+            return Ok(());
         }
         let Ok(()) =
             splot_parallel::join_each(&mut slots[..filled], &|slot: &mut BandSlot<'_, '_>| {

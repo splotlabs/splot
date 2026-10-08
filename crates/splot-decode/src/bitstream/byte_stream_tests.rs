@@ -32,6 +32,45 @@ fn ivf_records_are_read_one_at_a_time_and_share_reused_buffers() {
     assert_eq!(records.buffers.len(), 1);
 }
 
+/// A source whose end seek reports less than it then yields, like a file that
+/// grows while it is planned.
+struct StaleLength<'a>(Cursor<&'a [u8]>);
+
+impl Read for StaleLength<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl Seek for StaleLength<'_> {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        match position {
+            SeekFrom::End(_) => Ok(1),
+            position => self.0.seek(position),
+        }
+    }
+}
+
+#[test]
+fn input_limit_holds_for_bytes_read_not_the_reported_length() {
+    let mut ivf = Vec::new();
+    write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 2)).unwrap();
+    write_ivf_frame(&mut ivf, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
+    let annex_b = [0x01, 0x08, 0x05, 0x10];
+    let options = DecodeOptions::new(
+        DecodeLimits::unlimited().with_max_input_bytes(crate::DecodeLimitThreshold::Max(2)),
+    );
+    for bytes in [ivf.as_slice(), annex_b.as_slice()] {
+        let error = prepare_stream(&mut StaleLength(Cursor::new(bytes)), &options)
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error,
+            DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxInputBytes
+        ));
+    }
+}
+
 #[test]
 fn raw_obu_limit_is_checked_before_parsing_next_obu() {
     let bytes = [0x01, 0x08, 0x05, 0x10];

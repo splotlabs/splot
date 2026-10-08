@@ -132,8 +132,11 @@ pub(crate) fn prepare_stream(
     }
     let mut bytes = Vec::new();
     let _ = bytes.try_reserve_exact(usize::try_from(input_len).unwrap_or(0));
-    reader.read_to_end(&mut bytes).map_err(DecodeError::input)?;
+    Read::take(&mut *reader, input_cap(limits))
+        .read_to_end(&mut bytes)
+        .map_err(DecodeError::input)?;
     let input_len = bytes.len() as u64;
+    limits.ensure(DecodeLimitName::MaxInputBytes, input_len)?;
     let bytes = UnitBytes::new(Arc::new(bytes), 0);
     let plan = plan_annex_b(
         &parse_bounded_annex_b(bytes.view().bytes(), limits)?,
@@ -144,6 +147,15 @@ pub(crate) fn prepare_stream(
         plan,
         input: PreparedInput::AnnexB(bytes),
     })
+}
+
+/// One byte past the input limit: reading it proves the input is too long,
+/// whatever length the seek reported.
+fn input_cap(limits: DecodeLimits) -> u64 {
+    limits
+        .max_input_bytes()
+        .max_value()
+        .map_or(u64::MAX, |max| max.saturating_add(1))
 }
 
 fn rewind(reader: &mut dyn ReadSeek) -> Result<()> {
@@ -158,7 +170,9 @@ fn plan_ivf(
     input_len: u64,
     limits: DecodeLimits,
 ) -> Result<(DecodeStreamPlan, IvfHeader)> {
-    let mut units = TemporalUnitReader::with_max_unit_bytes(reader, usize::MAX);
+    let cap = input_cap(limits);
+    let mut capped = Read::take(&mut *reader, cap);
+    let mut units = TemporalUnitReader::with_max_unit_bytes(&mut capped, usize::MAX);
     let mut builder = PlanBuilder::new(BitstreamFormat::Ivf, input_len, limits);
     let mut planner = IvfPlanner::default();
     let mut counts = (0u64, 0u64);
@@ -219,6 +233,8 @@ fn plan_ivf(
         }
     };
     let header = units.ivf_header();
+    drop(units);
+    limits.ensure(DecodeLimitName::MaxInputBytes, cap - capped.limit())?;
     let plan = planner.finish(builder, header, warning.as_slice(), error.as_ref())?;
     let header = header.ok_or_else(|| {
         crate::pipeline::unsupported(

@@ -453,7 +453,7 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
         .with_y4m_frame_rate_override(args.frame_rate);
-    let input = open_decode_input(&args.input)
+    let input = open_decode_input(&args.input, &options)
         .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
     let context = DecodeContext::new(
         DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
@@ -815,14 +815,17 @@ trait DecodeInput: io::Read + io::Seek + Send {}
 impl<T: io::Read + io::Seek + Send> DecodeInput for T {}
 
 /// Streams a seekable file; reads a pipe or FIFO into memory, as decode
-/// reads its input twice.
-fn open_decode_input(path: &Path) -> io::Result<Box<dyn DecodeInput>> {
+/// reads its input twice. One byte past the input limit is enough for the
+/// decoder to report the limit, so an endless pipe cannot exhaust memory.
+fn open_decode_input(path: &Path, options: &DecodeOptions) -> io::Result<Box<dyn DecodeInput>> {
     let mut file = File::open(path)?;
     if file.stream_position().is_ok() {
         return Ok(Box::new(BufReader::new(file)));
     }
+    let limit = options.limits().max_input_bytes().max_value();
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    file.take(limit.map_or(u64::MAX, |limit| limit.saturating_add(1)))
+        .read_to_end(&mut bytes)?;
     Ok(Box::new(io::Cursor::new(bytes)))
 }
 
