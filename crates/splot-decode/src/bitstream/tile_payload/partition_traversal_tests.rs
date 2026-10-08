@@ -23,6 +23,8 @@ use splot_core::symbol::{
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::DEFAULT_Y_MODE_SET_CDF;
 
+const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
+
 const BLOCK_4X4: usize = 0;
 const BLOCK_4X8: usize = 1;
 const BLOCK_16X16: usize = 6;
@@ -193,7 +195,8 @@ fn run_first_superblock<'payload>(
         TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())
             .unwrap();
     let mut joint_modes =
-        TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone()).unwrap();
+        TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), WHOLE_TILE)
+            .unwrap();
     let mut uses_mrls =
         TileUsesMrlsState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
     let mut use_dip =
@@ -202,7 +205,7 @@ fn run_first_superblock<'payload>(
         TileFscModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
     let mut palette_y =
         TileLumaPaletteState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
-    let mut uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len())
+    let mut uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len(), WHOLE_TILE)
         .unwrap()
         .with_origin(tile_rows.start, tile_cols.start);
     let mut cursor = GeneralIntraPartitionTreeCursor::new(
@@ -347,7 +350,7 @@ fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
 
 #[test]
 fn uv_cfl_context_uses_chroma_reference_base_for_offset_blocks() {
-    let mut uv_cfls = TileUvCflState::new(16, 16).unwrap();
+    let mut uv_cfls = TileUvCflState::new(16, 16, WHOLE_TILE).unwrap();
     uv_cfls.record_block(0, 4, 4, 4, true);
     let bounds = TilePartitionBounds {
         mi_row_start: 0,

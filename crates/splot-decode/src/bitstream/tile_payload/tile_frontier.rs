@@ -87,13 +87,13 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             ..(work_unit.mi_col_range().end as usize).min(mi_cols);
         let mi_size_state =
             TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())?;
-        let joint_modes =
-            TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone())?;
         let sb_size4 = frame
             .sb_size()
             .num_4x4_wide()
             .map_err(TilePartitionTraversalError::from)?
             .max(1);
+        let joint_modes =
+            TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
         let uses_mrls =
             TileUsesMrlsState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
         let use_dip =
@@ -102,7 +102,7 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             TileFscModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
         let palette_y =
             TileLumaPaletteState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
-        let uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len())?
+        let uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len(), sb_size4)?
             .with_origin(tile_rows.start, tile_cols.start);
         let tree = GeneralIntraPartitionTreeCursor::new_with_bytes(
             work_unit, tile_bytes, frame, limits, lr_records,

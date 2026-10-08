@@ -38,7 +38,6 @@ pub(crate) struct SbRowWindow {
 
 impl SbRowWindow {
     /// A superblock height that spans any tile, so no row is ever reused.
-    #[cfg(test)]
     pub(crate) const WHOLE_TILE_SB_H4: usize = 1 << (usize::BITS - 2);
 
     pub(crate) fn new(rows: usize, sb_h4: usize) -> Self {

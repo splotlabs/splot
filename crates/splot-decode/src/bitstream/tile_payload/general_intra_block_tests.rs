@@ -15,6 +15,8 @@ use super::super::encode_symbol_sequence;
 use super::super::partition_traversal::tests::make_work_unit as make_test_work_unit;
 use super::*;
 
+const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
+
 const BLOCK_16X16: usize = 6;
 const BLOCK_8X8: usize = 3;
 const BLOCK_32X16: usize = 8;
@@ -64,7 +66,7 @@ fn mrl(index: u8, secondary: u8) -> MrlSelection {
 }
 
 fn empty_joint_modes() -> TileIntraJointModeState {
-    TileIntraJointModeState::new_for_tile(0..SB_N4, 0..(2 * SB_N4)).unwrap()
+    TileIntraJointModeState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), WHOLE_TILE).unwrap()
 }
 
 fn empty_uses_mrls() -> TileUsesMrlsState {
@@ -695,7 +697,7 @@ fn mrl_symbols_use_retained_neighbour_contexts() {
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
     let joint_modes =
-        TileIntraJointModeState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4)).unwrap();
+        TileIntraJointModeState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), WHOLE_TILE).unwrap();
     let mut uses_mrls =
         TileUsesMrlsState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap();
     uses_mrls.record_block(7, 11, 1, 1, mrl(1, 1));
