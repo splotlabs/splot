@@ -1380,6 +1380,8 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             reference,
             offset,
         )?;
+        super::temporal::commit_temporal_motion_blocks(&mut motion_field, temporal_records);
+        temporal_records.clear();
         let grid = predict(
             &mut scratch,
             &mut residual_scratch,
@@ -1402,7 +1404,6 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         retire_motion_grid(&mut scratch, grid);
         band_y += rows;
     }
-    super::temporal::commit_temporal_motion_blocks(&mut motion_field, temporal_records);
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
             .quantization_params
