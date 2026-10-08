@@ -1606,9 +1606,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             {
                 return Err(invalid_inter_tile_scheduling_state());
             }
-            if workspace.is_band() {
-                frontier.recon_band = Some(workspace);
-            }
+            frontier.recon_band = Some(workspace);
         }
         Ok(ScheduledCommitProgress {
             frontier_rows: committed.frontier_rows,
@@ -1888,7 +1886,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         frontier: Mutex::new(ScheduledFrontier {
             sealed,
             sealed_rows: 0,
-            recon_band: reusable.recon_band.take(),
+            recon_band: None,
             deblock: None,
             filter: None,
             next_filter_stripe: 0,

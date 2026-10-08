@@ -146,11 +146,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         Ok(())
     }
 
-    /// Whether the luma plane stores fewer rows than the frame has.
-    pub fn is_band(&self) -> bool {
-        self.y.samples.len() < self.y.stride_samples() * self.y.storage_size.height()
-    }
-
     /// Copies the completed luma rows and their matching chroma rows into
     /// another workspace of the same geometry.
     ///
@@ -189,7 +184,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 ///
 /// AV2 § 7.11.2 reads at most one row above a superblock: `sbBoundary` forces
 /// `aboveMrlIndex` to zero, and the CfL and MHCCP luma reads clamp to
-/// `sbTop - 1`. IntraBC reads further and is reconstructed into a full frame.
+/// `sbTop - 1`. Local IntraBC reads only the current superblock row (§ 5.20.2.1
+/// resets `IBCBufferValid` per row); global IntraBC never takes this path.
 const BAND_EDGE_ROWS: usize = 1;
 
 impl<T: ReconSample> CurrentFramePlane<T> {
@@ -502,7 +498,6 @@ mod tests {
             .unwrap()
         };
         let mut band = CurrentFrameWorkspace::<u16>::new_band(frame(256), 64, None).unwrap();
-        assert!(band.is_band());
         band.set_reconstructed_sample(PlaneId::Y, 3, 63, 77)
             .unwrap();
         band.set_reconstructed_sample(PlaneId::U, 3, 31, 55)
@@ -525,7 +520,6 @@ mod tests {
         assert!(band.move_band(0).is_err());
 
         let whole = CurrentFrameWorkspace::<u16>::new_band(frame(64), 64, Some(band)).unwrap();
-        assert!(!whole.is_band());
         assert!(whole.samples(PlaneId::Y).is_ok());
     }
 
