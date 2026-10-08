@@ -29,11 +29,14 @@
 use core::ops::Range;
 
 use super::owned_rect::OwnedFrameRectRows;
-use super::{CurrentFramePlane, CurrentFrameWorkspace, block_rect};
+use super::{
+    CurrentFramePlane, CurrentFrameWorkspace, IntraPredictionScratch, block_rect,
+    chroma_plane_geometry,
+};
 use crate::reconstruct::add_block_residual_into_rows;
 use crate::{
-    BitDepth, DecodedFrameInfo, IntraRectBlockSize, PlaneId, PlaneRect, PlaneRefRows, ReconError,
-    ReconSample, Result,
+    BitDepth, DecodedFrameInfo, IntraRectBlockSize, PlaneId, PlaneRect, PlaneRefRows, PlaneSize,
+    ReconError, ReconSample, Result,
 };
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
@@ -64,6 +67,88 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         recycled: &mut crate::FramePlaneSamples<T>,
     ) -> Result<Self> {
         Self::with_planes(info, None, recycled)
+    }
+
+    /// Creates a band: each plane stores the rows of one `luma_rows` tall
+    /// superblock row plus the one row above it, from row 0.
+    ///
+    /// Every row access outside the stored rows fails closed. The buffers of
+    /// `spare`, an earlier band, are reused; a band never takes plane-pool
+    /// buffers, which are frame sized.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] if the sample type cannot represent the frame bit
+    /// depth, geometry arithmetic overflows, or plane allocation fails.
+    pub fn new_band(info: DecodedFrameInfo, luma_rows: usize, spare: Option<Self>) -> Result<Self> {
+        crate::intra_dc_math::validate_sample_type::<T>(info.bit_depth())?;
+        let (mut spare, intra_prediction_scratch) = match spare {
+            Some(mut spare) => {
+                let scratch = core::mem::take(&mut spare.intra_prediction_scratch);
+                (spare.into_plane_samples(), scratch)
+            }
+            None => (
+                crate::FramePlaneSamples::default(),
+                IntraPredictionScratch::new(),
+            ),
+        };
+        let luma_size = info.storage_luma_size();
+        let luma_rect = info.visible_luma_rect();
+        let y = CurrentFramePlane::band(
+            PlaneId::Y,
+            luma_size,
+            luma_rect,
+            luma_rows,
+            spare.take(PlaneId::Y),
+        )?;
+        let chroma_rows = luma_rows >> info.pixel_format().subsampling_y();
+        let (u, v) = match chroma_plane_geometry(info.pixel_format(), luma_size, luma_rect)? {
+            None => (None, None),
+            Some((size, rect)) => (
+                Some(CurrentFramePlane::band(
+                    PlaneId::U,
+                    size,
+                    rect,
+                    chroma_rows,
+                    spare.take(PlaneId::U),
+                )?),
+                Some(CurrentFramePlane::band(
+                    PlaneId::V,
+                    size,
+                    rect,
+                    chroma_rows,
+                    spare.take(PlaneId::V),
+                )?),
+            ),
+        };
+        Ok(Self {
+            info,
+            y,
+            u,
+            v,
+            intra_prediction_scratch,
+        })
+    }
+
+    /// Moves a band down so it stores the superblock row starting at luma row
+    /// `luma_row`, keeping the row above it.
+    ///
+    /// A workspace that stores every row is left as it is.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the band would move up, which would expose
+    /// rows it no longer holds.
+    pub fn move_band(&mut self, luma_row: usize) -> Result<()> {
+        let subsampling_y = self.info.pixel_format().subsampling_y();
+        self.y.move_band(luma_row.saturating_sub(BAND_EDGE_ROWS))?;
+        for plane in [self.u.as_mut(), self.v.as_mut()].into_iter().flatten() {
+            plane.move_band((luma_row >> subsampling_y).saturating_sub(BAND_EDGE_ROWS))?;
+        }
+        Ok(())
+    }
+
+    /// Whether the luma plane stores fewer rows than the frame has.
+    pub fn is_band(&self) -> bool {
+        self.y.samples.len() < self.y.stride_samples() * self.y.storage_size.height()
     }
 
     /// Copies the completed luma rows and their matching chroma rows into
@@ -100,7 +185,82 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     }
 }
 
+/// Plane rows a band keeps above its superblock row.
+///
+/// AV2 § 7.11.2 reads at most one row above a superblock: `sbBoundary` forces
+/// `aboveMrlIndex` to zero, and the CfL and MHCCP luma reads clamp to
+/// `sbTop - 1`. IntraBC reads further and is reconstructed into a full frame.
+const BAND_EDGE_ROWS: usize = 1;
+
 impl<T: ReconSample> CurrentFramePlane<T> {
+    fn band(
+        plane: PlaneId,
+        storage_size: PlaneSize,
+        visible_rect: PlaneRect,
+        rows: usize,
+        mut samples: Vec<T>,
+    ) -> Result<Self> {
+        let len = rows
+            .saturating_add(BAND_EDGE_ROWS)
+            .min(storage_size.height())
+            .checked_mul(storage_size.width())
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "current-frame band sample count",
+            })?;
+        samples.truncate(len);
+        samples
+            .try_reserve_exact(len - samples.len())
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "band sample buffer",
+            })?;
+        samples.resize(len, T::default());
+        Ok(Self {
+            plane,
+            storage_size,
+            visible_rect,
+            origin_y: 0,
+            samples,
+            pool: None,
+        })
+    }
+
+    fn move_band(&mut self, origin_y: usize) -> Result<()> {
+        let stride = self.stride_samples();
+        if self.samples.len() >= stride * self.storage_size.height() {
+            return Ok(());
+        }
+        let Some(skip) = origin_y.checked_sub(self.origin_y) else {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: self.storage_size,
+                rect: PlaneRect::new(0, origin_y, stride, 1)?,
+            });
+        };
+        let skip = skip.saturating_mul(stride);
+        if skip < self.samples.len() {
+            self.samples.copy_within(skip.., 0); // splot-copy-ok: keep the edge rows the next superblock row reads
+        }
+        self.origin_y = origin_y;
+        Ok(())
+    }
+
+    /// The first plane row this plane stores.
+    pub const fn origin_y(&self) -> usize {
+        self.origin_y
+    }
+
+    /// Plane rows `start..end`, which must all be stored.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::WorkspaceRectOutOfBounds`] for a row outside the
+    /// stored rows.
+    pub fn rows(&self, start: usize, end: usize) -> Result<&[T]> {
+        let (stride, rows) = (self.stride_samples(), end.saturating_sub(start));
+        let local = self.band_row(start, rows)?;
+        Ok(&self.samples[local * stride..(local + rows) * stride])
+    }
+
     /// Copies rows `start..end` into the matching plane of another workspace.
     ///
     /// Both planes are tightly strided over the same storage size, so the row
@@ -127,7 +287,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         }
         let stride_samples = self.stride_samples();
         let range = start * stride_samples..end * stride_samples;
-        let sealed = &self.samples[range.clone()];
+        let sealed = self.rows(start, end)?;
         target.samples[range].copy_from_slice(sealed); // splot-copy-ok: seal completed rows for the stage that filters them
         Ok(())
     }
@@ -325,6 +485,48 @@ mod tests {
             self.0 ^= self.0 << 17;
             self.0
         }
+    }
+
+    /// A band stores one superblock row and the row above it; a moved band
+    /// keeps that edge row, and every access outside its rows fails closed.
+    #[test]
+    fn band_keeps_the_edge_row_and_refuses_rows_it_does_not_store() {
+        let frame = |height| {
+            DecodedFrameInfo::new(
+                OutputIndex::new(0),
+                BitDepth::Ten,
+                PixelFormat::Yuv420,
+                PlaneSize::new(64, height).unwrap(),
+                PlaneRect::new(0, 0, 64, height).unwrap(),
+            )
+            .unwrap()
+        };
+        let mut band = CurrentFrameWorkspace::<u16>::new_band(frame(256), 64, None).unwrap();
+        assert!(band.is_band());
+        band.set_reconstructed_sample(PlaneId::Y, 3, 63, 77)
+            .unwrap();
+        band.set_reconstructed_sample(PlaneId::U, 3, 31, 55)
+            .unwrap();
+        assert!(band.set_reconstructed_sample(PlaneId::Y, 3, 65, 1).is_err());
+        assert!(band.samples(PlaneId::Y).is_err());
+
+        band.move_band(64).unwrap();
+        assert_eq!(band.reconstructed_sample(PlaneId::Y, 3, 63).unwrap(), 77);
+        assert_eq!(band.reconstructed_sample(PlaneId::U, 3, 31).unwrap(), 55);
+        assert!(band.reconstructed_sample(PlaneId::Y, 3, 62).is_err());
+        assert!(band.reconstructed_sample(PlaneId::U, 3, 30).is_err());
+        assert!(band.reconstructed_sample(PlaneId::Y, 3, 128).is_err());
+        let rows = |y, height| PlaneRect::new(0, y, 8, height).unwrap();
+        assert!(band.rect_rows(PlaneId::Y, rows(63, 65)).is_ok());
+        assert!(band.rect_rows(PlaneId::Y, rows(62, 2)).is_err());
+        assert!(band.fill_rect(PlaneId::Y, rows(120, 9), 1).is_err());
+        assert!(band.plane(PlaneId::Y).unwrap().rows(64, 128).is_ok());
+        assert!(band.plane(PlaneId::Y).unwrap().rows(60, 64).is_err());
+        assert!(band.move_band(0).is_err());
+
+        let whole = CurrentFrameWorkspace::<u16>::new_band(frame(64), 64, Some(band)).unwrap();
+        assert!(!whole.is_band());
+        assert!(whole.samples(PlaneId::Y).is_ok());
     }
 
     /// The write-through path must reproduce the buffered reference exactly for

@@ -164,7 +164,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
-    recycled: &mut splot_recon::FramePlaneSamples<T>,
+    workspace: impl FnOnce(DecodedFrameInfo) -> splot_recon::Result<CurrentFrameWorkspace<T>>,
     initial_cdf_storage: Option<&mut Option<Arc<FrameCdfSubset>>>,
     payload_scratch: &mut crate::bitstream::tile_payload::TilePayloadScratch,
 ) -> Result<InterWalkPrologue<'payload, T>> {
@@ -221,7 +221,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let interpolation_filter = inter
         .interpolation_filter
         .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
-    let workspace = CurrentFrameWorkspace::<T>::new_recycled_from(geometry.info(), recycled)?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
+    let workspace = workspace(geometry.info())?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let quantization = core.quantization_params.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_base_q",
@@ -384,6 +384,10 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         let _scopes = quantizer.install_frame();
         reusable.deblocked_shell = records.deblocked_shell.take();
         let mut payload_scratch = core::mem::take(&mut reusable.payload);
+        let mut recycled = T::reclaim_planes(&mut records.retired_planes)
+            .with_pool(records.buffers.as_ref().map(|buffers| buffers.planes()));
+        let banded = !crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(&core);
+        let spare_band = banded.then(|| reusable.recon_band.take()).flatten();
         let prologue = derive_inter_walk_prologue(
             plan,
             candidate,
@@ -394,11 +398,17 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             &reference,
             bit_depth,
             geometry,
-            &mut T::reclaim_planes(&mut records.retired_planes)
-                .with_pool(records.buffers.as_ref().map(|buffers| buffers.planes())),
+            |info| {
+                if banded {
+                    CurrentFrameWorkspace::new_band(info, geometry.sb_h4() * 4, spare_band)
+                } else {
+                    CurrentFrameWorkspace::new_recycled_from(info, &mut recycled)
+                }
+            },
             Some(reusable.initial_cdfs()),
             &mut payload_scratch,
         );
+        recycled.release();
         let InterWalkPrologue {
             mut tile_plan,
             workspace,

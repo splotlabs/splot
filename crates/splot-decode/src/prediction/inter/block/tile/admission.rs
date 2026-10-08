@@ -122,15 +122,12 @@ struct CommittedBatch<T: ReconSample> {
 /// The § 7.17 frontier's own storage, advanced by one ordered chain per frame.
 ///
 /// The chain runs beside the commit spine, so it owns the sealed copy the spine
-/// hands it one superblock row at a time. A frame with no active deblock plan
-/// has nothing for the chain to advance, so sealing would only add a copy; it
-/// receives the spine's whole workspace once reconstruction is complete.
+/// hands it one superblock row at a time; the spine itself keeps only a band.
 struct ScheduledFrontier<T: ReconSample> {
     sealed: Option<crate::filters::source::DeblockedSource<T>>,
     sealed_rows: usize,
-    terminal_workspace: Option<crate::filters::source::DeblockedSource<T>>,
-    /// The emptied source cell the terminal workspace is wrapped in.
-    terminal_shell: Option<crate::filters::source::DeblockedShell>,
+    /// The spine's band once reconstruction is complete, for the next frame.
+    recon_band: Option<CurrentFrameWorkspace<T>>,
     deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
     filter: Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
     next_filter_stripe: usize,
@@ -309,6 +306,8 @@ pub(crate) struct ScheduledTileWorkspace<T: ReconSample> {
     /// The last filter phase's emptied deblocked-source cell, parked between
     /// the walk's start and its prepare.
     pub(crate) deblocked_shell: Option<crate::filters::source::DeblockedShell>,
+    /// The last frame's reconstruction band.
+    pub(crate) recon_band: Option<CurrentFrameWorkspace<T>>,
 }
 
 impl<T: ReconSample> ScheduledTileWorkspace<T> {
@@ -1177,6 +1176,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             reference: Some(self.recon.reference),
             initial_cdfs: self.recon.initial_cdfs,
             deblocked_shell: None,
+            recon_band: self.frontier.get_mut().recon_band.take(),
         }
     }
 
@@ -1402,7 +1402,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.recon.precompute(index, &self.pending_surfaces)
     }
 
-    fn seal_committed_rows(&self, commit: &TileCommit<T>, rows: usize) -> Result<()> {
+    /// Seals the spine's completed rows, then moves its band to the next row.
+    fn seal_committed_rows(&self, commit: &mut TileCommit<T>, rows: usize) -> Result<()> {
         let mut frontier = self.frontier.lock();
         let ScheduledFrontier {
             sealed,
@@ -1419,6 +1420,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             sealed.copy_rows_from(&commit.workspace, *sealed_rows..end)?;
             *sealed_rows = end;
         }
+        commit.workspace.move_band(end)?;
         Ok(())
     }
 
@@ -1441,7 +1443,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let ScheduledFrontier {
             sealed,
             sealed_rows,
-            terminal_workspace,
             deblock,
             filter,
             next_filter_stripe,
@@ -1449,7 +1450,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             ..
         } = &mut *frontier;
         let sealed_rows = sealed.as_ref().map(|_| *sealed_rows);
-        let filtered = terminal_workspace.as_mut();
         let mut filters = core::mem::take(spare_filters);
         if let Some(deblock) = deblock.as_mut()
             && let Some(safe_mi_end) = safe_deblock_mi_end(
@@ -1476,7 +1476,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 }),
                 "the frontier read a row the spine had not sealed"
             );
-            let source = sealed.as_mut().or(filtered).ok_or_else(|| {
+            let source = sealed.as_mut().ok_or_else(|| {
                 crate::filters::wienerns_lr::recon::deblock_prepare_error(
                     &crate::filters::deblock::DeblockError::Workspace,
                 )
@@ -1488,7 +1488,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 })?;
             while *next_filter_stripe < setup.stripe_ranges().len() {
                 let stripe = *next_filter_stripe;
-                let Some(source) = sealed.as_ref().or(terminal_workspace.as_ref()) else {
+                let Some(source) = sealed.as_ref() else {
                     break;
                 };
                 let Some(source) = setup.lease_ready_rows(stripe, deblock, source)? else {
@@ -1554,7 +1554,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             let source = frontier
                 .sealed
                 .as_ref()
-                .or(frontier.terminal_workspace.as_ref())
                 .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
             let source = setup.lease_terminal_rows(stripe, source)?;
             filters
@@ -1567,10 +1566,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             );
             frontier.next_filter_stripe += 1;
         }
-        let source = frontier
-            .sealed
-            .take()
-            .or(frontier.terminal_workspace.take());
+        let source = frontier.sealed.take();
         Ok(ScheduledFrameProgress {
             filters,
             output: Some(
@@ -1594,9 +1590,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     ///
     /// The one caller that commits the final unit receives the completed tile.
     pub(crate) fn commit(&self, index: usize) -> Result<ScheduledCommitProgress> {
-        let committed = self.recon.commit_batch(index, &self.parse_progress)?;
+        let mut committed = self.recon.commit_batch(index, &self.parse_progress)?;
         if !committed.frontier_rows.is_empty() {
-            self.seal_committed_rows(&committed.state, committed.frontier_rows.end)?;
+            self.seal_committed_rows(&mut committed.state, committed.frontier_rows.end)?;
         }
         if !committed.terminal {
             restore_active_commit(&self.recon.commit, committed.state)?;
@@ -1608,19 +1604,21 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let workspace = self.recon.finish_commit(committed.state);
         {
             let mut frontier = self.frontier.lock();
-            if frontier.sealed.is_some() {
-                drop(workspace);
-            } else {
-                let mut source = crate::filters::source::DeblockedSource::new_in(
-                    frontier.terminal_shell.take(),
-                    workspace,
-                );
-                if frontier.deblock.is_none()
-                    && !source.publish_final_rows(self.info.storage_luma_size().height())
-                {
-                    return Err(invalid_inter_tile_scheduling_state());
-                }
-                frontier.terminal_workspace = Some(source);
+            let frontier = &mut *frontier;
+            let deblocks = self
+                .recon
+                .core
+                .deblocking_filter_params
+                .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4]);
+            if !deblocks
+                && !frontier.sealed.as_mut().is_some_and(|source| {
+                    source.publish_final_rows(self.info.storage_luma_size().height())
+                })
+            {
+                return Err(invalid_inter_tile_scheduling_state());
+            }
+            if workspace.is_band() {
+                frontier.recon_band = Some(workspace);
             }
         }
         Ok(ScheduledCommitProgress {
@@ -1859,21 +1857,13 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         rects,
     )?;
     let resolve_state = TileResolveState::new(&sequence);
-    let sealed = if core
-        .deblocking_filter_params
-        .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4])
-    {
-        let mut spare = buffers.as_ref().map_or_else(Default::default, |buffers| {
-            splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
-        });
-        let workspace = CurrentFrameWorkspace::new_recycled_from(info, &mut spare)?;
-        Some(crate::filters::source::DeblockedSource::new_in(
-            reusable.deblocked_shell.take(),
-            workspace,
-        ))
-    } else {
-        None
-    };
+    let mut spare = buffers.as_ref().map_or_else(Default::default, |buffers| {
+        splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
+    });
+    let sealed = Some(crate::filters::source::DeblockedSource::new_in(
+        reusable.deblocked_shell.take(),
+        CurrentFrameWorkspace::new_recycled_from(info, &mut spare)?,
+    ));
     let tile = ScheduledTileRecon {
         recon: TileRecon {
             buffers,
@@ -1911,8 +1901,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         frontier: Mutex::new(ScheduledFrontier {
             sealed,
             sealed_rows: 0,
-            terminal_workspace: None,
-            terminal_shell: reusable.deblocked_shell.take(),
+            recon_band: reusable.recon_band.take(),
             deblock: None,
             filter: None,
             next_filter_stripe: 0,

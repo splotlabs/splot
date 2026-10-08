@@ -179,11 +179,7 @@ impl<T: ReconSample> DeblockedSource<T> {
             }
             let sample_start = start * storage.stride;
             let sample_end = end * storage.stride;
-            let source = source.samples().get(sample_start..sample_end).ok_or(
-                splot_recon::ReconError::ArithmeticOverflow {
-                    context: "deblocked source row geometry",
-                },
-            )?;
+            let source = source.rows(start, end)?;
             if sample_end > storage.len {
                 return Err(splot_recon::ReconError::ArithmeticOverflow {
                     context: "deblocked source row geometry",
