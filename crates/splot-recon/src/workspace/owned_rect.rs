@@ -150,9 +150,10 @@ fn publish_plane_into<T: ReconSample>(
     }
     target.ensure_rect(region.rect)?;
     let stride = region.rect.width();
+    let first_row = target.band_row(region.rect.y(), region.rect.height())?;
     for row in 0..region.rect.height() {
         let source = row * stride;
-        let target_start = (region.rect.y() + row) * target.stride_samples() + region.rect.x();
+        let target_start = (first_row + row) * target.stride_samples() + region.rect.x();
         let target_end = target_start + stride;
         copy_row_samples(
             &mut target.samples[target_start..target_end],

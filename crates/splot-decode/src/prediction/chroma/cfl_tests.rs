@@ -205,6 +205,7 @@ fn cfl_420_filter1_simd_matches_scalar_at_block_and_frame_edges() {
         let mut actual = Vec::new();
         assert!(fill_cfl_luma_ac_420_filter1_u16(
             &luma,
+            0,
             plane_width,
             plane_width,
             plane_height,

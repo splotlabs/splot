@@ -144,6 +144,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         }
     }
     let mut payload_scratch = core::mem::take(&mut scratch.payload);
+    let mut recycled = scratch.reclaim_retired_planes();
     let frame_walk::InterWalkPrologue {
         tile_plan,
         workspace,
@@ -162,7 +163,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference,
         bit_depth,
         geometry,
-        &mut scratch.reclaim_retired_planes(),
+        |info| splot_recon::CurrentFrameWorkspace::new_recycled_from(info, &mut recycled),
         Some(&mut scratch.initial_cdfs),
         &mut payload_scratch,
     )?;
