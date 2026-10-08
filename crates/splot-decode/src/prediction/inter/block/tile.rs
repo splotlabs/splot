@@ -1444,6 +1444,7 @@ impl ParseProgress {
         &mut self,
         buffers: &Arc<crate::support::decode_buffers::DecodeBuffers>,
     ) -> bool {
+        self.rows.get_mut().clear();
         let geometry = self.geometry.get_mut();
         let geometry_reusable = match geometry {
             GeometryState::Unpublished => true,
@@ -1463,7 +1464,6 @@ impl ParseProgress {
             }
             GeometryState::Unpublished => GeometryState::Unpublished,
         };
-        self.rows.get_mut().clear();
         let residuals = residuals.get_mut();
         residuals.coefficients.clear();
         residuals.planes.clear();
