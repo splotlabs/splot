@@ -572,6 +572,24 @@ impl TileSegmentIdState {
         Ok(Self { grid, predicted })
     }
 
+    /// With segmentation off every segment id is zero, so the grids hold no
+    /// cells: reads fall outside them and records are dropped.
+    pub(crate) fn disabled() -> Self {
+        let grid = || MiGrid {
+            origin_row: 0,
+            origin_col: 0,
+            rows: 0,
+            cols: 0,
+            window: SbRowWindow::new(0, SbRowWindow::WHOLE_TILE_SB_H4),
+            default: 0,
+            cells: Vec::new(),
+        };
+        Self {
+            grid: grid(),
+            predicted: grid(),
+        }
+    }
+
     pub(crate) fn cell(&self, r: usize, c: usize) -> Option<u8> {
         self.grid.cell(r, c)
     }
@@ -655,7 +673,10 @@ impl TileSegmentIdState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// The default map is empty: a frame with segmentation off saves only zero
+/// segment ids, and an empty map loads as zeros (§ 6.17.2
+/// `load_previous_segment_ids`).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FrameSegmentIdMap {
     mi_rows: usize,
     mi_cols: usize,

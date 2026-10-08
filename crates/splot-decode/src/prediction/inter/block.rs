@@ -557,7 +557,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let segment_ids = if previous.is_some() {
         None
     } else {
-        Some(products.segment_ids(params.mi_rows, params.mi_cols)?)
+        products.segment_ids(params.mi_rows, params.mi_cols, segmentation_enabled(core))?
     };
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
         tile_scratch,
@@ -599,6 +599,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         filter_inputs,
         segment_ids,
     })
+}
+
+pub(crate) fn segmentation_enabled(core: &FrameHeaderCore) -> bool {
+    core.segmentation_params
+        .as_ref()
+        .is_some_and(|seg| seg.segmentation_enabled)
 }
 
 fn final_segment_ids<'a, T: ReconSample>(

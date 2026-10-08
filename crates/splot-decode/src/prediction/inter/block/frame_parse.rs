@@ -109,7 +109,11 @@ impl<'payload> InterFrameParser<'payload> {
         let segment_ids = if previous.is_some() {
             None
         } else {
-            Some(products.segment_ids(params.mi_rows, params.mi_cols)?)
+            products.segment_ids(
+                params.mi_rows,
+                params.mi_cols,
+                super::segmentation_enabled(core),
+            )?
         };
         records.clear();
         let (unit_count, cdef_state, gdf_state, ccso_state) =

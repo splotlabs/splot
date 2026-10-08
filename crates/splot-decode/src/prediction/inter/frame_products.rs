@@ -174,11 +174,21 @@ impl FrameProductWriters {
             .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
     }
 
+    /// The frame's segment-id map to fill, or `None` when `enabled` is false:
+    /// the published map is then the empty all-zero one.
     pub(crate) fn segment_ids(
         &mut self,
         mi_rows: usize,
         mi_cols: usize,
-    ) -> crate::Result<&mut FrameSegmentIdMap> {
+        enabled: bool,
+    ) -> crate::Result<Option<&mut FrameSegmentIdMap>> {
+        if !enabled {
+            match self.segment_ids.as_mut().and_then(Arc::get_mut) {
+                Some(map) => *map = FrameSegmentIdMap::default(),
+                None => self.segment_ids = Some(Arc::default()),
+            }
+            return Ok(None);
+        }
         if self.segment_ids.is_none() {
             self.segment_ids = Some(Arc::new(super::block::frame_segment_id_map(
                 mi_rows, mi_cols,
@@ -193,7 +203,7 @@ impl FrameProductWriters {
         output
             .reset(mi_rows, mi_cols)
             .map_err(|error| super::block::segment_map_error(&error))?;
-        Ok(output)
+        Ok(Some(output))
     }
 
     pub(crate) fn inherit_segment_ids(
@@ -365,7 +375,7 @@ mod tests {
         );
         assert_eq!(Arc::as_ptr(reused.ccso_grid()), identities.2);
         assert_eq!(
-            std::ptr::from_ref(reused.segment_ids(1, 1).unwrap()),
+            std::ptr::from_ref(reused.segment_ids(1, 1, true).unwrap().unwrap()),
             identities.3,
         );
     }
@@ -414,7 +424,9 @@ mod tests {
         drop(current_handles);
         drop(current);
         let mut reused = current_slots.claim().unwrap();
-        let reused_map = std::ptr::from_ref::<FrameSegmentIdMap>(reused.segment_ids(2, 3).unwrap());
+        let reused_map = std::ptr::from_ref::<FrameSegmentIdMap>(
+            reused.segment_ids(2, 3, true).unwrap().unwrap(),
+        );
         assert_eq!(reused_map, current_pointer);
     }
 

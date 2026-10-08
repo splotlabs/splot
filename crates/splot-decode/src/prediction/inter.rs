@@ -229,7 +229,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
         .reset_output_from(&frame_cdfs, qindex);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = geometry.mi_dimensions();
-    products.segment_ids(mi_rows, mi_cols)?;
+    products.segment_ids(mi_rows, mi_cols, false)?;
     let segment_ids = products.finish_segment_ids()?;
     Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
 }
@@ -285,7 +285,7 @@ fn decode_bridge_frame<T: ReconSample>(
         .reset_output_from(&frame_cdfs, qindex);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = segment_id_map_dimensions(&core)?;
-    products.segment_ids(mi_rows, mi_cols)?;
+    products.segment_ids(mi_rows, mi_cols, false)?;
     let segment_ids = products.finish_segment_ids()?;
     Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
 }
