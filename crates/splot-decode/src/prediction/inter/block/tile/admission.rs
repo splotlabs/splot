@@ -21,7 +21,6 @@ pub(super) type FinishedDirectTile<T> = (
     deferred_recon::InterReconScratch<T>,
     CurrentFrameWorkspace<T>,
     bool,
-    Vec<splot_recon::OwnedFrameRect<T>>,
     crate::filters::wienerns_lr::FrameFilterRecords,
     TileBlockDecodedState,
 );
@@ -104,12 +103,10 @@ impl<T: ReconSample> TileCommit<T> {
     }
 
     pub(super) fn finish_direct(self) -> FinishedDirectTile<T> {
-        let surfaces = self.surfaces.lock().drain_free();
         (
             self.ordered,
             self.workspace,
             self.decoded_any,
-            surfaces,
             self.frame_filter_records,
             self.block_decoded,
         )
@@ -371,18 +368,22 @@ impl<T: ReconSample> ScheduledTileWorkspace<T> {
 /// source allocates on demand and takes published surfaces back. Interior
 /// superblocks all need the same buffer and differ only in position, so a
 /// returned surface is retargeted rather than reallocated: the live set follows
-/// how many units are in flight instead of how many the frame has.
+/// how many units are in flight instead of how many the frame has. The spare
+/// surfaces are shared by every frame in flight, whose peaks do not coincide.
 pub(super) struct SurfaceSource<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
     rects: Vec<splot_recon::PlaneRect>,
-    free: Vec<splot_recon::OwnedFrameRect<T>>,
+    free: SpareSurfaces<T>,
 }
+
+/// The decode's spare reconstruction surfaces.
+pub(super) type SpareSurfaces<T> = Arc<Mutex<Vec<splot_recon::OwnedFrameRect<T>>>>;
 
 impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn new(
         info: splot_recon::DecodedFrameInfo,
         rects: Vec<splot_recon::PlaneRect>,
-        free: Vec<splot_recon::OwnedFrameRect<T>>,
+        free: SpareSurfaces<T>,
     ) -> Self {
         Self { info, rects, free }
     }
@@ -392,7 +393,7 @@ impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn reset(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
-        free: Vec<splot_recon::OwnedFrameRect<T>>,
+        free: SpareSurfaces<T>,
     ) -> &mut Vec<splot_recon::PlaneRect> {
         self.info = info;
         self.free = free;
@@ -408,46 +409,48 @@ impl<T: ReconSample> SurfaceSource<T> {
         unit: usize,
     ) -> Option<splot_recon::Result<splot_recon::OwnedFrameRect<T>>> {
         let rect = *self.rects.get(unit)?;
-        let reusable = self.free.iter().position(|surface| {
-            let held = surface.luma_rect();
-            surface.info() == self.info
-                && held.width() == rect.width()
-                && held.height() == rect.height()
-        });
-        if let Some(index) = reusable {
-            let mut surface = self.free.swap_remove(index);
-            if surface.luma_rect() == rect || surface.retarget(rect).is_ok() {
-                poison_reused_surface(&mut surface);
-                return Some(Ok(surface));
+        let spare = {
+            let mut free = self.free.lock();
+            let reusable = free.iter().position(|surface| {
+                let held = surface.luma_rect();
+                surface.info() == self.info
+                    && held.width() == rect.width()
+                    && held.height() == rect.height()
+            });
+            // A surface of another shape still carries usable storage, so the
+            // set is laid out over rather than added to.
+            match reusable {
+                Some(index) => Some(free.swap_remove(index)),
+                None => free.pop(),
             }
-            self.free.push(surface);
-        }
-        // A surface of another shape still carries usable storage, so the
-        // frame's set is laid out over rather than added to.
-        if let Some(mut surface) = self.free.pop() {
-            return Some(surface.reshape(self.info, rect, T::default()).map(|()| {
-                poison_reused_surface(&mut surface);
-                surface
-            }));
-        }
-        Some(splot_recon::OwnedFrameRect::new(
-            self.info,
-            rect,
-            T::default(),
-        ))
+        };
+        let Some(mut surface) = spare else {
+            return Some(splot_recon::OwnedFrameRect::new(
+                self.info,
+                rect,
+                T::default(),
+            ));
+        };
+        let laid_out = if surface.info() == self.info
+            && (surface.luma_rect() == rect || surface.retarget(rect).is_ok())
+        {
+            Ok(())
+        } else {
+            surface.reshape(self.info, rect, T::default())
+        };
+        Some(laid_out.map(|()| {
+            poison_reused_surface(&mut surface);
+            surface
+        }))
     }
 
     pub(super) fn give(&mut self, surface: splot_recon::OwnedFrameRect<T>) {
-        self.free.push(surface);
-    }
-
-    fn drain_free(&mut self) -> Vec<splot_recon::OwnedFrameRect<T>> {
-        core::mem::take(&mut self.free)
+        self.free.lock().push(surface);
     }
 
     #[cfg(test)]
     pub(super) fn free_len(&self) -> usize {
-        self.free.len()
+        self.free.lock().len()
     }
 }
 
@@ -566,6 +569,8 @@ impl<T: ReconSample> TileRecon<T> {
                             .flatten();
                     }
                     scratch.with_installed(|scratch| {
+                        let mut lists = core::mem::take(&mut scratch.lists);
+                        ready.row.load_parsed(&mut lists);
                         if !ready.row.has_terminal_error() && !ready.row.motion_derived {
                             if ready.row.motion_storage.is_none() {
                                 ready.row.motion_storage = self.workers.take_motion_storage();
@@ -578,7 +583,7 @@ impl<T: ReconSample> TileRecon<T> {
                                 &shared,
                             );
                         }
-                        precompute_recon_row(
+                        let mut ready = precompute_recon_row(
                             ready,
                             scratch,
                             &self.prepass_block_decoded,
@@ -596,7 +601,10 @@ impl<T: ReconSample> TileRecon<T> {
                             self.params.luma_use_tcq,
                             self.params.residual_use_ddt,
                             self.params.bit_depth,
-                        )
+                        );
+                        ready.row.unload_parsed(&mut lists);
+                        scratch.lists = lists;
+                        ready
                     })
                 })
                 .collect()
@@ -672,8 +680,7 @@ impl<T: ReconSample> TileRecon<T> {
     }
 
     fn finish_commit(&self, commit: TileCommit<T>) -> CurrentFrameWorkspace<T> {
-        let surfaces = commit.surfaces.lock().drain_free();
-        let mut scratch = TileDecodeScratch::from_scheduled(commit.ordered, surfaces);
+        let mut scratch = TileDecodeScratch::from_scheduled(commit.ordered);
         scratch.parse.commit_block_decoded = commit.block_decoded;
         scratch.scheduled_rows = self.slots.retire();
         scratch.buffers.clone_from(&self.buffers);
@@ -1268,8 +1275,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             else {
                 break;
             };
-            resolve.grid.replay_flag_log(&row.flag_log);
+            row.replay_flags(&mut resolve.grid)?;
             row.return_terminal_error()?;
+            let mut lists = self.parse_progress.resolve_lists.lock();
+            row.load_parsed(&mut lists);
             {
                 let ScheduledResolve { grid, state, .. } = &mut *resolve;
                 state.resolve_unit(
@@ -1282,6 +1291,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             }?;
             row.return_terminal_error()?;
             let bounds = row_gate.bounds_for_row(&row);
+            row.unload_parsed(&mut lists);
+            drop(lists);
             TileRecon::accept_resolved(
                 &mut rows,
                 next,
@@ -1825,19 +1836,21 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         surface_source: _,
         ordered,
         workers: _,
-        surfaces,
         batches: _,
         scheduled_rows,
         buffers: _,
     } = scratch;
-    let mut surface_source = reusable
-        .surfaces
-        .take()
-        .unwrap_or_else(|| Arc::new(Mutex::new(SurfaceSource::new(info, Vec::new(), Vec::new()))));
+    let mut surface_source = reusable.surfaces.take().unwrap_or_else(|| {
+        Arc::new(Mutex::new(SurfaceSource::new(
+            info,
+            Vec::new(),
+            workers.spare_surfaces(),
+        )))
+    });
     let rects = Arc::get_mut(&mut surface_source)
         .ok_or_else(invalid_inter_tile_scheduling_state)?
         .get_mut()
-        .reset(info, surfaces);
+        .reset(info, workers.spare_surfaces());
     super::superblock_luma_rects_into(
         &geometry.mi_rows,
         &geometry.mi_cols,
