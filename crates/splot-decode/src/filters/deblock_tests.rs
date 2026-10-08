@@ -6,7 +6,9 @@
 use super::grid::DeblockGridStorage;
 use super::*;
 use crate::filters::source::DeblockedWindow;
-use crate::test_support::{yuv420_workspace, yuv420_workspace_with};
+use crate::test_support::{
+    copy_rows_to_workspace, frontier_plane, frontier_rows, yuv420_workspace, yuv420_workspace_with,
+};
 
 static EMPTY_CHROMA_RECORDS: ChromaDeblockRecords = ChromaDeblockRecords::new();
 
@@ -62,45 +64,7 @@ fn source_from_workspace<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
 ) -> FrontierRows<T> {
     let replacement = CurrentFrameWorkspace::<T>::new(workspace.info(), T::default()).unwrap();
-    std::sync::Arc::new(
-        crate::pipeline::frame_progress::FrameProgress::from_workspace(
-            core::mem::replace(workspace, replacement),
-            None,
-        ),
-    )
-    .frontier_rows()
-    .unwrap()
-}
-
-/// One plane's samples and width, final or not.
-fn source_plane<T: ReconSample>(
-    source: &mut FrontierRows<T>,
-    plane: PlaneId,
-) -> Option<(Vec<T>, usize)> {
-    let (width, height) = source.plane_size(plane)?;
-    let mut samples = Vec::new();
-    if source.append_rows(plane, 0, height, &mut samples).is_none() {
-        samples = source.with_plane_rows_mut(plane, 0, height, |rows, _, _, _, _| rows.to_vec())?;
-    }
-    Some((samples, width))
-}
-
-fn copy_source_to_workspace<T: ReconSample>(
-    source: &mut FrontierRows<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-) {
-    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        let Some((samples, width)) = source_plane(source, plane) else {
-            continue;
-        };
-        for (y, row) in samples.chunks(width).enumerate() {
-            for (x, &sample) in row.iter().enumerate() {
-                workspace
-                    .set_reconstructed_sample(plane, x, y, sample)
-                    .unwrap();
-            }
-        }
-    }
+    frontier_rows(core::mem::replace(workspace, replacement)).1
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -133,7 +97,7 @@ fn deblock_through_live_source<T: ReconSample>(
     let mut source = source_from_workspace(workspace);
     sections.advance_source(&mut source, mi_rows, bit_depth)?;
     assert!(sections.finish().is_none());
-    copy_source_to_workspace(&mut source, workspace);
+    copy_rows_to_workspace(&mut source, workspace);
     Ok(())
 }
 
@@ -219,7 +183,7 @@ fn one_row_advance_matches_the_whole_frame_deblock() {
     plan.advance_source(&mut staged_source, mi_rows, BitDepth::Eight)
         .unwrap();
     assert!(plan.finish().is_none());
-    copy_source_to_workspace(&mut staged_source, &mut staged);
+    copy_rows_to_workspace(&mut staged_source, &mut staged);
 
     let combined =
         splot_recon::DecodedFrameHashInput::new(&combined.freeze().unwrap()).compute_hash();
@@ -366,7 +330,7 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
 
     assert_eq!(plan.final_luma_rows(1), 128);
     assert!(plan.finish().is_none());
-    copy_source_to_workspace(&mut source, &mut actual);
+    copy_rows_to_workspace(&mut source, &mut actual);
     assert_workspace_samples_eq(&actual, &expected);
 }
 
@@ -497,8 +461,8 @@ fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
             .unwrap();
     }
 
-    copy_source_to_workspace(&mut borrowed_source, &mut borrowed);
-    copy_source_to_workspace(&mut owned_source, &mut owned);
+    copy_rows_to_workspace(&mut borrowed_source, &mut borrowed);
+    copy_rows_to_workspace(&mut owned_source, &mut owned);
     assert_workspace_samples_eq(&owned, &borrowed);
     assert!(borrowed_plan.finish().is_none());
     let mut records = owned_plan.finish().unwrap();
@@ -628,7 +592,7 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
 
     assert_eq!(plan.final_luma_rows(1), 72);
     assert!(plan.finish().is_none());
-    copy_source_to_workspace(&mut source, &mut actual);
+    copy_rows_to_workspace(&mut source, &mut actual);
     assert_workspace_samples_eq(&actual, &expected);
     let mut window = DeblockedWindow::default();
     window
@@ -685,7 +649,7 @@ fn incremental_deblock_matches_tile_boundary_rules() {
         plan.advance_source(&mut source, mi_rows, BitDepth::Eight)
             .unwrap();
         assert!(plan.finish().is_none());
-        copy_source_to_workspace(&mut source, &mut actual);
+        copy_rows_to_workspace(&mut source, &mut actual);
         assert_workspace_samples_eq(&actual, &expected);
 
         let p0 = actual.reconstructed_sample(PlaneId::Y, 63, 16).unwrap();
@@ -1959,11 +1923,11 @@ fn contiguous_source_plane_parallel_pass_matches_serial_output() {
         plan.prime_vertical_pass(&mut source, BitDepth::Eight)
             .unwrap();
         let primed = [PlaneId::Y, PlaneId::U, PlaneId::V]
-            .map(|plane| source_plane(&mut source, plane).unwrap().0);
+            .map(|plane| frontier_plane(&mut source, plane).unwrap().0);
         plan.advance_source(&mut source, mi_rows, BitDepth::Eight)
             .unwrap();
         assert!(plan.finish().is_none());
-        copy_source_to_workspace(&mut source, ws);
+        copy_rows_to_workspace(&mut source, ws);
         primed
     };
     let serial_primed = run(&mut serial);

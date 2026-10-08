@@ -9,7 +9,6 @@ use super::{
     DeblockedWindow, FramePlane, StripeOutputPlane, StripePlane, take_stripe_sample_buffer,
     window_bounds,
 };
-use crate::pipeline::frame_progress::FrameProgress;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
     PlaneRect, PlaneSize,
@@ -50,25 +49,15 @@ fn workspace_with_format(
     workspace
 }
 
-fn frontier(
-    workspace: CurrentFrameWorkspace<u16>,
-) -> (
-    Arc<FrameProgress<u16>>,
-    crate::pipeline::frame_progress::FrontierRows<u16>,
-) {
-    let progress = Arc::new(FrameProgress::from_workspace(workspace, None));
-    let rows = progress.frontier_rows().expect("frontier rows");
-    (progress, rows)
-}
-
 #[test]
 fn stripe_window_includes_reconstructed_padding_beyond_coded_height() {
     let info = workspace(18, 14)
         .info()
         .with_storage_luma_size(PlaneSize::new(24, 16).expect("storage size"))
         .expect("padded frame info");
-    let (_progress, mut rows) =
-        frontier(CurrentFrameWorkspace::new(info, 117u16).expect("workspace"));
+    let (_progress, mut rows) = crate::test_support::frontier_rows(
+        CurrentFrameWorkspace::new(info, 117u16).expect("workspace"),
+    );
     let (mut window, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
     assert!(rows.publish_final_rows(14));
     assert!(window.fill(&mut rows, &mut carry, (8, 16), 0).is_none());
@@ -94,7 +83,8 @@ fn stripe_windows_cover_first_middle_and_terminal_margins_for_all_formats() {
         PixelFormat::Yuv420,
         PixelFormat::Yuv444,
     ] {
-        let (_progress, mut rows) = frontier(workspace_with_format(16, 129, format));
+        let (_progress, mut rows) =
+            crate::test_support::frontier_rows(workspace_with_format(16, 129, format));
         assert!(rows.publish_final_rows(129));
         let mut carry = DeblockedWindow::default();
         for (start, end) in [(0, 56), (56, 120), (120, 129)] {

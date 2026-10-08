@@ -214,27 +214,6 @@ fn deblock_workspace() -> CurrentFrameWorkspace<u8> {
     workspace
 }
 
-fn workspace_from_rows<T: splot_recon::ReconSample>(
-    rows: &FrontierRows<T>,
-) -> CurrentFrameWorkspace<T> {
-    let mut workspace = CurrentFrameWorkspace::<T>::new(rows.info(), T::default()).unwrap();
-    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        let Some((width, height)) = rows.plane_size(plane) else {
-            continue;
-        };
-        let mut samples = Vec::new();
-        rows.append_rows(plane, 0, height, &mut samples).unwrap();
-        for (y, row) in samples.chunks(width).enumerate() {
-            for (x, &sample) in row.iter().enumerate() {
-                workspace
-                    .set_reconstructed_sample(plane, x, y, sample)
-                    .unwrap();
-            }
-        }
-    }
-    workspace
-}
-
 /// Wraps the sink's reconstructed frame in the progress it is filtered in.
 fn progress_of<T: splot_recon::ReconSample>(
     sink: &mut WienerNsLrReconSink<T>,
@@ -286,9 +265,7 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         )
         .unwrap();
 
-    let mut source = Arc::new(FrameProgress::from_workspace(deblock_workspace(), None))
-        .frontier_rows()
-        .unwrap();
+    let mut source = crate::test_support::frontier_rows(deblock_workspace()).1;
     let chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
     let mut deblock = crate::filters::deblock::FrameDeblock::prepare(
         &records,
@@ -308,7 +285,8 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         .advance_source(&mut source, 8, BitDepth::Eight)
         .unwrap();
     assert!(deblock.finish().is_none());
-    let staged_workspace = workspace_from_rows(&source);
+    let mut staged_workspace = CurrentFrameWorkspace::new(source.info(), 0).unwrap();
+    crate::test_support::copy_rows_to_workspace(&mut source, &mut staged_workspace);
     let mut staged_core = core.clone();
     staged_core.deblocking_filter_params = None;
     let mut staged =

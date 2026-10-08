@@ -515,10 +515,7 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
     .unwrap();
 
     let ranges = [(0, 56), (56, 120), (120, 128)];
-    let progress = std::sync::Arc::new(
-        crate::pipeline::frame_progress::FrameProgress::from_workspace(striped, None),
-    );
-    let mut rows = progress.frontier_rows().unwrap();
+    let (_progress, mut rows) = crate::test_support::frontier_rows(striped);
     assert!(rows.publish_final_rows(128));
     let mut carry = DeblockedWindow::default();
     let leases = ranges
