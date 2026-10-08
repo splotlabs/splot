@@ -274,11 +274,8 @@ impl<'r> IvfRecords<'r> {
     }
 
     /// The current record and its index among non-empty records.
-    pub(crate) const fn current(&self) -> Option<(&UnitBytes, usize)> {
-        match &self.current {
-            Some(unit) => Some((unit, self.record)),
-            None => None,
-        }
+    pub(crate) fn current(&self) -> Option<(&UnitBytes, usize)> {
+        self.current.as_ref().map(|unit| (unit, self.record))
     }
 
     /// Makes the next non-empty record current; `false` at end of input.

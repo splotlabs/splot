@@ -644,22 +644,16 @@ pub(crate) fn plan_stream(
     let limits = options.limits();
     limits.ensure(DecodeLimitName::MaxInputBytes, input.input_len_bytes)?;
 
-    let mut builder = PlanBuilder::new(input.parsed.format(), input.input_len_bytes, limits);
-
     match input.parsed {
-        ParsedBitstream::AnnexB(partial) => {
-            push_annex_b(&mut builder, &partial.obus, partial.error.as_ref())?;
-            Ok(builder.finish())
+        ParsedBitstream::AnnexB(partial) => plan_annex_b(partial, input.input_len_bytes, options),
+        ParsedBitstream::Ivf(ivf) => {
+            let mut builder = PlanBuilder::new(BitstreamFormat::Ivf, input.input_len_bytes, limits);
+            let mut planner = IvfPlanner::default();
+            for frame in &ivf.frames {
+                planner.push_frame(&mut builder, frame.frame, &frame.obus, frame.error.as_ref());
+            }
+            planner.finish(builder, ivf.header, &ivf.warnings, ivf.error.as_ref())
         }
-        ParsedBitstream::Ivf(ivf) => push_ivf(
-            builder,
-            ivf.header,
-            &ivf.warnings,
-            ivf.error.as_ref(),
-            ivf.frames
-                .iter()
-                .map(|frame| (frame.frame, frame.obus.as_slice(), frame.error.as_ref())),
-        ),
     }
 }
 
@@ -668,45 +662,16 @@ pub(crate) fn plan_annex_b(
     input_len_bytes: u64,
     options: &DecodeOptions,
 ) -> Result<DecodeStreamPlan> {
-    let mut builder = PlanBuilder::new(BitstreamFormat::AnnexB, input_len_bytes, options.limits());
-    push_annex_b(&mut builder, &partial.obus, partial.error.as_ref())?;
-    Ok(builder.finish())
-}
-
-fn push_annex_b(
-    builder: &mut PlanBuilder,
-    obus: &[ObuEnvelope<'_>],
-    error: Option<&splot_core::Error>,
-) -> Result<()> {
-    if let Some(error) = error {
+    if let Some(error) = &partial.error {
         return Err(DecodeError::MalformedSource {
             issue: issue_from_core_error(DecodeSourceIssueKind::AnnexBParseError, None, error),
         });
     }
-    for &obu in obus {
+    let mut builder = PlanBuilder::new(BitstreamFormat::AnnexB, input_len_bytes, options.limits());
+    for &obu in &partial.obus {
         builder.push_obu(obu, DecodeObuSourceKind::AnnexB, None)?;
     }
-    Ok(())
-}
-
-fn push_ivf<'a: 'b, 'b>(
-    mut builder: PlanBuilder,
-    header: Option<splot_core::ivf::IvfHeader>,
-    warnings: &[IvfWarning],
-    error: Option<&IvfError>,
-    frames: impl Iterator<
-        Item = (
-            splot_core::ivf::IvfFrame<'a>,
-            &'b [ObuEnvelope<'a>],
-            Option<&'b splot_core::Error>,
-        ),
-    >,
-) -> Result<DecodeStreamPlan> {
-    let mut planner = IvfPlanner::default();
-    for (frame, obus, frame_error) in frames {
-        planner.push_frame(&mut builder, frame, obus, frame_error);
-    }
-    planner.finish(builder, header, warnings, error)
+    Ok(builder.finish())
 }
 
 /// Plans IVF frame records one at a time. A record's planning error waits for
