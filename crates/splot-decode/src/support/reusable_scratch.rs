@@ -25,11 +25,12 @@ thread_local! {
         const { RefCell::new([const { None }; POOLED_VEC_SLOTS]) };
 }
 
-/// Takes a spare buffer of `T` holding at least `cells`, or the largest spare
-/// this thread has when none does, or an empty one when it has none at all.
+/// Takes a spare buffer of `T` holding at least `cells` but not twice that, or
+/// else the largest smaller spare, or else the smallest larger one.
 ///
-/// Handing back a buffer the caller then grows costs the allocation the spare
-/// was meant to save, so a spare that already fits is picked first.
+/// A spare more than twice the request is taken last: grids of one cell type
+/// come in several sizes, and a small grid that keeps a large buffer pins the
+/// large one's pages for good.
 pub(crate) fn take_pooled_vec<T: Send + 'static>(cells: usize) -> Vec<T> {
     POOLED_VECS
         .try_with(|slots| {
@@ -39,8 +40,9 @@ pub(crate) fn take_pooled_vec<T: Send + 'static>(cells: usize) -> Vec<T> {
                 .filter_map(|slot| slot.as_mut()?.downcast_mut::<Vec<T>>())
                 .filter(|spare| spare.capacity() > 0)
                 .min_by_key(|spare| match spare.capacity() {
-                    capacity if capacity >= cells => (0, capacity),
-                    capacity => (1, usize::MAX - capacity),
+                    capacity if capacity >= cells && capacity / 2 <= cells => (0, capacity),
+                    capacity if capacity < cells => (1, usize::MAX - capacity),
+                    capacity => (2, capacity),
                 })
                 .map(core::mem::take)
                 .unwrap_or_default()
@@ -96,4 +98,29 @@ pub(crate) fn with_reusable_scratch<T: Default, R>(
         };
         f(&mut value)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{recycle_pooled_vec, take_pooled_vec};
+
+    fn spare_capacity(spares: &[usize], cells: usize) -> usize {
+        for &capacity in spares {
+            recycle_pooled_vec(Vec::<u16>::with_capacity(capacity));
+        }
+        take_pooled_vec::<u16>(cells).capacity()
+    }
+
+    #[test]
+    fn a_spare_more_than_twice_the_request_is_taken_last() {
+        let pick = |spares: &'static [usize], cells| {
+            std::thread::spawn(move || spare_capacity(spares, cells))
+                .join()
+                .unwrap_or(0)
+        };
+        assert_eq!(pick(&[1000, 100], 90), 100);
+        assert_eq!(pick(&[1000, 50], 100), 50);
+        assert_eq!(pick(&[1000], 100), 1000);
+        assert_eq!(pick(&[1000, 100], 600), 1000);
+    }
 }
