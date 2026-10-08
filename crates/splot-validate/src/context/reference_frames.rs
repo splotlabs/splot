@@ -129,7 +129,7 @@ impl ValidatorContext {
                     &self.reference_state,
                 )
             });
-        let Some(facts) = slot_facts(
+        let Some(mut facts) = slot_facts(
             (core.order_hint, core.order_hint_lsb),
             (
                 core.frame_size.map(|size| size.width),
@@ -146,6 +146,15 @@ impl ValidatorContext {
         ) else {
             return FrameRefUpdate::PoisonAll;
         };
+
+        if let Some(lr) = core.lr_params.as_ref() {
+            for (plane, params) in lr.planes.iter().enumerate() {
+                if params.frame_filters_on {
+                    facts.lr_frame_filter_class_counts[plane] =
+                        params.num_filter_classes.unwrap_or(1);
+                }
+            }
+        }
 
         if core.starts_cvs && obu.header.obu_type == ObuType::ClosedLoopKey {
             let num_ref_frames = self

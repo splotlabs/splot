@@ -1843,3 +1843,68 @@ expect = "clean"
 path = "vectors/valid/syn-intrabc-bottom-edge-320x180-q180.ivf"
 description = "Deterministic 5,252-byte single-key-frame 320x180 8-bit 4:2:0 AVMenc stream with a bottom-edge IntraBC block at luma y=160 whose nominal 24-row footprint reaches the padded MI height 184. Before the fix splot passed that valid MI-domain target directly to the cropped workspace and rejected the 32x24 copy against coded 320x180 storage; the integer-copy bridge now preserves the padded prediction geometry while clipping the writable copy to the visible 32x20 target. Pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774, current AVM revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03, and fixed splot at one and eight threads produce byte-identical 86,400-byte raw I420 SHA-256 0442b4c7b20cab3ec12878277786c8e363cd09798376c95fa3e8fde708836895; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-interintra-column-422-128x32-8bit-q180.ivf"
+description = "Inter-intra DC at column tile edges in 8-bit 4:2:2, 128x32. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-interintra-row-420-64x128-10bit-q180.ivf"
+description = "Inter-intra DC at row tile edges in 10-bit 4:2:0, 64x128. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-interintra-both-444-128x128-10bit-q180.ivf"
+description = "Inter-intra DC at both tile edges in 10-bit 4:4:4, 128x128. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-interintra-ibp-row-422-64x128-10bit-q180.ivf"
+description = "Inter-intra DC at row tile edges in 10-bit 4:2:2, 64x128. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-mrl-padded-422-68x68-10bit-q120.ivf"
+description = "MRL prediction at padded frame edges in 10-bit 4:2:2, 68x68. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-mrl-padded-444-67x67-10bit-q120.ivf"
+description = "MRL prediction at padded frame edges in 10-bit 4:4:4, 67x67. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-mrl-padded-420-132x68-10bit-q120.ivf"
+description = "MRL prediction at padded frame edges in 10-bit 4:2:0, 132x68. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-3frame-padded-filters-420-134x70-10bit-q150.ivf"
+description = "Filters with partial right and bottom blocks in three 10-bit 4:2:0 frames, 134x70. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
+description = "Filters with partial right and bottom blocks in three 10-bit 4:2:2 frames, 134x69. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-3frame-padded-cctx-422-134x69-10bit-q180.ivf"
+description = "Cctx with partial right and bottom blocks in three 10-bit 4:2:2 frames, 134x69. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-3frame-padded-cctx-444-131x67-10bit-q180.ivf"
+description = "Cctx with partial right and bottom blocks in three 10-bit 4:4:4 frames, 131x67. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-3frame-padded-interintra-444-131x67-10bit-q180.ivf"
+description = "Interintra with partial right and bottom blocks in three 10-bit 4:4:4 frames, 131x67. Original source and pinned AVM recipe are in tools/decoder-fixtures/generate.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-mrl-4x4-10bit-96x96-q60.ivf"
+description = "Original 10-bit 96x96 texture selects 35 nonzero MRL predictions on 4x4 luma units. The vector enables extended partitions. The pinned AVM recipe is in tools/decoder-fixtures/generate.py."
+expect = "clean"
