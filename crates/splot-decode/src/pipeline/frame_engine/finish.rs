@@ -104,7 +104,7 @@ impl FilterSinkSetup {
         );
         let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas) =
             self.fill_sink(sink, filter_inputs);
-        let (setup, _) = sink.into_owned_filter_setup_published(
+        let setup = sink.into_owned_filter_setup_published(
             core,
             disable_loopfilters_across_tiles,
             progress,
@@ -225,6 +225,11 @@ impl<T: ReconSample> WalkedFrame<T> {
     /// chain carries through unchanged from the reconstruction workspace.
     pub(crate) fn info(&self) -> DecodedFrameInfo {
         self.sink.frame_info()
+    }
+
+    /// Takes the reconstructed frame, which its pending slot then filters in place.
+    pub(crate) fn take_workspace(&mut self) -> Option<splot_recon::CurrentFrameWorkspace<T>> {
+        self.sink.take_workspace()
     }
 }
 

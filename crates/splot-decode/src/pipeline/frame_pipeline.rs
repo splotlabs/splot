@@ -571,7 +571,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ParkedTipOutput<'_, T> {
         }
         let planes = progress
             .take_unfiltered_planes()
-            .unwrap_or_else(|| scratch.reclaim_retired_planes());
+            .unwrap_or_else(|| scratch.pooled_planes());
         let TipOutputJob {
             candidate,
             envelope,

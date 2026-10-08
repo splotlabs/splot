@@ -219,13 +219,9 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         records
     }
 
-    /// Takes back the plane buffers the last frame's filter phase retired.
-    pub(crate) fn reclaim_retired_planes(&mut self) -> splot_recon::FramePlaneSamples<T> {
-        let retired = self
-            .frame_filter_records
-            .last_mut()
-            .map(|records| &mut records.retired_planes);
-        T::reclaim_planes(retired.unwrap_or(&mut splot_recon::RetiredFramePlanes::default()))
+    /// Plane buffers for a new workspace, taken from the decode's pool.
+    pub(crate) fn pooled_planes(&self) -> splot_recon::FramePlaneSamples<T> {
+        splot_recon::FramePlaneSamples::default()
             .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes()))
     }
 

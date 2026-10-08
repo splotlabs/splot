@@ -179,7 +179,7 @@ fn reclaim_unowned_frames(
                 )
             })?;
         scheduler.forget(frame_index);
-        frames.entries[slot_index].retired = Some(ring.keep_frame_planes(frame.frame, false));
+        frames.entries[slot_index].retired = Some(ring.keep_frame_planes(frame.frame));
     }
     Ok(())
 }

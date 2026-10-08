@@ -30,6 +30,8 @@ pub(crate) use grid::DeblockGridStorage;
 use grid::MiCell;
 use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, build_mi_grid, overlay_mi_grid};
 
+use crate::pipeline::frame_progress::FrontierRows;
+
 const MI_SIZE: usize = 4;
 
 const SB_SIZE: usize = 64;
@@ -451,22 +453,18 @@ impl<'a> FrameDeblock<'a> {
     /// [`Self::advance_source`] can call a stripe's rows final.
     pub(crate) fn prime_vertical_pass<T: ReconSample>(
         &mut self,
-        workspace: &mut CurrentFrameWorkspace<T>,
+        frame: &mut FrontierRows<T>,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
         let range = self.next_pass_0_mi_row..self.mi_rows;
         if range.is_empty() {
             return Ok(());
         }
-        let pixel_format = workspace.info().pixel_format();
-        let mut dimensions = [None; 3];
-        for (plane, slot) in dimensions.iter_mut().enumerate() {
-            let plane_id = plane_index_to_id(plane);
-            if workspace.plane(plane_id).is_ok() {
-                *slot = Some(coded_plane_dimensions(workspace, plane_id)?);
-            }
-        }
-        let (y, u, v) = workspace.as_frame_mut().into_planes();
+        let pixel_format = frame.info().pixel_format();
+        let dimensions = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| frame.plane_size(plane));
+        let [Some(y), u, v] = frame.planes_mut() else {
+            return Err(DeblockError::Workspace);
+        };
         let luma_bands = dimensions[0].map_or(0, |(_, height)| {
             height.div_ceil(VERTICAL_BAND_MI_ROWS * MI_SIZE)
         });
@@ -505,10 +503,9 @@ impl<'a> FrameDeblock<'a> {
             ) else {
                 continue;
             };
-            let stride = samples.stride_samples();
+            let stride = width;
             let band_rows = (VERTICAL_BAND_MI_ROWS * MI_SIZE) >> plane_pass.plane_sub_y;
             let plane_samples = samples
-                .into_samples()
                 .get_mut(..stride.checked_mul(height).ok_or(DeblockError::Workspace)?)
                 .ok_or(DeblockError::Workspace)?;
             let band_samples = band_rows
@@ -553,11 +550,11 @@ impl<'a> FrameDeblock<'a> {
         Ok(())
     }
 
-    /// Deblocks only the mutable rows below a contiguous source's immutable
-    /// filter prefix, then releases the newly final prefix for read leases.
+    /// Deblocks the frame rows past its final prefix in place, then publishes
+    /// the newly final prefix for stripe windows.
     pub(crate) fn advance_source<T: ReconSample>(
         &mut self,
-        source: &mut impl DeblockRows<T>,
+        source: &mut FrontierRows<T>,
         mi_row_end: usize,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
@@ -590,7 +587,7 @@ impl<'a> FrameDeblock<'a> {
 
     fn run_ranges_source<T: ReconSample>(
         &self,
-        source: &mut impl DeblockRows<T>,
+        source: &mut FrontierRows<T>,
         ranges: &[core::ops::Range<usize>; 2],
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
@@ -748,62 +745,6 @@ impl<'a> FrameDeblock<'a> {
                 Some(records)
             }
         }
-    }
-}
-
-/// The frame rows one frontier deblocks in place.
-pub(crate) trait DeblockRows<T> {
-    fn info(&self) -> splot_recon::DecodedFrameInfo;
-    fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)>;
-    fn with_plane_rows_mut<R>(
-        &mut self,
-        plane: PlaneId,
-        start: usize,
-        end: usize,
-        f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
-    ) -> Option<R>;
-    fn publish_final_rows(&mut self, rows: usize) -> bool;
-}
-
-impl<T: ReconSample> DeblockRows<T> for crate::filters::source::DeblockedSource<T> {
-    fn info(&self) -> splot_recon::DecodedFrameInfo {
-        self.info()
-    }
-    fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)> {
-        self.plane_size(plane)
-    }
-    fn with_plane_rows_mut<R>(
-        &mut self,
-        plane: PlaneId,
-        start: usize,
-        end: usize,
-        f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
-    ) -> Option<R> {
-        self.with_plane_rows_mut(plane, start, end, f)
-    }
-    fn publish_final_rows(&mut self, rows: usize) -> bool {
-        self.publish_final_rows(rows)
-    }
-}
-
-impl<T: ReconSample> DeblockRows<T> for crate::pipeline::frame_progress::FrontierRows<T> {
-    fn info(&self) -> splot_recon::DecodedFrameInfo {
-        self.info()
-    }
-    fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)> {
-        self.plane_size(plane)
-    }
-    fn with_plane_rows_mut<R>(
-        &mut self,
-        plane: PlaneId,
-        start: usize,
-        end: usize,
-        f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
-    ) -> Option<R> {
-        self.with_plane_rows_mut(plane, start, end, f)
-    }
-    fn publish_final_rows(&mut self, rows: usize) -> bool {
-        self.publish_final_rows(rows)
     }
 }
 

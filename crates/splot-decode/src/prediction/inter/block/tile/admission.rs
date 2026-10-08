@@ -1631,8 +1631,8 @@ const RECON_READ_LEAD_MI_ROWS: usize = 6;
 
 /// Returns the § 7.17 deblock frontier after `completed_rows` canonical rows.
 ///
-/// The frontier deblocks the sealed copy, so its only bound is the sealed rows
-/// it may read. Current-frame readers — ordinary intra, and local or global
+/// The frontier deblocks the rows sealed into the frame, so its only bound is
+/// the sealed rows it may read. Current-frame readers — ordinary intra, and local or global
 /// IntraBC — keep reading the spine's raw workspace, which no deblock pass
 /// writes, so an IntraBC source's liveness places no constraint here.
 fn safe_deblock_mi_end(

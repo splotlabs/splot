@@ -5,6 +5,7 @@
 
 use super::grid::DeblockGridStorage;
 use super::*;
+use crate::filters::source::DeblockedWindow;
 use crate::test_support::{yuv420_workspace, yuv420_workspace_with};
 
 static EMPTY_CHROMA_RECORDS: ChromaDeblockRecords = ChromaDeblockRecords::new();
@@ -63,28 +64,41 @@ const fn filter(apply_deblocking_filter: [bool; 4]) -> DeblockingFilterParams {
 
 fn source_from_workspace<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-) -> crate::filters::source::DeblockedSource<T> {
+) -> FrontierRows<T> {
     let replacement = CurrentFrameWorkspace::<T>::new(workspace.info(), T::default()).unwrap();
-    crate::filters::source::DeblockedSource::new(core::mem::replace(workspace, replacement))
+    std::sync::Arc::new(
+        crate::pipeline::frame_progress::FrameProgress::from_workspace(
+            core::mem::replace(workspace, replacement),
+            None,
+        ),
+    )
+    .frontier_rows()
+    .unwrap()
+}
+
+/// One plane's samples and width, final or not.
+fn source_plane<T: ReconSample>(
+    source: &mut FrontierRows<T>,
+    plane: PlaneId,
+) -> Option<(Vec<T>, usize)> {
+    let (width, height) = source.plane_size(plane)?;
+    let mut samples = Vec::new();
+    if source.append_rows(plane, 0, height, &mut samples).is_none() {
+        samples = source.with_plane_rows_mut(plane, 0, height, |rows, _, _, _, _| rows.to_vec())?;
+    }
+    Some((samples, width))
 }
 
 fn copy_source_to_workspace<T: ReconSample>(
-    source: &crate::filters::source::DeblockedSource<T>,
+    source: &mut FrontierRows<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
 ) {
-    let height = source.info().coded_luma_size().height();
-    let lease = source.lease(0, height, 0).unwrap();
-    let planes = lease.planes().unwrap();
-    for (plane, source) in [
-        (PlaneId::Y, Some(planes.y)),
-        (PlaneId::U, planes.u),
-        (PlaneId::V, planes.v),
-    ] {
-        let Some(source) = source else {
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let Some((samples, width)) = source_plane(source, plane) else {
             continue;
         };
-        for y in source.origin_y()..source.end_y() {
-            for (x, &sample) in source.row(y).unwrap().iter().enumerate() {
+        for (y, row) in samples.chunks(width).enumerate() {
+            for (x, &sample) in row.iter().enumerate() {
                 workspace
                     .set_reconstructed_sample(plane, x, y, sample)
                     .unwrap();
@@ -123,7 +137,7 @@ fn deblock_through_live_source<T: ReconSample>(
     let mut source = source_from_workspace(workspace);
     sections.advance_source(&mut source, mi_rows, bit_depth)?;
     assert!(sections.finish().is_none());
-    copy_source_to_workspace(&source, workspace);
+    copy_source_to_workspace(&mut source, workspace);
     Ok(())
 }
 
@@ -209,7 +223,7 @@ fn one_row_advance_matches_the_whole_frame_deblock() {
     plan.advance_source(&mut staged_source, mi_rows, BitDepth::Eight)
         .unwrap();
     assert!(plan.finish().is_none());
-    copy_source_to_workspace(&staged_source, &mut staged);
+    copy_source_to_workspace(&mut staged_source, &mut staged);
 
     let combined =
         splot_recon::DecodedFrameHashInput::new(&combined.freeze().unwrap()).compute_hash();
@@ -356,19 +370,18 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
 
     assert_eq!(plan.final_luma_rows(1), 128);
     assert!(plan.finish().is_none());
-    copy_source_to_workspace(&source, &mut actual);
+    copy_source_to_workspace(&mut source, &mut actual);
     assert_workspace_samples_eq(&actual, &expected);
 }
 
 #[test]
-fn contiguous_source_deblock_matches_workspace_while_an_older_lease_is_live() {
+fn in_place_deblock_matches_workspace_across_stripe_windows() {
     let mi_rows = 32;
     let mi_cols = 32;
     let blocks = deblock_blocks(mi_rows, mi_cols);
     let params = filter([true; 4]);
     let mut expected = patterned_yuv420_workspace(128, 128);
-    let mut source =
-        crate::filters::source::DeblockedSource::new(patterned_yuv420_workspace(128, 128));
+    let mut source = source_from_workspace(&mut patterned_yuv420_workspace(128, 128));
 
     deblock_through_live_source(
         &mut expected,
@@ -398,28 +411,32 @@ fn contiguous_source_deblock_matches_workspace_while_an_older_lease_is_live() {
     .unwrap();
     plan.advance_source(&mut source, 16, BitDepth::Eight)
         .unwrap();
-    let earlier = source.lease(0, 32, 8).unwrap();
+    let (mut earlier, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
+    earlier.fill(&mut source, &mut carry, (0, 32), 8).unwrap();
     plan.advance_source(&mut source, 32, BitDepth::Eight)
         .unwrap();
+    let mut later = DeblockedWindow::default();
+    later.fill(&mut source, &mut carry, (32, 128), 0).unwrap();
 
-    assert!(earlier.planes().is_some());
-    let actual = source.lease(0, 128, 0).unwrap();
-    let actual = actual.planes().unwrap();
-    for (plane, actual) in [
-        (PlaneId::Y, Some(actual.y)),
-        (PlaneId::U, actual.u),
-        (PlaneId::V, actual.v),
-    ] {
-        let actual = actual.unwrap();
-        let expected = expected.plane(plane).unwrap();
-        let width = expected.storage_size().width();
-        let stride = expected.stride_samples();
-        for y in 0..expected.storage_size().height() {
-            assert_eq!(
-                actual.row(y).unwrap(),
-                &expected.samples()[y * stride..y * stride + width],
-                "{plane:?} row {y} differs"
-            );
+    for (window, end) in [(&earlier, 16), (&later, 64)] {
+        let actual = window.planes().unwrap();
+        for (plane, actual) in [
+            (PlaneId::Y, Some(actual.y)),
+            (PlaneId::U, actual.u),
+            (PlaneId::V, actual.v),
+        ] {
+            let actual = actual.unwrap();
+            let expected = expected.plane(plane).unwrap();
+            let width = expected.storage_size().width();
+            let stride = expected.stride_samples();
+            let end = end << usize::from(plane == PlaneId::Y);
+            for y in actual.origin_y()..actual.end_y().min(end) {
+                assert_eq!(
+                    actual.row(y).unwrap(),
+                    &expected.samples()[y * stride..y * stride + width],
+                    "{plane:?} row {y} differs"
+                );
+            }
         }
     }
     assert!(plan.finish().is_none());
@@ -484,8 +501,8 @@ fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
             .unwrap();
     }
 
-    copy_source_to_workspace(&borrowed_source, &mut borrowed);
-    copy_source_to_workspace(&owned_source, &mut owned);
+    copy_source_to_workspace(&mut borrowed_source, &mut borrowed);
+    copy_source_to_workspace(&mut owned_source, &mut owned);
     assert_workspace_samples_eq(&owned, &borrowed);
     assert!(borrowed_plan.finish().is_none());
     let mut records = owned_plan.finish().unwrap();
@@ -556,14 +573,21 @@ fn incremental_deblock_enforces_frontiers_and_leases_exact_window() {
     assert_eq!(plan.final_luma_rows(0), 56);
     assert_eq!(plan.final_luma_rows(1), 48);
 
-    let lease = source.lease(0, 32, 8).unwrap();
-    let planes = lease.planes().unwrap();
+    let mut window = DeblockedWindow::default();
+    assert!(
+        window
+            .fill(&mut source, &mut DeblockedWindow::default(), (0, 33), 8)
+            .is_none()
+    );
+    window
+        .fill(&mut source, &mut DeblockedWindow::default(), (0, 32), 8)
+        .unwrap();
+    let planes = window.planes().unwrap();
     assert_eq!((planes.y.origin_y(), planes.y.end_y()), (0, 40));
     assert_eq!(
         (planes.u.unwrap().origin_y(), planes.u.unwrap().end_y()),
         (0, 24)
     );
-    assert!(source.lease(0, 33, 8).is_none());
     assert!(plan.finish().is_none());
 }
 
@@ -607,12 +631,14 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
         .unwrap();
 
     assert_eq!(plan.final_luma_rows(1), 72);
-    let lease = source.lease(0, 70, 16).unwrap();
-    assert_eq!(lease.planes().unwrap().y.end_y(), 72);
-    assert!(source.lease(0, 73, 16).is_none());
     assert!(plan.finish().is_none());
-    copy_source_to_workspace(&source, &mut actual);
+    copy_source_to_workspace(&mut source, &mut actual);
     assert_workspace_samples_eq(&actual, &expected);
+    let mut window = DeblockedWindow::default();
+    window
+        .fill(&mut source, &mut DeblockedWindow::default(), (0, 70), 16)
+        .unwrap();
+    assert_eq!(window.planes().unwrap().y.end_y(), 72);
 }
 
 #[test]
@@ -663,7 +689,7 @@ fn incremental_deblock_matches_tile_boundary_rules() {
         plan.advance_source(&mut source, mi_rows, BitDepth::Eight)
             .unwrap();
         assert!(plan.finish().is_none());
-        copy_source_to_workspace(&source, &mut actual);
+        copy_source_to_workspace(&mut source, &mut actual);
         assert_workspace_samples_eq(&actual, &expected);
 
         let p0 = actual.reconstructed_sample(PlaneId::Y, 63, 16).unwrap();
@@ -1933,14 +1959,15 @@ fn contiguous_source_plane_parallel_pass_matches_serial_output() {
         )
         .unwrap()
         .unwrap();
-        plan.prime_vertical_pass(ws, BitDepth::Eight).unwrap();
-        let primed =
-            [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| ws.samples(plane).unwrap().to_vec());
         let mut source = source_from_workspace(ws);
+        plan.prime_vertical_pass(&mut source, BitDepth::Eight)
+            .unwrap();
+        let primed = [PlaneId::Y, PlaneId::U, PlaneId::V]
+            .map(|plane| source_plane(&mut source, plane).unwrap().0);
         plan.advance_source(&mut source, mi_rows, BitDepth::Eight)
             .unwrap();
         assert!(plan.finish().is_none());
-        copy_source_to_workspace(&source, ws);
+        copy_source_to_workspace(&mut source, ws);
         primed
     };
     let serial_primed = run(&mut serial);

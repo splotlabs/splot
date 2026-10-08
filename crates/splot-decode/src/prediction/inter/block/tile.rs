@@ -1069,7 +1069,7 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
     batches: admission::BatchRowSlots<T>,
     scheduled_rows: admission::ScheduledRowSlots<T>,
-    /// The decode's reusable storage, for the sealed copy and the row sets.
+    /// The decode's reusable storage, for the row sets.
     pub(in crate::prediction::inter) buffers:
         Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }

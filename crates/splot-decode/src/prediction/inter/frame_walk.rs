@@ -398,7 +398,7 @@ impl<'payload, T: ReconSample> InterFrameStart<'payload, T> {
             &reference,
             bit_depth,
             geometry,
-            &mut T::reclaim_planes(&mut records.retired_planes)
+            &mut splot_recon::FramePlaneSamples::default()
                 .with_pool(records.buffers.as_ref().map(|buffers| buffers.planes())),
             Some(reusable.initial_cdfs()),
             &mut payload_scratch,

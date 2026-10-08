@@ -41,20 +41,13 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) stripes: FilterStripeLists,
     /// The deblock grid vectors, borrowed and handed back the same way.
     pub(crate) deblock_grids: crate::filters::deblock::DeblockGridStorage,
-    /// The reconstruction workspace's sample buffers, on their way to the next
-    /// frame's walk: the filter phase is the last reader of the frame it
-    /// filtered, and these records already run from the phase to the decoder's
-    /// scratch and back out with the next frame.
-    pub(crate) retired_planes: splot_recon::RetiredFramePlanes,
-    /// The decode's reusable storage, so a workspace built from
-    /// `retired_planes` knows where it goes when its last holder releases it.
+    /// The decode's reusable storage, which the next frame's workspace is taken
+    /// from and returns to.
     pub(crate) buffers: Option<std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
     pub(crate) cdef_grid_values: Vec<Option<usize>>,
     pub(crate) cdef_strengths: Vec<crate::filters::cdef::CdefFrameParams>,
     pub(crate) tx_skip_grid_values: Vec<u8>,
     pub(crate) ccso_offset_luts: [Vec<i32>; 3],
-    /// The last filter phase's emptied deblocked-source cell.
-    pub(crate) deblocked_shell: Option<crate::filters::source::DeblockedShell>,
     /// Spent stripe input windows, for the next filter phase to fill.
     pub(crate) filter_windows: Vec<splot_recon::RetiredFramePlanes>,
 }

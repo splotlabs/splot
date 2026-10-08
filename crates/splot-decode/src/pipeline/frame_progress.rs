@@ -423,21 +423,16 @@ impl<T: ReconSample> FrameProgress<T> {
         self.buffers.as_ref()
     }
 
-    /// Opens the filtered workspace one pending frame's filter phase publishes
-    /// into, before that phase is handed to a worker.
-    ///
-    /// # Errors
-    ///
-    /// Returns the workspace allocation's own diagnostic.
-    pub(crate) fn recycled(
-        info: DecodedFrameInfo,
-        recycled: &mut splot_recon::FramePlaneSamples<T>,
+    /// Opens the workspace one pending frame's filter phase filters in place
+    /// and publishes, before that phase is handed to a worker.
+    pub(crate) fn from_workspace(
+        workspace: CurrentFrameWorkspace<T>,
         buffers: Option<&std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    ) -> Result<Self> {
+    ) -> Self {
         let buffers = buffers.cloned();
-        let workspace =
-            DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?); // every row is published by a filter stripe before any consumer may read past the watermark
-        Ok(Self {
+        let info = workspace.info();
+        let workspace = DirectWorkspace::new(workspace);
+        Self {
             buffers,
             info,
             planes: workspace.planes,
@@ -449,16 +444,12 @@ impl<T: ReconSample> FrameProgress<T> {
             terminal_published: CompletionCell::new(),
             luma_height: info.storage_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
-        })
+        }
     }
 
-    pub(crate) fn reset(
-        &mut self,
-        info: DecodedFrameInfo,
-        recycled: &mut splot_recon::FramePlaneSamples<T>,
-    ) -> Result<()> {
-        let workspace =
-            DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?);
+    pub(crate) fn reset(&mut self, workspace: CurrentFrameWorkspace<T>) {
+        let info = workspace.info();
+        let workspace = DirectWorkspace::new(workspace);
         if let Some(layout) = self.layout.take() {
             *self.spare_stripes.get_mut() = layout.into_inner().stripes;
         }
@@ -471,12 +462,17 @@ impl<T: ReconSample> FrameProgress<T> {
         self.terminal_published.reset();
         self.luma_height = info.storage_luma_size().height();
         self.subsampling_y = usize::from(info.pixel_format().subsampling_y());
-        Ok(())
     }
 
     #[cfg(test)]
     pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
-        Self::recycled(info, &mut splot_recon::FramePlaneSamples::default(), None)
+        Ok(Self::from_workspace(
+            CurrentFrameWorkspace::new_recycled_from(
+                info,
+                &mut splot_recon::FramePlaneSamples::default(),
+            )?,
+            None,
+        ))
     }
 
     /// Publishes the terminal watermark of a filter phase that ended.
@@ -826,6 +822,17 @@ impl<T: ReconSample> FrontierRows<T> {
         let (samples, len) = self.span(plane, start, end)?; // SAFETY: rows at or past `final_luma_rows` (never below `released_luma_rows`) are this unique frontier's alone: `direct_stripe` refuses a stripe ending past the release and the published prefix is made of such stripes; freeze and plane take refuse while this handle lives, so the storage stays allocated.
         let samples = unsafe { slice::from_raw_parts_mut(samples, len) };
         Some(f(samples, width, width, height, start))
+    }
+
+    /// Lends every whole plane while no row is final, for a pass that filters
+    /// them all before the frontier advances.
+    pub(crate) fn planes_mut(&mut self) -> [Option<&mut [T]>; 3] {
+        let final_rows = self.final_luma_rows;
+        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+            let height = self.progress.planes[plane.index()]?.height;
+            let (samples, len) = self.span(plane, 0, height).filter(|_| final_rows == 0)?; // SAFETY: with no final row every row is this frontier's, as in `with_plane_rows_mut`, and the three planes are disjoint allocations.
+            Some(unsafe { slice::from_raw_parts_mut(samples, len) })
+        })
     }
 
     /// Seals reconstructed luma rows and their chroma rows into the frame.

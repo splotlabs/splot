@@ -115,7 +115,7 @@ impl RetainedDecode {
         }
         for entry in &mut self.frames.entries {
             if let Some(frame) = entry.frame.take() {
-                entry.retired = Some(self.ring.keep_frame_planes(frame.frame, true));
+                entry.retired = Some(self.ring.keep_frame_planes(frame.frame));
             }
         }
         self.frames.count = 0;

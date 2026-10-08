@@ -392,9 +392,10 @@ fn resetting_progress_retains_stripes_and_clears_terminal_publication() {
         .as_ptr();
     for cycle in 0..1200 {
         progress.publish_terminal(cycle % 2 == 0);
-        progress
-            .reset(geometry, &mut planes)
-            .expect("reset progress");
+        progress.reset(
+            splot_recon::CurrentFrameWorkspace::new_recycled_from(geometry, &mut planes)
+                .expect("reset workspace"),
+        );
         assert_eq!(progress.published_luma_rows(), 0);
         assert!(!progress.terminal_published.is_set());
         assert!(progress.layout.get().is_none());

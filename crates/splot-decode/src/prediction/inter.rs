@@ -119,7 +119,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait()?;
-        let planes = scratch.reclaim_retired_planes();
+        let planes = scratch.pooled_planes();
         return decode_tip_output_frame(
             scratch,
             planes,
@@ -162,7 +162,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference,
         bit_depth,
         geometry,
-        &mut scratch.reclaim_retired_planes(),
+        &mut scratch.pooled_planes(),
         Some(&mut scratch.initial_cdfs),
         &mut payload_scratch,
     )?;
