@@ -12,25 +12,24 @@ use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample}
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::bitstream::byte_stream::FlatParsedBitstream;
+use crate::DecodeOptions;
+use crate::bitstream::byte_stream::{PreparedStream, ReadSeek};
 use crate::error::Result;
 use crate::hash_report::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport,
 };
 use crate::pipeline::PipelineDecodedFrame;
-use crate::{DecodeOptions, DecodeStreamPlan};
 use parking_lot::Mutex;
 
 pub(crate) fn decode_hash_report_from_plan(
-    bytes: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
+    prepared: &PreparedStream,
+    reader: &mut dyn ReadSeek,
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<DecodeHashReport> {
     let report_frames =
-        decode_hash_frames_pipelined(bytes, parsed, options, plan, resolved_threads, session)?;
+        decode_hash_frames_pipelined(prepared, reader, options, resolved_threads, session)?;
 
     Ok(DecodeHashReport::raw_intermediate_output(
         resolved_threads.to_string(),
@@ -58,10 +57,9 @@ fn hash_backlog_capacity(resolved_threads: NonZeroUsize, frame_delay: NonZeroUsi
 
 /// Hashes decoded frames on short worker tasks while the driver decodes.
 fn decode_hash_frames_pipelined(
-    bytes: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
+    prepared: &PreparedStream,
+    reader: &mut dyn ReadSeek,
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<Vec<DecodeHashFrame>> {
@@ -71,10 +69,9 @@ fn decode_hash_frames_pipelined(
         let mut emitted = 0u64;
         let mut outstanding: VecDeque<Arc<CompletionCell<()>>> = VecDeque::new();
         crate::pipeline::emit_frames_from_prepared(
-            bytes,
-            parsed,
+            prepared,
+            reader,
             options,
-            plan,
             session,
             |_| Ok(()),
             |output| {

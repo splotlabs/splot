@@ -13,7 +13,6 @@
 
 use std::sync::Arc;
 
-use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, FrameSize};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{
@@ -22,6 +21,7 @@ use splot_recon::{
 };
 
 use super::*;
+use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{DecodeTilePayloadPlan, FrameQuantizerSnapshot};
 use crate::filters::wienerns_lr::FrameFilterRecords;
 
@@ -157,8 +157,7 @@ impl FrameDecodeGeometry {
 pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &'payload [u8],
-    frame_envelope: ObuEnvelope<'payload>,
+    bytes: SourceBytes<'payload>,
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
@@ -169,7 +168,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     initial_cdf_storage: Option<&mut Option<Arc<FrameCdfSubset>>>,
     payload_scratch: &mut crate::bitstream::tile_payload::TilePayloadScratch,
 ) -> Result<InterWalkPrologue<'payload, T>> {
-    let offset = frame_envelope.offset;
+    let offset = candidate.offset();
     let initial_cdfs = if let Some(storage) = initial_cdf_storage {
         resolve_initial_frame_cdfs_reusing(core, sequence, reference, candidate, offset, storage)?
     } else {
@@ -349,8 +348,6 @@ pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) records: FrameFilterRecords,
     pub(crate) plan: &'payload DecodeStreamPlan,
     pub(crate) candidate: &'payload DecodePlannedObu,
-    pub(crate) bytes: &'payload [u8],
-    pub(crate) frame_envelope: ObuEnvelope<'payload>,
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
     pub(crate) options: &'payload DecodeOptions,
@@ -363,17 +360,16 @@ pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) products: FrameProductWriters,
 }
 
-impl<'payload, T: ReconSample> InterFrameStart<'payload, T> {
-    pub(crate) fn run(
+impl<T: ReconSample> InterFrameStart<'_, T> {
+    pub(crate) fn run<'unit>(
         self,
+        bytes: SourceBytes<'unit>,
         reusable: &mut block::ScheduledTileWorkspace<T>,
-    ) -> Result<(InterWalkEarly<T>, PendingInterWalk<'payload, T>)> {
+    ) -> Result<(InterWalkEarly<T>, PendingInterWalk<'unit, T>)> {
         let Self {
             mut records,
             plan,
             candidate,
-            bytes,
-            frame_envelope,
             core,
             sequence,
             options,
@@ -392,7 +388,6 @@ impl<'payload, T: ReconSample> InterFrameStart<'payload, T> {
             plan,
             candidate,
             bytes,
-            frame_envelope,
             &core,
             &sequence,
             options,

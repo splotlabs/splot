@@ -84,6 +84,35 @@ fn decode_hash_json(path: &Path, threads: &str, frame_delay: &str) -> serde_json
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+#[cfg(unix)]
+#[test]
+fn decode_reads_non_seekable_input_from_a_pipe() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    let bytes = std::fs::read(&input).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args(["decode", "--output-format", "hash", "/dev/stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&bytes).unwrap();
+    let piped = child.wait_with_output().unwrap();
+    let from_file = splot(&["decode", "--output-format", "hash", input.to_str().unwrap()]);
+
+    assert_eq!(
+        piped.status.code(),
+        Some(0),
+        "stderr was: {}",
+        String::from_utf8_lossy(&piped.stderr)
+    );
+    assert_eq!(piped.stdout, from_file.stdout);
+    assert!(!piped.stdout.is_empty());
+}
+
 #[test]
 fn decode_missing_input_is_operational_error_and_does_not_touch_files() {
     let input = temp_path("missing-input", "av2");

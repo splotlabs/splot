@@ -10,17 +10,16 @@ use std::io::Write;
 use splot_core::ivf::IvfHeader;
 use splot_recon::{BitDepth, DecodedFrame, ReconSample, Y4mError, Y4mFrameRate, Y4mWriter};
 
-use crate::bitstream::byte_stream::FlatParsedBitstream;
+use crate::DecodeOptions;
+use crate::bitstream::byte_stream::{PreparedStream, ReadSeek};
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
-use crate::{DecodeOptions, DecodeStreamPlan};
 
 pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
-    bytes: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
+    prepared: &PreparedStream,
+    reader: &mut dyn ReadSeek,
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
     session: &crate::pipeline::DecodeSession,
     output: W,
 ) -> Result<W> {
@@ -29,10 +28,9 @@ pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
     let mut sample_bit_depth = None;
     let frame_rate_override = options.y4m_frame_rate_override();
     crate::pipeline::emit_frames_from_prepared(
-        bytes,
-        parsed,
+        prepared,
+        reader,
         options,
-        plan,
         session,
         |header| preflight_y4m_source(header, frame_rate_override),
         |output| {

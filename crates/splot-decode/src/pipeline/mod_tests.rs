@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use crate::bitstream::byte_stream::{FlatParsedBitstream, prepare_byte_stream};
+use crate::bitstream::byte_stream::{IvfRecords, SourceBytes, plan_byte_stream, runtime_obus};
 use crate::test_support::empty_avmenc_ivf;
 use crate::{DecodeContext, DecodeRuntimeConfig};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
@@ -292,36 +292,26 @@ fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf()
     .concat();
 
     let options = DecodeOptions::default();
-    let annex_b = prepare_byte_stream(&payload, &options)?;
-    assert_eq!(annex_b.plan().obu_count(), 5);
-    assert!(matches!(annex_b.parsed(), FlatParsedBitstream::AnnexB(_)));
-    let FlatParsedBitstream::AnnexB(annex_b) = annex_b.parsed() else {
-        return Err("unexpected prepared bitstream format".into());
-    };
-    assert_eq!(annex_b.obus.len(), 3);
-    assert!(
-        annex_b
-            .obus
-            .iter()
-            .all(|obu| !obu.header.obu_type.is_reserved())
-    );
+    assert_eq!(plan_byte_stream(&payload, &options)?.obu_count(), 5);
+    let mut obus = Vec::new();
+    runtime_obus(SourceBytes::from(payload.as_slice()), &mut obus)?;
+    assert_eq!(obus.len(), 3);
+    assert!(obus.iter().all(|obu| !obu.header.obu_type.is_reserved()));
 
     let mut ivf_bytes = Vec::new();
-    write_ivf_header(&mut ivf_bytes, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1))?;
+    let header = IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1);
+    write_ivf_header(&mut ivf_bytes, &header)?;
     write_ivf_frame(&mut ivf_bytes, 0, &payload)?;
-    let ivf = prepare_byte_stream(&ivf_bytes, &options)?;
-    assert_eq!(ivf.plan().obu_count(), 5);
-    assert!(matches!(ivf.parsed(), FlatParsedBitstream::Ivf(_)));
-    let FlatParsedBitstream::Ivf(ivf) = ivf.parsed() else {
-        return Err("unexpected prepared bitstream format".into());
-    };
-    assert_eq!(ivf.frames.len(), 1);
-    assert_eq!(ivf.frame_obus(&ivf.frames[0]).len(), 3);
-    assert!(
-        ivf.frame_obus(&ivf.frames[0])
-            .iter()
-            .all(|obu| !obu.header.obu_type.is_reserved())
-    );
+    assert_eq!(plan_byte_stream(&ivf_bytes, &options)?.obu_count(), 5);
+    let mut reader = std::io::Cursor::new(ivf_bytes.as_slice());
+    let mut buffers = Vec::new();
+    let mut records = IvfRecords::new(&mut reader, header, &mut buffers)?;
+    assert!(records.advance()?);
+    let (unit, record) = records.current().ok_or("missing IVF record")?;
+    let mut obus = Vec::new();
+    runtime_obus(unit.view(), &mut obus)?;
+    assert_eq!((record, obus.len()), (0, 3));
+    assert!(obus.iter().all(|obu| !obu.header.obu_type.is_reserved()));
     Ok(())
 }
 

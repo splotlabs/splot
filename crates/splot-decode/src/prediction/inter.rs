@@ -22,6 +22,7 @@ use splot_recon::{
     ReferenceSlot,
 };
 
+use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
     FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap, GeneralIntraResidualError,
     reconstruct_general_intra_chroma_cctx_pair_into,
@@ -85,7 +86,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &[u8],
+    bytes: SourceBytes<'_>,
     frame_envelope: ObuEnvelope<'_>,
     core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
@@ -124,7 +125,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             scratch,
             planes,
             candidate,
-            frame_envelope,
+            frame_envelope.offset,
             core,
             sequence,
             options,
@@ -155,7 +156,6 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         plan,
         candidate,
         bytes,
-        frame_envelope,
         &core,
         sequence,
         options,
@@ -200,7 +200,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     candidate: &DecodePlannedObu,
-    frame_envelope: ObuEnvelope<'_>,
+    offset: ByteOffset,
     core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
@@ -209,7 +209,6 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     products: &mut FrameProductWriters,
 ) -> Result<InterDecodeOutput<T>> {
     let bit_depth = geometry.info().bit_depth();
-    let offset = frame_envelope.offset;
     let frame_size = geometry.frame_size();
     ensure_runtime_limits(
         options.limits(),
