@@ -735,20 +735,97 @@ fn push_recon_entry<Entry>(
     }
 }
 
+/// A parsed frame's units, packed in parse order.
+///
+/// Units wait here from parse to commit, a whole frame of them per frame in
+/// flight. Most hold a few entries, so one list per unit would hold a page
+/// for each; packed, the frame costs only what it parsed.
 #[derive(Default)]
 struct FrameResiduals {
     coefficients: Vec<i32>,
     planes: crate::residual::pipeline::ResidualPlaneArena,
+    entries: Vec<Option<ReconRowEntry>>,
+    blocks: Vec<InterResidualBlock>,
 }
 
 pub(super) struct RowResiduals {
     frame: Arc<Mutex<FrameResiduals>>,
     planes: crate::residual::pipeline::ResidualPlaneSpan,
     range: Range<usize>,
+    entries: Range<usize>,
+    blocks: Range<usize>,
     capacity: usize,
 }
 
+/// The working entry and block lists of one stage that loads parsed units.
+#[derive(Default)]
+pub(super) struct UnitLists {
+    entries: Vec<ReconRowEntry>,
+    blocks: Vec<InterResidualBlock>,
+}
+
+impl UnitLists {
+    pub(super) fn swap_into(
+        &mut self,
+        entries: &mut Vec<ReconRowEntry>,
+        blocks: &mut Vec<InterResidualBlock>,
+    ) {
+        core::mem::swap(&mut self.entries, entries);
+        core::mem::swap(&mut self.blocks, blocks);
+    }
+}
+
 impl RowResiduals {
+    fn load(
+        &self,
+        entries: &mut Vec<ReconRowEntry>,
+        blocks: &mut Vec<InterResidualBlock>,
+    ) -> Result<()> {
+        entries.clear();
+        blocks.clear();
+        let mut frame = self.frame.lock();
+        let FrameResiduals {
+            entries: parsed,
+            blocks: parsed_blocks,
+            ..
+        } = &mut *frame;
+        let parsed = parsed
+            .get_mut(self.entries.clone())
+            .filter(|parsed| parsed.iter().all(Option::is_some))
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        let parsed_blocks = parsed_blocks
+            .get(self.blocks.clone())
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        let bound = self.capacity / 16;
+        if entries.capacity() < parsed.len() {
+            entries
+                .try_reserve_exact(bound.max(parsed.len()))
+                .map_err(|_| inter_allocation!("unit entries"))?;
+        }
+        if blocks.capacity() < parsed_blocks.len() {
+            blocks
+                .try_reserve_exact(bound.max(parsed_blocks.len()))
+                .map_err(|_| inter_allocation!("unit residual blocks"))?;
+        }
+        entries.extend(parsed.iter_mut().filter_map(Option::take));
+        blocks.extend_from_slice(parsed_blocks);
+        Ok(())
+    }
+
+    fn store(&self, entries: &mut Vec<ReconRowEntry>) {
+        let mut frame = self.frame.lock();
+        if let Some(parsed) = frame
+            .entries
+            .get_mut(self.entries.clone())
+            .filter(|parsed| parsed.len() == entries.len())
+        {
+            for (slot, entry) in parsed.iter_mut().zip(entries.drain(..)) {
+                *slot = Some(entry);
+            }
+        }
+        entries.clear();
+    }
+
     pub(super) fn take_planes(
         &self,
         target: &mut crate::residual::pipeline::ResidualPlaneArena,
@@ -802,6 +879,28 @@ pub(super) struct ReconRow {
 }
 
 impl ReconRow {
+    /// Moves a published unit's entries and residual blocks out of the frame
+    /// into `lists`, which the row holds until [`Self::unload_parsed`].
+    pub(super) fn load_parsed(&mut self, lists: &mut UnitLists) {
+        let Some(source) = &self.residual_source else {
+            return;
+        };
+        lists.swap_into(&mut self.entries, &mut self.residual_blocks);
+        if let Err(error) = source.load(&mut self.entries, &mut self.residual_blocks) {
+            self.record_terminal_error(error);
+        }
+    }
+
+    /// Puts the entries back into the frame and returns the lists.
+    pub(super) fn unload_parsed(&mut self, lists: &mut UnitLists) {
+        let Some(source) = &self.residual_source else {
+            return;
+        };
+        source.store(&mut self.entries);
+        self.residual_blocks.clear();
+        lists.swap_into(&mut self.entries, &mut self.residual_blocks);
+    }
+
     fn has_terminal_error(&self) -> bool {
         matches!(self.failure, ReconRowFailure::Terminal(_))
     }
@@ -1423,6 +1522,8 @@ pub(crate) struct ParseProgress {
     residuals: Arc<Mutex<FrameResiduals>>,
     coefficient_scratch: Mutex<Vec<i32>>,
     plane_scratch: Mutex<crate::residual::pipeline::ResidualPlaneArena>,
+    parse_lists: Mutex<UnitLists>,
+    resolve_lists: Mutex<UnitLists>,
     finished: splot_parallel::WatermarkCell,
     rows: Mutex<Vec<Option<ReconRow>>>,
     geometry: Mutex<GeometryState>,
@@ -1467,6 +1568,8 @@ impl ParseProgress {
         let residuals = residuals.get_mut();
         residuals.coefficients.clear();
         residuals.planes.clear();
+        residuals.entries.clear();
+        residuals.blocks.clear();
         self.finished.reset();
         let records = self.records.get_mut();
         records.clear();
@@ -1543,6 +1646,11 @@ impl ParseProgress {
             .planes
             .reserve_records(capacity / 16)
             .map_err(|_| inter_allocation!("frame residual records"))?;
+        let FrameResiduals {
+            entries, blocks, ..
+        } = &mut *residuals;
+        let _ = entries.try_reserve_exact((capacity / 16).saturating_sub(entries.len()));
+        let _ = blocks.try_reserve_exact((capacity / 16).saturating_sub(blocks.len()));
         drop(residuals);
         drop(buffers);
         let mut published = self.geometry.lock();
@@ -1687,6 +1795,10 @@ impl<'payload> TileParser<'payload> {
             &mut row_set.residual_planes,
             &mut *parse_progress.plane_scratch.lock(),
         );
+        parse_progress
+            .parse_lists
+            .lock()
+            .swap_into(&mut row_set.entries, &mut row_set.residual_blocks);
         let capacity = superblock_coefficient_capacity(
             context.params.sb_h4,
             context.sequence.general.chroma_format_idc,
@@ -1714,14 +1826,31 @@ impl<'payload> TileParser<'payload> {
                 .planes
                 .append_row(&mut row.residual_planes)
                 .map_err(|_| inter_allocation!("frame residual publication"))?;
+            let entries = residuals.entries.len();
+            let blocks = residuals.blocks.len();
+            residuals
+                .entries
+                .try_reserve(row.entries.len())
+                .and_then(|()| residuals.blocks.try_reserve(row.residual_blocks.len()))
+                .map_err(|_| inter_allocation!("frame unit publication"))?;
+            residuals.entries.extend(row.entries.drain(..).map(Some));
+            residuals.blocks.append(&mut row.residual_blocks);
             row.residual_source = Some(RowResiduals {
                 frame: Arc::clone(&parse_progress.residuals),
                 range: start..residuals.coefficients.len(),
                 planes,
+                entries: entries..residuals.entries.len(),
+                blocks: blocks..residuals.blocks.len(),
                 capacity,
             });
             Ok::<(), crate::DecodeError>(())
         })();
+        if row.residual_source.is_some() {
+            parse_progress
+                .parse_lists
+                .lock()
+                .swap_into(&mut row.entries, &mut row.residual_blocks);
+        }
         row.residual_coeffs.clear();
         std::mem::swap(
             &mut row.residual_coeffs,
