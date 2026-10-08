@@ -19,6 +19,7 @@ use super::{
     CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at,
 };
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
+use crate::tile::SbRowWindow;
 
 /// Syntax facts read by neighbour context derivation during symbol decode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -353,11 +354,7 @@ pub(crate) struct NeighbourMvGrid {
     pub(super) origin_col: usize,
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
-    sb_h4_log2: u32,
-    /// Plane row of tile-relative row `r` is `r & ring_mask`.
-    ring_mask: usize,
-    /// Tile-relative superblock row of the latest publication.
-    sb_row: Option<usize>,
+    window: SbRowWindow,
     pub(super) planes: GridPlanes,
     /// Flag publications since the last [`NeighbourMvGrid::take_flag_log`],
     /// collected only while logging is on.
@@ -372,7 +369,7 @@ impl NeighbourMvGrid {
         mi_cols: core::ops::Range<usize>,
     ) -> Result<Self, TileGridConstructionError> {
         let mut grid = Self::default();
-        grid.reset_for_tile(mi_rows, mi_cols, 1 << (usize::BITS - 2))?;
+        grid.reset_for_tile(mi_rows, mi_cols, SbRowWindow::WHOLE_TILE_SB_H4)?;
         Ok(grid)
     }
 
@@ -387,22 +384,17 @@ impl NeighbourMvGrid {
         sb_h4: usize,
     ) -> Result<(), TileGridConstructionError> {
         let (rows, cols, tile_cells) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
-        let sb_h4 = sb_h4.max(1).next_power_of_two();
-        let ring_rows = sb_h4.saturating_mul(2);
-        let (plane_rows, ring_mask) = if rows > ring_rows {
-            (ring_rows, ring_rows - 1)
-        } else {
-            (rows, usize::MAX)
-        };
         self.origin_row = mi_rows.start;
         self.origin_col = mi_cols.start;
         self.mi_rows = rows;
         self.mi_cols = cols;
-        self.sb_h4_log2 = sb_h4.trailing_zeros();
-        self.ring_mask = ring_mask;
-        self.sb_row = None;
-        reset_grid_planes(&mut self.planes, plane_rows * cols, tile_cells)
-            .map_err(|_| TileGridConstructionError::Allocation)?;
+        self.window = SbRowWindow::new(rows, sb_h4);
+        reset_grid_planes(
+            &mut self.planes,
+            self.window.plane_rows() * cols,
+            tile_cells,
+        )
+        .map_err(|_| TileGridConstructionError::Allocation)?;
         self.flag_log.clear();
         self.logging = false;
         Ok(())
@@ -766,24 +758,12 @@ impl NeighbourMvGrid {
         }
     }
 
-    /// Moves the window down to the superblock row holding tile row `row`,
-    /// clearing the plane rows it takes over from the superblock row two above.
+    /// Moves the window down to the superblock row holding tile row `row`.
     fn enter_sb_row(&mut self, row: usize) {
-        let sb_row = row.saturating_sub(self.origin_row) >> self.sb_h4_log2;
-        let previous = self.sb_row;
-        if previous.is_some_and(|current| current >= sb_row) {
+        let Some(rows) = self.window.enter(row.saturating_sub(self.origin_row)) else {
             return;
-        }
-        self.sb_row = Some(sb_row);
-        let span = match previous {
-            None => return,
-            Some(_) if self.ring_mask == usize::MAX => return,
-            Some(current) if current + 1 == sb_row => {
-                let start = ((sb_row << self.sb_h4_log2) & self.ring_mask) * self.mi_cols;
-                start..start + (self.mi_cols << self.sb_h4_log2)
-            }
-            Some(_) => 0..self.planes.flags.len(),
         };
+        let span = rows.start * self.mi_cols..rows.end * self.mi_cols;
         if let Some(flags) = self.planes.flags.get_mut(span.clone()) {
             flags.fill(None);
         }
@@ -794,11 +774,7 @@ impl NeighbourMvGrid {
 
     /// Plane row of tile row `row`, `None` outside the readable window.
     fn plane_row(&self, row: usize) -> Option<usize> {
-        let rel = row.checked_sub(self.origin_row)?;
-        let sb_row = rel >> self.sb_h4_log2;
-        let current = self.sb_row?;
-        (rel < self.mi_rows && sb_row <= current && sb_row + 1 >= current)
-            .then_some(rel & self.ring_mask)
+        self.window.plane_row(row.checked_sub(self.origin_row)?)
     }
 
     /// Plane row and column ranges covered by one leaf, `None` when the leaf
