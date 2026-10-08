@@ -1602,9 +1602,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             });
         }
         let workspace = self.recon.finish_commit(committed.state);
-        if workspace.is_band() {
-            self.frontier.lock().recon_band = Some(workspace);
-        }
+        self.frontier.lock().recon_band = Some(workspace);
         Ok(ScheduledCommitProgress {
             frontier_rows: committed.frontier_rows,
             recon_complete: true,

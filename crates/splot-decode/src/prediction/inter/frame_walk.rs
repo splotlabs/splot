@@ -383,10 +383,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         } = self;
         let _scopes = quantizer.install_frame();
         let mut payload_scratch = core::mem::take(&mut reusable.payload);
-        let mut recycled = splot_recon::FramePlaneSamples::default()
-            .with_pool(records.buffers.as_ref().map(|buffers| buffers.planes()));
-        let banded = !crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(&core);
-        let spare_band = banded.then(|| reusable.recon_band.take()).flatten();
+        let spare_band = reusable.recon_band.take();
         let prologue = derive_inter_walk_prologue(
             plan,
             candidate,
@@ -397,17 +394,10 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             &reference,
             bit_depth,
             geometry,
-            |info| {
-                if banded {
-                    CurrentFrameWorkspace::new_band(info, geometry.sb_h4() * 4, spare_band)
-                } else {
-                    CurrentFrameWorkspace::new_recycled_from(info, &mut recycled)
-                }
-            },
+            |info| CurrentFrameWorkspace::new_band(info, geometry.sb_h4() * 4, spare_band),
             Some(reusable.initial_cdfs()),
             &mut payload_scratch,
         );
-        recycled.release();
         let InterWalkPrologue {
             mut tile_plan,
             workspace,
