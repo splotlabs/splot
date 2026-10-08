@@ -1081,6 +1081,7 @@ pub(crate) struct InterReconScratchPool<T: ReconSample> {
     /// Only the units in that window hold one, so a few stay warm for every
     /// unit of every frame instead of one growing per unit per parse slot.
     motion_storage: Mutex<Vec<std::sync::Arc<super::mc::MotionRowStorage>>>,
+    surfaces: std::sync::OnceLock<admission::SpareSurfaces<T>>,
 }
 
 impl<T: ReconSample> InterReconScratchPool<T> {
@@ -1108,6 +1109,10 @@ impl<T: ReconSample> InterReconScratchPool<T> {
         Ok(result)
     }
 
+    fn spare_surfaces(&self) -> admission::SpareSurfaces<T> {
+        std::sync::Arc::clone(self.surfaces.get_or_init(std::sync::Arc::default))
+    }
+
     fn take_motion_storage(&self) -> Option<std::sync::Arc<super::mc::MotionRowStorage>> {
         self.motion_storage.lock().pop()
     }
@@ -1126,6 +1131,7 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
         Self {
             available: Mutex::new((0, Vec::new())),
             motion_storage: Mutex::new(Vec::new()),
+            surfaces: std::sync::OnceLock::new(),
         }
     }
 }
@@ -1165,7 +1171,6 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     surface_source: Option<std::sync::Arc<Mutex<admission::SurfaceSource<T>>>>,
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
-    surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
     batches: admission::BatchRowSlots<T>,
     scheduled_rows: admission::ScheduledRowSlots<T>,
     /// The decode's reusable storage, for the sealed copy and the row sets.
@@ -1174,16 +1179,12 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
 }
 
 impl<T: ReconSample> TileDecodeScratch<T> {
-    fn from_scheduled(
-        ordered: deferred_recon::InterReconScratch<T>,
-        surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
-    ) -> Self {
+    fn from_scheduled(ordered: deferred_recon::InterReconScratch<T>) -> Self {
         Self {
             parse: TileParseState::default(),
             surface_source: None,
             ordered,
             workers: InterReconScratchPool::default(),
-            surfaces,
             batches: admission::BatchRowSlots::default(),
             scheduled_rows: admission::ScheduledRowSlots::default(),
             buffers: None,
@@ -2020,7 +2021,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
         surface_source: mut spent_surface_source,
         mut ordered,
         workers,
-        surfaces: mut recycled_surfaces,
         mut batches,
         scheduled_rows,
         buffers,
@@ -2105,13 +2105,13 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 std::sync::Arc::new(Mutex::new(admission::SurfaceSource::new(
                     info,
                     Vec::new(),
-                    Vec::new(),
+                    workers.spare_surfaces(),
                 )))
             });
         let Some(source) = std::sync::Arc::get_mut(&mut surface_source) else {
             return Err(invalid_inter_tile_scheduling_state());
         };
-        let rects = source.get_mut().reset(info, recycled_surfaces);
+        let rects = source.get_mut().reset(info, workers.spare_surfaces());
         rects.clear();
         if !global_intrabc {
             superblock_luma_rects_into(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4, rects)?;
@@ -2143,18 +2143,11 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &mut batches,
             commit,
         )?;
-        let (
-            next_ordered,
-            next_workspace,
-            next_decoded,
-            next_surfaces,
-            next_records,
-            spent_block_decoded,
-        ) = commit.finish_direct();
+        let (next_ordered, next_workspace, next_decoded, next_records, spent_block_decoded) =
+            commit.finish_direct();
         ordered = next_ordered;
         workspace = next_workspace;
         decoded_any = next_decoded;
-        recycled_surfaces = next_surfaces;
         *frame_filter_records = next_records;
         let (output, next_parse_state) = parser.into_output();
         parse_state = next_parse_state;
@@ -2192,7 +2185,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
             surface_source: spent_surface_source,
             ordered,
             workers,
-            surfaces: recycled_surfaces,
             batches,
             scheduled_rows,
         },
