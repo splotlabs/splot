@@ -71,7 +71,8 @@ macro_rules! contiguous_rect_writer {
                 Self::Frame(workspace) => {
                     let target = workspace.plane_mut(plane)?;
                     let stride_samples = target.stride_samples();
-                    (&mut target.samples[..], stride_samples, rect.x(), rect.y())
+                    let local_y = target.band_row(rect.y(), rect.height())?;
+                    (&mut target.samples[..], stride_samples, rect.x(), local_y)
                 }
                 Self::Rect(surface) => {
                     let target = surface.plane_mut(plane)?;
@@ -316,7 +317,7 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
             });
         }
         target.ensure_rect(self.rect)?;
-        let start = self.rect.y() * target.stride_samples();
+        let start = target.band_row(self.rect.y(), self.rect.height())? * target.stride_samples();
         let output = target
             .samples
             .get_mut(start..start + self.samples.len())
@@ -573,12 +574,13 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             Self::Frame(workspace) => {
                 let target = workspace.plane_mut(plane)?;
                 let stride_samples = target.stride_samples();
+                let local_y = target.band_row(rect.y(), rect.height())?;
                 write_u16_rect_to_samples(
                     &mut target.samples,
                     stride_samples,
                     rect,
                     rect.x(),
-                    rect.y(),
+                    local_y,
                     samples,
                     row_stride_samples,
                 )
@@ -754,8 +756,8 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 let target = workspace.plane_mut(plane)?;
                 let rect = target.clamp_rect_to_storage(rect)?;
                 let stride = target.stride_samples();
-                let base = rect
-                    .y()
+                let base = target
+                    .band_row(rect.y(), rect.height())?
                     .checked_mul(stride)
                     .and_then(|start| start.checked_add(rect.x()))
                     .ok_or(ReconError::ArithmeticOverflow {
@@ -839,7 +841,7 @@ impl<'a, T: ReconSample> PlaneBandSplit<'a, T> {
             plane: plane.plane,
             storage_size: plane.storage_size,
             rest: &mut plane.samples,
-            settled_rows: 0,
+            settled_rows: plane.origin_y,
         }
     }
 
@@ -860,6 +862,13 @@ impl<'a, T: ReconSample> PlaneBandSplit<'a, T> {
         }
         let skip = (rect.y() - self.settled_rows) * stride;
         let span = rect.height() * stride;
+        if skip.saturating_add(span) > self.rest.len() {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: self.storage_size,
+                rect,
+            });
+        }
         let rest = core::mem::take(&mut self.rest);
         let (_, below) = rest.split_at_mut(skip);
         let (band, tail) = below.split_at_mut(span);
@@ -1104,7 +1113,9 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Returns [`ReconError::MissingWorkspacePlane`] for absent chroma planes in
     /// monochrome workspaces.
     pub fn samples(&self, plane: PlaneId) -> Result<&[T]> {
-        Ok(self.plane(plane)?.samples())
+        let plane = self.plane(plane)?;
+        plane.band_row(0, plane.storage_size.height())?;
+        Ok(plane.samples())
     }
 
     /// Returns the single already-reconstructed sample at `(x, y)` in `plane`.
@@ -1399,6 +1410,8 @@ pub struct CurrentFramePlane<T: ReconSample> {
     plane: PlaneId,
     storage_size: PlaneSize,
     visible_rect: PlaneRect,
+    /// The first plane row `samples` holds; a band stores no row above it.
+    origin_y: usize,
     samples: Vec<T>,
     pool: Option<Arc<crate::PlanePool>>,
 }
@@ -1470,6 +1483,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             plane,
             storage_size,
             visible_rect,
+            origin_y: 0,
             samples,
         })
     }
@@ -1504,7 +1518,8 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         self.samples.len() * mem::size_of::<T>()
     }
 
-    /// Returns all backing samples for this plane.
+    /// Returns all backing samples for this plane, from row
+    /// [`Self::origin_y`] down.
     pub fn samples(&self) -> &[T] {
         &self.samples
     }
@@ -1532,11 +1547,13 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
     /// Borrows this plane's storage as an immutable [`PlaneRef`] without copying.
     pub fn as_plane_ref(&self) -> PlaneRef<'_, T> {
+        debug_assert_eq!(self.origin_y, 0, "a band has no whole-plane view");
         PlaneRef::from_parts(&self.samples, self.stride_samples(), self.visible_rect)
     }
 
     /// Borrows this plane's storage as an exclusive [`PlaneMut`] without copying.
     pub fn as_plane_mut(&mut self) -> PlaneMut<'_, T> {
+        debug_assert_eq!(self.origin_y, 0, "a band has no whole-plane view");
         let stride_samples = self.stride_samples();
         PlaneMut::from_parts(&mut self.samples, stride_samples, self.visible_rect)
     }
@@ -1548,8 +1565,14 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// outside the plane storage.
     pub fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
         self.ensure_rect(rect)?;
+        let local = PlaneRect::new(
+            rect.x(),
+            rect.y() - self.origin_y,
+            rect.width(),
+            rect.height(),
+        )?;
         Ok(WorkspaceRectRows::Strided(
-            PlaneRef::from_parts(&self.samples, self.stride_samples(), rect).visible_rows(),
+            PlaneRef::from_parts(&self.samples, self.stride_samples(), local).visible_rows(),
         ))
     }
 
@@ -1575,13 +1598,14 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         // Drop partial frame-edge overhang; an out-of-frame origin remains an error.
         let rect = self.clamp_rect_to_storage(rect)?;
         let stride_samples = self.stride_samples();
+        let local_y = self.band_row(rect.y(), rect.height())?;
         write_rect_to_samples(
             self.plane,
             &mut self.samples,
             stride_samples,
             rect,
             rect.x(),
-            rect.y(),
+            local_y,
             samples,
             row_stride_samples,
             max_sample,
@@ -1759,16 +1783,33 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 
     fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
-        ensure_rect_in_storage(self.plane, self.storage_size, rect)
+        ensure_rect_in_storage(self.plane, self.storage_size, rect)?;
+        self.band_row(rect.y(), rect.height()).map(|_| ())
+    }
+
+    /// Maps plane row `y` into the stored rows, failing closed unless all
+    /// `rows` rows from `y` are stored.
+    #[inline]
+    fn band_row(&self, y: usize, rows: usize) -> Result<usize> {
+        let stored = self.samples.len() / self.stride_samples().max(1);
+        match y.checked_sub(self.origin_y) {
+            Some(local) if local.saturating_add(rows) <= stored => Ok(local),
+            _ => Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: self.storage_size,
+                rect: PlaneRect::new(0, y, self.storage_size.width(), rows.max(1))?,
+            }),
+        }
     }
 
     #[inline]
     fn sample_index(&self, x: usize, y: usize) -> Result<usize> {
-        let row_start =
-            y.checked_mul(self.stride_samples())
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "current-frame workspace row offset",
-                })?;
+        let row_start = self
+            .band_row(y, 1)?
+            .checked_mul(self.stride_samples())
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "current-frame workspace row offset",
+            })?;
         let index = row_start
             .checked_add(x)
             .ok_or(ReconError::ArithmeticOverflow {

@@ -85,6 +85,7 @@ pub(super) struct RetainedDecode {
     pub(super) frames: FrameStore,
     pub(super) entropy_eight: RetainedEntropy<u8>,
     pub(super) entropy_ten: RetainedEntropy<u16>,
+    pub(super) input_scratch: crate::bitstream::byte_stream::InputScratch,
 }
 
 impl RetainedDecode {
@@ -103,6 +104,7 @@ impl RetainedDecode {
             frames: FrameStore::new(false, depth.get()),
             entropy_eight: RetainedEntropy::default(),
             entropy_ten: RetainedEntropy::default(),
+            input_scratch: crate::bitstream::byte_stream::InputScratch::default(),
         }
     }
 

@@ -80,10 +80,13 @@ pub(super) fn replay_recon_row<T: ReconSample>(
 ) -> Result<ReconRowBuffers> {
     let mut coefficient_scratch = std::mem::take(&mut scratch.coefficients);
     let mut plane_scratch = std::mem::take(&mut scratch.plane_records);
+    let mut lists = std::mem::take(&mut scratch.lists);
     let result = (|| {
         if row.ordinal != *expected_ordinal {
             return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
         }
+        row.return_terminal_error()?;
+        row.load_parsed(&mut lists);
         row.return_terminal_error()?;
         let ordinal = row.ordinal;
         *expected_ordinal = expected_ordinal.saturating_add(1);
@@ -253,6 +256,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         residual_coeffs.clear();
         temporal.clear();
         flag_log.clear();
+        if shared_coefficients {
+            lists.swap_into(&mut entries, &mut residual_blocks);
+        }
         Ok(ReconRowBuffers {
             superblocks,
             residual_coeffs,
@@ -268,5 +274,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     scratch.coefficients = coefficient_scratch;
     plane_scratch.clear();
     scratch.plane_records = plane_scratch;
+    scratch.lists = lists;
     result
 }

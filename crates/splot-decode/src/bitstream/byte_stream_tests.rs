@@ -8,24 +8,28 @@ use crate::DecodeUnsupportedReason;
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 
 #[test]
-fn prepared_ivf_keeps_obus_in_one_flat_arena() {
+fn ivf_records_are_read_one_at_a_time_and_share_reused_buffers() {
     let mut bytes = Vec::new();
-    write_ivf_header(&mut bytes, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 2)).unwrap();
+    let header = IvfHeader::new(*b"AV02", 16, 16, 24, 1, 3);
+    write_ivf_header(&mut bytes, &header).unwrap();
     write_ivf_frame(&mut bytes, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
-    write_ivf_frame(&mut bytes, 1, &[0x01, 0x10]).unwrap();
+    write_ivf_frame(&mut bytes, 1, &[]).unwrap();
+    write_ivf_frame(&mut bytes, 2, &[0x01, 0x10]).unwrap();
+    let prepared = prepare_stream(&mut Cursor::new(&bytes), &DecodeOptions::default()).unwrap();
+    assert_eq!(prepared.plan.obu_count(), 3);
 
-    let prepared = prepare_byte_stream(&bytes, &DecodeOptions::default()).unwrap();
-    assert!(matches!(prepared.parsed(), FlatParsedBitstream::Ivf(_)));
-    let FlatParsedBitstream::Ivf(ivf) = prepared.parsed() else {
-        return;
-    };
-
-    assert_eq!(prepared.plan().obu_count(), 3);
-    assert_eq!(ivf.obus.len(), 3);
-    assert_eq!(ivf.frames[0].obus, 0..2);
-    assert_eq!(ivf.frames[1].obus, 2..3);
-    assert_eq!(ivf.frame_obus(&ivf.frames[0]).len(), 2);
-    assert_eq!(ivf.frame_obus(&ivf.frames[1]).len(), 1);
+    let mut reader = Cursor::new(&bytes);
+    let mut buffers = Vec::new();
+    let mut records = IvfRecords::new(&mut reader, header, &mut buffers).unwrap();
+    let mut seen = Vec::new();
+    while records.advance().unwrap() {
+        let (unit, record) = records.current().unwrap();
+        let mut obus = Vec::new();
+        runtime_obus(unit.view(), &mut obus).unwrap();
+        seen.push((record, unit.view().base(), obus.len()));
+    }
+    assert_eq!(seen, [(0, 44, 2), (1, 72, 1)]);
+    assert_eq!(records.buffers.len(), 1);
 }
 
 #[test]

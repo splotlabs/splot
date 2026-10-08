@@ -22,6 +22,7 @@ use splot_recon::{
     ReferenceSlot,
 };
 
+use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
     FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap, GeneralIntraResidualError,
     reconstruct_general_intra_chroma_cctx_pair_into,
@@ -85,7 +86,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &[u8],
+    bytes: SourceBytes<'_>,
     frame_envelope: ObuEnvelope<'_>,
     core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
@@ -124,7 +125,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             scratch,
             planes,
             candidate,
-            frame_envelope,
+            frame_envelope.offset,
             core,
             sequence,
             options,
@@ -144,6 +145,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         }
     }
     let mut payload_scratch = core::mem::take(&mut scratch.payload);
+    let mut recycled = scratch.pooled_planes();
     let frame_walk::InterWalkPrologue {
         tile_plan,
         workspace,
@@ -155,14 +157,13 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         plan,
         candidate,
         bytes,
-        frame_envelope,
         &core,
         sequence,
         options,
         reference,
         bit_depth,
         geometry,
-        &mut scratch.pooled_planes(),
+        |info| splot_recon::CurrentFrameWorkspace::new_recycled_from(info, &mut recycled),
         Some(&mut scratch.initial_cdfs),
         &mut payload_scratch,
     )?;
@@ -200,7 +201,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     candidate: &DecodePlannedObu,
-    frame_envelope: ObuEnvelope<'_>,
+    offset: ByteOffset,
     core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
@@ -209,7 +210,6 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     products: &mut FrameProductWriters,
 ) -> Result<InterDecodeOutput<T>> {
     let bit_depth = geometry.info().bit_depth();
-    let offset = frame_envelope.offset;
     let frame_size = geometry.frame_size();
     ensure_runtime_limits(
         options.limits(),

@@ -12,18 +12,17 @@ use std::sync::Arc;
 use splot_parallel::CompletionCell;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
-use crate::bitstream::byte_stream::FlatParsedBitstream;
+use crate::DecodeOptions;
+use crate::bitstream::byte_stream::{PreparedStream, ReadSeek};
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
-use crate::{DecodeOptions, DecodeStreamPlan};
 use parking_lot::Mutex;
 
 pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
-    bitstream: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
+    prepared: &PreparedStream,
+    reader: &mut dyn ReadSeek,
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
     session: &crate::pipeline::DecodeSession,
     writer: W,
 ) -> Result<()> {
@@ -32,10 +31,9 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     let decode_result = splot_parallel::ready_task_scope(|scope| {
         let mut outstanding: Option<Arc<CompletionCell<()>>> = None;
         let decode_result = crate::pipeline::emit_frames_from_prepared(
-            bitstream,
-            parsed,
+            prepared,
+            reader,
             options,
-            plan,
             session,
             |_| Ok(()),
             |output| {
@@ -103,17 +101,15 @@ fn write_display_frame(
 }
 
 pub(crate) fn discard_raw_stream_from_plan(
-    bitstream: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
+    prepared: &PreparedStream,
+    reader: &mut dyn ReadSeek,
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<()> {
     crate::pipeline::emit_frames_from_prepared(
-        bitstream,
-        parsed,
+        prepared,
+        reader,
         options,
-        plan,
         session,
         |_| Ok(()),
         |output| {

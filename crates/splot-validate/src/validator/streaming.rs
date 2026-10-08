@@ -103,6 +103,7 @@ fn run_stream<R: Read>(
             Ok(Some(StreamUnit::IvfFrame {
                 payload_offset,
                 payload,
+                ..
             })) => {
                 let parsed = parse_annex_b_obus_partial_at(payload, payload_offset);
                 for obu in &parsed.obus {

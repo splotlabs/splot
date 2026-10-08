@@ -856,10 +856,7 @@ impl<T: ReconSample> FrontierRows<T> {
             let start = luma_rows.start >> shift;
             let end = luma_rows.end.div_ceil(1 << shift);
             let stride = source.stride_samples();
-            let rows = source
-                .samples()
-                .get(start * stride..end.checked_mul(stride).ok_or_else(geometry)?)
-                .ok_or_else(geometry)?;
+            let rows = source.rows(start, end)?;
             self.with_plane_rows_mut(plane, start, end, |target, target_stride, _, _, _| {
                 (target_stride == stride).then(|| target.copy_from_slice(rows))
             })

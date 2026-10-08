@@ -10,109 +10,199 @@ use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 
-use crate::bitstream::byte_stream::{FlatParsedBitstream, FlatParsedIvfBitstream};
+use crate::bitstream::byte_stream::{IvfRecords, PreparedInput, ReadSeek, UnitBytes, runtime_obus};
 use crate::error::Result;
 use crate::support::capability::missing_capability_message;
 use crate::{DecodePlannedObu, DecodeStreamPlan};
 
-#[derive(Clone, Copy, Debug)]
+/// The input the frame loop reads frame units from: the whole Annex B input,
+/// or IVF frame records read in order as the loop reaches them.
 pub(super) enum RuntimeStream<'a> {
     AnnexB {
-        obus: &'a [ObuEnvelope<'a>],
+        unit: &'a UnitBytes,
+        obus: Vec<ObuEnvelope<'a>>,
     },
     Ivf {
-        ivf: &'a FlatParsedIvfBitstream<'a>,
+        records: IvfRecords<'a>,
         header: IvfHeader,
     },
 }
 
 impl<'a> RuntimeStream<'a> {
-    pub(super) const fn ivf_header(self) -> Option<IvfHeader> {
+    pub(super) fn new(
+        input: &'a PreparedInput,
+        reader: &'a mut dyn ReadSeek,
+        buffers: &'a mut Vec<std::sync::Arc<Vec<u8>>>,
+    ) -> Result<Self> {
+        match input {
+            PreparedInput::AnnexB(unit) => {
+                let mut obus = Vec::new();
+                runtime_obus(unit.view(), &mut obus)?;
+                if obus.is_empty() {
+                    return Err(unsupported(
+                        "empty_annex_b_input",
+                        None,
+                        "decode runtime requires at least one Annex B OBU",
+                    ));
+                }
+                Ok(Self::AnnexB { unit, obus })
+            }
+            PreparedInput::Ivf(header) => Ok(Self::Ivf {
+                records: IvfRecords::new(reader, *header, buffers)?,
+                header: *header,
+            }),
+        }
+    }
+
+    pub(super) const fn ivf_header(&self) -> Option<IvfHeader> {
         match self {
             Self::AnnexB { .. } => None,
-            Self::Ivf { header, .. } => Some(header),
+            Self::Ivf { header, .. } => Some(*header),
         }
     }
 
-    pub(super) const fn frame_rate(self) -> PipelineFrameRate {
+    pub(super) const fn frame_rate(&self) -> PipelineFrameRate {
         match self {
             Self::AnnexB { .. } => PipelineFrameRate::ANNEX_B_DEFAULT,
-            Self::Ivf { header, .. } => PipelineFrameRate::from_ivf_header(header),
+            Self::Ivf { header, .. } => PipelineFrameRate::from_ivf_header(*header),
         }
     }
 
-    pub(super) fn leading_obus(self) -> Result<&'a [ObuEnvelope<'a>]> {
+    /// The whole Annex B input, or the first IVF frame record.
+    pub(super) fn first_unit(&mut self) -> Result<UnitBytes> {
         match self {
-            Self::AnnexB { obus } => Ok(obus),
-            Self::Ivf { ivf, .. } => ivf
-                .frames
-                .first()
-                .map(|frame| ivf.frame_obus(frame))
-                .ok_or_else(|| {
-                    unsupported(
-                        "missing_first_ivf_frame",
-                        None,
-                        "decode runtime requires at least one IVF frame",
-                    )
-                }),
-        }
-    }
-}
-
-pub(super) fn require_runtime_stream<'a>(
-    parsed: &'a FlatParsedBitstream<'a>,
-) -> Result<RuntimeStream<'a>> {
-    match parsed {
-        FlatParsedBitstream::AnnexB(partial) => {
-            if partial.obus.is_empty() {
-                return Err(unsupported(
-                    "empty_annex_b_input",
-                    None,
-                    "decode runtime requires at least one Annex B OBU",
-                ));
+            Self::AnnexB { unit, .. } => Ok((*unit).clone()),
+            Self::Ivf { records, .. } => {
+                records.advance()?;
+                records
+                    .current()
+                    .map(|(unit, _)| unit.clone())
+                    .ok_or_else(|| {
+                        unsupported(
+                            "missing_first_ivf_frame",
+                            None,
+                            "decode runtime requires at least one IVF frame",
+                        )
+                    })
             }
-            Ok(RuntimeStream::AnnexB {
-                obus: partial.obus.as_slice(),
-            })
         }
-        FlatParsedBitstream::Ivf(ivf) => {
-            let Some(header) = ivf.header else {
-                return Err(unsupported(
-                    "missing_ivf_header",
-                    None,
-                    "decode runtime requires a complete IVF header",
-                ));
-            };
-            Ok(RuntimeStream::Ivf { ivf, header })
+    }
+
+    /// The unit holding an inter-ordered `candidate`, checking each IVF
+    /// record read on the way.
+    pub(super) fn inter_unit(
+        &mut self,
+        candidate: &DecodePlannedObu,
+        storage: &mut Vec<ObuEnvelope<'static>>,
+    ) -> Result<UnitBytes> {
+        match self {
+            Self::AnnexB { unit, .. } => Ok((*unit).clone()),
+            Self::Ivf { records, .. } => records.seek_offset(
+                candidate.offset(),
+                storage,
+                require_following_ivf_record_obu_order,
+                || missing_inter_ivf_obu(candidate),
+            ),
+        }
+    }
+
+    /// The unit holding a key-frame `candidate`, checking each IVF record read
+    /// on the way as a key frame unit.
+    pub(super) fn key_unit(
+        &mut self,
+        candidate: &DecodePlannedObu,
+        storage: &mut Vec<ObuEnvelope<'static>>,
+    ) -> Result<UnitBytes> {
+        match self {
+            Self::AnnexB { unit, .. } => Ok((*unit).clone()),
+            Self::Ivf { records, .. } => records.seek_offset(
+                candidate.offset(),
+                storage,
+                |obus, _| require_key_ivf_obu_order(obus),
+                || {
+                    unsupported_at(
+                        "missing_key_ivf_obu",
+                        candidate.offset(),
+                        "the planned key candidate offset was not found in the parsed IVF payloads",
+                    )
+                },
+            ),
+        }
+    }
+
+    /// The OBUs of `unit`: all Annex B OBUs, or one IVF record's, parsed into
+    /// `buffer`.
+    pub(super) fn obus<'s, 'u>(
+        &'s self,
+        unit: &'u UnitBytes,
+        buffer: &'s mut Vec<ObuEnvelope<'u>>,
+    ) -> Result<&'s [ObuEnvelope<'u>]>
+    where
+        'a: 'u,
+    {
+        match self {
+            Self::AnnexB { obus, .. } => Ok(obus),
+            Self::Ivf { .. } => {
+                runtime_obus(unit.view(), buffer)?;
+                Ok(buffer)
+            }
+        }
+    }
+
+    pub(super) fn inter_envelope<'o>(
+        &self,
+        obus: &'o [ObuEnvelope<'o>],
+        candidate: &DecodePlannedObu,
+        next_unvalidated_following_annexb_obu: &mut usize,
+    ) -> Result<(&'o [ObuEnvelope<'o>], ObuEnvelope<'o>)> {
+        match self {
+            Self::AnnexB { .. } => following_annexb_inter_envelope(
+                obus,
+                candidate,
+                next_unvalidated_following_annexb_obu,
+            ),
+            Self::Ivf { records, .. } => {
+                ivf_inter_envelope(obus, records.current().map_or(0, |(_, r)| r), candidate)
+            }
+        }
+    }
+
+    pub(super) fn key_frame_unit<'o>(
+        &self,
+        obus: &'o [ObuEnvelope<'o>],
+        candidate: &DecodePlannedObu,
+        next_unvalidated_following_annexb_obu: &mut usize,
+    ) -> Result<(ObuEnvelope<'o>, &'o [ObuEnvelope<'o>], ObuEnvelope<'o>)> {
+        match self {
+            Self::AnnexB { .. } => following_annexb_key_frame_unit(
+                obus,
+                candidate,
+                next_unvalidated_following_annexb_obu,
+            ),
+            Self::Ivf { .. } => ivf_key_frame_unit(obus, candidate),
         }
     }
 }
 
-pub(crate) fn following_inter_envelope<'a>(
-    ivf: &'a FlatParsedIvfBitstream<'a>,
-    candidate: &DecodePlannedObu,
-    next_unvalidated_following_ivf_record: &mut usize,
-) -> Result<(&'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
-    for (ivf_frame_index, ivf_frame) in ivf.frames.iter().enumerate() {
-        let obus = ivf.frame_obus(ivf_frame);
-        let Some(position) = obus
-            .iter()
-            .position(|envelope| envelope.offset == candidate.offset())
-        else {
-            continue;
-        };
-        require_following_ivf_obu_order_through(
-            ivf,
-            next_unvalidated_following_ivf_record,
-            ivf_frame_index,
-        )?;
-        return inter_frame_envelope(obus, position, ivf_frame_index);
-    }
-    Err(unsupported_at(
+fn missing_inter_ivf_obu(candidate: &DecodePlannedObu) -> crate::DecodeError {
+    unsupported_at(
         "missing_inter_ivf_obu",
         candidate.offset(),
         "the planned inter candidate offset was not found in the parsed IVF payloads",
-    ))
+    )
+}
+
+/// The prefix and frame OBU of an inter `candidate` inside IVF record `record`.
+pub(crate) fn ivf_inter_envelope<'a>(
+    obus: &'a [ObuEnvelope<'a>],
+    record: usize,
+    candidate: &DecodePlannedObu,
+) -> Result<(&'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
+    let position = obus
+        .iter()
+        .position(|envelope| envelope.offset == candidate.offset())
+        .ok_or_else(|| missing_inter_ivf_obu(candidate))?;
+    inter_frame_envelope(obus, position, record)
 }
 
 pub(super) fn following_annexb_inter_envelope<'a>(
@@ -160,47 +250,37 @@ fn inter_frame_envelope<'a>(
     Ok((&obus[td_index..position], inter_envelope))
 }
 
-pub(super) fn following_key_frame_unit<'a>(
-    ivf: &'a FlatParsedIvfBitstream<'a>,
+fn ivf_key_frame_unit<'a>(
+    obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
-    next_unvalidated_following_ivf_record: &mut usize,
 ) -> Result<(ObuEnvelope<'a>, &'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
-    for (ivf_frame_index, ivf_frame) in ivf.frames.iter().enumerate() {
-        let obus = ivf.frame_obus(ivf_frame);
-        let Some(position) = obus
-            .iter()
-            .position(|envelope| envelope.offset == candidate.offset())
-        else {
-            continue;
-        };
-        require_following_key_ivf_obu_order_through(
-            ivf,
-            next_unvalidated_following_ivf_record,
-            ivf_frame_index,
-        )?;
-        let ([_, sequence_envelope, key_envelope], _) = require_key_frame_unit(obus)?;
-        if key_envelope.offset != candidate.offset() {
-            return Err(unsupported_at(
-                "unexpected_key_obu_order",
-                candidate.offset(),
-                missing_capability_message!("frame.sequence repeated_key_frame_unit"),
-            ));
-        }
-        let indices = minimal_frame_unit_indices(obus)?;
-        if position != indices.frame {
-            return Err(unsupported_at(
-                "unexpected_key_obu_order",
-                candidate.offset(),
-                missing_capability_message!("frame.sequence repeated_key_frame_unit"),
-            ));
-        }
-        return Ok((sequence_envelope, leading_prefix_obus(obus)?, key_envelope));
+    let Some(position) = obus
+        .iter()
+        .position(|envelope| envelope.offset == candidate.offset())
+    else {
+        return Err(unsupported_at(
+            "missing_key_ivf_obu",
+            candidate.offset(),
+            "the planned key candidate offset was not found in the parsed IVF payloads",
+        ));
+    };
+    let ([_, sequence_envelope, key_envelope], _) = require_key_frame_unit(obus)?;
+    if key_envelope.offset != candidate.offset() {
+        return Err(unsupported_at(
+            "unexpected_key_obu_order",
+            candidate.offset(),
+            missing_capability_message!("frame.sequence repeated_key_frame_unit"),
+        ));
     }
-    Err(unsupported_at(
-        "missing_key_ivf_obu",
-        candidate.offset(),
-        "the planned key candidate offset was not found in the parsed IVF payloads",
-    ))
+    let indices = minimal_frame_unit_indices(obus)?;
+    if position != indices.frame {
+        return Err(unsupported_at(
+            "unexpected_key_obu_order",
+            candidate.offset(),
+            missing_capability_message!("frame.sequence repeated_key_frame_unit"),
+        ));
+    }
+    Ok((sequence_envelope, leading_prefix_obus(obus)?, key_envelope))
 }
 
 pub(super) fn following_annexb_key_frame_unit<'a>(
@@ -278,46 +358,7 @@ pub(super) fn leading_record_inter_frame_unit_start(
     None
 }
 
-pub(super) fn require_following_ivf_obu_order_through(
-    ivf: &FlatParsedIvfBitstream<'_>,
-    next_unvalidated_following_ivf_record: &mut usize,
-    target_ivf_frame_index: usize,
-) -> Result<()> {
-    let validation_end = target_ivf_frame_index.saturating_add(1);
-    for (ivf_frame_index, frame) in ivf
-        .frames
-        .iter()
-        .enumerate()
-        .take(validation_end)
-        .skip(*next_unvalidated_following_ivf_record)
-    {
-        require_following_ivf_record_obu_order(ivf.frame_obus(frame), ivf_frame_index)?;
-    }
-    *next_unvalidated_following_ivf_record =
-        (*next_unvalidated_following_ivf_record).max(validation_end);
-    Ok(())
-}
-
-pub(super) fn require_following_key_ivf_obu_order_through(
-    ivf: &FlatParsedIvfBitstream<'_>,
-    next_unvalidated_following_ivf_record: &mut usize,
-    target_ivf_frame_index: usize,
-) -> Result<()> {
-    let validation_end = target_ivf_frame_index.saturating_add(1);
-    for frame in ivf
-        .frames
-        .iter()
-        .take(validation_end)
-        .skip(*next_unvalidated_following_ivf_record)
-    {
-        require_key_ivf_obu_order(ivf.frame_obus(frame))?;
-    }
-    *next_unvalidated_following_ivf_record =
-        (*next_unvalidated_following_ivf_record).max(validation_end);
-    Ok(())
-}
-
-pub(super) fn require_following_ivf_record_obu_order(
+fn require_following_ivf_record_obu_order(
     obus: &[ObuEnvelope<'_>],
     ivf_frame_index: usize,
 ) -> Result<()> {
@@ -631,32 +672,7 @@ fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUn
     })
 }
 
-pub(super) fn frame_suffix_obus<'a>(
-    stream: RuntimeStream<'a>,
-    candidate: &DecodePlannedObu,
-) -> Result<&'a [ObuEnvelope<'a>]> {
-    match stream {
-        RuntimeStream::AnnexB { obus } => suffix_after_candidate(obus, candidate),
-        RuntimeStream::Ivf { ivf, .. } => {
-            for frame in &ivf.frames {
-                let obus = ivf.frame_obus(frame);
-                if obus
-                    .iter()
-                    .any(|envelope| envelope.offset == candidate.offset())
-                {
-                    return suffix_after_candidate(obus, candidate);
-                }
-            }
-            Err(unsupported_at(
-                "missing_frame_suffix_candidate",
-                candidate.offset(),
-                "planned frame candidate was not found while resolving suffix metadata",
-            ))
-        }
-    }
-}
-
-fn suffix_after_candidate<'a>(
+pub(super) fn suffix_after_candidate<'a>(
     obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
 ) -> Result<&'a [ObuEnvelope<'a>]> {

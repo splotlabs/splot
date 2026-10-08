@@ -15,6 +15,7 @@ use std::ops::Range;
 use crate::bitstream::tile_payload::GeneralIntraResidualError;
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
+use crate::tile::SbRowWindow;
 
 #[derive(Default)]
 pub(crate) struct TileSmoothGrid {
@@ -22,6 +23,7 @@ pub(crate) struct TileSmoothGrid {
     origin_col: usize,
     mi_rows: usize,
     mi_cols: usize,
+    window: SbRowWindow,
     cells: Vec<bool>,
 }
 
@@ -37,7 +39,7 @@ impl TileSmoothGrid {
         mi_cols: Range<usize>,
     ) -> Result<Self, TileGridConstructionError> {
         let mut grid = Self::default();
-        grid.reset_for_tile(mi_rows, mi_cols)?;
+        grid.reset_for_tile(mi_rows, mi_cols, SbRowWindow::WHOLE_TILE_SB_H4)?;
         Ok(grid)
     }
 
@@ -50,8 +52,11 @@ impl TileSmoothGrid {
         &mut self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
+        sb_h4: usize,
     ) -> Result<(), TileGridConstructionError> {
-        let (rows, cols, cell_count) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
+        let (rows, cols, _) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
+        let window = SbRowWindow::new(rows, sb_h4);
+        let cell_count = window.plane_rows() * cols;
         self.cells.clear();
         self.cells
             .try_reserve_exact(cell_count)
@@ -61,6 +66,7 @@ impl TileSmoothGrid {
         self.origin_col = mi_cols.start;
         self.mi_rows = rows;
         self.mi_cols = cols;
+        self.window = window;
         Ok(())
     }
 
@@ -73,11 +79,24 @@ impl TileSmoothGrid {
         let col_end = c
             .saturating_add(n4w)
             .min(self.origin_col.saturating_add(self.mi_cols));
+        if row_start >= row_end || col_start >= col_end {
+            return;
+        }
+        if let Some(stale) = self.window.enter(row_start - self.origin_row) {
+            self.cells[stale.start * self.mi_cols..stale.end * self.mi_cols].fill(false);
+        }
         for row in row_start..row_end {
-            for col in col_start..col_end {
-                self.cells[(row - self.origin_row) * self.mi_cols + col - self.origin_col] = smooth;
+            if let Some(plane_row) = self.window.plane_row(row - self.origin_row) {
+                let start = plane_row * self.mi_cols;
+                self.cells[start + col_start - self.origin_col..start + col_end - self.origin_col]
+                    .fill(smooth);
             }
         }
+    }
+
+    /// Whether an access touched a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.window.violated()
     }
 
     pub(crate) fn block_smoothness(&self, mi_col: usize, mi_row: usize) -> (bool, bool) {
@@ -96,10 +115,12 @@ impl TileSmoothGrid {
         let Some(row) = row.checked_sub(self.origin_row) else {
             return false;
         };
-        if col >= self.mi_cols || row >= self.mi_rows {
+        if col >= self.mi_cols {
             return false;
         }
-        self.cells[row * self.mi_cols + col]
+        self.window
+            .plane_row(row)
+            .is_some_and(|row| self.cells[row * self.mi_cols + col])
     }
 }
 

@@ -187,7 +187,6 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     /// `TileDecodeScratch`'s `Default` reserves a whole reconstruction scratch,
     /// which a placeholder would build and discard on every frame.
     tile: Option<tile::TileDecodeScratch<T>>,
-    temporal_context: Option<TemporalMvContext>,
     /// One record set per frame in flight, so none is dropped and rebuilt.
     frame_filter_records: Vec<crate::filters::wienerns_lr::FrameFilterRecords>,
     /// The payload plan's framing, work units and tile CDFs, kept across frames.
@@ -545,14 +544,9 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         initial_frame_cdfs,
         qindex,
     } = setup;
-    let temporal_context = prelude.run(
-        scratch
-            .temporal_context
-            .get_or_insert_with(TemporalMvContext::empty),
-        core,
-        ref_frame_idx,
-        reference,
-    )?;
+    let mut lease =
+        crate::support::decode_buffers::DecodeBuffers::lend_temporal(scratch.buffers.as_deref());
+    let temporal_context = prelude.run(&mut lease.temporal, core, ref_frame_idx, reference)?;
     let mut tile_scratch = scratch.tile.take().unwrap_or_default();
     tile_scratch.buffers.clone_from(&scratch.buffers);
     let previous = final_segment_ids(core, reference, params.mi_rows, params.mi_cols);

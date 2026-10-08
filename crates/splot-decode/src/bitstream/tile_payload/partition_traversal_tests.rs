@@ -23,6 +23,8 @@ use splot_core::symbol::{
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::DEFAULT_Y_MODE_SET_CDF;
 
+const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
+
 const BLOCK_4X4: usize = 0;
 const BLOCK_4X8: usize = 1;
 const BLOCK_16X16: usize = 6;
@@ -193,7 +195,8 @@ fn run_first_superblock<'payload>(
         TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())
             .unwrap();
     let mut joint_modes =
-        TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone()).unwrap();
+        TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), WHOLE_TILE)
+            .unwrap();
     let mut uses_mrls =
         TileUsesMrlsState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
     let mut use_dip =
@@ -202,7 +205,7 @@ fn run_first_superblock<'payload>(
         TileFscModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
     let mut palette_y =
         TileLumaPaletteState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
-    let mut uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len())
+    let mut uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len(), WHOLE_TILE)
         .unwrap()
         .with_origin(tile_rows.start, tile_cols.start);
     let mut cursor = GeneralIntraPartitionTreeCursor::new(
@@ -347,7 +350,7 @@ fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
 
 #[test]
 fn uv_cfl_context_uses_chroma_reference_base_for_offset_blocks() {
-    let mut uv_cfls = TileUvCflState::new(16, 16).unwrap();
+    let mut uv_cfls = TileUvCflState::new(16, 16, WHOLE_TILE).unwrap();
     uv_cfls.record_block(0, 4, 4, 4, true);
     let bounds = TilePartitionBounds {
         mi_row_start: 0,
@@ -1048,7 +1051,7 @@ fn current_cursor_retains_active_frame_level_wiener_ns_source_blocks() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.storage.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 5);
     assert_eq!(
         output.storage.active_source_blocks[0],
         WienerNsLrSourceBlock {
@@ -1063,7 +1066,7 @@ fn current_cursor_retains_active_frame_level_wiener_ns_source_blocks() {
             x: 0,
             y: 0,
             width: 256,
-            height: 4,
+            height: 56,
             luma_start_x: 0,
             luma_end_x: 255,
             luma_start_y: 0,
@@ -1082,7 +1085,7 @@ fn current_cursor_retains_active_frame_level_pc_wiener_source_blocks() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.storage.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 5);
     assert!(
         output
             .storage
@@ -1131,7 +1134,7 @@ fn active_lr_source_blocks_track_stripe_bounds() {
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.storage.active_source_blocks.len(), 64);
+    assert_eq!(output.storage.active_source_blocks.len(), 5);
     let second_stripe = output
         .storage
         .active_source_blocks
@@ -1153,7 +1156,7 @@ fn active_lr_source_bounds_clamp_to_tile_when_loopfilters_across_tiles_disabled(
 
     let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
-    assert_eq!(output.storage.active_source_blocks.len(), 32);
+    assert_eq!(output.storage.active_source_blocks.len(), 3);
     assert_eq!(output.storage.active_source_blocks[0].luma_end_x, 127);
     assert_eq!(output.storage.active_source_blocks[0].luma_end_y, 127);
 }

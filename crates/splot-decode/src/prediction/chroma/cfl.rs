@@ -428,6 +428,7 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
         && let Some(luma) = T::u16_slice(luma_plane.samples())
         && fill_cfl_luma_ac_420_filter1_u16(
             luma,
+            luma_plane.origin_y(),
             luma_plane.stride_samples(),
             luma_plane.storage_size().width(),
             luma_plane.storage_size().height(),
@@ -469,6 +470,7 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn fill_cfl_luma_ac_420_filter1_u16(
     luma: &[u16],
+    origin_y: usize,
     stride: usize,
     plane_width: usize,
     plane_height: usize,
@@ -482,10 +484,7 @@ fn fill_cfl_luma_ac_420_filter1_u16(
     let Some(sample_count) = width.checked_mul(height) else {
         return false;
     };
-    let Some(required) = stride.checked_mul(plane_height) else {
-        return false;
-    };
-    if plane_width == 0 || plane_height == 0 || stride < plane_width || luma.len() < required {
+    if plane_width == 0 || plane_height == 0 || stride < plane_width {
         return false;
     }
     output.clear();
@@ -500,10 +499,16 @@ fn fill_cfl_luma_ac_420_filter1_u16(
         let luma_y = clamped_cfl_luma_coordinate(chroma_y, 1, max_y);
         let row0 = luma_y.min(max_y);
         let row1 = luma_y.saturating_add(1).min(max_y);
-        let Some(row0_start) = row0.checked_mul(stride) else {
+        let Some(row0_start) = row0
+            .checked_sub(origin_y)
+            .and_then(|row| row.checked_mul(stride))
+        else {
             return false;
         };
-        let Some(row1_start) = row1.checked_mul(stride) else {
+        let Some(row1_start) = row1
+            .checked_sub(origin_y)
+            .and_then(|row| row.checked_mul(stride))
+        else {
             return false;
         };
         let Some(row0) = luma.get(row0_start..row0_start + plane_width) else {

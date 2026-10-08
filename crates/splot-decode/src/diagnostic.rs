@@ -42,7 +42,8 @@ impl DecodeDiagnosticReport {
             DecodeError::Pool { .. }
             | DecodeError::HeaderState { .. }
             | DecodeError::Reconstruction { .. }
-            | DecodeError::ReferenceState { .. } => None,
+            | DecodeError::ReferenceState { .. }
+            | DecodeError::Input { .. } => None,
             DecodeError::Limit { source } => Some(Self::resource_limit(*source)),
             DecodeError::MalformedSource { issue } => Some(Self::malformed_source(issue)),
             DecodeError::UnsupportedStructure { unsupported } => {

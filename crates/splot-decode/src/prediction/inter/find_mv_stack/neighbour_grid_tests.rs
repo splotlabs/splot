@@ -124,3 +124,30 @@ fn a_warp_leaf_still_splats_per_cell_sub_mvs() {
         "a splatted leaf varies its sub-MV across § 7.13.3.19 8x8 units"
     );
 }
+
+/// A tile taller than two superblock rows keeps only the current superblock
+/// row and the one above it. A reused plane row reads as unpublished, and a
+/// read of a row the window dropped fails the tile instead of reading absent.
+#[test]
+fn the_window_drops_superblock_rows_two_above_the_current_one() {
+    let mut grid = NeighbourMvGrid::default();
+    grid.reset_for_tile(0..12, 0..2, 4).unwrap();
+    let inter = NeighbourFlagSyntax {
+        is_inter: true,
+        ref_frame0: 0,
+        ..NON_INTER_FLAG_SYNTAX
+    };
+    grid.record_flags(0, 0, 2, 4, inter);
+    grid.record_flags(4, 0, 2, 4, inter);
+    assert!(grid.flags_at(0, 0).is_some() && grid.flags_at(7, 1).is_some());
+    grid.record_flags(8, 0, 2, 2, inter);
+    assert!(grid.flags_at(7, 1).is_some(), "the superblock row above");
+    assert!(grid.flags_at(9, 1).is_some());
+    assert!(grid.flags_at(10, 0).is_none(), "reused row is cleared");
+    assert!(!grid.window_violated());
+    assert!(grid.flags_at(3, 0).is_none(), "two superblock rows above");
+    assert!(
+        grid.window_violated(),
+        "the dropped row is a fail-closed defect"
+    );
+}

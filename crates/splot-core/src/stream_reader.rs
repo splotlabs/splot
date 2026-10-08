@@ -26,7 +26,8 @@
 use std::io::{self, Read};
 
 use crate::ivf::{
-    IVF_FRAME_HEADER_SIZE, IVF_HEADER_SIZE, IVF_SIGNATURE, IvfError, IvfWarning, parse_ivf_header,
+    IVF_FRAME_HEADER_SIZE, IVF_HEADER_SIZE, IVF_SIGNATURE, IvfError, IvfHeader, IvfWarning,
+    parse_ivf_header,
 };
 use crate::leb128::read_leb128;
 use crate::span::ByteOffset;
@@ -61,6 +62,10 @@ pub enum StreamUnit<'a> {
     /// One IVF frame payload. Parse with
     /// [`crate::annexb::parse_annex_b_obus_partial_at`] at `payload_offset`.
     IvfFrame {
+        /// Zero-based IVF frame index in file order.
+        index: usize,
+        /// Presentation timestamp from the IVF frame header.
+        pts: u64,
         /// Absolute offset of the frame payload in the stream.
         payload_offset: ByteOffset,
         /// The frame payload bytes (Annex B OBUs).
@@ -102,7 +107,8 @@ pub struct TemporalUnitReader<R: Read> {
     buf: Vec<u8>,
     /// Bytes read ahead (format probe / not yet consumed by unit logic). Drained
     /// before reading from `inner`.
-    pending: Vec<u8>,
+    pending: [u8; 4],
+    pending_len: usize,
     pending_pos: usize,
     /// Absolute offset of the next byte to be consumed by unit logic.
     pos: u64,
@@ -110,8 +116,8 @@ pub struct TemporalUnitReader<R: Read> {
     cap: usize,
     /// Detected format (resolved lazily on first read).
     format: Option<BitstreamFormat>,
-    /// Whether the IVF header has been consumed and validated.
-    ivf_header_read: bool,
+    /// The IVF header, once consumed and validated.
+    ivf_header: Option<IvfHeader>,
     /// Next IVF frame index to assign.
     frame_index: usize,
     /// Once set, all further reads yield `Ok(None)`.
@@ -129,12 +135,13 @@ impl<R: Read> TemporalUnitReader<R> {
         Self {
             inner,
             buf: Vec::new(),
-            pending: Vec::new(),
+            pending: [0; 4],
+            pending_len: 0,
             pending_pos: 0,
             pos: 0,
             cap,
             format: None,
-            ivf_header_read: false,
+            ivf_header: None,
             frame_index: 0,
             done: false,
         }
@@ -145,6 +152,12 @@ impl<R: Read> TemporalUnitReader<R> {
     #[cfg(test)]
     fn buf_capacity(&self) -> usize {
         self.buf.capacity()
+    }
+
+    /// The IVF file header, available after the first IVF unit is read.
+    #[must_use]
+    pub const fn ivf_header(&self) -> Option<IvfHeader> {
+        self.ivf_header
     }
 
     /// Reads the next framed unit, or `Ok(None)` at clean end of stream.
@@ -173,30 +186,26 @@ impl<R: Read> TemporalUnitReader<R> {
         if let Some(format) = self.format {
             return Ok(format);
         }
-        let mut probe = Vec::with_capacity(IVF_SIGNATURE.len());
-        let mut one = [0u8; 1];
-        while probe.len() < IVF_SIGNATURE.len() {
-            match self.inner.read(&mut one) {
+        while self.pending_len < IVF_SIGNATURE.len() {
+            match self.inner.read(&mut self.pending[self.pending_len..]) {
                 Ok(0) => break,
-                Ok(_) => probe.push(one[0]),
+                Ok(read) => self.pending_len += read,
                 Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(ReaderError::Io(e)),
             }
         }
-        let format = if probe.as_slice() == IVF_SIGNATURE {
+        let format = if self.pending[..self.pending_len] == IVF_SIGNATURE {
             BitstreamFormat::Ivf
         } else {
             BitstreamFormat::AnnexB
         };
-        self.pending = probe;
-        self.pending_pos = 0;
         self.format = Some(format);
         Ok(format)
     }
 
     /// Reads one byte, draining `pending` first. `Ok(None)` at EOF.
     fn read_one(&mut self) -> Result<Option<u8>, ReaderError> {
-        if self.pending_pos < self.pending.len() {
+        if self.pending_pos < self.pending_len {
             let byte = self.pending[self.pending_pos];
             self.pending_pos += 1;
             self.pos += 1;
@@ -224,7 +233,7 @@ impl<R: Read> TemporalUnitReader<R> {
     /// it; the per-unit cap remains the hard ceiling for units truly that large.
     fn read_into_buf(&mut self, want: usize) -> Result<usize, ReaderError> {
         let mut got = 0;
-        let avail = self.pending.len() - self.pending_pos;
+        let avail = self.pending_len - self.pending_pos;
         let take = avail.min(want);
         if take > 0 {
             self.buf
@@ -313,7 +322,7 @@ impl<R: Read> TemporalUnitReader<R> {
 
     /// Frames the next IVF frame payload (parsing the file header on first use).
     fn next_ivf_unit(&mut self) -> Result<Option<StreamUnit<'_>>, ReaderError> {
-        if !self.ivf_header_read {
+        if self.ivf_header.is_none() {
             self.buf.clear();
             let got = self.read_into_buf(IVF_HEADER_SIZE_BYTES)?;
             if got == IVF_HEADER_SIZE_BYTES {
@@ -323,7 +332,7 @@ impl<R: Read> TemporalUnitReader<R> {
                 }
             }
             match parse_ivf_header(&self.buf) {
-                Ok(_) => self.ivf_header_read = true,
+                Ok(header) => self.ivf_header = Some(header),
                 Err(error) => {
                     self.done = true;
                     return Err(ReaderError::Ivf(error));
@@ -356,6 +365,8 @@ impl<R: Read> TemporalUnitReader<R> {
             }));
         }
         let size = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
+        let b = &self.buf;
+        let pts = u64::from_le_bytes([b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11]]);
         let payload_offset = self.pos; // == frame header offset + 12
         if u64::from(size) > self.cap as u64 {
             self.done = true;
@@ -379,6 +390,8 @@ impl<R: Read> TemporalUnitReader<R> {
         }
         self.frame_index += 1;
         Ok(Some(StreamUnit::IvfFrame {
+            index: self.frame_index - 1,
+            pts,
             payload_offset: ByteOffset::new(payload_offset),
             payload: &self.buf,
         }))
@@ -513,7 +526,7 @@ mod tests {
         let mut reader = TemporalUnitReader::new(&data[..]);
         assert!(matches!(
             reader.next_unit().unwrap(),
-            Some(StreamUnit::IvfFrame { payload_offset, payload })
+            Some(StreamUnit::IvfFrame { payload_offset, payload, .. })
                 if payload_offset == ByteOffset::new(44) && payload == [0x01u8, 0x08].as_slice()
         ));
         assert!(reader.next_unit().unwrap().is_none());

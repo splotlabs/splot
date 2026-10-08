@@ -1275,10 +1275,10 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
     }
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
-    let mut lease = crate::support::decode_buffers::DecodeBuffers::lend_tip_temporal(
+    let mut lease = crate::support::decode_buffers::DecodeBuffers::lend_temporal(
         decode_scratch.buffers.as_deref(),
     );
-    let crate::support::decode_buffers::TipTemporalLease {
+    let crate::support::decode_buffers::TemporalLease {
         temporal,
         records: temporal_records,
         ..
@@ -1380,6 +1380,8 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             reference,
             offset,
         )?;
+        super::temporal::commit_temporal_motion_blocks(&mut motion_field, temporal_records);
+        temporal_records.clear();
         let grid = predict(
             &mut scratch,
             &mut residual_scratch,
@@ -1402,7 +1404,6 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         retire_motion_grid(&mut scratch, grid);
         band_y += rows;
     }
-    super::temporal::commit_temporal_motion_blocks(&mut motion_field, temporal_records);
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
             .quantization_params

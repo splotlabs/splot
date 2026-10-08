@@ -21,14 +21,6 @@ fn project_whole_temporal_motion_field(
     trajectories: Option<&mut TrajectoryState>,
     output: &mut ProjectedTemporalMotionField,
 ) {
-    let config = TemporalProjectionConfig {
-        frame_size: (0, 0),
-        step: projection_step,
-        unit_size8: tmvp_unit_size8,
-        enable_tip: false,
-        enable_trajectory: trajectories.is_some(),
-        reduced: false,
-    };
     let prepared = TemporalProjectionSource::new(
         &source.metadata(),
         source.layout(),
@@ -39,21 +31,28 @@ fn project_whole_temporal_motion_field(
         target_ref,
         ref_order_hints,
     );
-    let prepared = prepared.map(|source_info| PreparedTemporalProjection {
-        source: source_info,
-        field: source,
-    });
-    run_band_projections(
-        core::slice::from_ref(&prepared),
-        config,
-        trajectories,
-        output,
-    );
+    let Some(prepared) = prepared else {
+        return;
+    };
+    let height8 = output.height8;
+    let mut band = trajectories.and_then(TrajectoryState::whole_band);
+    if let Some(mut rows) = output.bands(height8.max(1)).next() {
+        project_temporal_motion_field(
+            &prepared,
+            source,
+            0..height8,
+            projection_step,
+            tmvp_unit_size8,
+            band.as_mut(),
+            &mut rows,
+        );
+    }
 }
 
 #[test]
 fn temporal_motion_block_stays_compact() {
     assert_eq!(size_of::<TemporalMotionBlock>(), 120);
+    assert_eq!(size_of::<ProjectedTemporalMotionCell>(), 8);
 }
 
 #[test]
@@ -116,7 +115,6 @@ fn tip_context(
         current_order_hint,
         ref_order_hints,
         field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
-        projection_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
         average_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
         trajectories: None,
         trajectory_scratch: None,
@@ -530,14 +528,14 @@ fn backward_projection_preserves_source_to_current_direction() {
 
     assert_eq!(
         output.cell(8, 25),
-        Some(ProjectedTemporalMotionCell {
-            valid: true,
-            mv: Mv {
+        Some(ProjectedTemporalMotionCell::new(
+            true,
+            Mv {
                 row: -10,
                 col: -232,
             },
-            ref_offset: 5,
-        })
+            5
+        ))
     );
     assert!(!output.cell(8, 27).unwrap().valid);
     assert_eq!(output, project(4));
@@ -569,11 +567,7 @@ fn projection_records_zero_offset_reference() {
 
     assert_eq!(
         output.cell(0, 0),
-        Some(ProjectedTemporalMotionCell {
-            valid: true,
-            mv: Mv::ZERO,
-            ref_offset: 0,
-        })
+        Some(ProjectedTemporalMotionCell::new(true, Mv::ZERO, 0))
     );
 }
 
@@ -760,14 +754,14 @@ fn tip_temporal_scaling_clamps_to_the_reference_mv_domain() {
     assert!(context.prepare_tip(references, 1, 8, false).is_ok());
     assert_eq!(
         context.field.cell(0, 0),
-        Some(ProjectedTemporalMotionCell {
-            valid: true,
-            mv: Mv {
+        Some(ProjectedTemporalMotionCell::new(
+            true,
+            Mv {
                 row: -REFMVS_LIMIT,
                 col: REFMVS_LIMIT,
             },
-            ref_offset: 9,
-        })
+            9
+        ))
     );
 }
 
@@ -810,11 +804,7 @@ fn tip_newly_averaged_sample_keeps_the_scaled_reference_offset() {
     let cell = context.field.cell(0, 11).unwrap();
     assert_eq!(
         cell,
-        ProjectedTemporalMotionCell {
-            valid: true,
-            mv: Mv { row: 18, col: -36 },
-            ref_offset: 9,
-        }
+        ProjectedTemporalMotionCell::new(true, Mv { row: 18, col: -36 }, 9)
     );
 }
 
@@ -870,8 +860,8 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let field_ptr = context.field.cells.as_ptr();
     let trajectories = context.trajectories.as_ref().unwrap();
     let trajectory_ptr = trajectories.cells.as_ptr();
-    let positions_ptr = trajectories.positions[0].as_ptr();
-    let offsets_ptr = trajectories.projection_offsets.as_ptr();
+    let positions_ptr = trajectories.scratch[0].positions.as_ptr();
+    let offsets_ptr = trajectories.scratch[0].projection_offsets.as_ptr();
 
     context
         .refresh_from_references(
@@ -888,8 +878,11 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let trajectories = context.trajectories.as_ref().unwrap();
     assert_eq!(context.field.cells.as_ptr(), field_ptr);
     assert_eq!(trajectories.cells.as_ptr(), trajectory_ptr);
-    assert_eq!(trajectories.positions[0].as_ptr(), positions_ptr);
-    assert_eq!(trajectories.projection_offsets.as_ptr(), offsets_ptr);
+    assert_eq!(trajectories.scratch[0].positions.as_ptr(), positions_ptr);
+    assert_eq!(
+        trajectories.scratch[0].projection_offsets.as_ptr(),
+        offsets_ptr
+    );
 }
 
 #[test]
