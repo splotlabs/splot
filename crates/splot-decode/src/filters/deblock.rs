@@ -557,7 +557,7 @@ impl<'a> FrameDeblock<'a> {
     /// filter prefix, then releases the newly final prefix for read leases.
     pub(crate) fn advance_source<T: ReconSample>(
         &mut self,
-        source: &mut crate::filters::source::DeblockedSource<T>,
+        source: &mut impl DeblockRows<T>,
         mi_row_end: usize,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
@@ -590,7 +590,7 @@ impl<'a> FrameDeblock<'a> {
 
     fn run_ranges_source<T: ReconSample>(
         &self,
-        source: &mut crate::filters::source::DeblockedSource<T>,
+        source: &mut impl DeblockRows<T>,
         ranges: &[core::ops::Range<usize>; 2],
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
@@ -748,6 +748,62 @@ impl<'a> FrameDeblock<'a> {
                 Some(records)
             }
         }
+    }
+}
+
+/// The frame rows one frontier deblocks in place.
+pub(crate) trait DeblockRows<T> {
+    fn info(&self) -> splot_recon::DecodedFrameInfo;
+    fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)>;
+    fn with_plane_rows_mut<R>(
+        &mut self,
+        plane: PlaneId,
+        start: usize,
+        end: usize,
+        f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
+    ) -> Option<R>;
+    fn publish_final_rows(&mut self, rows: usize) -> bool;
+}
+
+impl<T: ReconSample> DeblockRows<T> for crate::filters::source::DeblockedSource<T> {
+    fn info(&self) -> splot_recon::DecodedFrameInfo {
+        self.info()
+    }
+    fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)> {
+        self.plane_size(plane)
+    }
+    fn with_plane_rows_mut<R>(
+        &mut self,
+        plane: PlaneId,
+        start: usize,
+        end: usize,
+        f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
+    ) -> Option<R> {
+        self.with_plane_rows_mut(plane, start, end, f)
+    }
+    fn publish_final_rows(&mut self, rows: usize) -> bool {
+        self.publish_final_rows(rows)
+    }
+}
+
+impl<T: ReconSample> DeblockRows<T> for crate::pipeline::frame_progress::FrontierRows<T> {
+    fn info(&self) -> splot_recon::DecodedFrameInfo {
+        self.info()
+    }
+    fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)> {
+        self.plane_size(plane)
+    }
+    fn with_plane_rows_mut<R>(
+        &mut self,
+        plane: PlaneId,
+        start: usize,
+        end: usize,
+        f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
+    ) -> Option<R> {
+        self.with_plane_rows_mut(plane, start, end, f)
+    }
+    fn publish_final_rows(&mut self, rows: usize) -> bool {
+        self.publish_final_rows(rows)
     }
 }
 

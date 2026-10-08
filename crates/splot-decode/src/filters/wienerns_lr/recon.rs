@@ -168,6 +168,8 @@ pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
     /// Each stripe's filter outcome, borrowed from the records with the rest.
     stripe_outcomes: Vec<Option<crate::Result<()>>>,
     deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
+    /// Spent stripe windows, for the frontier to fill again.
+    windows: Mutex<Vec<splot_recon::RetiredFramePlanes>>,
 }
 
 pub(crate) type OwnedFilterShell<T> = Arc<Option<OwnedFilterSetup<'static, 'static, T>>>;
@@ -179,18 +181,16 @@ pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
     direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
 }
 
-/// One scheduled stripe with its deblocked read lease.
+/// One scheduled stripe with its private deblocked input window.
 pub(crate) struct OwnedFilterJob<T: ReconSample> {
     setup: OwnedFilterShell<T>,
     stripe: usize,
-    source: crate::filters::source::DeblockedReadLease<T>,
+    window: crate::filters::source::DeblockedWindow<T>,
 }
 
 /// The sole setup owner after every scheduled stripe has settled.
 pub(crate) struct OwnedFilterFinish<T: ReconSample> {
     setup: OwnedFilterShell<T>,
-    /// The deblocked source the stripes read, emptied once they have settled.
-    source: Option<crate::filters::source::DeblockedSource<T>>,
 }
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -460,7 +460,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             cfl_ds_filter_index,
             luma_width,
             luma_height,
-            filter_records,
+            mut filter_records,
             cdef_grid,
             ccso_grid,
             gdf_grid,
@@ -468,6 +468,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             gdf_reference,
             lossless_grid,
         } = self;
+        let windows = Mutex::new(core::mem::take(&mut filter_records.filter_windows));
         Ok((
             OwnedFilterSetup {
                 core,
@@ -504,6 +505,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }),
                 stripe_outcomes: core::mem::take(&mut stripes.outcomes),
                 deblock_records: Mutex::new(None),
+                windows,
             },
             workspace,
         ))
@@ -732,7 +734,9 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         deblock: &crate::filters::deblock::FrameDeblock<'_>,
         source: &crate::filters::source::DeblockedSource<T>,
     ) -> Result<Option<crate::filters::source::DeblockedReadLease<T>>> {
-        let Some((start, end)) = self.ready_stripe(stripe, deblock)? else {
+        let Some((start, end)) =
+            self.ready_stripe(stripe, deblock.final_luma_rows(self.subsampling.1))?
+        else {
             return Ok(None);
         };
         source
@@ -765,21 +769,30 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .ok_or_else(lr_pipeline_state_error)
     }
 
-    fn ready_stripe(
-        &self,
-        stripe: usize,
-        deblock: &crate::filters::deblock::FrameDeblock<'_>,
-    ) -> Result<Option<(usize, usize)>> {
+    fn ready_stripe(&self, stripe: usize, final_rows: usize) -> Result<Option<(usize, usize)>> {
         let (start, end) = self.stripe_bounds(stripe)?;
         let needed = end
             .checked_add(STRIPE_WINDOW_MARGIN << self.subsampling.1)
             .ok_or_else(lr_pipeline_state_error)?
             .min(self.luma_height);
-        Ok((deblock
-            .final_luma_rows(self.subsampling.1)
-            .min(self.luma_height)
-            >= needed)
-            .then_some((start, end)))
+        Ok((final_rows.min(self.luma_height) >= needed).then_some((start, end)))
+    }
+
+    fn take_window(&self) -> crate::filters::source::DeblockedWindow<T> {
+        self.windows
+            .lock()
+            .pop()
+            .map(|mut spent| {
+                crate::filters::source::DeblockedWindow::from_samples(T::reclaim_planes(&mut spent))
+            })
+            .unwrap_or_default()
+    }
+
+    fn give_window(&self, window: crate::filters::source::DeblockedWindow<T>) {
+        let mut windows = self.windows.lock();
+        if windows.try_reserve(1).is_ok() {
+            windows.push(T::retire_planes(window.into_samples()));
+        }
     }
 
     fn stripe_bounds(&self, stripe: usize) -> Result<(usize, usize)> {
@@ -1090,6 +1103,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         self.filter_records.stripes.ranges = core::mem::take(&mut self.ranges);
         self.filter_records.stripes.lifecycles = core::mem::take(self.stripe_state.get_mut());
         self.filter_records.stripes.outcomes = core::mem::take(&mut self.stripe_outcomes);
+        self.filter_records.filter_windows = core::mem::take(self.windows.get_mut());
         let has_restored_deblock = self.deblock_records.get_mut().is_some();
         if has_restored_deblock
             && (!self.filter_records.deblock_blocks.is_empty()
@@ -1127,13 +1141,24 @@ impl<T: ReconSample> OwnedFilterJob<T> {
 
     /// Claims and runs one stripe, then publishes it exactly once.
     pub(crate) fn run(self) -> Result<()> {
-        let setup = self
-            .setup
+        let Self {
+            setup,
+            stripe,
+            window,
+        } = self;
+        let setup = setup
             .as_ref()
             .as_ref()
             .ok_or_else(lr_pipeline_state_error)?;
-        let filtered = setup.run_borrowed_lease(self.stripe, &self.source)?;
-        setup.publish(filtered)
+        let result = setup
+            .claim(stripe)
+            .and_then(|range| {
+                let planes = window.planes().ok_or_else(lr_pipeline_state_error)?;
+                setup.run_claimed_planes(stripe, range, planes)
+            })
+            .and_then(|filtered| setup.publish(filtered));
+        setup.give_window(window);
+        result
     }
 }
 
@@ -1144,36 +1169,48 @@ impl<T: ReconSample> OwnedFilterFinish<T> {
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> (Result<(R, super::FrameFilterRecords)>, OwnedFilterShell<T>) {
         let mut setup = self.setup;
-        let mut result = Arc::get_mut(&mut setup)
+        let result = Arc::get_mut(&mut setup)
             .ok_or_else(lr_pipeline_state_error)
             .and_then(|setup| setup.take().ok_or_else(lr_pipeline_state_error))
             .and_then(|setup| setup.finish(publish));
-        if let (Ok((_, records)), Some(source)) = (result.as_mut(), self.source) {
-            records.deblocked_shell = source.into_parts().1;
-        }
         (result, setup)
     }
 }
 
 impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
-    pub(crate) fn source_job(
+    /// Copies one stripe's input window out of the frame once its rows are
+    /// final, and wraps it in the stripe's job; `None` while they are not.
+    pub(crate) fn window_job(
         setup: &OwnedFilterShell<T>,
         stripe: usize,
-        source: crate::filters::source::DeblockedReadLease<T>,
-    ) -> OwnedFilterJob<T> {
-        OwnedFilterJob {
+        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
+        carry: &mut crate::filters::source::DeblockedWindow<T>,
+    ) -> Result<Option<OwnedFilterJob<T>>> {
+        let owner = setup
+            .as_ref()
+            .as_ref()
+            .ok_or_else(lr_pipeline_state_error)?;
+        let Some(range) = owner.ready_stripe(stripe, frame.final_luma_rows())? else {
+            return Ok(None);
+        };
+        let mut window = owner.take_window();
+        if window
+            .fill(frame, carry, range, STRIPE_WINDOW_MARGIN)
+            .is_none()
+        {
+            owner.give_window(window);
+            return Err(lr_pipeline_state_error());
+        }
+        Ok(Some(OwnedFilterJob {
             setup: Arc::clone(setup),
             stripe,
-            source,
-        }
+            window,
+        }))
     }
 
     /// Transfers terminal ownership to the exactly-once freeze job.
-    pub(crate) fn owned_finish(
-        setup: OwnedFilterShell<T>,
-        source: Option<crate::filters::source::DeblockedSource<T>>,
-    ) -> OwnedFilterFinish<T> {
-        OwnedFilterFinish { setup, source }
+    pub(crate) fn owned_finish(setup: OwnedFilterShell<T>) -> OwnedFilterFinish<T> {
+        OwnedFilterFinish { setup }
     }
 }
 

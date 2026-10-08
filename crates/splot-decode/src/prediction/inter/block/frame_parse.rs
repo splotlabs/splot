@@ -266,6 +266,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         reference,
         ref_frame_idx,
         workspace,
+        &progress,
         filter_count,
         motion_field,
         motion_handle,

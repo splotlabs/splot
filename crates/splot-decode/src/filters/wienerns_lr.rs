@@ -55,6 +55,8 @@ pub(crate) struct FrameFilterRecords {
     pub(crate) ccso_offset_luts: [Vec<i32>; 3],
     /// The last filter phase's emptied deblocked-source cell.
     pub(crate) deblocked_shell: Option<crate::filters::source::DeblockedShell>,
+    /// Spent stripe input windows, for the next filter phase to fill.
+    pub(crate) filter_windows: Vec<splot_recon::RetiredFramePlanes>,
 }
 
 /// The per-stripe lists one frame's filter phase works through.
