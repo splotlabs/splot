@@ -91,7 +91,7 @@ pub(crate) use input::{
 };
 pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
-    FrameSegmentIdMap, LumaPalette, TileFscModeState, TileIntraJointModeState,
+    FrameSegmentIdMap, LumaPalette, MiGrid, TileFscModeState, TileIntraJointModeState,
     TileLumaPaletteState, TileSegmentIdState, TileSegmentIdStateError, TileUseDipState,
     TileUsesMrlsState, neg_deinterleave,
 };

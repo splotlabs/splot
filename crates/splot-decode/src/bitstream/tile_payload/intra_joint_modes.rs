@@ -44,8 +44,8 @@ impl NeighbourSample {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MiGrid<T> {
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MiGrid<T> {
     origin_row: usize,
     origin_col: usize,
     rows: usize,
@@ -57,7 +57,7 @@ struct MiGrid<T> {
 
 impl<T: Copy> MiGrid<T> {
     #[expect(clippy::too_many_arguments)]
-    fn build<E>(
+    pub(crate) fn build<E>(
         row_range: Range<usize>,
         col_range: Range<usize>,
         sb_h4: usize,
@@ -93,16 +93,16 @@ impl<T: Copy> MiGrid<T> {
         })
     }
 
-    fn into_cells(self) -> Vec<T> {
+    pub(crate) fn into_cells(self) -> Vec<T> {
         self.cells
     }
 
-    fn window_violated(&self) -> bool {
+    pub(crate) fn window_violated(&self) -> bool {
         self.window.violated()
     }
 
     /// A tile cell outside the window reads as the default value.
-    fn cell(&self, row: usize, col: usize) -> Option<T> {
+    pub(crate) fn cell(&self, row: usize, col: usize) -> Option<T> {
         let row = row.checked_sub(self.origin_row)?;
         let col = col.checked_sub(self.origin_col)?;
         if row >= self.rows || col >= self.cols {
@@ -123,7 +123,7 @@ impl<T: Copy> MiGrid<T> {
         self
     }
 
-    fn record_block(&mut self, pos: (usize, usize), extent: (usize, usize), value: T) {
+    pub(crate) fn record_block(&mut self, pos: (usize, usize), extent: (usize, usize), value: T) {
         let (r, c) = pos;
         let (n4w, n4h) = extent;
         let Some(r) = r.checked_sub(self.origin_row) else {

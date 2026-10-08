@@ -12,19 +12,13 @@
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 use std::ops::Range;
 
-use crate::bitstream::tile_payload::GeneralIntraResidualError;
+use crate::bitstream::tile_payload::{GeneralIntraResidualError, MiGrid};
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
-use crate::tile::SbRowWindow;
 
 #[derive(Default)]
 pub(crate) struct TileSmoothGrid {
-    origin_row: usize,
-    origin_col: usize,
-    mi_rows: usize,
-    mi_cols: usize,
-    window: SbRowWindow,
-    cells: Vec<bool>,
+    grid: MiGrid<bool>,
 }
 
 pub(crate) type TileYSmoothGrid = TileSmoothGrid;
@@ -39,7 +33,7 @@ impl TileSmoothGrid {
         mi_cols: Range<usize>,
     ) -> Result<Self, TileGridConstructionError> {
         let mut grid = Self::default();
-        grid.reset_for_tile(mi_rows, mi_cols, SbRowWindow::WHOLE_TILE_SB_H4)?;
+        grid.reset_for_tile(mi_rows, mi_cols, crate::tile::SbRowWindow::WHOLE_TILE_SB_H4)?;
         Ok(grid)
     }
 
@@ -54,73 +48,43 @@ impl TileSmoothGrid {
         mi_cols: Range<usize>,
         sb_h4: usize,
     ) -> Result<(), TileGridConstructionError> {
-        let (rows, cols, _) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
-        let window = SbRowWindow::new(rows, sb_h4);
-        let cell_count = window.plane_rows() * cols;
-        self.cells.clear();
-        self.cells
-            .try_reserve_exact(cell_count)
-            .map_err(|_| TileGridConstructionError::Allocation)?;
-        self.cells.resize(cell_count, false);
-        self.origin_row = mi_rows.start;
-        self.origin_col = mi_cols.start;
-        self.mi_rows = rows;
-        self.mi_cols = cols;
-        self.window = window;
+        tile_grid_dimensions(&mi_rows, &mi_cols)?;
+        self.grid = MiGrid::build(
+            mi_rows,
+            mi_cols,
+            sb_h4,
+            false,
+            core::mem::take(&mut self.grid).into_cells(),
+            |_, _| TileGridConstructionError::EmptyDimensions,
+            |_, _, _| TileGridConstructionError::AreaOverflow,
+            |_| TileGridConstructionError::Allocation,
+            Ok(()),
+        )?;
         Ok(())
     }
 
     pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {
-        let row_start = r.max(self.origin_row);
-        let col_start = c.max(self.origin_col);
-        let row_end = r
-            .saturating_add(n4h)
-            .min(self.origin_row.saturating_add(self.mi_rows));
-        let col_end = c
-            .saturating_add(n4w)
-            .min(self.origin_col.saturating_add(self.mi_cols));
-        if row_start >= row_end || col_start >= col_end {
-            return;
-        }
-        if let Some(stale) = self.window.enter(row_start - self.origin_row) {
-            self.cells[stale.start * self.mi_cols..stale.end * self.mi_cols].fill(false);
-        }
-        for row in row_start..row_end {
-            if let Some(plane_row) = self.window.plane_row(row - self.origin_row) {
-                let start = plane_row * self.mi_cols;
-                self.cells[start + col_start - self.origin_col..start + col_end - self.origin_col]
-                    .fill(smooth);
-            }
-        }
+        self.grid.record_block((r, c), (n4w, n4h), smooth);
     }
 
     /// Whether an access touched a row the window had already reused.
     pub(crate) fn window_violated(&self) -> bool {
-        self.window.violated()
+        self.grid.window_violated()
     }
 
     pub(crate) fn block_smoothness(&self, mi_col: usize, mi_row: usize) -> (bool, bool) {
-        let (col, row) = (mi_col as isize, mi_row as isize);
-        (self.at(col, row - 1), self.at(col - 1, row))
+        (
+            mi_row
+                .checked_sub(1)
+                .is_some_and(|row| self.at(mi_col, row)),
+            mi_col
+                .checked_sub(1)
+                .is_some_and(|col| self.at(col, mi_row)),
+        )
     }
 
-    fn at(&self, col: isize, row: isize) -> bool {
-        if col < 0 || row < 0 {
-            return false;
-        }
-        let (col, row) = (col as usize, row as usize);
-        let Some(col) = col.checked_sub(self.origin_col) else {
-            return false;
-        };
-        let Some(row) = row.checked_sub(self.origin_row) else {
-            return false;
-        };
-        if col >= self.mi_cols {
-            return false;
-        }
-        self.window
-            .plane_row(row)
-            .is_some_and(|row| self.cells[row * self.mi_cols + col])
+    fn at(&self, col: usize, row: usize) -> bool {
+        self.grid.cell(row, col).unwrap_or(false)
     }
 }
 
