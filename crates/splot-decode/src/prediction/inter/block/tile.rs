@@ -306,13 +306,14 @@ impl<'payload> TileParser<'payload> {
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
         parse
             .y_smooth
-            .reset_for_tile(tile_rows.clone(), tile_cols.clone())
+            .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
             .map_err(|error| inter_tile_grid_error(&error, "inter luma smooth grid"))?;
         let (chroma_rows, chroma_cols) =
             super::chroma_smooth_tile_ranges(tile_rows, tile_cols, chroma);
+        let chroma_sb_h4 = context.params.sb_h4 >> usize::from(chroma_subsampling(chroma).1);
         parse
             .chroma_smooth
-            .reset_for_tile(chroma_rows, chroma_cols)
+            .reset_for_tile(chroma_rows, chroma_cols, chroma_sb_h4)
             .map_err(|error| inter_tile_grid_error(&error, "inter chroma smooth grid"))?;
         let walk = GeneralIntraMultiblockCursor::new(
             tile,
