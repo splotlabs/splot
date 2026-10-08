@@ -176,11 +176,7 @@ fn luma_lr_path_retains_its_distinct_tx_skip_grid() {
 }
 
 const fn deblock_prediction(r: usize, c: usize) -> crate::filters::deblock::DeblockPredictionUnit {
-    crate::filters::deblock::DeblockPredictionUnit {
-        base_r: r,
-        base_c: c,
-        default_sub_pu_tx: 3,
-    }
+    crate::filters::deblock::DeblockPredictionUnit::new(r, c, 3)
 }
 
 fn deblock_records() -> Vec<crate::filters::deblock::DeblockBlock> {
@@ -188,11 +184,11 @@ fn deblock_records() -> Vec<crate::filters::deblock::DeblockBlock> {
         .into_iter()
         .map(|c| crate::filters::deblock::DeblockBlock {
             r: 0,
-            c,
+            c: c as u32,
             luma_prediction: deblock_prediction(0, c),
             chroma_prediction: deblock_prediction(0, c),
             chroma_base_r: 0,
-            chroma_base_c: c,
+            chroma_base_c: c as u32,
             n4w: 8,
             n4h: 8,
             luma_tx: 3,

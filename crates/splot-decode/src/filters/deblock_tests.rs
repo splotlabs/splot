@@ -11,11 +11,7 @@ use crate::test_support::{yuv420_workspace, yuv420_workspace_with};
 static EMPTY_CHROMA_RECORDS: ChromaDeblockRecords = ChromaDeblockRecords::new();
 
 const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
-    DeblockPredictionUnit {
-        base_r: r,
-        base_c: c,
-        default_sub_pu_tx: tx,
-    }
+    DeblockPredictionUnit::new(r, c, tx)
 }
 
 fn with_plane_ctx<T: ReconSample, R>(
@@ -37,12 +33,12 @@ fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
     for r in (0..mi_rows).step_by(8) {
         for c in (0..mi_cols).step_by(8) {
             blocks.push(DeblockBlock {
-                r,
-                c,
+                r: r as u32,
+                c: c as u32,
                 luma_prediction: prediction(r, c, 3),
                 chroma_prediction: prediction(r, c, 2),
-                chroma_base_r: r,
-                chroma_base_c: c,
+                chroma_base_r: r as u32,
+                chroma_base_c: c as u32,
                 n4w: 8,
                 n4h: 8,
                 luma_tx: 3,
@@ -867,7 +863,7 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
     let blocks = Box::leak(Box::new([
         DeblockBlock {
             r: 0,
-            c: if prediction_boundary { 0 } else { 2 },
+            c: (if prediction_boundary { 0 } else { 2 }) as u32,
             luma_prediction: prediction(0, 2, 3),
             chroma_prediction: prediction(0, 2, 3),
             chroma_base_r: 0,
@@ -959,14 +955,14 @@ fn assert_candidate_mask_superset(
 #[test]
 fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
     let block = |r, c, n4w, n4h, sub_pu_size| DeblockBlock {
-        r,
-        c,
+        r: r as u32,
+        c: c as u32,
         luma_prediction: prediction(r, c, 3),
         chroma_prediction: prediction(r, c, 2),
-        chroma_base_r: r,
-        chroma_base_c: c,
-        n4w,
-        n4h,
+        chroma_base_r: r as u32,
+        chroma_base_c: c as u32,
+        n4w: n4w as u32,
+        n4h: n4h as u32,
         luma_tx: 3,
         chroma_tx: Some(2),
         sub_pu_size,
@@ -1039,11 +1035,11 @@ fn prediction_unit_geometry_caps_filter_width_at_block_edges() {
     fill_rect(&mut ws, PlaneId::Y, 64..128, 0..8, 108);
     let block = |c| DeblockBlock {
         r: 0,
-        c,
+        c: c as u32,
         luma_prediction: prediction(0, c, 4),
         chroma_prediction: prediction(0, c, 2),
         chroma_base_r: 0,
-        chroma_base_c: c,
+        chroma_base_c: c as u32,
         n4w: 16,
         n4h: 2,
         luma_tx: 4,
@@ -1891,11 +1887,11 @@ fn chroma_pass_uses_4x4_tx_for_sub8_luma_records() {
     let mut ws = yuv420_workspace(8, 16, 100);
     fill_rect(&mut ws, PlaneId::U, 0..4, 4..8, 108);
     let block = |r| DeblockBlock {
-        r,
+        r: r as u32,
         c: 0,
         luma_prediction: prediction(r, 0, 0),
         chroma_prediction: prediction(r, 0, 0),
-        chroma_base_r: r,
+        chroma_base_r: r as u32,
         chroma_base_c: 0,
         n4w: 2,
         n4h: 2,

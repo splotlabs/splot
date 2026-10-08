@@ -263,7 +263,7 @@ impl FrameCdfSubset {
     #[must_use]
     pub(crate) fn from_defaults() -> Self {
         Self {
-            rows: Box::new(TileCdfRows::from_defaults()),
+            rows: Box::new(DEFAULT_TILE_CDF_ROWS),
         }
     }
 
@@ -286,7 +286,7 @@ impl FrameCdfSubset {
     }
 
     pub(crate) fn reset_to_defaults(&mut self) {
-        *self.rows = TileCdfRows::from_defaults();
+        *self.rows = DEFAULT_TILE_CDF_ROWS;
     }
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
@@ -1007,7 +1007,9 @@ pub(crate) fn tile_cdf_save_policy(
     })
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// `Copy` so that resetting a boxed table is one copy into place, never a
+/// 48 KB temporary on the stack.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCdfRows {
     do_split: DoSplitCdfRows,
     do_ext_partition: DoExtPartitionCdfRows,
@@ -1075,8 +1077,10 @@ fn tx_partition_rows_mut(rows: &mut TileCdfRows, reduced: bool) -> &mut TxPartit
     }
 }
 
+static DEFAULT_TILE_CDF_ROWS: TileCdfRows = TileCdfRows::from_defaults();
+
 impl TileCdfRows {
-    fn from_defaults() -> Self {
+    const fn from_defaults() -> Self {
         Self {
             do_split: DEFAULT_DO_SPLIT_CDF,
             do_ext_partition: DEFAULT_DO_EXT_PARTITION_CDF,

@@ -110,7 +110,7 @@ pub(crate) enum MvCdfSelector {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MvCdfRows {
     joint_shell_set: JointShellSetCdfRows,
     joint_shell0_class0: JointShell0Class0CdfRows,
@@ -136,7 +136,7 @@ pub(crate) struct MvCdfRows {
 }
 
 impl MvCdfRows {
-    pub(crate) fn from_defaults() -> Self {
+    pub(crate) const fn from_defaults() -> Self {
         Self {
             joint_shell_set: [DEFAULT_JOINT_SHELL_SET_CDF; MV_CONTEXTS],
             joint_shell0_class0: [DEFAULT_JOINT_SHELL0_CLASS0_CDF; MV_CONTEXTS],

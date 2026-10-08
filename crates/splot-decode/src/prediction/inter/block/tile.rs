@@ -297,9 +297,12 @@ impl<'payload> TileParser<'payload> {
             context.core.frame_is_intra == Some(true),
             crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(context.core),
         )?;
-        let segment_id_state =
+        let segment_id_state = if super::segmentation_enabled(context.core) {
             TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone())
-                .map_err(|error| inter_tile_segment_id_error(&error))?;
+                .map_err(|error| inter_tile_segment_id_error(&error))?
+        } else {
+            TileSegmentIdState::disabled()
+        };
         parse
             .mv_grid
             .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
