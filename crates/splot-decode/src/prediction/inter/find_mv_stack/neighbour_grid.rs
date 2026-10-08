@@ -777,6 +777,11 @@ impl NeighbourMvGrid {
         self.window.plane_row(row.checked_sub(self.origin_row)?)
     }
 
+    /// Whether an access touched a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.window.violated()
+    }
+
     /// Plane row and column ranges covered by one leaf, `None` when the leaf
     /// lies entirely outside this tile's grid.
     fn footprint(

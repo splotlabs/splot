@@ -164,6 +164,17 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         .map_err(GeneralIntraMultiblockError::Walk)
     }
 
+    /// Whether a neighbour grid touched a row its window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.tree.window_violated()
+            || self.joint_modes.window_violated()
+            || self.uses_mrls.window_violated()
+            || self.use_dip.window_violated()
+            || self.fsc_modes.window_violated()
+            || self.palette_y.window_violated()
+            || self.uv_cfls.window_violated()
+    }
+
     pub(crate) fn into_output(self) -> GeneralIntraMultiblockOutput<'payload> {
         let Self {
             tree,

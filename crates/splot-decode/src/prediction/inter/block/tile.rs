@@ -490,6 +490,16 @@ impl<'payload> TileParser<'payload> {
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
         recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
+        if decoded_row.is_ok()
+            && (walk.window_violated()
+                || self.mv_grid.window_violated()
+                || self.intrabc_state.window_violated()
+                || self.y_smooth.window_violated()
+                || self.chroma_smooth.window_violated())
+        {
+            recon_row.record_terminal_error(invalid_inter_tile_scheduling_state());
+            return ParserStep::Last(recon_row);
+        }
         match decoded_row {
             Ok(true) => ParserStep::More(recon_row),
             Err(error) => {
@@ -591,7 +601,11 @@ impl TileResolveState {
                 tile_offset,
             },
             context.params.sb_h4,
-        )
+        )?;
+        if grid.window_violated() {
+            return Err(invalid_inter_tile_scheduling_state());
+        }
+        Ok(())
     }
 }
 

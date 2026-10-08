@@ -97,6 +97,10 @@ impl<T: Copy> MiGrid<T> {
         self.cells
     }
 
+    fn window_violated(&self) -> bool {
+        self.window.violated()
+    }
+
     /// A tile cell outside the window reads as the default value.
     fn cell(&self, row: usize, col: usize) -> Option<T> {
         let row = row.checked_sub(self.origin_row)?;
@@ -204,6 +208,19 @@ macro_rules! impl_grid_origin {
                 pub(crate) fn with_origin(mut self, row: usize, col: usize) -> Self {
                     self.grid = self.grid.with_origin(row, col);
                     self
+                }
+            }
+        )+
+    };
+}
+
+macro_rules! impl_grid_window_violated {
+    ($($state:ty),+ $(,)?) => {
+        $(
+            impl $state {
+                /// Whether an access touched a row the window had already reused.
+                pub(crate) fn window_violated(&self) -> bool {
+                    self.grid.window_violated()
                 }
             }
         )+
@@ -1138,6 +1155,15 @@ impl TileIntraYModeState {
 }
 
 impl_grid_origin!(TileUvCflState, TileIntraYModeState);
+impl_grid_window_violated!(
+    TileIntraJointModeState,
+    TileUsesMrlsState,
+    TileUseDipState,
+    TileFscModeState,
+    TileLumaPaletteState,
+    TileUvCflState,
+    TileIntraYModeState,
+);
 impl_grid_recycle!(
     TileIntraJointModeState,
     TileUsesMrlsState,

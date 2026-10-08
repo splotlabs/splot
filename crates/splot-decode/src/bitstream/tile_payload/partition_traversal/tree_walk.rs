@@ -119,6 +119,11 @@ pub(crate) struct TileTraversalStorage {
 }
 
 impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
+    /// Whether the SDP luma-mode grid touched a row its window had reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.y_modes.window_violated()
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         work_unit: &DecodeTileWorkUnit,

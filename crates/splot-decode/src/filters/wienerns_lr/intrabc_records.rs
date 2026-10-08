@@ -595,19 +595,28 @@ impl TileIntrabcPreludeState {
             .and_then(|index| self.facts_at_index(index)))
     }
 
-    /// Plane index of a tile position, `None` outside the readable window.
+    /// Plane index of a tile position, `None` while its row is unpublished.
     fn index(&self, row: usize, col: usize) -> Result<Option<usize>> {
-        if row < self.origin_row
-            || col < self.origin_col
-            || row >= self.origin_row.saturating_add(self.tile_rows)
-            || col >= self.origin_col.saturating_add(self.tile_cols)
-        {
+        if !self.is_inside(row, col) {
             return Err(intrabc_state_error());
         }
-        Ok(self
+        let plane_row = self
             .window
-            .plane_row(row - self.origin_row)
-            .map(|plane_row| plane_row * self.tile_cols + (col - self.origin_col)))
+            .checked_plane_row(row - self.origin_row)
+            .map_err(|_| intrabc_state_error())?;
+        Ok(plane_row.map(|plane_row| plane_row * self.tile_cols + (col - self.origin_col)))
+    }
+
+    fn is_inside(&self, row: usize, col: usize) -> bool {
+        row >= self.origin_row
+            && col >= self.origin_col
+            && row < self.origin_row.saturating_add(self.tile_rows)
+            && col < self.origin_col.saturating_add(self.tile_cols)
+    }
+
+    /// Whether a probe read a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.window.violated()
     }
 
     pub(crate) fn capture_spatial_intrabc_probes(
@@ -642,7 +651,11 @@ impl TileIntrabcPreludeState {
     }
 
     fn facts_at(&self, row: usize, col: usize) -> Option<IntrabcBlockFacts> {
-        self.facts_at_index(self.index(row, col).ok()??)
+        if !self.is_inside(row, col) {
+            return None;
+        }
+        let plane_row = self.window.plane_row(row - self.origin_row)?;
+        self.facts_at_index(plane_row * self.tile_cols + (col - self.origin_col))
     }
 
     fn facts_at_index(&self, index: usize) -> Option<IntrabcBlockFacts> {

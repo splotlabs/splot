@@ -94,6 +94,11 @@ impl TileSmoothGrid {
         }
     }
 
+    /// Whether an access touched a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.window.violated()
+    }
+
     pub(crate) fn block_smoothness(&self, mi_col: usize, mi_row: usize) -> (bool, bool) {
         let (col, row) = (mi_col as isize, mi_row as isize);
         (self.at(col, row - 1), self.at(col - 1, row))
