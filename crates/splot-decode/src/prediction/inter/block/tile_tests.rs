@@ -323,6 +323,41 @@ fn frame_slots_retain_their_row_payloads_across_reset() {
 }
 
 #[test]
+fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
+    let buffers = crate::support::decode_buffers::DecodeBuffers::new();
+    let mut progress = ParseProgress::default();
+    assert!(progress.reset(&buffers));
+    let row = |progress: &ParseProgress, ordinal| ReconRow {
+        residual_source: Some(RowResiduals {
+            frame: Arc::clone(&progress.residuals),
+            planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
+            range: 0..0,
+            capacity: 0,
+        }),
+        ordinal,
+        residual_coeffs: Vec::new(),
+        superblocks: Vec::new(),
+        entries: Vec::new(),
+        residual_blocks: Vec::new(),
+        temporal: Vec::new(),
+        motion_storage: None,
+        flag_log: Vec::new(),
+        filter_records: TileFilterRecords::default(),
+        residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
+        motion_folded: false,
+        motion_derived: false,
+        failure: ReconRowFailure::None,
+    };
+    progress.publish_row(row(&progress, 0));
+    progress.publish_row(row(&progress, 1));
+    let claimed = progress.take_row(0).expect("published row");
+    assert!(!progress.reset(&buffers));
+    drop(claimed);
+    assert!(progress.reset(&buffers));
+    assert!(progress.take_row(1).is_none());
+}
+
+#[test]
 fn frame_geometry_waits_for_readers_then_reuses_hidden_backing() {
     use crate::support::decode_buffers::DecodeBuffers;
 
