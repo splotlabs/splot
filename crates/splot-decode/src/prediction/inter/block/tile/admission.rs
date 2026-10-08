@@ -567,6 +567,9 @@ impl<T: ReconSample> TileRecon<T> {
                     }
                     scratch.with_installed(|scratch| {
                         if !ready.row.has_terminal_error() && !ready.row.motion_derived {
+                            if ready.row.motion_storage.is_none() {
+                                ready.row.motion_storage = self.workers.take_motion_storage();
+                            }
                             mvres::derive_unit_motion(
                                 &mut ready.row,
                                 ready.surface.as_mut(),
@@ -632,13 +635,15 @@ impl<T: ReconSample> TileRecon<T> {
         let mut batch = batch;
         for ready in batch.drain(..) {
             let ordinal = ready.row.ordinal;
-            let spent = commit.replay(
+            let mut spent = commit.replay(
                 ready,
                 &self.quantizer,
                 &self.motion,
                 &self.temporal,
                 &context,
             )?;
+            self.workers
+                .recycle_motion_storage(spent.motion_storage.take());
             parse_progress.return_row_buffers(ordinal, spent)?;
         }
         *self

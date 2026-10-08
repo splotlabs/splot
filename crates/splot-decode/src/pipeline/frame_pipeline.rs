@@ -115,15 +115,59 @@ pub(super) struct EntropyContexts<'job, T: splot_recon::ReconSample> {
     workers: Option<Arc<inter::InterReconScratchPool<T>>>,
     next: usize,
     depth: usize,
+    /// Storage the last decode on this context left, for the slots this one opens.
+    spare: Vec<EntropyStorage<T>>,
+}
+
+/// The storage of one entropy context, kept between decode calls.
+///
+/// The scheduled frame itself is not kept: its completion cells are sized
+/// for one stream's geometry, and a smaller next stream would wait on cells
+/// nobody sets. Its reconstruction storage is retired into the workspace.
+pub(crate) struct EntropyStorage<T: splot_recon::ReconSample> {
+    workspace: inter::ScheduledTileWorkspace<T>,
+    temporal: Arc<inter::TemporalMvContext>,
+    early: EntropyEarly<T>,
+    tail: EntropyResult<T>,
+}
+
+/// The entropy storage one decode leaves for the next on its context.
+#[derive(Default)]
+pub(crate) struct RetainedEntropy<T: splot_recon::ReconSample> {
+    storage: Vec<EntropyStorage<T>>,
+    workers: Option<Arc<inter::InterReconScratchPool<T>>>,
 }
 
 impl<'job, T: splot_recon::ReconSample> EntropyContexts<'job, T> {
-    pub(super) fn new(depth: usize) -> Self {
+    pub(super) fn new(depth: usize, retained: RetainedEntropy<T>) -> Self {
         Self {
             slots: Vec::new(),
-            workers: None,
+            workers: retained.workers,
             next: 0,
             depth: depth.max(1),
+            spare: retained.storage,
+        }
+    }
+
+    /// Keeps the storage of every slot no task still holds, and the spares
+    /// this decode did not need.
+    pub(super) fn into_retained(mut self) -> RetainedEntropy<T> {
+        self.retire_completed();
+        let mut storage = self.spare;
+        storage.extend(
+            self.slots
+                .into_iter()
+                .filter_map(|slot| Arc::try_unwrap(slot).ok())
+                .map(|context| EntropyStorage {
+                    workspace: context.workspace.into_inner(),
+                    temporal: context.temporal.into_inner(),
+                    early: context.early,
+                    tail: context.tail,
+                }),
+        );
+        RetainedEntropy {
+            storage,
+            workers: self.workers,
         }
     }
 
@@ -132,16 +176,22 @@ impl<'job, T: splot_recon::ReconSample> EntropyContexts<'job, T> {
         self.next = (index + 1) % self.depth;
         if index == self.slots.len() {
             let workers = self.workers.get_or_insert_with(Arc::default);
+            let storage = self.spare.pop().unwrap_or_else(|| EntropyStorage {
+                workspace: inter::ScheduledTileWorkspace::default(),
+                temporal: Arc::new(inter::TemporalMvContext::empty()),
+                early: Arc::new(CompletionCell::new()),
+                tail: Arc::new(CompletionCell::new()),
+            });
             self.slots.push(Arc::new(EntropyContext {
                 task: Mutex::new(None),
                 frame: Mutex::new(None),
-                workspace: Mutex::new(inter::ScheduledTileWorkspace::default()),
-                temporal: Mutex::new(Arc::new(inter::TemporalMvContext::empty())),
+                workspace: Mutex::new(storage.workspace),
+                temporal: Mutex::new(storage.temporal),
                 workers: Arc::clone(workers),
                 prepare: Mutex::new(None),
                 attach: Mutex::new(None),
-                early: Arc::new(CompletionCell::new()),
-                tail: Arc::new(CompletionCell::new()),
+                early: storage.early,
+                tail: storage.tail,
             }));
         }
         loop {
@@ -297,6 +347,8 @@ pub(crate) enum FrameTask<'job> {
     Output(ScheduledFrameRef),
     FinishEight(super::inflight::ParkedFinish<u8>),
     FinishTen(super::inflight::ParkedFinish<u16>),
+    TipOutputEight(ParkedTipOutput<'job, u8>),
+    TipOutputTen(ParkedTipOutput<'job, u16>),
 }
 
 impl<'job> splot_parallel::Task<'job> for FrameTask<'job> {
@@ -308,6 +360,8 @@ impl<'job> splot_parallel::Task<'job> for FrameTask<'job> {
             },
             Self::FinishEight(finish) => finish.run(admit),
             Self::FinishTen(finish) => finish.run(admit),
+            Self::TipOutputEight(tip) => tip.run(),
+            Self::TipOutputTen(tip) => tip.run(),
             Self::ParseEight(context) => EntropyTask::run(&context),
             Self::ParseTen(context) => EntropyTask::run(&context),
             Self::PrepareEight(context) => ScheduledPrepare::run(&context, admit),
@@ -338,17 +392,11 @@ impl<'job> splot_parallel::Task<'job> for FrameTask<'job> {
     }
 }
 
-/// Wraps a job the task enum cannot name.
-pub(crate) fn boxed_task<'job>(
-    job: impl for<'a> FnOnce(&'a dyn splot_parallel::Admit<'job, FrameTask<'job>>) + Send + 'job,
-) -> splot_parallel::Job<'job, FrameTask<'job>> {
-    splot_parallel::Job::Boxed(Box::new(job))
-}
-
 pub(crate) trait ScheduledScratchSample: splot_recon::ReconSample {
     fn parse_task(task: EntropySlot<'_, Self>) -> FrameTask<'_>;
     fn prepare_task(task: EntropySlot<'_, Self>) -> FrameTask<'_>;
     fn attach_task(task: EntropySlot<'_, Self>) -> FrameTask<'_>;
+    fn tip_output_task(task: ParkedTipOutput<'_, Self>) -> FrameTask<'_>;
     /// Names this depth's frame for a scheduled task.
     fn scheduled_frame_ref(frame: Arc<ScheduledFrame<Self>>) -> ScheduledFrameRef;
 
@@ -366,7 +414,7 @@ pub(crate) trait ScheduledScratchSample: splot_recon::ReconSample {
 }
 
 macro_rules! impl_scheduled_scratch_sample {
-    ($sample:ty, $variant:ident, $parse:ident, $prepare:ident, $attach:ident) => {
+    ($sample:ty, $variant:ident, $parse:ident, $prepare:ident, $attach:ident, $tip:ident) => {
         impl ScheduledScratchSample for $sample {
             fn parse_task(task: EntropySlot<'_, Self>) -> FrameTask<'_> {
                 FrameTask::$parse(task)
@@ -376,6 +424,9 @@ macro_rules! impl_scheduled_scratch_sample {
             }
             fn attach_task(task: EntropySlot<'_, Self>) -> FrameTask<'_> {
                 FrameTask::$attach(task)
+            }
+            fn tip_output_task(task: ParkedTipOutput<'_, Self>) -> FrameTask<'_> {
+                FrameTask::$tip(task)
             }
             fn scheduled_frame_ref(frame: Arc<ScheduledFrame<Self>>) -> ScheduledFrameRef {
                 ScheduledFrameRef::$variant(frame)
@@ -409,8 +460,15 @@ macro_rules! impl_scheduled_scratch_sample {
     };
 }
 
-impl_scheduled_scratch_sample!(u8, Eight, ParseEight, PrepareEight, AttachEight);
-impl_scheduled_scratch_sample!(u16, Ten, ParseTen, PrepareTen, AttachTen);
+impl_scheduled_scratch_sample!(
+    u8,
+    Eight,
+    ParseEight,
+    PrepareEight,
+    AttachEight,
+    TipOutputEight
+);
+impl_scheduled_scratch_sample!(u16, Ten, ParseTen, PrepareTen, AttachTen, TipOutputTen);
 
 type PendingTipProducts<T> = (
     PipelineFrameSlot,
@@ -438,14 +496,127 @@ pub(super) fn reserve_tip_output<T: super::inflight::SpareFramePlanes>(
     Ok((slot, finish, geometry, products, motion))
 }
 
+/// One TIP output frame's reconstruction inputs, parked in a reusable cell
+/// until its scheduler task takes them.
+pub(crate) struct TipOutputJob<'job, T: splot_recon::ReconSample> {
+    pub(super) candidate: &'job crate::bitstream::stream_plan::DecodePlannedObu,
+    pub(super) envelope: splot_core::annexb::ObuEnvelope<'job>,
+    pub(super) core: Arc<FrameHeaderCore>,
+    pub(super) sequence: Arc<SequenceHeader>,
+    pub(super) options: &'job crate::DecodeOptions,
+    pub(super) reference: inter::InterReferenceState<T>,
+    pub(super) geometry: inter::FrameDecodeGeometry,
+}
+
+/// A reusable cell holding one TIP output job between its submission and run.
+pub(crate) type TipOutputCell<'job, T> = Arc<Mutex<Option<TipOutputTask<'job, T>>>>;
+
+pub(crate) struct TipOutputTask<'job, T: splot_recon::ReconSample> {
+    job: TipOutputJob<'job, T>,
+    products: inter::FrameProductWriters,
+    motion: inter::MotionFieldHandle,
+    finish: PendingFinish<T>,
+    scratch: Option<ReconScratchSlot>,
+    scratch_done: ReconScratchSlot,
+}
+
+/// The scheduler task for one parked TIP output job.
+///
+/// A task dropped unrun drops the parked job, which settles the frame's slot
+/// as failed instead of leaving it pending.
+pub(crate) struct ParkedTipOutput<'job, T: splot_recon::ReconSample>(TipOutputCell<'job, T>);
+
+impl<T: splot_recon::ReconSample> Drop for ParkedTipOutput<'_, T> {
+    fn drop(&mut self) {
+        drop(self.0.lock().take());
+    }
+}
+
+/// Claims a TIP output cell no task still holds, adding one when all are busy.
+pub(super) fn claim_tip_output_cell<'job, T: splot_recon::ReconSample>(
+    cells: &mut Vec<TipOutputCell<'job, T>>,
+) -> TipOutputCell<'job, T> {
+    if let Some(cell) = cells.iter_mut().find_map(|cell| {
+        Arc::get_mut(cell)?;
+        Some(Arc::clone(cell))
+    }) {
+        return cell;
+    }
+    let cell = Arc::new(Mutex::new(None));
+    cells.push(Arc::clone(&cell));
+    cell
+}
+
+impl<T: ScheduledScratchSample + Send + 'static> ParkedTipOutput<'_, T> {
+    fn run(self) {
+        let Some(TipOutputTask {
+            job,
+            mut products,
+            motion,
+            finish,
+            scratch,
+            scratch_done,
+        }) = self.0.lock().take()
+        else {
+            return;
+        };
+        let mut scratch = scratch
+            .as_deref()
+            .and_then(CompletionCell::get)
+            .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
+            .unwrap_or_default();
+        let progress = finish.progress_handle();
+        if let Some(buffers) = progress.buffers() {
+            scratch.set_decode_buffers(buffers);
+        }
+        let planes = progress
+            .take_unfiltered_planes()
+            .unwrap_or_else(|| scratch.reclaim_retired_planes());
+        let TipOutputJob {
+            candidate,
+            envelope,
+            core,
+            sequence,
+            options,
+            reference,
+            geometry,
+        } = job;
+        match inter::decode_tip_output_frame(
+            &mut scratch,
+            planes,
+            candidate,
+            envelope,
+            core,
+            &sequence,
+            options,
+            &reference,
+            geometry,
+            &mut products,
+        ) {
+            Ok((frame, _, cdfs, ccso, field, segments)) => {
+                products.settle(cdfs, ccso, segments);
+                motion.publish(field);
+                finish.complete_frame(frame);
+            }
+            Err(error) => {
+                drop(products);
+                motion.fail();
+                finish.fail(error);
+            }
+        }
+        let _ = scratch_done.set(Mutex::new(Some(T::wrap_scheduled_scratch(scratch))));
+    }
+}
+
 /// Admits one reference-gated TIP output reconstruction without stopping the
 /// frame driver at its pixel-reference barrier.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
-    reconstruct: P,
+pub(super) fn schedule_tip_output<'job, 'scope, T>(
+    job: TipOutputJob<'job, T>,
+    cell: TipOutputCell<'job, T>,
     frame_index: usize,
     dependencies: &inter::TipOutputDependencies<T>,
-    mut products: inter::FrameProductWriters,
+    products: inter::FrameProductWriters,
     motion: inter::MotionFieldHandle,
     finish: PendingFinish<T>,
     scheduler: &'scope AdmissionScheduler<'job, FrameTask<'job>>,
@@ -453,15 +624,9 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
     lane: &mut ReconAdmissionLane,
 ) where
     T: ScheduledScratchSample + Send + 'static,
-    P: FnOnce(
-            &mut inter::InterDecodeScratch<T>,
-            &mut inter::FrameProductWriters,
-        ) -> Result<inter::InterDecodeOutput<T>>
-        + Send
-        + 'job,
     'job: 'scope,
 {
-    let (scratch_source, scratch_done) = match lane.reserve_recon() {
+    let (scratch, scratch_done) = match lane.reserve_recon() {
         Ok(reservation) => reservation,
         Err(error) => {
             drop(products);
@@ -472,38 +637,23 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
     };
     let mut conditions = dependencies
         .conditions()
-        .chain(scratch_source.as_deref().map(Condition::completion));
-    let scratch_for_job = scratch_source.clone();
+        .chain(scratch.as_deref().map(Condition::completion));
     let order_key = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
         .saturating_mul(ORDER_KEY_FRAME_STRIDE);
+    *cell.lock() = Some(TipOutputTask {
+        job,
+        products,
+        motion,
+        finish,
+        scratch: scratch.clone(),
+        scratch_done,
+    });
     scheduler.submit_iter(
         scope,
         order_key,
         &mut conditions,
-        boxed_task(move |_| {
-            let mut scratch = scratch_for_job
-                .as_deref()
-                .and_then(CompletionCell::get)
-                .and_then(|scratch| T::take_scheduled_scratch(&mut scratch.lock()))
-                .unwrap_or_default();
-            if let Some(buffers) = finish.progress_handle().buffers() {
-                scratch.set_decode_buffers(buffers);
-            }
-            match reconstruct(&mut scratch, &mut products) {
-                Ok((frame, _, cdfs, ccso, field, segments)) => {
-                    products.settle(cdfs, ccso, segments);
-                    motion.publish(field);
-                    finish.complete_frame(frame);
-                }
-                Err(error) => {
-                    drop(products);
-                    motion.fail();
-                    finish.fail(error);
-                }
-            }
-            let _ = scratch_done.set(Mutex::new(Some(T::wrap_scheduled_scratch(scratch))));
-        }),
+        splot_parallel::Job::Inline(T::tip_output_task(ParkedTipOutput(cell))),
     );
 }
 
@@ -543,6 +693,11 @@ impl ReconAdmissionLane {
                 .map(|_| Arc::new(CompletionCell::new()))
                 .collect(),
         }
+    }
+
+    /// Whether every gate this lane would hand the next frame has settled.
+    pub(super) fn is_settled(&self) -> bool {
+        self.recon.iter().all(|cell| cell.is_set()) && self.filters.iter().all(|cell| cell.is_set())
     }
 
     fn reserve<T>(
@@ -1361,7 +1516,7 @@ mod tests {
 
     #[test]
     fn entropy_contexts_reuse_the_same_bounded_slots() {
-        let mut contexts = EntropyContexts::<u16>::new(12);
+        let mut contexts = EntropyContexts::<u16>::new(12, RetainedEntropy::default());
         let addresses: Vec<_> = (0..12)
             .map(|_| {
                 let slot = contexts.claim();
@@ -1409,7 +1564,7 @@ mod tests {
 
     #[test]
     fn frame_context_cannot_reset_while_a_task_holds_it() {
-        let mut contexts = EntropyContexts::<u16>::new(1);
+        let mut contexts = EntropyContexts::<u16>::new(1, RetainedEntropy::default());
         let slot = contexts.claim();
         let frame = Arc::new(ScheduledFrame::default());
         *slot.frame.lock() = Some(Arc::clone(&frame));

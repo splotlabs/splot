@@ -1249,6 +1249,7 @@ const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     decode_scratch: &mut super::InterDecodeScratch<T>,
+    mut recycled: splot_recon::FramePlaneSamples<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
@@ -1273,11 +1274,15 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     if sequence.partition.is_none() {
         return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
     }
-    let mut recycled = decode_scratch.reclaim_retired_planes();
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
-    let temporal = decode_scratch
-        .temporal_context
-        .get_or_insert_with(TemporalMvContext::empty);
+    let mut lease = crate::support::decode_buffers::DecodeBuffers::lend_tip_temporal(
+        decode_scratch.buffers.as_deref(),
+    );
+    let crate::support::decode_buffers::TipTemporalLease {
+        temporal,
+        records: temporal_records,
+        ..
+    } = &mut lease;
     temporal.refresh_from_references(
         (mi_rows, mi_cols),
         current_order_hint,
@@ -1352,7 +1357,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             residual: None,
         },
     };
-    let (mut scratch, mut temporal_records) = core::mem::take(&mut decode_scratch.tip_output);
+    let mut scratch = core::mem::take(&mut decode_scratch.tip_output);
     temporal_records.clear();
     let mut residual_scratch = InterResidualReconScratch::default();
     let mut sink = mc::WorkspaceSink::Frame(&mut workspace);
@@ -1365,7 +1370,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         placed.chroma_luma_h = rows;
         let grid = motion(
             &mut scratch,
-            &mut temporal_records,
+            temporal_records,
             &sink,
             &placed,
             temporal,
@@ -1397,7 +1402,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         retire_motion_grid(&mut scratch, grid);
         band_y += rows;
     }
-    super::temporal::commit_temporal_motion_blocks(&mut motion_field, &temporal_records);
+    super::temporal::commit_temporal_motion_blocks(&mut motion_field, temporal_records);
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
             .quantization_params
@@ -1427,7 +1432,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         )
         .map_err(|_| DecodeHeaderStateError::IncompleteTipOutput)?;
     }
-    decode_scratch.tip_output = (scratch, temporal_records);
+    decode_scratch.tip_output = scratch;
     Ok((workspace.freeze()?, motion_field))
 }
 

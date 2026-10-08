@@ -5,7 +5,6 @@
 //!
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
-use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use splot_recon::{PlaneId, ReconError};
@@ -363,14 +362,13 @@ impl<'payload> TileParser<'payload> {
             context.params.sb_h4,
             context.sequence.general.chroma_format_idc,
         )
-        .and_then(|capacity| buffers.reserve_coefficients(capacity));
+        .and_then(|capacity| buffers.reserve_unit(capacity));
         let ReconRowBuffers {
             superblocks,
             residual_coeffs,
             entries,
             residual_blocks,
             temporal,
-            motion_grids,
             motion_storage,
             mut flag_log,
             filter_records,
@@ -387,7 +385,6 @@ impl<'payload> TileParser<'payload> {
             entries,
             residual_blocks,
             temporal,
-            motion_grids,
             motion_storage,
             flag_log,
             filter_records: TileFilterRecords::default(),
@@ -624,7 +621,7 @@ pub(super) struct ReconRowEntry {
     state: Option<ReconEntryState>,
     /// The refinement grid the motion pass derived, which is the only grid the
     /// entry's prediction may sample through.
-    motion: Option<NonZeroUsize>,
+    motion: Option<super::super::mc::StoredMotionGrid>,
     pub(super) temporal: Range<usize>,
 }
 
@@ -699,33 +696,17 @@ impl ReconRowEntry {
         ))
     }
 
-    fn store_motion(
-        &mut self,
-        grid: Option<super::super::mc::StoredMotionGrid>,
-        grids: &mut Vec<Option<super::super::mc::StoredMotionGrid>>,
-    ) {
-        self.motion = grid.and_then(|grid| {
-            grids.push(Some(grid));
-            NonZeroUsize::new(grids.len())
-        });
+    pub(super) fn store_motion(&mut self, grid: Option<super::super::mc::StoredMotionGrid>) {
+        self.motion = grid;
     }
 
     pub(super) fn take_motion(
         &mut self,
-        grids: &mut [Option<super::super::mc::StoredMotionGrid>],
         storage: Option<&std::sync::Arc<super::super::mc::MotionRowStorage>>,
     ) -> Result<Option<super::super::mc::CompoundMotionGrid>> {
-        let Some(index) = self
-            .motion
-            .take()
-            .and_then(|index| index.get().checked_sub(1))
-        else {
+        let Some(grid) = self.motion.take() else {
             return Ok(None);
         };
-        let grid = grids
-            .get_mut(index)
-            .and_then(Option::take)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
         let storage = storage.ok_or_else(invalid_inter_tile_scheduling_state)?;
         Ok(Some(grid.view(storage)))
     }
@@ -805,7 +786,6 @@ pub(super) struct ReconRow {
     pub(super) entries: Vec<ReconRowEntry>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
-    pub(super) motion_grids: Vec<Option<super::super::mc::StoredMotionGrid>>,
     pub(super) motion_storage: Option<std::sync::Arc<super::super::mc::MotionRowStorage>>,
     /// The unit's flag-plane publications, replayed by a resolve pass that runs
     /// on a grid of its own. Empty unless the parser was logging.
@@ -899,7 +879,6 @@ pub(crate) struct ReconRowBuffers {
     pub(super) entries: Vec<ReconRowEntry>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
-    pub(super) motion_grids: Vec<Option<super::super::mc::StoredMotionGrid>>,
     pub(super) motion_storage: Option<std::sync::Arc<super::super::mc::MotionRowStorage>>,
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
@@ -910,40 +889,40 @@ impl ReconRowBuffers {
     fn capacities(&self) -> crate::support::decode_buffers::RowCapacities {
         [
             self.superblocks.capacity(),
-            self.entries.capacity(),
-            self.residual_blocks.capacity(),
             self.temporal.capacity(),
-            self.motion_grids.capacity(),
             self.flag_log.capacity(),
         ]
     }
 
     fn reserve_to(&mut self, reached: crate::support::decode_buffers::RowCapacities) -> Result<()> {
-        fn reserve<E>(list: &mut Vec<E>, capacity: usize) -> Result<()> {
-            list.try_reserve_exact(capacity.saturating_sub(list.len()))
-                .map_err(|_| inter_allocation!("superblock row lists"))
-        }
-        let [
-            superblocks,
-            entries,
-            residual_blocks,
-            temporal,
-            motion_grids,
-            flag_log,
-        ] = reached;
-        reserve(&mut self.superblocks, superblocks)?;
-        reserve(&mut self.entries, entries)?;
-        reserve(&mut self.residual_blocks, residual_blocks)?;
-        reserve(&mut self.temporal, temporal)?;
-        reserve(&mut self.motion_grids, motion_grids)?;
-        reserve(&mut self.flag_log, flag_log)
+        let [superblocks, temporal, flag_log] = reached;
+        reserve_list(&mut self.superblocks, superblocks)?;
+        reserve_list(&mut self.temporal, temporal)?;
+        reserve_list(&mut self.flag_log, flag_log)
     }
 
-    fn reserve_coefficients(&mut self, capacity: usize) -> Result<()> {
-        self.residual_coeffs
-            .try_reserve_exact(capacity.saturating_sub(self.residual_coeffs.len()))
-            .map_err(|_| inter_allocation!("superblock coefficients"))
+    /// Sizes the unit's coefficient and block lists to a superblock's
+    /// geometric bound, as dav2d sizes its frame-thread block arrays: every
+    /// leaf and transform block covers at least 16 samples. The bound is far
+    /// above typical content, but the allocator commits pages only as they
+    /// are written, so content never has to grow these lists. The block lists
+    /// are only a hint: where the address space is refused they grow instead.
+    fn reserve_unit(&mut self, coefficients: usize) -> Result<()> {
+        reserve_list(&mut self.residual_coeffs, coefficients)?;
+        let blocks = coefficients / 16;
+        let _ = self
+            .entries
+            .try_reserve_exact(blocks.saturating_sub(self.entries.len()));
+        let _ = self
+            .residual_blocks
+            .try_reserve_exact(blocks.saturating_sub(self.residual_blocks.len()));
+        Ok(())
     }
+}
+
+fn reserve_list<E>(list: &mut Vec<E>, capacity: usize) -> Result<()> {
+    list.try_reserve_exact(capacity.saturating_sub(list.len()))
+        .map_err(|_| inter_allocation!("superblock row lists"))
 }
 
 fn superblock_coefficient_capacity(sb_h4: usize, chroma: ChromaFormatIdc) -> Result<usize> {
@@ -999,6 +978,10 @@ struct ReadyReconRow<T: ReconSample> {
 
 pub(crate) struct InterReconScratchPool<T: ReconSample> {
     available: Mutex<(usize, Vec<deferred_recon::InterReconScratch<T>>)>,
+    /// Refinement-grid storage between a unit's motion pass and its commit.
+    /// Only the units in that window hold one, so a few stay warm for every
+    /// unit of every frame instead of one growing per unit per parse slot.
+    motion_storage: Mutex<Vec<std::sync::Arc<super::mc::MotionRowStorage>>>,
 }
 
 impl<T: ReconSample> InterReconScratchPool<T> {
@@ -1025,12 +1008,25 @@ impl<T: ReconSample> InterReconScratchPool<T> {
         self.available.lock().1.push(scratch);
         Ok(result)
     }
+
+    fn take_motion_storage(&self) -> Option<std::sync::Arc<super::mc::MotionRowStorage>> {
+        self.motion_storage.lock().pop()
+    }
+
+    fn recycle_motion_storage(&self, storage: Option<std::sync::Arc<super::mc::MotionRowStorage>>) {
+        if let Some(mut storage) = storage
+            && std::sync::Arc::get_mut(&mut storage).is_some()
+        {
+            self.motion_storage.lock().push(storage);
+        }
+    }
 }
 
 impl<T: ReconSample> Default for InterReconScratchPool<T> {
     fn default() -> Self {
         Self {
             available: Mutex::new((0, Vec::new())),
+            motion_storage: Mutex::new(Vec::new()),
         }
     }
 }
@@ -1249,7 +1245,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 let start = row.temporal.len();
                 let result = if row.motion_derived {
                     entry
-                        .take_motion(&mut row.motion_grids, row.motion_storage.as_ref())
+                        .take_motion(row.motion_storage.as_ref())
                         .and_then(|grid| {
                             scratch.reconstruct_from_motion(
                                 &command,
@@ -1590,14 +1586,14 @@ impl ParseProgress {
             .and_then(Option::take)
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         if let Some(buffers) = &self.buffers {
-            row.reserve_to(buffers.row_capacities(index))?;
+            row.reserve_to(buffers.row_capacities())?;
         }
         Ok(row)
     }
 
     pub(super) fn return_row_buffers(&self, index: usize, buffers: ReconRowBuffers) -> Result<()> {
         if let Some(shared) = &self.buffers {
-            shared.note_row_capacities(index, buffers.capacities());
+            shared.note_row_capacities(buffers.capacities());
         }
         let mut rows = self.row_buffers.lock();
         let slot = rows

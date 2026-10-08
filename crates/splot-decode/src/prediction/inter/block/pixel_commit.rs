@@ -99,7 +99,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mut entries,
             mut residual_blocks,
             mut temporal,
-            mut motion_grids,
             motion_storage,
             mut flag_log,
             filter_records: mut row_filter_records,
@@ -178,8 +177,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                     &command,
                                     &mut WorkspaceSink::Frame(workspace),
                                     block_decoded,
-                                    entry
-                                        .take_motion(&mut motion_grids, motion_storage.as_ref())?,
+                                    entry.take_motion(motion_storage.as_ref())?,
                                     &residual_blocks,
                                     if shared_coefficients {
                                         &coefficient_scratch
@@ -254,7 +252,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         residual_blocks.clear();
         residual_coeffs.clear();
         temporal.clear();
-        motion_grids.clear();
         flag_log.clear();
         Ok(ReconRowBuffers {
             superblocks,
@@ -262,7 +259,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             entries,
             residual_blocks,
             temporal,
-            motion_grids,
             motion_storage,
             flag_log,
             filter_records: row_filter_records,

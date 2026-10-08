@@ -119,15 +119,16 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait()?;
+        let planes = scratch.reclaim_retired_planes();
         return decode_tip_output_frame(
             scratch,
+            planes,
             candidate,
             frame_envelope,
             core,
             sequence,
             options,
             reference,
-            bit_depth,
             geometry,
             products,
         )
@@ -197,16 +198,17 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
+    planes: splot_recon::FramePlaneSamples<T>,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
-    bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
     products: &mut FrameProductWriters,
 ) -> Result<InterDecodeOutput<T>> {
+    let bit_depth = geometry.info().bit_depth();
     let offset = frame_envelope.offset;
     let frame_size = geometry.frame_size();
     ensure_runtime_limits(
@@ -218,8 +220,9 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
         sequence.general.chroma_format_idc,
     )?;
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
-    let (frame, motion_field) =
-        block::tip::reconstruct_output(scratch, sequence, &core, reference, geometry, offset)?;
+    let (frame, motion_field) = block::tip::reconstruct_output(
+        scratch, planes, sequence, &core, reference, geometry, offset,
+    )?;
     let qindex = core.quantization_params.map_or(0, |q| q.base_q_idx);
     products
         .frame_cdfs()?
@@ -2211,7 +2214,7 @@ pub(crate) use block::{
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
-    FixedStack, MotionFieldLayout, TemporalMotionField, TemporalMvContext,
+    FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
 };
 pub(crate) use frame_products::{
     CcsoGridHandle, FrameCdfHandle, FrameProductWriters, FrameProducts, SegmentIdMapHandle,

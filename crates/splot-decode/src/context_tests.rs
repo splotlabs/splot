@@ -34,3 +34,33 @@ fn discard_output_decodes_supported_fixture() {
     ctx.decode_discard_bytes(MINIMAL_FIXTURE, DecodeOptions::default())
         .unwrap();
 }
+
+#[test]
+fn a_context_reused_across_streams_decodes_like_a_new_one() {
+    const STREAMS: [&[u8]; 4] = [
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf"),
+        include_bytes!(
+            "../../../tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
+        ),
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-frame-tip-families-64x64.ivf"),
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-warp-inter-128x128.ivf"),
+    ];
+    let context = || {
+        DecodeContext::new(
+            DecodeRuntimeConfig::new(ThreadCount::from(4usize))
+                .with_frame_delay(splot_parallel::FrameDelay::from(4usize)),
+        )
+        .unwrap()
+    };
+    let decode = |context: &DecodeContext, bytes: &[u8]| {
+        let mut output = Vec::new();
+        context
+            .decode_raw_bytes(bytes, DecodeOptions::default(), &mut output)
+            .unwrap();
+        output
+    };
+    let reused = context();
+    for bytes in STREAMS.into_iter().chain(STREAMS) {
+        assert_eq!(decode(&reused, bytes), decode(&context(), bytes));
+    }
+}

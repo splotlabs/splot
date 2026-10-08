@@ -215,52 +215,21 @@ fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
     plane: &Plane<T>,
     writer: &mut W,
 ) -> io::Result<()> {
-    const WRITE_BATCH_BYTES: usize = 64 * 1024;
-
     let bytes_per_sample = bytes_per_sample(bit_depth);
-    let row_byte_len = plane
-        .visible_size()
-        .width()
-        .checked_mul(bytes_per_sample)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "decoded frame hash input row byte length overflow",
-            )
-        })?;
-    if row_byte_len == 0 {
-        return Ok(());
-    }
-    let rows_per_batch = WRITE_BATCH_BYTES
-        .checked_div(row_byte_len)
-        .unwrap_or(1)
-        .max(1);
-    let batch_byte_len = row_byte_len.checked_mul(rows_per_batch).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "decoded frame hash input write batch length overflow",
-        )
-    })?;
-    let mut batch = Vec::new();
-    batch.try_reserve_exact(batch_byte_len).map_err(|err| {
-        io::Error::other(format!(
-            "decoded frame hash input write buffer allocation failed: {err}"
-        ))
-    })?;
-
+    let mut batch = [0u8; 16 * 1024];
+    let mut filled = 0;
     for row in plane.visible_rows() {
-        let start = batch.len();
-        batch.resize(start + row_byte_len, 0);
-        fill_sample_bytes(bit_depth, row, &mut batch[start..]);
-        if batch.len() == batch_byte_len {
-            writer.write_all(&batch)?;
-            batch.clear();
+        for samples in row.chunks(batch.len() / bytes_per_sample) {
+            let len = samples.len() * bytes_per_sample;
+            if filled + len > batch.len() {
+                writer.write_all(&batch[..filled])?;
+                filled = 0;
+            }
+            fill_sample_bytes(bit_depth, samples, &mut batch[filled..filled + len]);
+            filled += len;
         }
     }
-    if !batch.is_empty() {
-        writer.write_all(&batch)?;
-    }
-    Ok(())
+    writer.write_all(&batch[..filled])
 }
 
 /// Serializes one visible row into `row_bytes` per § 6.16.13: one byte per

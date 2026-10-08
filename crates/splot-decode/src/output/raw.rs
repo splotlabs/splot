@@ -5,8 +5,6 @@
 //!
 //! Feature tracking: `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`.
 
-use core::num::NonZeroUsize;
-
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -26,7 +24,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
-    frame_delay: NonZeroUsize,
+    session: &crate::pipeline::DecodeSession,
     writer: W,
 ) -> Result<()> {
     let writer = Mutex::new(writer);
@@ -38,7 +36,7 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
             parsed,
             options,
             plan,
-            frame_delay,
+            session,
             |_| Ok(()),
             |output| {
                 if let Some(done) = outstanding.take() {
@@ -49,31 +47,15 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
                 }
                 let frame = output.ready_frame()?;
                 let display_grain = output.display_grain.clone();
+                if splot_parallel::current_pool_width() <= 1 {
+                    return write_display_frame(&frame, display_grain.as_ref(), &writer);
+                }
                 let writer = &writer;
                 let output_error = &output_error;
                 let done = Arc::new(CompletionCell::new());
                 outstanding = Some(Arc::clone(&done));
                 scope.spawn(move |_| {
-                    let result = catch_unwind(AssertUnwindSafe(|| {
-                        let mut writer = writer.lock();
-                        match &frame {
-                            PipelineDecodedFrame::Eight(frame) => {
-                                let display = film_grain::frame_for_output(
-                                    frame.get(),
-                                    display_grain.as_ref(),
-                                )?;
-                                write_raw_frame(display.as_ref(), &mut *writer)
-                            }
-                            PipelineDecodedFrame::Ten(frame) => {
-                                let display = film_grain::frame_for_output(
-                                    frame.get(),
-                                    display_grain.as_ref(),
-                                )?;
-                                write_raw_frame(display.as_ref(), &mut *writer)
-                            }
-                        }
-                    }))
-                    .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")));
+                    let result = write_display_frame(&frame, display_grain.as_ref(), writer);
                     if let Err(error) = result {
                         let mut failure = output_error.lock();
                         if failure.is_none() {
@@ -97,19 +79,42 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     Ok(())
 }
 
+/// Writes one displayed frame, turning a panicking writer into an error at
+/// every pool width.
+fn write_display_frame(
+    frame: &PipelineDecodedFrame,
+    display_grain: Option<&crate::pipeline::ActiveFilmGrain>,
+    writer: &Mutex<impl Write>,
+) -> Result<()> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let writer = &mut *writer.lock();
+        match frame {
+            PipelineDecodedFrame::Eight(frame) => {
+                let display = film_grain::frame_for_output(frame.get(), display_grain)?;
+                write_raw_frame(display.as_ref(), writer)
+            }
+            PipelineDecodedFrame::Ten(frame) => {
+                let display = film_grain::frame_for_output(frame.get(), display_grain)?;
+                write_raw_frame(display.as_ref(), writer)
+            }
+        }
+    }))
+    .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")))
+}
+
 pub(crate) fn discard_raw_stream_from_plan(
     bitstream: &[u8],
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
-    frame_delay: NonZeroUsize,
+    session: &crate::pipeline::DecodeSession,
 ) -> Result<()> {
     crate::pipeline::emit_frames_from_prepared(
         bitstream,
         parsed,
         options,
         plan,
-        frame_delay,
+        session,
         |_| Ok(()),
         |output| {
             let frame = output.ready_frame()?;

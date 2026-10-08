@@ -22,11 +22,15 @@ use crate::runtime::DecodeRuntimeConfig;
 /// discard-output paths for the supported decode envelope (tracked in
 /// `docs/DECODER-SUPPORT-MATRIX.toml`). It does not touch the filesystem or
 /// invoke any external decoder.
+///
+/// A context keeps the decoder state of its last successful decode, sized
+/// for the largest stream it has decoded, so the next call reuses it instead
+/// of allocating it again. Drop the context to release that memory.
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
     pool: WorkerPool,
-    frame_delay: NonZeroUsize,
+    session: crate::pipeline::DecodeSession,
 }
 
 impl DecodeContext {
@@ -43,7 +47,7 @@ impl DecodeContext {
         Ok(Self {
             runtime,
             pool,
-            frame_delay,
+            session: crate::pipeline::DecodeSession::new(frame_delay),
         })
     }
 
@@ -53,7 +57,7 @@ impl DecodeContext {
     /// effective in-flight capacity without changing the scheduling algorithm.
     #[must_use]
     pub fn frame_delay(&self) -> NonZeroUsize {
-        self.frame_delay
+        self.session.frame_delay()
     }
 
     /// The runtime (non-bitstream) configuration.
@@ -103,13 +107,13 @@ impl DecodeContext {
             &'a [u8],
             &PreparedByteStream<'a>,
             &DecodeOptions,
-            NonZeroUsize,
+            &crate::pipeline::DecodeSession,
         ) -> Result<()>
         + Send,
     ) -> Result<()> {
         let prepared = self.prepare_bytes(bytes, &options)?;
         self.pool
-            .install(|| decode(bytes, &prepared, &options, self.frame_delay))
+            .install(|| decode(bytes, &prepared, &options, &self.session))
     }
 
     /// Decodes the supported envelope and returns a deterministic hash report.
@@ -136,7 +140,7 @@ impl DecodeContext {
                 &options,
                 prepared.plan(),
                 self.threads(),
-                self.frame_delay,
+                &self.session,
             )
         })
     }
@@ -159,7 +163,7 @@ impl DecodeContext {
                 prepared.parsed(),
                 &options,
                 prepared.plan(),
-                self.frame_delay,
+                &self.session,
                 |_| Ok(()),
                 |_| Ok(()),
             )
@@ -183,20 +187,16 @@ impl DecodeContext {
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.decode_raw_with(
-            bytes,
-            options,
-            move |bytes, prepared, options, frame_delay| {
-                crate::output::raw::write_raw_stream_from_plan(
-                    bytes,
-                    prepared.parsed(),
-                    options,
-                    prepared.plan(),
-                    frame_delay,
-                    writer,
-                )
-            },
-        )
+        self.decode_raw_with(bytes, options, move |bytes, prepared, options, session| {
+            crate::output::raw::write_raw_stream_from_plan(
+                bytes,
+                prepared.parsed(),
+                options,
+                prepared.plan(),
+                session,
+                writer,
+            )
+        })
     }
 
     /// Decodes raw output through output-effect materialization without
@@ -211,13 +211,13 @@ impl DecodeContext {
     /// structures, runtime-tier rejections, resource-limit failures, worker-pool
     /// failures, reconstruction model errors, or output-effect errors.
     pub fn decode_raw_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
-        self.decode_raw_with(bytes, options, |bytes, prepared, options, frame_delay| {
+        self.decode_raw_with(bytes, options, |bytes, prepared, options, session| {
             crate::output::raw::discard_raw_stream_from_plan(
                 bytes,
                 prepared.parsed(),
                 options,
                 prepared.plan(),
-                frame_delay,
+                session,
             )
         })
     }
@@ -246,7 +246,7 @@ impl DecodeContext {
                 prepared.parsed(),
                 &options,
                 prepared.plan(),
-                self.frame_delay,
+                &self.session,
                 writer,
             )
             .map(drop)

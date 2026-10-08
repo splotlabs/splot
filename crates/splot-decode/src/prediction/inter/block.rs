@@ -194,8 +194,8 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     pub(in crate::prediction::inter) payload: crate::bitstream::tile_payload::TilePayloadScratch,
     /// The fused walk's initial CDF cell, reset in place for each frame.
     pub(in crate::prediction::inter) initial_cdfs: Option<Arc<FrameCdfSubset>>,
-    /// The TIP output walk's scratch and temporal records, kept across frames.
-    tip_output: (tip::TipReconstructScratch<T>, Vec<TemporalMotionBlock>),
+    /// The TIP output walk's scratch, kept across frames.
+    tip_output: tip::TipReconstructScratch<T>,
     /// The reusable storage this decode's retired work leaves behind.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
 }

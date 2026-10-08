@@ -614,14 +614,18 @@ impl SpareFramePlanes for u16 {
     }
 }
 
-/// Keeps `retired` when the ring is not already holding a full cycle of spares.
+/// Keeps `retired` when the ring is not already holding a full cycle of spares,
+/// otherwise hands it to `overflow`'s pool when the caller names one.
 fn keep_spare<T: ReconSample>(
     spares: &mut Vec<splot_recon::FramePlaneSamples<T>>,
     capacity: usize,
     retired: splot_recon::FramePlaneSamples<T>,
+    overflow: Option<&Arc<splot_recon::PlanePool>>,
 ) {
     if spares.len() < capacity {
         spares.push(retired);
+    } else {
+        retired.with_pool(overflow).release();
     }
 }
 
@@ -707,7 +711,15 @@ impl InflightRing {
     ///
     /// A frame still shared by any reader keeps its own buffers: the samples
     /// are only taken when this handle is the last one holding them.
-    pub(crate) fn keep_frame_planes(&mut self, mut slot: PipelineFrameSlot) -> PipelineFrameSlot {
+    ///
+    /// With `release`, the decode's pool takes whatever planes the spares have
+    /// no room for: a new decode retires the frames the last one left at once.
+    pub(crate) fn keep_frame_planes(
+        &mut self,
+        mut slot: PipelineFrameSlot,
+        release: bool,
+    ) -> PipelineFrameSlot {
+        let overflow = release.then(|| self.buffers.planes());
         match &mut slot {
             PipelineFrameSlot::Eight(slot) => {
                 if let Some(frame) = slot.retire_frame() {
@@ -715,6 +727,7 @@ impl InflightRing {
                         &mut self.spare_eight,
                         self.capacity,
                         frame.into_plane_samples(),
+                        overflow,
                     );
                 }
             }
@@ -724,6 +737,7 @@ impl InflightRing {
                         &mut self.spare_ten,
                         self.capacity,
                         frame.into_plane_samples(),
+                        overflow,
                     );
                 }
             }
