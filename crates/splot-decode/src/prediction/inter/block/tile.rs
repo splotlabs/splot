@@ -302,17 +302,18 @@ impl<'payload> TileParser<'payload> {
                 .map_err(|error| inter_tile_segment_id_error(&error))?;
         parse
             .mv_grid
-            .reset_for_tile(tile_rows.clone(), tile_cols.clone())
+            .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
         parse
             .y_smooth
-            .reset_for_tile(tile_rows.clone(), tile_cols.clone())
+            .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
             .map_err(|error| inter_tile_grid_error(&error, "inter luma smooth grid"))?;
         let (chroma_rows, chroma_cols) =
             super::chroma_smooth_tile_ranges(tile_rows, tile_cols, chroma);
+        let chroma_sb_h4 = context.params.sb_h4 >> usize::from(chroma_subsampling(chroma).1);
         parse
             .chroma_smooth
-            .reset_for_tile(chroma_rows, chroma_cols)
+            .reset_for_tile(chroma_rows, chroma_cols, chroma_sb_h4)
             .map_err(|error| inter_tile_grid_error(&error, "inter chroma smooth grid"))?;
         let walk = GeneralIntraMultiblockCursor::new(
             tile,
@@ -489,6 +490,16 @@ impl<'payload> TileParser<'payload> {
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
         recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
+        if decoded_row.is_ok()
+            && (walk.window_violated()
+                || self.mv_grid.window_violated()
+                || self.intrabc_state.window_violated()
+                || self.y_smooth.window_violated()
+                || self.chroma_smooth.window_violated())
+        {
+            recon_row.record_terminal_error(invalid_inter_tile_scheduling_state());
+            return ParserStep::Last(recon_row);
+        }
         match decoded_row {
             Ok(true) => ParserStep::More(recon_row),
             Err(error) => {
@@ -590,7 +601,11 @@ impl TileResolveState {
                 tile_offset,
             },
             context.params.sb_h4,
-        )
+        )?;
+        if grid.window_violated() {
+            return Err(invalid_inter_tile_scheduling_state());
+        }
+        Ok(())
     }
 }
 

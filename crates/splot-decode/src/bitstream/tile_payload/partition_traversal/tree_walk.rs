@@ -119,6 +119,11 @@ pub(crate) struct TileTraversalStorage {
 }
 
 impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
+    /// Whether the SDP luma-mode grid touched a row its window had reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.y_modes.window_violated()
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         work_unit: &DecodeTileWorkUnit,
@@ -156,9 +161,9 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             ..(work_unit.mi_row_range().end as usize).min(frame.mi_rows);
         let tile_cols = work_unit.mi_col_range().start as usize
             ..(work_unit.mi_col_range().end as usize).min(frame.mi_cols);
-        let y_modes = TileIntraYModeState::new(tile_rows.len(), tile_cols.len())?
-            .with_origin(tile_rows.start, tile_cols.start);
         let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
+        let y_modes = TileIntraYModeState::new(tile_rows.len(), tile_cols.len(), sb_size4)?
+            .with_origin(tile_rows.start, tile_cols.start);
         let next_sb_row = work_unit.mi_row_range().start as usize;
         Ok(Self {
             frame,
@@ -499,6 +504,8 @@ pub(super) fn is_intra_sdp_shared_root(
 mod row_cursor_tests {
     #![allow(clippy::unwrap_used)]
 
+    const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
+
     use splot_core::symbol::CdfUpdateMode;
 
     use super::*;
@@ -557,13 +564,14 @@ mod row_cursor_tests {
         (
             TileMiSizeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, frame.sb_size)
                 .unwrap(),
-            TileIntraJointModeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols).unwrap(),
+            TileIntraJointModeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, WHOLE_TILE)
+                .unwrap(),
             TileUsesMrlsState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, sb_size4).unwrap(),
             TileUseDipState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, sb_size4).unwrap(),
             TileFscModeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, sb_size4).unwrap(),
             TileLumaPaletteState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, sb_size4)
                 .unwrap(),
-            TileUvCflState::new(frame.mi_rows, frame.mi_cols).unwrap(),
+            TileUvCflState::new(frame.mi_rows, frame.mi_cols, WHOLE_TILE).unwrap(),
         )
     }
 
@@ -820,7 +828,7 @@ mod row_cursor_tests {
 
     #[test]
     fn missing_chroma_collocation_is_a_typed_construction_error() {
-        let y_modes = TileIntraYModeState::new(16, 16).unwrap();
+        let y_modes = TileIntraYModeState::new(16, 16, WHOLE_TILE).unwrap();
         let call =
             TilePartitionCall::root(7, 11, BlockSize::new(BLOCK_64X64).unwrap(), ROOT_HAS_CHROMA)
                 .with_tree_type(PartitionTreeType::ChromaPart);

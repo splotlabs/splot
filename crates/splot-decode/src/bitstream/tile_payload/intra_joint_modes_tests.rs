@@ -5,6 +5,8 @@
 
 use super::*;
 
+const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
+
 const SB_N4: usize = 16;
 
 fn joint_mode(value: usize) -> IntraJointMode {
@@ -21,34 +23,34 @@ fn secondary_mrl() -> MrlSelection {
 
 #[test]
 fn out_of_frame_neighbours_give_context_zero() {
-    let state = TileIntraJointModeState::new_for_tile(0..16, 0..16).unwrap();
+    let state = TileIntraJointModeState::new_for_tile(0..16, 0..16, WHOLE_TILE).unwrap();
     assert_eq!(state.y_mode_index_ctx(0, 0, 16, 16), 0);
 }
 
 #[test]
 fn non_directional_neighbour_keeps_context_zero() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, joint_mode(2));
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
 }
 
 #[test]
 fn directional_left_neighbour_raises_context_to_one() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, joint_mode(36));
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 1);
 }
 
 #[test]
 fn directional_above_neighbour_raises_context_to_one() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..16).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..16, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, joint_mode(36));
     assert_eq!(state.y_mode_index_ctx(16, 0, 16, 16), 1);
 }
 
 #[test]
 fn directional_both_neighbours_raise_context_to_two() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..32).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..32, WHOLE_TILE).unwrap();
     state.record_block(0, 16, 16, 16, joint_mode(36));
     state.record_block(16, 0, 16, 16, joint_mode(36));
     assert_eq!(state.y_mode_index_ctx(16, 16, 16, 16), 2);
@@ -56,7 +58,7 @@ fn directional_both_neighbours_raise_context_to_two() {
 
 #[test]
 fn non_intra_block_resets_directional_neighbour_to_dc() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..64, 0..64).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..64, 0..64, WHOLE_TILE).unwrap();
     state.record_block(32, 0, 16, 16, joint_mode(36));
     state.record_block(16, 16, 16, 16, joint_mode(36));
     assert_eq!(state.y_mode_index_ctx(32, 16, 16, 16), 2);
@@ -72,7 +74,7 @@ fn non_intra_block_resets_directional_neighbour_to_dc() {
 
 #[test]
 fn get_joint_mode_uses_the_spec_neighbour_positions() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..8, 0..8).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..8, 0..8, WHOLE_TILE).unwrap();
     state.record_block(3, 1, 1, 1, joint_mode(36));
     assert_eq!(state.get_joint_mode(0, 2, 2, 2, 2), joint_mode(36));
     state.record_block(1, 3, 1, 1, joint_mode(36));
@@ -81,7 +83,7 @@ fn get_joint_mode_uses_the_spec_neighbour_positions() {
 
 #[test]
 fn last_non_directional_mode_does_not_raise_the_context() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, joint_mode(4));
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
 }
@@ -89,18 +91,18 @@ fn last_non_directional_mode_does_not_raise_the_context() {
 #[test]
 fn empty_dimensions_are_rejected() {
     assert!(matches!(
-        TileIntraJointModeState::new_for_tile(0..0, 0..4),
+        TileIntraJointModeState::new_for_tile(0..0, 0..4, WHOLE_TILE),
         Err(TileIntraJointModeStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
-        TileIntraJointModeState::new_for_tile(0..4, 0..0),
+        TileIntraJointModeState::new_for_tile(0..4, 0..0, WHOLE_TILE),
         Err(TileIntraJointModeStateError::EmptyDimensions { .. })
     ));
 }
 
 #[test]
 fn record_block_clips_to_the_grid() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..4, 0..4).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..4, 0..4, WHOLE_TILE).unwrap();
     state.record_block(2, 2, 16, 16, joint_mode(36));
     assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), joint_mode(36));
 }
@@ -286,7 +288,7 @@ fn fsc_and_use_dip_empty_dimensions_are_rejected() {
 
 #[test]
 fn y_mode_state_records_and_clips_blocks() {
-    let mut state = TileIntraYModeState::new(4, 4).unwrap();
+    let mut state = TileIntraYModeState::new(4, 4, WHOLE_TILE).unwrap();
     state.record_block(2, 2, 16, 16, IntraYMode::Dc, -3);
 
     let expected = Some(TileIntraYModeFacts {
@@ -301,34 +303,34 @@ fn y_mode_state_records_and_clips_blocks() {
 
 #[test]
 fn uv_cfl_out_of_frame_neighbours_give_context_zero() {
-    let state = TileUvCflState::new(16, 16).unwrap();
+    let state = TileUvCflState::new(16, 16, WHOLE_TILE).unwrap();
     assert_eq!(state.is_cfl_ctx(0, 0, false, false), 0);
 }
 
 #[test]
 fn uv_cfl_non_cfl_neighbour_keeps_context_zero() {
-    let mut state = TileUvCflState::new(16, 32).unwrap();
+    let mut state = TileUvCflState::new(16, 32, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, false);
     assert_eq!(state.is_cfl_ctx(0, 16, false, true), 0);
 }
 
 #[test]
 fn uv_cfl_left_neighbour_raises_context_to_one() {
-    let mut state = TileUvCflState::new(16, 32).unwrap();
+    let mut state = TileUvCflState::new(16, 32, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, true);
     assert_eq!(state.is_cfl_ctx(0, 16, false, true), 1);
 }
 
 #[test]
 fn uv_cfl_above_neighbour_raises_context_to_one() {
-    let mut state = TileUvCflState::new(32, 16).unwrap();
+    let mut state = TileUvCflState::new(32, 16, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, true);
     assert_eq!(state.is_cfl_ctx(16, 0, true, false), 1);
 }
 
 #[test]
 fn uv_cfl_both_neighbours_raise_context_to_two() {
-    let mut state = TileUvCflState::new(32, 32).unwrap();
+    let mut state = TileUvCflState::new(32, 32, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, true);
     state.record_block(16, 0, 16, 16, true);
     state.record_block(0, 16, 16, 16, true);
@@ -337,19 +339,19 @@ fn uv_cfl_both_neighbours_raise_context_to_two() {
 
 #[test]
 fn uv_cfl_availability_gate_overrides_a_cfl_neighbour() {
-    let mut state = TileUvCflState::new(16, 32).unwrap();
+    let mut state = TileUvCflState::new(16, 32, WHOLE_TILE).unwrap();
     state.record_block(0, 0, 16, 16, true);
     assert_eq!(state.is_cfl_ctx(0, 16, false, false), 0);
 }
 
 #[test]
 fn uv_cfl_record_block_clips_to_the_grid_and_rejects_empty_dimensions() {
-    let mut state = TileUvCflState::new(4, 4).unwrap();
+    let mut state = TileUvCflState::new(4, 4, WHOLE_TILE).unwrap();
     state.record_block(2, 2, 16, 16, true);
     assert_eq!(state.is_cfl_ctx(3, 3, true, true), 2);
     assert_eq!(state.is_cfl_ctx(2, 3, false, true), 1);
-    assert!(TileUvCflState::new(0, 4).is_err());
-    assert!(TileUvCflState::new(4, 0).is_err());
+    assert!(TileUvCflState::new(0, 4, WHOLE_TILE).is_err());
+    assert!(TileUvCflState::new(4, 0, WHOLE_TILE).is_err());
 }
 
 /// AV2 § 5.20.5.8 `neg_deinterleave` across its four branches, with asymmetric
