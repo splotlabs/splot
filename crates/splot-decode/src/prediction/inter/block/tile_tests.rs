@@ -461,6 +461,7 @@ fn frame_coefficient_snapshots_release_the_lock_and_pin_retirement() {
             range: 1..4,
             entries: 0..0,
             blocks: 0..0,
+            flags: 0..0,
             capacity: 16,
         };
         source.copy_into(&mut snapshot).expect("snapshot");
@@ -494,6 +495,7 @@ fn frame_coefficient_snapshots_release_the_lock_and_pin_retirement() {
         range: 0..65,
         entries: 0..0,
         blocks: 0..0,
+        flags: 0..0,
         capacity: 64,
     };
     assert!(source.copy_into(&mut snapshot).is_err());

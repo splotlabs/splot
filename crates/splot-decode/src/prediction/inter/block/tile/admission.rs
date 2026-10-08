@@ -1275,7 +1275,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             else {
                 break;
             };
-            resolve.grid.replay_flag_log(&row.flag_log);
+            row.replay_flags(&mut resolve.grid)?;
             row.return_terminal_error()?;
             let mut lists = self.parse_progress.resolve_lists.lock();
             row.load_parsed(&mut lists);

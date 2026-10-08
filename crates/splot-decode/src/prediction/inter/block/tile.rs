@@ -746,6 +746,7 @@ struct FrameResiduals {
     planes: crate::residual::pipeline::ResidualPlaneArena,
     entries: Vec<Option<ReconRowEntry>>,
     blocks: Vec<InterResidualBlock>,
+    flags: Vec<NeighbourFlagRecord>,
 }
 
 pub(super) struct RowResiduals {
@@ -754,6 +755,7 @@ pub(super) struct RowResiduals {
     range: Range<usize>,
     entries: Range<usize>,
     blocks: Range<usize>,
+    flags: Range<usize>,
     capacity: usize,
 }
 
@@ -762,6 +764,7 @@ pub(super) struct RowResiduals {
 pub(super) struct UnitLists {
     entries: Vec<ReconRowEntry>,
     blocks: Vec<InterResidualBlock>,
+    flags: Vec<NeighbourFlagRecord>,
 }
 
 impl UnitLists {
@@ -899,6 +902,20 @@ impl ReconRow {
         source.store(&mut self.entries);
         self.residual_blocks.clear();
         lists.swap_into(&mut self.entries, &mut self.residual_blocks);
+    }
+
+    /// Replays the unit's logged flag publications onto `grid`.
+    pub(super) fn replay_flags(&self, grid: &mut NeighbourMvGrid) -> Result<()> {
+        let Some(source) = &self.residual_source else {
+            grid.replay_flag_log(&self.flag_log);
+            return Ok(());
+        };
+        let frame = source.frame.lock();
+        let flags = (frame.flags)
+            .get(source.flags.clone())
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+        grid.replay_flag_log(flags);
+        Ok(())
     }
 
     fn has_terminal_error(&self) -> bool {
@@ -1571,6 +1588,7 @@ impl ParseProgress {
         residuals.planes.clear();
         residuals.entries.clear();
         residuals.blocks.clear();
+        residuals.flags.clear();
         self.finished.reset();
         let records = self.records.get_mut();
         records.clear();
@@ -1787,6 +1805,10 @@ impl<'payload> TileParser<'payload> {
         parse_progress: &ParseProgress,
     ) -> Result<bool> {
         let mut row_set = parse_progress.take_row_buffers(self.parser_ordinal)?;
+        core::mem::swap(
+            &mut row_set.flag_log,
+            &mut parse_progress.parse_lists.lock().flags,
+        );
         std::mem::swap(&mut row_set.filter_records, &mut self.filter_records);
         std::mem::swap(
             &mut row_set.residual_coeffs,
@@ -1829,28 +1851,31 @@ impl<'payload> TileParser<'payload> {
                 .map_err(|_| inter_allocation!("frame residual publication"))?;
             let entries = residuals.entries.len();
             let blocks = residuals.blocks.len();
+            let flags = residuals.flags.len();
             residuals
                 .entries
                 .try_reserve(row.entries.len())
                 .and_then(|()| residuals.blocks.try_reserve(row.residual_blocks.len()))
+                .and_then(|()| residuals.flags.try_reserve(row.flag_log.len()))
                 .map_err(|_| inter_allocation!("frame unit publication"))?;
             residuals.entries.extend(row.entries.drain(..).map(Some));
             residuals.blocks.append(&mut row.residual_blocks);
+            residuals.flags.append(&mut row.flag_log);
             row.residual_source = Some(RowResiduals {
                 frame: Arc::clone(&parse_progress.residuals),
                 range: start..residuals.coefficients.len(),
                 planes,
                 entries: entries..residuals.entries.len(),
                 blocks: blocks..residuals.blocks.len(),
+                flags: flags..residuals.flags.len(),
                 capacity,
             });
             Ok::<(), crate::DecodeError>(())
         })();
         if row.residual_source.is_some() {
-            parse_progress
-                .parse_lists
-                .lock()
-                .swap_into(&mut row.entries, &mut row.residual_blocks);
+            let mut lists = parse_progress.parse_lists.lock();
+            lists.swap_into(&mut row.entries, &mut row.residual_blocks);
+            core::mem::swap(&mut row.flag_log, &mut lists.flags);
         }
         row.residual_coeffs.clear();
         std::mem::swap(
