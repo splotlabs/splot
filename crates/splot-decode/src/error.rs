@@ -76,6 +76,25 @@ pub enum DecodeError {
         #[from]
         source: DecodeOutputError,
     },
+    /// Reading the decode input failed.
+    #[error("failed to read decode input: {source}")]
+    Input {
+        /// The underlying read failure.
+        source: io::Error,
+    },
+}
+
+impl DecodeError {
+    pub(crate) const fn input(source: io::Error) -> Self {
+        Self::Input { source }
+    }
+
+    pub(crate) fn reader(error: splot_core::stream_reader::ReaderError) -> Self {
+        match error {
+            splot_core::stream_reader::ReaderError::Io(source) => Self::Input { source },
+            other => Self::input(io::Error::other(other)),
+        }
+    }
 }
 
 /// Runtime parsed-header or derived decode-state consistency failure.

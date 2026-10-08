@@ -31,7 +31,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
     scratch: &mut crate::prediction::inter::InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &[u8],
+    bytes: crate::bitstream::byte_stream::SourceBytes<'_>,
     frame_envelope: ObuEnvelope<'_>,
     core: std::sync::Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,

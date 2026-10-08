@@ -70,7 +70,7 @@ fn decode_intra_fixture_with_core_on_threads(
             &mut crate::prediction::inter::InterDecodeScratch::default(),
             &plan,
             &candidate,
-            Q80_FIXTURE,
+            Q80_FIXTURE.into(),
             key,
             std::sync::Arc::new(core),
             &sequence,

@@ -163,7 +163,7 @@ fn derive_tile_payload_plan<'a>(
     let input = FrameCandidateTileBoundaryInput::new(
         &stream_plan,
         candidate,
-        bytes,
+        bytes.into(),
         envelope,
         position,
         facts,

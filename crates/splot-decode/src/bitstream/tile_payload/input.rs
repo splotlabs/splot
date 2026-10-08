@@ -25,6 +25,7 @@ use super::{
     DecodeTilePayloadPlan, TileCoeffFrameFacts, TileFrameFacts, TileGridFacts,
     TilePayloadBoundaryError, TilePayloadBoundaryInput,
 };
+use crate::bitstream::byte_stream::SourceBytes;
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
     DecodePlannedObu, DecodeStreamPlan,
@@ -298,7 +299,7 @@ impl TileGroupPositionFacts {
 pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
     plan: &'facts DecodeStreamPlan,
     candidate: &'facts DecodePlannedObu,
-    input_bytes: &'payload [u8],
+    input_bytes: SourceBytes<'payload>,
     envelope: ObuEnvelope<'payload>,
     position: TileGroupPositionFacts,
     facts: FrameCandidateTileFacts<'facts>,
@@ -313,7 +314,7 @@ impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
     pub(crate) const fn new(
         plan: &'facts DecodeStreamPlan,
         candidate: &'facts DecodePlannedObu,
-        input_bytes: &'payload [u8],
+        input_bytes: SourceBytes<'payload>,
         envelope: ObuEnvelope<'payload>,
         position: TileGroupPositionFacts,
         facts: FrameCandidateTileFacts<'facts>,
@@ -552,20 +553,22 @@ pub(crate) fn plan_derived_tile_payload_boundary_with_scratch<'payload>(
 
     let mut plan =
         super::plan_tile_payload_boundary_with_storage(&boundary_input, work_units, tile_cdfs)?;
-    let base = usize::try_from(payload_base.get()).map_err(|_| {
-        DecodeLimitError::HostAllocationTooLarge {
+    let base = payload_base
+        .get()
+        .checked_sub(input.input_bytes.base())
+        .and_then(|base| usize::try_from(base).ok())
+        .ok_or(DecodeLimitError::HostAllocationTooLarge {
             name: DecodeLimitName::MaxTilePayloadBytes,
             actual: payload_base.get(),
-        }
-    })?;
-    plan.rebase_payload(input.input_bytes, base)?;
+        })?;
+    plan.rebase_payload(input.input_bytes.bytes(), base)?;
     Ok(plan)
 }
 
 fn validate_candidate(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    input_bytes: &[u8],
+    input_bytes: SourceBytes<'_>,
     envelope: ObuEnvelope<'_>,
 ) -> Result<(), FrameCandidateTileBoundaryError> {
     if !plan.obus().any(|planned| planned == candidate) {
@@ -599,7 +602,7 @@ fn validate_candidate(
     if candidate.header() != envelope.header {
         return mismatch("header");
     }
-    if plan.input_len_bytes() != input_bytes.len() as u64 {
+    if input_bytes.end() > plan.input_len_bytes() {
         return mismatch("input_len_bytes");
     }
 
@@ -652,16 +655,11 @@ fn validate_candidate(
 }
 
 fn validate_envelope_payload_slice(
-    input_bytes: &[u8],
+    input_bytes: SourceBytes<'_>,
     envelope: ObuEnvelope<'_>,
     payload_len: u64,
 ) -> Result<(), FrameCandidateTileBoundaryError> {
     let payload_offset = checked_payload_offset(envelope)?;
-    let payload_start = usize::try_from(payload_offset.get()).map_err(|_| {
-        FrameCandidateTileBoundaryError::Malformed(
-            FrameCandidateTileMalformed::SourceRangeOutOfBounds { range: "payload" },
-        )
-    })?;
     let payload_end = payload_offset.get().checked_add(payload_len).ok_or(
         DecodeLimitError::ArithmeticOverflow {
             name: DecodeLimitName::MaxInputBytes,
@@ -670,12 +668,7 @@ fn validate_envelope_payload_slice(
             right: payload_len,
         },
     )?;
-    let payload_end = usize::try_from(payload_end).map_err(|_| {
-        FrameCandidateTileBoundaryError::Malformed(
-            FrameCandidateTileMalformed::SourceRangeOutOfBounds { range: "payload" },
-        )
-    })?;
-    let expected = input_bytes.get(payload_start..payload_end).ok_or(
+    let expected = input_bytes.get(payload_offset.get(), payload_end).ok_or(
         FrameCandidateTileBoundaryError::Malformed(
             FrameCandidateTileMalformed::SourceRangeOutOfBounds { range: "payload" },
         ),

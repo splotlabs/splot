@@ -21,6 +21,7 @@ use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
 use splot_recon::BitDepth;
 
 use crate::Result;
+use crate::bitstream::byte_stream::UnitBytes;
 use crate::error::DecodeError;
 use crate::prediction::inter;
 
@@ -68,6 +69,7 @@ pub(super) type PendingEntropyQueue<'job> = VecDeque<PendingEntropy<'job>>;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn schedule_entropy<'scope, 'job, T: ScheduledScratchSample + Send + 'static>(
     start: inter::InterFrameStart<'job, T>,
+    unit: UnitBytes,
     context: EntropySlot<'job, T>,
     frame_index: usize,
     motion: inter::MotionFieldHandle,
@@ -83,7 +85,11 @@ where
         tail: Arc::clone(&context.tail),
         context: Arc::clone(&context),
     };
-    *context.task.lock() = Some(EntropyTask { start, motion });
+    *context.task.lock() = Some(EntropyTask {
+        start,
+        unit,
+        motion,
+    });
     let order_key = u64::try_from(frame_index)
         .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
         .saturating_mul(ORDER_KEY_FRAME_STRIDE);
@@ -258,6 +264,7 @@ impl<T: splot_recon::ReconSample> EntropyContexts<'_, T> {
 
 struct EntropyTask<'job, T: splot_recon::ReconSample> {
     start: inter::InterFrameStart<'job, T>,
+    unit: UnitBytes,
     motion: inter::MotionFieldHandle,
 }
 
@@ -268,7 +275,7 @@ impl<'job, T: ScheduledScratchSample + Send + 'static> EntropyTask<'job, T> {
         };
         let started = {
             let mut workspace = context.workspace.lock();
-            task.start.run(&mut workspace)
+            task.start.run(task.unit.view(), &mut workspace)
         };
         let parsed = started
             .and_then(|(early, pending)| {
@@ -500,7 +507,6 @@ pub(super) fn reserve_tip_output<T: super::inflight::SpareFramePlanes>(
 /// until its scheduler task takes them.
 pub(crate) struct TipOutputJob<'job, T: splot_recon::ReconSample> {
     pub(super) candidate: &'job crate::bitstream::stream_plan::DecodePlannedObu,
-    pub(super) envelope: splot_core::annexb::ObuEnvelope<'job>,
     pub(super) core: Arc<FrameHeaderCore>,
     pub(super) sequence: Arc<SequenceHeader>,
     pub(super) options: &'job crate::DecodeOptions,
@@ -574,7 +580,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ParkedTipOutput<'_, T> {
             .unwrap_or_else(|| scratch.reclaim_retired_planes());
         let TipOutputJob {
             candidate,
-            envelope,
             core,
             sequence,
             options,
@@ -585,7 +590,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ParkedTipOutput<'_, T> {
             &mut scratch,
             planes,
             candidate,
-            envelope,
+            candidate.offset(),
             core,
             &sequence,
             options,
