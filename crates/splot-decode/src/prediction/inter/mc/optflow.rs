@@ -173,12 +173,24 @@ enum RefinemvCandidates {
 pub(crate) struct MotionRowStorage {
     cells: Vec<MotionCell>,
     candidates: Vec<[Mv; 2]>,
+    /// The 4x4 cells of one superblock, which bound everything a unit stores.
+    bound: usize,
 }
 
 impl MotionRowStorage {
-    pub(crate) fn reset(&mut self) {
+    pub(crate) fn reset(&mut self, superblock_cells: usize) {
         self.cells.clear();
         self.candidates.clear();
+        self.bound = superblock_cells;
+    }
+
+    /// Grows `list` to the superblock bound the first time a unit needs more,
+    /// so new content does not grow it again. The bound is only a hint.
+    fn reserve_for<E>(list: &mut Vec<E>, bound: usize, additional: usize) {
+        if list.capacity() - list.len() < additional {
+            let target = bound.max(list.len() + additional);
+            let _ = list.try_reserve_exact(target - list.len());
+        }
     }
 }
 
@@ -337,7 +349,10 @@ impl CompoundMotionGrid {
         let start = storage.cells.len();
         match &mut self.cells {
             MotionCells::Inline(cell) => storage.cells.push(*cell),
-            MotionCells::Heap(cells) => storage.cells.append(cells),
+            MotionCells::Heap(cells) => {
+                MotionRowStorage::reserve_for(&mut storage.cells, storage.bound, cells.len());
+                storage.cells.append(cells);
+            }
             MotionCells::Shared(_, _) => {
                 return Err(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
             }
@@ -354,6 +369,11 @@ impl CompoundMotionGrid {
                 unit_size,
             } => {
                 let first = storage.candidates.len();
+                MotionRowStorage::reserve_for(
+                    &mut storage.candidates,
+                    storage.bound,
+                    candidates.len(),
+                );
                 storage.candidates.append(candidates);
                 spare = core::mem::take(candidates);
                 StoredCandidates::PerCell(first..storage.candidates.len(), *unit_size)
@@ -1508,7 +1528,7 @@ mod tests {
         let mut address = None;
         for count in [64, 1, 4].into_iter().cycle().take(1200) {
             let arena = std::sync::Arc::get_mut(&mut storage).unwrap();
-            arena.reset();
+            arena.reset(64);
             let grid = CompoundMotionGrid {
                 unit_size: 8,
                 columns: count,

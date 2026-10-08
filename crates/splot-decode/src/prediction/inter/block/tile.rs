@@ -978,6 +978,10 @@ struct ReadyReconRow<T: ReconSample> {
 
 pub(crate) struct InterReconScratchPool<T: ReconSample> {
     available: Mutex<(usize, Vec<deferred_recon::InterReconScratch<T>>)>,
+    /// Refinement-grid storage between a unit's motion pass and its commit.
+    /// Only the units in that window hold one, so a few stay warm for every
+    /// unit of every frame instead of one growing per unit per parse slot.
+    motion_storage: Mutex<Vec<std::sync::Arc<super::mc::MotionRowStorage>>>,
 }
 
 impl<T: ReconSample> InterReconScratchPool<T> {
@@ -1004,12 +1008,25 @@ impl<T: ReconSample> InterReconScratchPool<T> {
         self.available.lock().1.push(scratch);
         Ok(result)
     }
+
+    fn take_motion_storage(&self) -> Option<std::sync::Arc<super::mc::MotionRowStorage>> {
+        self.motion_storage.lock().pop()
+    }
+
+    fn recycle_motion_storage(&self, storage: Option<std::sync::Arc<super::mc::MotionRowStorage>>) {
+        if let Some(mut storage) = storage
+            && std::sync::Arc::get_mut(&mut storage).is_some()
+        {
+            self.motion_storage.lock().push(storage);
+        }
+    }
 }
 
 impl<T: ReconSample> Default for InterReconScratchPool<T> {
     fn default() -> Self {
         Self {
             available: Mutex::new((0, Vec::new())),
+            motion_storage: Mutex::new(Vec::new()),
         }
     }
 }

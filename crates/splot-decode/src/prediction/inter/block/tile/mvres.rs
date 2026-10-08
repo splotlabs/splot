@@ -79,7 +79,10 @@ fn derive_row_motion<T: ReconSample>(
         row.record_terminal_error(super::invalid_inter_tile_scheduling_state());
         return false;
     };
-    storage.reset();
+    storage.reset(shared.sequence.partition.as_ref().map_or(0, |partition| {
+        let side = super::super::frame_superblock_h4(partition.seq_sb_size(), false);
+        side * side
+    }));
     for entry in &mut row.entries {
         entry.temporal = 0..0;
         let Some(ReconCommand::Inter(command)) = entry.command() else {
