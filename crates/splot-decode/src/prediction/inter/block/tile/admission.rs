@@ -1730,10 +1730,12 @@ fn superblock_row_batches_into(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_scheduled_motion(
     reusable: &mut ScheduledTileWorkspace<impl ReconSample>,
     mi_rows: core::ops::Range<usize>,
     mi_cols: core::ops::Range<usize>,
+    sb_h4: usize,
     motion_field: TemporalMotionField,
     units: usize,
     units_per_row: usize,
@@ -1741,7 +1743,7 @@ fn prepare_scheduled_motion(
 ) -> Result<(NeighbourMvGrid, MotionFieldUnits)> {
     reusable
         .grid
-        .reset_for_tile(mi_rows, mi_cols)
+        .reset_for_tile(mi_rows, mi_cols, sb_h4)
         .map_err(|error| inter_tile_grid_error(&error, "inter admission MV grid"))?;
     let motion = if let Some(mut motion) = reusable.motion.take() {
         motion.reset_publishing(motion_field, units, units_per_row, motion_handle)?;
@@ -1791,6 +1793,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         reusable,
         geometry.mi_rows.clone(),
         geometry.mi_cols.clone(),
+        params.sb_h4,
         motion_field,
         unit_count.saturating_sub(1),
         units_per_row,
@@ -2176,6 +2179,7 @@ mod tests {
             &mut super::ScheduledTileWorkspace::<u8>::default(),
             1..1,
             0..1,
+            16,
             field,
             0,
             1,
@@ -2205,6 +2209,7 @@ mod tests {
             &mut super::ScheduledTileWorkspace::<u8>::default(),
             0..8,
             0..8,
+            16,
             field,
             0,
             1,

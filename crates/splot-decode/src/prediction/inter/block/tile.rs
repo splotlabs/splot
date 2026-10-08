@@ -302,7 +302,7 @@ impl<'payload> TileParser<'payload> {
                 .map_err(|error| inter_tile_segment_id_error(&error))?;
         parse
             .mv_grid
-            .reset_for_tile(tile_rows.clone(), tile_cols.clone())
+            .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
         parse
             .y_smooth
