@@ -149,20 +149,22 @@ impl<'job, T: splot_recon::ReconSample> EntropyContexts<'job, T> {
         }
     }
 
-    /// Keeps the storage of every slot no task still holds.
+    /// Keeps the storage of every slot no task still holds, and the spares
+    /// this decode did not need.
     pub(super) fn into_retained(mut self) -> RetainedEntropy<T> {
         self.retire_completed();
-        let storage = self
-            .slots
-            .into_iter()
-            .filter_map(|slot| Arc::try_unwrap(slot).ok())
-            .map(|context| EntropyStorage {
-                workspace: context.workspace.into_inner(),
-                temporal: context.temporal.into_inner(),
-                early: context.early,
-                tail: context.tail,
-            })
-            .collect();
+        let mut storage = self.spare;
+        storage.extend(
+            self.slots
+                .into_iter()
+                .filter_map(|slot| Arc::try_unwrap(slot).ok())
+                .map(|context| EntropyStorage {
+                    workspace: context.workspace.into_inner(),
+                    temporal: context.temporal.into_inner(),
+                    early: context.early,
+                    tail: context.tail,
+                }),
+        );
         RetainedEntropy {
             storage,
             workers: self.workers,
