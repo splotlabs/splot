@@ -39,22 +39,38 @@ const HORIZONTAL_TX_CANDIDATE: u8 = 2;
 const SUB_PU_CANDIDATE: u8 = 4;
 const COVERED_CANDIDATE: u8 = 8;
 
+/// Mode-info positions and transform sizes are stored narrow: a frame holds
+/// one record per transform block, so the record size is the frame's
+/// deblock-record footprint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeblockPredictionUnit {
-    pub(crate) base_r: usize,
-    pub(crate) base_c: usize,
-    pub(crate) default_sub_pu_tx: usize,
+    pub(crate) base_r: u32,
+    pub(crate) base_c: u32,
+    pub(crate) default_sub_pu_tx: u8,
+}
+
+impl DeblockPredictionUnit {
+    pub(crate) const fn new(base_r: usize, base_c: usize, default_sub_pu_tx: usize) -> Self {
+        Self {
+            base_r: base_r as u32,
+            base_c: base_c as u32,
+            default_sub_pu_tx: default_sub_pu_tx as u8,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeblockSubPuSize {
-    pub(crate) width: usize,
-    pub(crate) height: usize,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
 }
 
 impl DeblockSubPuSize {
     pub(crate) const fn new(width: usize, height: usize) -> Self {
-        Self { width, height }
+        Self {
+            width: width as u16,
+            height: height as u16,
+        }
     }
 
     pub(crate) const fn square(size: usize) -> Self {
@@ -64,16 +80,16 @@ impl DeblockSubPuSize {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DeblockBlock {
-    pub(crate) r: usize,
-    pub(crate) c: usize,
+    pub(crate) r: u32,
+    pub(crate) c: u32,
     pub(crate) luma_prediction: DeblockPredictionUnit,
     pub(crate) chroma_prediction: DeblockPredictionUnit,
-    pub(crate) chroma_base_r: usize,
-    pub(crate) chroma_base_c: usize,
-    pub(crate) n4w: usize,
-    pub(crate) n4h: usize,
-    pub(crate) luma_tx: usize,
-    pub(crate) chroma_tx: Option<usize>,
+    pub(crate) chroma_base_r: u32,
+    pub(crate) chroma_base_c: u32,
+    pub(crate) n4w: u32,
+    pub(crate) n4h: u32,
+    pub(crate) luma_tx: u8,
+    pub(crate) chroma_tx: Option<u8>,
     pub(crate) sub_pu_size: Option<DeblockSubPuSize>,
     pub(crate) chroma_transform_only: bool,
     pub(crate) qindex: u32,
@@ -197,24 +213,25 @@ impl EdgeBlock<'_> {
     }
 
     fn tx_base(self, plane: usize) -> (usize, usize) {
-        if plane == 0 {
+        let (r, c) = if plane == 0 {
             (self.block.r, self.block.c)
         } else if let Some(transform) = self.chroma_transform {
             (transform.chroma_base_r, transform.chroma_base_c)
         } else {
             (self.block.chroma_base_r, self.block.chroma_base_c)
-        }
+        };
+        (r as usize, c as usize)
     }
 
     fn tx(self, plane: usize) -> usize {
-        if plane == 0 {
+        usize::from(if plane == 0 {
             self.block.luma_tx
         } else {
             self.chroma_transform
                 .and_then(|transform| transform.chroma_tx)
                 .or(self.block.chroma_tx)
                 .unwrap_or(0)
-        }
+        })
     }
 }
 
@@ -1318,7 +1335,7 @@ fn sub_pu_dimension(
         } else {
             (size.height, sub_y)
         };
-        return (dimension >> subsampling).max(1);
+        return (usize::from(dimension) >> subsampling).max(1);
     }
     let tx = if plane == 0 {
         info.block.luma_prediction.default_sub_pu_tx
@@ -1327,7 +1344,7 @@ fn sub_pu_dimension(
     };
     let dimensions = if pass == 0 { &TX_WIDTH } else { &TX_HEIGHT };
     dimensions
-        .get(tx)
+        .get(usize::from(tx))
         .and_then(|&size| usize::try_from(size).ok())
         .unwrap_or(1)
 }
@@ -1341,13 +1358,13 @@ fn sub_pu_base(
     sub_y: usize,
 ) -> (usize, usize) {
     let prediction = info.prediction(plane);
-    let block_x = (prediction.base_c * MI_SIZE) >> sub_x;
-    let block_y = (prediction.base_r * MI_SIZE) >> sub_y;
+    let block_x = (prediction.base_c as usize * MI_SIZE) >> sub_x;
+    let block_y = (prediction.base_r as usize * MI_SIZE) >> sub_y;
     let Some(size) = info.block.sub_pu_size else {
         return (block_x, block_y);
     };
-    let width = (size.width >> sub_x).max(1);
-    let height = (size.height >> sub_y).max(1);
+    let width = (usize::from(size.width) >> sub_x).max(1);
+    let height = (usize::from(size.height) >> sub_y).max(1);
     (
         block_x + x.saturating_sub(block_x) / width * width,
         block_y + y.saturating_sub(block_y) / height * height,
@@ -1444,8 +1461,8 @@ fn deblock_filter_edge_specialized<T: ReconSample, const PLANE: usize, const PAS
     let (tx_row_base, tx_col_base) = curr.tx_base(plane);
     let (prev_tx_row_base, prev_tx_col_base) = prev.tx_base(plane);
     let prediction = curr.prediction(plane);
-    let block_y = (prediction.base_r * MI_SIZE) >> plane_sub_y;
-    let block_x = (prediction.base_c * MI_SIZE) >> plane_sub_x;
+    let block_y = (prediction.base_r as usize * MI_SIZE) >> plane_sub_y;
+    let block_x = (prediction.base_c as usize * MI_SIZE) >> plane_sub_x;
     let skip = curr.block.skip;
     let tx_sz = curr.tx(plane);
     let prev_tx_sz = prev.tx(plane);

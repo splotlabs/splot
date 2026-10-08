@@ -318,11 +318,7 @@ fn every_post_lr_plane_is_preflighted_before_any_target_mutation() {
 }
 
 fn lossless_block() -> crate::filters::deblock::DeblockBlock {
-    let prediction = crate::filters::deblock::DeblockPredictionUnit {
-        base_r: 0,
-        base_c: 0,
-        default_sub_pu_tx: 0,
-    };
+    let prediction = crate::filters::deblock::DeblockPredictionUnit::new(0, 0, 0);
     crate::filters::deblock::DeblockBlock {
         r: 0,
         c: 0,

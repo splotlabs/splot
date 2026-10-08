@@ -146,18 +146,17 @@ fn lossless_cells<'a>(
         if !block.lossless {
             continue;
         }
-        let row_end = block
-            .r
-            .checked_add(block.n4h)
+        let (r, c) = (block.r as usize, block.c as usize);
+        let row_end = r
+            .checked_add(block.n4h as usize)
             .ok_or(LosslessGridError::Geometry)?
             .min(mi_rows);
-        let col_end = block
-            .c
-            .checked_add(block.n4w)
+        let col_end = c
+            .checked_add(block.n4w as usize)
             .ok_or(LosslessGridError::Geometry)?
             .min(mi_cols);
-        for row in block.r.min(mi_rows)..row_end {
-            for col in block.c.min(mi_cols)..col_end {
+        for row in r.min(mi_rows)..row_end {
+            for col in c.min(mi_cols)..col_end {
                 cells[row * mi_cols + col] = true;
             }
         }

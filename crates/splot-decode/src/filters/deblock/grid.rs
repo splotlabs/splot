@@ -316,12 +316,13 @@ fn block_chroma_spans(
     sub_x: usize,
     sub_y: usize,
 ) -> impl Iterator<Item = (usize, usize)> {
-    let row_end = block.r.saturating_add(block.n4h).min(mi_rows);
-    let col_end = block.c.saturating_add(block.n4w).min(mi_cols);
-    let col_start = block.c.min(col_end);
+    let (r, c) = (block.r as usize, block.c as usize);
+    let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
+    let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
+    let col_start = c.min(col_end);
     let chroma_col_start = col_start >> sub_x;
     let chroma_col_end = col_end.div_ceil(1 << sub_x);
-    (block.r >> sub_y..row_end.div_ceil(1 << sub_y)).map(move |chroma_row| {
+    (r >> sub_y..row_end.div_ceil(1 << sub_y)).map(move |chroma_row| {
         let base = chroma_row * cell_cols;
         (base + chroma_col_start, base + chroma_col_end)
     })
@@ -332,10 +333,11 @@ fn block_row_spans(
     mi_rows: usize,
     mi_cols: usize,
 ) -> impl Iterator<Item = (usize, usize)> {
-    let row_end = block.r.saturating_add(block.n4h).min(mi_rows);
-    let col_end = block.c.saturating_add(block.n4w).min(mi_cols);
-    let col_start = block.c.min(col_end);
-    (block.r..row_end).map(move |row| {
+    let (r, c) = (block.r as usize, block.c as usize);
+    let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
+    let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
+    let col_start = c.min(col_end);
+    (r..row_end).map(move |row| {
         let base = row * mi_cols;
         (base + col_start, base + col_end)
     })
@@ -355,10 +357,11 @@ fn mark_block_candidates(
     mi_rows: usize,
     mi_cols: usize,
 ) {
-    let row_end = block.r.saturating_add(block.n4h).min(mi_rows);
-    let col_end = block.c.saturating_add(block.n4w).min(mi_cols);
-    let row_start = block.r.min(row_end);
-    let col_start = block.c.min(col_end);
+    let (r, c) = (block.r as usize, block.c as usize);
+    let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
+    let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
+    let row_start = r.min(row_end);
+    let col_start = c.min(col_end);
 
     for row in row_start..row_end {
         mark_vertical_candidate(candidates, row, col_start, mi_cols);
