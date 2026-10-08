@@ -10,8 +10,8 @@ use parking_lot::Mutex;
 use crate::filters::wienerns_lr::FrameFilterRecordCapacities;
 use crate::prediction::inter::{TemporalMotionBlock, TemporalMvContext};
 
-/// The TIP output walk's temporal context and motion records.
-pub(crate) type TipTemporal = (TemporalMvContext, Vec<TemporalMotionBlock>);
+/// A frame walk's temporal context and motion records.
+pub(crate) type WalkTemporal = (TemporalMvContext, Vec<TemporalMotionBlock>);
 
 /// The storage one decode's finished work leaves for the work behind it.
 #[derive(Default)]
@@ -20,9 +20,9 @@ pub(crate) struct DecodeBuffers {
     tile_records: Mutex<FrameFilterRecordCapacities>,
     /// The small row-list capacities any spent superblock unit reached.
     row_capacities: Mutex<RowCapacities>,
-    /// One TIP walk's temporal state for the whole decode: TIP output frames
-    /// are rare, so a copy per reconstruction lane is memory nobody reads.
-    tip_temporal: Mutex<Option<TipTemporal>>,
+    /// One walk's temporal state for the whole decode: the inter and TIP output
+    /// walks take turns, so a copy per walk or lane is memory nobody reads.
+    walk_temporal: Mutex<Option<WalkTemporal>>,
 }
 
 /// The capacities of a superblock unit's small growable row lists.
@@ -64,13 +64,13 @@ impl DecodeBuffers {
         }
     }
 
-    /// Lends the decode's TIP temporal state to one walk, or a new one when
+    /// Lends the decode's walk temporal state to one walk, or a new one when
     /// another walk holds it or there are no decode buffers.
-    pub(crate) fn lend_tip_temporal(buffers: Option<&Self>) -> TipTemporalLease<'_> {
+    pub(crate) fn lend_temporal(buffers: Option<&Self>) -> TemporalLease<'_> {
         let (temporal, records) = buffers
-            .and_then(|buffers| buffers.tip_temporal.lock().take())
+            .and_then(|buffers| buffers.walk_temporal.lock().take())
             .unwrap_or_else(|| (TemporalMvContext::empty(), Vec::new()));
-        TipTemporalLease {
+        TemporalLease {
             buffers,
             temporal,
             records,
@@ -78,18 +78,18 @@ impl DecodeBuffers {
     }
 }
 
-/// The TIP temporal state lent to one walk, given back however the walk ends.
-pub(crate) struct TipTemporalLease<'a> {
+/// The temporal state lent to one walk, given back however the walk ends.
+pub(crate) struct TemporalLease<'a> {
     buffers: Option<&'a DecodeBuffers>,
     pub(crate) temporal: TemporalMvContext,
     pub(crate) records: Vec<TemporalMotionBlock>,
 }
 
-impl Drop for TipTemporalLease<'_> {
+impl Drop for TemporalLease<'_> {
     fn drop(&mut self) {
         if let Some(buffers) = self.buffers {
             let temporal = core::mem::replace(&mut self.temporal, TemporalMvContext::empty());
-            *buffers.tip_temporal.lock() = Some((temporal, core::mem::take(&mut self.records)));
+            *buffers.walk_temporal.lock() = Some((temporal, core::mem::take(&mut self.records)));
         }
     }
 }

@@ -1275,10 +1275,10 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
     }
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
-    let mut lease = crate::support::decode_buffers::DecodeBuffers::lend_tip_temporal(
+    let mut lease = crate::support::decode_buffers::DecodeBuffers::lend_temporal(
         decode_scratch.buffers.as_deref(),
     );
-    let crate::support::decode_buffers::TipTemporalLease {
+    let crate::support::decode_buffers::TemporalLease {
         temporal,
         records: temporal_records,
         ..
