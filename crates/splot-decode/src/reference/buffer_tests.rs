@@ -511,3 +511,39 @@ fn restricted_switch_marks_dependency_layer_order_hints() {
     assert_eq!(restricted, (0..8).collect::<Vec<_>>());
     assert!(buf.slots.iter().all(|slot| slot.order_hint == u32::MAX));
 }
+
+#[test]
+fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update(), true);
+    assert!(buf.lr_frame_filter_taps.is_none());
+    let coeffs = |tap: i16| InlineVec::from_iter_checked([tap]).unwrap();
+    let mut update = inter_update();
+    update.lr_frame_filter_taps[0].push(coeffs(5)).unwrap();
+    buf.update(1, &update, false);
+    let frames = || {
+        (0..4)
+            .map(|_| Some(pipeline_frame(64, 64)))
+            .collect::<Vec<_>>()
+            .into()
+    };
+    let held = buf.build_store_eight(&frames()).unwrap().1;
+
+    update.lr_frame_filter_taps[0][0] = coeffs(9);
+    buf.update(2, &update, false);
+    let fresh = buf.build_store_eight(&frames()).unwrap().1;
+
+    let taps =
+        |meta: &ReferenceMetadata, slot: usize| meta.lr_frame_filter_taps.as_ref().unwrap()[slot];
+    assert_eq!(taps(&held, 1)[0][0], coeffs(5));
+    assert_eq!(taps(&fresh, 1)[0][0], coeffs(9));
+    assert!(taps(&fresh, 0)[0].is_empty());
+
+    drop(held);
+    update.lr_frame_filter_taps[0][0] = coeffs(7);
+    buf.update(3, &update, false);
+    let reused = buf.build_store_eight(&frames()).unwrap().1;
+    assert_eq!(taps(&fresh, 1)[0][0], coeffs(9));
+    assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
+    assert_eq!(buf.lr_frame_filter_spares.len(), 1);
+}

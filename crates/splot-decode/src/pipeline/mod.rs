@@ -741,8 +741,7 @@ where
         }
         ObuType::OpenLoopKey => match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
-                let (store, meta) = reference.build_store_eight(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_eight(frames)?;
                 parse_olk_core_with_effects(
                     key_envelope,
                     &sequence,
@@ -752,8 +751,7 @@ where
                 )?
             }
             BitDepthIdc::Ten => {
-                let (store, meta) = reference.build_store_ten(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_ten(frames)?;
                 parse_olk_core_with_effects(
                     key_envelope,
                     &sequence,
@@ -765,8 +763,7 @@ where
         },
         ObuType::RasFrame => match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
-                let (store, meta) = reference.build_store_eight(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_eight(frames)?;
                 let activation = inter::parse_inter_frame_activation(
                     key_envelope,
                     &sequence,
@@ -789,8 +786,7 @@ where
                 )?
             }
             BitDepthIdc::Ten => {
-                let (store, meta) = reference.build_store_ten(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_ten(frames)?;
                 let activation = inter::parse_inter_frame_activation(
                     key_envelope,
                     &sequence,
@@ -848,8 +844,7 @@ where
     let key_frame = if key_envelope.header.obu_type == ObuType::RasFrame {
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
-                let (store, meta) = reference.build_store_eight(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_eight(frames)?;
                 ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
                     admission.assist_ready(scope)
                 });
@@ -901,8 +896,7 @@ where
                 }
             }
             BitDepthIdc::Ten => {
-                let (store, meta) = reference.build_store_ten(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_ten(frames)?;
                 ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
                     admission.assist_ready(scope)
                 });
@@ -1130,8 +1124,7 @@ where
                 reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
                 let sef_core = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
-                        let (store, meta) = reference.build_store_eight(frames)?;
-                        let state = inter::InterReferenceState::from_metadata(store, meta);
+                        let state = reference.state_eight(frames)?;
                         parse_inter_core_with_effects(
                             sef_envelope,
                             &sequence,
@@ -1142,8 +1135,7 @@ where
                         )?
                     }
                     BitDepthIdc::Ten => {
-                        let (store, meta) = reference.build_store_ten(frames)?;
-                        let state = inter::InterReferenceState::from_metadata(store, meta);
+                        let state = reference.state_ten(frames)?;
                         parse_inter_core_with_effects(
                             sef_envelope,
                             &sequence,
@@ -1299,8 +1291,7 @@ where
                 ) {
                     let activation = match sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
-                            let (store, meta) = reference.build_store_eight(frames)?;
-                            let state = inter::InterReferenceState::from_metadata(store, meta);
+                            let state = reference.state_eight(frames)?;
                             inter::parse_inter_frame_activation(
                                 inter_envelope,
                                 &sequence,
@@ -1310,8 +1301,7 @@ where
                             )?
                         }
                         BitDepthIdc::Ten => {
-                            let (store, meta) = reference.build_store_ten(frames)?;
-                            let state = inter::InterReferenceState::from_metadata(store, meta);
+                            let state = reference.state_ten(frames)?;
                             inter::parse_inter_frame_activation(
                                 inter_envelope,
                                 &sequence,
@@ -1352,8 +1342,7 @@ where
                 let frame_index = frames.len();
                 let decoded = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
-                        let (store, meta) = reference.build_store_eight(frames)?;
-                        let inter_state = inter::InterReferenceState::from_metadata(store, meta);
+                        let inter_state = reference.state_eight(frames)?;
                         let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
@@ -1573,8 +1562,7 @@ where
                         }
                     }
                     BitDepthIdc::Ten => {
-                        let (store, meta) = reference.build_store_ten(frames)?;
-                        let inter_state = inter::InterReferenceState::from_metadata(store, meta);
+                        let inter_state = reference.state_ten(frames)?;
                         let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
@@ -1978,8 +1966,7 @@ where
                 } else {
                     match key_sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
-                            let (store, meta) = reference.build_store_eight(frames)?;
-                            let state = inter::InterReferenceState::from_metadata(store, meta);
+                            let state = reference.state_eight(frames)?;
                             parse_olk_core_with_effects(
                                 key_envelope,
                                 &key_sequence,
@@ -1989,8 +1976,7 @@ where
                             )?
                         }
                         BitDepthIdc::Ten => {
-                            let (store, meta) = reference.build_store_ten(frames)?;
-                            let state = inter::InterReferenceState::from_metadata(store, meta);
+                            let state = reference.state_ten(frames)?;
                             parse_olk_core_with_effects(
                                 key_envelope,
                                 &key_sequence,
