@@ -5,7 +5,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Write as _};
+use std::io::{self, BufReader, BufWriter, Read as _, Seek as _, Write as _};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -453,8 +453,7 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
         .with_y4m_frame_rate_override(args.frame_rate);
-    let input = File::open(&args.input)
-        .map(BufReader::new)
+    let input = open_decode_input(&args.input)
         .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
     let context = DecodeContext::new(
         DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
@@ -462,25 +461,25 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let report = match target {
         DecodeOutputTarget::Null => match context.decode_discard_reader(input, options) {
             Ok(()) => return Ok(ExitCode::SUCCESS),
-            Err(error) => decode_report_from_error(&error)?,
+            Err(error) => decode_report_from_error(&error, &args.input)?,
         },
         DecodeOutputTarget::Hash => match context.decode_hash_report_reader(input, options) {
             Ok(report) => {
                 render_hash_report(&report, args.json)?;
                 return Ok(ExitCode::SUCCESS);
             }
-            Err(error) => decode_report_from_error(&error)?,
+            Err(error) => decode_report_from_error(&error, &args.input)?,
         },
         DecodeOutputTarget::Y4m { path } => {
             match decode_y4m_to_file(&context, input, &options, path) {
                 Ok(()) => return Ok(ExitCode::SUCCESS),
-                Err(error) => decode_report_from_error(&error)?,
+                Err(error) => decode_report_from_error(&error, &args.input)?,
             }
         }
         DecodeOutputTarget::Raw { path } => {
             match decode_raw_to_file(&context, input, &options, path) {
                 Ok(()) => return Ok(ExitCode::SUCCESS),
-                Err(error) => decode_report_from_error(&error)?,
+                Err(error) => decode_report_from_error(&error, &args.input)?,
             }
         }
     };
@@ -498,7 +497,7 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
 
 fn decode_y4m_to_file(
     context: &DecodeContext,
-    input: BufReader<File>,
+    input: Box<dyn DecodeInput>,
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
@@ -509,7 +508,7 @@ fn decode_y4m_to_file(
 
 fn decode_raw_to_file(
     context: &DecodeContext,
-    input: BufReader<File>,
+    input: Box<dyn DecodeInput>,
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
@@ -811,7 +810,26 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
     DecodeOutputError::io(operation, source).into()
 }
 
-fn decode_report_from_error(error: &DecodeError) -> Result<DecodeDiagnosticReport> {
+trait DecodeInput: io::Read + io::Seek + Send {}
+
+impl<T: io::Read + io::Seek + Send> DecodeInput for T {}
+
+/// Streams a seekable file; reads a pipe or FIFO into memory, as decode
+/// reads its input twice.
+fn open_decode_input(path: &Path) -> io::Result<Box<dyn DecodeInput>> {
+    let mut file = File::open(path)?;
+    if file.stream_position().is_ok() {
+        return Ok(Box::new(BufReader::new(file)));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Box::new(io::Cursor::new(bytes)))
+}
+
+fn decode_report_from_error(error: &DecodeError, input: &Path) -> Result<DecodeDiagnosticReport> {
+    if let DecodeError::Input { source } = error {
+        anyhow::bail!("failed to read input file: {}: {source}", input.display());
+    }
     DecodeDiagnosticReport::from_decode_error(error)
         .ok_or_else(|| anyhow::anyhow!("failed to plan decode input: {error}"))
 }
