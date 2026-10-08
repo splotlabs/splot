@@ -1979,13 +1979,20 @@ fn run_band_projections(
             );
         }
     };
-    let mut trajectory_bands = trajectories.and_then(|state| state.bands(band_rows));
+    let width = splot_parallel::current_pool_width().clamp(1, BAND_FAN_OUT);
+    let mut trajectory = trajectories.and_then(|state| state.grids(band_rows, width));
     let mut field_bands = field.bands(band_rows);
     loop {
         let mut slots: [BandSlot<'_, '_>; BAND_FAN_OUT] = core::array::from_fn(|_| None);
         let mut filled = 0;
-        for (slot, band) in slots.iter_mut().zip(&mut field_bands) {
-            *slot = Some((band, trajectory_bands.as_mut().and_then(Iterator::next)));
+        let mut rounds = trajectory
+            .as_mut()
+            .map(|(grids, scratch)| (grids, scratch.iter_mut()));
+        for (slot, band) in slots.iter_mut().take(width).zip(&mut field_bands) {
+            let rows = rounds
+                .as_mut()
+                .and_then(|(grids, scratch)| grids.next_band(scratch.next()?));
+            *slot = Some((band, rows));
             filled += 1;
         }
         if filled == 0 {
@@ -2001,7 +2008,8 @@ fn run_band_projections(
     }
 }
 
-/// Bands fanned out per round; a taller field runs several rounds.
+/// Most bands fanned out per round; each round runs one band per pool worker,
+/// so the trajectory position scratch is sized by the pool, not the frame.
 const BAND_FAN_OUT: usize = 32;
 
 type BandSlot<'f, 't> = Option<(ProjectedFieldBand<'f>, Option<TrajectoryBand<'t>>)>;

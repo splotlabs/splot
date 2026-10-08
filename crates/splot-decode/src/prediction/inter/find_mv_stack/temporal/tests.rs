@@ -21,14 +21,6 @@ fn project_whole_temporal_motion_field(
     trajectories: Option<&mut TrajectoryState>,
     output: &mut ProjectedTemporalMotionField,
 ) {
-    let config = TemporalProjectionConfig {
-        frame_size: (0, 0),
-        step: projection_step,
-        unit_size8: tmvp_unit_size8,
-        enable_tip: false,
-        enable_trajectory: trajectories.is_some(),
-        reduced: false,
-    };
     let prepared = TemporalProjectionSource::new(
         &source.metadata(),
         source.layout(),
@@ -39,16 +31,22 @@ fn project_whole_temporal_motion_field(
         target_ref,
         ref_order_hints,
     );
-    let prepared = prepared.map(|source_info| PreparedTemporalProjection {
-        source: source_info,
-        field: source,
-    });
-    run_band_projections(
-        core::slice::from_ref(&prepared),
-        config,
-        trajectories,
-        output,
-    );
+    let Some(prepared) = prepared else {
+        return;
+    };
+    let height8 = output.height8;
+    let mut band = trajectories.and_then(TrajectoryState::whole_band);
+    if let Some(mut rows) = output.bands(height8.max(1)).next() {
+        project_temporal_motion_field(
+            &prepared,
+            source,
+            0..height8,
+            projection_step,
+            tmvp_unit_size8,
+            band.as_mut(),
+            &mut rows,
+        );
+    }
 }
 
 #[test]
@@ -869,8 +867,8 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let field_ptr = context.field.cells.as_ptr();
     let trajectories = context.trajectories.as_ref().unwrap();
     let trajectory_ptr = trajectories.cells.as_ptr();
-    let positions_ptr = trajectories.positions[0].as_ptr();
-    let offsets_ptr = trajectories.projection_offsets.as_ptr();
+    let positions_ptr = trajectories.scratch[0].positions.as_ptr();
+    let offsets_ptr = trajectories.scratch[0].projection_offsets.as_ptr();
 
     context
         .refresh_from_references(
@@ -887,8 +885,11 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let trajectories = context.trajectories.as_ref().unwrap();
     assert_eq!(context.field.cells.as_ptr(), field_ptr);
     assert_eq!(trajectories.cells.as_ptr(), trajectory_ptr);
-    assert_eq!(trajectories.positions[0].as_ptr(), positions_ptr);
-    assert_eq!(trajectories.projection_offsets.as_ptr(), offsets_ptr);
+    assert_eq!(trajectories.scratch[0].positions.as_ptr(), positions_ptr);
+    assert_eq!(
+        trajectories.scratch[0].projection_offsets.as_ptr(),
+        offsets_ptr
+    );
 }
 
 #[test]
