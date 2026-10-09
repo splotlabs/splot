@@ -56,6 +56,7 @@ mod clipped_compound;
 mod clipped_edges;
 mod copy;
 mod fullpel_u8;
+mod narrow;
 mod output;
 mod slide;
 mod tip_overlap;
@@ -2016,6 +2017,25 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 output_stride,
                 &mut finish,
             ),
+            (false, false) if matches!(w, 4 | 8) => {
+                let len = (h + NUM_TAPS - 1) * w;
+                let mut run = |intermediate: &mut [i16]| {
+                    narrow::two_axis(
+                        reference,
+                        params,
+                        inter_round1,
+                        intermediate,
+                        output,
+                        output_stride,
+                        &mut finish,
+                    );
+                };
+                match scratch.and_then(|scratch| scratch.get_mut(..len)) {
+                    Some(intermediate) => run(intermediate),
+                    None => with_subpel_intermediate(len, run),
+                }
+                return Ok(());
+            }
             (false, false) => {}
         }
         if h_phase == 0 || v_phase == 0 {
