@@ -19,14 +19,7 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     output_stride: usize,
 ) -> Result<()> {
     let intermediate_height = validate_subpel_u8_output(params, output, output_stride)?;
-    let params = SubpelPredictParams {
-        first_x: params.first_x.clamp(0, reference.width as i32 - 1),
-        first_y: params.first_y.clamp(0, reference.readable_rows as i32 - 1),
-        last_x: params.last_x.clamp(0, reference.width as i32 - 1),
-        last_y: params.last_y.clamp(0, reference.readable_rows as i32 - 1),
-        ..*params
-    };
-    let params = &params;
+    let params = &plane_bounded(reference, params);
     if params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
         && (params.start_x >> 6) & SUBPEL_MASK == 0

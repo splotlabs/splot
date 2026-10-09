@@ -1812,15 +1812,20 @@ fn clipped_horizontal_compound_matches_materialized_predictors() {
             blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
         let stride = params0.w + 3;
         let mut output = vec![u16::MAX; stride * params0.h];
-        assert!(subpel_predict_block_compound_average_horizontal_validated(
-            &view0,
-            &params0,
-            &view1,
-            &params1,
-            weight,
-            &mut output,
-            stride,
-        ));
+        let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
+        assert!(
+            subpel_predict_block_compound_average_fast_validated_strided_into(
+                &view0,
+                &params0,
+                &view1,
+                &params1,
+                weight,
+                &mut scratch,
+                &mut output,
+                stride,
+            )
+            .unwrap()
+        );
         for row in 0..params0.h {
             assert_eq!(
                 &output[row * stride..row * stride + params0.w],
@@ -1880,16 +1885,21 @@ fn clipped_horizontal_compound_rows_match_materialized_predictors() {
     let pred1 = subpel_predict_block_compound_intermediate(&view1, &expected_params1).unwrap();
     let expected = blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, 12).unwrap();
     let mut actual = vec![u16::MAX; params0.w * params0.h];
+    let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
 
-    assert!(subpel_predict_block_compound_average_horizontal_validated(
-        &view0,
-        &params0,
-        &view1,
-        &params1,
-        12,
-        &mut actual,
-        params0.w,
-    ));
+    assert!(
+        subpel_predict_block_compound_average_fast_validated_strided_into(
+            &view0,
+            &params0,
+            &view1,
+            &params1,
+            12,
+            &mut scratch,
+            &mut actual,
+            params0.w,
+        )
+        .unwrap()
+    );
     assert_eq!(actual, expected);
 }
 
@@ -1934,21 +1944,100 @@ fn fused_two_axis_compound_matches_materialized_predictors() {
             let stride = width + 3;
             let mut output = vec![u16::MAX; stride * params0.h];
             let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
-            assert!(subpel_predict_block_compound_average_2d_validated(
-                &view0,
-                &params0,
-                &view1,
-                &params1,
-                weight,
-                &mut scratch,
-                &mut output,
-                stride,
-            ));
+            assert!(
+                subpel_predict_block_compound_average_fast_validated_strided_into(
+                    &view0,
+                    &params0,
+                    &view1,
+                    &params1,
+                    weight,
+                    &mut scratch,
+                    &mut output,
+                    stride,
+                )
+                .unwrap()
+            );
             for row in 0..params0.h {
                 assert_eq!(
                     &output[row * stride..row * stride + width],
                     &expected[row * width..(row + 1) * width],
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn compound_fast_path_u8_matches_materialized_predictors() {
+    let (ref_w, ref_h) = (24usize, 20usize);
+    let samples0 = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 3) % 256) as u8)
+        .collect::<Vec<_>>();
+    let samples1 = (0..ref_w * ref_h)
+        .map(|index| ((index * 29 + 11) % 256) as u8)
+        .collect::<Vec<_>>();
+    let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
+    let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
+    for (w, h) in [(4, 4), (8, 8), (4, 8), (8, 4)] {
+        for (phase0, phase1) in [((5, 11), (13, 3)), ((5, 0), (0, 9)), ((0, 0), (0, 0))] {
+            for start in [3i32, -6, 20] {
+                let params0 = SubpelPredictParams {
+                    interp: InterpolationFilter::EightTapSharp,
+                    w,
+                    h,
+                    start_x: (start << SCALE_SUBPEL_BITS) + (phase0.0 << 6),
+                    start_y: (4 << SCALE_SUBPEL_BITS) + (phase0.1 << 6),
+                    step_x: 1 << SCALE_SUBPEL_BITS,
+                    step_y: 1 << SCALE_SUBPEL_BITS,
+                    first_x: 0,
+                    first_y: 0,
+                    last_x: ref_w as i32 - 1,
+                    last_y: ref_h as i32 - 1,
+                    bit_depth: BitDepth::Eight,
+                };
+                let params1 = SubpelPredictParams {
+                    interp: InterpolationFilter::EightTapSmooth,
+                    start_x: ((start + 2) << SCALE_SUBPEL_BITS) + (phase1.0 << 6),
+                    start_y: (7 << SCALE_SUBPEL_BITS) + (phase1.1 << 6),
+                    ..params0
+                };
+                let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
+                let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
+                for weight in [8, 12] {
+                    let expected =
+                        blend_compound_average_weighted(&pred0, &pred1, BitDepth::Eight, weight)
+                            .unwrap();
+                    let stride = w + 3;
+                    let mut output = vec![u8::MAX; stride * h];
+                    let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
+                    assert!(
+                        subpel_predict_block_compound_average_fast_validated_strided_into(
+                            &view0,
+                            &params0,
+                            &view1,
+                            &params1,
+                            weight,
+                            &mut scratch,
+                            &mut output,
+                            stride,
+                        )
+                        .unwrap()
+                    );
+                    for row in 0..h {
+                        assert!(
+                            output[row * stride..row * stride + w]
+                                .iter()
+                                .zip(&expected[row * w..(row + 1) * w])
+                                .all(|(&actual, &expected)| u16::from(actual) == expected),
+                            "{w}x{h} {phase0:?} {phase1:?} start={start} weight={weight}"
+                        );
+                        assert!(
+                            output[row * stride + w..(row + 1) * stride]
+                                .iter()
+                                .all(|&sample| sample == u8::MAX)
+                        );
+                    }
+                }
             }
         }
     }
@@ -2000,16 +2089,19 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
                 let stride = width + 3;
                 let mut output = vec![u16::MAX; stride * params0.h];
                 let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
-                assert!(subpel_predict_block_compound_average_2d_validated(
-                    &view0,
-                    &params0,
-                    &view1,
-                    &params1,
-                    weight,
-                    &mut scratch,
-                    &mut output,
-                    stride,
-                ));
+                assert!(
+                    subpel_predict_block_compound_average_fast_validated_strided_into(
+                        &view0,
+                        &params0,
+                        &view1,
+                        &params1,
+                        weight,
+                        &mut scratch,
+                        &mut output,
+                        stride,
+                    )
+                    .unwrap()
+                );
                 for row in 0..params0.h {
                     assert_eq!(
                         &output[row * stride..row * stride + width],

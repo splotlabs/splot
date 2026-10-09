@@ -101,6 +101,28 @@ impl CompoundAverageOutput for u8 {
             output_stride,
         )
     }
+
+    fn predict_fast<T: ReconSample>(
+        reference0: &ReferencePlaneView<'_, T>,
+        params0: &SubpelPredictParams,
+        reference1: &ReferencePlaneView<'_, T>,
+        params1: &SubpelPredictParams,
+        cwp_weight: i16,
+        scratch: &mut [i16],
+        output: &mut [Self],
+        output_stride: usize,
+    ) -> splot_recon::Result<bool> {
+        subpel_predict_block_compound_average_fast_validated_strided_into(
+            reference0,
+            params0,
+            reference1,
+            params1,
+            cwp_weight,
+            scratch,
+            output,
+            output_stride,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
