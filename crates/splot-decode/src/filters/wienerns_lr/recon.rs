@@ -994,7 +994,13 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         });
         let lr_initializations =
             final_filters::lr_initializations(&self.core, active_lr, plane_blocks, &target);
-        let (cdef_target, lr_target) = target.split(active_lr);
+        let lr_copies = core::array::from_fn(|index| {
+            active_lr[index]
+                && !target
+                    .get([PlaneId::Y, PlaneId::U, PlaneId::V][index])
+                    .is_some_and(|target| target.is_u16() && target.holds_deblocked())
+        });
+        let (cdef_target, lr_target) = target.split(lr_copies);
         let cdef = self.cdef_ccso_range(deblocked, &chain, start, end, Some(cdef_target))?;
         let cdef_overlap = self.cdef_overlap_planes(deblocked, &chain, start, end)?;
         let mut frame = chain.apply_lr_stripe(

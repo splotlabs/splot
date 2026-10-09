@@ -110,8 +110,10 @@ pub(crate) struct LrStripeOutput {
 }
 
 impl<'a, T: ReconSample> LrFrame<'a, T> {
+    /// An active plane CDEF already filtered in place in its target keeps that
+    /// target as the LR output, and LR reads a copy of the CDEF rows instead.
     fn from_cdef(
-        frame: CdefFrame<'a, T>,
+        mut frame: CdefFrame<'a, T>,
         active_planes: [bool; 3],
         direct_u8_planes: [bool; 3],
         initializations: [StripeInitialization; 3],
@@ -127,7 +129,12 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 continue;
             }
             let plane = planes[plane_id.index()].ok_or(StripeCopyError::Geometry)?;
-            let direct_target = target.get(plane_id).ok_or(StripeCopyError::Geometry)?;
+            let Some(direct_target) = target.get(plane_id) else {
+                if plane.is_direct() {
+                    continue;
+                }
+                return Err(StripeCopyError::Geometry);
+            };
             if direct_u8_planes[plane_id.index()] && direct_target.is_u16() {
                 return Err(StripeCopyError::Geometry);
             }
@@ -138,27 +145,39 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 initializations[plane_id.index()],
             )?;
         }
-        let mut copy = |plane_id: PlaneId, plane: &StripePlane| {
-            let target = target.take(plane_id).ok_or(StripeCopyError::Geometry)?;
+        let mut copy = |plane_id: PlaneId, plane: &mut StripePlane| {
+            let end_y = plane.end_y().ok_or(StripeCopyError::Geometry)?;
+            let Some(target) = target.take(plane_id) else {
+                let cdef = plane.copy_rows_into_mode(
+                    plane.origin_y(),
+                    end_y,
+                    None,
+                    StripeInitialization::CopyAll,
+                )?;
+                return Ok(StripeOutputPlane::u16(core::mem::replace(plane, cdef)));
+            };
             if direct_u8_planes[plane_id.index()] {
                 return StripeOutputPlane::direct_u8(target, plane);
             }
             plane
                 .copy_rows_into_mode(
                     plane.origin_y(),
-                    plane.end_y().ok_or(StripeCopyError::Geometry)?,
+                    end_y,
                     Some(target),
                     initializations[plane_id.index()],
                 )
                 .map(StripeOutputPlane::u16)
         };
         let post_lr_y = if active_planes[PlaneId::Y.index()] {
-            Some(copy(PlaneId::Y, &frame.filtered_y).map_err(|error| error.for_plane(PlaneId::Y))?)
+            Some(
+                copy(PlaneId::Y, &mut frame.filtered_y)
+                    .map_err(|error| error.for_plane(PlaneId::Y))?,
+            )
         } else {
             None
         };
         let post_lr_u = if active_planes[PlaneId::U.index()] {
-            match frame.filtered_u.as_ref() {
+            match frame.filtered_u.as_mut() {
                 Some(plane) => {
                     Some(copy(PlaneId::U, plane).map_err(|error| error.for_plane(PlaneId::U))?)
                 }
@@ -168,7 +187,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
             None
         };
         let post_lr_v = if active_planes[PlaneId::V.index()] {
-            match frame.filtered_v.as_ref() {
+            match frame.filtered_v.as_mut() {
                 Some(plane) => {
                     Some(copy(PlaneId::V, plane).map_err(|error| error.for_plane(PlaneId::V))?)
                 }
