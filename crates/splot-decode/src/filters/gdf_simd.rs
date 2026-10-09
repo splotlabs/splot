@@ -33,6 +33,37 @@ macro_rules! for_each_gdf_tap {
     };
 }
 
+/// Bit `index * 18 + k` is set when weight `index` of tap `k` is zero in every
+/// GDF table for every class in the `classes` bit set.
+const fn zero_weight_taps(classes: u8) -> u64 {
+    let mut mask = 0;
+    let mut bit = 0;
+    while bit < 3 * GDF_COORDS.len() {
+        let (index, k) = (bit / GDF_COORDS.len(), bit % GDF_COORDS.len());
+        let mut zero = true;
+        let mut table = 0;
+        while table < GDF_WEIGHT.len() * GDF_WEIGHT[0].len() {
+            let weights = &GDF_WEIGHT[table / GDF_WEIGHT[0].len()][table % GDF_WEIGHT[0].len()];
+            let mut class = 0;
+            while class < 4 {
+                zero &= classes >> class & 1 == 0 || weights[index][k][class] == 0;
+                class += 1;
+            }
+            table += 1;
+        }
+        if zero {
+            mask |= 1 << bit;
+        }
+        bit += 1;
+    }
+    mask
+}
+
+/// Weights that are zero for classes 0 and 2.
+pub(super) const EVEN_CLASS_ZERO_WEIGHTS: u64 = zero_weight_taps(0b0101);
+/// Weights that are zero for classes 1 and 3.
+pub(super) const ODD_CLASS_ZERO_WEIGHTS: u64 = zero_weight_taps(0b1010);
+
 /// Clip bound and weights of one tap per lane.
 pub(super) struct GdfTapWeights<const W: usize> {
     pub(super) alpha: Simd<i16, W>,
@@ -49,8 +80,27 @@ pub(super) fn uniform_gdf_class<const LANES: usize>(classes: &[GdfClass; LANES])
         .then_some(first as u8)
 }
 
+/// Filters a row pair of `W` samples whose class changes every two samples.
+pub(super) fn mixed_class_rows<const W: usize>(
+    base_values: [[u16; W]; 2],
+    source: &GdfSource<'_>,
+    classes: &[GdfClass],
+    block: &GdfBlock,
+    origin: (usize, usize),
+) -> Result<[[u16; W]; 2]> {
+    let weights = class_tap_weights::<W>(classes, block);
+    gdf_rows::<W, { zero_weight_taps(0b1111) }>(
+        base_values,
+        source,
+        classes,
+        block,
+        origin,
+        weights,
+    )
+}
+
 /// Per-tap weights for `W` lanes whose class changes every two lanes.
-pub(super) fn class_tap_weights<const W: usize>(
+fn class_tap_weights<const W: usize>(
     classes: &[GdfClass],
     block: &GdfBlock,
 ) -> impl Fn(usize) -> GdfTapWeights<W> {
@@ -70,9 +120,10 @@ pub(super) fn class_tap_weights<const W: usize>(
     }
 }
 
-/// Filters two rows of `W` samples starting at `origin` in `source`.
+/// Filters two rows of `W` samples starting at `origin` in `source`; weights
+/// marked in `ZERO_WEIGHTS` are skipped.
 #[inline(never)]
-pub(super) fn gdf_rows<const W: usize>(
+pub(super) fn gdf_rows<const W: usize, const ZERO_WEIGHTS: u64>(
     base_values: [[u16; W]; 2],
     source: &GdfSource<'_>,
     classes: &[GdfClass],
@@ -126,8 +177,10 @@ pub(super) fn gdf_rows<const W: usize>(
                 .simd_max(Simd::splat(-512))
                 .simd_min(Simd::splat(511))
                 .cast::<i32>();
-            for (sum, weight) in sums[row].iter_mut().zip(tap.weights) {
-                *sum += comb * weight.cast::<i32>();
+            for (index, (sum, weight)) in sums[row].iter_mut().zip(tap.weights).enumerate() {
+                if ZERO_WEIGHTS >> (index * GDF_COORDS.len() + K) & 1 == 0 {
+                    *sum += comb * weight.cast::<i32>();
+                }
             }
         }
     });

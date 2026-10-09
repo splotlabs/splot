@@ -26,7 +26,10 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 #[path = "gdf_simd.rs"]
 mod simd;
 
-use simd::{GdfTapWeights, class_tap_weights, gdf_rows, uniform_gdf_class};
+use simd::{
+    EVEN_CLASS_ZERO_WEIGHTS, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, gdf_rows, mixed_class_rows,
+    uniform_gdf_class,
+};
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -508,6 +511,7 @@ struct GdfBlock {
 }
 
 struct GdfUniformParams {
+    class: usize,
     alpha: [i16; GDF_COORDS.len()],
     weights: [[i16; GDF_COORDS.len()]; 3],
 }
@@ -517,6 +521,7 @@ impl GdfUniformParams {
         let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
         let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
         Self {
+            class,
             alpha: core::array::from_fn(|tap| alpha_table[tap][class] as i16),
             weights: core::array::from_fn(|index| {
                 core::array::from_fn(|tap| weight_table[index][tap][class])
@@ -524,10 +529,37 @@ impl GdfUniformParams {
         }
     }
 
-    fn tap_weights<const W: usize>(&self) -> impl Fn(usize) -> GdfTapWeights<W> + '_ {
-        |k| GdfTapWeights {
+    /// Filters a row pair of `W` samples that all have this class.
+    fn rows<const W: usize>(
+        &self,
+        base_values: [[u16; W]; 2],
+        source: &GdfSource<'_>,
+        classes: &[GdfClass],
+        block: &GdfBlock,
+        origin: (usize, usize),
+    ) -> Result<[[u16; W]; 2]> {
+        let weights = |k| GdfTapWeights {
             alpha: Simd::splat(self.alpha[k]),
             weights: core::array::from_fn(|index| Simd::splat(self.weights[index][k])),
+        };
+        if self.class & 1 == 0 {
+            gdf_rows::<W, EVEN_CLASS_ZERO_WEIGHTS>(
+                base_values,
+                source,
+                classes,
+                block,
+                origin,
+                weights,
+            )
+        } else {
+            gdf_rows::<W, ODD_CLASS_ZERO_WEIGHTS>(
+                base_values,
+                source,
+                classes,
+                block,
+                origin,
+                weights,
+            )
         }
     }
 }
@@ -610,8 +642,7 @@ fn compute_block<T: ReconSample>(
                 .ok_or_else(gdf_state_error)?;
             let base = base_row_pair(base_luma, base_start, block.frame_width)?;
             let origin = (source_origin.0, source_origin.1 + row);
-            let weights = class_tap_weights::<MI_SIZE>(classes, &block);
-            let rows = gdf_rows(base, source, classes, &block, origin, weights)?;
+            let rows = mixed_class_rows::<MI_SIZE>(base, source, classes, &block, origin)?;
             for (row_offset, samples) in rows.into_iter().enumerate() {
                 for (col, sample) in samples.into_iter().enumerate() {
                     output[(row + row_offset) * MI_SIZE + col] =
@@ -680,9 +711,9 @@ fn compute_enabled_segment(
                 .and_then(|classes| <&[GdfClass; 8]>::try_from(classes).ok())
                 .and_then(|classes| uniform_gdf_class(classes).map(|index| (classes, index)));
             if let Some((classes, class_index)) = uniform_16 {
-                let weights = uniform_params[class_index as usize].tap_weights::<16>();
+                let params = &uniform_params[class_index as usize];
                 filter_row_pair::<16>(base_luma, output_start, block.frame_width, |base| {
-                    gdf_rows(base, source, classes, block, origin, weights)
+                    params.rows(base, source, classes, block, origin)
                 })?;
                 local_x += 16;
             } else if width >= 8 {
@@ -692,11 +723,10 @@ fn compute_enabled_segment(
                     .ok_or_else(geometry_error)?;
                 filter_row_pair::<8>(base_luma, output_start, block.frame_width, |base| {
                     if let Some(class_index) = uniform_gdf_class(classes) {
-                        let weights = uniform_params[class_index as usize].tap_weights::<8>();
-                        gdf_rows(base, source, classes, block, origin, weights)
+                        let params = &uniform_params[class_index as usize];
+                        params.rows(base, source, classes, block, origin)
                     } else {
-                        let weights = class_tap_weights::<8>(classes, block);
-                        gdf_rows(base, source, classes, block, origin, weights)
+                        mixed_class_rows(base, source, classes, block, origin)
                     }
                 })?;
                 local_x += 8;
@@ -705,8 +735,7 @@ fn compute_enabled_segment(
                     .get(class_start..class_start + 2)
                     .ok_or_else(geometry_error)?;
                 filter_row_pair::<MI_SIZE>(base_luma, output_start, block.frame_width, |base| {
-                    let weights = class_tap_weights::<MI_SIZE>(classes, block);
-                    gdf_rows(base, source, classes, block, origin, weights)
+                    mixed_class_rows(base, source, classes, block, origin)
                 })?;
                 local_x += MI_SIZE;
             } else {
