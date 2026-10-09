@@ -1742,7 +1742,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 output_stride,
                 &mut finish,
             ),
-            (false, false) if matches!(w, 4 | 8) => {
+            (false, false) if matches!(w, 4 | 8) || w % 16 == 0 => {
                 let len = (h + NUM_TAPS - 1) * w;
                 let mut run = |intermediate: &mut [i16]| {
                     narrow::two_axis(
@@ -1770,12 +1770,6 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
 
     let h_filter = interp.pass_index(w as u32);
     let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
-
-    let x_window_start = if step_x == 1 << SCALE_SUBPEL_BITS {
-        subpel_horizontal_window_x(reference, params)
-    } else {
-        None
-    };
 
     let v_filter = interp.pass_index(h as u32);
     let mut read_lo = intermediate_height;
@@ -1811,113 +1805,18 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "subpel intermediate sample count",
             })?;
-    let clamped_window = (x_window_start.is_none() && step_x == 1 << SCALE_SUBPEL_BITS)
-        .then(|| clipped_edges::ClampedWindow::new(reference, params));
-    let mut clamped_storage = None;
     let mut run = |intermediate: &mut [i16]| {
         for r in read_lo..read_hi {
             let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
             let ref_row = (ref_row as usize).min(reference.readable_rows - 1);
             let row_out = &mut intermediate[r * w..(r + 1) * w];
-            let window = match (x_window_start, clamped_window) {
-                (Some(window_start), _) => {
-                    let row_base = ref_row * reference.stride + window_start;
-                    let taps_end = row_base + w + NUM_TAPS - 1;
-                    reference
-                        .samples
-                        .get(row_base..taps_end + SLIDE_RESERVE)
-                        .or_else(|| reference.samples.get(row_base..taps_end))
-                }
-                (None, Some(clamped)) => Some(clamped.fill(
-                    reference.row(ref_row),
-                    clamped_storage.get_or_insert([T::default(); clipped_edges::WINDOW_STORAGE]),
-                )),
-                (None, None) => None,
-            };
-            if let Some(window) = window {
-                let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
-                if phase == 0 {
-                    for (out, sample) in row_out.iter_mut().zip(&window[3..3 + w]) {
-                        *out = (sample.to_u16() << (FILTER_BITS - INTER_ROUND0)) as i16;
-                    }
-                    continue;
-                }
-                let full_taps = &h_filter_rows[phase];
-                let packed_taps = slide::intermediate_taps::<T>(full_taps);
-                let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
-                let taps = &full_taps[tap_start..tap_end];
-                let available = window.len();
-                let vector_width16 = w - w % 16;
-                for c in (0..vector_width16).step_by(16) {
-                    let filtered = if Simd::<i32, 16>::admits(available, c) {
-                        Simd::<i32, 16>::slid_intermediate(window, c, packed_taps)
-                    } else {
-                        let mut sum = Simd::<i32, 16>::splat(0);
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                reference_lanes::<16, T>(window, c + tap_start + tap_offset).cast(),
-                                tap,
-                            );
-                        }
-                        round2_simd(sum, INTER_ROUND0).cast()
-                    }
-                    .to_array();
-                    row_out[c..c + 16].copy_from_slice(&filtered); // splot-copy-ok: publish sixteen SIMD convolution outputs
-                }
-                let vector_width8 = w - w % 8;
-                for c in (vector_width16..vector_width8).step_by(8) {
-                    let filtered = if Simd::<i32, 8>::admits(available, c) {
-                        Simd::<i32, 8>::slid_intermediate(window, c, packed_taps)
-                    } else {
-                        let mut sum = Simd::<i32, 8>::splat(0);
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                reference_lanes::<8, T>(window, c + tap_start + tap_offset).cast(),
-                                tap,
-                            );
-                        }
-                        round2_simd(sum, INTER_ROUND0).cast()
-                    }
-                    .to_array();
-                    row_out[c..c + 8].copy_from_slice(&filtered); // splot-copy-ok: publish eight SIMD convolution outputs
-                }
-                let vector_width4 = w - w % 4;
-                for c in (vector_width8..vector_width4).step_by(4) {
-                    let filtered = if Simd::<i32, 4>::admits(available, c) {
-                        Simd::<i32, 4>::slid_intermediate(window, c, packed_taps)
-                    } else {
-                        let mut sum = Simd::<i32, 4>::splat(0);
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                reference_lanes::<4, T>(window, c + tap_start + tap_offset).cast(),
-                                tap,
-                            );
-                        }
-                        round2_simd(sum, INTER_ROUND0).cast()
-                    }
-                    .to_array();
-                    row_out[c..c + 4].copy_from_slice(&filtered); // splot-copy-ok: publish four SIMD convolution lanes into row scratch
-                }
-                for c in vector_width4..w {
-                    let mut sum = 0i32;
-                    for (tap_offset, &tap) in taps.iter().enumerate() {
-                        sum += tap * i32::from(window[c + tap_start + tap_offset].to_u16());
-                    }
-                    row_out[c] = round2_i32(sum, INTER_ROUND0) as i16;
-                }
-                continue;
-            }
-            for c in 0..w {
+            for (c, out) in row_out.iter_mut().enumerate() {
                 let p = scaled_position(start_x, step_x, c);
                 let phase = ((p >> 6) & SUBPEL_MASK) as usize;
                 if phase == 0 {
                     let ref_col = (p >> SCALE_SUBPEL_BITS).clamp(first_x, last_x);
-                    intermediate[r * w + c] = (reference.sample(ref_row, ref_col as usize)
-                        << (FILTER_BITS - INTER_ROUND0))
-                        as i16;
+                    *out = (reference.sample(ref_row, ref_col as usize)
+                        << (FILTER_BITS - INTER_ROUND0)) as i16;
                     continue;
                 }
                 let taps = &h_filter_rows[phase];
@@ -1929,7 +1828,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                     let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3).clamp(first_x, last_x);
                     s += tap * reference.sample(ref_row, ref_col as usize);
                 }
-                intermediate[r * w + c] = round2_i32(s, INTER_ROUND0) as i16;
+                *out = round2_i32(s, INTER_ROUND0) as i16;
             }
         }
 
