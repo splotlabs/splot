@@ -3,7 +3,11 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
-use std::simd::Simd;
+use std::simd::{
+    Simd,
+    cmp::SimdOrd,
+    num::{SimdInt, SimdUint},
+};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::tables::loop_restoration::{
@@ -1341,6 +1345,7 @@ fn band_classes_from_source(
 ) -> Result<()> {
     if source_origin.0 == 0
         || source_origin.1 == 0
+        || block.width == 0
         || !block.width.is_multiple_of(2)
         || !block.height.is_multiple_of(2)
     {
@@ -1354,9 +1359,19 @@ fn band_classes_from_source(
     resize_overwrite_scratch(classes, len)?;
     let [previous, current] = gradient_pairs;
     gradient_pair_row(source, source_origin, 0, class_cols, previous, gradient_tmp)?;
-    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
-    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-    for row in 0..class_rows {
+    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx][GDF_COORDS.len()..];
+    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx][2][GDF_COORDS.len()..];
+    let alpha: [Simd<u32, GDF_DIRECTIONS>; 4] = core::array::from_fn(|cls| {
+        Simd::from_array(core::array::from_fn(|direction| {
+            u32::from(alpha_table[direction][cls])
+        }))
+    });
+    let weight: [Simd<i32, GDF_DIRECTIONS>; 4] = core::array::from_fn(|cls| {
+        Simd::from_array(core::array::from_fn(|direction| {
+            i32::from(weight_table[direction][cls])
+        }))
+    });
+    for (row, classes) in classes.chunks_exact_mut(class_cols).enumerate() {
         gradient_pair_row(
             source,
             source_origin,
@@ -1365,21 +1380,14 @@ fn band_classes_from_source(
             current,
             gradient_tmp,
         )?;
-        for col in 0..class_cols {
-            let strengths: [u32; GDF_DIRECTIONS] = core::array::from_fn(|direction| {
-                u32::from(previous[col][direction]) + u32::from(current[col][direction])
-            });
+        for ((class, previous), current) in classes.iter_mut().zip(&*previous).zip(&*current) {
+            let strengths = Simd::from_array(*previous).cast::<u32>()
+                + Simd::from_array(*current).cast::<u32>();
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
             let cls = usize::from(index);
-            let mut gradient_bias = 0_i32;
-            for (direction, strength) in strengths.into_iter().enumerate() {
-                let k = GDF_COORDS.len() + direction;
-                let alpha = alpha_table[k][cls];
-                let comb = ((strength >> 4) as i32).min(i32::from(alpha));
-                gradient_bias += comb * i32::from(weight_table[2][k][cls]);
-            }
-            classes[row * class_cols + col] = GdfClass::new(index, gradient_bias);
+            let comb = (strengths >> 4).simd_min(alpha[cls]).cast::<i32>();
+            *class = GdfClass::new(index, (comb * weight[cls]).reduce_sum());
         }
         core::mem::swap(previous, current);
     }
