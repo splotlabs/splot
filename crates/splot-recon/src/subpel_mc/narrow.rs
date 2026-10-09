@@ -55,10 +55,11 @@ fn rows<const LANES: usize, T: ReconSample, O>(
     output_stride: usize,
     finish: &mut impl SubpelOutput<O>,
 ) where
-    Simd<i32, LANES>: SlideLanes,
+    Simd<i32, LANES>: SlideLanes<Intermediate = Simd<i16, LANES>>,
 {
     let h_filter = params.interp.pass_index(LANES as u32) as usize;
     let h_taps = &SUBPEL_FILTERS[h_filter][((params.start_x >> 6) & SUBPEL_MASK) as usize];
+    let packed_taps = slide::intermediate_taps::<T>(h_taps);
     let v_filter = params.interp.pass_index(params.h as u32) as usize;
     let v_phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
     let (v_start, v_end) = ACTIVE_TAP_SPANS[v_filter][v_phase];
@@ -96,8 +97,8 @@ fn rows<const LANES: usize, T: ReconSample, O>(
                 clamped_storage.get_or_insert([T::default(); WINDOW_STORAGE]),
             ),
         };
-        let sum = if Simd::<i32, LANES>::admits(window.len(), 0) {
-            Simd::<i32, LANES>::slid_tap_sum(window, 0, h_taps)
+        let filtered = if Simd::<i32, LANES>::admits(window.len(), 0) {
+            Simd::<i32, LANES>::slid_intermediate(window, 0, packed_taps)
         } else {
             let mut sum = Simd::splat(0);
             for (tap_index, &tap) in h_taps.iter().enumerate() {
@@ -107,9 +108,9 @@ fn rows<const LANES: usize, T: ReconSample, O>(
                     tap,
                 );
             }
-            sum
+            round2_simd(sum, INTER_ROUND0).cast()
         };
-        lanes.copy_from_slice(round2_simd(sum, INTER_ROUND0).cast::<i16>().as_array()); // splot-copy-ok: publish one intermediate row
+        lanes.copy_from_slice(filtered.as_array()); // splot-copy-ok: publish one intermediate row
     }
 
     let intermediate = &intermediate[..row_count * LANES];
