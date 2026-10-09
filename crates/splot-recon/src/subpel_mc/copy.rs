@@ -100,9 +100,20 @@ pub(super) fn subpel_copy_block_into<T: ReconSample, O>(
         if let Some(x) = direct_x {
             let row = row.min(reference.readable_rows - 1);
             let start = row * reference.stride + x;
-            for (out, sample) in output
+            let source = &reference.samples[start..start + params.w];
+            let vector_width8 = params.w - params.w % 8;
+            for c in (0..vector_width8).step_by(8) {
+                let values = reference_lanes::<8, T>(source, c).cast::<i32>() << shift_up as i32;
+                finish.eight(values, &mut output[c..c + 8]);
+            }
+            let vector_width4 = params.w - params.w % 4;
+            for c in (vector_width8..vector_width4).step_by(4) {
+                let values = reference_lanes::<4, T>(source, c).cast::<i32>() << shift_up as i32;
+                finish.four(values, &mut output[c..c + 4]);
+            }
+            for (out, sample) in output[vector_width4..]
                 .iter_mut()
-                .zip(&reference.samples[start..start + params.w])
+                .zip(&source[vector_width4..])
             {
                 *out = finish.one(i32::from(sample.to_u16()) << shift_up);
             }
