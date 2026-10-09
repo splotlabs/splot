@@ -588,32 +588,24 @@ impl SelectableLumaTxGrid {
             .map_err(|_| SelectableTransformRecordError::Unsupported {
                 reason: "record-allocation",
             })?;
-        for r in row..row.saturating_add(h4) {
-            if r >= self.rows {
-                break;
-            }
-            for c in col..col.saturating_add(w4) {
-                if c >= self.cols {
-                    break;
-                }
-                let index = self.index(r, c)?;
-                if self.cells[index].is_some() {
-                    return Err(SelectableTransformRecordError::Overlap { row: r, col: c });
-                }
+        let row_end = row.saturating_add(h4).min(self.rows);
+        let cols = col.saturating_add(w4).min(self.cols) - col;
+        for r in row..row_end {
+            let start = self.index(r, col)?;
+            if let Some(offset) = self.cells[start..start + cols]
+                .iter()
+                .position(Option::is_some)
+            {
+                return Err(SelectableTransformRecordError::Overlap {
+                    row: r,
+                    col: col + offset,
+                });
             }
         }
         let cell = SelectableLumaTxCell { scan_order };
-        for r in row..row.saturating_add(h4) {
-            if r >= self.rows {
-                break;
-            }
-            for c in col..col.saturating_add(w4) {
-                if c >= self.cols {
-                    break;
-                }
-                let index = self.index(r, c)?;
-                self.cells[index] = Some(cell);
-            }
+        for r in row..row_end {
+            let start = self.index(r, col)?;
+            self.cells[start..start + cols].fill(Some(cell));
         }
         self.records.push(SelectableLumaTxRecord {
             row,
@@ -642,12 +634,14 @@ impl SelectableLumaTxGrid {
         )?;
         let mut actual = 0usize;
         for r in row..row.saturating_add(region_rows) {
-            for c in col..col.saturating_add(region_cols) {
-                let index = self.index(r, c)?;
-                if self.cells[index].is_some() {
-                    actual += 1;
-                }
+            if region_cols == 0 {
+                break;
             }
+            let start = self.index(r, col)?;
+            actual += self.cells[start..start + region_cols]
+                .iter()
+                .filter(|cell| cell.is_some())
+                .count();
         }
         if actual != expected {
             return Err(SelectableTransformRecordError::Incomplete { expected, actual });
