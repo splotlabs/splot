@@ -108,7 +108,8 @@ impl MiGrid<'_> {
     /// One mode-info row's edge flags, or `None` outside the window.
     pub(super) fn candidate_row(&self, row: usize) -> Option<&[u8]> {
         let start = self.index(row, 0);
-        self.candidates.get(start..start + self.base.mi_cols)
+        self.candidates
+            .get(start..start.wrapping_add(self.base.mi_cols))
     }
 
     #[allow(clippy::inline_always, reason = "measured luma deblock hot path")]
