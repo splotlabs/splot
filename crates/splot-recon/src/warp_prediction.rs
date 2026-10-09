@@ -809,6 +809,8 @@ fn build_interior_intermediate<T: ReconSample>(
 /// accumulate work they feed. Each column's taps are contiguous, so they load
 /// as one vector; the three swizzle stages below are the standard 8x8 transpose
 /// and lower to `trn1`/`trn2` pairs.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
 fn transpose_warp_taps(
     columns: &[&'static [i8; WARP_FILTER_TAPS]; WARPED_BLOCK_SIZE],
 ) -> [Simd<i16, WARPED_BLOCK_SIZE>; WARP_FILTER_TAPS] {
