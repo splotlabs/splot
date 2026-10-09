@@ -13,10 +13,7 @@ use super::super::cdf::coeff_context::{
 use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::NonZeroCoeffEob;
-use super::base_symbol::{
-    CoeffBaseRangeRead, CoeffBaseSymbolReadError, CoeffBaseSymbolReadInput, CoeffBaseSymbolSource,
-    read_coeff_base_symbol,
-};
+use super::base_symbol::{CoeffBaseSymbolReadError, read_coeff_symbol};
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{
     COEFF_BASE_RANGE, CoeffTransformClass, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS,
@@ -149,8 +146,22 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
 
     let mut first_pass = CoeffBaseFirstPassSummary::default();
     for (index, entry) in walk.entries().enumerate() {
-        let input = derive_base_symbol_input(index, entry, &block, first_pass, config);
-        let level = read_coeff_base_symbol(cdfs, symbols, input)?;
+        let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
+        let (selector, bias) = if index == 0 {
+            (base_eob_selector(entry, is_lf, config), 1)
+        } else {
+            (base_selector(entry, is_lf, &block, first_pass, config), 0)
+        };
+        let mut level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + bias;
+        let base_levels = if is_lf {
+            LF_NUM_BASE_LEVELS
+        } else {
+            NUM_BASE_LEVELS
+        };
+        if level > base_levels && !(is_lf && config.plane > 0) {
+            let selector = base_range_selector(entry, is_lf, &block, config);
+            level += u32::from(read_coeff_symbol(cdfs, symbols, selector)?);
+        }
         first_pass.update_after_level(entry, level, config)?;
         block.set_level(entry.row(), entry.col(), level)?;
     }
@@ -190,43 +201,6 @@ fn preflight_pass(
         });
     }
     Ok(())
-}
-
-fn derive_base_symbol_input(
-    index: usize,
-    entry: CoeffScanEntry,
-    block: &TransformCoeffBlockState,
-    first_pass: CoeffBaseFirstPassSummary,
-    config: CoeffBaseDerivedLevelPassConfig,
-) -> CoeffBaseSymbolReadInput {
-    let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
-    let base_levels = if is_lf {
-        LF_NUM_BASE_LEVELS
-    } else {
-        NUM_BASE_LEVELS
-    };
-    let base = if index == 0 {
-        CoeffBaseSymbolSource::BaseEob {
-            selector: base_eob_selector(entry, is_lf, config),
-        }
-    } else {
-        CoeffBaseSymbolSource::Base {
-            selector: base_selector(entry, is_lf, block, first_pass, config),
-        }
-    };
-    let base_range = if is_lf && config.plane > 0 {
-        CoeffBaseRangeRead::Disabled
-    } else {
-        CoeffBaseRangeRead::Enabled {
-            selector: base_range_selector(entry, is_lf, block, config),
-        }
-    };
-
-    CoeffBaseSymbolReadInput {
-        base,
-        base_levels,
-        base_range,
-    }
 }
 
 fn base_eob_selector(
