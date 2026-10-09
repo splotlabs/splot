@@ -956,21 +956,24 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
         shift: u32,
     ) -> Option<()> {
         let end = start.checked_add(dst.len())?;
+        let mut max = 0;
+        let mut copy = |dst: &mut u16, sample: u16| {
+            max = max.max(sample);
+            *dst = sample << shift;
+        };
         match self {
             Self::Frame(row) => {
-                let source = row.get(start..end)?;
-                for (dst, sample) in dst.iter_mut().zip(source) {
-                    *dst = U::try_from_u16(sample.to_u16()).ok()?.to_u16() << shift;
+                for (dst, sample) in dst.iter_mut().zip(row.get(start..end)?) {
+                    copy(dst, sample.to_u16());
                 }
             }
             Self::Stripe(row) => {
-                let source = row.get(start..end)?;
-                for (dst, &sample) in dst.iter_mut().zip(source) {
-                    *dst = U::try_from_u16(sample).ok()?.to_u16() << shift;
+                for (dst, &sample) in dst.iter_mut().zip(row.get(start..end)?) {
+                    copy(dst, sample);
                 }
             }
         }
-        Some(())
+        (max <= U::MAX_VALUE).then_some(())
     }
 }
 
