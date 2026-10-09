@@ -50,57 +50,6 @@ impl CdfStorage for u16 {
     }
 }
 
-macro_rules! read_symbol_from_cdf {
-    ($decoder:expr, $cdf:expr) => {{
-        let decoder = $decoder;
-        let cdf = $cdf;
-        let shape = decoder.validate_cdf(cdf)?;
-        decoder.ensure_buffered(15);
-        let symbol_value = (decoder.dif >> SV_SHIFT) as u32;
-        let mut cur = decoder.symbol_range;
-        let mut symbol = 0usize;
-
-        let (prev, cur) = loop {
-            let prev = cur;
-            let f = if symbol == shape.n - 1 {
-                0
-            } else {
-                CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_i32() as u32)
-            };
-            let prob_inc = PROB_INC[shape.n - 2][symbol] as u32;
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
-            let next_cur = (((decoder.symbol_range >> 8) * pp) >> 7) << 3;
-
-            if symbol_value >= next_cur {
-                break (prev, next_cur);
-            }
-
-            cur = next_cur;
-            symbol += 1;
-            if symbol >= shape.n {
-                return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-            }
-        };
-
-        let new_range = prev.saturating_sub(cur);
-        if new_range == 0 {
-            return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-        }
-        let bits = 15 - floor_log2(new_range);
-        decoder.symbol_range = new_range << bits;
-        decoder.dif = (decoder.dif - (u64::from(cur) << SV_SHIFT)) << bits;
-        decoder.buffered -= bits as i32;
-        decoder.symbol_max_bits -= i64::from(bits);
-        decoder.frame_symbol_count = decoder.frame_symbol_count.saturating_add(1);
-
-        if decoder.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf(cdf, shape, symbol);
-        }
-
-        Ok(Symbol::new(symbol as u8))
-    }};
-}
-
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SymbolBitPosition(u64);
@@ -469,7 +418,7 @@ impl<'a> SymbolDecoder<'a> {
     /// [`Error::UnexpectedEof`] if the bounded tile payload unexpectedly cannot
     /// supply a required coded bit.
     pub fn read_symbol(&mut self, cdf: &mut [i32]) -> Result<Symbol> {
-        read_symbol_from_cdf!(self, cdf)
+        self.read_symbol_row(cdf)
     }
 
     /// Decodes one AV2 § 8.2.6 symbol from a compact `u16` CDF row.
@@ -480,7 +429,73 @@ impl<'a> SymbolDecoder<'a> {
     /// Returns the same errors as [`Self::read_symbol`].
     #[inline]
     pub fn read_symbol_u16(&mut self, cdf: &mut [u16]) -> Result<Symbol> {
-        read_symbol_from_cdf!(self, cdf)
+        self.read_symbol_row(cdf)
+    }
+
+    /// Dispatches on the row length so each arity's search loop and
+    /// adaptation are unrolled with constant bounds.
+    #[inline]
+    fn read_symbol_row<T: CdfStorage>(&mut self, cdf: &mut [T]) -> Result<Symbol> {
+        match cdf.len() {
+            3 => self.read_symbol_arity::<T, 2>(cdf),
+            4 => self.read_symbol_arity::<T, 3>(cdf),
+            5 => self.read_symbol_arity::<T, 4>(cdf),
+            6 => self.read_symbol_arity::<T, 5>(cdf),
+            7 => self.read_symbol_arity::<T, 6>(cdf),
+            8 => self.read_symbol_arity::<T, 7>(cdf),
+            9 => self.read_symbol_arity::<T, 8>(cdf),
+            len => Err(self.cdf_error(SymbolCdfErrorKind::UnsupportedLength { len })),
+        }
+    }
+
+    /// Decodes one symbol of a row with `N + 1` entries. The last symbol's
+    /// `next_cur` is 0 (`f = 0` and `Prob_Inc` 0), so a search that passes
+    /// every other boundary ends there. Both validation modes return
+    /// `n = N`; restating it keeps `n` constant in the adaptation step.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_symbol_arity<T: CdfStorage, const N: usize>(
+        &mut self,
+        cdf: &mut [T],
+    ) -> Result<Symbol> {
+        let shape = CdfShape {
+            n: N,
+            ..self.validate_cdf(cdf)?
+        };
+        self.ensure_buffered(15);
+        let symbol_value = (self.dif >> SV_SHIFT) as u32;
+        let range8 = self.symbol_range >> 8;
+        let mut prev = self.symbol_range;
+        let mut cur = 0;
+        let mut symbol = 0;
+        while symbol < N - 1 {
+            let f = CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_i32() as u32);
+            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC[N - 2][symbol] as u32;
+            let next_cur = ((range8 * pp) >> 7) << 3;
+            if symbol_value >= next_cur {
+                cur = next_cur;
+                break;
+            }
+            prev = next_cur;
+            symbol += 1;
+        }
+
+        let new_range = prev.saturating_sub(cur);
+        if new_range == 0 {
+            return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
+        }
+        let bits = 15 - floor_log2(new_range);
+        self.symbol_range = new_range << bits;
+        self.dif = (self.dif - (u64::from(cur) << SV_SHIFT)) << bits;
+        self.buffered -= bits as i32;
+        self.symbol_max_bits -= i64::from(bits);
+        self.frame_symbol_count = self.frame_symbol_count.saturating_add(1);
+
+        if self.config.cdf_update == CdfUpdateMode::Enabled {
+            update_cdf(cdf, shape, symbol);
+        }
+
+        Ok(Symbol::new(symbol as u8))
     }
 
     /// Validates AV2 § 8.2.4 `exit_symbol()` and returns the final decoder summary.
@@ -773,6 +788,8 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
 /// Applies the AV2 § 8.2.6 adaptation step. The grow branch uses wrapping
 /// arithmetic: identical for in-range entries, and panic-free under overflow
 /// checks for trusted rows with hostile entries.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
 pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: usize) {
     let time_interval = if shape.count > 31 {
         2usize

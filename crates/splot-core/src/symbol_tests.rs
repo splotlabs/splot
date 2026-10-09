@@ -368,6 +368,13 @@ fn invalid_cdf_rows_are_rejected_before_mutation() {
 }
 
 #[test]
+fn last_symbol_prob_inc_is_zero_for_every_arity() {
+    for n in MIN_SYMBOLS..=MAX_SYMBOLS {
+        assert_eq!(PROB_INC[n - 2][n - 1], 0, "N={n}");
+    }
+}
+
+#[test]
 fn read_symbol_extreme_values_select_first_and_last_symbol_for_all_arities() {
     let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled);
     for n in MIN_SYMBOLS..=MAX_SYMBOLS {
