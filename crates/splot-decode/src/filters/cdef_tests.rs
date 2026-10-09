@@ -7,7 +7,7 @@ use super::*;
 use crate::filters::source::DeblockedWindow;
 use crate::test_support::yuv420_workspace as workspace_8bit;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
+    CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize, cdef_direction,
     cdef_filter_sample,
 };
 

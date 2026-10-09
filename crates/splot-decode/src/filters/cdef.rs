@@ -7,7 +7,7 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
     CDEF_PAIR_STRIDE, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter, CdefSampleTaps, CdefTap,
-    PlaneId, PlaneRect, ReconSample, cdef_direction, cdef_direction_padded,
+    PlaneId, PlaneRect, ReconSample, cdef_direction_padded,
     cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
     cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
@@ -722,17 +722,18 @@ fn compute_cdef_block<S: ReconSample>(
     } else if luma_pad_ready {
         cdef_direction_padded(pad, ctx.coeff_shift)
     } else {
-        let mut block = [[0i32; 8]; 8];
-        for (i, row) in block.iter_mut().enumerate() {
+        for i in 0..8 {
             let src = luma_snap
                 .row(y0 + i.min(block_h - 1))
                 .and_then(|row| row.get(x0..x0 + block_w))
                 .ok_or(CdefError::Geometry)?;
-            for (j, cell) in row.iter_mut().enumerate() {
-                *cell = (i32::from(src[j.min(block_w - 1)].to_u16()) >> ctx.coeff_shift) - 128;
+            let start = (i + 2) * CDEF_PADDED_SIDE + 2;
+            let dst = pad.get_mut(start..start + 8).ok_or(CdefError::Workspace)?;
+            for (j, cell) in dst.iter_mut().enumerate() {
+                *cell = src[j.min(block_w - 1)].to_u16();
             }
         }
-        cdef_direction(&block)
+        cdef_direction_padded(pad, ctx.coeff_shift)
     };
     let dir = if pri_base == 0 { 0 } else { y_dir };
     let var_str = (var >> 6).checked_ilog2().unwrap_or(0).min(12) as i32;
