@@ -103,7 +103,8 @@ pub(crate) struct PreparedStream {
 /// memory; split it at temporal delimiters if large Annex B inputs matter.
 pub(crate) enum PreparedInput {
     AnnexB(UnitBytes),
-    Ivf(IvfHeader),
+    /// The header and the input end planning read and checked.
+    Ivf(IvfHeader, u64),
 }
 
 /// Plans `reader` without keeping IVF payloads: each frame record is parsed
@@ -124,10 +125,10 @@ pub(crate) fn prepare_stream(
     };
     rewind(reader)?;
     if ivf {
-        let (plan, header) = plan_ivf(reader, input_len, limits)?;
+        let (plan, header, end) = plan_ivf(reader, input_len, limits)?;
         return Ok(PreparedStream {
             plan,
-            input: PreparedInput::Ivf(header),
+            input: PreparedInput::Ivf(header, end),
         });
     }
     let mut bytes = Vec::new();
@@ -169,7 +170,7 @@ fn plan_ivf(
     reader: &mut dyn ReadSeek,
     input_len: u64,
     limits: DecodeLimits,
-) -> Result<(DecodeStreamPlan, IvfHeader)> {
+) -> Result<(DecodeStreamPlan, IvfHeader, u64)> {
     let cap = input_cap(limits);
     let mut capped = Read::take(&mut *reader, cap);
     let mut units = TemporalUnitReader::with_max_unit_bytes(&mut capped, usize::MAX);
@@ -234,7 +235,8 @@ fn plan_ivf(
     };
     let header = units.ivf_header();
     drop(units);
-    limits.ensure(DecodeLimitName::MaxInputBytes, cap - capped.limit())?;
+    let end = cap - capped.limit();
+    limits.ensure(DecodeLimitName::MaxInputBytes, end)?;
     let plan = planner.finish(builder, header, warning.as_slice(), error.as_ref())?;
     let header = header.ok_or_else(|| {
         crate::pipeline::unsupported(
@@ -243,7 +245,7 @@ fn plan_ivf(
             "decode runtime requires a complete IVF header",
         )
     })?;
-    Ok((plan, header))
+    Ok((plan, header, end))
 }
 
 /// Empties `obus` and keeps its storage for envelopes of another lifetime.
@@ -261,10 +263,12 @@ pub(crate) struct InputScratch {
 
 /// Reads IVF frame records again during decode, one record at a time, into
 /// reused buffers that the tasks parsing a record's frames share. Planning
-/// already checked the container, so a short read here is the end of input.
+/// already checked the container, so a short read here is the end of input,
+/// and a record past the planned end means the input changed between passes.
 pub(crate) struct IvfRecords<'r> {
     reader: &'r mut dyn ReadSeek,
     position: u64,
+    end: u64,
     current: Option<UnitBytes>,
     record: usize,
     buffers: &'r mut Vec<Arc<Vec<u8>>>,
@@ -274,6 +278,7 @@ impl<'r> IvfRecords<'r> {
     pub(crate) fn new(
         reader: &'r mut dyn ReadSeek,
         header: IvfHeader,
+        end: u64,
         buffers: &'r mut Vec<Arc<Vec<u8>>>,
     ) -> Result<Self> {
         let position = u64::from(header.header_len);
@@ -283,6 +288,7 @@ impl<'r> IvfRecords<'r> {
         Ok(Self {
             reader,
             position,
+            end,
             current: None,
             record: 0,
             buffers,
@@ -306,6 +312,12 @@ impl<'r> IvfRecords<'r> {
             let size = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
             let base = self.position + IVF_FRAME_HEADER_SIZE as u64;
             self.position = base + u64::from(size);
+            if self.position > self.end {
+                return Err(DecodeError::input(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "IVF input changed between planning and decode",
+                )));
+            }
             if size == 0 {
                 continue;
             }

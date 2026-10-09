@@ -20,7 +20,8 @@ fn ivf_records_are_read_one_at_a_time_and_share_reused_buffers() {
 
     let mut reader = Cursor::new(&bytes);
     let mut buffers = Vec::new();
-    let mut records = IvfRecords::new(&mut reader, header, &mut buffers).unwrap();
+    let mut records =
+        IvfRecords::new(&mut reader, header, bytes.len() as u64, &mut buffers).unwrap();
     let mut seen = Vec::new();
     while records.advance().unwrap() {
         let (unit, record) = records.current().unwrap();
@@ -30,6 +31,20 @@ fn ivf_records_are_read_one_at_a_time_and_share_reused_buffers() {
     }
     assert_eq!(seen, [(0, 44, 2), (1, 72, 1)]);
     assert_eq!(records.buffers.len(), 1);
+}
+
+#[test]
+fn a_record_past_the_planned_end_is_refused_before_it_is_read() {
+    let mut bytes = Vec::new();
+    let header = IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1);
+    write_ivf_header(&mut bytes, &header).unwrap();
+    let planned_end = bytes.len() as u64 + 12 + 4;
+    write_ivf_frame(&mut bytes, 0, &[0x01, 0x08, 0x01, 0x04, 0x01, 0x10]).unwrap();
+    let mut buffers = Vec::new();
+    let mut reader = Cursor::new(&bytes);
+    let mut records = IvfRecords::new(&mut reader, header, planned_end, &mut buffers).unwrap();
+    assert!(matches!(records.advance(), Err(DecodeError::Input { .. })));
+    assert!(buffers.is_empty());
 }
 
 /// A source whose end seek reports less than it then yields, like a file that
