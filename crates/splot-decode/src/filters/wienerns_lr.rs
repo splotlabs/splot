@@ -175,6 +175,7 @@ impl WienerNsLrTxSkipGrid {
         Ok(Self { rows, cols, values })
     }
 
+    #[inline]
     pub(crate) fn lookup(&self, lookup: WienerNsLrTxSkipLookup) -> ReconResult<i32> {
         if lookup.row >= self.rows || lookup.col >= self.cols {
             return Err(ReconError::PcWienerInvalidBounds {

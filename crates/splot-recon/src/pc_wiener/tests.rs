@@ -77,6 +77,24 @@ fn maximum_ten_bit_feature_window_fits_i32_classification_state() {
 }
 
 #[test]
+fn maximum_ten_bit_pooled_grid_matches_scalar_cells() {
+    let mut params = params(BitDepth::Ten);
+    params.base_q_idx = 200;
+    let source = |_: isize, y: isize| Ok(if y & 1 == 0 { 1023u16 } else { 0 });
+    let grid = pc_wiener_classify_grid::<u16, _, _>(&params, 9, 2, source, |_| Ok(1)).unwrap();
+    for (index, cell) in grid.iter().enumerate() {
+        let mut single = params;
+        single.x += isize::try_from(index % 9 * PC_WIENER_BLOCK_SIZE).unwrap();
+        single.y += isize::try_from(index / 9 * PC_WIENER_BLOCK_SIZE).unwrap();
+        assert_eq!(
+            *cell,
+            pc_wiener_classify::<u16, _, _>(&single, source, |_| Ok(1)).unwrap()
+        );
+        assert_eq!(cell.raw_features, [0, 73_656, 73_656, 73_656]);
+    }
+}
+
+#[test]
 fn grid_classification_matches_scalar_cells_and_reuses_features() {
     let mut params = params(BitDepth::Eight);
     params.x = 52;
