@@ -26,6 +26,9 @@ use std::{
 mod grid;
 
 pub(crate) use grid::DeblockGridStorage;
+/// Mode-info rows above itself that a horizontal edge reads.
+const HORIZONTAL_EDGE_REACH_MI: usize = 2;
+
 #[cfg(test)]
 use grid::MiCell;
 use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, RowOrder};
@@ -560,11 +563,13 @@ impl<'a> FrameDeblock<'a> {
         let reach = |rows: &Range<usize>, back: usize| {
             (!rows.is_empty()).then(|| rows.start.saturating_sub(back)..rows.end)
         };
-        // A horizontal edge reads up to two mode-info rows above itself.
-        let window = [reach(&ranges[0], 0), reach(&ranges[1], 2)]
-            .into_iter()
-            .flatten()
-            .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end));
+        let window = [
+            reach(&ranges[0], 0),
+            reach(&ranges[1], HORIZONTAL_EDGE_REACH_MI),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end));
         if let Some(window) = window {
             self.fill_grids(window)?;
         }

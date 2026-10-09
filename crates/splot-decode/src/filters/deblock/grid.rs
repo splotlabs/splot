@@ -100,7 +100,9 @@ impl MiGrid<'_> {
     #[allow(clippy::inline_always, reason = "measured luma deblock hot path")]
     #[inline(always)]
     const fn index(&self, row: usize, col: usize) -> usize {
-        (row * self.base.mi_cols + col).wrapping_sub(self.offset)
+        row.wrapping_mul(self.base.mi_cols)
+            .wrapping_add(col)
+            .wrapping_sub(self.offset)
     }
 
     /// One mode-info row's edge flags, or `None` outside the window.
@@ -123,7 +125,9 @@ impl MiGrid<'_> {
         let base = self.base.cells.get(self.index(row, col))?;
         let chroma = self.chroma.and_then(|grid| {
             grid.cells.get(
-                ((row >> grid.sub_y) * grid.cell_cols + (col >> grid.sub_x))
+                (row >> grid.sub_y)
+                    .wrapping_mul(grid.cell_cols)
+                    .wrapping_add(col >> grid.sub_x)
                     .wrapping_sub(self.chroma_offset),
             )
         });
