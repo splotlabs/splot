@@ -3,7 +3,7 @@
 
 use std::simd::{
     Select, Simd,
-    cmp::SimdOrd,
+    cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd},
     num::{SimdInt, SimdUint},
 };
 
@@ -380,9 +380,16 @@ fn gradients(
         let (source_units, source_remainder) = source.as_chunks::<GRADIENT_UNIT>();
         let (output_units, output_remainder) = output.as_chunks_mut::<GRADIENT_UNIT>();
         for (source, output) in source_units.iter().zip(output_units) {
-            horizontal_gradient_unit(source, output);
+            *output = horizontal_gradient_lanes(source);
         }
-        horizontal_gradient_partial(source_remainder, output_remainder);
+        if let (Ok(source), Ok(output)) = (
+            <&[i16; 8]>::try_from(source_remainder),
+            <&mut [i16; 8]>::try_from(&mut *output_remainder),
+        ) {
+            *output = horizontal_gradient_lanes(source);
+        } else {
+            horizontal_gradient_partial(source_remainder, output_remainder);
+        }
     }
     for row in 0..height {
         let row_start = (row / GRADIENT_UNIT) * GRADIENT_UNIT;
@@ -405,23 +412,31 @@ fn gradients(
     }
 }
 
-fn horizontal_gradient_unit(source: &[i16; GRADIENT_UNIT], output: &mut [i16; GRADIENT_UNIT]) {
-    for col in [0, 1, GRADIENT_UNIT - 2, GRADIENT_UNIT - 1] {
-        output[col] = horizontal_gradient_scalar(source, col);
-    }
-    let next = Simd::<i16, 8>::from_slice(&source[3..11]).cast::<i32>();
-    let prev = Simd::<i16, 8>::from_slice(&source[1..9]).cast::<i32>();
-    let next2 = Simd::<i16, 8>::from_slice(&source[4..12]).cast::<i32>();
-    let prev2 = Simd::<i16, 8>::from_slice(&source[..8]).cast::<i32>();
+/// Horizontal § 7.13.3.9 gradients of one whole gradient unit, with the
+/// clamped edge taps and doubled edge columns of [`horizontal_gradient_scalar`]
+/// applied lane-wise.
+fn horizontal_gradient_lanes<const N: usize>(source: &[i16; N]) -> [i16; N] {
+    let samples = Simd::<i16, N>::from_array(*source).cast::<i32>();
+    let lane = Simd::<i32, N>::from_array(core::array::from_fn(|lane| lane as i32));
+    let first = Simd::splat(samples[0]);
+    let last = Simd::splat(samples[N - 1]);
+    let end = Simd::splat(N as i32 - 1);
+    let next = lane
+        .simd_ge(end)
+        .select(last, samples.rotate_elements_left::<1>());
+    let next2 = (lane + Simd::splat(1))
+        .simd_ge(end)
+        .select(last, samples.rotate_elements_left::<2>());
+    let prev = lane
+        .simd_le(Simd::splat(0))
+        .select(first, samples.rotate_elements_right::<1>());
+    let prev2 = lane
+        .simd_le(Simd::splat(1))
+        .select(first, samples.rotate_elements_right::<2>());
     let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
-    output[2..10].copy_from_slice(&round2_signed_simd(value, 7).cast::<i16>().to_array()); // splot-copy-ok: publish SIMD horizontal gradients into caller scratch
-
-    let next = Simd::<i16, 4>::from_slice(&source[11..15]).cast::<i32>();
-    let prev = Simd::<i16, 4>::from_slice(&source[9..13]).cast::<i32>();
-    let next2 = Simd::<i16, 4>::from_slice(&source[12..]).cast::<i32>();
-    let prev2 = Simd::<i16, 4>::from_slice(&source[8..12]).cast::<i32>();
-    let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
-    output[10..14].copy_from_slice(&round2_signed_simd(value, 7).cast::<i16>().to_array()); // splot-copy-ok: publish SIMD horizontal gradients into caller scratch
+    let edge = lane.simd_eq(Simd::splat(0)) | lane.simd_eq(end);
+    let value = value + edge.select(value, Simd::splat(0));
+    round2_signed_simd(value, 7).cast::<i16>().to_array()
 }
 
 fn horizontal_gradient_partial(source: &[i16], output: &mut [i16]) {
@@ -652,6 +667,25 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn lane_horizontal_gradients_match_the_clamped_scalar_taps() {
+        let row = |len: usize| {
+            (0..len)
+                .map(|index| ((index * 7919 + 13) % 4001) as i16 - 2000)
+                .collect::<Vec<i16>>()
+        };
+        let source8: [i16; 8] = row(8).try_into().unwrap();
+        let source16: [i16; 16] = row(16).try_into().unwrap();
+        let want8: Vec<i16> = (0..8)
+            .map(|col| horizontal_gradient_scalar(&source8, col))
+            .collect();
+        let want16: Vec<i16> = (0..16)
+            .map(|col| horizontal_gradient_scalar(&source16, col))
+            .collect();
+        assert_eq!(horizontal_gradient_lanes(&source8).to_vec(), want8);
+        assert_eq!(horizontal_gradient_lanes(&source16).to_vec(), want16);
+    }
 
     #[test]
     fn equal_predictors_produce_zero_deltas() {
