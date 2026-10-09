@@ -947,6 +947,7 @@ fn resize_overwrite_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize)
 }
 
 struct GdfSource<'a> {
+    /// Luma samples; 8-bit samples are scaled to 10 bits so taps need no shift.
     samples: &'a [u16],
     stride: usize,
     origin_x: isize,
@@ -973,19 +974,24 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
         }
     }
 
-    fn copy_range_as<U: ReconSample>(&self, start: usize, dst: &mut [u16]) -> Option<()> {
+    fn copy_range_as<U: ReconSample>(
+        &self,
+        start: usize,
+        dst: &mut [u16],
+        shift: u32,
+    ) -> Option<()> {
         let end = start.checked_add(dst.len())?;
         match self {
             Self::Frame(row) => {
                 let source = row.get(start..end)?;
                 for (dst, sample) in dst.iter_mut().zip(source) {
-                    *dst = U::try_from_u16(sample.to_u16()).ok()?.to_u16();
+                    *dst = U::try_from_u16(sample.to_u16()).ok()?.to_u16() << shift;
                 }
             }
             Self::Stripe(row) => {
                 let source = row.get(start..end)?;
                 for (dst, &sample) in dst.iter_mut().zip(source) {
-                    *dst = U::try_from_u16(sample).ok()?.to_u16();
+                    *dst = U::try_from_u16(sample).ok()?.to_u16() << shift;
                 }
             }
         }
@@ -1051,6 +1057,7 @@ impl<'a> GdfSource<'a> {
         let origin_x = isize::try_from(block.x).map_err(|_| gdf_state_error())? - radius;
         let origin_y = isize::try_from(block.y).map_err(|_| gdf_state_error())? - radius;
         let source_error = || gdf_state_error();
+        let shift = u32::from(10 - block.bit_depth.bits().min(10));
         for row in 0..height {
             let y = origin_y
                 .checked_add(isize::try_from(row).map_err(|_| gdf_state_error())?)
@@ -1087,7 +1094,8 @@ impl<'a> GdfSource<'a> {
             dst[..pre].fill(
                 T::try_from_u16(left_value)
                     .map_err(|_| source_error())?
-                    .to_u16(),
+                    .to_u16()
+                    << shift,
             );
             if mid != 0 {
                 let mid_start = usize::try_from(
@@ -1097,14 +1105,15 @@ impl<'a> GdfSource<'a> {
                 )
                 .map_err(|_| source_error())?;
                 source_row
-                    .copy_range_as::<T>(mid_start, &mut dst[pre..pre + mid])
+                    .copy_range_as::<T>(mid_start, &mut dst[pre..pre + mid], shift)
                     .ok_or_else(source_error)?;
             }
             let right_value = source_row.get(right.x).ok_or_else(source_error)?;
             dst[pre + mid..].fill(
                 T::try_from_u16(right_value)
                     .map_err(|_| source_error())?
-                    .to_u16(),
+                    .to_u16()
+                    << shift,
             );
         }
         Ok(Self {
@@ -1226,11 +1235,6 @@ fn band_classes(
     }
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-    let strength_shift = if block.bit_depth == BitDepth::Eight {
-        2
-    } else {
-        4
-    };
     let len = class_rows
         .checked_mul(class_cols)
         .ok_or_else(gdf_state_error)?;
@@ -1249,7 +1253,7 @@ fn band_classes(
             for (direction, strength) in strengths.into_iter().enumerate() {
                 let k = GDF_COORDS.len() + direction;
                 let alpha = alpha_table[k][cls];
-                let comb = ((strength >> strength_shift) as i32).min(i32::from(alpha));
+                let comb = ((strength >> 4) as i32).min(i32::from(alpha));
                 gradient_bias += comb * i32::from(weight_table[2][k][cls]);
             }
             classes[i * class_cols + j] = GdfClass::new(index, gradient_bias);
@@ -1374,11 +1378,6 @@ fn band_classes_from_source(
     gradient_pair_row(source, source_origin, 0, class_cols, previous, gradient_tmp)?;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-    let strength_shift = if block.bit_depth == BitDepth::Eight {
-        2
-    } else {
-        4
-    };
     for row in 0..class_rows {
         gradient_pair_row(
             source,
@@ -1399,7 +1398,7 @@ fn band_classes_from_source(
             for (direction, strength) in strengths.into_iter().enumerate() {
                 let k = GDF_COORDS.len() + direction;
                 let alpha = alpha_table[k][cls];
-                let comb = ((strength >> strength_shift) as i32).min(i32::from(alpha));
+                let comb = ((strength >> 4) as i32).min(i32::from(alpha));
                 gradient_bias += comb * i32::from(weight_table[2][k][cls]);
             }
             classes[row * class_cols + col] = GdfClass::new(index, gradient_bias);
@@ -1437,7 +1436,6 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const ROWS: usize>(
     source_origin: (usize, usize),
 ) -> Result<[[u16; WIDTH]; ROWS]> {
     let source_error = gdf_state_error;
-    let shift = u32::from(10 - block.bit_depth.bits().min(10));
     let mut bases = [0usize; ROWS];
     let mut centers = [Simd::<i16, WIDTH>::splat(0); ROWS];
     let mut gdf_indices = [[Simd::<i32, WIDTH>::splat(0); 3]; ROWS];
@@ -1467,10 +1465,10 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const ROWS: usize>(
                 exact_slice(source.samples, base + tap, WIDTH).ok_or_else(source_error)?,
             )
             .cast::<i16>();
-            let above = ((negative - centers[row_offset]) << shift as i16)
+            let above = (negative - centers[row_offset])
                 .simd_max(low)
                 .simd_min(high);
-            let below = ((positive - centers[row_offset]) << shift as i16)
+            let below = (positive - centers[row_offset])
                 .simd_max(low)
                 .simd_min(high);
             let comb = (above + below)
@@ -1528,13 +1526,12 @@ fn gdf_sample(
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let mut gdf_idx = [0, 0, class.gradient_bias()];
-    let shift = u32::from(10 - block.bit_depth.bits().min(10));
     for (k, &tap) in tap_offsets.iter().enumerate() {
         let alpha = i32::from(alpha_table[k][cls]);
         let sample3 = i32::from(samples[base - tap]);
         let sample4 = i32::from(samples[base + tap]);
-        let above = ((sample3 - sample2) << shift).clamp(-alpha, alpha);
-        let below = ((sample4 - sample2) << shift).clamp(-alpha, alpha);
+        let above = (sample3 - sample2).clamp(-alpha, alpha);
+        let below = (sample4 - sample2).clamp(-alpha, alpha);
         let comb = (above + below).clamp(-512, 511);
         for (idx, total) in gdf_idx.iter_mut().enumerate() {
             *total += comb * i32::from(weight_table[idx][k][cls]);

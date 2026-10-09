@@ -40,7 +40,6 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
     let source_error = gdf_state_error;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-    let shift = u32::from(10 - block.bit_depth.bits().min(10));
     let lane_bytes = Simd::<u8, 16>::from_array(core::array::from_fn(|byte| {
         classes[byte >> 2].index() * 2 + (byte & 1) as u8
     }));
@@ -79,10 +78,10 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
                 exact_slice(source.samples, base + tap, 8).ok_or_else(source_error)?,
             )
             .cast::<i16>();
-            let above = ((negative - centers[row_offset]) << shift as i16)
+            let above = (negative - centers[row_offset])
                 .simd_max(low)
                 .simd_min(alpha);
-            let below = ((positive - centers[row_offset]) << shift as i16)
+            let below = (positive - centers[row_offset])
                 .simd_max(low)
                 .simd_min(alpha);
             let comb = (above + below)
@@ -130,7 +129,6 @@ pub(super) fn gdf_width4_rows<const ROWS: usize>(
     let source_error = gdf_state_error;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-    let shift = u32::from(10 - block.bit_depth.bits().min(10));
     let [class0, class1] = classes.map(|class| usize::from(class.index()));
     let [bias0, bias1] = classes.map(GdfClass::gradient_bias);
     let gradient_bias = Simd::from_array([bias0, bias0, bias1, bias1]);
@@ -174,10 +172,10 @@ pub(super) fn gdf_width4_rows<const ROWS: usize>(
                 exact_slice(source.samples, base + tap, MI_SIZE).ok_or_else(source_error)?,
             )
             .cast::<i32>();
-            let above = ((negative - centers[row_offset]) << shift as i32)
+            let above = (negative - centers[row_offset])
                 .simd_max(-alpha)
                 .simd_min(alpha);
-            let below = ((positive - centers[row_offset]) << shift as i32)
+            let below = (positive - centers[row_offset])
                 .simd_max(-alpha)
                 .simd_min(alpha);
             let comb = (above + below)
