@@ -30,7 +30,7 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
     let progress = Arc::new(
         FrameProgress::<u16>::new(info(8, 8, PixelFormat::Monochrome)).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 4), (4, 8)]));
+    progress.begin(&[(0, 4), (4, 8)]).expect("stripe geometry");
 
     let mut bottom = progress.direct_stripe(1).expect("bottom stripe lend");
     assert!(progress.direct_stripe(1).is_none(), "a live lend is unique");
@@ -81,7 +81,7 @@ fn detached_direct_target_keeps_its_stripe_leased() {
     let progress = Arc::new(
         FrameProgress::<u16>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 4)]));
+    progress.begin(&[(0, 4)]).expect("stripe geometry");
 
     let mut lease = progress.direct_stripe(0).expect("stripe lend");
     let mut target = lease.take_target().expect("stripe target");
@@ -100,7 +100,7 @@ fn detached_target_drop_hands_writes_back_before_submit() {
     let progress = Arc::new(
         FrameProgress::<u16>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 4)]));
+    progress.begin(&[(0, 4)]).expect("stripe geometry");
 
     let mut lease = progress.direct_stripe(0).expect("stripe lend");
     let mut target = lease.take_target().expect("stripe target");
@@ -127,7 +127,7 @@ fn u8_direct_stripe_writes_the_canonical_allocation() {
     let progress = Arc::new(
         FrameProgress::<u8>::new(info(8, 4, PixelFormat::Monochrome)).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 4)]));
+    progress.begin(&[(0, 4)]).expect("stripe geometry");
 
     let mut lease = progress.direct_stripe(0).expect("stripe lend");
     let mut target = lease.take_target().expect("stripe target");
@@ -151,7 +151,9 @@ fn direct_mode_rejects_misaligned_subsampled_stripes() {
         FrameProgress::<u16>::new(info(8, 128, PixelFormat::Yuv420)).expect("frame progress"),
     );
 
-    assert!(progress.begin(&[(0, 65), (65, 128)]));
+    progress
+        .begin(&[(0, 65), (65, 128)])
+        .expect("stripe geometry");
     assert!(progress.direct_stripe(0).is_none());
     assert!(progress.direct_stripe(1).is_none());
 }
@@ -159,7 +161,9 @@ fn direct_mode_rejects_misaligned_subsampled_stripes() {
 #[test]
 fn out_of_order_stripes_advance_only_the_contiguous_prefix() {
     let progress = new_progress(64, 192, PixelFormat::Monochrome);
-    assert!(progress.begin(&[(0, 64), (64, 128), (128, 192)]));
+    progress
+        .begin(&[(0, 64), (64, 128), (128, 192)])
+        .expect("stripe geometry");
     assert_eq!(progress.published_luma_rows(), 0);
 
     progress.publish(2);
@@ -187,7 +191,9 @@ fn out_of_order_stripes_advance_only_the_contiguous_prefix() {
 #[test]
 fn the_watermark_advances_one_stripe_at_a_time_in_order() {
     let progress = new_progress(64, 160, PixelFormat::Monochrome);
-    assert!(progress.begin(&[(0, 64), (64, 128), (128, 160)]));
+    progress
+        .begin(&[(0, 64), (64, 128), (128, 160)])
+        .expect("stripe geometry");
 
     for (stripe, expected) in [(0usize, 64usize), (1, 128), (2, 160)] {
         progress.publish(stripe);
@@ -198,7 +204,9 @@ fn the_watermark_advances_one_stripe_at_a_time_in_order() {
 #[test]
 fn a_repeated_or_out_of_range_publish_never_moves_the_watermark_backwards() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
-    assert!(progress.begin(&[(0, 64), (64, 128)]));
+    progress
+        .begin(&[(0, 64), (64, 128)])
+        .expect("stripe geometry");
 
     progress.publish(0);
     assert_eq!(progress.published_luma_rows(), 64);
@@ -210,29 +218,44 @@ fn a_repeated_or_out_of_range_publish_never_moves_the_watermark_backwards() {
     assert_eq!(progress.published_luma_rows(), 128);
 }
 
+fn is_filter_state_error(result: &crate::Result<()>) -> bool {
+    matches!(
+        result,
+        Err(crate::error::DecodeError::HeaderState {
+            source: crate::error::DecodeHeaderStateError::InvalidLoopRestorationFilterState,
+        })
+    )
+}
+
 #[test]
 fn a_non_contiguous_geometry_is_refused_and_publishes_nothing() {
     let progress = new_progress(64, 192, PixelFormat::Monochrome);
     assert!(
-        !progress.begin(&[(0, 64), (128, 192)]),
+        is_filter_state_error(&progress.begin(&[(0, 64), (128, 192)])),
         "a gap must be refused"
     );
     progress.publish(0);
     assert_eq!(progress.published_luma_rows(), 0);
 
     let descending = new_progress(64, 128, PixelFormat::Monochrome);
-    assert!(!descending.begin(&[(64, 128), (0, 64)]));
+    assert!(is_filter_state_error(
+        &descending.begin(&[(64, 128), (0, 64)])
+    ));
 
     let empty_stripe = new_progress(64, 128, PixelFormat::Monochrome);
-    assert!(!empty_stripe.begin(&[(0, 0), (0, 128)]));
+    assert!(is_filter_state_error(
+        &empty_stripe.begin(&[(0, 0), (0, 128)])
+    ));
 }
 
 #[test]
 fn the_geometry_installs_once() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
-    assert!(progress.begin(&[(0, 64), (64, 128)]));
+    progress
+        .begin(&[(0, 64), (64, 128)])
+        .expect("stripe geometry");
     assert!(
-        !progress.begin(&[(0, 128)]),
+        is_filter_state_error(&progress.begin(&[(0, 128)])),
         "a second geometry must not replace the first"
     );
     progress.publish(0);
@@ -242,7 +265,9 @@ fn the_geometry_installs_once() {
 #[test]
 fn chroma_rows_truncate_to_the_fully_published_luma_pairs() {
     let progress = new_progress(64, 192, PixelFormat::Yuv420);
-    assert!(progress.begin(&[(0, 65), (65, 192)]));
+    progress
+        .begin(&[(0, 65), (65, 192)])
+        .expect("stripe geometry");
 
     progress.publish(0);
     assert_eq!(progress.published_luma_rows(), 65);
@@ -253,12 +278,14 @@ fn chroma_rows_truncate_to_the_fully_published_luma_pairs() {
     );
 
     let full = new_progress(64, 128, PixelFormat::Yuv420);
-    assert!(full.begin(&[(0, 64), (64, 128)]));
+    full.begin(&[(0, 64), (64, 128)]).expect("stripe geometry");
     full.publish(0);
     assert_eq!(full.read().expect("a published prefix").chroma_rows(), 32);
 
     let unsubsampled = new_progress(64, 128, PixelFormat::Yuv444);
-    assert!(unsubsampled.begin(&[(0, 64), (64, 128)]));
+    unsubsampled
+        .begin(&[(0, 64), (64, 128)])
+        .expect("stripe geometry");
     unsubsampled.publish(0);
     assert_eq!(
         unsubsampled
@@ -272,7 +299,9 @@ fn chroma_rows_truncate_to_the_fully_published_luma_pairs() {
 #[test]
 fn a_complete_odd_height_frame_publishes_its_terminal_chroma_row() {
     let progress = new_progress(64, 129, PixelFormat::Yuv420);
-    assert!(progress.begin(&[(0, 64), (64, 129)]));
+    progress
+        .begin(&[(0, 64), (64, 129)])
+        .expect("stripe geometry");
 
     progress.publish(0);
     assert_eq!(
@@ -292,7 +321,9 @@ fn a_complete_odd_height_frame_publishes_its_terminal_chroma_row() {
 #[test]
 fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
-    assert!(progress.begin(&[(0, 64), (64, 128)]));
+    progress
+        .begin(&[(0, 64), (64, 128)])
+        .expect("stripe geometry");
     assert!(
         progress.read().is_none(),
         "an unpublished frame exposes no rows"
@@ -324,7 +355,9 @@ fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
 #[test]
 fn a_failed_phase_publishes_no_readable_row() {
     let progress = new_progress(64, 128, PixelFormat::Yuv420);
-    assert!(progress.begin(&[(0, 64), (64, 128)]));
+    progress
+        .begin(&[(0, 64), (64, 128)])
+        .expect("stripe geometry");
     progress.publish(0);
     assert_eq!(progress.published_luma_rows(), 64);
     assert!(!progress.terminal_published.is_set());
@@ -345,7 +378,9 @@ fn a_failed_phase_publishes_no_readable_row() {
 #[test]
 fn a_finished_phase_publishes_the_whole_frame() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
-    assert!(progress.begin(&[(0, 64), (64, 128)]));
+    progress
+        .begin(&[(0, 64), (64, 128)])
+        .expect("stripe geometry");
     assert!(!progress.terminal_published.is_set());
 
     progress.publish_terminal(true);
@@ -361,7 +396,9 @@ fn a_finished_phase_publishes_the_whole_frame() {
 #[test]
 fn the_freeze_publishes_before_it_releases_the_workspace() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
-    assert!(progress.begin(&[(0, 64), (64, 128)]));
+    progress
+        .begin(&[(0, 64), (64, 128)])
+        .expect("stripe geometry");
     progress.publish(0);
 
     let published_inside = progress
@@ -382,7 +419,7 @@ fn resetting_progress_retains_stripes_and_clears_terminal_publication() {
     let geometry = info(8, 8, PixelFormat::Monochrome);
     let mut progress = FrameProgress::<u8>::new(geometry).expect("frame progress");
     let mut planes = splot_recon::FramePlaneSamples::default();
-    assert!(progress.begin(&[(0, 4), (4, 8)]));
+    progress.begin(&[(0, 4), (4, 8)]).expect("stripe geometry");
     let stripes = progress
         .layout
         .get()
@@ -398,7 +435,7 @@ fn resetting_progress_retains_stripes_and_clears_terminal_publication() {
         assert_eq!(progress.published_luma_rows(), 0);
         assert!(!progress.terminal_published.is_set());
         assert!(progress.layout.get().is_none());
-        assert!(progress.begin(&[(0, 4), (4, 8)]));
+        progress.begin(&[(0, 4), (4, 8)]).expect("stripe geometry");
         assert_eq!(
             progress
                 .layout

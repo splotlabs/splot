@@ -191,7 +191,7 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
     let mut published_references = [None, None];
     for (reference, rows) in published_references.iter_mut().zip([needed, needed - 1]) {
         let progress = Arc::new(FrameProgress::<u8>::new(info)?);
-        assert!(progress.begin(&[(0, rows), (rows, 160)]));
+        progress.begin(&[(0, rows), (rows, 160)])?;
         let mut lease = progress
             .direct_stripe(0)
             .ok_or_else(|| format!("published {rows}-row stripe lease"))?;

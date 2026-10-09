@@ -72,7 +72,9 @@ fn reference_waits_for_mi_padding_rows_to_be_published() {
         .with_storage_luma_size(PlaneSize::new(272, 272).unwrap())
         .unwrap();
     let progress = std::sync::Arc::new(FrameProgress::<u8>::new(info).unwrap());
-    assert!(progress.begin(&[(0, 270), (270, 272)]));
+    progress
+        .begin(&[(0, 270), (270, 272)])
+        .expect("stripe geometry");
     for (stripe, value) in [(0, 11), (1, 77)] {
         let mut lease = progress.direct_stripe(stripe).unwrap();
         lease
@@ -146,7 +148,9 @@ fn settled_frame() -> DecodedFrame<u8> {
 fn published_progress(published: usize) -> FrameProgress<u8> {
     let progress =
         std::sync::Arc::new(FrameProgress::new(info(WIDTH, HEIGHT)).expect("frame progress"));
-    assert!(progress.begin(&[(0, published), (published, HEIGHT)]));
+    progress
+        .begin(&[(0, published), (published, HEIGHT)])
+        .expect("stripe geometry");
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
     let mut y = target.take(PlaneId::Y).expect("luma target");

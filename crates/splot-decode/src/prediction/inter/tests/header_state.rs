@@ -614,7 +614,7 @@ fn admitted_reference_samples_survive_a_later_slot_failure() {
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(frame.info())
         .expect("pending reference slot");
     let progress = slot.progress().expect("pending frame progress");
-    assert!(progress.begin(&[(0, 4)]));
+    progress.begin(&[(0, 4)]).expect("stripe geometry");
     progress.publish(0);
     reference
         .store

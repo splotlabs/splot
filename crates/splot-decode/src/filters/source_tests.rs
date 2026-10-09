@@ -327,7 +327,7 @@ fn u8_direct_stripe_initializes_contiguous_u16_source() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 2)]));
+    progress.begin(&[(0, 2)]).expect("stripe geometry");
     let source_samples = [1_u16, 2, 3, 4, 5, 6, 7, 8];
     let source = FramePlane::window(&source_samples, 4, 2, 0, 2).expect("source plane");
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
@@ -358,7 +358,7 @@ fn u8_direct_stripe_initializes_strided_u8_rows() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 2)]));
+    progress.begin(&[(0, 2)]).expect("stripe geometry");
     let source_samples = [1_u8, 2, 3, 4, 99, 99, 5, 6, 7, 8, 99, 99];
     let source = FramePlane {
         width: 4,
@@ -400,7 +400,7 @@ fn partial_u8_source_failure_recycles_length_zero_staging() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, height)]));
+    progress.begin(&[(0, height)]).expect("stripe geometry");
     let source_samples = vec![73_u8; width * valid_rows];
     let malformed_source = FramePlane {
         width,
@@ -439,7 +439,7 @@ fn u8_direct_stripe_flushes_checked_filter_samples() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 4)]));
+    progress.begin(&[(0, 4)]).expect("stripe geometry");
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
     let source = StripePlane::from_samples(8, 4, 0, (0_u16..32).collect()).expect("source stripe");
@@ -474,7 +474,7 @@ fn u8_direct_stripe_rejects_unrepresentable_filter_samples_without_publication()
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 1)]));
+    progress.begin(&[(0, 1)]).expect("stripe geometry");
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
     let source = StripePlane::from_samples(4, 1, 0, vec![1, 2, 256, 4]).expect("source stripe");
@@ -497,7 +497,7 @@ fn completed_direct_u8_and_staged_fallback_planes_publish_together() {
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(workspace.info())
             .expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 8)]));
+    progress.begin(&[(0, 8)]).expect("stripe geometry");
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
 
@@ -564,7 +564,7 @@ fn invalid_direct_u8_geometry_drops_without_publication_and_releases_lease() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(info).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 2)]));
+    progress.begin(&[(0, 2)]).expect("stripe geometry");
     let source = StripePlane::from_samples(4, 2, 0, vec![0; 8]).expect("source geometry");
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");

@@ -88,7 +88,7 @@ fn direct_cdef_10bit(
         size.width().div_ceil(MI_SIZE),
     );
     let progress = Arc::new(FrameProgress::<u16>::new(workspace.info()).unwrap());
-    assert!(progress.begin(&[(0, size.height())]));
+    progress.begin(&[(0, size.height())]).unwrap();
     poison_u16_progress(&progress, 0xdead);
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
@@ -342,7 +342,7 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
     let workspace = yuv420_workspace(18, 14, 91);
     let height = workspace.plane(PlaneId::Y).unwrap().storage_size().height();
     let progress = Arc::new(FrameProgress::<u8>::new(workspace.info()).unwrap());
-    assert!(progress.begin(&[(0, height)]));
+    progress.begin(&[(0, height)]).unwrap();
     {
         let mut lease = progress.direct_stripe(0).unwrap();
         let mut target = lease.take_target().unwrap();
@@ -411,7 +411,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
     let params = active_params();
     let grid = constant_cdef_grid(4, 4, 0).unwrap();
     let progress = Arc::new(FrameProgress::<u16>::new(workspace.info()).unwrap());
-    assert!(progress.begin(&[(0, 16)]));
+    progress.begin(&[(0, 16)]).unwrap();
     poison_u16_progress(&progress, 0xdead);
 
     let mut lease = progress.direct_stripe(0).unwrap();
