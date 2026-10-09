@@ -108,7 +108,7 @@ impl DecodeContext {
         prepared.plan.retain_decode_obus();
         let result = self.pool.install(|| decode(&prepared, reader));
         if let PreparedInput::Ivf(_, _, hashes) = prepared.input {
-            self.session.keep_record_hashes(hashes);
+            self.session.keep_record_hashes(hashes.into_vec());
         }
         result
     }

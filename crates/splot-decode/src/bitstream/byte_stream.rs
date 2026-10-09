@@ -6,6 +6,7 @@
 //!
 //! Feature tracking: `DECODE-BYTE-STREAM-PLANNER`.
 
+use std::hash::BuildHasher;
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
@@ -105,7 +106,37 @@ pub(crate) enum PreparedInput {
     AnnexB(UnitBytes),
     /// The header, the input end planning read, and a hash of each non-empty
     /// record it checked.
-    Ivf(IvfHeader, u64, Vec<u64>),
+    Ivf(IvfHeader, u64, RecordHashes),
+}
+
+/// Hashes of the IVF records planning checked, under keys drawn for this
+/// decode, so a record rewritten between the passes cannot be made to match.
+pub(crate) struct RecordHashes {
+    keys: std::hash::RandomState,
+    hashes: Vec<u64>,
+}
+
+impl RecordHashes {
+    /// Empties `hashes`, a list an earlier decode returned, under fresh keys.
+    pub(crate) fn new(mut hashes: Vec<u64>) -> Self {
+        hashes.clear();
+        Self {
+            keys: std::hash::RandomState::new(),
+            hashes,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        self.hashes.push(self.keys.hash_one(bytes));
+    }
+
+    fn matches(&self, record: usize, bytes: &[u8]) -> bool {
+        self.hashes.get(record) == Some(&self.keys.hash_one(bytes))
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<u64> {
+        self.hashes
+    }
 }
 
 /// Plans `reader` without keeping IVF payloads: each frame record is parsed
@@ -128,7 +159,8 @@ pub(crate) fn prepare_stream(
     };
     rewind(reader)?;
     if ivf {
-        let (plan, header, end, hashes) = plan_ivf(reader, input_len, limits, hashes)?;
+        let (plan, header, end, hashes) =
+            plan_ivf(reader, input_len, limits, RecordHashes::new(hashes))?;
         return Ok(PreparedStream {
             plan,
             input: PreparedInput::Ivf(header, end, hashes),
@@ -173,8 +205,8 @@ fn plan_ivf(
     reader: &mut dyn ReadSeek,
     input_len: u64,
     limits: DecodeLimits,
-    mut hashes: Vec<u64>,
-) -> Result<(DecodeStreamPlan, IvfHeader, u64, Vec<u64>)> {
+    mut hashes: RecordHashes,
+) -> Result<(DecodeStreamPlan, IvfHeader, u64, RecordHashes)> {
     let cap = input_cap(limits);
     let mut capped = Read::take(&mut *reader, cap);
     let mut units = TemporalUnitReader::with_max_unit_bytes(&mut capped, usize::MAX);
@@ -184,7 +216,6 @@ fn plan_ivf(
     let mut first_unsupported = None;
     let mut spare = Vec::new();
     let mut warning = None;
-    hashes.clear();
     let error = loop {
         let unit = match units.next_unit() {
             Ok(unit) => unit,
@@ -211,7 +242,7 @@ fn plan_ivf(
         };
         limits.ensure(DecodeLimitName::MaxIvfFrameRecords, index as u64 + 1)?;
         if !payload.is_empty() {
-            hashes.push(record_hash(payload));
+            hashes.push(payload);
         }
         let mut obus = recycle(core::mem::take(&mut spare));
         let frame_error = parse_bounded_annex_b_at(
@@ -279,7 +310,7 @@ pub(crate) struct IvfRecords<'r> {
     reader: &'r mut dyn ReadSeek,
     position: u64,
     end: u64,
-    hashes: &'r [u64],
+    hashes: &'r RecordHashes,
     current: Option<UnitBytes>,
     record: usize,
     buffers: &'r mut Vec<Arc<Vec<u8>>>,
@@ -290,7 +321,7 @@ impl<'r> IvfRecords<'r> {
         reader: &'r mut dyn ReadSeek,
         header: IvfHeader,
         end: u64,
-        hashes: &'r [u64],
+        hashes: &'r RecordHashes,
         buffers: &'r mut Vec<Arc<Vec<u8>>>,
     ) -> Result<Self> {
         let position = u64::from(header.header_len);
@@ -346,7 +377,7 @@ impl<'r> IvfRecords<'r> {
             if let Some(bytes) = Arc::get_mut(buffer) {
                 bytes.resize(size as usize, 0);
                 self.reader.read_exact(bytes).map_err(DecodeError::input)?;
-                if self.hashes.get(self.record) != Some(&record_hash(bytes)) {
+                if !self.hashes.matches(self.record, bytes) {
                     return Err(input_changed());
                 }
             }
@@ -389,15 +420,6 @@ fn input_changed() -> DecodeError {
         ErrorKind::InvalidData,
         "IVF input changed between planning and decode",
     ))
-}
-
-/// Identifies a record's bytes, so the decode pass refuses a record that
-/// changed after planning checked it.
-fn record_hash(bytes: &[u8]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
 }
 
 /// Parses the OBUs the decode pass acts on; reserved OBUs are dropped.

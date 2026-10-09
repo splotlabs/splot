@@ -26,7 +26,7 @@ fn ivf_records_are_read_one_at_a_time_and_share_reused_buffers() {
 
     let mut reader = Cursor::new(&bytes);
     let mut buffers = Vec::new();
-    let mut records = IvfRecords::new(&mut reader, header, end, &hashes, &mut buffers).unwrap();
+    let mut records = IvfRecords::new(&mut reader, header, end, hashes, &mut buffers).unwrap();
     let mut seen = Vec::new();
     while records.advance().unwrap() {
         let (unit, record) = records.current().unwrap();
@@ -47,17 +47,19 @@ fn a_record_past_the_planned_end_is_refused_before_it_is_read() {
     write_ivf_frame(&mut bytes, 0, &[0x01, 0x08, 0x01, 0x04, 0x01, 0x10]).unwrap();
     let mut buffers = Vec::new();
     let mut reader = Cursor::new(&bytes);
-    let mut records = IvfRecords::new(&mut reader, header, planned_end, &[], &mut buffers).unwrap();
+    let hashes = RecordHashes::new(Vec::new());
+    let mut records =
+        IvfRecords::new(&mut reader, header, planned_end, &hashes, &mut buffers).unwrap();
     assert!(matches!(records.advance(), Err(DecodeError::Input { .. })));
     assert!(buffers.is_empty());
 }
 
 /// The input end and record hashes planning hands to the decode pass.
-fn planned_records(prepared: &PreparedStream) -> (u64, Vec<u64>) {
+fn planned_records(prepared: &PreparedStream) -> (u64, &RecordHashes) {
     let PreparedInput::Ivf(_, end, hashes) = &prepared.input else {
         unreachable!("IVF input");
     };
-    (*end, hashes.clone())
+    (*end, hashes)
 }
 
 #[test]
@@ -84,11 +86,11 @@ fn a_reread_record_that_changed_after_planning_is_refused() {
     ] {
         assert_eq!(rewritten.len(), planned.len());
         let mut reader = Cursor::new(&rewritten);
-        let mut records = IvfRecords::new(&mut reader, header, end, &hashes, &mut buffers).unwrap();
+        let mut records = IvfRecords::new(&mut reader, header, end, hashes, &mut buffers).unwrap();
         assert!(matches!(records.advance(), Err(DecodeError::Input { .. })));
     }
     let mut reader = Cursor::new(&planned);
-    let mut records = IvfRecords::new(&mut reader, header, end, &hashes, &mut buffers).unwrap();
+    let mut records = IvfRecords::new(&mut reader, header, end, hashes, &mut buffers).unwrap();
     assert!(records.advance().unwrap());
 }
 
