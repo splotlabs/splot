@@ -305,7 +305,8 @@ fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf()
     assert_eq!(plan_byte_stream(&ivf_bytes, &options)?.obu_count(), 5);
     let mut reader = std::io::Cursor::new(ivf_bytes.as_slice());
     let mut buffers = Vec::new();
-    let mut records = IvfRecords::new(&mut reader, header, ivf_bytes.len() as u64, &mut buffers)?;
+    let mut records =
+        IvfRecords::new(&mut reader, header, ivf_bytes.len() as u64, 5, &mut buffers)?;
     assert!(records.advance()?);
     let (unit, record) = records.current().ok_or("missing IVF record")?;
     let mut obus = Vec::new();

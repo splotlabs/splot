@@ -103,8 +103,8 @@ pub(crate) struct PreparedStream {
 /// memory; split it at temporal delimiters if large Annex B inputs matter.
 pub(crate) enum PreparedInput {
     AnnexB(UnitBytes),
-    /// The header and the input end planning read and checked.
-    Ivf(IvfHeader, u64),
+    /// The header, and the input end and OBU count planning read and checked.
+    Ivf(IvfHeader, u64, u64),
 }
 
 /// Plans `reader` without keeping IVF payloads: each frame record is parsed
@@ -126,9 +126,10 @@ pub(crate) fn prepare_stream(
     rewind(reader)?;
     if ivf {
         let (plan, header, end) = plan_ivf(reader, input_len, limits)?;
+        let obus = plan.obu_count();
         return Ok(PreparedStream {
             plan,
-            input: PreparedInput::Ivf(header, end),
+            input: PreparedInput::Ivf(header, end, obus),
         });
     }
     let mut bytes = Vec::new();
@@ -264,11 +265,13 @@ pub(crate) struct InputScratch {
 /// Reads IVF frame records again during decode, one record at a time, into
 /// reused buffers that the tasks parsing a record's frames share. Planning
 /// already checked the container, so a short read here is the end of input,
-/// and a record past the planned end means the input changed between passes.
+/// and a record past the planned end or the planned OBU count means the input
+/// changed between passes.
 pub(crate) struct IvfRecords<'r> {
     reader: &'r mut dyn ReadSeek,
     position: u64,
     end: u64,
+    obus_left: u64,
     current: Option<UnitBytes>,
     record: usize,
     buffers: &'r mut Vec<Arc<Vec<u8>>>,
@@ -279,6 +282,7 @@ impl<'r> IvfRecords<'r> {
         reader: &'r mut dyn ReadSeek,
         header: IvfHeader,
         end: u64,
+        obus: u64,
         buffers: &'r mut Vec<Arc<Vec<u8>>>,
     ) -> Result<Self> {
         let position = u64::from(header.header_len);
@@ -289,6 +293,7 @@ impl<'r> IvfRecords<'r> {
             reader,
             position,
             end,
+            obus_left: obus,
             current: None,
             record: 0,
             buffers,
@@ -313,10 +318,7 @@ impl<'r> IvfRecords<'r> {
             let base = self.position + IVF_FRAME_HEADER_SIZE as u64;
             self.position = base + u64::from(size);
             if self.position > self.end {
-                return Err(DecodeError::input(std::io::Error::new(
-                    ErrorKind::InvalidData,
-                    "IVF input changed between planning and decode",
-                )));
+                return Err(input_changed());
             }
             if size == 0 {
                 continue;
@@ -336,6 +338,7 @@ impl<'r> IvfRecords<'r> {
             if let Some(bytes) = Arc::get_mut(buffer) {
                 bytes.resize(size as usize, 0);
                 self.reader.read_exact(bytes).map_err(DecodeError::input)?;
+                self.obus_left = take_planned_obus(bytes, base, self.obus_left)?;
             }
             self.current = Some(UnitBytes::new(Arc::clone(buffer), base));
             return Ok(true);
@@ -369,6 +372,26 @@ impl<'r> IvfRecords<'r> {
             *storage = recycle(obus);
         }
     }
+}
+
+fn input_changed() -> DecodeError {
+    DecodeError::input(std::io::Error::new(
+        ErrorKind::InvalidData,
+        "IVF input changed between planning and decode",
+    ))
+}
+
+/// Walks the OBU headers of a reread record against the `left` OBUs planning
+/// admitted, refusing a record that holds more, does not parse, or holds an
+/// OBU planning would have refused.
+fn take_planned_obus(bytes: &[u8], base: u64, mut left: u64) -> Result<u64> {
+    let mut cursor = AnnexBObuCursor::new(bytes, ByteOffset::new(base));
+    while let Some(envelope) = cursor.next_obu().map_err(|_| input_changed())? {
+        left = left.checked_sub(1).ok_or_else(input_changed)?;
+        ensure_supported_obu(envelope, DecodeLayerSelection::base())
+            .map_err(|_| input_changed())?;
+    }
+    Ok(left)
 }
 
 /// Parses the OBUs the decode pass acts on; reserved OBUs are dropped.
