@@ -68,12 +68,12 @@ fn decode_block_part(
         PartitionTreeType::Shared => Ok(DecodeBlockPart::Shared),
         PartitionTreeType::LumaPart => Ok(DecodeBlockPart::LumaPart),
         PartitionTreeType::ChromaPart => {
-            let facts = y_modes.y_mode_facts_at(call.r, call.c).ok_or(
-                TilePartitionTraversalError::MissingSdpLumaModeState {
+            let Some(facts) = y_modes.y_mode_facts_at(call.r, call.c) else {
+                return Err(TilePartitionTraversalError::MissingSdpLumaModeState {
                     r: call.r,
                     c: call.c,
-                },
-            )?;
+                });
+            };
             Ok(DecodeBlockPart::ChromaPart {
                 y_mode: facts.y_mode,
                 angle_delta_y: facts.angle_delta_y,
@@ -443,20 +443,20 @@ pub(super) fn read_frontier_partition_decision(
     )?;
     let facts = partition_decision_facts(allowed)?;
     let partition_plane = partition_cdf_plane(call.tree_type);
-    let local_r = call.r.checked_sub(context.origin_row).ok_or(
-        TilePartitionTraversalError::CoordinateUnderflow {
+    let Some(local_r) = call.r.checked_sub(context.origin_row) else {
+        return Err(TilePartitionTraversalError::CoordinateUnderflow {
             coordinate: "tile-local partition row",
             base: call.r,
             offset: context.origin_row,
-        },
-    )?;
-    let local_c = call.c.checked_sub(context.origin_col).ok_or(
-        TilePartitionTraversalError::CoordinateUnderflow {
+        });
+    };
+    let Some(local_c) = call.c.checked_sub(context.origin_col) else {
+        return Err(TilePartitionTraversalError::CoordinateUnderflow {
             coordinate: "tile-local partition column",
             base: call.c,
             offset: context.origin_col,
-        },
-    )?;
+        });
+    };
     let partition_context = PartitionContextInput::new(
         call.b_size.index(),
         partition_plane,

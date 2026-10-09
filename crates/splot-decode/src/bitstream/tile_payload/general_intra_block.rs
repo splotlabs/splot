@@ -855,10 +855,12 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
     }
 
-    let coeff_uv_mode = get_intra_uv_mode_set(y_mode, uv_mode)
-        .ok_or(GeneralIntraBlockModeError::InvalidUvMode { uv_mode })?;
-    let mode = supported_chroma_mode(y_mode, uv_mode)
-        .ok_or(GeneralIntraBlockModeError::InvalidUvMode { uv_mode })?;
+    let (Some(coeff_uv_mode), Some(mode)) = (
+        get_intra_uv_mode_set(y_mode, uv_mode),
+        supported_chroma_mode(y_mode, uv_mode),
+    ) else {
+        return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
+    };
 
     Ok(GeneralIntraChromaBlockMode::prediction(
         mode,
@@ -899,8 +901,9 @@ fn read_cfl_alphas(
             TileCdfSelector::CflMhDir { size_group },
             CFL_MH_DIR_REASON,
         )?;
-        let direction = CflMultiDirection::from_symbol(mh_dir)
-            .ok_or(GeneralIntraBlockModeError::InvalidCflMhDirection { direction: mh_dir })?;
+        let Some(direction) = CflMultiDirection::from_symbol(mh_dir) else {
+            return Err(GeneralIntraBlockModeError::InvalidCflMhDirection { direction: mh_dir });
+        };
         return Ok(CflParams::Multi { direction });
     }
 

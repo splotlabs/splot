@@ -145,10 +145,9 @@ fn fsc_branch_tx_size_facts(
     plane_tx_type: usize,
     coeff_cdf_q_ctx: usize,
 ) -> Result<CoeffFscBranchTxSizeFacts, CoeffFscBranchError> {
-    let raw_tx_width = TX_WIDTH
-        .get(tx_size)
-        .copied()
-        .ok_or(CoeffFscBranchError::InvalidTransformSize { tx_size })?;
+    let Some(&raw_tx_width) = TX_WIDTH.get(tx_size) else {
+        return Err(CoeffFscBranchError::InvalidTransformSize { tx_size });
+    };
     let tx_width = usize::try_from(raw_tx_width).map_err(|_| {
         CoeffFscBranchError::InvalidTransformSizeTableValue {
             table: "Tx_Width",
@@ -156,10 +155,9 @@ fn fsc_branch_tx_size_facts(
             value: raw_tx_width,
         }
     })?;
-    let raw_tx_height = TX_HEIGHT
-        .get(tx_size)
-        .copied()
-        .ok_or(CoeffFscBranchError::InvalidTransformSize { tx_size })?;
+    let Some(&raw_tx_height) = TX_HEIGHT.get(tx_size) else {
+        return Err(CoeffFscBranchError::InvalidTransformSize { tx_size });
+    };
     let tx_height = usize::try_from(raw_tx_height).map_err(|_| {
         CoeffFscBranchError::InvalidTransformSizeTableValue {
             table: "Tx_Height",
@@ -231,11 +229,13 @@ fn fsc_branch_tx_size_facts(
             value: tx_size_sqr_up,
         });
     }
-    let tx_size_ctx = tx_size_sqr
+    let Some(tx_size_ctx) = tx_size_sqr
         .checked_add(tx_size_sqr_up)
         .and_then(|sum| sum.checked_add(1))
         .map(|sum| sum >> 1)
-        .ok_or(CoeffFscBranchError::TransformSizeContextOverflow { tx_size })?;
+    else {
+        return Err(CoeffFscBranchError::TransformSizeContextOverflow { tx_size });
+    };
 
     let scan = coefficient_scan_slice(
         tx_width.min(MAX_SCAN_DIMENSION),

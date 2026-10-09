@@ -131,15 +131,14 @@ pub(super) fn apply_cross_chroma_transform(
             context: "CCTX coefficient lengths",
         });
     }
-    let [cos, sin] = *CCTX_MTX
-        .get(cctx_type.checked_sub(1).ok_or(
-            GeneralIntraResidualError::InvalidReconstructionState {
-                context: "CCTX type",
-            },
-        )?)
-        .ok_or(GeneralIntraResidualError::InvalidReconstructionState {
+    let Some(&[cos, sin]) = cctx_type
+        .checked_sub(1)
+        .and_then(|index| CCTX_MTX.get(index))
+    else {
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "CCTX type",
-        })?;
+        });
+    };
     let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
     for (u, v) in u_dequant.iter_mut().zip(v_dequant.iter_mut()) {
         let saved_u = (*u).clamp(-bound, bound - 1);

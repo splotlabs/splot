@@ -405,30 +405,27 @@ pub(crate) fn resolve_mode_to_txfm_plane_tx_type(
     } else {
         config.uv_mode
     };
-    let tx_type = MODE_TO_TXFM
-        .get(uv_mode)
-        .copied()
-        .ok_or(CoeffOrdinaryBranchError::InvalidUvMode { uv_mode })?;
+    let Some(&tx_type) = MODE_TO_TXFM.get(uv_mode) else {
+        return Err(CoeffOrdinaryBranchError::InvalidUvMode { uv_mode });
+    };
     let tx_type = usize::try_from(tx_type).map_err(|_| {
         CoeffOrdinaryBranchError::InvalidModeToTxfmTableValue {
             uv_mode,
             value: tx_type,
         }
     })?;
-    let set = TX_TYPE_IN_SET_INTRA.get(config.tx_set).ok_or(
-        CoeffOrdinaryBranchError::InvalidIntraTransformSet {
+    let Some(set) = TX_TYPE_IN_SET_INTRA.get(config.tx_set) else {
+        return Err(CoeffOrdinaryBranchError::InvalidIntraTransformSet {
             tx_set: config.tx_set,
-        },
-    )?;
-    if set
-        .get(tx_type)
-        .copied()
-        .ok_or(CoeffOrdinaryBranchError::InvalidModeToTxfmTableValue {
+        });
+    };
+    let Some(&in_set) = set.get(tx_type) else {
+        return Err(CoeffOrdinaryBranchError::InvalidModeToTxfmTableValue {
             uv_mode,
             value: tx_type as i32,
-        })?
-        != 0
-    {
+        });
+    };
+    if in_set != 0 {
         Ok(tx_type)
     } else {
         Ok(DCT_DCT)
@@ -447,15 +444,13 @@ fn chroma_inter_tx_type(tx_set: usize, tx_type: usize) -> Result<usize, CoeffOrd
     if tx_type >= TX_TYPES {
         return Err(CoeffOrdinaryBranchError::InvalidChromaInterTxType { tx_type });
     }
-    let set = TX_TYPE_IN_SET_INTER
-        .get(tx_set)
-        .ok_or(CoeffOrdinaryBranchError::InvalidInterTransformSet { tx_set })?;
-    if set
-        .get(tx_type)
-        .copied()
-        .ok_or(CoeffOrdinaryBranchError::InvalidChromaInterTxType { tx_type })?
-        != 0
-    {
+    let Some(set) = TX_TYPE_IN_SET_INTER.get(tx_set) else {
+        return Err(CoeffOrdinaryBranchError::InvalidInterTransformSet { tx_set });
+    };
+    let Some(&in_set) = set.get(tx_type) else {
+        return Err(CoeffOrdinaryBranchError::InvalidChromaInterTxType { tx_type });
+    };
+    if in_set != 0 {
         Ok(tx_type)
     } else {
         Ok(DCT_DCT)
@@ -470,23 +465,21 @@ fn directional_uv_mode(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     config: CoeffOrdinaryBranchModeToTxfmBaseConfig,
 ) -> Result<usize, CoeffOrdinaryBranchError> {
-    let mode_to_angle = MODE_TO_ANGLE.get(config.uv_mode).copied().ok_or(
-        CoeffOrdinaryBranchError::InvalidUvMode {
+    let Some(&mode_to_angle) = MODE_TO_ANGLE.get(config.uv_mode) else {
+        return Err(CoeffOrdinaryBranchError::InvalidUvMode {
             uv_mode: config.uv_mode,
-        },
-    )?;
-    let delta = config.angle_delta_uv.checked_mul(ANGLE_STEP).ok_or(
-        CoeffOrdinaryBranchError::DirectionalAngleOverflow {
-            uv_mode: config.uv_mode,
-            angle_delta_uv: config.angle_delta_uv,
-        },
-    )?;
-    let p_angle = mode_to_angle.checked_add(delta).ok_or(
-        CoeffOrdinaryBranchError::DirectionalAngleOverflow {
+        });
+    };
+    let Some(p_angle) = config
+        .angle_delta_uv
+        .checked_mul(ANGLE_STEP)
+        .and_then(|delta| mode_to_angle.checked_add(delta))
+    else {
+        return Err(CoeffOrdinaryBranchError::DirectionalAngleOverflow {
             uv_mode: config.uv_mode,
             angle_delta_uv: config.angle_delta_uv,
-        },
-    )?;
+        });
+    };
     let tx_width = canonical_tx_size_value(
         "Tx_Width",
         geometry.tx_size,
@@ -578,7 +571,9 @@ fn canonical_tx_size_value(
     tx_size: usize,
     value: Option<i32>,
 ) -> Result<usize, CoeffOrdinaryBranchError> {
-    let value = value.ok_or(CoeffOrdinaryBranchError::InvalidTransformSize { tx_size })?;
+    let Some(value) = value else {
+        return Err(CoeffOrdinaryBranchError::InvalidTransformSize { tx_size });
+    };
     usize::try_from(value).map_err(
         |_| CoeffOrdinaryBranchError::InvalidTransformSizeTableValue {
             table: table_name,

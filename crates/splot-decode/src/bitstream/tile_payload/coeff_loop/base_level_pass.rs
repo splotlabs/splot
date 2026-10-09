@@ -66,12 +66,13 @@ impl CoeffBaseFirstPassSummary {
         config: CoeffBaseDerivedLevelPassConfig,
     ) -> Result<(), CoeffBaseDerivedLevelPassError> {
         if config.use_tcq {
-            self.tcq_state = next_tcq_state(self.tcq_state, level).ok_or(
-                CoeffBaseDerivedLevelPassError::InvalidTcqState {
+            let Some(tcq_state) = next_tcq_state(self.tcq_state, level) else {
+                return Err(CoeffBaseDerivedLevelPassError::InvalidTcqState {
                     entry,
                     tcq_state: self.tcq_state,
-                },
-            )?;
+                });
+            };
+            self.tcq_state = tcq_state;
         }
         if config.parity_hiding && entry.scan_index() > 0 {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);

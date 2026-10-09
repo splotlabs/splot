@@ -111,7 +111,7 @@ impl CoeffReadQuantState {
                     q_base,
                     length_base
                         .checked_sub(k_base)
-                        .ok_or(quant_overflow(index, "1 << length - 1 << k"))?,
+                        .ok_or_else(|| quant_overflow(index, "1 << length - 1 << k"))?,
                     "extended xBase",
                 )?,
             )
@@ -137,7 +137,7 @@ impl CoeffReadQuantState {
         let quant = input
             .level
             .checked_add(quant_add)
-            .ok_or(quant_overflow(index, "quant + x << allowTcq"))?;
+            .ok_or_else(|| quant_overflow(index, "quant + x << allowTcq"))?;
         self.hr_level_avg = next_hr;
 
         Ok(CoeffQuantReadInput { quant })
@@ -157,13 +157,14 @@ fn quant_threshold(
     max_level: u32,
     allow_tcq: bool,
 ) -> Result<u32, CoeffReadQuantError> {
-    max_level
-        .checked_sub(u32::from(allow_tcq))
-        .ok_or(CoeffReadQuantError::InvalidMaxLevel {
+    let Some(threshold) = max_level.checked_sub(u32::from(allow_tcq)) else {
+        return Err(CoeffReadQuantError::InvalidMaxLevel {
             index,
             max_level,
             allow_tcq,
-        })
+        });
+    };
+    Ok(threshold)
 }
 
 #[derive(Clone, Copy)]
@@ -204,7 +205,8 @@ fn checked_add(
     rhs: u32,
     operation: &'static str,
 ) -> Result<u32, CoeffReadQuantError> {
-    lhs.checked_add(rhs).ok_or(quant_overflow(index, operation))
+    lhs.checked_add(rhs)
+        .ok_or_else(|| quant_overflow(index, operation))
 }
 
 fn checked_shl(
@@ -215,7 +217,7 @@ fn checked_shl(
 ) -> Result<u32, CoeffReadQuantError> {
     value
         .checked_shl(shift)
-        .ok_or(quant_overflow(index, operation))
+        .ok_or_else(|| quant_overflow(index, operation))
 }
 
 fn quant_overflow(index: usize, operation: &'static str) -> CoeffReadQuantError {
