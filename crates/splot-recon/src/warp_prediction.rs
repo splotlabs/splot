@@ -132,6 +132,46 @@ impl PreparedWarpPrediction {
         };
         warp_predict_block_prepared_into(reference, &params, &self.shear, is_compound, output)
     }
+
+    /// Predicts every 8x8 section of a non-compound `width` x `height` block at
+    /// `(x, y)` straight into `output` rows `stride` apart, applying the final
+    /// § 7.13.3.19 `Clip1` as each sample is stored.
+    ///
+    /// # Errors
+    /// Returns the errors of [`Self::predict_block_into`], or
+    /// [`ReconError::BufferLengthMismatch`] when `output` cannot hold the block.
+    pub fn predict_clipped_into<T: ReconSample>(
+        &self,
+        reference: &ReferencePlaneView<'_, T>,
+        [x, y, width, height]: [usize; 4],
+        output: &mut [T],
+        stride: usize,
+    ) -> Result<()> {
+        let max_sample = i32::from(self.params.bit_depth.max_sample());
+        let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+        for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
+            for local_x in (0..width).step_by(WARPED_BLOCK_SIZE) {
+                let section = [x + local_x, y + local_y].map(|value| value as i32);
+                self.predict_block_into(reference, section[0], section[1], false, &mut predicted)?;
+                let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
+                let rows = predicted.chunks_exact(WARPED_BLOCK_SIZE);
+                for (row, source) in rows.take(height - local_y).enumerate() {
+                    let start = (local_y + row) * stride + local_x;
+                    let available = output.len();
+                    let target = output.get_mut(start..start + section_w).ok_or(
+                        ReconError::BufferLengthMismatch {
+                            expected: start + section_w,
+                            actual: available,
+                        },
+                    )?;
+                    for (target, &sample) in target.iter_mut().zip(source) {
+                        *target = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// AV2 § 3 `EXT_WARP_TAPS`.
@@ -1052,6 +1092,38 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn clipped_block_matches_clipped_sections_at_the_target_stride() {
+        let (ref_w, ref_h) = (64usize, 64usize);
+        let samples = (0..ref_w * ref_h)
+            .map(|index| ((index * 37) % 256) as u8)
+            .collect::<Vec<u8>>();
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let mut params = default_params(16, 24, ref_w as i32, ref_h as i32);
+        params.warp_params = [0, 0, 1 << WARPEDMODEL_PREC_BITS, 384, -256, 70_000];
+        let prepared = PreparedWarpPrediction::new(&params).unwrap();
+        let stride = 20;
+        let mut output = vec![7u8; stride * 16];
+        prepared
+            .predict_clipped_into(&view, [16, 24, 16, 16], &mut output, stride)
+            .unwrap();
+        for (x, y) in [(0, 0), (8, 0), (0, 8), (8, 8)] {
+            let mut section = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+            prepared
+                .predict_block_into(&view, 16 + x as i32, 24 + y as i32, false, &mut section)
+                .unwrap();
+            for (row, values) in section.chunks_exact(WARPED_BLOCK_SIZE).enumerate() {
+                let start = (y + row) * stride + x;
+                let want = values.iter().map(|&value| value.clamp(0, 255) as u8);
+                assert!(
+                    output[start..start + 8].iter().copied().eq(want),
+                    "({x}, {y})"
+                );
+                assert_eq!(output[(y + row) * stride + 16], 7, "row padding untouched");
+            }
+        }
     }
 
     #[test]

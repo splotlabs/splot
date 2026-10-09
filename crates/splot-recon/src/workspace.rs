@@ -43,7 +43,7 @@ pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
 pub use workspace_rows::{CurrentFrameRectRowsMut, WorkspaceRectRows};
 
 macro_rules! contiguous_rect_writer {
-    ($name:ident, $sample:ty, $slice_mut:ident, $offset:literal, $span:literal) => {
+    ($name:ident, $sample:ty, $slice_mut:expr, $offset:literal, $span:literal) => {
         #[doc = concat!(
             "Runs a writer over contiguous `",
             stringify!($sample),
@@ -93,7 +93,7 @@ macro_rules! contiguous_rect_writer {
                     )
                 }
             };
-            let Some(samples) = T::$slice_mut(samples) else {
+            let Some(samples) = $slice_mut(samples) else {
                 return Ok(None);
             };
             let base = local_y
@@ -617,16 +617,23 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     }
 
     contiguous_rect_writer!(
+        with_contiguous_rect_mut,
+        T,
+        Some,
+        "contiguous target offset",
+        "contiguous target span"
+    );
+    contiguous_rect_writer!(
         with_contiguous_u16_rect_mut,
         u16,
-        u16_slice_mut,
+        T::u16_slice_mut,
         "contiguous u16 target offset",
         "contiguous u16 target span"
     );
     contiguous_rect_writer!(
         with_contiguous_u8_rect_mut,
         u8,
-        u8_slice_mut,
+        T::u8_slice_mut,
         "contiguous u8 target offset",
         "contiguous u8 target span"
     );

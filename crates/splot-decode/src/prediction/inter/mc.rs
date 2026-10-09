@@ -1102,6 +1102,16 @@ fn predict_warp_plane<T: ReconSample>(
         bit_depth,
     };
     let prepared = PreparedWarpPrediction::new(&params)?;
+    let block = [plane_x, plane_y, block_w, block_h];
+    let block_rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
+    if sink
+        .with_contiguous_rect_mut(plane, block_rect, |output, stride| {
+            prepared.predict_clipped_into(&view, block, output, stride)
+        })?
+        .is_some()
+    {
+        return Ok(());
+    }
     for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
         for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
             let write_x = plane_x + local_x;
