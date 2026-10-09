@@ -39,7 +39,9 @@ use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
 };
-use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
+use super::coeff_state::{
+    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
+};
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 mod cctx;
@@ -475,16 +477,14 @@ impl LumaCoeffBlock {
         }
     }
 
-    /// Appends `coeffs` to `arena` and records the span they landed in.
-    fn with_coeffs(mut self, arena: &mut Vec<i32>, coeffs: &[i32]) -> Self {
+    /// Appends the block's coefficients up to the last nonzero one to
+    /// `arena` and records the span they landed in.
+    fn with_coeffs(mut self, arena: &mut Vec<i32>, block: &TransformCoeffBlockState) -> Self {
         let start = arena.len();
-        let prefix = coeffs
-            .iter()
-            .rposition(|&value| value != 0)
-            .map_or(0, |index| index + 1);
-        arena.extend_from_slice(&coeffs[..prefix]);
+        let nonzero = block.nonzero_quant();
+        arena.extend_from_slice(nonzero);
         self.quant_range = start..arena.len();
-        self.zero_tail = coeffs.len() - prefix;
+        self.zero_tail = block.quant().len() - nonzero.len();
         self
     }
 }
@@ -1257,7 +1257,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         use_tcq: base_config.use_tcq,
         lossless,
     }
-    .with_coeffs(arena, block.quant()))
+    .with_coeffs(arena, &block))
 }
 
 fn staged_transform_tool_lossless_base_config(

@@ -65,6 +65,8 @@ pub(crate) struct TransformCoeffBlockState {
     level: Vec<u8>,
     quant_sign: Vec<i8>,
     quant: Vec<i32>,
+    /// One past the last nonzero entry of `quant`.
+    quant_end: usize,
 }
 
 impl TransformCoeffBlockState {
@@ -89,6 +91,7 @@ impl TransformCoeffBlockState {
             level,
             quant_sign,
             quant,
+            quant_end: 0,
         })
     }
 
@@ -145,6 +148,11 @@ impl TransformCoeffBlockState {
         &self.quant
     }
 
+    /// The quantised coefficients up to and including the last nonzero one.
+    pub(crate) fn nonzero_quant(&self) -> &[i32] {
+        &self.quant[..self.quant_end]
+    }
+
     pub(crate) fn set_level(
         &mut self,
         row: usize,
@@ -172,6 +180,9 @@ impl TransformCoeffBlockState {
     pub(crate) fn set_quant(&mut self, pos: usize, value: i32) -> Result<(), TileCoeffStateError> {
         let idx = self.quant_index(pos)?;
         self.quant[idx] = value;
+        if value != 0 {
+            self.quant_end = self.quant_end.max(idx + 1);
+        }
         Ok(())
     }
 

@@ -2094,13 +2094,16 @@ fn resolve_block_qm_none_for_flat_paths() {
 #[test]
 fn compact_coefficient_tails_restore_dense_values_and_validate_spans() {
     let mut arena = Vec::new();
-    for len in [16, 64, 256, 1024] {
+    for side in [4, 8, 16, 32] {
+        let len = side * side;
         for last in [None, Some(0), Some(len / 2), Some(len - 1)] {
             let mut dense = vec![0; len];
+            let mut state = TransformCoeffBlockState::new(side, side).unwrap();
             if let Some(last) = last {
                 dense[last] = -17;
+                state.set_quant(last, -17).unwrap();
             }
-            let block = LumaCoeffBlock::empty(DCT_DCT, false).with_coeffs(&mut arena, &dense);
+            let block = LumaCoeffBlock::empty(DCT_DCT, false).with_coeffs(&mut arena, &state);
             assert_eq!(block.quant_range.len(), last.map_or(0, |i| i + 1));
             let view = CoeffBlock::new(&block, &arena).unwrap();
             view.with_dense(|expanded| {
