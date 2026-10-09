@@ -467,7 +467,6 @@ pub(super) fn read_frontier_partition_decision(
     )?;
     let avail_u = tile_bounds.avail_u(call);
     let avail_l = tile_bounds.avail_l(call);
-    // A row outside the window reads past the grid and fails the context.
     let grid_r = context
         .mi_size_rows
         .plane_row(local_r)
