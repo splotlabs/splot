@@ -142,47 +142,57 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     let scales = luma_diff_weighted_mask
         .map(|mask| diff_weighted_luma_mask_scales(mask, w, h, sub_x, sub_y))
         .transpose()?;
-    let max_sample = i32::from(bit_depth.max_sample());
+    let max_sample = i32::from(bit_depth.max_sample().min(T::MAX_VALUE));
     let blend_shift = 6 + compound_inter_post_round();
     let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
-    for (index, (slot, (&left, &right))) in
-        output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
-    {
-        let mask = if let (Some(luma_mask), Some((scale_x, scale_y, luma_w))) =
+    let mut mask_row = [0i32; MAX_MC_BLOCK_DIM];
+    let mask_row = mask_row
+        .get_mut(..w)
+        .ok_or(ReconError::BufferLengthMismatch {
+            expected: w,
+            actual: MAX_MC_BLOCK_DIM,
+        })?;
+    let rows = output
+        .chunks_mut(w)
+        .zip(pred0.chunks_exact(w).zip(pred1.chunks_exact(w)));
+    for (y, (output, (pred0, pred1))) in rows.enumerate() {
+        if let (Some(luma_mask), Some((scale_x, scale_y, luma_w))) =
             (luma_diff_weighted_mask, scales)
         {
-            let x = index % w;
-            let y = index / w;
-            let mut sum = 0i32;
+            mask_row.fill(0);
             for dy in 0..scale_y {
-                for dx in 0..scale_x {
-                    sum += i32::from(luma_mask[(y * scale_y + dy) * luma_w + x * scale_x + dx]);
+                let luma_row = &luma_mask[(y * scale_y + dy) * luma_w..][..luma_w];
+                for (mask, luma) in mask_row.iter_mut().zip(luma_row.chunks_exact(scale_x)) {
+                    *mask += luma.iter().map(|&value| i32::from(value)).sum::<i32>();
                 }
             }
-            u16::try_from(round2_i32(sum, sub_x + sub_y)).map_err(|_| {
-                ReconError::ArithmeticOverflow {
-                    context: "diff-weighted chroma mask average",
-                }
-            })?
+            let average_shift = sub_x + sub_y;
+            for mask in mask_row.iter_mut() {
+                *mask = (*mask + ((1 << average_shift) >> 1)) >> average_shift;
+            }
         } else {
-            let diff = round2_i32(
-                i32::try_from(left.abs_diff(right)).unwrap_or(i32::MAX),
-                diff_round,
-            );
-            let base = u16::try_from((38 + diff / 16).clamp(0, 64)).map_err(|_| {
-                ReconError::ArithmeticOverflow {
-                    context: "diff-weighted compound mask",
-                }
-            })?;
-            if inverse { 64 - base } else { base }
-        };
-        let blended = round2_i32(
-            i32::from(mask) * left + i32::from(64 - mask) * right,
-            blend_shift,
-        );
-        *slot = T::try_from_u16(blended.clamp(0, max_sample) as u16)?;
+            for (mask, (&left, &right)) in mask_row.iter_mut().zip(pred0.iter().zip(pred1)) {
+                *mask = i32::from(difference_weight(left, right, diff_round, inverse));
+            }
+        }
+        for (slot, (&mask, (&left, &right))) in output
+            .iter_mut()
+            .zip(mask_row.iter().zip(pred0.iter().zip(pred1)))
+        {
+            let blended =
+                (mask * left + (64 - mask) * right + (1 << (blend_shift - 1))) >> blend_shift;
+            *slot = T::try_from_u16(blended.clamp(0, max_sample) as u16)?;
+        }
     }
     Ok(())
+}
+
+/// § 7.13.3.28 difference weight of one sample pair, rounded without overflow.
+#[inline]
+fn difference_weight(left: i32, right: i32, diff_round: u32, inverse: bool) -> u16 {
+    let diff = ((left.abs_diff(right) >> (diff_round - 1)) + 1) >> 1;
+    let base = (38 + (diff >> 4)).min(64) as u16;
+    if inverse { 64 - base } else { base }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -251,19 +261,12 @@ pub(super) fn diff_weighted_mask_into(
     }
     let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
     mask.clear();
-    mask.reserve(sample_count);
-    for (&left, &right) in pred0.iter().zip(pred1).take(sample_count) {
-        let diff = round2_i32(
-            i32::try_from(left.abs_diff(right)).unwrap_or(i32::MAX),
-            diff_round,
-        );
-        let base = u16::try_from((38 + diff / 16).clamp(0, 64)).map_err(|_| {
-            ReconError::ArithmeticOverflow {
-                context: "diff-weighted compound mask",
-            }
-        })?;
-        mask.push(if inverse { 64 - base } else { base });
-    }
+    mask.extend(
+        pred0[..sample_count]
+            .iter()
+            .zip(&pred1[..sample_count])
+            .map(|(&left, &right)| difference_weight(left, right, diff_round, inverse)),
+    );
     Ok(())
 }
 
@@ -307,4 +310,39 @@ fn diff_weighted_luma_mask_scales(
     }
 
     Ok((scale_x, scale_y, luma_w))
+}
+
+#[cfg(test)]
+#[test]
+fn difference_weight_matches_the_rounded_spec_formula_at_the_extremes() {
+    let values = [
+        i32::MIN,
+        -70_000,
+        -1023,
+        -17,
+        -1,
+        0,
+        1,
+        15,
+        16,
+        1023,
+        70_000,
+        i32::MAX,
+    ];
+    for diff_round in [4, 6] {
+        for left in values {
+            for right in values {
+                let diff = round2_i32(
+                    i32::try_from(left.abs_diff(right)).unwrap_or(i32::MAX),
+                    diff_round,
+                );
+                let base = (38 + diff / 16).clamp(0, 64) as u16;
+                for inverse in [false, true] {
+                    let want = if inverse { 64 - base } else { base };
+                    let got = difference_weight(left, right, diff_round, inverse);
+                    assert_eq!(got, want, "{left} {right} {diff_round} {inverse}");
+                }
+            }
+        }
+    }
 }
