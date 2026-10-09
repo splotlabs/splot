@@ -287,9 +287,10 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             });
         }
         let stride_samples = self.stride_samples();
-        let range = start * stride_samples..end * stride_samples;
+        let local = target.band_row(start, end - start)?;
         let sealed = self.rows(start, end)?;
-        target.samples[range].copy_from_slice(sealed); // splot-copy-ok: seal completed rows for the stage that filters them
+        target.samples[local * stride_samples..(local + end - start) * stride_samples]
+            .copy_from_slice(sealed); // splot-copy-ok: seal completed rows for the stage that filters them
         Ok(())
     }
 }
@@ -531,6 +532,24 @@ mod tests {
         let whole = CurrentFrameWorkspace::<u16>::new_band(frame(64), 64, Some(band)).unwrap();
         assert!(whole.samples(PlaneId::Y).is_ok());
         assert!(whole.as_frame_ref().is_ok());
+
+        let mut bottom = CurrentFrameWorkspace::<u16>::new_band(frame(200), 64, None).unwrap();
+        for row in [64, 128, 192] {
+            bottom.move_band(row).unwrap();
+        }
+        assert!(bottom.plane(PlaneId::Y).unwrap().rows(191, 200).is_ok());
+        assert!(bottom.plane(PlaneId::Y).unwrap().rows(200, 201).is_err());
+        assert!(bottom.reconstructed_sample(PlaneId::Y, 0, 200).is_err());
+
+        let mut source = CurrentFrameWorkspace::<u16>::new_band(frame(256), 64, None).unwrap();
+        let mut target = CurrentFrameWorkspace::<u16>::new_band(frame(256), 64, None).unwrap();
+        source.move_band(64).unwrap();
+        target.move_band(64).unwrap();
+        source
+            .set_reconstructed_sample(PlaneId::Y, 5, 100, 9)
+            .unwrap();
+        source.copy_rows_into(&mut target, 64..128).unwrap();
+        assert_eq!(target.reconstructed_sample(PlaneId::Y, 5, 100).unwrap(), 9);
     }
 
     /// The write-through path must reproduce the buffered reference exactly for
