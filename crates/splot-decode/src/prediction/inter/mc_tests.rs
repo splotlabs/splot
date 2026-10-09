@@ -1487,7 +1487,7 @@ fn uniform_motion_direct_average_matches_materialized_path() {
             [None; 2],
             0,
             0,
-            None,
+            &mut None,
             Some(motion),
             ByteOffset::new(0),
             &mut output,

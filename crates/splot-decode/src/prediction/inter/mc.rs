@@ -707,8 +707,7 @@ pub(super) fn predict_compound_from_grid<T: ReconSample>(
     samples: &mut [T],
 ) -> Result<CompoundBlockMetadata> {
     let mut samples = compound_output_samples(sink, block, samples)?;
-    let luma_diff_weighted_mask =
-        compound_luma_diff_weighted_mask(sink, block, motion.as_ref(), offset)?;
+    let mut luma_diff_weighted_mask = None;
     for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
@@ -746,7 +745,7 @@ pub(super) fn predict_compound_from_grid<T: ReconSample>(
                 block.warp_params,
                 sub_x,
                 sub_y,
-                luma_diff_weighted_mask.as_ref().map(|mask| mask.as_slice()),
+                &mut luma_diff_weighted_mask,
                 motion.as_ref(),
                 offset,
                 plane_samples,
@@ -795,30 +794,6 @@ fn compound_output_sample_count(
                 })?;
     }
     Ok(sample_count)
-}
-
-fn compound_luma_diff_weighted_mask<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
-    motion: Option<&CompoundMotionGrid>,
-    offset: ByteOffset,
-) -> Result<Option<RecycledMcSamples<u16>>> {
-    let CompoundBlend::DiffWeighted { inverse } = block.blend else {
-        return Ok(None);
-    };
-    let prediction =
-        compound_plane_prediction_for_block(sink, block, PlaneId::Y, 0, 0, motion, offset)?;
-    let mut mask = RecycledMcSamples::take();
-    diff_weighted_mask_into(
-        &prediction.pred0,
-        &prediction.pred1,
-        sink.info().bit_depth(),
-        prediction.block_w,
-        prediction.block_h,
-        inverse,
-        &mut mask,
-    )?;
-    Ok(Some(mask))
 }
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
@@ -1153,7 +1128,7 @@ fn predict_compound_plane_output<T: ReconSample>(
     warp_params: [Option<[i32; 6]>; 2],
     sub_x: u32,
     sub_y: u32,
-    luma_diff_weighted_mask: Option<&[u16]>,
+    luma_diff_weighted_mask: &mut Option<RecycledMcSamples<u16>>,
     motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
     samples: &mut [T],
@@ -1263,6 +1238,21 @@ fn predict_compound_plane_output<T: ReconSample>(
             compound_plane_prediction_for_block(sink, block, plane, sub_x, sub_y, motion, offset)?
         }
     };
+    if plane == PlaneId::Y
+        && let CompoundBlend::DiffWeighted { inverse } = blend
+    {
+        let mut mask = RecycledMcSamples::take();
+        diff_weighted_mask_into(
+            &prediction.pred0,
+            &prediction.pred1,
+            sink.info().bit_depth(),
+            prediction.block_w,
+            prediction.block_h,
+            inverse,
+            &mut mask,
+        )?;
+        *luma_diff_weighted_mask = Some(mask);
+    }
     blend_compound_average::<T>(
         &prediction.pred0,
         &prediction.pred1,
@@ -1279,7 +1269,7 @@ fn predict_compound_plane_output<T: ReconSample>(
         prediction.scaling1,
         frame_w,
         frame_h,
-        luma_diff_weighted_mask,
+        luma_diff_weighted_mask.as_deref().map(Vec::as_slice),
         sub_x,
         sub_y,
         samples,
