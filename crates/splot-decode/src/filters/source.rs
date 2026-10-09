@@ -382,9 +382,11 @@ impl<T: ReconSample> DeblockedWindow<T> {
             }
             if let Some(carry) = carry.as_deref_mut() {
                 let tail = (luma.1 >> shift).saturating_sub(margin).clamp(start, end);
-                carry.planes[index].clear();
-                carry.planes[index]
-                    .extend_from_slice(samples.get((tail - start) * width..).ok_or_else(state)?);
+                let kept = samples.get((tail - start) * width..).ok_or_else(state)?;
+                let carried = &mut carry.planes[index];
+                carried.clear();
+                carried.try_reserve_exact(kept.len()).map_err(alloc)?;
+                carried.extend_from_slice(kept);
                 carry.rows[index] = Some((tail, end));
             }
             self.rows[index] = Some((start, end));
