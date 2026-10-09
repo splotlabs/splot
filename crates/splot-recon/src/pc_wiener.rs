@@ -899,9 +899,13 @@ fn pooled_row_window(
 /// `4 * 2 * 1023` under § 6 Table 6.3's 10-bit cap, so three pooled rows still
 /// fit `u16` lanes. The § 7.20.4 column clip keeps its center column inside the
 /// source cache, so a row's linear span reaches exactly `linear_cols + 2`
-/// cached samples. `LrTxSkip` rows are fetched once per clipped grid row and
-/// kept in two pooled slots: clipped grid rows never decrease down the grid,
-/// so evicting the older slot never drops a row the current pooled row reads.
+/// cached samples. `get_tx_skip` clips every column again to `BlockEndX`, so
+/// column `c` reads `LrTxSkip` column `Clip3(BlockStartX, BlockEndX, x) >> 2`;
+/// the coordinates are kept relative to the first such column and clamped to
+/// `feature_width + 8`, which never changes a clip result. Each clipped grid
+/// row is fetched once and kept in two pooled slots: clipped grid rows never
+/// decrease down the grid, so evicting the older slot never drops a row the
+/// current pooled row reads.
 fn build_feature_grid<FT>(
     params: &PcWienerClassifyParams,
     geo: &ClassifyGridGeometry,
@@ -953,7 +957,23 @@ where
             context: "PC-Wiener feature-grid",
         })?;
     feature_grid.resize(pooled_count, [0; 4]);
-    let skip_len = geo.feature_width + 3 * pooled_width;
+    let last_feature_x = coordinate_add(
+        geo.feature_start_x,
+        usize_to_isize(geo.feature_width - 1, "PC-Wiener feature-grid last x")?,
+        "PC-Wiener feature-grid last x",
+    )?;
+    let first_x = geo.feature_start_x.clamp(block_lo, block_hi);
+    let first_cell = first_x >> 2;
+    let cell_count = ((last_feature_x.clamp(block_lo, block_hi) >> 2) - first_cell) as usize + 1;
+    let base_x = 4 * first_cell;
+    let span = usize_to_isize(geo.feature_width + 8, "PC-Wiener tx-skip span")?;
+    let relative = |x: isize| (x - base_x).clamp(-span, span) as i32;
+    let (start_x, low_x, high_x) = (
+        relative(geo.feature_start_x),
+        relative(block_lo),
+        relative(block_hi),
+    );
+    let skip_len = cell_count + 16 + 3 * pooled_width;
     skip_rows
         .try_reserve_exact(skip_len.saturating_sub(skip_rows.len()))
         .map_err(|_| ReconError::WorkspaceAllocationFailed {
@@ -961,7 +981,7 @@ where
             context: "PC-Wiener feature-grid",
         })?;
     skip_rows.resize(skip_len, 0);
-    let (skip_row, pooled_skips) = skip_rows.split_at_mut(geo.feature_width);
+    let (cells, pooled_skips) = skip_rows.split_at_mut(cell_count + 16);
     let (slots, pair_skip) = pooled_skips.split_at_mut(2 * pooled_width);
     let mut slot_rows: [Option<usize>; 2] = [None; 2];
     let mut pair_rows = None;
@@ -995,46 +1015,21 @@ where
             if slot_rows.contains(&Some(*skip_grid_row)) {
                 continue;
             }
-            let mut col = 0usize;
-            while col < linear_cols {
-                let x = (geo.feature_start_x + col as isize).clamp(block_lo, block_hi);
-                let run_last_x = (x >> 2) * 4 + 3;
-                let seg_end = if block_hi <= run_last_x {
-                    linear_cols
-                } else {
-                    usize::try_from(run_last_x - geo.feature_start_x)
-                        .map_or(linear_cols, |last_col| (last_col + 1).min(linear_cols))
-                };
-                let value = checked_tx_skip(tx_skip, x as usize, clipped_y, *skip_grid_row)?;
-                let Some(segment) = skip_row.get_mut(col..seg_end) else {
-                    return Err(ReconError::BufferLengthMismatch {
-                        expected: seg_end,
-                        actual: geo.feature_width,
-                    });
-                };
-                segment.fill(value);
-                col = seg_end;
-            }
-            if linear_cols < geo.feature_width {
-                let skip = if linear_cols != 0 {
-                    skip_row[linear_cols - 1]
-                } else {
-                    let x = geo.block_end_plus_two.clamp(block_lo, block_hi) as usize;
-                    checked_tx_skip(tx_skip, x, clipped_y, *skip_grid_row)?
-                };
-                skip_row[linear_cols..].fill(skip);
+            for (index, value) in cells[..cell_count].iter_mut().enumerate() {
+                let x = (4 * (first_cell + index as isize)).max(first_x) as usize;
+                *value = checked_tx_skip(tx_skip, x, clipped_y, *skip_grid_row)?;
             }
             let slot = match slot_rows {
                 [None, _] => 0,
                 [_, None] => 1,
                 [Some(first), Some(second)] => usize::from(second < first),
             };
-            for (pooled, pair) in slots[slot * pooled_width..(slot + 1) * pooled_width]
-                .iter_mut()
-                .zip(skip_row.chunks_exact(2))
-            {
-                *pooled = pair[0] + pair[1];
-            }
+            pool_skip_row(
+                &mut slots[slot * pooled_width..(slot + 1) * pooled_width],
+                cells,
+                start_x,
+                [low_x, high_x],
+            );
             slot_rows[slot] = Some(*skip_grid_row);
             pair_rows = None;
         }
@@ -1086,6 +1081,40 @@ where
         }
     }
     Ok(())
+}
+
+/// Sums the `LrTxSkip` values of feature columns `2j` and `2j + 1` into
+/// `pooled[j]`.
+///
+/// Feature column `c` reads `cells[(Clip3(low, high, start + c)) >> 2]`, with
+/// every coordinate relative to the first fetched cell. Sixteen columns span
+/// at most five cells, so each chunk gathers from a sixteen-cell window.
+fn pool_skip_row(pooled: &mut [u16], cells: &[u16], start: i32, [low, high]: [i32; 2]) {
+    const EVEN: [i32; 8] = [0, 2, 4, 6, 8, 10, 12, 14];
+    for (chunk, pooled) in pooled.chunks_mut(8).enumerate() {
+        let first = Simd::splat(start + 16 * chunk as i32) + Simd::from_array(EVEN);
+        let clip = |x: Simd<i32, 8>| x.simd_clamp(Simd::splat(low), Simd::splat(high)) >> 2;
+        let (even, odd) = (clip(first), clip(first + Simd::splat(1)));
+        let window = even[0] as usize;
+        let table = Simd::<u16, 16>::from_slice(&cells[window..]).cast::<u8>();
+        let (even, odd) = (
+            even - Simd::splat(window as i32),
+            odd - Simd::splat(window as i32),
+        );
+        let indices = simd_swizzle!(
+            even,
+            odd,
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        )
+        .cast::<u8>();
+        let values = table.swizzle_dyn(indices);
+        let sums = (simd_swizzle!(values, [0, 1, 2, 3, 4, 5, 6, 7])
+            + simd_swizzle!(values, [8, 9, 10, 11, 12, 13, 14, 15]))
+        .cast::<u16>();
+        for (pooled, &sum) in pooled.iter_mut().zip(sums.as_array()) {
+            *pooled = sum;
+        }
+    }
 }
 
 /// Pools sixteen feature columns of two feature rows into eight entries.
