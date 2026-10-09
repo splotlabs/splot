@@ -652,35 +652,6 @@ struct CdefBlockCtx {
     chroma_lossless: bool,
 }
 
-impl CdefBlockCtx {
-    fn filter_ctx(
-        &self,
-        pri_str: i32,
-        sec_str: i32,
-        damping: i32,
-        dir: usize,
-        sub: usize,
-    ) -> CdefFilterCtx {
-        CdefFilterCtx {
-            r: self.r,
-            c: self.c,
-            pri_str,
-            sec_str,
-            damping,
-            dir,
-            sub,
-            coeff_shift: self.coeff_shift,
-            max_sample: self.max_sample,
-            mi_rows: self.mi_rows,
-            mi_cols: self.mi_cols,
-            mi_row_start: self.mi_row_start,
-            mi_col_start: self.mi_col_start,
-            frame_sub_x: self.sub_x,
-            frame_sub_y: self.sub_y,
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compute_cdef_block<S: ReconSample>(
     ctx: &CdefBlockCtx,
@@ -742,16 +713,26 @@ fn compute_cdef_block<S: ReconSample>(
     } else {
         0
     };
-    let damping = ctx.params.damping + ctx.coeff_shift as i32;
-    let y_filter = ctx.filter_ctx(pri_str, sec_str, damping, dir, 0);
+    let y_filter = CdefBlockFilter {
+        pri_str,
+        sec_str,
+        damping: ctx.params.damping + ctx.coeff_shift as i32,
+        dir,
+        coeff_shift: ctx.coeff_shift,
+    };
 
     let uv_dir = if uv_pri == 0 {
         0
     } else {
         CDEF_UV_DIR[ctx.sub_x][ctx.sub_y][y_dir]
     };
-    let uv_damping = ctx.params.damping + ctx.coeff_shift as i32 - 1;
-    let uv_filter = ctx.filter_ctx(uv_pri, uv_sec, uv_damping, uv_dir, 1);
+    let uv_filter = CdefBlockFilter {
+        pri_str: uv_pri,
+        sec_str: uv_sec,
+        damping: ctx.params.damping + ctx.coeff_shift as i32 - 1,
+        dir: uv_dir,
+        coeff_shift: ctx.coeff_shift,
+    };
 
     let y_zero = pri_str == 0 && sec_str == 0;
     let uv_zero = uv_pri == 0 && uv_sec == 0;
@@ -759,7 +740,7 @@ fn compute_cdef_block<S: ReconSample>(
         if luma_pad_ready {
             filter_pad_into(filtered_y, pad, x0, y0, block_w, block_h, &y_filter, false)?;
         } else {
-            compute_cdef_filter_plane::<S>(luma_snap, &y_filter, pad, filtered_y)?;
+            compute_cdef_filter_plane::<S>(luma_snap, ctx, false, &y_filter, pad, filtered_y)?;
         }
     }
     if uv_zero || ctx.chroma_lossless {
@@ -769,12 +750,12 @@ fn compute_cdef_block<S: ReconSample>(
         (None, None, _, _) => Ok(()),
         (Some(u_snap), Some(v_snap), Some(filtered_u), Some(filtered_v)) => {
             if compute_cdef_chroma_pair::<S>(
-                u_snap, v_snap, &uv_filter, pad, filtered_u, filtered_v,
+                u_snap, v_snap, ctx, &uv_filter, pad, filtered_u, filtered_v,
             )? {
                 return Ok(());
             }
-            compute_cdef_filter_plane::<S>(u_snap, &uv_filter, pad, filtered_u)?;
-            compute_cdef_filter_plane::<S>(v_snap, &uv_filter, pad, filtered_v)
+            compute_cdef_filter_plane::<S>(u_snap, ctx, true, &uv_filter, pad, filtered_u)?;
+            compute_cdef_filter_plane::<S>(v_snap, ctx, true, &uv_filter, pad, filtered_v)
         }
         _ => Err(CdefError::Workspace),
     }
@@ -790,21 +771,22 @@ fn compute_cdef_block<S: ReconSample>(
 fn compute_cdef_chroma_pair<S: ReconSample>(
     u_snap: FramePlane<'_, S>,
     v_snap: FramePlane<'_, S>,
-    ctx: &CdefFilterCtx,
+    ctx: &CdefBlockCtx,
+    filter: &CdefBlockFilter,
     pad: &mut [u16; CDEF_PADDED_AREA],
     filtered_u: &mut StripePlane,
     filtered_v: &mut StripePlane,
 ) -> Result<bool, CdefError> {
-    let x0 = (ctx.c * MI_SIZE) >> ctx.frame_sub_x;
-    let y0 = (ctx.r * MI_SIZE) >> ctx.frame_sub_y;
-    let (w, h) = ((8 >> ctx.frame_sub_x), (8 >> ctx.frame_sub_y));
-    if ctx.sub == 0 || (w, h) != (CHROMA_PAIR_SIDE, CHROMA_PAIR_SIDE) {
+    let x0 = (ctx.c * MI_SIZE) >> ctx.sub_x;
+    let y0 = (ctx.r * MI_SIZE) >> ctx.sub_y;
+    let (w, h) = ((8 >> ctx.sub_x), (8 >> ctx.sub_y));
+    if (w, h) != (CHROMA_PAIR_SIDE, CHROMA_PAIR_SIDE) {
         return Ok(false);
     }
-    let inside_x = ((ctx.mi_cols * MI_SIZE) >> ctx.frame_sub_x).min(u_snap.width());
-    let inside_y = ((ctx.mi_rows * MI_SIZE) >> ctx.frame_sub_y).min(u_snap.frame_height());
-    let start_x = (ctx.mi_col_start * MI_SIZE) >> ctx.frame_sub_x;
-    let start_y = (ctx.mi_row_start * MI_SIZE) >> ctx.frame_sub_y;
+    let inside_x = ((ctx.mi_cols * MI_SIZE) >> ctx.sub_x).min(u_snap.width());
+    let inside_y = ((ctx.mi_rows * MI_SIZE) >> ctx.sub_y).min(u_snap.frame_height());
+    let start_x = (ctx.mi_col_start * MI_SIZE) >> ctx.sub_x;
+    let start_y = (ctx.mi_row_start * MI_SIZE) >> ctx.sub_y;
     if !(x0 >= start_x + CDEF_TAP_REACH
         && y0 >= start_y + CDEF_TAP_REACH
         && x0 + w - 1 + CDEF_TAP_REACH < inside_x
@@ -828,15 +810,8 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
     } else {
         return Ok(false);
     }
-    let filter = CdefBlockFilter {
-        pri_str: ctx.pri_str,
-        sec_str: ctx.sec_str,
-        damping: ctx.damping,
-        dir: ctx.dir,
-        coeff_shift: ctx.coeff_shift,
-    };
     let mut output = [0u16; CDEF_PAIR_OUTPUT];
-    if !cdef_filter_block_chroma_pair(pad, h, &filter, &mut output) {
+    if !cdef_filter_block_chroma_pair(pad, h, filter, &mut output) {
         return Err(CdefError::Workspace);
     }
     for (row, lanes) in output.chunks_exact(2 * CHROMA_PAIR_SIDE).enumerate() {
@@ -899,32 +874,19 @@ where
     Ok(())
 }
 
-struct CdefFilterCtx {
-    r: usize,
-    c: usize,
-    mi_row_start: usize,
-    mi_col_start: usize,
-    pri_str: i32,
-    sec_str: i32,
-    damping: i32,
-    dir: usize,
-    sub: usize,
-    coeff_shift: u32,
-    max_sample: i32,
-    mi_rows: usize,
-    mi_cols: usize,
-    frame_sub_x: usize,
-    frame_sub_y: usize,
-}
-
 fn compute_cdef_filter_plane<S: ReconSample>(
     snap: FramePlane<'_, S>,
-    ctx: &CdefFilterCtx,
+    ctx: &CdefBlockCtx,
+    chroma: bool,
+    filter: &CdefBlockFilter,
     pad: &mut [u16; CDEF_PADDED_AREA],
     filtered: &mut StripePlane,
 ) -> Result<(), CdefError> {
-    let sub_x = if ctx.sub > 0 { ctx.frame_sub_x } else { 0 };
-    let sub_y = if ctx.sub > 0 { ctx.frame_sub_y } else { 0 };
+    let (sub_x, sub_y) = if chroma {
+        (ctx.sub_x, ctx.sub_y)
+    } else {
+        (0, 0)
+    };
     let x0 = (ctx.c * MI_SIZE) >> sub_x;
     let y0 = (ctx.r * MI_SIZE) >> sub_y;
     let w = (8 >> sub_x).min(snap.width().saturating_sub(x0));
@@ -944,17 +906,17 @@ fn compute_cdef_filter_plane<S: ReconSample>(
 
     if interior {
         gather_interior_pad(snap, pad, x0, y0, w, h)?;
-        return filter_pad_into(filtered, pad, x0, y0, w, h, ctx, false);
+        return filter_pad_into(filtered, pad, x0, y0, w, h, filter, false);
     }
 
     if matches!(w, 4 | 8) {
         gather_boundary_pad(
             snap, pad, x0, y0, w, h, start_x, start_y, inside_x, inside_y,
         )?;
-        return filter_pad_into(filtered, pad, x0, y0, w, h, ctx, true);
+        return filter_pad_into(filtered, pad, x0, y0, w, h, filter, true);
     }
     let mut filtered_block = [0u16; 64];
-    let offsets = CdefTapOffsets::for_direction(ctx.dir);
+    let offsets = CdefTapOffsets::for_direction(filter.dir);
     for i in 0..h {
         for j in 0..w {
             let center = snap
@@ -973,10 +935,10 @@ fn compute_cdef_filter_plane<S: ReconSample>(
             );
             let filtered = cdef_filter_sample(
                 &taps,
-                ctx.pri_str,
-                ctx.sec_str,
-                ctx.damping,
-                ctx.coeff_shift,
+                filter.pri_str,
+                filter.sec_str,
+                filter.damping,
+                filter.coeff_shift,
             );
             filtered_block[i * w + j] = storage_sample(filtered, ctx.max_sample)?;
         }
@@ -1131,22 +1093,15 @@ fn filter_pad_into(
     y0: usize,
     w: usize,
     h: usize,
-    ctx: &CdefFilterCtx,
+    filter: &CdefBlockFilter,
     has_unavailable: bool,
 ) -> Result<(), CdefError> {
-    let filter = CdefBlockFilter {
-        pri_str: ctx.pri_str,
-        sec_str: ctx.sec_str,
-        damping: ctx.damping,
-        dir: ctx.dir,
-        coeff_shift: ctx.coeff_shift,
-    };
     let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
     let (output, stride) = filtered.rect_mut(rect).ok_or(CdefError::Workspace)?;
     let filtered = if has_unavailable {
-        cdef_filter_block_boundary_to_valid_stride(pad, w, h, &filter, output, stride)
+        cdef_filter_block_boundary_to_valid_stride(pad, w, h, filter, output, stride)
     } else {
-        cdef_filter_block_interior_to_valid_stride(pad, w, h, &filter, output, stride)
+        cdef_filter_block_interior_to_valid_stride(pad, w, h, filter, output, stride)
     };
     if filtered {
         Ok(())

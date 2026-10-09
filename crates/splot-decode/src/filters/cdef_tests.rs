@@ -387,27 +387,39 @@ fn assert_cdef_block_matches_per_sample_reference(
     let (x0, y0) = (c * MI_SIZE, r * MI_SIZE);
     for dir in 0..8usize {
         for (pri_str, sec_str) in [(0, 3), (5, 0), (5, 3), (12, 4)] {
-            let ctx = CdefFilterCtx {
+            let ctx = CdefBlockCtx {
                 r,
                 c,
                 mi_row_start: 0,
                 mi_col_start: 0,
-                pri_str,
-                sec_str,
-                damping: 4,
-                dir,
-                sub: 0,
+                params: CdefFrameParams {
+                    y_pri: 0,
+                    y_sec: 0,
+                    uv_pri: 0,
+                    uv_sec: 0,
+                    damping: 4,
+                },
                 coeff_shift: 0,
                 max_sample: 255,
                 mi_rows: 16,
                 mi_cols: 16,
-                frame_sub_x: 1,
-                frame_sub_y: 1,
+                sub_x: 1,
+                sub_y: 1,
+                luma_lossless: false,
+                chroma_lossless: false,
+            };
+            let filter = CdefBlockFilter {
+                pri_str,
+                sec_str,
+                damping: 4,
+                dir,
+                coeff_shift: 0,
             };
             let mut pad = [0u16; CDEF_PADDED_AREA];
             let mut filtered = StripePlane::copy_from(snap, 0, 64).unwrap();
-            compute_cdef_filter_plane::<u8>(snap, &ctx, &mut pad, &mut filtered).unwrap();
-            let offsets = CdefTapOffsets::for_direction(ctx.dir);
+            compute_cdef_filter_plane::<u8>(snap, &ctx, false, &filter, &mut pad, &mut filtered)
+                .unwrap();
+            let offsets = CdefTapOffsets::for_direction(filter.dir);
             for i in 0..8 {
                 for j in 0..8 {
                     let (x, y) = (x0 + j, y0 + i);
@@ -415,10 +427,10 @@ fn assert_cdef_block_matches_per_sample_reference(
                     let taps = gather_taps(snap, &offsets, x, y, 0, 0, 64, 64, center);
                     let expected = cdef_filter_sample(
                         &taps,
-                        ctx.pri_str,
-                        ctx.sec_str,
-                        ctx.damping,
-                        ctx.coeff_shift,
+                        filter.pri_str,
+                        filter.sec_str,
+                        filter.damping,
+                        filter.coeff_shift,
                     )
                     .clamp(0, ctx.max_sample);
                     assert_eq!(
