@@ -495,8 +495,25 @@ fn tiled_luma_ccso(
     luma: (usize, usize),
     tiles: Option<(&[u32], &[u32])>,
 ) -> (Vec<u16>, Vec<u16>) {
+    tiled_ccso::<u16>(params, shift, luma, tiles, 0)
+}
+
+/// Filters luma (`sub == 0`) or 4:2:0 chroma from luma stored as `L`.
+fn tiled_ccso<L: ReconSample>(
+    params: &CcsoPlaneParams,
+    shift: u32,
+    luma: (usize, usize),
+    tiles: Option<(&[u32], &[u32])>,
+    sub: usize,
+) -> (Vec<u16>, Vec<u16>) {
     let (lw, lh) = luma;
+    let (pw, ph) = (lw >> sub, lh >> sub);
+    let plane = sub;
     let curr_luma = asymmetric_luma(lw, lh);
+    let stored_luma: Vec<L> = curr_luma
+        .iter()
+        .map(|&sample| L::try_from_u16(sample).unwrap())
+        .collect();
     let blk = 4usize << shift;
     let grid_cols = lw.div_ceil(blk);
     let grid_rows = lh.div_ceil(blk);
@@ -504,37 +521,72 @@ fn tiled_luma_ccso(
     let grid = CcsoUnitGrid::new(
         true,
         shift,
-        [true, false, false],
-        [vec![1; cells], vec![0; cells], vec![0; cells]],
+        [plane == 0, plane == 1, false],
+        [vec![1; cells], vec![1; cells], vec![0; cells]],
         grid_rows,
         grid_cols,
     )
     .unwrap();
-    let pre: Vec<u16> = (0..lw * lh).map(|i| ((i * 37 + 11) % 251) as u16).collect();
-    let mut destination = StripePlane::from_samples(lw, lh, 0, pre.clone()).unwrap();
-    let prepared =
-        prepare_ccso_plane(0, params, &grid, BitDepth::Eight, (0, 0), Vec::new()).unwrap();
+    let pre: Vec<u16> = (0..pw * ph).map(|i| ((i * 37 + 11) % 251) as u16).collect();
+    let mut destination = StripePlane::from_samples(pw, ph, 0, pre.clone()).unwrap();
+    let prepared = prepare_ccso_plane(
+        plane,
+        params,
+        &grid,
+        BitDepth::Eight,
+        (sub, sub),
+        Vec::new(),
+    )
+    .unwrap();
     ccso_apply(
         &mut destination,
-        FramePlane::window(&curr_luma, lw, lh, 0, lh).unwrap(),
-        0,
+        FramePlane::window(&stored_luma, lw, lh, 0, lh).unwrap(),
+        plane,
         &prepared,
         &grid,
         None,
         tiles,
     )
     .unwrap();
-    let expected = (0..lw * lh)
+    let plane_blk = blk >> sub;
+    let expected = (0..pw * ph)
         .map(|index| {
-            let (x, y) = (index % lw, index / lw);
-            let x_clamp =
-                luma_tile_clamp(tiles.map(|(_, cols)| cols), x / blk * blk / MI_SIZE, lw - 1);
-            let y_clamp =
-                luma_tile_clamp(tiles.map(|(rows, _)| rows), y / blk * blk / MI_SIZE, lh - 1);
-            tile_ref_sample(pre[index], &curr_luma, lw, (x, y), x_clamp, y_clamp, params)
+            let (x, y) = (index % pw, index / pw);
+            let block_mi = |at: usize| ((at / plane_blk * plane_blk) << sub) / MI_SIZE;
+            let x_clamp = luma_tile_clamp(tiles.map(|(_, cols)| cols), block_mi(x), lw - 1);
+            let y_clamp = luma_tile_clamp(tiles.map(|(rows, _)| rows), block_mi(y), lh - 1);
+            let at = (x << sub, y << sub);
+            tile_ref_sample(pre[index], &curr_luma, lw, at, x_clamp, y_clamp, params)
         })
         .collect();
     (destination.samples().to_vec(), expected)
+}
+
+#[test]
+fn ccso_vector_rows_match_reference_for_every_luma_layout() {
+    let tiles: [Option<(&[u32], &[u32])>; 2] = [None, Some((&[0, 4], &[0, 20, 64]))];
+    for ext_filter in 0..7 {
+        let mut planes = vec![
+            edge_plane(ext_filter, false, 2, 36),
+            edge_plane(ext_filter, true, 2, 16),
+        ];
+        let mut bo = bo_plane(1);
+        bo.ccso_max_band_log2 = Some(5);
+        bo.ccso_offset_idx =
+            CcsoOffsets::from_iter_checked((0..32).map(|i| (i % 8) as u8)).unwrap_or_default();
+        planes.push(bo);
+        for params in &planes {
+            for tiles in tiles {
+                for sub in [0, 1] {
+                    let label = format!("ext_filter {ext_filter} sub {sub} tiles {tiles:?}");
+                    let (actual, expected) = tiled_ccso::<u8>(params, 4, (256, 16), tiles, sub);
+                    assert_luma_matches(&actual, &expected, 256 >> sub, &label);
+                    let (wide, _) = tiled_ccso::<u16>(params, 4, (256, 16), tiles, sub);
+                    assert_eq!(wide, actual, "{label}: u16 luma storage");
+                }
+            }
+        }
+    }
 }
 
 fn assert_luma_matches(actual: &[u16], expected: &[u16], lw: usize, label: &str) {
