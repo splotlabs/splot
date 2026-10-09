@@ -161,7 +161,7 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
         let progress = Arc::new(
             crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
         );
-        assert!(progress.begin(&[(0, 7)]));
+        progress.begin(&[(0, 7)]).unwrap();
         poison_progress(&progress);
         let mut lease = progress.direct_stripe(0).unwrap();
         let target = lease.take_target().unwrap();
@@ -244,7 +244,7 @@ fn a_coverage_hole_selects_copy_all_and_replaces_poison_with_cdef() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 8)]));
+    progress.begin(&[(0, 8)]).unwrap();
     poison_progress(&progress);
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
@@ -284,7 +284,7 @@ fn every_post_lr_plane_is_preflighted_before_any_target_mutation() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 8)]));
+    progress.begin(&[(0, 8)]).unwrap();
     poison_progress(&progress);
     let mut lease = progress.direct_stripe(0).unwrap();
     let mut target = lease.take_target().unwrap();
@@ -377,7 +377,7 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 8)]));
+    progress.begin(&[(0, 8)]).unwrap();
     poison_progress(&progress);
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
@@ -510,7 +510,7 @@ fn poison_oracle_exposes_one_suppressed_lr_block_write() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 8)]));
+    progress.begin(&[(0, 8)]).unwrap();
     poison_progress(&progress);
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
@@ -548,7 +548,7 @@ fn direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(workspace.info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 8)]));
+    progress.begin(&[(0, 8)]).unwrap();
     let mut poison_lease = progress.direct_stripe(0).unwrap();
     let mut poison_target = poison_lease.take_target().unwrap();
     poison_target
@@ -603,7 +603,7 @@ fn gdf_active_luma_keeps_the_full_overwrite_initialization() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 8)]));
+    progress.begin(&[(0, 8)]).unwrap();
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let blocks = blocks_for_target(target.get(PlaneId::Y).unwrap(), PlaneId::Y);
@@ -621,7 +621,7 @@ fn terminal_luma_direct_u8_eligibility_keeps_every_non_class_a_fallback() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(workspace_u8.info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 7)]));
+    progress.begin(&[(0, 7)]).unwrap();
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let target = target.get(PlaneId::Y).unwrap();
@@ -661,7 +661,7 @@ fn terminal_luma_direct_u8_eligibility_keeps_every_non_class_a_fallback() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 7)]));
+    progress.begin(&[(0, 7)]).unwrap();
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let target = target.get(PlaneId::Y).unwrap();

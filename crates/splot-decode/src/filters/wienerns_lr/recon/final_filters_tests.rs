@@ -959,7 +959,7 @@ fn apply_luma_lr(
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 16)]));
+    progress.begin(&[(0, 16)]).unwrap();
     let mut poison_lease = progress.direct_stripe(0).unwrap();
     let mut poison_target = poison_lease.take_target().unwrap();
     poison_target
@@ -1019,7 +1019,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
     );
-    assert!(progress.begin(&[(0, 16)]));
+    progress.begin(&[(0, 16)]).unwrap();
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let cdef = crate::filters::cdef::cdef_stripe(

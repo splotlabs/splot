@@ -51,9 +51,7 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
                 None,
             )?),
         };
-        if !progress.begin(ranges) {
-            return Err(lr_pipeline_state_error());
-        }
+        progress.begin(ranges)?;
         Ok(Self { progress, admit })
     }
 

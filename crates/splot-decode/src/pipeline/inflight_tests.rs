@@ -222,7 +222,7 @@ fn settled_failure_does_not_finish_the_wait_before_terminal_publication() {
     let progress = slot.progress().expect("pending progress");
     let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).expect("one-worker pool");
 
-    assert!(progress.begin(&[(0, 2), (2, 4)]));
+    progress.begin(&[(0, 2), (2, 4)]).expect("stripe geometry");
     progress.publish(0);
     assert_eq!(progress.published_luma_rows(), 2);
 
@@ -298,7 +298,7 @@ fn a_failed_writer_closes_the_published_prefix_instead_of_lending_it() {
     let (slot, writer) =
         RefFrameSlot::<u8>::pending(decoded_frame(8, 8).info()).expect("pending slot");
     let progress = slot.progress().expect("a pending slot publishes stripes");
-    assert!(progress.begin(&[(0, 4), (4, 8)]));
+    progress.begin(&[(0, 4), (4, 8)]).expect("stripe geometry");
     progress.publish(0);
     assert_eq!(progress.published_luma_rows(), 4);
     assert!(
@@ -573,7 +573,7 @@ fn retired_publications_keep_their_identity_and_exclude_direct_readers() {
         assert_eq!(Arc::as_ptr(slot.progress.as_ref().unwrap()), progress);
         assert!(!slot.is_settled());
         assert!(slot.progress().unwrap().read().is_none());
-        assert!(writer.progress.begin(&[(0, 8)]));
+        writer.progress.begin(&[(0, 8)]).expect("stripe geometry");
         let lease = writer.progress.direct_stripe(0).unwrap();
         drop(writer);
         assert!(!slot.can_reuse());

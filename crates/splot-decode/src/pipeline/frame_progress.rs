@@ -481,21 +481,25 @@ impl<T: ReconSample> FrameProgress<T> {
     /// the watermark is the end of the contiguous published prefix. A geometry
     /// that does not satisfy that leaves the frame unpublished rather than
     /// letting a consumer read an unwritten row.
-    pub(crate) fn begin(&self, ranges: &[(usize, usize)]) -> bool {
+    pub(crate) fn begin(&self, ranges: &[(usize, usize)]) -> Result<()> {
+        let invalid = crate::filters::wienerns_lr::recon::lr_pipeline_state_error;
         let mut next = 0usize;
         for &(start, end) in ranges {
             if start != next || end <= start {
-                return false;
+                return Err(invalid());
             }
             next = end;
         }
         if self.layout.get().is_some() {
-            return false;
+            return Err(invalid());
         }
         let mut stripes = core::mem::take(&mut *self.spare_stripes.lock());
-        if stripes.try_reserve_exact(ranges.len()).is_err() {
-            return false;
-        }
+        stripes.try_reserve_exact(ranges.len()).map_err(|_| {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "filter stripe layout",
+            }
+        })?;
         stripes.extend(ranges.iter().map(|&(_, end)| StripeProgress {
             end,
             ..StripeProgress::default()
@@ -509,7 +513,7 @@ impl<T: ReconSample> FrameProgress<T> {
             freezing: false,
             prefix: 0,
         };
-        self.layout.set(Mutex::new(layout)).is_ok()
+        self.layout.set(Mutex::new(layout)).map_err(|_| invalid())
     }
 
     pub(crate) fn direct_stripe(

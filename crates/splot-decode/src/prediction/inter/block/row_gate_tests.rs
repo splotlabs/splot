@@ -245,11 +245,10 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
     let (past, _past_writer) = RefFrameSlot::<u8>::pending(frame).expect("pending past");
     let (future, _future_writer) = RefFrameSlot::<u8>::pending(frame).expect("pending future");
     for slot in [&past, &future] {
-        assert!(slot.progress().expect("progress").begin(&[
-            (0, 568),
-            (568, 582),
-            (582, FRAME_HEIGHT)
-        ]));
+        slot.progress()
+            .expect("progress")
+            .begin(&[(0, 568), (568, 582), (582, FRAME_HEIGHT)])
+            .expect("stripe geometry");
         slot.progress().expect("progress").publish(0);
     }
     let references = TipReferencePair {
