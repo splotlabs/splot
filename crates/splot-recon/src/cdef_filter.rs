@@ -392,10 +392,43 @@ const fn cdef_tap_offsets(stride: isize, col_step: isize) -> CdefTapOffsets {
 
 const CDEF_RELATIVE_OFFSETS: CdefTapOffsets = cdef_tap_offsets(CDEF_PADDED_SIDE as isize, 1);
 
-/// [`CDEF_RELATIVE_OFFSETS`] for the interleaved chroma-pair layout: rows are
+/// Scratch index of each direction's twelve taps for the block's first
+/// sample, four primary taps (`[k][sign]`) then eight secondary
+/// (`[k][sign][dirOff]`).
+type CdefTapStarts = [[u8; 12]; 8];
+
+const fn cdef_tap_starts(offsets: &CdefTapOffsets, center: usize) -> CdefTapStarts {
+    let mut starts = [[0; 12]; 8];
+    let mut dir = 0;
+    while dir < 8 {
+        let (primary, secondary) = &offsets[dir];
+        let mut tap = 0;
+        while tap < 2 {
+            let mut sign = 0;
+            while sign < 2 {
+                let center = center as isize;
+                starts[dir][tap * 2 + sign] = (center + primary[tap][sign]) as u8;
+                starts[dir][4 + tap * 4 + sign * 2] = (center + secondary[tap][sign][0]) as u8;
+                starts[dir][5 + tap * 4 + sign * 2] = (center + secondary[tap][sign][1]) as u8;
+                sign += 1;
+            }
+            tap += 1;
+        }
+        dir += 1;
+    }
+    starts
+}
+
+const CDEF_TAP_STARTS: CdefTapStarts =
+    cdef_tap_starts(&CDEF_RELATIVE_OFFSETS, 2 * CDEF_PADDED_SIDE + 2);
+
+/// [`CDEF_TAP_STARTS`] for the interleaved chroma-pair layout: rows are
 /// `CDEF_PAIR_STRIDE` lanes apart and a column displacement moves two lanes
 /// because the two planes alternate.
-const CDEF_PAIR_OFFSETS: CdefTapOffsets = cdef_tap_offsets(CDEF_PAIR_STRIDE as isize, 2);
+const CDEF_PAIR_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
+    &cdef_tap_offsets(CDEF_PAIR_STRIDE as isize, 2),
+    2 * CDEF_PAIR_STRIDE + 4,
+);
 
 /// Two consecutive `W`-lane rows of one tap view as one `V`-lane vector.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
@@ -446,8 +479,9 @@ fn cdef_pair<const W: usize, const V: usize>(first: &[u16; W], second: &[u16; W]
 ///
 /// Each of the twelve taps is bound once per block to a `SPAN`-lane view of
 /// `pad` that starts at its displacement from the block's first sample, so
-/// every row load inside the loop is at a constant offset from a view.
-/// `ROWS` is the most rows the layout holds; rows at or past `h` are computed
+/// every row load inside the loop is at a constant offset from a view. Every
+/// table start already leaves room for a view; clamping it shows the
+/// compiler that the view is in bounds. `ROWS` is the most rows the layout holds; rows at or past `h` are computed
 /// and discarded. With `HAS_UNAVAILABLE`, taps equal to [`CDEF_UNAVAILABLE`]
 /// leave the max unchanged and constrain to zero.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
@@ -466,37 +500,31 @@ fn cdef_filter_rows<
     pad: &[u16; CDEF_PADDED_AREA],
     h: usize,
     filter: &CdefBlockFilter,
-    offsets: &CdefTapOffsets,
+    starts: &CdefTapStarts,
     out: &mut [u16],
     out_stride: usize,
 ) -> Option<()> {
-    let center_start = 2 * STRIDE + CENTER;
-    let view = |rel: isize| -> Option<&[u16; SPAN]> {
-        pad.get(center_start.checked_add_signed(rel)?..)?
+    let starts = &starts[filter.dir & 7];
+    let view = |tap: usize| -> Option<&[u16; SPAN]> {
+        pad.get(usize::from(starts[tap]).min(CDEF_PADDED_AREA - SPAN)..)?
             .first_chunk()
     };
-    let (pri_rel, sec_rel) = &offsets[filter.dir & 7];
-    let center_view = view(0)?;
+    let center_view = pad.get(2 * STRIDE + CENTER..)?.first_chunk()?;
     let pri_views = if PRI {
-        [
-            view(pri_rel[0][0])?,
-            view(pri_rel[0][1])?,
-            view(pri_rel[1][0])?,
-            view(pri_rel[1][1])?,
-        ]
+        [view(0)?, view(1)?, view(2)?, view(3)?]
     } else {
         [center_view; 4]
     };
     let sec_views = if SEC {
         [
-            view(sec_rel[0][0][0])?,
-            view(sec_rel[0][0][1])?,
-            view(sec_rel[0][1][0])?,
-            view(sec_rel[0][1][1])?,
-            view(sec_rel[1][0][0])?,
-            view(sec_rel[1][0][1])?,
-            view(sec_rel[1][1][0])?,
-            view(sec_rel[1][1][1])?,
+            view(4)?,
+            view(5)?,
+            view(6)?,
+            view(7)?,
+            view(8)?,
+            view(9)?,
+            view(10)?,
+            view(11)?,
         ]
     } else {
         [center_view; 8]
@@ -583,24 +611,24 @@ fn cdef_filter_block_rows<
     pad: &[u16; CDEF_PADDED_AREA],
     h: usize,
     filter: &CdefBlockFilter,
-    offsets: &CdefTapOffsets,
+    starts: &CdefTapStarts,
     out: &mut [u16],
     out_stride: usize,
 ) -> Option<()> {
     match (filter.pri_str != 0, filter.sec_str != 0) {
         (true, true) => {
             cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, true, true>(
-                pad, h, filter, offsets, out, out_stride,
+                pad, h, filter, starts, out, out_stride,
             )
         }
         (true, false) => {
             cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, true, false>(
-                pad, h, filter, offsets, out, out_stride,
+                pad, h, filter, starts, out, out_stride,
             )
         }
         (false, true) => {
             cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, false, true>(
-                pad, h, filter, offsets, out, out_stride,
+                pad, h, filter, starts, out, out_stride,
             )
         }
         (false, false) => {
@@ -670,7 +698,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
     out: &mut [u16],
     out_stride: usize,
 ) -> bool {
-    let offsets = &CDEF_RELATIVE_OFFSETS;
+    let starts = &CDEF_TAP_STARTS;
     let h = h.min(8);
     match w.min(8) {
         8 => cdef_filter_block_rows::<
@@ -681,7 +709,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
             2,
             8,
             { 7 * CDEF_PADDED_SIDE + 8 },
-        >(pad, h, filter, offsets, out, out_stride),
+        >(pad, h, filter, starts, out, out_stride),
         4 => cdef_filter_block_rows::<
             4,
             8,
@@ -690,7 +718,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
             2,
             8,
             { 7 * CDEF_PADDED_SIDE + 4 },
-        >(pad, h, filter, offsets, out, out_stride),
+        >(pad, h, filter, starts, out, out_stride),
         _ => None,
     }
     .is_some()
@@ -730,7 +758,7 @@ pub fn cdef_filter_block_chroma_pair(
         pad,
         h,
         filter,
-        &CDEF_PAIR_OFFSETS,
+        &CDEF_PAIR_TAP_STARTS,
         out,
         8,
     )
@@ -1302,6 +1330,21 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn tap_starts_leave_room_for_their_views() {
+        for (starts, span) in [
+            (CDEF_TAP_STARTS, 7 * CDEF_PADDED_SIDE + 8),
+            (CDEF_PAIR_TAP_STARTS, 3 * CDEF_PAIR_STRIDE + 8),
+        ] {
+            assert!(
+                starts
+                    .iter()
+                    .flatten()
+                    .all(|&start| usize::from(start) + span <= CDEF_PADDED_AREA)
+            );
         }
     }
 
