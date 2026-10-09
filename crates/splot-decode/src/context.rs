@@ -94,13 +94,12 @@ impl DecodeContext {
         self.pool.install(|| plan_byte_stream(bytes, &options))
     }
 
-    fn run<R: Read + Seek + Send, T: Send>(
+    fn run<T: Send>(
         &self,
-        mut reader: R,
+        reader: &mut dyn ReadSeek,
         options: &DecodeOptions,
         decode: impl FnOnce(&PreparedStream, &mut dyn ReadSeek) -> Result<T> + Send,
     ) -> Result<T> {
-        let reader: &mut dyn ReadSeek = &mut reader;
         let hashes = self.session.take_record_hashes();
         let mut prepared = self
             .pool
@@ -139,7 +138,15 @@ impl DecodeContext {
     /// failures, worker-pool failures, or reconstruction model errors.
     pub fn decode_hash_report_reader<R: Read + Seek + Send>(
         &self,
-        reader: R,
+        mut reader: R,
+        options: DecodeOptions,
+    ) -> Result<DecodeHashReport> {
+        self.decode_hash_report(&mut reader, options)
+    }
+
+    fn decode_hash_report(
+        &self,
+        reader: &mut dyn ReadSeek,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
         self.run(reader, &options, |prepared, reader| {
@@ -173,9 +180,13 @@ impl DecodeContext {
     /// failures, worker-pool failures, or reconstruction model errors.
     pub fn decode_discard_reader<R: Read + Seek + Send>(
         &self,
-        reader: R,
+        mut reader: R,
         options: DecodeOptions,
     ) -> Result<()> {
+        self.decode_discard(&mut reader, options)
+    }
+
+    fn decode_discard(&self, reader: &mut dyn ReadSeek, options: DecodeOptions) -> Result<()> {
         self.run(reader, &options, |prepared, reader| {
             crate::pipeline::emit_frames_from_prepared(
                 prepared,
@@ -214,11 +225,11 @@ impl DecodeContext {
     /// serialization errors, or caller-writer I/O errors.
     pub fn decode_raw_reader<R: Read + Seek + Send, W: std::io::Write + Send>(
         &self,
-        reader: R,
+        mut reader: R,
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.run(reader, &options, |prepared, reader| {
+        self.run(&mut reader, &options, |prepared, reader| {
             crate::output::raw::write_raw_stream_from_plan(
                 prepared,
                 reader,
@@ -243,9 +254,13 @@ impl DecodeContext {
     /// output-effect errors.
     pub fn decode_raw_discard_reader<R: Read + Seek + Send>(
         &self,
-        reader: R,
+        mut reader: R,
         options: DecodeOptions,
     ) -> Result<()> {
+        self.decode_raw_discard(&mut reader, options)
+    }
+
+    fn decode_raw_discard(&self, reader: &mut dyn ReadSeek, options: DecodeOptions) -> Result<()> {
         self.run(reader, &options, |prepared, reader| {
             crate::output::raw::discard_raw_stream_from_plan(
                 prepared,
@@ -282,11 +297,11 @@ impl DecodeContext {
     /// serialization errors, or caller-writer I/O errors.
     pub fn decode_y4m_reader<R: Read + Seek + Send, W: std::io::Write + Send>(
         &self,
-        reader: R,
+        mut reader: R,
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.run(reader, &options, |prepared, reader| {
+        self.run(&mut reader, &options, |prepared, reader| {
             crate::output::y4m::write_y4m_stream_to_writer(
                 prepared,
                 reader,
