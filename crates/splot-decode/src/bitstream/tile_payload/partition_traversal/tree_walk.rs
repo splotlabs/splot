@@ -216,7 +216,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let sb_row = self.next_sb_row;
         let sb_col = self.next_sb_col;
         if sb_col == self.tile_bounds.mi_col_start {
-            mi_size_state.clear_left_context();
+            mi_size_state.enter_sb_row(sb_row);
         }
         let root = TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, ROOT_HAS_CHROMA);
         self.stack.clear();
@@ -467,10 +467,15 @@ pub(super) fn read_frontier_partition_decision(
     )?;
     let avail_u = tile_bounds.avail_u(call);
     let avail_l = tile_bounds.avail_l(call);
+    // A row outside the window reads past the grid and fails the context.
+    let grid_r = context
+        .mi_size_rows
+        .plane_row(local_r)
+        .unwrap_or(usize::MAX);
     let square_context = SquareSplitContextInput::new(
         call.b_size.index(),
         0,
-        local_r,
+        grid_r,
         local_c,
         avail_u,
         avail_l,

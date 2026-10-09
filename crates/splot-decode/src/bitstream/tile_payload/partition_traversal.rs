@@ -57,6 +57,7 @@ pub(crate) const BLOCK_32X8: usize = 22;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionContextState<'a> {
     mi_sizes: &'a [u8],
+    mi_size_rows: &'a crate::tile::SbRowWindow,
     mi_size_stride: usize,
     left_mi_sizes: [&'a [u8]; 2],
     above_mi_sizes: [&'a [u8]; 2],
@@ -68,6 +69,7 @@ impl<'a> TilePartitionContextState<'a> {
     #[must_use]
     pub(crate) const fn new_at(
         mi_sizes: &'a [u8],
+        mi_size_rows: &'a crate::tile::SbRowWindow,
         mi_size_stride: usize,
         left_mi_sizes: [&'a [u8]; 2],
         above_mi_sizes: [&'a [u8]; 2],
@@ -76,6 +78,7 @@ impl<'a> TilePartitionContextState<'a> {
     ) -> Self {
         Self {
             mi_sizes,
+            mi_size_rows,
             mi_size_stride,
             left_mi_sizes,
             above_mi_sizes,

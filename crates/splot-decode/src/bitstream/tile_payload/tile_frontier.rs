@@ -167,6 +167,7 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
     /// Whether a neighbour grid touched a row its window had already reused.
     pub(crate) fn window_violated(&self) -> bool {
         self.tree.window_violated()
+            || self.mi_size_state.window_violated()
             || self.joint_modes.window_violated()
             || self.uses_mrls.window_violated()
             || self.use_dip.window_violated()
