@@ -1760,7 +1760,6 @@ fn prepare_tip_field(
     if fill_holes {
         fill_tip_holes(field, projection_step, tmvp_unit_size8);
         average_tip_motion(field, average, projection_step, tmvp_unit_size8)?;
-        std::mem::swap(field, average);
     }
     fill_temporal_sampling_gaps(field, projection_step, tmvp_unit_size8);
     Ok(())
@@ -1799,32 +1798,31 @@ fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superbl
     }
 }
 
-/// Averages the § 7.10.4 TIP motion of every sampled cell into `averaged`.
+/// Replaces every sampled cell with its § 7.10.4 TIP motion average.
 ///
-/// The destination is reset rather than resized: above a projection step of one
-/// this writes only the sampled cells, so a reused scratch would carry another
-/// frame's motion in the cells between them, and
+/// An average reads only its own superblock, so each superblock row is
+/// averaged into the one-row `averaged` scratch and then copied back over its
+/// rows. The scratch is cleared per row rather than resized: above a
+/// projection step of one this writes only the sampled cells, so a reused
+/// scratch would carry other motion in the cells between them, and
 /// [`fill_temporal_sampling_gaps`] overwrites those only where the sampled
 /// anchor is valid.
 fn average_tip_motion(
-    field: &ProjectedTemporalMotionField,
+    field: &mut ProjectedTemporalMotionField,
     averaged: &mut ProjectedTemporalMotionField,
     step: usize,
     superblock_size8: usize,
 ) -> crate::Result<()> {
-    let mi_rows = field
-        .height8
-        .checked_mul(2)
-        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-    let mi_cols = field
-        .width8
-        .checked_mul(2)
-        .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+    let state = || crate::DecodeHeaderStateError::InvalidInterTemporalMotionState;
+    let band_rows = superblock_size8.min(field.height8);
+    let mi_rows = band_rows.checked_mul(2).ok_or_else(state)?;
+    let mi_cols = field.width8.checked_mul(2).ok_or_else(state)?;
     averaged.reset(mi_rows, mi_cols)?;
     let width8 = field.width8;
     for block_y in (0..field.height8).step_by(superblock_size8) {
+        let end_y = (block_y + superblock_size8).min(field.height8);
+        averaged.cells.fill(ProjectedTemporalMotionCell::default());
         for block_x in (0..field.width8).step_by(superblock_size8) {
-            let end_y = (block_y + superblock_size8).min(field.height8);
             let end_x = (block_x + superblock_size8).min(field.width8);
             for y8 in (block_y..end_y).step_by(step) {
                 for x8 in (block_x..end_x).step_by(step) {
@@ -1852,7 +1850,7 @@ fn average_tip_motion(
                     if x8 + step < end_x {
                         add(index + step);
                     }
-                    averaged.cells[index] = if count == 0 {
+                    averaged.cells[index - block_y * width8] = if count == 0 {
                         ProjectedTemporalMotionCell::default()
                     } else {
                         ProjectedTemporalMotionCell::new(
@@ -1867,6 +1865,13 @@ fn average_tip_motion(
                 }
             }
         }
+        let rows = block_y * width8..end_y * width8;
+        let band = averaged.cells.get(..rows.len()).ok_or_else(state)?;
+        field
+            .cells
+            .get_mut(rows)
+            .ok_or_else(state)?
+            .copy_from_slice(band);
     }
     Ok(())
 }
