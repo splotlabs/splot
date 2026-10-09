@@ -1565,7 +1565,7 @@ fn subpel_predict_block_compound_average_horizontal_validated<T: ReconSample>(
         (
             &full[start..end],
             start,
-            (start == 0 && end == NUM_TAPS).then(|| slide::intermediate_taps::<u16>(full)),
+            slide::intermediate_taps::<u16>(full),
         )
     });
     let forward = i32::from(cwp_weight);
@@ -1595,22 +1595,19 @@ fn subpel_predict_block_compound_average_horizontal_validated<T: ReconSample>(
             for reference in 0..2 {
                 let (taps, tap_start, full_taps) = filters[reference];
                 let window = windows[reference];
-                predictors[reference] = match full_taps {
-                    Some(full_taps) if Simd::<i32, 8>::admits(window.len(), col) => {
-                        Simd::<i32, 8>::slid_intermediate(window, col, full_taps).cast()
+                predictors[reference] = if Simd::<i32, 8>::admits(window.len(), col) {
+                    Simd::<i32, 8>::slid_intermediate(window, col, full_taps).cast()
+                } else {
+                    let mut sum = predictors[reference];
+                    for (tap_offset, &tap) in taps.iter().enumerate() {
+                        sum = tap_mac(
+                            sum,
+                            Simd::<u16, 8>::from_slice(&window[col + tap_start + tap_offset..])
+                                .cast(),
+                            tap,
+                        );
                     }
-                    _ => {
-                        let mut sum = predictors[reference];
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                Simd::<u16, 8>::from_slice(&window[col + tap_start + tap_offset..])
-                                    .cast(),
-                                tap,
-                            );
-                        }
-                        round2_simd(sum, INTER_ROUND0)
-                    }
+                    round2_simd(sum, INTER_ROUND0)
                 };
             }
             let blended = round2_simd(
@@ -1627,22 +1624,19 @@ fn subpel_predict_block_compound_average_horizontal_validated<T: ReconSample>(
             for reference in 0..2 {
                 let (taps, tap_start, full_taps) = filters[reference];
                 let window = windows[reference];
-                predictors[reference] = match full_taps {
-                    Some(full_taps) if Simd::<i32, 4>::admits(window.len(), col) => {
-                        Simd::<i32, 4>::slid_intermediate(window, col, full_taps).cast()
+                predictors[reference] = if Simd::<i32, 4>::admits(window.len(), col) {
+                    Simd::<i32, 4>::slid_intermediate(window, col, full_taps).cast()
+                } else {
+                    let mut sum = predictors[reference];
+                    for (tap_offset, &tap) in taps.iter().enumerate() {
+                        sum = tap_mac(
+                            sum,
+                            Simd::<u16, 4>::from_slice(&window[col + tap_start + tap_offset..])
+                                .cast(),
+                            tap,
+                        );
                     }
-                    _ => {
-                        let mut sum = predictors[reference];
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                Simd::<u16, 4>::from_slice(&window[col + tap_start + tap_offset..])
-                                    .cast(),
-                                tap,
-                            );
-                        }
-                        round2_simd(sum, INTER_ROUND0)
-                    }
+                    round2_simd(sum, INTER_ROUND0)
                 };
             }
             let blended = round2_simd(
@@ -1763,7 +1757,7 @@ fn fused_compound_average_2d<const LANES: usize>(
         (
             &full[start..end],
             start,
-            (start == 0 && end == NUM_TAPS).then(|| slide::intermediate_taps::<u16>(full)),
+            slide::intermediate_taps::<u16>(full),
         )
     });
     for reference in 0..2 {
@@ -1775,21 +1769,18 @@ fn fused_compound_average_2d<const LANES: usize>(
                 * references[reference].stride
                 + windows[reference]..];
             let (taps, tap_start, full_taps) = horizontal[reference];
-            let lanes = match full_taps {
-                Some(full_taps) if Simd::<i32, LANES>::admits(source.len(), 0) => {
-                    Simd::<i32, LANES>::slid_intermediate(source, 0, full_taps)
+            let lanes = if Simd::<i32, LANES>::admits(source.len(), 0) {
+                Simd::<i32, LANES>::slid_intermediate(source, 0, full_taps)
+            } else {
+                let mut sum = Simd::<i32, LANES>::splat(0);
+                for (offset, &tap) in taps.iter().enumerate() {
+                    sum = tap_mac(
+                        sum,
+                        Simd::<u16, LANES>::from_slice(&source[tap_start + offset..]).cast(),
+                        tap,
+                    );
                 }
-                _ => {
-                    let mut sum = Simd::<i32, LANES>::splat(0);
-                    for (offset, &tap) in taps.iter().enumerate() {
-                        sum = tap_mac(
-                            sum,
-                            Simd::<u16, LANES>::from_slice(&source[tap_start + offset..]).cast(),
-                            tap,
-                        );
-                    }
-                    round2_simd(sum, INTER_ROUND0).cast()
-                }
+                round2_simd(sum, INTER_ROUND0).cast()
             }
             .to_array();
             intermediate[reference][row * LANES..(row + 1) * LANES].copy_from_slice(&lanes); // splot-copy-ok: store horizontal SIMD lanes in caller scratch
@@ -2119,11 +2110,10 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let packed_taps = slide::intermediate_taps::<T>(full_taps);
                 let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
                 let taps = &full_taps[tap_start..tap_end];
-                let full_span = tap_start == 0 && tap_end == NUM_TAPS;
                 let available = window.len();
                 let vector_width16 = w - w % 16;
                 for c in (0..vector_width16).step_by(16) {
-                    let filtered = if full_span && Simd::<i32, 16>::admits(available, c) {
+                    let filtered = if Simd::<i32, 16>::admits(available, c) {
                         Simd::<i32, 16>::slid_intermediate(window, c, packed_taps)
                     } else {
                         let mut sum = Simd::<i32, 16>::splat(0);
@@ -2141,7 +2131,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 }
                 let vector_width8 = w - w % 8;
                 for c in (vector_width16..vector_width8).step_by(8) {
-                    let filtered = if full_span && Simd::<i32, 8>::admits(available, c) {
+                    let filtered = if Simd::<i32, 8>::admits(available, c) {
                         Simd::<i32, 8>::slid_intermediate(window, c, packed_taps)
                     } else {
                         let mut sum = Simd::<i32, 8>::splat(0);
@@ -2159,7 +2149,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 }
                 let vector_width4 = w - w % 4;
                 for c in (vector_width8..vector_width4).step_by(4) {
-                    let filtered = if full_span && Simd::<i32, 4>::admits(available, c) {
+                    let filtered = if Simd::<i32, 4>::admits(available, c) {
                         Simd::<i32, 4>::slid_intermediate(window, c, packed_taps)
                     } else {
                         let mut sum = Simd::<i32, 4>::splat(0);

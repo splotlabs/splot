@@ -354,7 +354,6 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
     let full_taps = &SUBPEL_FILTERS[h_filter][phase];
     let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter][phase];
     let taps = &full_taps[tap_start..tap_end];
-    let full_span = tap_start == 0 && tap_end == NUM_TAPS;
     let packed_taps = slide::intermediate_taps::<T>(full_taps);
     let x_window_start = subpel_horizontal_window_x(reference, params);
     let clamped_window = clipped_edges::ClampedWindow::new(reference, params);
@@ -381,7 +380,7 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
         let available = window.len();
         let vector_width8 = params.w - params.w % 8;
         for c in (0..vector_width8).step_by(8) {
-            let horizontal = if full_span && Simd::<i32, 8>::admits(available, c) {
+            let horizontal = if Simd::<i32, 8>::admits(available, c) {
                 Simd::<i32, 8>::slid_intermediate(window, c, packed_taps).cast()
             } else {
                 let mut sum = Simd::<i32, 8>::splat(0);
@@ -399,7 +398,7 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
         }
         let vector_width4 = params.w - params.w % 4;
         for c in (vector_width8..vector_width4).step_by(4) {
-            let horizontal = if full_span && Simd::<i32, 4>::admits(available, c) {
+            let horizontal = if Simd::<i32, 4>::admits(available, c) {
                 Simd::<i32, 4>::slid_intermediate(window, c, packed_taps).cast()
             } else {
                 let mut sum = Simd::<i32, 4>::splat(0);
