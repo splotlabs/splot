@@ -455,14 +455,11 @@ impl TileIntrabcPreludeState {
         let value = IntrabcGridCell::new(facts)?;
         let area = self.clipped_record_area(row, col, n4w, n4h)?;
         if !area.cols.is_empty() {
-            if let Some(rows) = self
+            if let Some(slide) = self
                 .window
                 .enter(area.rows.start.saturating_sub(self.origin_row))
-                && let Some(stale) = self
-                    .values
-                    .get_mut(rows.start * self.tile_cols..rows.end * self.tile_cols)
             {
-                stale.fill(IntrabcGridCell::default());
+                slide.apply(&mut self.values, self.tile_cols, IntrabcGridCell::default());
             }
             for r in area.rows {
                 let Some(start) = self.index(r, area.cols.start)? else {
