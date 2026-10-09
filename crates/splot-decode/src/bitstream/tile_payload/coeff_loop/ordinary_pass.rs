@@ -17,7 +17,7 @@ use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{CoeffMaxLevelConfig, derive_coeff_max_level};
 use super::quant_pass::{CoeffQuantPassError, validate_coeff_quant_pass_config};
 use super::quant_state::{
-    CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState,
+    CoeffQuantReadInput, CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState,
     apply_derived_nonzero_coeff_quant_state_step,
 };
 use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuantState};
@@ -232,6 +232,9 @@ struct InterleavedSignQuantPassInput<'a> {
     config: CoeffQuantStateConfig,
 }
 
+/// Reads each coefficient's sign and remainder in scan order. A zero level
+/// (outside the hidden-parity DC) has no sign, no remainder and a quant of
+/// 0, which the block already holds, so it only advances the TCQ state.
 fn apply_interleaved_sign_and_quant_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -255,6 +258,12 @@ fn apply_interleaved_sign_and_quant_pass(
 
     for (index, entry) in walk.entries().enumerate() {
         let level = block.level_at(entry.row(), entry.col())?;
+        if level == 0 && !(config.is_hidden && entry.scan_index() == 0) {
+            quant_state
+                .apply_entry(index, entry, false, CoeffQuantReadInput { quant: 0 })
+                .map_err(CoeffQuantPassError::from)?;
+            continue;
+        }
         let sign_input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
         let max_level = derive_coeff_max_level(entry, max_level_config);
         let sign = read_preflighted_nonzero_coeff_sign(cdfs, symbols, sign_input)?;
