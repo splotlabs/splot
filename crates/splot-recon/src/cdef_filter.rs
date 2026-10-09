@@ -478,12 +478,13 @@ fn cdef_pair<const W: usize, const V: usize>(first: &[u16; W], second: &[u16; W]
 /// § 7.18.3 over a padded block, two rows per `V`-lane vector.
 ///
 /// Each of the twelve taps is bound once per block to a `SPAN`-lane view of
-/// `pad` that starts at its displacement from the block's first sample, so
-/// every row load inside the loop is at a constant offset from a view. Every
-/// table start already leaves room for a view; clamping it shows the
-/// compiler that the view is in bounds. `ROWS` is the most rows the layout holds; rows at or past `h` are computed
-/// and discarded. With `HAS_UNAVAILABLE`, taps equal to [`CDEF_UNAVAILABLE`]
-/// leave the max unchanged and constrain to zero.
+/// `pad` that starts at its displacement from the block's first sample. Every
+/// table start already leaves room for a view; clamping it shows the compiler
+/// that the view is in bounds. The row pairs are unrolled, so every row load
+/// is a constant offset from a view. `ROWS` is the most rows the layout
+/// holds; rows at or past `h` are computed and discarded. With
+/// `HAS_UNAVAILABLE`, taps equal to [`CDEF_UNAVAILABLE`] leave the max
+/// unchanged and constrain to zero.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows<
@@ -534,56 +535,62 @@ fn cdef_filter_rows<
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, V>::splat(tap as i16));
     let pri = CdefConstrain::<V>::new(filter.pri_str, filter.damping);
     let sec = CdefConstrain::<V>::new(filter.sec_str, filter.damping);
-    for row in (0..ROWS).step_by(2) {
-        if row >= h {
-            break;
-        }
-        let center = cdef_row_pair::<W, V, STRIDE, SPAN>(center_view, row)?;
-        let mut sum = Simd::<i16, V>::splat(0);
-        let mut min = center;
-        let mut max = center;
-        macro_rules! add_pair {
-            ($first:expr, $second:expr, $constrain:expr, $weight:expr) => {{
-                let first = cdef_row_pair::<W, V, STRIDE, SPAN>($first, row)?;
-                let second = cdef_row_pair::<W, V, STRIDE, SPAN>($second, row)?;
-                if PRI && SEC {
-                    min = min.simd_min(first).simd_min(second);
-                    let unavailable = Simd::splat(CDEF_UNAVAILABLE as i16);
-                    let (first_max, second_max) = if HAS_UNAVAILABLE {
-                        (
-                            first.simd_eq(unavailable).select(center, first),
-                            second.simd_eq(unavailable).select(center, second),
-                        )
-                    } else {
-                        (first, second)
-                    };
-                    max = max.simd_max(first_max).simd_max(second_max);
+    macro_rules! filter_row_pair {
+        ($row:literal) => {{
+            let row: usize = $row;
+            if row < ROWS && row < h {
+                let center = cdef_row_pair::<W, V, STRIDE, SPAN>(center_view, row)?;
+                let mut sum = Simd::<i16, V>::splat(0);
+                let mut min = center;
+                let mut max = center;
+                macro_rules! add_pair {
+                    ($first:expr, $second:expr, $constrain:expr, $weight:expr) => {{
+                        let first = cdef_row_pair::<W, V, STRIDE, SPAN>($first, row)?;
+                        let second = cdef_row_pair::<W, V, STRIDE, SPAN>($second, row)?;
+                        if PRI && SEC {
+                            min = min.simd_min(first).simd_min(second);
+                            let unavailable = Simd::splat(CDEF_UNAVAILABLE as i16);
+                            let (first_max, second_max) = if HAS_UNAVAILABLE {
+                                (
+                                    first.simd_eq(unavailable).select(center, first),
+                                    second.simd_eq(unavailable).select(center, second),
+                                )
+                            } else {
+                                (first, second)
+                            };
+                            max = max.simd_max(first_max).simd_max(second_max);
+                        }
+                        sum += $weight
+                            * ($constrain.apply(first - center) + $constrain.apply(second - center));
+                    }};
                 }
-                sum += $weight
-                    * ($constrain.apply(first - center) + $constrain.apply(second - center));
-            }};
-        }
-        if PRI {
-            add_pair!(pri_views[0], pri_views[1], pri, pri_taps[0]);
-            add_pair!(pri_views[2], pri_views[3], pri, pri_taps[1]);
-        }
-        if SEC {
-            add_pair!(sec_views[0], sec_views[1], sec, sec_taps[0]);
-            add_pair!(sec_views[2], sec_views[3], sec, sec_taps[0]);
-            add_pair!(sec_views[4], sec_views[5], sec, sec_taps[1]);
-            add_pair!(sec_views[6], sec_views[7], sec, sec_taps[1]);
-        }
-        let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
-        let mut filtered = center + ((Simd::splat(8) + sum - negative) >> 4);
-        if PRI && SEC {
-            filtered = filtered.simd_max(min).simd_min(max);
-        }
-        let filtered = filtered.cast::<u16>().to_array();
-        cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(&filtered[..W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
-        if row + 1 < h {
-            cdef_output_row::<W>(out, out_stride, row + 1)?.copy_from_slice(&filtered[W..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
-        }
+                if PRI {
+                    add_pair!(pri_views[0], pri_views[1], pri, pri_taps[0]);
+                    add_pair!(pri_views[2], pri_views[3], pri, pri_taps[1]);
+                }
+                if SEC {
+                    add_pair!(sec_views[0], sec_views[1], sec, sec_taps[0]);
+                    add_pair!(sec_views[2], sec_views[3], sec, sec_taps[0]);
+                    add_pair!(sec_views[4], sec_views[5], sec, sec_taps[1]);
+                    add_pair!(sec_views[6], sec_views[7], sec, sec_taps[1]);
+                }
+                let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
+                let mut filtered = center + ((Simd::splat(8) + sum - negative) >> 4);
+                if PRI && SEC {
+                    filtered = filtered.simd_max(min).simd_min(max);
+                }
+                let filtered = filtered.cast::<u16>().to_array();
+                cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(&filtered[..W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                if row + 1 < h {
+                    cdef_output_row::<W>(out, out_stride, row + 1)?.copy_from_slice(&filtered[W..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                }
+            }
+        }};
     }
+    filter_row_pair!(0);
+    filter_row_pair!(2);
+    filter_row_pair!(4);
+    filter_row_pair!(6);
     Some(())
 }
 
