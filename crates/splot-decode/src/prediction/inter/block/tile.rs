@@ -2156,7 +2156,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         };
         let rects = source.get_mut().reset(info, workers.spare_surfaces());
         rects.clear();
-        if !global_intrabc {
+        if !global_intrabc && splot_parallel::current_pool_width() > 1 {
             superblock_luma_rects_into(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4, rects)?;
         }
         let commit = TileCommit::direct(

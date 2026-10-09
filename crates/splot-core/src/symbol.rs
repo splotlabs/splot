@@ -478,6 +478,7 @@ impl<'a> SymbolDecoder<'a> {
     ///
     /// # Errors
     /// Returns the same errors as [`Self::read_symbol`].
+    #[inline]
     pub fn read_symbol_u16(&mut self, cdf: &mut [u16]) -> Result<Symbol> {
         read_symbol_from_cdf!(self, cdf)
     }
