@@ -417,36 +417,22 @@ struct CurrentFrameResidualTarget<'surface, T: ReconSample> {
 }
 
 impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
+    /// Adds one residual row, which spans at least the clipped target width.
     #[inline]
-    fn add(self, mut residual_at: impl FnMut(usize, usize) -> i32) -> Result<()> {
+    fn add_row(&mut self, row: usize, residual: &[i32]) -> Result<()> {
+        let target_start = self.base + row * self.stride;
+        let samples = &mut self.samples[target_start..target_start + self.rect.width()];
+        debug_assert!(residual.len() >= samples.len());
         let max = i32::from(self.max_sample);
-        for row in 0..self.rect.height() {
-            let target_start = self.base + row * self.stride;
-            add_residual_row(
-                &mut self.samples[target_start..target_start + self.rect.width()],
-                row,
-                max,
-                &mut residual_at,
-            )?;
+        for (sample, &residual) in samples.iter_mut().zip(residual) {
+            let value = i32::from(sample.to_u16())
+                .saturating_add(residual)
+                .clamp(0, max) as u16;
+            debug_assert!(value <= T::MAX_VALUE);
+            *sample = T::try_from_u16(value)?;
         }
         Ok(())
     }
-}
-
-fn add_residual_row<T: ReconSample>(
-    samples: &mut [T],
-    row: usize,
-    max: i32,
-    residual_at: &mut impl FnMut(usize, usize) -> i32,
-) -> Result<()> {
-    for (column, sample) in samples.iter_mut().enumerate() {
-        let value = i32::from(sample.to_u16())
-            .saturating_add(residual_at(row, column))
-            .clamp(0, max) as u16;
-        debug_assert!(value <= T::MAX_VALUE);
-        *sample = T::try_from_u16(value)?;
-    }
-    Ok(())
 }
 
 impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
@@ -676,8 +662,14 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     ) -> Result<()> {
         let rect = checked_sample_block_rect(plane, x, y, size, residual.len())?;
         let source_stride = size.width();
-        self.residual_rect_target(plane, rect, source_stride)?
-            .add(|row, column| residual[row * source_stride + column])
+        let mut target = self.residual_rect_target(plane, rect, source_stride)?;
+        let rows = residual
+            .chunks_exact(source_stride)
+            .take(target.rect.height());
+        for (row, residual) in rows.enumerate() {
+            target.add_row(row, residual)?;
+        }
+        Ok(())
     }
 
     /// Adds an adjusted-size signed residual block directly to reconstructed
@@ -720,10 +712,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         }
         let rect = block_rect(x, y, size)?;
         let source_stride = size.width();
-        self.residual_rect_target(plane, rect, source_stride)?
-            .add(|row, column| {
-                residual[(row >> height_shift) * adjusted_width + (column >> width_shift)]
-            })
+        let mut target = self.residual_rect_target(plane, rect, source_stride)?;
+        let mut duplicated = [0i32; 64];
+        for row in 0..target.rect.height() {
+            let source = &residual[(row >> height_shift) * adjusted_width..][..adjusted_width];
+            if width_shift == 0 {
+                target.add_row(row, source)?;
+                continue;
+            }
+            for (pair, &value) in duplicated.chunks_exact_mut(2).zip(source) {
+                pair.fill(value);
+            }
+            target.add_row(row, &duplicated)?;
+        }
+        Ok(())
     }
 
     /// Adds one constant signed residual directly to a rectangular block.
@@ -746,8 +748,12 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         residual: i32,
     ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
-        self.residual_rect_target(plane, rect, size.width())?
-            .add(|_, _| residual)
+        let mut target = self.residual_rect_target(plane, rect, size.width())?;
+        let constant = [residual; 64];
+        for row in 0..target.rect.height() {
+            target.add_row(row, &constant)?;
+        }
+        Ok(())
     }
 
     #[inline]
