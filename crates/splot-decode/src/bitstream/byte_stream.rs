@@ -304,8 +304,8 @@ pub(crate) struct InputScratch {
 /// Reads IVF frame records again during decode, one record at a time, into
 /// reused buffers that the tasks parsing a record's frames share. Planning
 /// already checked the container, so a short read here is the end of input,
-/// and a record past the planned end or the planned OBU count means the input
-/// changed between passes.
+/// and a record past the planned end, or one whose bytes differ from what
+/// planning hashed, means the input changed between passes.
 pub(crate) struct IvfRecords<'r> {
     reader: &'r mut dyn ReadSeek,
     position: u64,
