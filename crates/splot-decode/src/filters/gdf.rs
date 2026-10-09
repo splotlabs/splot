@@ -375,23 +375,38 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                 &mut scratch.gradient_pairs,
                 &mut scratch.gradient_tmp,
             )?;
-            if !config.per_block
-                && lossless_grid.is_none()
-                && segment_width.is_multiple_of(MI_SIZE)
-                && height.is_multiple_of(2)
-            {
-                compute_enabled_segment(
-                    &source,
-                    post_lr_luma.samples_mut(),
-                    &scratch.classes,
-                    &stripe_block,
-                    band_origin,
-                )?;
-                continue;
-            }
             let segment_end = segment_x
                 .checked_add(segment_width)
                 .ok_or_else(gdf_state_error)?;
+            if lossless_grid.is_none() {
+                let Some(grid) = block_grid.filter(|_| config.per_block) else {
+                    compute_enabled_segment(
+                        &source,
+                        post_lr_luma.samples_mut(),
+                        &scratch.classes,
+                        &stripe_block,
+                        band_origin,
+                        0..segment_width,
+                    )?;
+                    continue;
+                };
+                let mut x = segment_x;
+                while x < segment_end {
+                    let next = ((x / grid.block_size + 1) * grid.block_size).min(segment_end);
+                    if grid.enabled(stripe_row, x).ok_or_else(gdf_state_error)? {
+                        compute_enabled_segment(
+                            &source,
+                            post_lr_luma.samples_mut(),
+                            &scratch.classes,
+                            &stripe_block,
+                            band_origin,
+                            x - segment_x..next - segment_x,
+                        )?;
+                    }
+                    x = next;
+                }
+                continue;
+            }
             let class_cols = segment_width >> 1;
             for local_y in (0..height).step_by(MI_SIZE) {
                 let block_y = y + local_y;
@@ -599,10 +614,11 @@ fn compute_enabled_segment(
     classes: &[GdfClass],
     block: &GdfBlock,
     source_origin: (usize, usize),
+    cols: core::ops::Range<usize>,
 ) -> Result<()> {
     let geometry_error = || gdf_state_error();
     let source_error = gdf_state_error;
-    if !block.height.is_multiple_of(2) {
+    if !block.height.is_multiple_of(2) || cols.end > block.width {
         return Err(geometry_error());
     }
     let class_cols = block.width >> 1;
@@ -617,8 +633,8 @@ fn compute_enabled_segment(
             .checked_mul(block.frame_width)
             .and_then(|row| row.checked_add(block.x))
             .ok_or_else(geometry_error)?;
-        let mut local_x = 0;
-        while local_x < block.width {
+        let mut local_x = cols.start;
+        while local_x < cols.end {
             let output_start = output_row.checked_add(local_x).ok_or_else(geometry_error)?;
             let next_output_start = output_start
                 .checked_add(block.frame_width)
@@ -626,7 +642,7 @@ fn compute_enabled_segment(
             let class_start = class_row
                 .checked_add(local_x >> 1)
                 .ok_or_else(geometry_error)?;
-            if block.width - local_x >= 16 {
+            if cols.end - local_x >= 16 {
                 let uniform_classes = classes
                     .get(class_start..class_start + 8)
                     .and_then(|classes| <&[GdfClass; 8]>::try_from(classes).ok())
@@ -657,7 +673,7 @@ fn compute_enabled_segment(
                     continue;
                 }
             }
-            if block.width - local_x >= 8 {
+            if cols.end - local_x >= 8 {
                 let base_values = exact_slice(base_luma, output_start, 8)
                     .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
                     .copied()
@@ -690,6 +706,37 @@ fn compute_enabled_segment(
                 base_luma[next_output_start..next_output_start + 8].copy_from_slice(&filtered[1]);
                 local_x += 8;
                 continue;
+            }
+            if cols.end - local_x < MI_SIZE {
+                let last_col = source_origin.0 + cols.end + GDF_READ_RADIUS - 1;
+                let window_end = (source_origin.1 + row + GDF_READ_RADIUS) * source.stride;
+                if source_origin.0 < GDF_READ_RADIUS
+                    || source_origin.1 < GDF_READ_RADIUS
+                    || last_col >= source.stride
+                    || window_end + last_col >= source.samples.len()
+                {
+                    return Err(source_error());
+                }
+                for sample_row in row..row + 2 {
+                    for col in local_x..cols.end {
+                        let class = *classes
+                            .get(class_start + ((col - local_x) >> 1))
+                            .ok_or_else(geometry_error)?;
+                        let sample = gdf_sample(
+                            base_luma,
+                            source,
+                            &tap_offsets,
+                            block,
+                            sample_row,
+                            col,
+                            (source_origin.0 + col, source_origin.1 + sample_row),
+                            class,
+                        );
+                        let output = sample_row * block.frame_width + block.x + col;
+                        *base_luma.get_mut(output).ok_or_else(source_error)? = sample;
+                    }
+                }
+                break;
             }
             let base_values = exact_slice(base_luma, output_start, MI_SIZE)
                 .and_then(|samples| <&[u16; MI_SIZE]>::try_from(samples).ok())

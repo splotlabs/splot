@@ -247,3 +247,61 @@ fn width_four_row_matches_legacy_samples_for_all_tables_and_classes() {
         }
     }
 }
+
+#[test]
+fn segment_columns_with_two_wide_tail_match_scalar_samples() {
+    let (width, height) = (22, 2);
+    let stride = width + GDF_READ_RADIUS * 2;
+    let samples: Vec<u16> = (0..stride * (height + GDF_READ_RADIUS * 2))
+        .map(|index| ((index * 73 + index / stride * 29) % 256) as u16)
+        .collect();
+    let radius = GDF_READ_RADIUS as isize;
+    let source = GdfSource {
+        samples: &samples,
+        stride,
+        origin_x: -radius,
+        origin_y: -radius,
+    };
+    let block = GdfBlock {
+        x: 0,
+        y: 0,
+        width,
+        height,
+        frame_width: width,
+        frame_height: height,
+        base_origin_y: 0,
+        bit_depth: BitDepth::Eight,
+        qp_idx: 1,
+        ref_dst_idx: 0,
+        pix_scale: 2,
+        max_sample: 255,
+    };
+    let classes: Vec<GdfClass> = (0..width / 2)
+        .map(|col| GdfClass::new(if col < 8 { 1 } else { (col % 4) as u8 }, 37 * col as i32))
+        .collect();
+    let base: Vec<u16> = (0..width * height)
+        .map(|index| ((index * 61) % 255) as u16)
+        .collect();
+    let tap_offsets = gdf_tap_offsets(stride).expect("valid tap offsets");
+    let origin = (GDF_READ_RADIUS, GDF_READ_RADIUS);
+    let mut expected = base.clone();
+    for row in 0..height {
+        for col in 0..width {
+            let position = (origin.0 + col, origin.1 + row);
+            expected[row * width + col] = gdf_sample(
+                &base,
+                &source,
+                &tap_offsets,
+                &block,
+                row,
+                col,
+                position,
+                classes[col >> 1],
+            );
+        }
+    }
+    let mut actual = base;
+    let result = compute_enabled_segment(&source, &mut actual, &classes, &block, origin, 0..width);
+    assert!(result.is_ok());
+    assert_eq!(actual, expected);
+}
