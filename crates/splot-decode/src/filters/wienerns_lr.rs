@@ -270,26 +270,29 @@ fn write_cdef_skip_record(
     written: &mut [bool],
     populated: &mut usize,
 ) -> ReconResult<()> {
-    for_each_wienerns_lr_tx_skip_record_cell(rows, cols, record, |index| {
-        let actual = values.len().min(written.len());
-        let Some((value, was_written)) = values.get_mut(index).zip(written.get_mut(index)) else {
-            return Err(ReconError::BufferLengthMismatch {
-                expected: index.saturating_add(1),
-                actual,
-            });
-        };
-        if !*was_written {
-            *value = record.skip_flag;
-            *was_written = true;
-            *populated = populated
-                .checked_add(1)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "CDEF skip populated sample count",
-                })?;
-        } else if *value != record.skip_flag {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "LrTxSkip conflicting transform records",
-            });
+    for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
+        for index in cells {
+            let actual = values.len().min(written.len());
+            let Some((value, was_written)) = values.get_mut(index).zip(written.get_mut(index))
+            else {
+                return Err(ReconError::BufferLengthMismatch {
+                    expected: index.saturating_add(1),
+                    actual,
+                });
+            };
+            if !*was_written {
+                *value = record.skip_flag;
+                *was_written = true;
+                *populated = populated
+                    .checked_add(1)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "CDEF skip populated sample count",
+                    })?;
+            } else if *value != record.skip_flag {
+                return Err(ReconError::PcWienerInvalidBounds {
+                    field: "LrTxSkip conflicting transform records",
+                });
+            }
         }
         Ok(())
     })
@@ -353,35 +356,49 @@ fn write_wienerns_lr_tx_skip_record(
     values: &mut [u8],
     populated: &mut usize,
 ) -> ReconResult<()> {
-    for_each_wienerns_lr_tx_skip_record_cell(rows, cols, record, |index| {
+    for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
         let actual = values.len();
-        let Some(slot) = values.get_mut(index) else {
+        let Some(slots) = values.get_mut(cells.clone()) else {
             return Err(ReconError::BufferLengthMismatch {
-                expected: index.saturating_add(1),
+                expected: cells.start.max(actual).saturating_add(1),
                 actual,
             });
         };
-        if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
-            *slot = value;
-            *populated = populated
-                .checked_add(1)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "LrTxSkip populated sample count",
-                })?;
-        } else if *slot != value {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "LrTxSkip conflicting transform records",
-            });
-        }
+        let unwritten = if slots
+            .iter()
+            .all(|&slot| slot == WIENERNS_LR_TX_SKIP_UNWRITTEN)
+        {
+            slots.fill(value);
+            slots.len()
+        } else {
+            let mut unwritten = 0;
+            for slot in slots {
+                if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
+                    *slot = value;
+                    unwritten += 1;
+                } else if *slot != value {
+                    return Err(ReconError::PcWienerInvalidBounds {
+                        field: "LrTxSkip conflicting transform records",
+                    });
+                }
+            }
+            unwritten
+        };
+        *populated = populated
+            .checked_add(unwritten)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "LrTxSkip populated sample count",
+            })?;
         Ok(())
     })
 }
 
-fn for_each_wienerns_lr_tx_skip_record_cell(
+/// Visits the clipped grid index range of each `record` row.
+fn for_each_wienerns_lr_tx_skip_record_row(
     rows: usize,
     cols: usize,
     record: &WienerNsLrTxSkipTransformRecord,
-    mut visit: impl FnMut(usize) -> ReconResult<()>,
+    mut visit: impl FnMut(core::ops::Range<usize>) -> ReconResult<()>,
 ) -> ReconResult<()> {
     if record.rows == 0 || record.cols == 0 {
         return Err(ReconError::PcWienerInvalidBounds {
@@ -411,10 +428,10 @@ fn for_each_wienerns_lr_tx_skip_record_cell(
     let end_col = nominal_end_col.min(cols);
 
     for row in record.row..end_row {
-        for col in record.col..end_col {
-            let index = wienerns_lr_tx_skip_grid_index(row, col, cols)?;
-            visit(index)?;
-        }
+        visit(
+            wienerns_lr_tx_skip_grid_index(row, record.col, cols)?
+                ..wienerns_lr_tx_skip_grid_index(row, end_col, cols)?,
+        )?;
     }
     Ok(())
 }
