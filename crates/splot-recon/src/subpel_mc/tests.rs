@@ -1042,6 +1042,15 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
                     };
                     let (first_x, last_x, first_y, last_y) = if fixed_window {
                         (base_x + 1, base_x + 15, base_y + 1, base_y + 15)
+                    } else if case % 5 == 3 {
+                        let x = |x: i32| x.clamp(0, ref_w as i32 - 1);
+                        let y = |y: i32| y.clamp(0, ref_h as i32 - 1);
+                        (
+                            x(base_x - 1),
+                            x(base_x + w as i32 + 1),
+                            y(base_y - 1),
+                            y(base_y + h as i32 + 1),
+                        )
                     } else {
                         (0, ref_w as i32 - 1, 0, ref_h as i32 - 1)
                     };

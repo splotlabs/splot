@@ -322,14 +322,23 @@ pub(super) fn subpel_direct_copy_x<T: ReconSample>(
         })
 }
 
+/// Returns the plane column of an unscaled block's `w + 7`-sample tap window
+/// when the whole window lies inside the plane row and every tap the phase
+/// actually uses lies inside `[firstX, lastX]`.
 pub(super) fn subpel_horizontal_window_x<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> Option<usize> {
+    let filter = params.interp.pass_index(params.w as u32) as usize;
+    let phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
+    let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][phase];
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-    (x0 - 3 >= params.first_x.max(0)
-        && x0 + params.w as i32 + 3 <= params.last_x.min(reference.width as i32 - 1))
-    .then(|| (x0 - 3) as usize)
+    let w = params.w as i32;
+    (x0 >= 3
+        && x0 + w + 3 < reference.width as i32
+        && x0 - 3 + tap_start as i32 >= params.first_x
+        && x0 + w + tap_end as i32 - 5 <= params.last_x)
+        .then(|| (x0 - 3) as usize)
 }
 
 pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
