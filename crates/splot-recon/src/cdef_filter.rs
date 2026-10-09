@@ -446,18 +446,13 @@ pub struct CdefBlockFilter {
     pub coeff_shift: u32,
 }
 
-type CdefPrimaryStarts = [[usize; 2]; 2];
-type CdefSecondaryStarts = [[[usize; 2]; 2]; 2];
 type CdefPrimaryOffsets = [[isize; 2]; 2];
 type CdefSecondaryOffsets = [[[isize; 2]; 2]; 2];
-type CdefRowStarts = [(CdefPrimaryStarts, CdefSecondaryStarts); 8];
+type CdefTapOffsets = [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8];
 
-const fn cdef_relative_offset(direction: usize, tap: usize, sign: i32) -> isize {
-    let [dy, dx] = CDEF_DIRECTIONS[direction & 7][tap];
-    (sign * dy) as isize * CDEF_PADDED_SIDE as isize + (sign * dx) as isize
-}
-
-const CDEF_RELATIVE_OFFSETS: [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8] = {
+/// Tap displacements for every direction in a padded layout `stride` lanes per
+/// row whose column step is `col_step` lanes.
+const fn cdef_tap_offsets(stride: isize, col_step: isize) -> CdefTapOffsets {
     let mut offsets = [([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8];
     let mut dir = 0;
     while dir < 8 {
@@ -466,9 +461,18 @@ const CDEF_RELATIVE_OFFSETS: [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8] = {
             let mut sign_index = 0;
             while sign_index < 2 {
                 let sign = if sign_index == 0 { -1 } else { 1 };
-                offsets[dir].0[tap][sign_index] = cdef_relative_offset(dir, tap, sign);
-                offsets[dir].1[tap][sign_index][0] = cdef_relative_offset(dir + 6, tap, sign);
-                offsets[dir].1[tap][sign_index][1] = cdef_relative_offset(dir + 2, tap, sign);
+                let mut slot = 0;
+                while slot < 3 {
+                    let rotated = [dir, dir + 6, dir + 2][slot];
+                    let [dy, dx] = CDEF_DIRECTIONS[rotated & 7][tap];
+                    let offset = (sign * dy) as isize * stride + (sign * dx) as isize * col_step;
+                    if slot == 0 {
+                        offsets[dir].0[tap][sign_index] = offset;
+                    } else {
+                        offsets[dir].1[tap][sign_index][slot - 1] = offset;
+                    }
+                    slot += 1;
+                }
                 sign_index += 1;
             }
             tap += 1;
@@ -476,88 +480,175 @@ const CDEF_RELATIVE_OFFSETS: [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8] = {
         dir += 1;
     }
     offsets
-};
+}
 
-const CDEF_ROW_STARTS: [CdefRowStarts; 8] = {
-    let mut starts = [[([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8]; 8];
-    let mut dir = 0;
-    while dir < 8 {
-        let mut row = 0;
-        while row < 8 {
-            let center = (row + 2) * CDEF_PADDED_SIDE + 2;
-            let mut tap = 0;
-            while tap < 2 {
-                let mut sign = 0;
-                while sign < 2 {
-                    starts[dir][row].0[tap][sign] =
-                        (center as isize + CDEF_RELATIVE_OFFSETS[dir].0[tap][sign]) as usize;
-                    let mut secondary = 0;
-                    while secondary < 2 {
-                        starts[dir][row].1[tap][sign][secondary] = (center as isize
-                            + CDEF_RELATIVE_OFFSETS[dir].1[tap][sign][secondary])
-                            as usize;
-                        secondary += 1;
-                    }
-                    sign += 1;
-                }
-                tap += 1;
-            }
-            row += 1;
+const CDEF_RELATIVE_OFFSETS: CdefTapOffsets = cdef_tap_offsets(CDEF_PADDED_SIDE as isize, 1);
+
+/// [`CDEF_RELATIVE_OFFSETS`] for the interleaved chroma-pair layout: rows are
+/// `CDEF_PAIR_STRIDE` lanes apart and a column displacement moves two lanes
+/// because the two planes alternate.
+const CDEF_PAIR_OFFSETS: CdefTapOffsets = cdef_tap_offsets(CDEF_PAIR_STRIDE as isize, 2);
+
+/// Two consecutive `W`-lane rows of one tap view as one `V`-lane vector.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_row_pair<const W: usize, const V: usize, const STRIDE: usize, const SPAN: usize>(
+    view: &[u16; SPAN],
+    row: usize,
+) -> Option<Simd<i16, V>> {
+    let first = view.get(row * STRIDE..)?.first_chunk::<W>()?;
+    let second = view.get((row + 1) * STRIDE..)?.first_chunk::<W>()?;
+    Some(Simd::from_array(cdef_pair::<W, V>(first, second)).cast())
+}
+
+/// Per-block § 7.18.3 `constrain` threshold and damping shift, splatted once.
+#[derive(Clone, Copy)]
+struct CdefConstrain<const V: usize> {
+    threshold: Simd<u16, V>,
+    shift: Simd<u16, V>,
+}
+
+impl<const V: usize> CdefConstrain<V> {
+    fn new(threshold: i32, damping: i32) -> Self {
+        Self {
+            threshold: Simd::splat(threshold as u16),
+            shift: Simd::splat(constrain_damping_adj(threshold, damping) as u16),
         }
-        dir += 1;
     }
-    starts
-};
 
-/// [`CDEF_ROW_STARTS`] for the interleaved chroma-pair layout: rows are
-/// `CDEF_PAIR_STRIDE` lanes apart, the block starts at lane 4, and a column
-/// displacement moves two lanes because the two planes alternate.
-const CDEF_PAIR_ROW_STARTS: [CdefRowStarts; 8] = {
-    let mut starts = [[([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8]; 8];
-    let mut dir = 0;
-    while dir < 8 {
-        let mut row = 0;
-        while row < 8 {
-            let center = (row + 2) * CDEF_PAIR_STRIDE + 4;
-            let mut tap = 0;
-            while tap < 2 {
-                let mut sign = 0;
-                while sign < 2 {
-                    let signed = if sign == 0 { -1 } else { 1 };
-                    starts[dir][row].0[tap][sign] =
-                        (center as isize + cdef_pair_offset(dir, tap, signed)) as usize;
-                    let mut secondary = 0;
-                    while secondary < 2 {
-                        let rotation = if secondary == 0 { 6 } else { 2 };
-                        starts[dir][row].1[tap][sign][secondary] = (center as isize
-                            + cdef_pair_offset(dir + rotation, tap, signed))
-                            as usize;
-                        secondary += 1;
-                    }
-                    sign += 1;
-                }
-                tap += 1;
-            }
-            row += 1;
-        }
-        dir += 1;
+    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[inline(always)]
+    fn apply(self, diff: Simd<i16, V>) -> Simd<i16, V> {
+        let clip = self
+            .threshold
+            .saturating_sub(diff.abs().cast::<u16>() >> self.shift)
+            .cast::<i16>();
+        diff.simd_min(clip).simd_max(-clip)
     }
-    starts
-};
-
-const fn cdef_pair_offset(direction: usize, tap: usize, sign: i32) -> isize {
-    let [dy, dx] = CDEF_DIRECTIONS[direction & 7][tap];
-    (sign * dy) as isize * CDEF_PAIR_STRIDE as isize + (sign * dx) as isize * 2
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn cdef_padded_row<const W: usize>(
+fn cdef_pair<const W: usize, const V: usize>(first: &[u16; W], second: &[u16; W]) -> [u16; V] {
+    debug_assert_eq!(V, W * 2);
+    core::array::from_fn(|i| if i < W { first[i] } else { second[i - W] })
+}
+
+/// § 7.18.3 over a padded block, two rows per `V`-lane vector.
+///
+/// Each of the twelve taps is bound once per block to a `SPAN`-lane view of
+/// `pad` that starts at its displacement from the block's first sample, so
+/// every row load inside the loop is at a constant offset from a view.
+/// `ROWS` is the most rows the layout holds; rows at or past `h` are computed
+/// and discarded. With `HAS_UNAVAILABLE`, taps equal to [`CDEF_UNAVAILABLE`]
+/// leave the max unchanged and constrain to zero.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_filter_rows<
+    const W: usize,
+    const V: usize,
+    const HAS_UNAVAILABLE: bool,
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const SPAN: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
     pad: &[u16; CDEF_PADDED_AREA],
-    start: usize,
-) -> Option<&[u16; W]> {
-    let end = start.checked_add(W)?;
-    pad.get(start..end)?.try_into().ok()
+    h: usize,
+    filter: &CdefBlockFilter,
+    offsets: &CdefTapOffsets,
+    out: &mut [u16],
+    out_stride: usize,
+) -> Option<()> {
+    let center_start = 2 * STRIDE + CENTER;
+    let view = |rel: isize| -> Option<&[u16; SPAN]> {
+        pad.get(center_start.checked_add_signed(rel)?..)?
+            .first_chunk()
+    };
+    let (pri_rel, sec_rel) = &offsets[filter.dir & 7];
+    let center_view = view(0)?;
+    let pri_views = if PRI {
+        [
+            view(pri_rel[0][0])?,
+            view(pri_rel[0][1])?,
+            view(pri_rel[1][0])?,
+            view(pri_rel[1][1])?,
+        ]
+    } else {
+        [center_view; 4]
+    };
+    let sec_views = if SEC {
+        [
+            view(sec_rel[0][0][0])?,
+            view(sec_rel[0][0][1])?,
+            view(sec_rel[0][1][0])?,
+            view(sec_rel[0][1][1])?,
+            view(sec_rel[1][0][0])?,
+            view(sec_rel[1][0][1])?,
+            view(sec_rel[1][1][0])?,
+            view(sec_rel[1][1][1])?,
+        ]
+    } else {
+        [center_view; 8]
+    };
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, V>::splat(tap as i16));
+    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, V>::splat(tap as i16));
+    let pri = CdefConstrain::<V>::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain::<V>::new(filter.sec_str, filter.damping);
+    for row in (0..ROWS).step_by(2) {
+        if row >= h {
+            break;
+        }
+        let center = cdef_row_pair::<W, V, STRIDE, SPAN>(center_view, row)?;
+        let mut sum = Simd::<i16, V>::splat(0);
+        let mut min = center;
+        let mut max = center;
+        macro_rules! add_pair {
+            ($first:expr, $second:expr, $constrain:expr, $weight:expr) => {{
+                let first = cdef_row_pair::<W, V, STRIDE, SPAN>($first, row)?;
+                let second = cdef_row_pair::<W, V, STRIDE, SPAN>($second, row)?;
+                if PRI && SEC {
+                    min = min.simd_min(first).simd_min(second);
+                    let unavailable = Simd::splat(CDEF_UNAVAILABLE as i16);
+                    let (first_max, second_max) = if HAS_UNAVAILABLE {
+                        (
+                            first.simd_eq(unavailable).select(center, first),
+                            second.simd_eq(unavailable).select(center, second),
+                        )
+                    } else {
+                        (first, second)
+                    };
+                    max = max.simd_max(first_max).simd_max(second_max);
+                }
+                sum += $weight
+                    * ($constrain.apply(first - center) + $constrain.apply(second - center));
+            }};
+        }
+        if PRI {
+            add_pair!(pri_views[0], pri_views[1], pri, pri_taps[0]);
+            add_pair!(pri_views[2], pri_views[3], pri, pri_taps[1]);
+        }
+        if SEC {
+            add_pair!(sec_views[0], sec_views[1], sec, sec_taps[0]);
+            add_pair!(sec_views[2], sec_views[3], sec, sec_taps[0]);
+            add_pair!(sec_views[4], sec_views[5], sec, sec_taps[1]);
+            add_pair!(sec_views[6], sec_views[7], sec, sec_taps[1]);
+        }
+        let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
+        let mut filtered = center + ((Simd::splat(8) + sum - negative) >> 4);
+        if PRI && SEC {
+            filtered = filtered.simd_max(min).simd_min(max);
+        }
+        let filtered = filtered.cast::<u16>().to_array();
+        cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(&filtered[..W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+        if row + 1 < h {
+            cdef_output_row::<W>(out, out_stride, row + 1)?.copy_from_slice(&filtered[W..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+        }
+    }
+    Some(())
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
@@ -570,310 +661,49 @@ fn cdef_output_row<const W: usize>(
     out.get_mut(row.checked_mul(stride)?..)?.first_chunk_mut()
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_primary_rows<'a, const W: usize>(
-    pad: &'a [u16; CDEF_PADDED_AREA],
-    starts: &CdefPrimaryStarts,
-) -> Option<[[&'a [u16; W]; 2]; 2]> {
-    Some([
-        [
-            cdef_padded_row(pad, starts[0][0])?,
-            cdef_padded_row(pad, starts[0][1])?,
-        ],
-        [
-            cdef_padded_row(pad, starts[1][0])?,
-            cdef_padded_row(pad, starts[1][1])?,
-        ],
-    ])
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_secondary_rows<'a, const W: usize>(
-    pad: &'a [u16; CDEF_PADDED_AREA],
-    starts: &CdefSecondaryStarts,
-) -> Option<[[[&'a [u16; W]; 2]; 2]; 2]> {
-    Some([
-        [
-            [
-                cdef_padded_row(pad, starts[0][0][0])?,
-                cdef_padded_row(pad, starts[0][0][1])?,
-            ],
-            [
-                cdef_padded_row(pad, starts[0][1][0])?,
-                cdef_padded_row(pad, starts[0][1][1])?,
-            ],
-        ],
-        [
-            [
-                cdef_padded_row(pad, starts[1][0][0])?,
-                cdef_padded_row(pad, starts[1][0][1])?,
-            ],
-            [
-                cdef_padded_row(pad, starts[1][1][0])?,
-                cdef_padded_row(pad, starts[1][1][1])?,
-            ],
-        ],
-    ])
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_filter_primary_row_simd<const W: usize>(
-    center_row: &[u16; W],
-    pri_rows: &[[&[u16; W]; 2]; 2],
-    pri_taps: [i32; 2],
-    pri_str: i32,
-    pri_adj: i32,
-) -> [u16; W] {
-    let center = Simd::from_array(*center_row).cast::<i16>();
-    let p00 = Simd::from_array(*pri_rows[0][0]).cast::<i16>();
-    let p01 = Simd::from_array(*pri_rows[0][1]).cast::<i16>();
-    let p10 = Simd::from_array(*pri_rows[1][0]).cast::<i16>();
-    let p11 = Simd::from_array(*pri_rows[1][1]).cast::<i16>();
-    let sum = Simd::splat(pri_taps[0] as i16)
-        * (constrain_with_adj_simd(p00 - center, pri_str, pri_adj)
-            + constrain_with_adj_simd(p01 - center, pri_str, pri_adj))
-        + Simd::splat(pri_taps[1] as i16)
-            * (constrain_with_adj_simd(p10 - center, pri_str, pri_adj)
-                + constrain_with_adj_simd(p11 - center, pri_str, pri_adj));
-    let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
-    (center + ((Simd::splat(8) + sum - negative) >> 4))
-        .cast::<u16>()
-        .to_array()
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_filter_secondary_row_simd<const W: usize>(
-    center_row: &[u16; W],
-    sec_rows: &[[[&[u16; W]; 2]; 2]; 2],
-    sec_taps: [i32; 2],
-    sec_str: i32,
-    sec_adj: i32,
-) -> [u16; W] {
-    let center = Simd::from_array(*center_row).cast::<i16>();
-    let s000 = Simd::from_array(*sec_rows[0][0][0]).cast::<i16>();
-    let s001 = Simd::from_array(*sec_rows[0][0][1]).cast::<i16>();
-    let s010 = Simd::from_array(*sec_rows[0][1][0]).cast::<i16>();
-    let s011 = Simd::from_array(*sec_rows[0][1][1]).cast::<i16>();
-    let s100 = Simd::from_array(*sec_rows[1][0][0]).cast::<i16>();
-    let s101 = Simd::from_array(*sec_rows[1][0][1]).cast::<i16>();
-    let s110 = Simd::from_array(*sec_rows[1][1][0]).cast::<i16>();
-    let s111 = Simd::from_array(*sec_rows[1][1][1]).cast::<i16>();
-    let sum = Simd::splat(sec_taps[0] as i16)
-        * (constrain_with_adj_simd(s000 - center, sec_str, sec_adj)
-            + constrain_with_adj_simd(s001 - center, sec_str, sec_adj)
-            + constrain_with_adj_simd(s010 - center, sec_str, sec_adj)
-            + constrain_with_adj_simd(s011 - center, sec_str, sec_adj))
-        + Simd::splat(sec_taps[1] as i16)
-            * (constrain_with_adj_simd(s100 - center, sec_str, sec_adj)
-                + constrain_with_adj_simd(s101 - center, sec_str, sec_adj)
-                + constrain_with_adj_simd(s110 - center, sec_str, sec_adj)
-                + constrain_with_adj_simd(s111 - center, sec_str, sec_adj));
-    let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
-    (center + ((Simd::splat(8) + sum - negative) >> 4))
-        .cast::<u16>()
-        .to_array()
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn constrain_with_adj_simd<const W: usize>(
-    diff: Simd<i16, W>,
-    threshold: i32,
-    damping_adj: i32,
-) -> Simd<i16, W> {
-    let abs = diff.abs().cast::<u16>();
-    let clip = Simd::splat(threshold as u16)
-        .saturating_sub(abs >> damping_adj as u16)
-        .cast::<i16>();
-    diff.simd_min(clip).simd_max(-clip)
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_pair<const W: usize, const V: usize>(first: &[u16; W], second: &[u16; W]) -> [u16; V] {
-    debug_assert_eq!(V, W * 2);
-    core::array::from_fn(|i| if i < W { first[i] } else { second[i - W] })
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_filter_full_rows_paired<const W: usize, const V: usize, const HAS_UNAVAILABLE: bool>(
-    center_row: &[u16; V],
-    pri_rows: &[[[&[u16; W]; 2]; 2]; 2],
-    sec_rows: &[[[[&[u16; W]; 2]; 2]; 2]; 2],
-    pri_taps: [i32; 2],
-    sec_taps: [i32; 2],
-    pri_str: i32,
-    sec_str: i32,
-    pri_adj: i32,
-    sec_adj: i32,
-) -> [u16; V] {
-    let center = Simd::from_array(*center_row).cast::<i16>();
-    let mut sum = Simd::splat(0);
-    let mut min = center;
-    let mut max = center;
-    macro_rules! add_pair {
-        ($first:expr, $second:expr, $strength:expr, $adjustment:expr, $weight:expr) => {{
-            let first = Simd::from_array(cdef_pair::<W, V>($first[0], $first[1])).cast::<i16>();
-            let second = Simd::from_array(cdef_pair::<W, V>($second[0], $second[1])).cast::<i16>();
-            min = min.simd_min(first).simd_min(second);
-            let first_available = if HAS_UNAVAILABLE {
-                first
-                    .simd_eq(Simd::splat(CDEF_UNAVAILABLE as i16))
-                    .select(center, first)
-            } else {
-                first
-            };
-            let second_available = if HAS_UNAVAILABLE {
-                second
-                    .simd_eq(Simd::splat(CDEF_UNAVAILABLE as i16))
-                    .select(center, second)
-            } else {
-                second
-            };
-            max = max.simd_max(first_available).simd_max(second_available);
-            sum += Simd::splat($weight as i16)
-                * (constrain_with_adj_simd(first - center, $strength, $adjustment)
-                    + constrain_with_adj_simd(second - center, $strength, $adjustment));
-        }};
-    }
-    add_pair!(
-        [&pri_rows[0][0][0], &pri_rows[1][0][0]],
-        [&pri_rows[0][0][1], &pri_rows[1][0][1]],
-        pri_str,
-        pri_adj,
-        pri_taps[0]
-    );
-    add_pair!(
-        [&pri_rows[0][1][0], &pri_rows[1][1][0]],
-        [&pri_rows[0][1][1], &pri_rows[1][1][1]],
-        pri_str,
-        pri_adj,
-        pri_taps[1]
-    );
-    add_pair!(
-        [&sec_rows[0][0][0][0], &sec_rows[1][0][0][0]],
-        [&sec_rows[0][0][0][1], &sec_rows[1][0][0][1]],
-        sec_str,
-        sec_adj,
-        sec_taps[0]
-    );
-    add_pair!(
-        [&sec_rows[0][0][1][0], &sec_rows[1][0][1][0]],
-        [&sec_rows[0][0][1][1], &sec_rows[1][0][1][1]],
-        sec_str,
-        sec_adj,
-        sec_taps[0]
-    );
-    add_pair!(
-        [&sec_rows[0][1][0][0], &sec_rows[1][1][0][0]],
-        [&sec_rows[0][1][0][1], &sec_rows[1][1][0][1]],
-        sec_str,
-        sec_adj,
-        sec_taps[1]
-    );
-    add_pair!(
-        [&sec_rows[0][1][1][0], &sec_rows[1][1][1][0]],
-        [&sec_rows[0][1][1][1], &sec_rows[1][1][1][1]],
-        sec_str,
-        sec_adj,
-        sec_taps[1]
-    );
-    let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
-    let rounded = center + ((Simd::splat(8) + sum - negative) >> 4);
-    rounded.simd_max(min).simd_min(max).cast::<u16>().to_array()
-}
-
-fn cdef_filter_block_interior_rows_paired<
+/// Dispatches [`cdef_filter_rows`] on which tap families are active; with
+/// neither, the block is its centre samples.
+fn cdef_filter_block_rows<
     const W: usize,
     const V: usize,
     const HAS_UNAVAILABLE: bool,
-    const PAD_STRIDE: usize,
-    const PAD_CENTER: usize,
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const SPAN: usize,
 >(
     pad: &[u16; CDEF_PADDED_AREA],
     h: usize,
     filter: &CdefBlockFilter,
-    row_starts: &CdefRowStarts,
+    offsets: &CdefTapOffsets,
     out: &mut [u16],
     out_stride: usize,
 ) -> Option<()> {
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
-    let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
-    let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
-    let center_start = 2 * PAD_STRIDE + PAD_CENTER;
-    for row in (0..h).step_by(2) {
-        let next_row = (row + 1).min(h - 1);
-        let center_rows = [
-            cdef_padded_row::<W>(pad, center_start + row * PAD_STRIDE)?,
-            cdef_padded_row::<W>(pad, center_start + next_row * PAD_STRIDE)?,
-        ];
-        let center = cdef_pair::<W, V>(center_rows[0], center_rows[1]);
-        let filtered = if filter.pri_str != 0 && filter.sec_str != 0 {
-            let pri_rows = [
-                cdef_primary_rows::<W>(pad, &row_starts[row].0)?,
-                cdef_primary_rows::<W>(pad, &row_starts[next_row].0)?,
-            ];
-            let sec_rows = [
-                cdef_secondary_rows::<W>(pad, &row_starts[row].1)?,
-                cdef_secondary_rows::<W>(pad, &row_starts[next_row].1)?,
-            ];
-            cdef_filter_full_rows_paired::<W, V, HAS_UNAVAILABLE>(
-                &center,
-                &pri_rows,
-                &sec_rows,
-                pri_taps,
-                sec_taps,
-                filter.pri_str,
-                filter.sec_str,
-                pri_adj,
-                sec_adj,
+    match (filter.pri_str != 0, filter.sec_str != 0) {
+        (true, true) => {
+            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, true, true>(
+                pad, h, filter, offsets, out, out_stride,
             )
-        } else if filter.pri_str != 0 {
-            let pri_rows = [
-                cdef_primary_rows::<W>(pad, &row_starts[row].0)?,
-                cdef_primary_rows::<W>(pad, &row_starts[next_row].0)?,
-            ];
-            let pri_data: [[[u16; V]; 2]; 2] = core::array::from_fn(|tap| {
-                core::array::from_fn(|sign| {
-                    cdef_pair::<W, V>(pri_rows[0][tap][sign], pri_rows[1][tap][sign])
-                })
-            });
-            let pri_refs =
-                core::array::from_fn(|tap| core::array::from_fn(|sign| &pri_data[tap][sign]));
-            cdef_filter_primary_row_simd(&center, &pri_refs, pri_taps, filter.pri_str, pri_adj)
-        } else if filter.sec_str != 0 {
-            let sec_rows = [
-                cdef_secondary_rows::<W>(pad, &row_starts[row].1)?,
-                cdef_secondary_rows::<W>(pad, &row_starts[next_row].1)?,
-            ];
-            let sec_data: [[[[u16; V]; 2]; 2]; 2] = core::array::from_fn(|tap| {
-                core::array::from_fn(|sign| {
-                    core::array::from_fn(|dir| {
-                        cdef_pair::<W, V>(sec_rows[0][tap][sign][dir], sec_rows[1][tap][sign][dir])
-                    })
-                })
-            });
-            let sec_refs = core::array::from_fn(|tap| {
-                core::array::from_fn(|sign| core::array::from_fn(|dir| &sec_data[tap][sign][dir]))
-            });
-            cdef_filter_secondary_row_simd(&center, &sec_refs, sec_taps, filter.sec_str, sec_adj)
-        } else {
-            center
-        };
-        cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(&filtered[..W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
-        if row + 1 < h {
-            cdef_output_row::<W>(out, out_stride, row + 1)?.copy_from_slice(&filtered[W..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+        }
+        (true, false) => {
+            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, true, false>(
+                pad, h, filter, offsets, out, out_stride,
+            )
+        }
+        (false, true) => {
+            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, false, true>(
+                pad, h, filter, offsets, out, out_stride,
+            )
+        }
+        (false, false) => {
+            for row in 0..h.min(ROWS) {
+                let start = (2 + row) * STRIDE + CENTER;
+                let center = pad.get(start..)?.first_chunk::<W>()?;
+                cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(center); // splot-copy-ok: unfiltered block keeps its centre samples
+            }
+            Some(())
         }
     }
-    Some(())
 }
 
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block written to a strided output.
@@ -932,24 +762,27 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
     out: &mut [u16],
     out_stride: usize,
 ) -> bool {
-    let row_starts = &CDEF_ROW_STARTS[filter.dir & 7];
+    let offsets = &CDEF_RELATIVE_OFFSETS;
+    let h = h.min(8);
     match w.min(8) {
-        8 => cdef_filter_block_interior_rows_paired::<8, 16, HAS_UNAVAILABLE, CDEF_PADDED_SIDE, 2>(
-            pad,
-            h.min(8),
-            filter,
-            row_starts,
-            out,
-            out_stride,
-        ),
-        4 => cdef_filter_block_interior_rows_paired::<4, 8, HAS_UNAVAILABLE, CDEF_PADDED_SIDE, 2>(
-            pad,
-            h.min(8),
-            filter,
-            row_starts,
-            out,
-            out_stride,
-        ),
+        8 => cdef_filter_block_rows::<
+            8,
+            16,
+            HAS_UNAVAILABLE,
+            CDEF_PADDED_SIDE,
+            2,
+            8,
+            { 7 * CDEF_PADDED_SIDE + 8 },
+        >(pad, h, filter, offsets, out, out_stride),
+        4 => cdef_filter_block_rows::<
+            4,
+            8,
+            HAS_UNAVAILABLE,
+            CDEF_PADDED_SIDE,
+            2,
+            8,
+            { 7 * CDEF_PADDED_SIDE + 4 },
+        >(pad, h, filter, offsets, out, out_stride),
         _ => None,
     }
     .is_some()
@@ -985,11 +818,11 @@ pub fn cdef_filter_block_chroma_pair(
     if h > 4 {
         return false;
     }
-    cdef_filter_block_interior_rows_paired::<8, 16, false, CDEF_PAIR_STRIDE, 4>(
+    cdef_filter_block_rows::<8, 16, false, CDEF_PAIR_STRIDE, 4, 4, { 3 * CDEF_PAIR_STRIDE + 8 }>(
         pad,
         h,
         filter,
-        &CDEF_PAIR_ROW_STARTS[filter.dir & 7],
+        &CDEF_PAIR_OFFSETS,
         out,
         8,
     )
