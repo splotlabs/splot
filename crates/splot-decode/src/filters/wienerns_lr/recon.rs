@@ -717,12 +717,9 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .ready_stripe(stripe, frame.final_luma_rows())?
             .ok_or_else(lr_pipeline_state_error)?;
         let mut window = self.take_window();
-        if window
-            .fill(frame, carry, range, self.window_margin())
-            .is_none()
-        {
+        if let Err(error) = window.fill(frame, carry, range, self.window_margin()) {
             self.give_window(window);
-            return Err(lr_pipeline_state_error());
+            return Err(error);
         }
         Ok(window)
     }
@@ -738,9 +735,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let range = self
             .ready_stripe(stripe, frame.final_luma_rows())?
             .ok_or_else(lr_pipeline_state_error)?;
-        window
-            .slide(frame, range, self.window_margin())
-            .ok_or_else(lr_pipeline_state_error)
+        window.slide(frame, range, self.window_margin())
     }
 
     /// Claims, filters and publishes one stripe, then keeps its window.

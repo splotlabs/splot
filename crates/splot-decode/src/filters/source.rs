@@ -299,7 +299,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
         carry: &mut Self,
         luma: (usize, usize),
         margin: usize,
-    ) -> Option<()> {
+    ) -> crate::Result<()> {
         self.copy_window(frame, Some(carry), luma, margin)
     }
 
@@ -311,7 +311,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
         frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
         luma: (usize, usize),
         margin: usize,
-    ) -> Option<()> {
+    ) -> crate::Result<()> {
         self.copy_window(frame, None, luma, margin)
     }
 
@@ -321,7 +321,8 @@ impl<T: ReconSample> DeblockedWindow<T> {
         mut carry: Option<&mut Self>,
         luma: (usize, usize),
         margin: usize,
-    ) -> Option<()> {
+    ) -> crate::Result<()> {
+        let state = || crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState;
         let sub_y = usize::from(frame.info().pixel_format().subsampling_y());
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             let index = plane.index();
@@ -333,7 +334,11 @@ impl<T: ReconSample> DeblockedWindow<T> {
                 continue;
             };
             let shift = usize::from(plane != PlaneId::Y) * sub_y;
-            let (start, end) = window_bounds(luma, shift, margin, height).ok()?;
+            let (start, end) = window_bounds(luma, shift, margin, height).map_err(|_| state())?;
+            let alloc = |_| splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "filter stripe window",
+            };
             let held = held.filter(|_| self.sizes[index] == (width, height));
             let samples = &mut self.planes[index];
             let shared = |(held_start, held_end): (usize, usize)| {
@@ -349,15 +354,17 @@ impl<T: ReconSample> DeblockedWindow<T> {
             match carry.as_deref() {
                 Some(carry) => {
                     samples.clear();
-                    samples.try_reserve_exact((end - start) * width).ok()?;
+                    samples
+                        .try_reserve_exact((end - start) * width)
+                        .map_err(alloc)?;
                     if let Some((kept, rows)) = carry.rows[index].and_then(shared) {
                         next = kept;
-                        samples.extend_from_slice(carry.planes[index].get(rows)?);
+                        samples.extend_from_slice(carry.planes[index].get(rows).ok_or_else(state)?);
                     }
                 }
                 None => match held.and_then(shared) {
                     Some((kept, rows)) => {
-                        let count = samples.get(rows.clone())?.len();
+                        let count = samples.get(rows.clone()).ok_or_else(state)?.len();
                         samples.copy_within(rows, 0);
                         samples.truncate(count);
                         next = kept;
@@ -365,20 +372,28 @@ impl<T: ReconSample> DeblockedWindow<T> {
                     None => samples.clear(),
                 },
             }
-            samples.try_reserve_exact((end - next) * width).ok()?;
+            samples
+                .try_reserve_exact((end - next) * width)
+                .map_err(alloc)?;
             if next < end {
-                frame.append_rows(plane, next, end, samples)?;
+                frame
+                    .append_rows(plane, next, end, samples)
+                    .ok_or_else(state)?;
             }
             if let Some(carry) = carry.as_deref_mut() {
                 let tail = (luma.1 >> shift).saturating_sub(margin).clamp(start, end);
                 carry.planes[index].clear();
-                carry.planes[index].extend_from_slice(samples.get((tail - start) * width..)?);
+                carry.planes[index]
+                    .extend_from_slice(samples.get((tail - start) * width..).ok_or_else(state)?);
                 carry.rows[index] = Some((tail, end));
             }
             self.rows[index] = Some((start, end));
             self.sizes[index] = (width, height);
         }
-        frame.release_rows(luma.1).then_some(())
+        frame
+            .release_rows(luma.1)
+            .then_some(())
+            .ok_or_else(|| state().into())
     }
 
     pub(crate) fn planes(&self) -> Option<DeblockedPlanes<'_, T>> {

@@ -60,7 +60,7 @@ fn stripe_window_includes_reconstructed_padding_beyond_coded_height() {
     );
     let (mut window, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
     assert!(rows.publish_final_rows(14));
-    assert!(window.fill(&mut rows, &mut carry, (8, 16), 0).is_none());
+    assert!(window.fill(&mut rows, &mut carry, (8, 16), 0).is_err());
     assert!(!rows.publish_final_rows(13));
     assert!(rows.publish_final_rows(16));
     window

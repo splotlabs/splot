@@ -537,7 +537,7 @@ fn incremental_deblock_enforces_frontiers_and_leases_exact_window() {
     assert!(
         window
             .fill(&mut source, &mut DeblockedWindow::default(), (0, 33), 8)
-            .is_none()
+            .is_err()
     );
     window
         .fill(&mut source, &mut DeblockedWindow::default(), (0, 32), 8)
