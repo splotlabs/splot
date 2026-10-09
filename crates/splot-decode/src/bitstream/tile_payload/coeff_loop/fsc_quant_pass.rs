@@ -282,6 +282,9 @@ fn validate_fsc_block_geometry(
     Ok(())
 }
 
+/// Reads each FSC coefficient's sign and remainder. With TCQ and parity
+/// hiding off, a zero level reads nothing and leaves every state unchanged,
+/// and its quant of 0 is already in the block, so it is skipped.
 fn apply_interleaved_fsc_quant_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -302,10 +305,11 @@ fn apply_interleaved_fsc_quant_pass(
     });
     for (index, entry) in walk.entries().enumerate() {
         let sign_input = derive_fsc_sign_input(entry, block, config)?;
-        let sign = read_fsc_sign_symbol(cdfs, symbols, sign_input)?;
-        if sign_input.level != 0 {
-            block.set_quant_sign(entry.row(), entry.col(), quant_sign_value(sign))?;
+        if sign_input.level == 0 {
+            continue;
         }
+        let sign = read_fsc_sign_symbol(cdfs, symbols, sign_input)?;
+        block.set_quant_sign(entry.row(), entry.col(), quant_sign_value(sign))?;
         let read_quant = read_quant_state.read_one(
             symbols,
             index,
