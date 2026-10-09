@@ -1024,9 +1024,10 @@ fn filter_luma_lanes<const LANES: usize, T: LumaSimdSource, O: LumaSimdOutput>(
     let window = rows.map(|row| &row[col..col + LANES + 2 * R]);
     let mut sum = T::load::<LANES>(window[R], R).cast::<i16>().cast::<i32>()
         * Simd::<i16, LANES>::splat(center_scale).cast::<i32>();
+    let coeffs = Simd::from_array(class.coeffs);
     macro_rules! tap_pairs {
         ($($j:literal)*) => {
-            $(add_luma_tap_pair::<LANES, $j, T>(&mut sum, &window, class);)*
+            $(add_luma_tap_pair::<LANES, $j, T>(&mut sum, &window, class.nonzero, coeffs);)*
         };
     }
     tap_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
@@ -1045,13 +1046,14 @@ fn filter_luma_lanes<const LANES: usize, T: LumaSimdSource, O: LumaSimdOutput>(
 fn add_luma_tap_pair<const LANES: usize, const J: usize, T: LumaSimdSource>(
     sum: &mut Simd<i32, LANES>,
     window: &[&[T]; LUMA_WINDOW_ROWS],
-    class: &PreparedLumaClass,
+    nonzero: u16,
+    coeffs: Simd<i16, WIENER_NS_LUMA_COEFFS>,
 ) {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
-    if class.nonzero & (1 << J) == 0 {
+    if nonzero & (1 << J) == 0 {
         return;
     }
-    let coeff = class.coeffs[J];
+    let coeff = coeffs[J];
     let (dy, dx, _) = WIENER_NS_CONFIG_Y_PAIRS[J];
     let plus = T::load::<LANES>(window[R.wrapping_add_signed(dy)], R.wrapping_add_signed(dx));
     let minus = T::load::<LANES>(
