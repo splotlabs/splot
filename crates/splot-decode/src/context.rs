@@ -11,7 +11,9 @@ use splot_parallel::WorkerPool;
 
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
-use crate::bitstream::byte_stream::{PreparedStream, ReadSeek, plan_byte_stream, prepare_stream};
+use crate::bitstream::byte_stream::{
+    PreparedInput, PreparedStream, ReadSeek, plan_byte_stream, prepare_stream,
+};
 use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
@@ -99,9 +101,16 @@ impl DecodeContext {
         decode: impl FnOnce(&PreparedStream, &mut dyn ReadSeek) -> Result<T> + Send,
     ) -> Result<T> {
         let reader: &mut dyn ReadSeek = &mut reader;
-        let mut prepared = self.pool.install(|| prepare_stream(reader, options))?;
+        let hashes = self.session.take_record_hashes();
+        let mut prepared = self
+            .pool
+            .install(|| prepare_stream(reader, options, hashes))?;
         prepared.plan.retain_decode_obus();
-        self.pool.install(|| decode(&prepared, reader))
+        let result = self.pool.install(|| decode(&prepared, reader));
+        if let PreparedInput::Ivf(_, _, hashes) = prepared.input {
+            self.session.keep_record_hashes(hashes);
+        }
+        result
     }
 
     /// [`Self::decode_hash_report_reader`] over in-memory bytes.

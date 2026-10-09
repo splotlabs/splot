@@ -97,7 +97,7 @@ pub(crate) fn decode_frames_from_plan(
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
     let mut reader = std::io::Cursor::new(bytes);
-    let prepared = crate::bitstream::byte_stream::prepare_stream(&mut reader, options)?;
+    let prepared = crate::bitstream::byte_stream::prepare_stream(&mut reader, options, Vec::new())?;
     decode_frames_from_plan_impl(
         &prepared.input,
         &mut reader,

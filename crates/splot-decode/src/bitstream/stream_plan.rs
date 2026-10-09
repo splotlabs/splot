@@ -787,7 +787,7 @@ impl IvfPlanner {
 pub(crate) struct PlanBuilder {
     format: BitstreamFormat,
     selected_layer: DecodeLayerSelection,
-    input_len_bytes: u64,
+    pub(crate) input_len_bytes: u64,
     limits: crate::DecodeLimits,
     obus: Vec<DecodePlannedObu>,
     traversed_obu_count: u64,

@@ -31,6 +31,7 @@ use crate::support::decode_buffers::DecodeBuffers;
 pub(crate) struct DecodeSession {
     frame_delay: NonZeroUsize,
     retained: Mutex<Option<RetainedDecode>>,
+    record_hashes: Mutex<Vec<u64>>,
 }
 
 impl core::fmt::Debug for DecodeSession {
@@ -47,7 +48,17 @@ impl DecodeSession {
         Self {
             frame_delay,
             retained: Mutex::new(None),
+            record_hashes: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The IVF record-hash list the last decode on this context planned into.
+    pub(crate) fn take_record_hashes(&self) -> Vec<u64> {
+        core::mem::take(&mut *self.record_hashes.lock())
+    }
+
+    pub(crate) fn keep_record_hashes(&self, hashes: Vec<u64>) {
+        *self.record_hashes.lock() = hashes;
     }
 
     pub(crate) const fn frame_delay(&self) -> NonZeroUsize {
