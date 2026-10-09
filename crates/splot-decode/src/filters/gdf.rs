@@ -1343,10 +1343,11 @@ fn gradient_pair_chunks(row: &[u16]) -> Option<(&[[u16; 2]], &[[u16; 2]])> {
     (left_remainder.is_empty() && right_remainder.is_empty()).then_some((left, right))
 }
 
+/// Second difference of three samples; samples have at most 12 bits, so it fits in i16.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn gdf_gradient(before: u16, center: u16, after: u16) -> u16 {
-    (i32::from(center) * 2 - i32::from(before) - i32::from(after)).unsigned_abs() as u16
+    (center as i16 * 2 - before as i16 - after as i16).unsigned_abs()
 }
 
 fn band_classes_from_source(
