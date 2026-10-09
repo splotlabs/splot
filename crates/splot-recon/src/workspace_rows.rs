@@ -100,7 +100,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             luma_rows,
             spare.take(PlaneId::Y),
         )?;
-        let chroma_rows = luma_rows >> info.pixel_format().subsampling_y();
+        let chroma_rows = luma_rows.div_ceil(1 << info.pixel_format().subsampling_y());
         let (u, v) = match chroma_plane_geometry(info.pixel_format(), luma_size, luma_rect)? {
             None => (None, None),
             Some((size, rect)) => (
@@ -528,6 +528,10 @@ mod tests {
         assert_eq!(band.reconstructed_sample(PlaneId::Y, 3, 63).unwrap(), 77);
         assert!(band.as_frame_ref().is_err());
         assert!(band.as_frame_mut().is_err());
+
+        let mut odd = CurrentFrameWorkspace::<u16>::new_band(frame(64), 1, None).unwrap();
+        odd.move_band(2).unwrap();
+        odd.set_reconstructed_sample(PlaneId::U, 0, 1, 3).unwrap();
 
         let whole = CurrentFrameWorkspace::<u16>::new_band(frame(64), 64, Some(band)).unwrap();
         assert!(whole.samples(PlaneId::Y).is_ok());
