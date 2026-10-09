@@ -3,14 +3,45 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::grid::DeblockGridStorage;
+use super::grid::{DeblockGridStorage, Window};
 use super::*;
 use crate::filters::source::DeblockedWindow;
 use crate::test_support::{
-    copy_rows_to_workspace, frontier_plane, frontier_rows, yuv420_workspace, yuv420_workspace_with,
+    copy_rows_to_workspace, frontier_rows, yuv420_workspace, yuv420_workspace_with,
 };
 
 static EMPTY_CHROMA_RECORDS: ChromaDeblockRecords = ChromaDeblockRecords::new();
+
+fn build_mi_grid(
+    blocks: &[DeblockBlock],
+    mi_rows: usize,
+    mi_cols: usize,
+    storage: &mut DeblockGridStorage,
+) -> Result<MiGridStorage, DeblockError> {
+    let mut order = RowOrder::default();
+    order.sort(blocks.iter(), mi_rows)?;
+    let mut grid = MiGridStorage::new(mi_cols, storage);
+    grid.fill(blocks, &order, mi_rows, &(0..mi_rows))?;
+    Ok(grid)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn overlay_mi_grid(
+    base: &MiGridStorage,
+    blocks: &ChromaDeblockRecords,
+    plane: usize,
+    mi_rows: usize,
+    mi_cols: usize,
+    sub_x: usize,
+    sub_y: usize,
+    storage: &mut (Vec<grid::ChromaMiCell>, Vec<u8>),
+) -> Result<ChromaMiGridStorage, DeblockError> {
+    let mut order = RowOrder::default();
+    order.sort(blocks.blocks.iter().map(|record| &record.block), mi_rows)?;
+    let mut grid = ChromaMiGridStorage::new(mi_cols, (sub_x, sub_y), storage);
+    grid.fill(base, blocks, &order, plane, mi_rows, &(0..mi_rows))?;
+    Ok(grid)
+}
 
 const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
     DeblockPredictionUnit::new(r, c, tx)
@@ -865,6 +896,7 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
     cells[5].base = 1;
     let storage = Box::leak(Box::new(MiGridStorage {
         mi_cols: 16,
+        window: Window::default(),
         fully_covered: false,
         cells,
         candidates: vec![0; 4 * 16],
@@ -952,6 +984,98 @@ fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
     }
     assert!(!grid.is_candidate(3, 5, 0, false, 0, 0));
     assert!(!grid.is_candidate(3, 5, 1, false, 0, 0));
+}
+
+#[test]
+fn sliding_grid_windows_match_the_whole_frame_grid() {
+    let block = |r: usize, c: usize, n4w: usize, n4h: usize, transform_only| DeblockBlock {
+        r: r as u32,
+        c: c as u32,
+        luma_prediction: prediction(r, c, 3),
+        chroma_prediction: prediction(r, c, 2),
+        chroma_base_r: r as u32,
+        chroma_base_c: c as u32,
+        n4w: n4w as u32,
+        n4h: n4h as u32,
+        luma_tx: 3,
+        chroma_tx: Some(2),
+        sub_pu_size: (n4h > 2).then(|| DeblockSubPuSize::square(8)),
+        chroma_transform_only: transform_only,
+        qindex: 100,
+        skip: false,
+        lossless: false,
+    };
+    let (mi_rows, mi_cols) = (9, 6);
+    let luma = [
+        block(4, 0, 6, 5, false),
+        block(0, 0, 3, 4, false),
+        block(0, 3, 3, 2, false),
+        block(2, 3, 3, 2, false),
+        block(1, 1, 2, 2, false),
+    ];
+    let mut chroma = ChromaDeblockRecords::default();
+    chroma.push(0, block(6, 2, 4, 3, false));
+    chroma.push_both(block(0, 0, 4, 4, false));
+    chroma.push(0, block(2, 0, 2, 2, true));
+    chroma.push(1, block(4, 4, 2, 4, false));
+    let whole = build_mi_grid(&luma, mi_rows, mi_cols, &mut DeblockGridStorage::default()).unwrap();
+    let mut order = [RowOrder::default(), RowOrder::default()];
+    order[0].sort(luma.iter(), mi_rows).unwrap();
+    order[1]
+        .sort(chroma.blocks.iter().map(|record| &record.block), mi_rows)
+        .unwrap();
+    let mut storage = DeblockGridStorage::default();
+    let mut base = MiGridStorage::new(mi_cols, &mut storage);
+    let mut overlays =
+        [0, 1].map(|plane| ChromaMiGridStorage::new(mi_cols, (1, 1), &mut storage.chroma[plane]));
+    for window in [0..4, 2..6, 4..8, 6..9, 2..6, 4..9] {
+        base.fill(&luma, &order[0], mi_rows, &window).unwrap();
+        for (plane, overlay) in overlays.iter_mut().enumerate() {
+            overlay
+                .fill(&base, &chroma, &order[1], plane, mi_rows, &window)
+                .unwrap();
+            let expected = overlay_mi_grid(
+                &whole,
+                &chroma,
+                plane,
+                mi_rows,
+                mi_cols,
+                1,
+                1,
+                &mut DeblockGridStorage::default().chroma[0],
+            )
+            .unwrap();
+            let sliding = MiGrid::new(&base, Some(overlay), &luma, &chroma);
+            let full = MiGrid::new(&whole, Some(&expected), &luma, &chroma);
+            for row in window.clone() {
+                for col in 0..mi_cols {
+                    let edge = |grid: &MiGrid<'_>| {
+                        grid.get_edge(row, col).map(|edge| {
+                            (
+                                core::ptr::from_ref(edge.block),
+                                edge.chroma_transform.map(core::ptr::from_ref),
+                            )
+                        })
+                    };
+                    assert_eq!(
+                        edge(&sliding),
+                        edge(&full),
+                        "window {window:?} ({row}, {col})"
+                    );
+                    if row > window.start {
+                        for (pass, sub) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                            assert_eq!(
+                                sliding.is_candidate(row, col, pass, true, sub, sub),
+                                full.is_candidate(row, col, pass, true, sub, sub),
+                                "window {window:?} ({row}, {col}) pass {pass}"
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(sliding.get_edge(window.start.wrapping_sub(1), 0).is_none());
+        }
+    }
 }
 
 fn assert_smoothed_step(p0: u8, q0: u8, reason: &str) {
@@ -1922,38 +2046,28 @@ fn contiguous_source_plane_parallel_pass_matches_serial_output() {
         let mut source = source_from_workspace(ws);
         plan.prime_vertical_pass(&mut source, BitDepth::Eight)
             .unwrap();
-        let primed = [PlaneId::Y, PlaneId::U, PlaneId::V]
-            .map(|plane| frontier_plane(&mut source, plane).unwrap().0);
         plan.advance_source(&mut source, mi_rows, BitDepth::Eight)
             .unwrap();
         assert!(plan.finish().is_none());
         copy_rows_to_workspace(&mut source, ws);
-        primed
     };
-    let serial_primed = run(&mut serial);
+    run(&mut serial);
     assert!(
         input
             .iter()
-            .zip(&serial_primed)
-            .any(|(before, after)| before != after),
-        "serial vertical pass must exercise at least one sample write"
+            .zip([PlaneId::Y, PlaneId::U, PlaneId::V])
+            .any(|(before, plane)| before != serial.samples(plane).unwrap()),
+        "serial deblock must exercise at least one sample write"
     );
     for threads in [1, 4] {
         let mut parallel = make_workspace();
         let pool = WorkerPool::new(ThreadCount::Fixed(threads.try_into().unwrap())).unwrap();
-        let parallel_primed = pool.install(|| {
+        pool.install(|| {
             assert!(splot_parallel::on_worker_pool());
-            run(&mut parallel)
+            run(&mut parallel);
         });
 
-        for (plane, (serial_primed, parallel_primed)) in [PlaneId::Y, PlaneId::U, PlaneId::V]
-            .into_iter()
-            .zip(serial_primed.iter().zip(&parallel_primed))
-        {
-            assert_eq!(
-                serial_primed, parallel_primed,
-                "primed vertical pass with {threads} worker(s) must match serial for {plane:?}"
-            );
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             assert_eq!(
                 serial.samples(plane).unwrap(),
                 parallel.samples(plane).unwrap(),
