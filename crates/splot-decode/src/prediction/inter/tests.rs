@@ -344,17 +344,19 @@ fn decode_inter_frame_after_core_mutation_inner(
     let frames = vec![Some(key_frame)];
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
-    let mut next_unvalidated_following_ivf_record = 1;
-    let prepared = crate::bitstream::byte_stream::prepare_byte_stream(bytes, &options)?;
-    let crate::bitstream::byte_stream::FlatParsedBitstream::Ivf(runtime_ivf) = prepared.parsed()
-    else {
-        panic!("inter fixture is IVF");
-    };
-    let (prefix, inter_envelope) = crate::pipeline::following_inter_envelope(
-        runtime_ivf,
-        inter_candidate,
-        &mut next_unvalidated_following_ivf_record,
-    )?;
+    let (record, inter_frame) = parsed
+        .frames
+        .iter()
+        .enumerate()
+        .find(|(_, frame)| {
+            frame
+                .obus
+                .iter()
+                .any(|obu| obu.offset == inter_candidate.offset())
+        })
+        .expect("fixture carries the inter frame record");
+    let (prefix, inter_envelope) =
+        crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
     let (store, meta) = reference.build_store_eight(&frames.into())?;
     let inter_state = std::sync::Arc::new(super::InterReferenceState::from_metadata(store, meta));
     let first_picture_in_tu = prefix
@@ -375,7 +377,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         &mut super::InterDecodeScratch::default(),
         &plan,
         inter_candidate,
-        bytes,
+        bytes.into(),
         inter_envelope,
         std::sync::Arc::new(core),
         &sequence,
@@ -443,17 +445,19 @@ fn parse_inter_core_for_validation_inner(
     let frames = vec![Some(key_frame)];
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
-    let mut next_unvalidated_following_ivf_record = 1;
-    let prepared = crate::bitstream::byte_stream::prepare_byte_stream(bytes, &options)?;
-    let crate::bitstream::byte_stream::FlatParsedBitstream::Ivf(runtime_ivf) = prepared.parsed()
-    else {
-        panic!("inter fixture is IVF");
-    };
-    let (prefix, inter_envelope) = crate::pipeline::following_inter_envelope(
-        runtime_ivf,
-        inter_candidate,
-        &mut next_unvalidated_following_ivf_record,
-    )?;
+    let (record, inter_frame) = parsed
+        .frames
+        .iter()
+        .enumerate()
+        .find(|(_, frame)| {
+            frame
+                .obus
+                .iter()
+                .any(|obu| obu.offset == inter_candidate.offset())
+        })
+        .expect("fixture carries the inter frame record");
+    let (prefix, inter_envelope) =
+        crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
     let (store, meta) = reference.build_store_eight(&frames.into())?;
     let inter_state = super::InterReferenceState::from_metadata(store, meta);
     let first_picture_in_tu = prefix

@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use splot_core::annexb::ObuEnvelope;
+use splot_core::annexb::{AnnexBObuCursor, ObuEnvelope, PartialParse};
 use splot_core::ivf::{IvfError, IvfWarning};
 use splot_core::obu::ObuHeader;
 use splot_core::span::ByteOffset;
@@ -16,7 +16,7 @@ use splot_core::types::{
     EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId,
 };
 
-use crate::bitstream::byte_stream::FlatParsedBitstream;
+use crate::bitstream::byte_stream::SourceBytes;
 use crate::error::{DecodeError, Result};
 use crate::{DecodeLimitName, DecodeOptions, UNSUPPORTED_FEATURE_RULE_ID};
 
@@ -108,6 +108,8 @@ pub struct DecodeStreamPlan {
     selected_layer: DecodeLayerSelection,
     input_len_bytes: u64,
     obus: Vec<DecodePlannedObu>,
+    candidate_types: Vec<u8>,
+    obu_count: u64,
     frame_candidate_count: u64,
     source_warnings: Vec<DecodeSourceIssue>,
 }
@@ -133,8 +135,8 @@ impl DecodeStreamPlan {
 
     /// Count of planned OBUs.
     #[must_use]
-    pub fn obu_count(&self) -> u64 {
-        self.obus.len() as u64
+    pub const fn obu_count(&self) -> u64 {
+        self.obu_count
     }
 
     /// Count of accepted frame candidates.
@@ -153,6 +155,14 @@ impl DecodeStreamPlan {
     /// walks (AV2 § 5.2.1, § 6.18).
     pub fn frame_candidates_all(&self) -> impl Iterator<Item = &DecodePlannedObu> {
         self.obus.iter().filter(|obu| obu.role.is_frame_candidate())
+    }
+
+    /// The OBU type of each frame candidate, in source order; the decode pass
+    /// plans each candidate again when it reads the candidate's bytes.
+    pub(crate) fn candidate_types(&self) -> impl Iterator<Item = ObuType> + '_ {
+        self.candidate_types
+            .iter()
+            .map(|&raw| ObuType::from_raw(raw))
     }
 
     /// Non-fatal source/container warnings carried into the plan.
@@ -182,6 +192,20 @@ pub struct DecodeIvfFrameContext {
 }
 
 impl DecodeIvfFrameContext {
+    pub(crate) const fn new(
+        frame_index: usize,
+        frame_payload_offset: ByteOffset,
+        frame_payload_size: u32,
+        pts: u64,
+    ) -> Self {
+        Self {
+            frame_index,
+            frame_payload_offset,
+            frame_payload_size,
+            pts,
+        }
+    }
+
     /// Zero-based IVF frame index.
     #[must_use]
     pub const fn frame_index(self) -> usize {
@@ -257,6 +281,29 @@ pub struct DecodePlannedObu {
 }
 
 impl DecodePlannedObu {
+    const fn new(
+        index: u64,
+        source_kind: DecodeObuSourceKind,
+        ivf_frame: Option<DecodeIvfFrameContext>,
+        envelope: ObuEnvelope<'_>,
+        role: DecodePlannedObuRole,
+    ) -> Self {
+        Self {
+            index,
+            source_kind,
+            ivf_frame,
+            offset: envelope.offset,
+            size: envelope.size,
+            payload_len: envelope.payload.len() as u64,
+            header: envelope.header,
+            role,
+        }
+    }
+
+    fn end(&self) -> u64 {
+        self.offset.get().saturating_add(u64::from(self.size))
+    }
+
     /// Zero-based OBU index in the plan.
     #[must_use]
     pub const fn index(&self) -> u64 {
@@ -645,109 +692,79 @@ pub(crate) fn plan_stream(
     let limits = options.limits();
     limits.ensure(DecodeLimitName::MaxInputBytes, input.input_len_bytes)?;
 
-    let mut builder = PlanBuilder::new(input.parsed.format(), input.input_len_bytes, limits);
-
     match input.parsed {
         ParsedBitstream::AnnexB(partial) => {
-            push_annex_b(&mut builder, &partial.obus, partial.error.as_ref())?;
+            plan_annex_b(partial, input.input_len_bytes, options, true)
         }
         ParsedBitstream::Ivf(ivf) => {
-            push_ivf(
-                &mut builder,
-                ivf.header,
-                &ivf.warnings,
-                ivf.error.as_ref(),
-                ivf.frames
-                    .iter()
-                    .map(|frame| (frame.frame, frame.obus.as_slice(), frame.error.as_ref())),
-            )?;
+            let mut builder =
+                PlanBuilder::new(BitstreamFormat::Ivf, input.input_len_bytes, limits, true);
+            let mut planner = IvfPlanner::default();
+            for frame in &ivf.frames {
+                planner.push_frame(&mut builder, frame.frame, &frame.obus, frame.error.as_ref());
+            }
+            planner.finish(builder, ivf.header, &ivf.warnings, ivf.error.as_ref())
         }
     }
-
-    Ok(builder.finish())
 }
 
-pub(crate) fn plan_flat_stream(
-    input: &FlatParsedBitstream<'_>,
+pub(crate) fn plan_annex_b(
+    partial: &PartialParse<'_>,
     input_len_bytes: u64,
     options: &DecodeOptions,
+    keep_obus: bool,
 ) -> Result<DecodeStreamPlan> {
-    let limits = options.limits();
-    limits.ensure(DecodeLimitName::MaxInputBytes, input_len_bytes)?;
-    let mut builder = PlanBuilder::new(input.format(), input_len_bytes, limits);
-
-    match input {
-        FlatParsedBitstream::AnnexB(partial) => {
-            push_annex_b(&mut builder, &partial.obus, partial.error.as_ref())?;
-        }
-        FlatParsedBitstream::Ivf(ivf) => {
-            push_ivf(
-                &mut builder,
-                ivf.header,
-                &ivf.warnings,
-                ivf.error.as_ref(),
-                ivf.frames
-                    .iter()
-                    .map(|frame| (frame.frame, ivf.frame_obus(frame), frame.error.as_ref())),
-            )?;
-        }
-    }
-    Ok(builder.finish())
-}
-
-fn push_annex_b(
-    builder: &mut PlanBuilder,
-    obus: &[ObuEnvelope<'_>],
-    error: Option<&splot_core::Error>,
-) -> Result<()> {
-    if let Some(error) = error {
+    if let Some(error) = &partial.error {
         return Err(DecodeError::MalformedSource {
             issue: issue_from_core_error(DecodeSourceIssueKind::AnnexBParseError, None, error),
         });
     }
-    for &obu in obus {
+    let mut builder = PlanBuilder::new(
+        BitstreamFormat::AnnexB,
+        input_len_bytes,
+        options.limits(),
+        keep_obus,
+    );
+    for &obu in &partial.obus {
         builder.push_obu(obu, DecodeObuSourceKind::AnnexB, None)?;
     }
-    Ok(())
+    Ok(builder.finish())
 }
 
-fn push_ivf<'a: 'b, 'b>(
-    builder: &mut PlanBuilder,
-    header: Option<splot_core::ivf::IvfHeader>,
-    warnings: &[IvfWarning],
-    error: Option<&IvfError>,
-    frames: impl Iterator<
-        Item = (
-            splot_core::ivf::IvfFrame<'a>,
-            &'b [ObuEnvelope<'a>],
-            Option<&'b splot_core::Error>,
-        ),
-    >,
-) -> Result<()> {
-    for warning in warnings {
-        builder
-            .source_warnings
-            .push(issue_from_ivf_warning(warning));
-    }
-    if let Some(error) = error {
-        return Err(DecodeError::MalformedSource {
-            issue: issue_from_ivf_error(error),
-        });
-    }
-    if let Some(header) = header
-        && header.fourcc != *b"AV02"
-    {
-        return Err(DecodeError::MalformedSource {
-            issue: issue_from_unsupported_ivf_codec(header.fourcc),
-        });
+/// Plans IVF frame records one at a time. A record's planning error waits for
+/// [`Self::finish`], so container errors found later in the stream still win,
+/// as they do when the whole stream is parsed before it is planned.
+#[derive(Default)]
+pub(crate) struct IvfPlanner {
+    first_unsupported: Option<DecodeUnsupportedStructure>,
+    error: Option<DecodeError>,
+}
+
+impl IvfPlanner {
+    pub(crate) fn push_frame(
+        &mut self,
+        builder: &mut PlanBuilder,
+        frame: splot_core::ivf::IvfFrame<'_>,
+        obus: &[ObuEnvelope<'_>],
+        error: Option<&splot_core::Error>,
+    ) {
+        if self.error.is_none()
+            && let Err(error) = self.try_push_frame(builder, frame, obus, error)
+        {
+            self.error = Some(error);
+        }
     }
 
-    let mut first_unsupported = None;
-    for (frame_record_index, (frame, obus, error)) in frames.enumerate() {
-        builder.limits.ensure(
-            DecodeLimitName::MaxIvfFrameRecords,
-            frame_record_index as u64 + 1,
-        )?;
+    fn try_push_frame(
+        &mut self,
+        builder: &mut PlanBuilder,
+        frame: splot_core::ivf::IvfFrame<'_>,
+        obus: &[ObuEnvelope<'_>],
+        error: Option<&splot_core::Error>,
+    ) -> Result<()> {
+        builder
+            .limits
+            .ensure(DecodeLimitName::MaxIvfFrameRecords, frame.index as u64 + 1)?;
         if let Some(error) = error {
             return Err(DecodeError::MalformedSource {
                 issue: issue_from_core_error(
@@ -757,42 +774,82 @@ fn push_ivf<'a: 'b, 'b>(
                 ),
             });
         }
-
         let context = Some(ivf_frame_context(frame));
         for &obu in obus {
             builder.push_obu_or_first_unsupported(
                 obu,
                 DecodeObuSourceKind::Ivf,
                 context,
-                &mut first_unsupported,
+                &mut self.first_unsupported,
             )?;
         }
+        Ok(())
     }
-    if let Some(unsupported) = first_unsupported {
-        return Err(DecodeError::UnsupportedStructure { unsupported });
+
+    pub(crate) fn finish(
+        self,
+        mut builder: PlanBuilder,
+        header: Option<splot_core::ivf::IvfHeader>,
+        warnings: &[IvfWarning],
+        error: Option<&IvfError>,
+    ) -> Result<DecodeStreamPlan> {
+        for warning in warnings {
+            builder
+                .source_warnings
+                .push(issue_from_ivf_warning(warning));
+        }
+        if let Some(error) = error {
+            return Err(DecodeError::MalformedSource {
+                issue: issue_from_ivf_error(error),
+            });
+        }
+        if let Some(header) = header
+            && header.fourcc != *b"AV02"
+        {
+            return Err(DecodeError::MalformedSource {
+                issue: issue_from_unsupported_ivf_codec(header.fourcc),
+            });
+        }
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if let Some(unsupported) = self.first_unsupported {
+            return Err(DecodeError::UnsupportedStructure { unsupported });
+        }
+        Ok(builder.finish())
     }
-    Ok(())
 }
 
-struct PlanBuilder {
+pub(crate) struct PlanBuilder {
     format: BitstreamFormat,
     selected_layer: DecodeLayerSelection,
-    input_len_bytes: u64,
+    pub(crate) input_len_bytes: u64,
     limits: crate::DecodeLimits,
+    keep_obus: bool,
     obus: Vec<DecodePlannedObu>,
+    candidate_types: Vec<u8>,
+    obu_count: u64,
     traversed_obu_count: u64,
     frame_candidate_count: u64,
     source_warnings: Vec<DecodeSourceIssue>,
 }
 
 impl PlanBuilder {
-    fn new(format: BitstreamFormat, input_len_bytes: u64, limits: crate::DecodeLimits) -> Self {
+    pub(crate) fn new(
+        format: BitstreamFormat,
+        input_len_bytes: u64,
+        limits: crate::DecodeLimits,
+        keep_obus: bool,
+    ) -> Self {
         Self {
             format,
             selected_layer: DecodeLayerSelection::base(),
             input_len_bytes,
             limits,
+            keep_obus,
             obus: Vec::new(),
+            candidate_types: Vec::new(),
+            obu_count: 0,
             traversed_obu_count: 0,
             frame_candidate_count: 0,
             source_warnings: Vec::new(),
@@ -862,16 +919,19 @@ impl PlanBuilder {
         ivf_frame: Option<DecodeIvfFrameContext>,
         role: DecodePlannedObuRole,
     ) {
-        self.obus.push(DecodePlannedObu {
-            index: self.obus.len() as u64,
-            source_kind,
-            ivf_frame,
-            offset: envelope.offset,
-            size: envelope.size,
-            payload_len: envelope.payload.len() as u64,
-            header: envelope.header,
-            role,
-        });
+        if role.is_frame_candidate() {
+            self.candidate_types.push(envelope.header.obu_type.raw());
+        }
+        if self.keep_obus {
+            self.obus.push(DecodePlannedObu::new(
+                self.obu_count,
+                source_kind,
+                ivf_frame,
+                envelope,
+                role,
+            ));
+        }
+        self.obu_count += 1;
     }
 
     fn finish(self) -> DecodeStreamPlan {
@@ -879,7 +939,9 @@ impl PlanBuilder {
             format: self.format,
             selected_layer: self.selected_layer,
             input_len_bytes: self.input_len_bytes,
+            obu_count: self.obu_count,
             obus: self.obus,
+            candidate_types: self.candidate_types,
             frame_candidate_count: self.frame_candidate_count,
             source_warnings: self.source_warnings,
         }
@@ -985,6 +1047,127 @@ fn classify_obu(
     }
 }
 
+/// The OBUs of `bytes` from absolute offset `from` to `end`, planned again as
+/// the planner planned them; the first one gets plan index `index`.
+#[derive(Clone)]
+struct Replan<'a> {
+    cursor: AnnexBObuCursor<'a>,
+    index: u64,
+    source_kind: DecodeObuSourceKind,
+    ivf_frame: Option<DecodeIvfFrameContext>,
+}
+
+impl<'a> Replan<'a> {
+    fn new(
+        bytes: SourceBytes<'a>,
+        from: u64,
+        end: u64,
+        index: u64,
+        ivf_frame: Option<DecodeIvfFrameContext>,
+    ) -> Self {
+        Self {
+            cursor: AnnexBObuCursor::new(
+                bytes.get(from, end).unwrap_or_default(),
+                ByteOffset::new(from),
+            ),
+            index,
+            source_kind: if ivf_frame.is_some() {
+                DecodeObuSourceKind::Ivf
+            } else {
+                DecodeObuSourceKind::AnnexB
+            },
+            ivf_frame,
+        }
+    }
+}
+
+impl Iterator for Replan<'_> {
+    type Item = Result<DecodePlannedObu>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let envelope = match self.cursor.next_obu() {
+            Ok(envelope) => envelope?,
+            Err(error) => {
+                self.cursor = AnnexBObuCursor::new(&[], ByteOffset::new(0));
+                return Some(Err(DecodeError::MalformedSource {
+                    issue: issue_from_core_error(
+                        DecodeSourceIssueKind::AnnexBParseError,
+                        None,
+                        &error,
+                    ),
+                }));
+            }
+        };
+        let index = self.index;
+        self.index += 1;
+        Some(
+            classify_obu(envelope, DecodeLayerSelection::BASE).map(|role| {
+                DecodePlannedObu::new(index, self.source_kind, self.ivf_frame, envelope, role)
+            }),
+        )
+    }
+}
+
+/// Finds the planned frame candidates again, in order, in the bytes the decode
+/// pass reads. Scanning every OBU once reproduces their plan indices.
+#[derive(Default)]
+pub(crate) struct CandidateScan {
+    resume: u64,
+    index: u64,
+}
+
+impl CandidateScan {
+    /// The next frame candidate in `bytes`, an IVF record (`ivf_frame`) or the
+    /// whole Annex B input, after the last candidate found.
+    pub(crate) fn next(
+        &mut self,
+        bytes: SourceBytes<'_>,
+        ivf_frame: Option<DecodeIvfFrameContext>,
+    ) -> Result<Option<DecodePlannedObu>> {
+        let from = self.resume.max(bytes.base());
+        for planned in Replan::new(bytes, from, bytes.end(), self.index, ivf_frame) {
+            let planned = planned?;
+            self.resume = planned.end();
+            self.index = planned.index + 1;
+            if planned.role.is_frame_candidate() {
+                return Ok(Some(planned));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// The tile-group OBUs in `bytes` that continue `candidate`'s coded frame,
+/// skipping padding, up to the end of the candidate's IVF frame record.
+pub(crate) fn tile_group_continuations<'a>(
+    bytes: SourceBytes<'a>,
+    candidate: &'a DecodePlannedObu,
+) -> impl Iterator<Item = DecodePlannedObu> + Clone + 'a {
+    let end = candidate.ivf_frame.map_or(bytes.end(), |frame| {
+        frame
+            .frame_payload_offset
+            .get()
+            .saturating_add(u64::from(frame.frame_payload_size))
+            .min(bytes.end())
+    });
+    Replan::new(
+        bytes,
+        candidate.end(),
+        end,
+        candidate.index + 1,
+        candidate.ivf_frame,
+    )
+    .map_while(Result::ok)
+    .filter(|planned| planned.obu_type() != ObuType::Padding)
+    .take_while(move |planned| {
+        planned.role.is_frame_continuation()
+            && planned.obu_type() == candidate.obu_type()
+            && planned.header.temporal_layer_id == candidate.header.temporal_layer_id
+            && planned.header.embedded_layer_id == candidate.header.embedded_layer_id
+            && planned.header.extended_layer_id == candidate.header.extended_layer_id
+    })
+}
+
 fn is_tile_group_continuation(envelope: ObuEnvelope<'_>) -> bool {
     envelope
         .payload
@@ -1009,7 +1192,7 @@ fn unsupported(
     })
 }
 
-fn issue_from_core_error(
+pub(crate) fn issue_from_core_error(
     kind: DecodeSourceIssueKind,
     frame_index: Option<usize>,
     error: &splot_core::Error,
@@ -1076,12 +1259,7 @@ fn issue_from_ivf_source(
 }
 
 fn ivf_frame_context(frame: splot_core::ivf::IvfFrame<'_>) -> DecodeIvfFrameContext {
-    DecodeIvfFrameContext {
-        frame_index: frame.index,
-        frame_payload_offset: frame.payload_offset,
-        frame_payload_size: frame.size,
-        pts: frame.pts,
-    }
+    DecodeIvfFrameContext::new(frame.index, frame.payload_offset, frame.size, frame.pts)
 }
 
 fn ivf_error_frame_index(error: &IvfError) -> Option<usize> {

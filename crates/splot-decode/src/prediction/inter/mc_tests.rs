@@ -53,6 +53,44 @@ fn intrabc_integer_copy_clips_bottom_edge_to_coded_storage() {
     assert_eq!(&y[5 * 8..5 * 8 + 4], [5, 6, 7, 8]);
 }
 
+/// A bilinear IntraBC prediction reads the row below only at a non-zero
+/// vertical phase, and its reads stay clipped to the plane.
+#[test]
+fn intrabc_bilinear_rows_cover_only_weighted_rows() {
+    let params = |start_y, h| splot_recon::SubpelPredictParams {
+        interp: splot_recon::InterpolationFilter::Bilinear,
+        w: 8,
+        h,
+        start_x: 0,
+        start_y,
+        step_x: 1 << 10,
+        step_y: 1 << 10,
+        first_x: 0,
+        first_y: 0,
+        last_x: 63,
+        last_y: 63,
+        bit_depth: splot_recon::BitDepth::Ten,
+    };
+    assert_eq!(
+        crate::filters::wienerns_lr::recon::full_recon::intrabc_bilinear_rows(&params(16 << 10, 8)),
+        (16, 23)
+    );
+    assert_eq!(
+        crate::filters::wienerns_lr::recon::full_recon::intrabc_bilinear_rows(&params(
+            (16 << 10) + 512,
+            8
+        )),
+        (16, 24)
+    );
+    assert_eq!(
+        crate::filters::wienerns_lr::recon::full_recon::intrabc_bilinear_rows(&params(
+            (60 << 10) + 512,
+            8
+        )),
+        (60, 63)
+    );
+}
+
 #[test]
 fn compound_sample_recycler_keeps_its_box_and_sample_storage() {
     MC_SAMPLES_RECYCLER.with(|cell| *cell.borrow_mut() = [None, None]);

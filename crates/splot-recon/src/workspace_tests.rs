@@ -596,7 +596,7 @@ fn surface_add_residual_rejects_inputs_atomically() {
             .all(|&sample| sample == 20)
     );
 
-    workspace.as_frame_mut().y_mut().samples_mut()[15] = 300;
+    workspace.as_frame_mut().unwrap().y_mut().samples_mut()[15] = 300;
     assert!(matches!(
         CurrentFrameSurface::Frame(&mut workspace).add_residual_rect_block(
             PlaneId::Y,
@@ -1298,7 +1298,7 @@ fn workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target() {
     let mut workspace =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 6, 6), 7).unwrap();
     {
-        let mut frame = workspace.as_frame_mut();
+        let mut frame = workspace.as_frame_mut().unwrap();
         let mut rows = frame.y_mut().visible_rows_mut();
         rows.next().unwrap()[1] = 300;
     }

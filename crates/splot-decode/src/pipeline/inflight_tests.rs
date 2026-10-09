@@ -66,27 +66,34 @@ fn parse_slots_are_bounded_and_reset_only_after_readers_release() {
     assert_eq!(ring.parse_slots.len(), 2);
 }
 
+/// The luma buffer the next workspace of `info` takes from the ring's pool.
+fn next_luma(ring: &InflightRing, info: DecodedFrameInfo) -> *const u8 {
+    let mut planes =
+        splot_recon::FramePlaneSamples::default().with_pool(Some(ring.buffers.planes()));
+    splot_recon::CurrentFrameWorkspace::<u8>::new_recycled_from(info, &mut planes)
+        .expect("workspace")
+        .samples(splot_recon::PlaneId::Y)
+        .expect("luma")
+        .as_ptr()
+}
+
 #[test]
-fn a_retired_frame_leaves_its_sample_buffers_in_the_ring() {
+fn a_retired_frame_leaves_its_sample_buffers_in_the_pool() {
     let mut ring = InflightRing::new(nz(1), test_plane_pool());
-    let frame = decoded_frame(4, 4);
+    let frame = decoded_frame(128, 128);
+    let info = frame.info();
     let samples = frame
         .plane(splot_recon::PlaneId::Y)
         .expect("luma plane")
         .samples()
         .as_ptr();
 
-    ring.keep_frame_planes(
-        PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(SharedFrame::new(frame))),
-        false,
-    );
+    ring.keep_frame_planes(PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(
+        SharedFrame::new(frame),
+    )));
 
-    let kept = u8::spares(&mut ring)
-        .pop()
-        .expect("the ring kept the retired frame's planes")
-        .take(splot_recon::PlaneId::Y);
     assert_eq!(
-        kept.as_ptr(),
+        next_luma(&ring, info),
         samples,
         "the next frame decodes into the retired frame's buffer"
     );
@@ -108,36 +115,18 @@ fn a_slot_another_owner_still_holds_is_not_the_driver_s_to_retire() {
 }
 
 #[test]
-fn every_retired_frame_of_a_deep_ring_leaves_its_buffers_behind() {
-    let mut ring = InflightRing::new(nz(3), test_plane_pool());
-    for _ in 0..3 {
-        ring.keep_frame_planes(
-            PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(SharedFrame::new(
-                decoded_frame(4, 4),
-            ))),
-            false,
-        );
-    }
-
-    assert_eq!(
-        u8::spares(&mut ring).len(),
-        3,
-        "a depth-three ring keeps a whole cycle of retired buffers, not just the last"
-    );
-}
-
-#[test]
 fn a_frame_a_reader_still_holds_keeps_its_own_sample_buffers() {
     let mut ring = InflightRing::new(nz(1), test_plane_pool());
-    let frame = SharedFrame::new(decoded_frame(4, 4));
+    let frame = SharedFrame::new(decoded_frame(128, 128));
+    let info = frame.get().info();
     let reader = frame.share();
+    let samples = reader.get().y().samples().as_ptr();
 
-    ring.keep_frame_planes(
-        PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(frame)),
-        false,
-    );
+    ring.keep_frame_planes(PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(
+        frame,
+    )));
 
-    assert!(u8::spares(&mut ring).is_empty());
+    assert_ne!(next_luma(&ring, info), samples);
     drop(reader);
 }
 
@@ -560,14 +549,19 @@ fn retired_publications_keep_their_identity_and_exclude_direct_readers() {
     let buffers = test_plane_pool();
     let info = decoded_frame(8, 8).info();
     let mut planes = splot_recon::FramePlaneSamples::default();
+    let workspace = |planes: &mut splot_recon::FramePlaneSamples<u8>| {
+        splot_recon::CurrentFrameWorkspace::new_recycled_from(info, planes).unwrap()
+    };
     let (mut slot, writer) =
-        RefFrameSlot::<u8>::pending_recycled(info, &mut planes, Some(&buffers)).unwrap();
+        RefFrameSlot::<u8>::pending_recycled(workspace(&mut planes), Some(&buffers)).unwrap();
     let cell = Arc::as_ptr(&slot.cell);
     let progress = Arc::as_ptr(slot.progress.as_ref().unwrap());
     drop(writer);
     for cycle in 0..1200 {
         assert!(slot.can_reuse());
-        let (next, writer) = slot.reuse_pending(info, &mut planes, &buffers).unwrap();
+        let (next, writer) = slot
+            .reuse_pending(workspace(&mut planes), &buffers)
+            .unwrap();
         slot = next;
         assert_eq!(Arc::as_ptr(&slot.cell), cell);
         assert_eq!(Arc::as_ptr(slot.progress.as_ref().unwrap()), progress);

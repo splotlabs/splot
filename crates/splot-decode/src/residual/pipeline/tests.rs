@@ -1057,7 +1057,7 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
             deblock_blocks[0].c,
             deblock_blocks[0].n4w,
             deblock_blocks[0].n4h,
-            deblock_blocks[0].luma_tx,
+            usize::from(deblock_blocks[0].luma_tx),
         ),
         (8, 8, 8, 8, tx_32x32)
     );

@@ -269,24 +269,21 @@ fn superblock_surfaces_follow_raster_order_and_clip_the_frame_edge()
 fn surface_scratch(
     info: splot_recon::DecodedFrameInfo,
     rects: &[splot_recon::PlaneRect],
-) -> splot_recon::Result<TileDecodeScratch<u8>> {
+) -> splot_recon::Result<super::admission::SpareSurfaces<u8>> {
     let surfaces = rects
         .iter()
         .copied()
         .map(|rect| splot_recon::OwnedFrameRect::new(info, rect, 0))
         .collect::<splot_recon::Result<Vec<_>>>()?;
-    Ok(TileDecodeScratch {
-        surfaces,
-        ..TileDecodeScratch::default()
-    })
+    Ok(std::sync::Arc::new(Mutex::new(surfaces)))
 }
 
 fn drain_surface_layout(
-    scratch: TileDecodeScratch<u8>,
+    scratch: super::admission::SpareSurfaces<u8>,
     info: splot_recon::DecodedFrameInfo,
     rects: &[splot_recon::PlaneRect],
 ) -> splot_recon::Result<Vec<splot_recon::PlaneRect>> {
-    let mut source = super::admission::SurfaceSource::new(info, rects.to_vec(), scratch.surfaces);
+    let mut source = super::admission::SurfaceSource::new(info, rects.to_vec(), scratch);
     let mut handed = Vec::new();
     for unit in 0..rects.len() {
         let Some(surface) = source.take(unit) else {
@@ -323,7 +320,7 @@ fn a_returned_surface_is_retargeted_rather_than_reallocated()
     assert!(equal_sized.len() >= 2, "need two same-shaped superblocks");
 
     let mut source =
-        super::admission::SurfaceSource::<u8>::new(info, equal_sized.clone(), Vec::new());
+        super::admission::SurfaceSource::<u8>::new(info, equal_sized.clone(), Arc::default());
     let first = source.take(0).ok_or("a first surface")??;
     assert_eq!(first.luma_rect(), equal_sized[0]);
     source.give(first);
@@ -348,7 +345,7 @@ fn a_stale_recycled_surface_layout_is_laid_out_over()
     let rects = superblock_luma_rects(&(0..4), &(0..64), &workspace, 32)?;
     let stale_rects = superblock_luma_rects(&(4..8), &(0..64), &workspace, 32)?;
     let scratch = surface_scratch(info, &stale_rects)?;
-    let mut source = super::admission::SurfaceSource::new(info, rects.clone(), scratch.surfaces);
+    let mut source = super::admission::SurfaceSource::new(info, rects.clone(), scratch);
 
     for unit in 0..rects.len() {
         source.take(unit).ok_or("a surface")??;

@@ -16,14 +16,17 @@ use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::tile::InlineVec;
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
+use std::sync::Arc;
 
 use crate::error::{DecodeReferenceStateError, Result};
 use crate::pipeline::PipelineFrame;
 use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::{
-    CcsoGridHandle, FrameCdfHandle, MotionFieldHandle, SegmentIdMapHandle,
+    CcsoGridHandle, FrameCdfHandle, InterReferenceState, MotionFieldHandle, SegmentIdMapHandle,
 };
+
+const NO_LR_FRAME_FILTER_TAPS: SlotFrameFilterTaps = [InlineVec::empty(InlineVec::empty(0)); 3];
 
 #[derive(Clone, Debug)]
 struct Slot {
@@ -43,7 +46,6 @@ struct Slot {
     saved_order_hints: SavedGlobalMotionOrderHints,
     saved_gm_params: SavedGlobalMotionParams,
     lr_frame_filter_class_counts: [u8; 3],
-    lr_frame_filter_taps: SlotFrameFilterTaps,
     frame_index: Option<usize>,
     long_term_id: Option<u32>,
     embedded_layer_id: EmbeddedLayerId,
@@ -68,7 +70,6 @@ impl Slot {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0; 3],
-        lr_frame_filter_taps: [InlineVec::empty(InlineVec::empty(0)); 3],
         frame_index: None,
         long_term_id: None,
         embedded_layer_id: EmbeddedLayerId::from_bits(0),
@@ -93,7 +94,6 @@ impl Slot {
             saved_order_hints: update.saved_order_hints,
             saved_gm_params: update.saved_gm_params,
             lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
-            lr_frame_filter_taps: update.lr_frame_filter_taps,
             frame_index: Some(frame_index),
             long_term_id: update.long_term_id,
             embedded_layer_id: update.embedded_layer_id,
@@ -133,6 +133,13 @@ struct OpenLoopState {
 
 pub(crate) struct RuntimeReferenceBuffer {
     slots: Vec<Slot>,
+    /// Shared with every frame's metadata snapshot, and copied only when a
+    /// refresh changes a slot while a snapshot is held: the table is tens of
+    /// kilobytes, and a snapshot is moved through many stack frames. `None`
+    /// until a frame saves a frame-level filter.
+    lr_frame_filter_taps: Option<Arc<[SlotFrameFilterTaps]>>,
+    /// Earlier tables, reused once no snapshot holds them.
+    lr_frame_filter_spares: Vec<Arc<[SlotFrameFilterTaps]>>,
     frame_counter: u32,
     started: bool,
     open_loop: Option<OpenLoopState>,
@@ -143,6 +150,8 @@ impl RuntimeReferenceBuffer {
         ReferenceFrameStore::<()>::with_capacity(num_ref_frames)?;
         Ok(Self {
             slots: vec![Slot::EMPTY; num_ref_frames],
+            lr_frame_filter_taps: None,
+            lr_frame_filter_spares: Vec::new(),
             frame_counter: 0,
             started: false,
             open_loop: None,
@@ -205,6 +214,7 @@ impl RuntimeReferenceBuffer {
     ) {
         self.advance_frame_counter();
         let mut first = true;
+        let slot_count = self.slots.len();
         for (i, slot) in self.slots.iter_mut().enumerate() {
             if (update.refresh_frame_flags >> i) & 1 == 0 {
                 continue;
@@ -212,6 +222,19 @@ impl RuntimeReferenceBuffer {
             let valid = !is_key_or_switch || first;
             first = false;
             slot.refresh(frame_index, update, valid, self.frame_counter);
+            let saved = self
+                .lr_frame_filter_taps
+                .as_deref()
+                .and_then(|taps| taps.get(i));
+            if *saved.unwrap_or(&NO_LR_FRAME_FILTER_TAPS) != update.lr_frame_filter_taps {
+                set_lr_frame_filter_taps(
+                    &mut self.lr_frame_filter_taps,
+                    &mut self.lr_frame_filter_spares,
+                    slot_count,
+                    i,
+                    update,
+                );
+            }
         }
     }
 
@@ -269,6 +292,19 @@ impl RuntimeReferenceBuffer {
         self.build_store(frames, PipelineFrame::slot_ten)
     }
 
+    /// Out of line, so a caller's frame holds only the built state.
+    #[inline(never)]
+    pub(crate) fn state_eight(&self, frames: &FrameStore) -> Result<InterReferenceState<u8>> {
+        let (store, meta) = self.build_store_eight(frames)?;
+        Ok(InterReferenceState::from_metadata(store, meta))
+    }
+
+    #[inline(never)]
+    pub(crate) fn state_ten(&self, frames: &FrameStore) -> Result<InterReferenceState<u16>> {
+        let (store, meta) = self.build_store_ten(frames)?;
+        Ok(InterReferenceState::from_metadata(store, meta))
+    }
+
     fn build_store<T: splot_recon::ReconSample>(
         &self,
         frames: &FrameStore,
@@ -278,6 +314,8 @@ impl RuntimeReferenceBuffer {
         let mut store: ReferenceFrameStore<RefFrameSlot<T>> =
             ReferenceFrameStore::with_capacity(num)?;
         let mut meta = ReferenceMetadata::with_capacity(num)?;
+        meta.lr_frame_filter_taps
+            .clone_from(&self.lr_frame_filter_taps);
         for (i, slot) in self.slots.iter().enumerate() {
             if !slot.valid {
                 meta.push_slot(slot, None);
@@ -361,6 +399,37 @@ impl RuntimeReferenceBuffer {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn set_lr_frame_filter_taps(
+    table: &mut Option<Arc<[SlotFrameFilterTaps]>>,
+    spares: &mut Vec<Arc<[SlotFrameFilterTaps]>>,
+    slot_count: usize,
+    slot: usize,
+    update: &FrameRefUpdate,
+) {
+    let table = table
+        .get_or_insert_with(|| core::iter::repeat_n(NO_LR_FRAME_FILTER_TAPS, slot_count).collect());
+    if Arc::get_mut(table).is_none() {
+        let free = spares
+            .iter()
+            .position(|spare| Arc::strong_count(spare) == 1 && spare.len() == table.len());
+        let fresh = match free.map(|index| spares.swap_remove(index)) {
+            Some(mut spare) => {
+                if let Some(taps) = Arc::get_mut(&mut spare) {
+                    taps.copy_from_slice(table);
+                }
+                spare
+            }
+            None => Arc::from(&**table),
+        };
+        spares.push(core::mem::replace(table, fresh));
+    }
+    if let Some(taps) = Arc::get_mut(table).and_then(|taps| taps.get_mut(slot)) {
+        *taps = update.lr_frame_filter_taps;
+    }
+}
+
 fn is_regular_non_olk(obu_type: ObuType) -> bool {
     matches!(
         obu_type,
@@ -425,7 +494,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) saved_global_motion_order_hints: RefSlots<SavedGlobalMotionOrderHints>,
     pub(crate) saved_global_motion_params: RefSlots<SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
-    pub(crate) lr_frame_filter_taps: RefSlots<SlotFrameFilterTaps>,
+    pub(crate) lr_frame_filter_taps: Option<Arc<[SlotFrameFilterTaps]>>,
     pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
     pub(crate) ref_ccso_params: RefSlots<Option<CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
@@ -463,7 +532,6 @@ impl ReferenceMetadata {
         self.saved_global_motion_params.push(slot.saved_gm_params);
         self.lr_frame_filter_class_counts
             .push(slot.lr_frame_filter_class_counts);
-        self.lr_frame_filter_taps.push(slot.lr_frame_filter_taps);
         self.ref_frame_cdfs
             .push(frame.map(|frame| frame.frame_cdfs.clone()));
         self.ref_ccso_params

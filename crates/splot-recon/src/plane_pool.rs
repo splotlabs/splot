@@ -3,9 +3,9 @@
 
 //! Spare storage for the frame-sized plane buffers of one decode.
 //!
-//! A frame holds three workspaces at once: the reconstruction target, the
-//! sealed copy the deblock frontier reads, and the buffer the filter stages
-//! publish into. None can be handed on by its creator: above a frame-pipelining
+//! A scheduled frame holds two workspaces at once: the reconstruction target and
+//! the frame its frontier seals, deblocks and filters in place. Neither can be
+//! handed on by its creator: above a frame-pipelining
 //! depth of one the last owner is whichever filter job finishes last, which is
 //! not known until it does, so a refcounted owner is what the pipeline needs.
 //!

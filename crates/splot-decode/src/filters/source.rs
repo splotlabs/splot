@@ -3,358 +3,13 @@
 
 #![allow(
     unsafe_code,
-    reason = "stripe buffers and final deblocked-row leases retain their unique allocation owner"
+    reason = "stripe buffers retain their unique allocation owner"
 )]
 
-use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
+#[cfg(test)]
+use splot_recon::CurrentFrameWorkspace;
+use splot_recon::{PlaneId, PlaneRect, ReconSample};
 use std::mem::MaybeUninit;
-use std::ptr::NonNull;
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-
-#[derive(Clone, Copy)]
-struct DeblockedPlaneStorage<T> {
-    samples: NonNull<T>,
-    len: usize,
-    stride: usize,
-    width: usize,
-    height: usize,
-}
-
-/// An emptied [`DeblockedSource`] cell, erased to its bit depth so the
-/// filter records can carry it to the next frame.
-pub(crate) type DeblockedShell = Arc<dyn core::any::Any + Send + Sync>;
-
-/// One contiguous reconstructed workspace whose final deblocked prefix may be
-/// read by filter jobs while deblock continues below that prefix.
-pub(crate) struct DeblockedSource<T: ReconSample> {
-    storage: Arc<DeblockedStorage<T>>,
-    final_luma_rows: usize,
-}
-
-struct DeblockedStorage<T: ReconSample> {
-    workspace: Option<CurrentFrameWorkspace<T>>,
-    info: splot_recon::DecodedFrameInfo,
-    planes: [Option<DeblockedPlaneStorage<T>>; 3],
-    #[cfg(test)]
-    recycled: Option<Arc<AtomicBool>>,
-}
-
-/// Safety: `DeblockedSource` is the sole mutable writer, admits writes only below
-/// immutable leases, and keeps this storage alive for every view.
-unsafe impl<T: ReconSample> Send for DeblockedStorage<T> {}
-/// Safety: shared storage access creates immutable views only.
-unsafe impl<T: ReconSample> Sync for DeblockedStorage<T> {}
-
-impl<T: ReconSample> DeblockedSource<T> {
-    #[cfg(test)]
-    pub(crate) fn new(workspace: CurrentFrameWorkspace<T>) -> Self {
-        Self::new_in(None, workspace)
-    }
-
-    /// Builds the source in `shell` when it is this bit depth's emptied cell.
-    pub(crate) fn new_in(
-        shell: Option<DeblockedShell>,
-        mut workspace: CurrentFrameWorkspace<T>,
-    ) -> Self {
-        let info = workspace.info();
-        let geometry = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
-            workspace
-                .plane(plane)
-                .ok()
-                .map(splot_recon::CurrentFramePlane::storage_size)
-        });
-        let mut planes = [None, None, None];
-        let (y, u, v) = workspace.as_frame_mut().into_planes();
-        for (plane, view) in [Some(y), u, v].into_iter().enumerate() {
-            let (Some(mut view), Some(size)) = (view, geometry[plane]) else {
-                continue;
-            };
-            let stride = view.stride_samples();
-            let samples = view.samples_mut();
-            let len = samples.len();
-            let Some(samples) = NonNull::new(samples.as_mut_ptr()) else {
-                continue;
-            };
-            planes[plane] = Some(DeblockedPlaneStorage {
-                samples,
-                len,
-                stride,
-                width: size.width(),
-                height: size.height(),
-            });
-        }
-        let filled = DeblockedStorage {
-            workspace: Some(workspace),
-            info,
-            planes,
-            #[cfg(test)]
-            recycled: None,
-        };
-        let storage = match shell.and_then(|shell| shell.downcast::<DeblockedStorage<T>>().ok()) {
-            Some(mut storage) => match Arc::get_mut(&mut storage) {
-                Some(held) => {
-                    *held = filled;
-                    storage
-                }
-                None => Arc::new(filled),
-            },
-            None => Arc::new(filled),
-        };
-        Self {
-            storage,
-            final_luma_rows: 0,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_with_recycle_probe(
-        workspace: CurrentFrameWorkspace<T>,
-        recycled: Arc<AtomicBool>,
-    ) -> Self {
-        let mut source = Self::new(workspace);
-        if let Some(storage) = Arc::get_mut(&mut source.storage) {
-            storage.recycled = Some(recycled);
-        }
-        source
-    }
-
-    /// Takes the reconstructed workspace back when no lease is outstanding.
-    ///
-    /// The filter phase is the last reader of the frame it filtered, so this is
-    /// where its sample buffers become the next frame's.
-    #[cfg(test)]
-    pub(crate) fn into_workspace(self) -> Option<CurrentFrameWorkspace<T>> {
-        self.into_parts().0
-    }
-
-    /// Takes the workspace back and keeps the emptied cell for [`Self::new_in`].
-    pub(crate) fn into_parts(self) -> (Option<CurrentFrameWorkspace<T>>, Option<DeblockedShell>) {
-        let mut storage = self.storage;
-        let Some(held) = Arc::get_mut(&mut storage) else {
-            return (None, None);
-        };
-        held.planes = [None, None, None];
-        (held.workspace.take(), Some(storage))
-    }
-
-    pub(crate) fn info(&self) -> splot_recon::DecodedFrameInfo {
-        self.storage.info
-    }
-
-    pub(crate) fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)> {
-        self.storage.planes[plane.index()].map(|plane| (plane.width, plane.height))
-    }
-
-    /// The mutable receiver guarantees this ascending copy cannot enter a lease.
-    pub(crate) fn copy_rows_from(
-        &mut self,
-        source: &CurrentFrameWorkspace<T>,
-        luma_rows: core::ops::Range<usize>,
-    ) -> splot_recon::Result<()> {
-        if source.info() != self.storage.info || luma_rows.start > luma_rows.end {
-            return Err(splot_recon::ReconError::ArithmeticOverflow {
-                context: "deblocked source row geometry",
-            });
-        }
-        let sub_y = usize::from(self.storage.info.pixel_format().subsampling_y());
-        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-            let Some(storage) = self.storage.planes[plane.index()] else {
-                continue;
-            };
-            let source = source.plane(plane)?;
-            let shift = usize::from(plane != PlaneId::Y) * sub_y;
-            let start = luma_rows.start >> shift;
-            let end = luma_rows.end.div_ceil(1 << shift);
-            if start > end
-                || end > storage.height
-                || source.stride_samples() != storage.stride
-                || source.storage_size().width() != storage.width
-                || (start << shift) < self.final_luma_rows
-            {
-                return Err(splot_recon::ReconError::ArithmeticOverflow {
-                    context: "deblocked source row geometry",
-                });
-            }
-            let sample_start = start * storage.stride;
-            let sample_end = end * storage.stride;
-            let source = source.samples().get(sample_start..sample_end).ok_or(
-                splot_recon::ReconError::ArithmeticOverflow {
-                    context: "deblocked source row geometry",
-                },
-            )?;
-            if sample_end > storage.len {
-                return Err(splot_recon::ReconError::ArithmeticOverflow {
-                    context: "deblocked source row geometry",
-                });
-            } // SAFETY: the mutable owner lends only unpublished rows in bounds.
-            unsafe {
-                core::slice::from_raw_parts_mut(
-                    storage.samples.as_ptr().add(sample_start),
-                    sample_end - sample_start,
-                )
-            }
-            .copy_from_slice(source);
-        }
-        Ok(())
-    }
-
-    /// Lends only a checked band below the immutable final-row frontier.
-    pub(crate) fn with_plane_rows_mut<R>(
-        &mut self,
-        plane: PlaneId,
-        start: usize,
-        end: usize,
-        f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
-    ) -> Option<R> {
-        let storage = self.storage.planes[plane.index()]?;
-        let shift = usize::from(plane != PlaneId::Y)
-            * usize::from(self.storage.info.pixel_format().subsampling_y());
-        if start > end || end > storage.height || (start << shift) < self.final_luma_rows {
-            return None;
-        }
-        let sample_start = start.checked_mul(storage.stride)?;
-        let sample_end = end.checked_mul(storage.stride)?;
-        if sample_end > storage.len {
-            return None;
-        } // SAFETY: the mutable owner lends only unpublished rows in bounds.
-        let samples = unsafe {
-            core::slice::from_raw_parts_mut(
-                storage.samples.as_ptr().add(sample_start),
-                sample_end - sample_start,
-            )
-        };
-        Some(f(
-            samples,
-            storage.stride,
-            storage.width,
-            storage.height,
-            start,
-        ))
-    }
-
-    pub(crate) fn publish_final_rows(&mut self, rows: usize) -> bool {
-        let rows = rows.min(self.storage.info.storage_luma_size().height());
-        if rows < self.final_luma_rows {
-            return false;
-        }
-        self.final_luma_rows = rows;
-        true
-    }
-
-    pub(crate) fn lease(
-        &self,
-        luma_start: usize,
-        luma_end: usize,
-        margin: usize,
-    ) -> Option<DeblockedReadLease<T>> {
-        let ranges = self.lease_ranges(luma_start, luma_end, margin)?;
-        Some(DeblockedReadLease {
-            source: Arc::clone(&self.storage),
-            ranges,
-        })
-    }
-
-    /// Reuses one serial reader's storage owner for another checked stripe.
-    pub(crate) fn retarget_lease(
-        &self,
-        lease: &mut DeblockedReadLease<T>,
-        luma_start: usize,
-        luma_end: usize,
-        margin: usize,
-    ) -> bool {
-        if !Arc::ptr_eq(&self.storage, &lease.source) {
-            return false;
-        }
-        let Some(ranges) = self.lease_ranges(luma_start, luma_end, margin) else {
-            return false;
-        };
-        lease.ranges = ranges;
-        true
-    }
-
-    fn lease_ranges(
-        &self,
-        luma_start: usize,
-        luma_end: usize,
-        margin: usize,
-    ) -> Option<[Option<(usize, usize)>; 3]> {
-        let luma_height = self.storage.info.storage_luma_size().height();
-        let needed = luma_end
-            .checked_add(margin << usize::from(self.storage.info.pixel_format().subsampling_y()))?
-            .min(luma_height);
-        if luma_start >= luma_end || luma_end > luma_height || needed > self.final_luma_rows {
-            return None;
-        }
-        let sub_y = usize::from(self.storage.info.pixel_format().subsampling_y());
-        let mut ranges = [None; 3];
-        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-            let Some(storage) = self.storage.planes[plane.index()] else {
-                continue;
-            };
-            let shift = usize::from(plane != PlaneId::Y) * sub_y;
-            ranges[plane.index()] =
-                Some(window_bounds((luma_start, luma_end), shift, margin, storage.height).ok()?);
-        }
-        Some(ranges)
-    }
-}
-
-impl<T: ReconSample> DeblockedStorage<T> {
-    /// Builds an immutable view only for rows released through `lease`.
-    fn plane(&self, plane: PlaneId, range: (usize, usize)) -> Option<FramePlane<'_, T>> {
-        let storage = self.planes[plane.index()]?;
-        let (start, end) = range;
-        let sample_start = start.checked_mul(storage.stride)?;
-        let sample_end = end.checked_mul(storage.stride)?;
-        if start >= end || end > storage.height || sample_end > storage.len {
-            return None;
-        } // SAFETY: leases expose only checked immutable finalized rows.
-        let samples = unsafe {
-            core::slice::from_raw_parts(
-                storage.samples.as_ptr().add(sample_start),
-                sample_end - sample_start,
-            )
-        };
-        Some(FramePlane {
-            width: storage.width,
-            height: storage.height,
-            stride: storage.stride,
-            storage_origin_y: start,
-            storage_rows: end - start,
-            samples,
-        })
-    }
-}
-
-#[cfg(test)]
-impl<T: ReconSample> Drop for DeblockedStorage<T> {
-    fn drop(&mut self) {
-        if let Some(recycled) = &self.recycled {
-            recycled.store(true, Ordering::SeqCst);
-        }
-    }
-}
-
-pub(crate) struct DeblockedReadLease<T: ReconSample> {
-    source: Arc<DeblockedStorage<T>>,
-    ranges: [Option<(usize, usize)>; 3],
-}
-
-impl<T: ReconSample> DeblockedReadLease<T> {
-    pub(crate) fn planes(&self) -> Option<DeblockedPlanes<'_, T>> {
-        Some(DeblockedPlanes {
-            y: self
-                .source
-                .plane(PlaneId::Y, self.ranges[PlaneId::Y.index()]?)?,
-            u: self.ranges[PlaneId::U.index()]
-                .and_then(|range| self.source.plane(PlaneId::U, range)),
-            v: self.ranges[PlaneId::V.index()]
-                .and_then(|range| self.source.plane(PlaneId::V, range)),
-        })
-    }
-}
 
 /// Why a stripe/window copy failed: inconsistent geometry, or storage that
 /// could not be reserved.
@@ -462,7 +117,6 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
 
     /// Views `samples` as the plane rows `origin_y..origin_y + rows` of a plane
     /// `width` wide and `height` tall, packed at `width` samples per row.
-    #[cfg(test)]
     pub(crate) fn window(
         samples: &'a [T],
         width: usize,
@@ -602,6 +256,158 @@ impl<'a, T: ReconSample> DeblockedPlanes<'a, T> {
             v: has_chroma
                 .then(|| FramePlane::new(workspace, PlaneId::V))
                 .flatten(),
+        })
+    }
+}
+
+/// One filter stripe's private copy of its deblocked input rows.
+///
+/// A stripe writes its output into the frame the deblock ran on, so it reads
+/// its input from this copy; the rows above it come from the carry, because the
+/// stripe above may already have overwritten them in the frame.
+#[derive(Default)]
+pub(crate) struct DeblockedWindow<T> {
+    planes: [Vec<T>; 3],
+    rows: [Option<(usize, usize)>; 3],
+    sizes: [(usize, usize); 3],
+}
+
+impl<T: ReconSample> DeblockedWindow<T> {
+    pub(crate) fn from_samples(mut samples: splot_recon::FramePlaneSamples<T>) -> Self {
+        Self {
+            planes: [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| samples.take(plane)),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn into_samples(self) -> splot_recon::FramePlaneSamples<T> {
+        let [y, u, v] = self.planes;
+        splot_recon::FramePlaneSamples::new(y, Some(u), Some(v))
+    }
+
+    /// Forgets the rows a previous frame left in this carry.
+    pub(crate) fn clear(&mut self) {
+        self.rows = [None; 3];
+    }
+
+    /// Copies stripe `luma` and `margin` rows around it: rows the carry holds
+    /// from it, the rest from the frame. The carry then keeps this window's
+    /// rows the next stripe's window shares.
+    pub(crate) fn fill(
+        &mut self,
+        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
+        carry: &mut Self,
+        luma: (usize, usize),
+        margin: usize,
+    ) -> crate::Result<()> {
+        self.copy_window(frame, Some(carry), luma, margin)
+    }
+
+    /// Fills this window for the stripe after the one it last held, when that
+    /// stripe ran before this call: the rows both share move down in place,
+    /// so the window is its own carry.
+    pub(crate) fn slide(
+        &mut self,
+        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
+        luma: (usize, usize),
+        margin: usize,
+    ) -> crate::Result<()> {
+        self.copy_window(frame, None, luma, margin)
+    }
+
+    fn copy_window(
+        &mut self,
+        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
+        mut carry: Option<&mut Self>,
+        luma: (usize, usize),
+        margin: usize,
+    ) -> crate::Result<()> {
+        let state = || crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState;
+        let sub_y = usize::from(frame.info().pixel_format().subsampling_y());
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            let index = plane.index();
+            let held = self.rows[index].take();
+            let Some((width, height)) = frame.plane_size(plane) else {
+                if let Some(carry) = carry.as_deref_mut() {
+                    carry.rows[index] = None;
+                }
+                continue;
+            };
+            let shift = usize::from(plane != PlaneId::Y) * sub_y;
+            let (start, end) = window_bounds(luma, shift, margin, height).map_err(|_| state())?;
+            let alloc = |_| splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "filter stripe window",
+            };
+            let held = held.filter(|_| self.sizes[index] == (width, height));
+            let samples = &mut self.planes[index];
+            let shared = |(held_start, held_end): (usize, usize)| {
+                (held_start <= start && start < held_end).then(|| {
+                    let next = held_end.min(end);
+                    (
+                        next,
+                        (start - held_start) * width..(next - held_start) * width,
+                    )
+                })
+            };
+            let mut next = start;
+            match carry.as_deref() {
+                Some(carry) => {
+                    samples.clear();
+                    samples
+                        .try_reserve_exact((end - start) * width)
+                        .map_err(alloc)?;
+                    if let Some((kept, rows)) = carry.rows[index].and_then(shared) {
+                        next = kept;
+                        samples.extend_from_slice(carry.planes[index].get(rows).ok_or_else(state)?);
+                    }
+                }
+                None => match held.and_then(shared) {
+                    Some((kept, rows)) => {
+                        let count = samples.get(rows.clone()).ok_or_else(state)?.len();
+                        samples.copy_within(rows, 0);
+                        samples.truncate(count);
+                        next = kept;
+                    }
+                    None => samples.clear(),
+                },
+            }
+            samples
+                .try_reserve_exact((end - next) * width)
+                .map_err(alloc)?;
+            if next < end {
+                frame
+                    .append_rows(plane, next, end, samples)
+                    .ok_or_else(state)?;
+            }
+            if let Some(carry) = carry.as_deref_mut() {
+                let tail = (luma.1 >> shift).saturating_sub(margin).clamp(start, end);
+                let kept = samples.get((tail - start) * width..).ok_or_else(state)?;
+                let carried = &mut carry.planes[index];
+                carried.clear();
+                carried.try_reserve_exact(kept.len()).map_err(alloc)?;
+                carried.extend_from_slice(kept);
+                carry.rows[index] = Some((tail, end));
+            }
+            self.rows[index] = Some((start, end));
+            self.sizes[index] = (width, height);
+        }
+        frame
+            .release_rows(luma.1)
+            .then_some(())
+            .ok_or_else(|| state().into())
+    }
+
+    pub(crate) fn planes(&self) -> Option<DeblockedPlanes<'_, T>> {
+        let plane = |index: usize| {
+            let (start, end) = self.rows[index]?;
+            let (width, height) = self.sizes[index];
+            FramePlane::window(&self.planes[index], width, height, start, end - start)
+        };
+        Some(DeblockedPlanes {
+            y: plane(PlaneId::Y.index())?,
+            u: plane(PlaneId::U.index()),
+            v: plane(PlaneId::V.index()),
         })
     }
 }
@@ -820,7 +626,8 @@ pub(crate) enum StripeOutputPlane {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StripeInitialization {
     CopyAll,
-    /// The caller proves every destination sample is written before publication.
+    /// The caller proves every destination sample is written, or already holds
+    /// its source sample, before publication.
     FullyOverwritten,
 }
 

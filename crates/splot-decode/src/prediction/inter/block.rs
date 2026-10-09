@@ -187,7 +187,6 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     /// `TileDecodeScratch`'s `Default` reserves a whole reconstruction scratch,
     /// which a placeholder would build and discard on every frame.
     tile: Option<tile::TileDecodeScratch<T>>,
-    temporal_context: Option<TemporalMvContext>,
     /// One record set per frame in flight, so none is dropped and rebuilt.
     frame_filter_records: Vec<crate::filters::wienerns_lr::FrameFilterRecords>,
     /// The payload plan's framing, work units and tile CDFs, kept across frames.
@@ -219,13 +218,9 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         records
     }
 
-    /// Takes back the plane buffers the last frame's filter phase retired.
-    pub(crate) fn reclaim_retired_planes(&mut self) -> splot_recon::FramePlaneSamples<T> {
-        let retired = self
-            .frame_filter_records
-            .last_mut()
-            .map(|records| &mut records.retired_planes);
-        T::reclaim_planes(retired.unwrap_or(&mut splot_recon::RetiredFramePlanes::default()))
+    /// Plane buffers for a new workspace, taken from the decode's pool.
+    pub(crate) fn pooled_planes(&self) -> splot_recon::FramePlaneSamples<T> {
+        splot_recon::FramePlaneSamples::default()
             .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes()))
     }
 
@@ -549,21 +544,16 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         initial_frame_cdfs,
         qindex,
     } = setup;
-    let temporal_context = prelude.run(
-        scratch
-            .temporal_context
-            .get_or_insert_with(TemporalMvContext::empty),
-        core,
-        ref_frame_idx,
-        reference,
-    )?;
+    let mut lease =
+        crate::support::decode_buffers::DecodeBuffers::lend_temporal(scratch.buffers.as_deref());
+    let temporal_context = prelude.run(&mut lease.temporal, core, ref_frame_idx, reference)?;
     let mut tile_scratch = scratch.tile.take().unwrap_or_default();
     tile_scratch.buffers.clone_from(&scratch.buffers);
     let previous = final_segment_ids(core, reference, params.mi_rows, params.mi_cols);
     let segment_ids = if previous.is_some() {
         None
     } else {
-        Some(products.segment_ids(params.mi_rows, params.mi_cols)?)
+        products.segment_ids(params.mi_rows, params.mi_cols, segmentation_enabled(core))?
     };
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
         tile_scratch,
@@ -605,6 +595,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         filter_inputs,
         segment_ids,
     })
+}
+
+pub(crate) fn segmentation_enabled(core: &FrameHeaderCore) -> bool {
+    core.segmentation_params
+        .as_ref()
+        .is_some_and(|seg| seg.segmentation_enabled)
 }
 
 fn final_segment_ids<'a, T: ReconSample>(

@@ -165,7 +165,7 @@ pub(crate) enum CoeffCdfSelector {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffCdfRows {
     pub(crate) coeff_base: CoeffBaseCdfRows,
     pub(crate) coeff_base_ph: CoeffBasePhCdfRows,
@@ -186,7 +186,7 @@ pub(crate) struct CoeffCdfRows {
 }
 
 impl CoeffCdfRows {
-    pub(crate) fn from_defaults() -> Self {
+    pub(crate) const fn from_defaults() -> Self {
         Self {
             coeff_base: DEFAULT_COEFF_BASE_CDF,
             coeff_base_ph: DEFAULT_COEFF_BASE_PH_CDF,

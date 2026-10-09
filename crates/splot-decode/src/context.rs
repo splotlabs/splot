@@ -5,12 +5,15 @@
 //! parsed-stream planning entry points.
 
 use core::num::NonZeroUsize;
+use std::io::{Cursor, Read, Seek};
 
 use splot_parallel::WorkerPool;
 
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
-use crate::bitstream::byte_stream::{PreparedByteStream, plan_byte_stream, prepare_byte_stream};
+use crate::bitstream::byte_stream::{
+    PreparedInput, PreparedStream, ReadSeek, plan_byte_stream, prepare_stream,
+};
 use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
@@ -91,78 +94,103 @@ impl DecodeContext {
         self.pool.install(|| plan_byte_stream(bytes, &options))
     }
 
-    fn prepare_bytes<'a>(
+    fn run<T: Send>(
         &self,
-        bytes: &'a [u8],
+        reader: &mut dyn ReadSeek,
         options: &DecodeOptions,
-    ) -> Result<PreparedByteStream<'a>> {
-        self.pool.install(|| prepare_byte_stream(bytes, options))
+        decode: impl FnOnce(&PreparedStream, &mut dyn ReadSeek) -> Result<T> + Send,
+    ) -> Result<T> {
+        let hashes = self.session.take_record_hashes();
+        let prepared = self
+            .pool
+            .install(|| prepare_stream(reader, options, hashes))?;
+        let result = self.pool.install(|| decode(&prepared, reader));
+        if let PreparedInput::Ivf(_, _, hashes) = prepared.input {
+            self.session.keep_record_hashes(hashes.into_vec());
+        }
+        result
     }
 
-    fn decode_raw_with<'a>(
-        &self,
-        bytes: &'a [u8],
-        options: DecodeOptions,
-        decode: impl FnOnce(
-            &'a [u8],
-            &PreparedByteStream<'a>,
-            &DecodeOptions,
-            &crate::pipeline::DecodeSession,
-        ) -> Result<()>
-        + Send,
-    ) -> Result<()> {
-        let prepared = self.prepare_bytes(bytes, &options)?;
-        self.pool
-            .install(|| decode(bytes, &prepared, &options, &self.session))
-    }
-
-    /// Decodes the supported envelope and returns a deterministic hash report.
-    ///
-    /// Runs the same bounded byte planning as [`Self::plan_bytes`] first so
-    /// malformed sources, resource-limit failures, layer selection, and
-    /// planner-level unsupported structures stay transactional. The supported
-    /// decode envelope is tracked in `docs/DECODER-SUPPORT-MATRIX.toml`.
+    /// [`Self::decode_hash_report_reader`] over in-memory bytes.
     ///
     /// # Errors
-    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
-    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
-    /// failures, or reconstruction model errors.
+    /// See [`Self::decode_hash_report_reader`].
     pub fn decode_hash_report_bytes(
         &self,
         bytes: &[u8],
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        let prepared = self.prepare_bytes(bytes, &options)?;
-        self.pool.install(|| {
+        self.decode_hash_report_reader(Cursor::new(bytes), options)
+    }
+
+    /// Decodes the supported envelope and returns a deterministic hash report.
+    ///
+    /// Plans the whole input first (see [`Self::plan_bytes`]) so malformed
+    /// sources, resource-limit failures, layer selection, and planner-level
+    /// unsupported structures stay transactional; then reads the input again
+    /// and holds only the IVF frame records still being decoded. The supported
+    /// decode envelope is tracked in `docs/DECODER-SUPPORT-MATRIX.toml`.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for read failures, malformed sources,
+    /// unsupported structures, runtime-tier rejections, resource-limit
+    /// failures, worker-pool failures, or reconstruction model errors.
+    pub fn decode_hash_report_reader<R: Read + Seek + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+    ) -> Result<DecodeHashReport> {
+        self.decode_hash_report(&mut reader, options)
+    }
+
+    fn decode_hash_report(
+        &self,
+        reader: &mut dyn ReadSeek,
+        options: DecodeOptions,
+    ) -> Result<DecodeHashReport> {
+        self.run(reader, &options, |prepared, reader| {
             crate::output::hash::decode_hash_report_from_plan(
-                bytes,
-                prepared.parsed(),
+                prepared,
+                reader,
                 &options,
-                prepared.plan(),
                 self.threads(),
                 &self.session,
             )
         })
     }
 
+    /// [`Self::decode_discard_reader`] over in-memory bytes.
+    ///
+    /// # Errors
+    /// See [`Self::decode_discard_reader`].
+    pub fn decode_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
+        self.decode_discard_reader(Cursor::new(bytes), options)
+    }
+
     /// Decodes the supported envelope and discards each displayed frame.
     ///
-    /// Runs the same bounded byte planning as [`Self::decode_hash_report_bytes`]
-    /// and waits for each displayed frame to settle, but does not hash or
+    /// Plans and reads the input like [`Self::decode_hash_report_reader`] and
+    /// waits for each displayed frame to settle, but does not hash or
     /// serialize its samples.
     ///
     /// # Errors
-    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
-    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
-    /// failures, or reconstruction model errors.
-    pub fn decode_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
-        let prepared = self.prepare_bytes(bytes, &options)?;
-        self.pool.install(|| {
+    /// Returns [`crate::DecodeError`] for read failures, malformed sources,
+    /// unsupported structures, runtime-tier rejections, resource-limit
+    /// failures, worker-pool failures, or reconstruction model errors.
+    pub fn decode_discard_reader<R: Read + Seek + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+    ) -> Result<()> {
+        self.decode_discard(&mut reader, options)
+    }
+
+    fn decode_discard(&self, reader: &mut dyn ReadSeek, options: DecodeOptions) -> Result<()> {
+        self.run(reader, &options, |prepared, reader| {
             crate::pipeline::emit_frames_from_prepared(
-                bytes,
-                prepared.parsed(),
+                prepared,
+                reader,
                 &options,
-                prepared.plan(),
                 &self.session,
                 |_| Ok(()),
                 |_| Ok(()),
@@ -170,30 +198,42 @@ impl DecodeContext {
         })
     }
 
-    /// Decodes the supported envelope and streams raw sample bytes.
-    ///
-    /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`]).
-    /// Each displayed frame is written before its output-only decoded storage
-    /// is reclaimed; the complete output is not retained in decoder memory.
+    /// [`Self::decode_raw_reader`] over in-memory bytes.
     ///
     /// # Errors
-    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
-    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
-    /// failures, reconstruction model errors, raw serialization errors, or
-    /// caller-writer I/O errors.
+    /// See [`Self::decode_raw_reader`].
     pub fn decode_raw_bytes<W: std::io::Write + Send>(
         &self,
         bytes: &[u8],
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.decode_raw_with(bytes, options, move |bytes, prepared, options, session| {
+        self.decode_raw_reader(Cursor::new(bytes), options, writer)
+    }
+
+    /// Decodes the supported envelope and streams raw sample bytes.
+    ///
+    /// Plans and reads the input like [`Self::decode_hash_report_reader`].
+    /// Each displayed frame is written before its output-only decoded storage
+    /// is reclaimed; the complete output is not retained in decoder memory.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for read failures, malformed sources,
+    /// unsupported structures, runtime-tier rejections, resource-limit
+    /// failures, worker-pool failures, reconstruction model errors, raw
+    /// serialization errors, or caller-writer I/O errors.
+    pub fn decode_raw_reader<R: Read + Seek + Send, W: std::io::Write + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+        writer: W,
+    ) -> Result<()> {
+        self.run(&mut reader, &options, |prepared, reader| {
             crate::output::raw::write_raw_stream_from_plan(
-                bytes,
-                prepared.parsed(),
-                options,
-                prepared.plan(),
-                session,
+                prepared,
+                reader,
+                &options,
+                &self.session,
                 writer,
             )
         })
@@ -207,45 +247,64 @@ impl DecodeContext {
     /// temporary sample-byte buffer is produced.
     ///
     /// # Errors
-    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
-    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
-    /// failures, reconstruction model errors, or output-effect errors.
-    pub fn decode_raw_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
-        self.decode_raw_with(bytes, options, |bytes, prepared, options, session| {
+    /// Returns [`crate::DecodeError`] for read failures, malformed sources,
+    /// unsupported structures, runtime-tier rejections, resource-limit
+    /// failures, worker-pool failures, reconstruction model errors, or
+    /// output-effect errors.
+    pub fn decode_raw_discard_reader<R: Read + Seek + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+    ) -> Result<()> {
+        self.decode_raw_discard(&mut reader, options)
+    }
+
+    fn decode_raw_discard(&self, reader: &mut dyn ReadSeek, options: DecodeOptions) -> Result<()> {
+        self.run(reader, &options, |prepared, reader| {
             crate::output::raw::discard_raw_stream_from_plan(
-                bytes,
-                prepared.parsed(),
-                options,
-                prepared.plan(),
-                session,
+                prepared,
+                reader,
+                &options,
+                &self.session,
             )
         })
     }
 
-    /// Decodes the supported envelope and streams a Y4M stream.
-    ///
-    /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`]).
-    /// The stream header is written with the first displayed frame, and each
-    /// frame is written before its output-only decoded storage is reclaimed.
+    /// [`Self::decode_y4m_reader`] over in-memory bytes.
     ///
     /// # Errors
-    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
-    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
-    /// failures, reconstruction model errors, Y4M serialization errors, or
-    /// caller-writer I/O errors.
+    /// See [`Self::decode_y4m_reader`].
     pub fn decode_y4m_bytes<W: std::io::Write + Send>(
         &self,
         bytes: &[u8],
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        let prepared = self.prepare_bytes(bytes, &options)?;
-        self.pool.install(|| {
+        self.decode_y4m_reader(Cursor::new(bytes), options, writer)
+    }
+
+    /// Decodes the supported envelope and streams a Y4M stream.
+    ///
+    /// Plans and reads the input like [`Self::decode_hash_report_reader`].
+    /// The stream header is written with the first displayed frame, and each
+    /// frame is written before its output-only decoded storage is reclaimed.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for read failures, malformed sources,
+    /// unsupported structures, runtime-tier rejections, resource-limit
+    /// failures, worker-pool failures, reconstruction model errors, Y4M
+    /// serialization errors, or caller-writer I/O errors.
+    pub fn decode_y4m_reader<R: Read + Seek + Send, W: std::io::Write + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+        writer: W,
+    ) -> Result<()> {
+        self.run(&mut reader, &options, |prepared, reader| {
             crate::output::y4m::write_y4m_stream_to_writer(
-                bytes,
-                prepared.parsed(),
+                prepared,
+                reader,
                 &options,
-                prepared.plan(),
                 &self.session,
                 writer,
             )

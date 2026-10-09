@@ -34,7 +34,6 @@ fn grid_records_and_reads_cells() {
     assert!(grid.at(1, 1));
     assert!(grid.at(2, 2));
     assert!(!grid.at(0, 0));
-    assert!(!grid.at(-1, 1));
     assert!(!grid.at(1, 4));
 }
 

@@ -26,9 +26,14 @@ use std::{
 mod grid;
 
 pub(crate) use grid::DeblockGridStorage;
+/// Mode-info rows above itself that a horizontal edge reads.
+const HORIZONTAL_EDGE_REACH_MI: usize = 2;
+
 #[cfg(test)]
 use grid::MiCell;
-use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, build_mi_grid, overlay_mi_grid};
+use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, RowOrder};
+
+use crate::pipeline::frame_progress::FrontierRows;
 
 const MI_SIZE: usize = 4;
 
@@ -39,22 +44,38 @@ const HORIZONTAL_TX_CANDIDATE: u8 = 2;
 const SUB_PU_CANDIDATE: u8 = 4;
 const COVERED_CANDIDATE: u8 = 8;
 
+/// Mode-info positions and transform sizes are stored narrow: a frame holds
+/// one record per transform block, so the record size is the frame's
+/// deblock-record footprint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeblockPredictionUnit {
-    pub(crate) base_r: usize,
-    pub(crate) base_c: usize,
-    pub(crate) default_sub_pu_tx: usize,
+    pub(crate) base_r: u32,
+    pub(crate) base_c: u32,
+    pub(crate) default_sub_pu_tx: u8,
+}
+
+impl DeblockPredictionUnit {
+    pub(crate) const fn new(base_r: usize, base_c: usize, default_sub_pu_tx: usize) -> Self {
+        Self {
+            base_r: base_r as u32,
+            base_c: base_c as u32,
+            default_sub_pu_tx: default_sub_pu_tx as u8,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeblockSubPuSize {
-    pub(crate) width: usize,
-    pub(crate) height: usize,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
 }
 
 impl DeblockSubPuSize {
     pub(crate) const fn new(width: usize, height: usize) -> Self {
-        Self { width, height }
+        Self {
+            width: width as u16,
+            height: height as u16,
+        }
     }
 
     pub(crate) const fn square(size: usize) -> Self {
@@ -64,16 +85,16 @@ impl DeblockSubPuSize {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DeblockBlock {
-    pub(crate) r: usize,
-    pub(crate) c: usize,
+    pub(crate) r: u32,
+    pub(crate) c: u32,
     pub(crate) luma_prediction: DeblockPredictionUnit,
     pub(crate) chroma_prediction: DeblockPredictionUnit,
-    pub(crate) chroma_base_r: usize,
-    pub(crate) chroma_base_c: usize,
-    pub(crate) n4w: usize,
-    pub(crate) n4h: usize,
-    pub(crate) luma_tx: usize,
-    pub(crate) chroma_tx: Option<usize>,
+    pub(crate) chroma_base_r: u32,
+    pub(crate) chroma_base_c: u32,
+    pub(crate) n4w: u32,
+    pub(crate) n4h: u32,
+    pub(crate) luma_tx: u8,
+    pub(crate) chroma_tx: Option<u8>,
     pub(crate) sub_pu_size: Option<DeblockSubPuSize>,
     pub(crate) chroma_transform_only: bool,
     pub(crate) qindex: u32,
@@ -197,24 +218,25 @@ impl EdgeBlock<'_> {
     }
 
     fn tx_base(self, plane: usize) -> (usize, usize) {
-        if plane == 0 {
+        let (r, c) = if plane == 0 {
             (self.block.r, self.block.c)
         } else if let Some(transform) = self.chroma_transform {
             (transform.chroma_base_r, transform.chroma_base_c)
         } else {
             (self.block.chroma_base_r, self.block.chroma_base_c)
-        }
+        };
+        (r as usize, c as usize)
     }
 
     fn tx(self, plane: usize) -> usize {
-        if plane == 0 {
+        usize::from(if plane == 0 {
             self.block.luma_tx
         } else {
             self.chroma_transform
                 .and_then(|transform| transform.chroma_tx)
                 .or(self.block.chroma_tx)
                 .unwrap_or(0)
-        }
+        })
     }
 }
 
@@ -233,6 +255,9 @@ pub(crate) struct FrameDeblock<'a> {
     records: DeblockRecords<'a>,
     grid: MiGridStorage,
     chroma: [Option<ChromaMiGridStorage>; 2],
+    /// Luma and chroma record orders the per-advance grid windows are laid
+    /// out from.
+    order: [RowOrder; 2],
     mi_rows: usize,
     filter: DeblockingFilterParams,
     tile_info: TileInfoSource<'a>,
@@ -264,6 +289,7 @@ pub(crate) struct OwnedDeblockRecords {
     pub(crate) chroma: ChromaDeblockRecords,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum DeblockRecords<'a> {
     Borrowed {
         blocks: &'a [DeblockBlock],
@@ -357,24 +383,14 @@ impl<'a> FrameDeblock<'a> {
         if filter.apply_deblocking_filter == [false; 4] {
             return Ok(None);
         }
-        let (sub_x, sub_y) = chroma_subsampling;
-        let grid = build_mi_grid(blocks, mi_rows, mi_cols, storage)?;
-        let mut chroma = [None, None];
-        for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
-            if !filter.apply_deblocking_filter[plane + 2] {
-                continue;
-            }
-            *slot = Some(overlay_mi_grid(
-                &grid,
-                chroma_blocks,
-                plane,
-                mi_rows,
-                mi_cols,
-                sub_x,
-                sub_y,
-                storage,
-            )?);
-        }
+        let (grid, chroma, order) = take_grids(
+            blocks,
+            chroma_blocks,
+            (mi_rows, mi_cols),
+            filter,
+            chroma_subsampling,
+            storage,
+        )?;
         Ok(Some(Self {
             records: DeblockRecords::Borrowed {
                 blocks,
@@ -382,6 +398,7 @@ impl<'a> FrameDeblock<'a> {
             },
             grid,
             chroma,
+            order,
             mi_rows,
             filter,
             tile_info: TileInfoSource::Borrowed(tile_info),
@@ -409,28 +426,19 @@ impl<'a> FrameDeblock<'a> {
         if filter.apply_deblocking_filter == [false; 4] {
             return Ok(None);
         }
-        let (sub_x, sub_y) = chroma_subsampling;
-        let storage = &mut records.grids;
-        let grid = build_mi_grid(&records.blocks, mi_rows, mi_cols, storage)?;
-        let mut chroma = [None, None];
-        for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
-            if filter.apply_deblocking_filter[plane + 2] {
-                *slot = Some(overlay_mi_grid(
-                    &grid,
-                    &records.chroma,
-                    plane,
-                    mi_rows,
-                    mi_cols,
-                    sub_x,
-                    sub_y,
-                    storage,
-                )?);
-            }
-        }
+        let (grid, chroma, order) = take_grids(
+            &records.blocks,
+            &records.chroma,
+            (mi_rows, mi_cols),
+            filter,
+            chroma_subsampling,
+            &mut records.grids,
+        )?;
         Ok(Some(Self {
             records: DeblockRecords::Owned(records),
             grid,
             chroma,
+            order,
             mi_rows,
             filter,
             tile_info: TileInfoSource::Owned(core),
@@ -448,44 +456,35 @@ impl<'a> FrameDeblock<'a> {
     /// bands filter exactly the samples one ascending walk does, and running
     /// them all up front leaves only the horizontal pass — which no row band can
     /// split, since consecutive horizontal edges overlap — pacing how early
-    /// [`Self::advance_source`] can call a stripe's rows final.
+    /// [`Self::advance_source`] can call a stripe's rows final. Off a parallel
+    /// pool it leaves the pass to the advances, which keeps the grids windowed.
     pub(crate) fn prime_vertical_pass<T: ReconSample>(
         &mut self,
-        workspace: &mut CurrentFrameWorkspace<T>,
+        frame: &mut FrontierRows<T>,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
         let range = self.next_pass_0_mi_row..self.mi_rows;
-        if range.is_empty() {
-            return Ok(());
-        }
-        let pixel_format = workspace.info().pixel_format();
-        let mut dimensions = [None; 3];
-        for (plane, slot) in dimensions.iter_mut().enumerate() {
-            let plane_id = plane_index_to_id(plane);
-            if workspace.plane(plane_id).is_ok() {
-                *slot = Some(coded_plane_dimensions(workspace, plane_id)?);
-            }
-        }
-        let (y, u, v) = workspace.as_frame_mut().into_planes();
-        let luma_bands = dimensions[0].map_or(0, |(_, height)| {
-            height.div_ceil(VERTICAL_BAND_MI_ROWS * MI_SIZE)
-        });
         let parallel = self.plane_parallel
             && splot_parallel::on_worker_pool()
             && splot_parallel::current_pool_width() > 1;
-        let mut jobs = Vec::new();
-        if parallel {
-            jobs.try_reserve(luma_bands.saturating_mul(3).saturating_add(3))
-                .map_err(|_| DeblockError::Workspace)?;
+        if range.is_empty() || !parallel {
+            return Ok(());
         }
-        let this = &*self;
-        let mut submit = |job| {
-            if parallel {
-                jobs.push(job);
-                Ok(())
-            } else {
-                this.run_plane_job(job)
-            }
+        self.fill_grids(range.clone())?;
+        let pixel_format = frame.info().pixel_format();
+        let dimensions = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| frame.plane_size(plane));
+        let [Some(y), u, v] = frame.planes_mut() else {
+            return Err(DeblockError::Workspace);
+        };
+        let luma_bands = dimensions[0].map_or(0, |(_, height)| {
+            height.div_ceil(VERTICAL_BAND_MI_ROWS * MI_SIZE)
+        });
+        let mut jobs = Vec::new();
+        jobs.try_reserve(luma_bands.saturating_mul(3).saturating_add(3))
+            .map_err(|_| DeblockError::Workspace)?;
+        let mut submit = |job| -> Result<(), DeblockError> {
+            jobs.push(job);
+            Ok(())
         };
         for (plane, samples) in [Some(y), u, v].into_iter().enumerate() {
             let (Some(samples), Some((width, height))) = (samples, dimensions[plane]) else {
@@ -505,10 +504,9 @@ impl<'a> FrameDeblock<'a> {
             ) else {
                 continue;
             };
-            let stride = samples.stride_samples();
+            let stride = width;
             let band_rows = (VERTICAL_BAND_MI_ROWS * MI_SIZE) >> plane_pass.plane_sub_y;
             let plane_samples = samples
-                .into_samples()
                 .get_mut(..stride.checked_mul(height).ok_or(DeblockError::Workspace)?)
                 .ok_or(DeblockError::Workspace)?;
             let band_samples = band_rows
@@ -553,15 +551,28 @@ impl<'a> FrameDeblock<'a> {
         Ok(())
     }
 
-    /// Deblocks only the mutable rows below a contiguous source's immutable
-    /// filter prefix, then releases the newly final prefix for read leases.
+    /// Deblocks the frame rows past its final prefix in place, then publishes
+    /// the newly final prefix for stripe windows.
     pub(crate) fn advance_source<T: ReconSample>(
         &mut self,
-        source: &mut crate::filters::source::DeblockedSource<T>,
+        source: &mut FrontierRows<T>,
         mi_row_end: usize,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
         let (ranges, pass_0_end, pass_1_end) = self.next_ranges(mi_row_end);
+        let reach = |rows: &Range<usize>, back: usize| {
+            (!rows.is_empty()).then(|| rows.start.saturating_sub(back)..rows.end)
+        };
+        let window = [
+            reach(&ranges[0], 0),
+            reach(&ranges[1], HORIZONTAL_EDGE_REACH_MI),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end));
+        if let Some(window) = window {
+            self.fill_grids(window)?;
+        }
         self.run_ranges_source(source, &ranges, bit_depth)?;
         self.next_pass_0_mi_row = pass_0_end;
         self.next_pass_1_mi_row = pass_1_end;
@@ -590,7 +601,7 @@ impl<'a> FrameDeblock<'a> {
 
     fn run_ranges_source<T: ReconSample>(
         &self,
-        source: &mut crate::filters::source::DeblockedSource<T>,
+        source: &mut FrontierRows<T>,
         ranges: &[core::ops::Range<usize>; 2],
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
@@ -723,10 +734,33 @@ impl<'a> FrameDeblock<'a> {
         self.mi_rows * MI_SIZE
     }
 
+    /// Lays every active plane's grid out over mode-info `rows`, widened to
+    /// whole chroma cell rows.
+    fn fill_grids(&mut self, rows: Range<usize>) -> Result<(), DeblockError> {
+        let rows = (rows.start & !1)..rows.end.saturating_add(rows.end & 1).min(self.mi_rows);
+        let blocks = self.records.blocks();
+        self.grid
+            .fill(blocks, &self.order[0], self.mi_rows, &rows)?;
+        for (plane, slot) in self.chroma.iter_mut().enumerate() {
+            if let Some(chroma) = slot {
+                chroma.fill(
+                    &self.grid,
+                    self.records.chroma(),
+                    &self.order[1],
+                    plane,
+                    self.mi_rows,
+                    &rows,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Hands the grid vectors back for the next frame to lay out over.
     pub(crate) fn release_grids(&mut self, storage: &mut DeblockGridStorage) {
         storage.cells = core::mem::take(&mut self.grid.cells);
         storage.candidates = core::mem::take(&mut self.grid.candidates);
+        storage.order = core::mem::take(&mut self.order);
         for (slot, storage) in self.chroma.iter_mut().zip(&mut storage.chroma) {
             if let Some(grid) = slot.as_mut() {
                 storage.0 = core::mem::take(&mut grid.cells);
@@ -749,6 +783,43 @@ impl<'a> FrameDeblock<'a> {
             }
         }
     }
+}
+
+type FrameGrids = (
+    MiGridStorage,
+    [Option<ChromaMiGridStorage>; 2],
+    [RowOrder; 2],
+);
+
+/// Takes the frame's grid vectors and orders its records by row; the grids
+/// stay empty until an advance lays a window out.
+fn take_grids(
+    blocks: &[DeblockBlock],
+    chroma_blocks: &ChromaDeblockRecords,
+    (mi_rows, mi_cols): (usize, usize),
+    filter: DeblockingFilterParams,
+    chroma_subsampling: (usize, usize),
+    storage: &mut DeblockGridStorage,
+) -> Result<FrameGrids, DeblockError> {
+    let mut order = core::mem::take(&mut storage.order);
+    order[0].sort(blocks.iter(), mi_rows)?;
+    let mut chroma = [None, None];
+    for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
+        if filter.apply_deblocking_filter[plane + 2] {
+            *slot = Some(ChromaMiGridStorage::new(
+                mi_cols,
+                chroma_subsampling,
+                storage,
+            ));
+        }
+    }
+    if chroma.iter().any(Option::is_some) {
+        order[1].sort(
+            chroma_blocks.blocks.iter().map(|record| &record.block),
+            mi_rows,
+        )?;
+    }
+    Ok((MiGridStorage::new(mi_cols, storage), chroma, order))
 }
 
 pub(crate) fn deblock_tip_frame<T: ReconSample>(
@@ -786,7 +857,9 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
             bit_depth,
         );
         let (width, height) = coded_plane_dimensions(workspace, plane_id)?;
-        let mut frame = workspace.as_frame_mut();
+        let mut frame = workspace
+            .as_frame_mut()
+            .map_err(|_| DeblockError::Workspace)?;
         let view = frame.plane_mut(plane_id).ok_or(DeblockError::Workspace)?;
         let stride = view.stride_samples();
         let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
@@ -965,8 +1038,9 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
                 0
             };
         for r in mi_row_range {
-            let row_start = r * mi_cols;
-            let row_candidates = &grid.candidates[row_start..row_start + mi_cols];
+            let row_candidates = grid
+                .candidate_row(r)
+                .ok_or(DeblockError::UncoveredMi { row: r, col: 0 })?;
             let chunks = row_candidates.chunks_exact(32);
             let tail = chunks.remainder();
             for (chunk_index, chunk) in chunks.enumerate() {
@@ -1318,7 +1392,7 @@ fn sub_pu_dimension(
         } else {
             (size.height, sub_y)
         };
-        return (dimension >> subsampling).max(1);
+        return (usize::from(dimension) >> subsampling).max(1);
     }
     let tx = if plane == 0 {
         info.block.luma_prediction.default_sub_pu_tx
@@ -1327,7 +1401,7 @@ fn sub_pu_dimension(
     };
     let dimensions = if pass == 0 { &TX_WIDTH } else { &TX_HEIGHT };
     dimensions
-        .get(tx)
+        .get(usize::from(tx))
         .and_then(|&size| usize::try_from(size).ok())
         .unwrap_or(1)
 }
@@ -1341,13 +1415,13 @@ fn sub_pu_base(
     sub_y: usize,
 ) -> (usize, usize) {
     let prediction = info.prediction(plane);
-    let block_x = (prediction.base_c * MI_SIZE) >> sub_x;
-    let block_y = (prediction.base_r * MI_SIZE) >> sub_y;
+    let block_x = (prediction.base_c as usize * MI_SIZE) >> sub_x;
+    let block_y = (prediction.base_r as usize * MI_SIZE) >> sub_y;
     let Some(size) = info.block.sub_pu_size else {
         return (block_x, block_y);
     };
-    let width = (size.width >> sub_x).max(1);
-    let height = (size.height >> sub_y).max(1);
+    let width = (usize::from(size.width) >> sub_x).max(1);
+    let height = (usize::from(size.height) >> sub_y).max(1);
     (
         block_x + x.saturating_sub(block_x) / width * width,
         block_y + y.saturating_sub(block_y) / height * height,
@@ -1444,8 +1518,8 @@ fn deblock_filter_edge_specialized<T: ReconSample, const PLANE: usize, const PAS
     let (tx_row_base, tx_col_base) = curr.tx_base(plane);
     let (prev_tx_row_base, prev_tx_col_base) = prev.tx_base(plane);
     let prediction = curr.prediction(plane);
-    let block_y = (prediction.base_r * MI_SIZE) >> plane_sub_y;
-    let block_x = (prediction.base_c * MI_SIZE) >> plane_sub_x;
+    let block_y = (prediction.base_r as usize * MI_SIZE) >> plane_sub_y;
+    let block_x = (prediction.base_c as usize * MI_SIZE) >> plane_sub_x;
     let skip = curr.block.skip;
     let tx_sz = curr.tx(plane);
     let prev_tx_sz = prev.tx(plane);

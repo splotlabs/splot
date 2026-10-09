@@ -5,7 +5,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, Read as _, Write as _};
+use std::io::{self, BufReader, BufWriter, Read as _, Seek as _, Write as _};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -16,8 +16,8 @@ use clap::{Args, ValueEnum};
 use serde::Serialize;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
-    DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeLimitError, DecodeLimitName,
-    DecodeOptions, DecodeOutputError, DecodeOutputOperation, DecodeRuntimeConfig, Y4mFrameRate,
+    DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOptions, DecodeOutputError,
+    DecodeOutputOperation, DecodeRuntimeConfig, Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -129,12 +129,6 @@ impl DecodeArgs {
             (DecodeOutputFormat::Null, _) => Some(DecodeOutputTarget::Null),
         }
     }
-}
-
-#[derive(Debug)]
-enum DecodeInputRead {
-    Bytes(Vec<u8>),
-    Limit(DecodeLimitError),
 }
 
 fn render_text_diagnostic(report: &DecodeDiagnosticReport, output_format: DecodeOutputFormat) {
@@ -459,43 +453,34 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
         .with_y4m_frame_rate_override(args.frame_rate);
-    let input = read_decode_input(&args.input, &options)?;
-    let report = match input {
-        DecodeInputRead::Bytes(bytes) => {
-            let context = DecodeContext::new(
-                DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
-            )?;
-            match target {
-                DecodeOutputTarget::Null => match context.decode_discard_bytes(&bytes, options) {
-                    Ok(()) => return Ok(ExitCode::SUCCESS),
-                    Err(error) => decode_report_from_error(&error)?,
-                },
-                DecodeOutputTarget::Hash => {
-                    match context.decode_hash_report_bytes(&bytes, options) {
-                        Ok(report) => {
-                            render_hash_report(&report, args.json)?;
-                            return Ok(ExitCode::SUCCESS);
-                        }
-                        Err(error) => decode_report_from_error(&error)?,
-                    }
-                }
-                DecodeOutputTarget::Y4m { path } => {
-                    match decode_y4m_to_file(&context, &bytes, &options, path) {
-                        Ok(()) => return Ok(ExitCode::SUCCESS),
-                        Err(error) => decode_report_from_error(&error)?,
-                    }
-                }
-                DecodeOutputTarget::Raw { path } => {
-                    match decode_raw_to_file(&context, &bytes, &options, path) {
-                        Ok(()) => return Ok(ExitCode::SUCCESS),
-                        Err(error) => decode_report_from_error(&error)?,
-                    }
-                }
+    let input = open_decode_input(&args.input, &options)
+        .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
+    let context = DecodeContext::new(
+        DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
+    )?;
+    let report = match target {
+        DecodeOutputTarget::Null => match context.decode_discard_reader(input, options) {
+            Ok(()) => return Ok(ExitCode::SUCCESS),
+            Err(error) => decode_report_from_error(&error, &args.input)?,
+        },
+        DecodeOutputTarget::Hash => match context.decode_hash_report_reader(input, options) {
+            Ok(report) => {
+                render_hash_report(&report, args.json)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            Err(error) => decode_report_from_error(&error, &args.input)?,
+        },
+        DecodeOutputTarget::Y4m { path } => {
+            match decode_y4m_to_file(&context, input, &options, path) {
+                Ok(()) => return Ok(ExitCode::SUCCESS),
+                Err(error) => decode_report_from_error(&error, &args.input)?,
             }
         }
-        DecodeInputRead::Limit(source) => {
-            let error = DecodeError::Limit { source };
-            decode_report_from_error(&error)?
+        DecodeOutputTarget::Raw { path } => {
+            match decode_raw_to_file(&context, input, &options, path) {
+                Ok(()) => return Ok(ExitCode::SUCCESS),
+                Err(error) => decode_report_from_error(&error, &args.input)?,
+            }
         }
     };
 
@@ -512,26 +497,26 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
 
 fn decode_y4m_to_file(
     context: &DecodeContext,
-    bytes: &[u8],
+    input: Box<dyn DecodeInput>,
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
     publish_output(path, Y4M_OUTPUT, |writer| {
-        context.decode_y4m_bytes(bytes, *options, writer)
+        context.decode_y4m_reader(input, *options, writer)
     })
 }
 
 fn decode_raw_to_file(
     context: &DecodeContext,
-    bytes: &[u8],
+    input: Box<dyn DecodeInput>,
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
     if cfg!(unix) && path == Path::new("/dev/null") {
-        return context.decode_raw_discard_bytes(bytes, *options);
+        return context.decode_raw_discard_reader(input, *options);
     }
     publish_output(path, RAW_OUTPUT, |writer| {
-        context.decode_raw_bytes(bytes, *options, writer)
+        context.decode_raw_reader(input, *options, writer)
     })
 }
 
@@ -825,57 +810,29 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
     DecodeOutputError::io(operation, source).into()
 }
 
-fn read_decode_input(path: &Path, options: &DecodeOptions) -> Result<DecodeInputRead> {
-    let mut file = File::open(path)
-        .with_context(|| format!("failed to read input file: {}", path.display()))?;
+trait DecodeInput: io::Read + io::Seek + Send {}
 
-    if let Some(max_input_bytes) = options.limits().max_input_bytes().max_value() {
-        if let Ok(metadata) = file.metadata()
-            && let Some(error) = input_byte_limit_error(options, metadata.len())
-        {
-            return Ok(DecodeInputRead::Limit(error));
-        }
+impl<T: io::Read + io::Seek + Send> DecodeInput for T {}
 
-        let read_limit = max_input_bytes.checked_add(1).unwrap_or(max_input_bytes);
-        let mut bytes = sized_input_buffer(&file, Some(read_limit));
-        file.take(read_limit)
-            .read_to_end(&mut bytes)
-            .with_context(|| format!("failed to read input file: {}", path.display()))?;
-        let actual = bytes.len() as u64;
-        if let Some(error) = input_byte_limit_error(options, actual) {
-            return Ok(DecodeInputRead::Limit(error));
-        }
-
-        return Ok(DecodeInputRead::Bytes(bytes));
+/// Streams a seekable file; reads a pipe or FIFO into memory, as decode
+/// reads its input twice. One byte past the input limit is enough for the
+/// decoder to report the limit, so an endless pipe cannot exhaust memory.
+fn open_decode_input(path: &Path, options: &DecodeOptions) -> io::Result<Box<dyn DecodeInput>> {
+    let mut file = File::open(path)?;
+    if file.stream_position().is_ok() {
+        return Ok(Box::new(BufReader::new(file)));
     }
-
-    let mut bytes = sized_input_buffer(&file, None);
-    file.read_to_end(&mut bytes)
-        .with_context(|| format!("failed to read input file: {}", path.display()))?;
-    Ok(DecodeInputRead::Bytes(bytes))
-}
-
-/// Reserves the file's exact length so `read_to_end` never doubles past it.
-fn sized_input_buffer(file: &File, limit: Option<u64>) -> Vec<u8> {
+    let limit = options.limits().max_input_bytes().max_value();
     let mut bytes = Vec::new();
-    let Ok(metadata) = file.metadata() else {
-        return bytes;
-    };
-    let len = limit.map_or_else(|| metadata.len(), |limit| metadata.len().min(limit));
-    if let Ok(len) = usize::try_from(len) {
-        let _ = bytes.try_reserve_exact(len);
+    file.take(limit.map_or(u64::MAX, |limit| limit.saturating_add(1)))
+        .read_to_end(&mut bytes)?;
+    Ok(Box::new(io::Cursor::new(bytes)))
+}
+
+fn decode_report_from_error(error: &DecodeError, input: &Path) -> Result<DecodeDiagnosticReport> {
+    if let DecodeError::Input { source } = error {
+        anyhow::bail!("failed to read input file: {}: {source}", input.display());
     }
-    bytes
-}
-
-fn input_byte_limit_error(options: &DecodeOptions, actual: u64) -> Option<DecodeLimitError> {
-    options
-        .limits()
-        .ensure(DecodeLimitName::MaxInputBytes, actual)
-        .err()
-}
-
-fn decode_report_from_error(error: &DecodeError) -> Result<DecodeDiagnosticReport> {
     DecodeDiagnosticReport::from_decode_error(error)
         .ok_or_else(|| anyhow::anyhow!("failed to plan decode input: {error}"))
 }

@@ -27,16 +27,16 @@ pub(crate) fn record_inter_deblock_geometry(
     let (sub_x, sub_y) = chroma_subsampling(chroma_format);
     let chroma_subsampling = (u32::from(sub_x), u32::from(sub_y));
     let chroma_ref = frontier.chroma_ref_geometry();
-    let luma_prediction = crate::filters::deblock::DeblockPredictionUnit {
-        base_r: frontier.r,
-        base_c: frontier.c,
-        default_sub_pu_tx: super::residual::max_tx_size(frontier.b_size.index())?,
-    };
-    let chroma_prediction = crate::filters::deblock::DeblockPredictionUnit {
-        base_r: chroma_ref.row(),
-        base_c: chroma_ref.col(),
-        default_sub_pu_tx: super::residual::max_tx_size(chroma_ref.size().index())?,
-    };
+    let luma_prediction = crate::filters::deblock::DeblockPredictionUnit::new(
+        frontier.r,
+        frontier.c,
+        super::residual::max_tx_size(frontier.b_size.index())?,
+    );
+    let chroma_prediction = crate::filters::deblock::DeblockPredictionUnit::new(
+        chroma_ref.row(),
+        chroma_ref.col(),
+        super::residual::max_tx_size(chroma_ref.size().index())?,
+    );
     let inherited_chroma = chroma_ref.row() != frontier.r
         || chroma_ref.col() != frontier.c
         || chroma_ref.size() != frontier.b_size;
@@ -55,16 +55,16 @@ pub(crate) fn record_inter_deblock_geometry(
             .num_4x4_high()
             .map_err(|_| super::residual::residual_geometry_error())?;
         let block = crate::filters::deblock::DeblockBlock {
-            r: chroma_ref.row(),
-            c: chroma_ref.col(),
+            r: chroma_ref.row() as u32,
+            c: chroma_ref.col() as u32,
             luma_prediction,
             chroma_prediction,
-            chroma_base_r: chroma_ref.row(),
-            chroma_base_c: chroma_ref.col(),
-            n4w: chroma_n4w,
-            n4h: chroma_n4h,
-            luma_tx: chroma_tx,
-            chroma_tx: Some(chroma_tx),
+            chroma_base_r: chroma_ref.row() as u32,
+            chroma_base_c: chroma_ref.col() as u32,
+            n4w: chroma_n4w as u32,
+            n4h: chroma_n4h as u32,
+            luma_tx: chroma_tx as u8,
+            chroma_tx: Some(chroma_tx as u8),
             sub_pu_size,
             chroma_transform_only: false,
             qindex,
@@ -80,15 +80,15 @@ pub(crate) fn record_inter_deblock_geometry(
         for row4 in (0..n4h).step_by(tx_h4.max(1)) {
             for col4 in (0..n4w).step_by(tx_w4.max(1)) {
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
-                    r: frontier.r + row4,
-                    c: frontier.c + col4,
+                    r: (frontier.r + row4) as u32,
+                    c: (frontier.c + col4) as u32,
                     luma_prediction,
                     chroma_prediction,
-                    chroma_base_r: frontier.r + row4,
-                    chroma_base_c: frontier.c + col4,
-                    n4w: tx_w4,
-                    n4h: tx_h4,
-                    luma_tx: tx_size,
+                    chroma_base_r: (frontier.r + row4) as u32,
+                    chroma_base_c: (frontier.c + col4) as u32,
+                    n4w: tx_w4 as u32,
+                    n4h: tx_h4 as u32,
+                    luma_tx: tx_size as u8,
                     chroma_tx: None,
                     sub_pu_size,
                     chroma_transform_only: false,
@@ -136,19 +136,20 @@ pub(crate) fn record_inter_deblock_geometry(
                 let tx_w4 = (1usize << log2_width) / MI_SIZE;
                 let tx_h4 = (1usize << log2_height) / MI_SIZE;
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
-                    r: block.y / MI_SIZE,
-                    c: block.x / MI_SIZE,
+                    r: (block.y / MI_SIZE) as u32,
+                    c: (block.x / MI_SIZE) as u32,
                     luma_prediction,
                     chroma_prediction,
-                    chroma_base_r: block.y / MI_SIZE,
-                    chroma_base_c: block.x / MI_SIZE,
-                    n4w: tx_w4,
-                    n4h: tx_h4,
-                    luma_tx: block.tx_size,
+                    chroma_base_r: (block.y / MI_SIZE) as u32,
+                    chroma_base_c: (block.x / MI_SIZE) as u32,
+                    n4w: tx_w4 as u32,
+                    n4h: tx_h4 as u32,
+                    luma_tx: block.tx_size as u8,
                     chroma_tx:
                         crate::filters::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
                             tx_w4, tx_h4,
-                        ),
+                        )
+                        .map(|tx| tx as u8),
                     sub_pu_size,
                     chroma_transform_only: false,
                     qindex,
@@ -287,16 +288,8 @@ mod tests {
             false,
         )
         .unwrap();
-        let luma_prediction = crate::filters::deblock::DeblockPredictionUnit {
-            base_r: 2,
-            base_c: 3,
-            default_sub_pu_tx: 4,
-        };
-        let chroma_prediction = crate::filters::deblock::DeblockPredictionUnit {
-            base_r: 4,
-            base_c: 5,
-            default_sub_pu_tx: 6,
-        };
+        let luma_prediction = crate::filters::deblock::DeblockPredictionUnit::new(2, 3, 4);
+        let chroma_prediction = crate::filters::deblock::DeblockPredictionUnit::new(4, 5, 6);
         let sub_pu_size = crate::filters::deblock::DeblockSubPuSize::new(8, 16);
 
         retain_inter_prediction_metadata(
@@ -316,11 +309,7 @@ mod tests {
     #[test]
     fn skipped_64x128_420_chroma_keeps_one_transform_across_luma_chunks() {
         let mut records = crate::filters::deblock::ChromaDeblockRecords::default();
-        let prediction = crate::filters::deblock::DeblockPredictionUnit {
-            base_r: 128,
-            base_c: 96,
-            default_sub_pu_tx: 0,
-        };
+        let prediction = crate::filters::deblock::DeblockPredictionUnit::new(128, 96, 0);
 
         record_skipped_chroma_deblock_geometry(
             &mut records,

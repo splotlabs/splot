@@ -3,7 +3,9 @@
 
 //! Neighbour mode-info grid.
 //!
-//! The grid keeps two planes over one tile-sized mode-info lattice. The flag
+//! The grid keeps two planes over a window of two superblock rows of one tile:
+//! every § 7.12 probe reads the current superblock row or the row above it,
+//! so a plane row is reused once its superblock row is two rows old. The flag
 //! plane holds the syntax facts that neighbour context derivation reads while
 //! symbols are decoded; the motion plane holds the AV2 § 7.12 motion payload
 //! that the reference MV stack and the warp derivations read. Each plane
@@ -17,6 +19,7 @@ use super::{
     CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at,
 };
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
+use crate::tile::SbRowWindow;
 
 /// Syntax facts read by neighbour context derivation during symbol decode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -295,12 +298,13 @@ pub(super) struct GridPlanes {
 fn reset_grid_planes(
     planes: &mut GridPlanes,
     cells: usize,
+    tile_cells: usize,
 ) -> Result<(), std::collections::TryReserveError> {
     // A grid the split path builds per frame starts empty, so its planes come
     // from the spare set a retired grid left rather than up a growth ladder.
     take_spare_plane(&mut planes.flags, cells);
     take_spare_plane(&mut planes.motion, cells);
-    take_spare_plane(&mut planes.leaves, cells);
+    take_spare_plane(&mut planes.leaves, tile_cells);
     planes.flags.clear();
     planes.motion.clear();
     planes.leaves.clear();
@@ -350,6 +354,7 @@ pub(crate) struct NeighbourMvGrid {
     pub(super) origin_col: usize,
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
+    window: SbRowWindow,
     pub(super) planes: GridPlanes,
     /// Flag publications since the last [`NeighbourMvGrid::take_flag_log`],
     /// collected only while logging is on.
@@ -364,7 +369,7 @@ impl NeighbourMvGrid {
         mi_cols: core::ops::Range<usize>,
     ) -> Result<Self, TileGridConstructionError> {
         let mut grid = Self::default();
-        grid.reset_for_tile(mi_rows, mi_cols)?;
+        grid.reset_for_tile(mi_rows, mi_cols, SbRowWindow::WHOLE_TILE_SB_H4)?;
         Ok(grid)
     }
 
@@ -376,14 +381,20 @@ impl NeighbourMvGrid {
         &mut self,
         mi_rows: core::ops::Range<usize>,
         mi_cols: core::ops::Range<usize>,
+        sb_h4: usize,
     ) -> Result<(), TileGridConstructionError> {
-        let (rows, cols, cells) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
+        let (rows, cols, tile_cells) = tile_grid_dimensions(&mi_rows, &mi_cols)?;
         self.origin_row = mi_rows.start;
         self.origin_col = mi_cols.start;
         self.mi_rows = rows;
         self.mi_cols = cols;
-        reset_grid_planes(&mut self.planes, cells)
-            .map_err(|_| TileGridConstructionError::Allocation)?;
+        self.window = SbRowWindow::new(rows, sb_h4);
+        reset_grid_planes(
+            &mut self.planes,
+            self.window.plane_rows() * cols,
+            tile_cells,
+        )
+        .map_err(|_| TileGridConstructionError::Allocation)?;
         self.flag_log.clear();
         self.logging = false;
         Ok(())
@@ -436,6 +447,7 @@ impl NeighbourMvGrid {
         let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
             return;
         };
+        self.enter_sb_row(rows.start);
         let flags = NeighbourFlags {
             bits: NeighbourFlags::flag(syntax.is_inter, NeighbourFlags::IS_INTER)
                 | NeighbourFlags::flag(syntax.newmv[0], NeighbourFlags::NEWMV_LIST0)
@@ -468,6 +480,7 @@ impl NeighbourMvGrid {
             return;
         };
         self.motion_plane();
+        self.enter_sb_row(rows.start);
         let leaf = u32::try_from(self.planes.leaves.len()).unwrap_or(UNPUBLISHED_LEAF);
         if leaf == UNPUBLISHED_LEAF {
             return;
@@ -740,9 +753,28 @@ impl NeighbourMvGrid {
     /// plane no leaf has published into.
     fn motion_plane(&mut self) {
         if self.planes.motion.is_empty() {
-            let cells = self.mi_rows.saturating_mul(self.mi_cols);
+            let cells = self.planes.flags.len();
             self.planes.motion.resize(cells, EMPTY_MOTION_CELL);
         }
+    }
+
+    /// Moves the window down to the superblock row holding tile row `row`.
+    fn enter_sb_row(&mut self, row: usize) {
+        let Some(slide) = self.window.enter(row.saturating_sub(self.origin_row)) else {
+            return;
+        };
+        slide.apply(&mut self.planes.flags, self.mi_cols, None);
+        slide.apply(&mut self.planes.motion, self.mi_cols, EMPTY_MOTION_CELL);
+    }
+
+    /// Plane row of tile row `row`, `None` outside the readable window.
+    fn plane_row(&self, row: usize) -> Option<usize> {
+        self.window.plane_row(row.checked_sub(self.origin_row)?)
+    }
+
+    /// Whether an access touched a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.window.violated()
     }
 
     /// Plane row and column ranges covered by one leaf, `None` when the leaf
@@ -805,7 +837,7 @@ impl NeighbourMvGrid {
 
     /// Plane index range covering `cols` on grid row `rr`.
     fn row_span(&self, rr: usize, cols: &Range<usize>) -> Option<Range<usize>> {
-        let row_base = rr.checked_sub(self.origin_row)?.checked_mul(self.mi_cols)?;
+        let row_base = self.plane_row(rr)?.checked_mul(self.mi_cols)?;
         let start = row_base.checked_add(cols.start.checked_sub(self.origin_col)?)?;
         let end = row_base.checked_add(cols.end.checked_sub(self.origin_col)?)?;
         Some(start..end)
@@ -815,9 +847,9 @@ impl NeighbourMvGrid {
         if r < 0 || c < 0 {
             return None;
         }
-        let r = (r as usize).checked_sub(self.origin_row)?;
+        let r = self.plane_row(r as usize)?;
         let c = (c as usize).checked_sub(self.origin_col)?;
-        if r >= self.mi_rows || c >= self.mi_cols {
+        if c >= self.mi_cols {
             return None;
         }
         r.checked_mul(self.mi_cols)?.checked_add(c)

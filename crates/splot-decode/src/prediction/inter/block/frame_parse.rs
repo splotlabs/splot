@@ -109,7 +109,11 @@ impl<'payload> InterFrameParser<'payload> {
         let segment_ids = if previous.is_some() {
             None
         } else {
-            Some(products.segment_ids(params.mi_rows, params.mi_cols)?)
+            products.segment_ids(
+                params.mi_rows,
+                params.mi_cols,
+                super::segmentation_enabled(core),
+            )?
         };
         records.clear();
         let (unit_count, cdef_state, gdf_state, ccso_state) =
@@ -266,6 +270,7 @@ pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
         reference,
         ref_frame_idx,
         workspace,
+        &progress,
         filter_count,
         motion_field,
         motion_handle,

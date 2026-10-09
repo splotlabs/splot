@@ -29,6 +29,7 @@ use core::cell::UnsafeCell;
 use core::num::NonZeroUsize;
 use core::ptr::NonNull;
 use core::slice;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use splot_parallel::{CompletionCell, Condition, WatermarkCell};
@@ -90,6 +91,12 @@ struct PlaneStorage<T> {
     size: PlaneSize,
 }
 
+/// SAFETY: a plane table is dereferenced only through the row ownership rules
+/// of `FrameProgress`: published prefixes, leased stripes, the frontier's rows.
+unsafe impl<T: ReconSample> Send for PlaneStorage<T> {}
+/// SAFETY: as for `Send`; a shared table copy creates no sample access itself.
+unsafe impl<T: ReconSample> Sync for PlaneStorage<T> {}
+
 struct DirectWorkspace<T: ReconSample> {
     workspace: UnsafeCell<CurrentFrameWorkspace<T>>,
     info: DecodedFrameInfo,
@@ -102,12 +109,12 @@ unsafe impl<T: ReconSample> Send for DirectWorkspace<T> {}
 unsafe impl<T: ReconSample> Sync for DirectWorkspace<T> {}
 
 impl<T: ReconSample> DirectWorkspace<T> {
-    fn new(mut workspace: CurrentFrameWorkspace<T>) -> Self {
+    fn new(mut workspace: CurrentFrameWorkspace<T>) -> crate::Result<Self> {
         let info = workspace.info();
         let mut planes = [None, None, None];
         let sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(&workspace);
         {
-            let mut frame = workspace.as_frame_mut();
+            let mut frame = workspace.as_frame_mut()?;
             for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
                 let Some(view) = frame.plane_mut(plane) else {
                     continue;
@@ -144,11 +151,11 @@ impl<T: ReconSample> DirectWorkspace<T> {
                 });
             }
         }
-        Self {
+        Ok(Self {
             workspace: UnsafeCell::new(workspace),
             info,
             planes,
-        }
+        })
     }
 
     fn direct_region(&self, plane: PlaneId, start: usize, end: usize) -> Option<DirectPlaneRegion> {
@@ -203,6 +210,7 @@ pub(crate) struct DirectPlaneTarget {
     region: DirectPlaneRegion,
     progress: Arc<dyn DirectLeaseRelease>,
     stripe: usize,
+    deblocked: bool,
 }
 
 /// SAFETY: moving this unique disjoint-band capability transfers ownership.
@@ -233,6 +241,12 @@ impl DirectPlaneTarget {
 
     pub(crate) const fn is_u16(&self) -> bool {
         matches!(self.region.samples, DirectPlaneSamples::U16(_))
+    }
+
+    /// The region still holds the deblocked rows the frontier released to
+    /// this stripe's window.
+    pub(crate) const fn holds_deblocked(&self) -> bool {
+        self.deblocked
     }
 
     #[inline]
@@ -267,11 +281,13 @@ impl DirectPlaneRegion {
         self,
         progress: Arc<dyn DirectLeaseRelease>,
         stripe: usize,
+        deblocked: bool,
     ) -> DirectPlaneTarget {
         DirectPlaneTarget {
             region: self,
             progress,
             stripe,
+            deblocked,
         }
     }
 }
@@ -389,7 +405,17 @@ pub(crate) struct FrameProgress<T: ReconSample> {
     terminal_published: CompletionCell<()>,
     luma_height: usize,
     subsampling_y: usize,
+    info: DecodedFrameInfo,
+    /// The workspace's plane table, kept beside the lock so the frontier
+    /// reaches its own rows without taking it.
+    planes: [Option<PlaneStorage<T>>; 3],
+    /// [`UNCLAIMED`], [`RELEASED`], or the luma row end of the last stripe the
+    /// live [`FrontierRows`] handed to a filter job.
+    frontier: AtomicUsize,
 }
+
+const UNCLAIMED: usize = usize::MAX;
+const RELEASED: usize = usize::MAX - 1;
 
 impl<T: ReconSample> DirectLeaseRelease for FrameProgress<T> {
     fn release_hold(&self, stripe: usize) {
@@ -406,22 +432,20 @@ impl<T: ReconSample> FrameProgress<T> {
         self.buffers.as_ref()
     }
 
-    /// Opens the filtered workspace one pending frame's filter phase publishes
-    /// into, before that phase is handed to a worker.
-    ///
-    /// # Errors
-    ///
-    /// Returns the workspace allocation's own diagnostic.
-    pub(crate) fn recycled(
-        info: DecodedFrameInfo,
-        recycled: &mut splot_recon::FramePlaneSamples<T>,
+    /// Opens the workspace one pending frame's filter phase filters in place
+    /// and publishes, before that phase is handed to a worker.
+    pub(crate) fn from_workspace(
+        workspace: CurrentFrameWorkspace<T>,
         buffers: Option<&std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    ) -> Result<Self> {
+    ) -> crate::Result<Self> {
         let buffers = buffers.cloned();
-        let workspace =
-            DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?); // every row is published by a filter stripe before any consumer may read past the watermark
+        let info = workspace.info();
+        let workspace = DirectWorkspace::new(workspace)?;
         Ok(Self {
             buffers,
+            info,
+            planes: workspace.planes,
+            frontier: AtomicUsize::new(UNCLAIMED),
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
             spare_stripes: Mutex::new(Vec::new()),
@@ -432,17 +456,16 @@ impl<T: ReconSample> FrameProgress<T> {
         })
     }
 
-    pub(crate) fn reset(
-        &mut self,
-        info: DecodedFrameInfo,
-        recycled: &mut splot_recon::FramePlaneSamples<T>,
-    ) -> Result<()> {
-        let workspace =
-            DirectWorkspace::new(CurrentFrameWorkspace::new_recycled_from(info, recycled)?);
+    pub(crate) fn reset(&mut self, workspace: CurrentFrameWorkspace<T>) -> crate::Result<()> {
+        let info = workspace.info();
+        let workspace = DirectWorkspace::new(workspace)?;
         if let Some(layout) = self.layout.take() {
             *self.spare_stripes.get_mut() = layout.into_inner().stripes;
         }
         self.spare_stripes.get_mut().clear();
+        self.info = info;
+        self.planes = workspace.planes;
+        *self.frontier.get_mut() = UNCLAIMED;
         *self.workspace.get_mut() = Some(workspace);
         self.published_luma_rows.reset();
         self.terminal_published.reset();
@@ -453,7 +476,13 @@ impl<T: ReconSample> FrameProgress<T> {
 
     #[cfg(test)]
     pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
-        Self::recycled(info, &mut splot_recon::FramePlaneSamples::default(), None)
+        Self::from_workspace(
+            CurrentFrameWorkspace::new_recycled_from(
+                info,
+                &mut splot_recon::FramePlaneSamples::default(),
+            )?,
+            None,
+        )
     }
 
     /// Publishes the terminal watermark of a filter phase that ended.
@@ -535,6 +564,11 @@ impl<T: ReconSample> FrameProgress<T> {
             layout.stripes.get(stripe - 1)?.end
         };
         let end = layout.stripes.get(stripe)?.end;
+        let frontier = self.frontier.load(Ordering::Acquire);
+        if end > frontier {
+            return None;
+        }
+        let deblocked = frontier != UNCLAIMED;
         let workspace_guard = self.workspace.read();
         let workspace = workspace_guard.as_ref()?;
         let chroma_start = start >> self.subsampling_y;
@@ -557,9 +591,9 @@ impl<T: ReconSample> FrameProgress<T> {
         drop(workspace_guard);
         drop(layout);
         let progress: Arc<dyn DirectLeaseRelease> = self.clone();
-        let y = y.into_target(Arc::clone(&progress), stripe);
-        let u = u.map(|region| region.into_target(Arc::clone(&progress), stripe));
-        let v = v.map(|region| region.into_target(progress, stripe));
+        let y = y.into_target(Arc::clone(&progress), stripe, deblocked);
+        let u = u.map(|region| region.into_target(Arc::clone(&progress), stripe, deblocked));
+        let v = v.map(|region| region.into_target(progress, stripe, deblocked));
         Some(DirectStripeLease {
             progress: Arc::clone(self),
             stripe,
@@ -676,7 +710,7 @@ impl<T: ReconSample> FrameProgress<T> {
     /// Takes the filtered workspace's planes from a frame that is published
     /// whole instead of filtered, so its reconstruction writes into them.
     pub(crate) fn take_unfiltered_planes(&self) -> Option<splot_recon::FramePlaneSamples<T>> {
-        if self.layout.get().is_some() {
+        if self.layout.get().is_some() || self.frontier_live() {
             return None;
         }
         let workspace = self.workspace.write().take()?;
@@ -704,6 +738,9 @@ impl<T: ReconSample> FrameProgress<T> {
         &self,
         publish: impl FnOnce(splot_recon::DecodedFrame<T>) -> R,
     ) -> Result<R> {
+        if self.frontier_live() {
+            return Err(live_direct_lease());
+        }
         if let Some(layout) = self.layout.get() {
             let mut layout = layout.lock();
             if layout.stripes.iter().any(|stripe| stripe.leased) {
@@ -714,6 +751,173 @@ impl<T: ReconSample> FrameProgress<T> {
         let mut guard = self.workspace.write();
         let workspace = guard.take().ok_or_else(taken_workspace)?;
         Ok(publish(workspace.into_workspace().freeze()?))
+    }
+}
+
+impl<T: ReconSample> FrameProgress<T> {
+    /// Claims the frame's one frontier handle, which seals, deblocks and copies
+    /// the rows no stripe has been handed yet.
+    pub(crate) fn frontier_rows(self: &Arc<Self>) -> Option<FrontierRows<T>> {
+        self.frontier
+            .compare_exchange(UNCLAIMED, 0, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(FrontierRows {
+            progress: Arc::clone(self),
+            final_luma_rows: 0,
+            released_luma_rows: 0,
+        })
+    }
+
+    fn frontier_live(&self) -> bool {
+        !matches!(self.frontier.load(Ordering::Acquire), UNCLAIMED | RELEASED)
+    }
+}
+
+/// The § 7.17 frontier's exclusive handle on the frame rows at or past the
+/// last stripe it handed to a filter job.
+///
+/// Rows below `released_luma_rows` belong to stripe jobs and readers; rows at
+/// or past `final_luma_rows` are still sealed and deblocked in place; the rows
+/// between are final and are only copied into stripe windows.
+pub(crate) struct FrontierRows<T: ReconSample> {
+    progress: Arc<FrameProgress<T>>,
+    final_luma_rows: usize,
+    released_luma_rows: usize,
+}
+
+impl<T: ReconSample> Drop for FrontierRows<T> {
+    fn drop(&mut self) {
+        self.progress.frontier.store(RELEASED, Ordering::Release);
+    }
+}
+
+impl<T: ReconSample> FrontierRows<T> {
+    pub(crate) fn info(&self) -> DecodedFrameInfo {
+        self.progress.info
+    }
+
+    pub(crate) fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)> {
+        let storage = self.progress.planes[plane.index()]?;
+        (storage.size.width() == storage.stride).then_some((storage.stride, storage.height))
+    }
+
+    pub(crate) const fn final_luma_rows(&self) -> usize {
+        self.final_luma_rows
+    }
+
+    fn shift(&self, plane: PlaneId) -> usize {
+        usize::from(plane != PlaneId::Y) * self.progress.subsampling_y
+    }
+
+    /// The checked start pointer and length of plane rows `start..end`.
+    fn span(&self, plane: PlaneId, start: usize, end: usize) -> Option<(*mut T, usize)> {
+        let storage = self.progress.planes[plane.index()]?;
+        let sample_end = end.checked_mul(storage.stride)?;
+        if start > end || end > storage.height || sample_end > storage.len {
+            return None;
+        }
+        let sample_start = start * storage.stride;
+        Some((
+            storage.samples.as_ptr().wrapping_add(sample_start),
+            sample_end - sample_start,
+        ))
+    }
+
+    /// Lends plane rows `start..end` that no deblock pass has finalized.
+    pub(crate) fn with_plane_rows_mut<R>(
+        &mut self,
+        plane: PlaneId,
+        start: usize,
+        end: usize,
+        f: impl FnOnce(&mut [T], usize, usize, usize, usize) -> R,
+    ) -> Option<R> {
+        if (start << self.shift(plane)) < self.final_luma_rows {
+            return None;
+        }
+        let (width, height) = self.plane_size(plane)?;
+        let (samples, len) = self.span(plane, start, end)?; // SAFETY: rows at or past `final_luma_rows` (never below `released_luma_rows`) are this unique frontier's alone: `direct_stripe` refuses a stripe ending past the release and the published prefix is made of such stripes; freeze and plane take refuse while this handle lives, so the storage stays allocated.
+        let samples = unsafe { slice::from_raw_parts_mut(samples, len) };
+        Some(f(samples, width, width, height, start))
+    }
+
+    /// Lends every whole plane while no row is final, for a pass that filters
+    /// them all before the frontier advances.
+    pub(crate) fn planes_mut(&mut self) -> [Option<&mut [T]>; 3] {
+        let final_rows = self.final_luma_rows;
+        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+            let height = self.progress.planes[plane.index()]?.height;
+            let (samples, len) = self.span(plane, 0, height).filter(|_| final_rows == 0)?; // SAFETY: with no final row every row is this frontier's, as in `with_plane_rows_mut`, and the three planes are disjoint allocations.
+            Some(unsafe { slice::from_raw_parts_mut(samples, len) })
+        })
+    }
+
+    /// Seals reconstructed luma rows and their chroma rows into the frame.
+    pub(crate) fn copy_rows_from(
+        &mut self,
+        source: &CurrentFrameWorkspace<T>,
+        luma_rows: core::ops::Range<usize>,
+    ) -> splot_recon::Result<()> {
+        let geometry = || splot_recon::ReconError::ArithmeticOverflow {
+            context: "deblocked source row geometry",
+        };
+        if source.info() != self.progress.info || luma_rows.start > luma_rows.end {
+            return Err(geometry());
+        }
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            if self.progress.planes[plane.index()].is_none() {
+                continue;
+            }
+            let source = source.plane(plane)?;
+            let shift = self.shift(plane);
+            let start = luma_rows.start >> shift;
+            let end = luma_rows.end.div_ceil(1 << shift);
+            let stride = source.stride_samples();
+            let rows = source.rows(start, end)?;
+            self.with_plane_rows_mut(plane, start, end, |target, target_stride, _, _, _| {
+                (target_stride == stride).then(|| target.copy_from_slice(rows))
+            })
+            .flatten()
+            .ok_or_else(geometry)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn publish_final_rows(&mut self, rows: usize) -> bool {
+        let rows = rows.min(self.progress.luma_height);
+        if rows < self.final_luma_rows {
+            return false;
+        }
+        self.final_luma_rows = rows;
+        true
+    }
+
+    /// Appends final plane rows `start..end` that no stripe has been handed.
+    pub(crate) fn append_rows(
+        &self,
+        plane: PlaneId,
+        start: usize,
+        end: usize,
+        out: &mut Vec<T>,
+    ) -> Option<()> {
+        let scale = 1 << self.shift(plane);
+        if start < self.released_luma_rows.div_ceil(scale)
+            || end > self.final_luma_rows.div_ceil(scale)
+        {
+            return None;
+        }
+        let (samples, len) = self.span(plane, start, end)?; // SAFETY: final rows at or past `released_luma_rows` are, as in `with_plane_rows_mut`, viewed by no stripe or reader, and no deblock pass writes below `final_luma_rows`.
+        out.extend_from_slice(unsafe { slice::from_raw_parts(samples, len) });
+        Some(())
+    }
+
+    /// Hands the rows below `luma_end` to stripe jobs for good.
+    pub(crate) fn release_rows(&mut self, luma_end: usize) -> bool {
+        if luma_end < self.released_luma_rows || luma_end > self.final_luma_rows {
+            return false;
+        }
+        self.released_luma_rows = luma_end;
+        self.progress.frontier.store(luma_end, Ordering::Release);
+        true
     }
 }
 

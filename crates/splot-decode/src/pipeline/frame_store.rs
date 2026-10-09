@@ -31,6 +31,7 @@ use crate::support::decode_buffers::DecodeBuffers;
 pub(crate) struct DecodeSession {
     frame_delay: NonZeroUsize,
     retained: Mutex<Option<RetainedDecode>>,
+    record_hashes: Mutex<Vec<u64>>,
 }
 
 impl core::fmt::Debug for DecodeSession {
@@ -47,7 +48,17 @@ impl DecodeSession {
         Self {
             frame_delay,
             retained: Mutex::new(None),
+            record_hashes: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The IVF record-hash list the last decode on this context planned into.
+    pub(crate) fn take_record_hashes(&self) -> Vec<u64> {
+        core::mem::take(&mut *self.record_hashes.lock())
+    }
+
+    pub(crate) fn keep_record_hashes(&self, hashes: Vec<u64>) {
+        *self.record_hashes.lock() = hashes;
     }
 
     pub(crate) const fn frame_delay(&self) -> NonZeroUsize {
@@ -85,6 +96,7 @@ pub(super) struct RetainedDecode {
     pub(super) frames: FrameStore,
     pub(super) entropy_eight: RetainedEntropy<u8>,
     pub(super) entropy_ten: RetainedEntropy<u16>,
+    pub(super) input_scratch: crate::bitstream::byte_stream::InputScratch,
 }
 
 impl RetainedDecode {
@@ -103,6 +115,7 @@ impl RetainedDecode {
             frames: FrameStore::new(false, depth.get()),
             entropy_eight: RetainedEntropy::default(),
             entropy_ten: RetainedEntropy::default(),
+            input_scratch: crate::bitstream::byte_stream::InputScratch::default(),
         }
     }
 
@@ -115,7 +128,7 @@ impl RetainedDecode {
         }
         for entry in &mut self.frames.entries {
             if let Some(frame) = entry.frame.take() {
-                entry.retired = Some(self.ring.keep_frame_planes(frame.frame, true));
+                entry.retired = Some(self.ring.keep_frame_planes(frame.frame));
             }
         }
         self.frames.count = 0;

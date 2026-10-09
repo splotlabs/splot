@@ -388,16 +388,8 @@ fn luma_ccso_preserves_lossless_4x4_samples() {
     let lossless_block = crate::filters::deblock::DeblockBlock {
         r: 0,
         c: 0,
-        luma_prediction: crate::filters::deblock::DeblockPredictionUnit {
-            base_r: 0,
-            base_c: 0,
-            default_sub_pu_tx: 0,
-        },
-        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit {
-            base_r: 0,
-            base_c: 0,
-            default_sub_pu_tx: 0,
-        },
+        luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(0, 0, 0),
+        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(0, 0, 0),
         chroma_base_r: 0,
         chroma_base_c: 0,
         n4w: 1,

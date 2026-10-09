@@ -28,7 +28,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use splot_parallel::{CompletionCell, Condition, TaskScope};
-use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
+use splot_recon::{
+    CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame,
+};
 
 use super::frame_engine::finish::{WalkStage, WalkedFrame, finish_walked_frame};
 use super::frame_progress::FrameProgress;
@@ -86,17 +88,13 @@ impl<T: ReconSample> RefFrameSlot<T> {
     /// The handle carries the [`FrameProgress`] the filter phase publishes its
     /// stripes through, so a consumer can read the frame's settled row prefix
     /// while the rest is still filtering.
-    ///
-    /// # Errors
-    ///
-    /// Returns the filtered-workspace allocation's own diagnostic.
     pub(crate) fn pending_recycled(
-        info: DecodedFrameInfo,
-        recycled: &mut splot_recon::FramePlaneSamples<T>,
+        workspace: CurrentFrameWorkspace<T>,
         buffers: Option<&Arc<crate::support::decode_buffers::DecodeBuffers>>,
     ) -> Result<(Self, FrameSlotWriter<T>)> {
+        let info = workspace.info();
         let cell = Arc::new(CompletionCell::new());
-        let progress = Arc::new(FrameProgress::recycled(info, recycled, buffers)?);
+        let progress = Arc::new(FrameProgress::from_workspace(workspace, buffers)?);
         let writer = FrameSlotWriter {
             cell: Arc::clone(&cell),
             progress: Arc::clone(&progress),
@@ -115,20 +113,19 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     fn reuse_pending(
         mut self,
-        info: DecodedFrameInfo,
-        recycled: &mut splot_recon::FramePlaneSamples<T>,
+        workspace: CurrentFrameWorkspace<T>,
         buffers: &Arc<crate::support::decode_buffers::DecodeBuffers>,
     ) -> Result<(Self, FrameSlotWriter<T>)> {
+        let info = workspace.info();
         let cell = Arc::get_mut(&mut self.cell)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
         if let Some(progress) = self.progress.as_mut() {
             Arc::get_mut(progress)
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?
-                .reset(info, recycled)?;
+                .reset(workspace)?;
         } else {
-            self.progress = Some(Arc::new(FrameProgress::recycled(
-                info,
-                recycled,
+            self.progress = Some(Arc::new(FrameProgress::from_workspace(
+                workspace,
                 Some(buffers),
             )?));
         }
@@ -168,7 +165,13 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     #[cfg(test)]
     pub(crate) fn pending(info: DecodedFrameInfo) -> Result<(Self, FrameSlotWriter<T>)> {
-        Self::pending_recycled(info, &mut splot_recon::FramePlaneSamples::default(), None)
+        Self::pending_recycled(
+            CurrentFrameWorkspace::new_recycled_from(
+                info,
+                &mut splot_recon::FramePlaneSamples::default(),
+            )?,
+            None,
+        )
     }
 
     /// Takes the published frame when this is the last handle to both the slot
@@ -524,8 +527,6 @@ pub(crate) struct InflightRing {
     entries: VecDeque<InflightEntry>,
     reports: Vec<FinishReport>,
     failure: Option<(usize, DecodeError)>,
-    spare_eight: Vec<splot_recon::FramePlaneSamples<u8>>,
-    spare_ten: Vec<splot_recon::FramePlaneSamples<u16>>,
     finish_eight: Vec<Arc<FinishCell<u8>>>,
     finish_ten: Vec<Arc<FinishCell<u16>>>,
     parse_slots: Vec<Arc<ParseProgress>>,
@@ -533,16 +534,10 @@ pub(crate) struct InflightRing {
     buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
 }
 
-/// Routes a frame's retired sample buffers to the ring's spares of its sample
-/// type.
-///
-/// One frame retires for every frame the ring admits, but at depth `D` up to
-/// `D` of them can retire between two takes, so the spares are a stack bounded
-/// by the ring's own capacity rather than a single slot: the frame taking a
-/// reference slot's place decodes into the buffers a frame leaving it gave up.
+/// Routes a frame's slot and owed filter phase to the ring state of its
+/// sample type.
 pub(crate) trait SpareFramePlanes: ReconSample {
     fn take_slot(slot: PipelineFrameSlot) -> Option<RefFrameSlot<Self>>;
-    fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>>;
     fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>>;
     fn finish_task<'job>(finish: ParkedFinish<Self>) -> super::frame_pipeline::FrameTask<'job>;
 }
@@ -585,9 +580,6 @@ impl SpareFramePlanes for u8 {
             PipelineFrameSlot::Ten(_) => None,
         }
     }
-    fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>> {
-        &mut ring.spare_eight
-    }
     fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>> {
         &mut ring.finish_eight
     }
@@ -603,29 +595,11 @@ impl SpareFramePlanes for u16 {
             PipelineFrameSlot::Eight(_) => None,
         }
     }
-    fn spares(ring: &mut InflightRing) -> &mut Vec<splot_recon::FramePlaneSamples<Self>> {
-        &mut ring.spare_ten
-    }
     fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>> {
         &mut ring.finish_ten
     }
     fn finish_task<'job>(finish: ParkedFinish<Self>) -> super::frame_pipeline::FrameTask<'job> {
         super::frame_pipeline::FrameTask::FinishTen(finish)
-    }
-}
-
-/// Keeps `retired` when the ring is not already holding a full cycle of spares,
-/// otherwise hands it to `overflow`'s pool when the caller names one.
-fn keep_spare<T: ReconSample>(
-    spares: &mut Vec<splot_recon::FramePlaneSamples<T>>,
-    capacity: usize,
-    retired: splot_recon::FramePlaneSamples<T>,
-    overflow: Option<&Arc<splot_recon::PlanePool>>,
-) {
-    if spares.len() < capacity {
-        spares.push(retired);
-    } else {
-        retired.with_pool(overflow).release();
     }
 }
 
@@ -646,8 +620,6 @@ impl InflightRing {
                 .map(|_| Arc::new(CompletionCell::new()))
                 .collect(),
             failure: None,
-            spare_eight: Vec::new(),
-            spare_ten: Vec::new(),
             finish_eight: Vec::new(),
             finish_ten: Vec::new(),
             parse_slots: Vec::new(),
@@ -707,38 +679,22 @@ impl InflightRing {
         }
     }
 
-    /// Keeps a retired frame's sample buffers for the frame that replaces it.
+    /// Hands a retired frame's sample buffers to the decode's pool, which the
+    /// next workspace is taken from.
     ///
     /// A frame still shared by any reader keeps its own buffers: the samples
     /// are only taken when this handle is the last one holding them.
-    ///
-    /// With `release`, the decode's pool takes whatever planes the spares have
-    /// no room for: a new decode retires the frames the last one left at once.
-    pub(crate) fn keep_frame_planes(
-        &mut self,
-        mut slot: PipelineFrameSlot,
-        release: bool,
-    ) -> PipelineFrameSlot {
-        let overflow = release.then(|| self.buffers.planes());
+    pub(crate) fn keep_frame_planes(&mut self, mut slot: PipelineFrameSlot) -> PipelineFrameSlot {
+        let pool = Some(self.buffers.planes());
         match &mut slot {
             PipelineFrameSlot::Eight(slot) => {
                 if let Some(frame) = slot.retire_frame() {
-                    keep_spare(
-                        &mut self.spare_eight,
-                        self.capacity,
-                        frame.into_plane_samples(),
-                        overflow,
-                    );
+                    frame.into_plane_samples().with_pool(pool).release();
                 }
             }
             PipelineFrameSlot::Ten(slot) => {
                 if let Some(frame) = slot.retire_frame() {
-                    keep_spare(
-                        &mut self.spare_ten,
-                        self.capacity,
-                        frame.into_plane_samples(),
-                        overflow,
-                    );
+                    frame.into_plane_samples().with_pool(pool).release();
                 }
             }
         }
@@ -866,7 +822,18 @@ where
         }
         WalkStage::Pending(walked) => walked,
     };
-    let (slot, pending) = reserve_pending_slot(walked.info(), erase, ring, frames, frame_index)?;
+    let mut walked = walked;
+    let workspace = walked
+        .take_workspace()
+        .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+    let (slot, pending) = reserve_slot(
+        walked.info(),
+        Some(workspace),
+        erase,
+        ring,
+        frames,
+        frame_index,
+    )?;
     super::frame_pipeline::schedule_finish(
         pending,
         walked,
@@ -906,16 +873,31 @@ pub(crate) fn reserve_pending_slot<T: SpareFramePlanes>(
     frames: &mut super::FrameStore,
     frame_index: usize,
 ) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
+    reserve_slot(info, None, erase, ring, frames, frame_index)
+}
+
+/// Reserves a slot whose filter phase filters `workspace` in place, or a
+/// pooled workspace when the frame is not reconstructed yet.
+fn reserve_slot<T: SpareFramePlanes>(
+    info: DecodedFrameInfo,
+    workspace: Option<CurrentFrameWorkspace<T>>,
+    erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
+    ring: &mut InflightRing,
+    frames: &mut super::FrameStore,
+    frame_index: usize,
+) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
     let report = ring.reserve_report()?;
     let buffers = Arc::clone(&ring.buffers);
-    let mut spare = <T as SpareFramePlanes>::spares(ring)
-        .pop()
-        .unwrap_or_else(|| {
-            splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes()))
-        });
+    let workspace = match workspace {
+        Some(workspace) => workspace,
+        None => CurrentFrameWorkspace::new_recycled_from(
+            info,
+            &mut splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes())),
+        )?,
+    };
     let (slot, writer) = match frames.take_retired()?.and_then(T::take_slot) {
-        Some(slot) => slot.reuse_pending(info, &mut spare, &buffers)?,
-        None => RefFrameSlot::pending_recycled(info, &mut spare, Some(&buffers))?,
+        Some(slot) => slot.reuse_pending(workspace, &buffers)?,
+        None => RefFrameSlot::pending_recycled(workspace, Some(&buffers))?,
     };
     let progress = Arc::clone(&writer.progress);
     ring.push(InflightEntry {

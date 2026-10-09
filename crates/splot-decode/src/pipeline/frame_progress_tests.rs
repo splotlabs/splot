@@ -430,7 +430,10 @@ fn resetting_progress_retains_stripes_and_clears_terminal_publication() {
     for cycle in 0..1200 {
         progress.publish_terminal(cycle % 2 == 0);
         progress
-            .reset(geometry, &mut planes)
+            .reset(
+                splot_recon::CurrentFrameWorkspace::new_recycled_from(geometry, &mut planes)
+                    .expect("reset workspace"),
+            )
             .expect("reset progress");
         assert_eq!(progress.published_luma_rows(), 0);
         assert!(!progress.terminal_published.is_set());
@@ -447,4 +450,67 @@ fn resetting_progress_retains_stripes_and_clears_terminal_publication() {
             stripes
         );
     }
+}
+
+#[test]
+fn frontier_rows_lend_only_rows_no_stripe_or_reader_holds() {
+    let progress = Arc::new(
+        FrameProgress::<u16>::new(info(4, 32, PixelFormat::Monochrome)).expect("frame progress"),
+    );
+    assert!(progress.begin(&[(0, 16), (16, 32)]));
+    let mut rows = progress.frontier_rows().expect("frontier rows");
+    assert!(progress.frontier_rows().is_none(), "the frontier is unique");
+    rows.with_plane_rows_mut(
+        splot_recon::PlaneId::Y,
+        0,
+        32,
+        |samples, stride, _, _, _| {
+            for (y, row) in samples.chunks_mut(stride).enumerate() {
+                row.fill(u16::try_from(y).expect("row"));
+            }
+        },
+    )
+    .expect("unfinalized rows");
+    assert!(rows.publish_final_rows(32));
+    assert!(progress.direct_stripe(0).is_none(), "an unreleased stripe");
+
+    let mut first = crate::filters::source::DeblockedWindow::default();
+    let mut carry = crate::filters::source::DeblockedWindow::default();
+    first
+        .fill(&mut rows, &mut carry, (0, 16), 4)
+        .expect("first window");
+    let mut lease = progress.direct_stripe(0).expect("released stripe");
+    lease
+        .take_target()
+        .and_then(|mut target| target.take(splot_recon::PlaneId::Y))
+        .expect("luma target")
+        .u16_samples_mut()
+        .expect("u16 luma")
+        .fill(99);
+    assert!(lease.submit());
+    assert!(
+        rows.append_rows(splot_recon::PlaneId::Y, 12, 20, &mut Vec::new())
+            .is_none(),
+        "a published row is not the frontier's"
+    );
+    assert!(
+        rows.with_plane_rows_mut(splot_recon::PlaneId::Y, 24, 32, |_, _, _, _, _| ())
+            .is_none(),
+        "a final row is not written again"
+    );
+
+    let mut second = crate::filters::source::DeblockedWindow::default();
+    second
+        .fill(&mut rows, &mut carry, (16, 32), 4)
+        .expect("second window");
+    let planes = second.planes().expect("window planes");
+    assert_eq!(
+        planes.y.row(12),
+        Some(&[12; 4][..]),
+        "carried deblocked row"
+    );
+    assert_eq!(planes.y.row(20), Some(&[20; 4][..]));
+    assert!(progress.freeze_workspace(drop).is_err(), "a live frontier");
+    drop(rows);
+    assert!(progress.direct_stripe(1).is_some());
 }

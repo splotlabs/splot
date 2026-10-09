@@ -11,6 +11,7 @@ use std::ops::Range;
 use super::partition_size::{BlockSize, PartitionSizeError};
 use super::partition_traversal::TilePartitionContextState;
 use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
+use crate::tile::SbRowWindow;
 
 const BLOCK_256X256_INDEX: u8 = 18;
 const PLANE_COUNT: usize = 2;
@@ -36,11 +37,14 @@ pub(crate) struct TileMiSizeState {
     grid_len: usize,
     left_len: usize,
     above_len: usize,
-    /// Coalesced backing store for both planes of the block-size grid and the
+    /// The luma block-size grid holds only the rows of this window: the
+    /// § 5.20.4.1 square-split context reads one row above the block. Chroma
+    /// block sizes feed only the context lines, so they have no grid.
+    window: SbRowWindow,
+    /// Coalesced backing store for the luma block-size grid and the
     /// left/above neighbour context lines, laid out as
-    /// `[mi_sizes L | mi_sizes C | left L | left C | above L | above C]`. A
-    /// single allocation replaces the previous six per-plane vectors. Entries
-    /// are block-size indices (`< 29`) and partition-context values (`<= 63`),
+    /// `[mi_sizes L | left L | left C | above L | above C]`. Entries are
+    /// block-size indices (`< 29`) and partition-context values (`<= 63`),
     /// which fit in a byte.
     storage: Vec<u8>,
 }
@@ -56,16 +60,12 @@ impl TileMiSizeState {
         }
         let padded_rows = padded_dimension("rows", mi_rows, sb_size.num_4x4_high()?)?;
         let padded_cols = padded_dimension("cols", mi_cols, sb_size.num_4x4_wide()?)?;
+        let window_rows = SbRowWindow::new(mi_rows, sb_size.num_4x4_high()?).plane_rows();
         let padded_grid_cells =
-            checked_mul_usize("padded_mi_rows * padded_mi_cols", padded_rows, padded_cols)?;
-        let plane_entries = checked_add_usize(
-            "padded_grid_cells + padded_rows",
-            padded_grid_cells,
-            padded_rows,
-        )?;
-        let plane_entries =
-            checked_add_usize("plane_entries + padded_cols", plane_entries, padded_cols)?;
-        let entry_count = checked_mul_usize("plane_entries * planes", plane_entries, PLANE_COUNT)?;
+            checked_mul_usize("window_rows * padded_mi_cols", window_rows, padded_cols)?;
+        let lines = checked_add_usize("padded_rows + padded_cols", padded_rows, padded_cols)?;
+        let lines = checked_mul_usize("lines * planes", lines, PLANE_COUNT)?;
+        let entry_count = checked_add_usize("padded_grid_cells + lines", padded_grid_cells, lines)?;
         Ok(TileMiSizeStateAllocation {
             padded_rows,
             padded_cols,
@@ -91,25 +91,25 @@ impl TileMiSizeState {
             grid_len: allocation.padded_grid_cells,
             left_len: allocation.padded_rows,
             above_len: allocation.padded_cols,
+            window: SbRowWindow::new(mi_rows, sb_size.num_4x4_high()?),
             storage: coalesced_storage(allocation)?,
         })
     }
 
-    const fn mi_base(&self, plane: usize) -> usize {
-        plane * self.grid_len
-    }
-
     const fn left_base(&self, plane: usize) -> usize {
-        2 * self.grid_len + plane * self.left_len
+        self.grid_len + plane * self.left_len
     }
 
     const fn above_base(&self, plane: usize) -> usize {
-        2 * self.grid_len + 2 * self.left_len + plane * self.above_len
+        self.grid_len + 2 * self.left_len + plane * self.above_len
     }
 
-    fn mi_sizes_plane(&self, plane: usize) -> &[u8] {
-        let base = self.mi_base(plane);
-        &self.storage[base..base + self.grid_len]
+    fn mi_sizes(&self) -> &[u8] {
+        &self.storage[..self.grid_len]
+    }
+
+    pub(crate) fn window_violated(&self) -> bool {
+        self.window.violated()
     }
 
     fn left_plane(&self, plane: usize) -> &[u8] {
@@ -122,10 +122,19 @@ impl TileMiSizeState {
         &self.storage[base..base + self.above_len]
     }
 
-    pub(crate) fn clear_left_context(&mut self) {
-        let base = 2 * self.grid_len;
+    /// Starts the superblock row at frame row `sb_row`: clears the left
+    /// context lines and moves the grid window down to it.
+    pub(crate) fn enter_sb_row(&mut self, sb_row: usize) {
+        let base = self.grid_len;
         let end = base + 2 * self.left_len;
         self.storage[base..end].fill(CLEAR_PARTITION_CONTEXT);
+        if let Some(slide) = self.window.enter(sb_row.saturating_sub(self.origin_row)) {
+            slide.apply(
+                &mut self.storage[..self.grid_len],
+                self.mi_size_stride,
+                BLOCK_256X256_INDEX,
+            );
+        }
     }
 
     pub(crate) fn update_luma_block(
@@ -148,7 +157,8 @@ impl TileMiSizeState {
 
     pub(crate) fn context_state(&self) -> TilePartitionContextState<'_> {
         TilePartitionContextState::new_at(
-            self.mi_sizes_plane(LUMA_PLANE),
+            self.mi_sizes(),
+            &self.window,
             self.mi_size_stride,
             [self.left_plane(LUMA_PLANE), self.left_plane(CHROMA_PLANE)],
             [self.above_plane(LUMA_PLANE), self.above_plane(CHROMA_PLANE)],
@@ -176,12 +186,15 @@ impl TileMiSizeState {
         let col_start = region.c;
         let col_end = region.col_end;
         let stride = self.mi_size_stride;
-        let mi_base = self.mi_base(plane);
         let left_base = self.left_base(plane);
         let above_base = self.above_base(plane);
         for row in region.r..region.row_end {
-            let row_start = mi_base + row * stride;
-            self.storage[row_start + col_start..row_start + col_end].fill(mi_size_value);
+            if plane == LUMA_PLANE
+                && let Some(plane_row) = self.window.plane_row(row)
+            {
+                let row_start = plane_row * stride;
+                self.storage[row_start + col_start..row_start + col_end].fill(mi_size_value);
+            }
             self.storage[left_base + row] = left_partition_context;
         }
         self.storage[above_base + col_start..above_base + col_end].fill(above_partition_context);
@@ -238,7 +251,7 @@ impl TileMiSizeState {
                 mi_cols: self.mi_cols,
             });
         }
-        let rows = self.grid_len / self.mi_size_stride;
+        let rows = self.left_len;
         let cols = self.mi_size_stride;
         let row_end = absolute_row_end.saturating_sub(self.origin_row);
         let col_end = absolute_col_end.saturating_sub(self.origin_col);
@@ -423,7 +436,7 @@ fn coalesced_storage(
 ) -> Result<Vec<u8>, TileMiSizeStateError> {
     let mut storage = take_pooled_vec::<u8>(allocation.entry_count());
     storage.try_reserve_exact(allocation.entry_count())?;
-    storage.resize(2 * allocation.padded_grid_cells(), BLOCK_256X256_INDEX);
+    storage.resize(allocation.padded_grid_cells(), BLOCK_256X256_INDEX);
     storage.resize(allocation.entry_count(), CLEAR_PARTITION_CONTEXT);
     Ok(storage)
 }

@@ -9,10 +9,14 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::sync::Arc;
+
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex,
-    PixelFormat, Plane, PlaneRect, PlaneSize, ReconSample,
+    PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize, ReconSample,
 };
+
+use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 
 /// The committed conformant luma-skip fixture exercised by every minimal-tier
 /// runtime adapter test.
@@ -67,4 +71,44 @@ pub(crate) fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
     .unwrap();
     let y = Plane::from_vec(size, width, rect, vec![0; width * height]).unwrap();
     DecodedFrame::try_new(info, FramePlanes::new(y, None, None)).unwrap()
+}
+
+/// Wraps `workspace` in a frame progress and opens its frontier rows.
+pub(crate) fn frontier_rows<T: ReconSample>(
+    workspace: CurrentFrameWorkspace<T>,
+) -> (Arc<FrameProgress<T>>, FrontierRows<T>) {
+    let progress = Arc::new(FrameProgress::from_workspace(workspace, None).unwrap());
+    let rows = progress.frontier_rows().unwrap();
+    (progress, rows)
+}
+
+/// One plane's samples and width, final or not.
+pub(crate) fn frontier_plane<T: ReconSample>(
+    rows: &mut FrontierRows<T>,
+    plane: PlaneId,
+) -> Option<(Vec<T>, usize)> {
+    let (width, height) = rows.plane_size(plane)?;
+    let mut samples = Vec::new();
+    if rows.append_rows(plane, 0, height, &mut samples).is_none() {
+        samples = rows.with_plane_rows_mut(plane, 0, height, |rows, _, _, _, _| rows.to_vec())?;
+    }
+    Some((samples, width))
+}
+
+pub(crate) fn copy_rows_to_workspace<T: ReconSample>(
+    rows: &mut FrontierRows<T>,
+    workspace: &mut CurrentFrameWorkspace<T>,
+) {
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let Some((samples, width)) = frontier_plane(rows, plane) else {
+            continue;
+        };
+        for (y, row) in samples.chunks(width).enumerate() {
+            for (x, &sample) in row.iter().enumerate() {
+                workspace
+                    .set_reconstructed_sample(plane, x, y, sample)
+                    .unwrap();
+            }
+        }
+    }
 }

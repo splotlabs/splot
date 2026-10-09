@@ -13,7 +13,6 @@
 
 use std::sync::Arc;
 
-use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, FrameSize};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{
@@ -22,6 +21,7 @@ use splot_recon::{
 };
 
 use super::*;
+use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{DecodeTilePayloadPlan, FrameQuantizerSnapshot};
 use crate::filters::wienerns_lr::FrameFilterRecords;
 
@@ -157,19 +157,18 @@ impl FrameDecodeGeometry {
 pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &'payload [u8],
-    frame_envelope: ObuEnvelope<'payload>,
+    bytes: SourceBytes<'payload>,
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
-    recycled: &mut splot_recon::FramePlaneSamples<T>,
+    workspace: impl FnOnce(DecodedFrameInfo) -> splot_recon::Result<CurrentFrameWorkspace<T>>,
     initial_cdf_storage: Option<&mut Option<Arc<FrameCdfSubset>>>,
     payload_scratch: &mut crate::bitstream::tile_payload::TilePayloadScratch,
 ) -> Result<InterWalkPrologue<'payload, T>> {
-    let offset = frame_envelope.offset;
+    let offset = candidate.offset();
     let initial_cdfs = if let Some(storage) = initial_cdf_storage {
         resolve_initial_frame_cdfs_reusing(core, sequence, reference, candidate, offset, storage)?
     } else {
@@ -222,7 +221,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let interpolation_filter = inter
         .interpolation_filter
         .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
-    let workspace = CurrentFrameWorkspace::<T>::new_recycled_from(geometry.info(), recycled)?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
+    let workspace = workspace(geometry.info())?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let quantization = core.quantization_params.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_base_q",
@@ -348,9 +347,7 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
 pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) records: FrameFilterRecords,
     pub(crate) plan: &'payload DecodeStreamPlan,
-    pub(crate) candidate: &'payload DecodePlannedObu,
-    pub(crate) bytes: &'payload [u8],
-    pub(crate) frame_envelope: ObuEnvelope<'payload>,
+    pub(crate) candidate: DecodePlannedObu,
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
     pub(crate) options: &'payload DecodeOptions,
@@ -363,17 +360,16 @@ pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) products: FrameProductWriters,
 }
 
-impl<'payload, T: ReconSample> InterFrameStart<'payload, T> {
-    pub(crate) fn run(
+impl<T: ReconSample> InterFrameStart<'_, T> {
+    pub(crate) fn run<'unit>(
         self,
+        bytes: SourceBytes<'unit>,
         reusable: &mut block::ScheduledTileWorkspace<T>,
-    ) -> Result<(InterWalkEarly<T>, PendingInterWalk<'payload, T>)> {
+    ) -> Result<(InterWalkEarly<T>, PendingInterWalk<'unit, T>)> {
         let Self {
             mut records,
             plan,
             candidate,
-            bytes,
-            frame_envelope,
             core,
             sequence,
             options,
@@ -386,21 +382,19 @@ impl<'payload, T: ReconSample> InterFrameStart<'payload, T> {
             mut products,
         } = self;
         let _scopes = quantizer.install_frame();
-        reusable.deblocked_shell = records.deblocked_shell.take();
         let mut payload_scratch = core::mem::take(&mut reusable.payload);
+        let spare_band = reusable.recon_band.take();
         let prologue = derive_inter_walk_prologue(
             plan,
-            candidate,
+            &candidate,
             bytes,
-            frame_envelope,
             &core,
             &sequence,
             options,
             &reference,
             bit_depth,
             geometry,
-            &mut T::reclaim_planes(&mut records.retired_planes)
-                .with_pool(records.buffers.as_ref().map(|buffers| buffers.planes())),
+            |info| CurrentFrameWorkspace::new_band(info, geometry.sb_h4() * 4, spare_band),
             Some(reusable.initial_cdfs()),
             &mut payload_scratch,
         );

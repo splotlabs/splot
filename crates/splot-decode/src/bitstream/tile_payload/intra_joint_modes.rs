@@ -11,6 +11,7 @@ use splot_core::symbol::Symbol;
 
 use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
+use crate::tile::SbRowWindow;
 
 const NO_FSC: u8 = 0;
 const NO_DIP: u8 = 0;
@@ -43,20 +44,23 @@ impl NeighbourSample {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MiGrid<T> {
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MiGrid<T> {
     origin_row: usize,
     origin_col: usize,
     rows: usize,
     cols: usize,
+    window: SbRowWindow,
+    default: T,
     cells: Vec<T>,
 }
 
 impl<T: Copy> MiGrid<T> {
     #[expect(clippy::too_many_arguments)]
-    fn build<E>(
+    pub(crate) fn build<E>(
         row_range: Range<usize>,
         col_range: Range<usize>,
+        sb_h4: usize,
         default: T,
         mut cells: Vec<T>,
         empty_dimensions: impl FnOnce(usize, usize) -> E,
@@ -70,7 +74,9 @@ impl<T: Copy> MiGrid<T> {
             return Err(empty_dimensions(rows, cols));
         }
         preallocate_check?;
-        let len = rows
+        let window = SbRowWindow::new(rows, sb_h4);
+        let len = window
+            .plane_rows()
             .checked_mul(cols)
             .ok_or_else(|| arithmetic_overflow("mi_rows * mi_cols", rows, cols))?;
         cells.clear();
@@ -81,16 +87,34 @@ impl<T: Copy> MiGrid<T> {
             origin_col: col_range.start,
             rows,
             cols,
+            window,
+            default,
             cells,
         })
     }
 
-    fn into_cells(self) -> Vec<T> {
+    pub(crate) fn into_cells(self) -> Vec<T> {
         self.cells
     }
 
-    fn cell(&self, row: usize, col: usize) -> Option<T> {
-        self.cell_index(row, col).map(|index| self.cells[index])
+    pub(crate) fn window_violated(&self) -> bool {
+        self.window.violated()
+    }
+
+    /// A tile cell outside the window reads as the default value.
+    pub(crate) fn cell(&self, row: usize, col: usize) -> Option<T> {
+        let row = row.checked_sub(self.origin_row)?;
+        let col = col.checked_sub(self.origin_col)?;
+        if row >= self.rows || col >= self.cols {
+            return None;
+        }
+        Some(
+            self.window
+                .plane_row(row)
+                .map_or(self.default, |plane_row| {
+                    self.cells[plane_row * self.cols + col]
+                }),
+        )
     }
 
     fn with_origin(mut self, origin_row: usize, origin_col: usize) -> Self {
@@ -99,7 +123,7 @@ impl<T: Copy> MiGrid<T> {
         self
     }
 
-    fn record_block(&mut self, pos: (usize, usize), extent: (usize, usize), value: T) {
+    pub(crate) fn record_block(&mut self, pos: (usize, usize), extent: (usize, usize), value: T) {
         let (r, c) = pos;
         let (n4w, n4h) = extent;
         let Some(r) = r.checked_sub(self.origin_row) else {
@@ -111,44 +135,39 @@ impl<T: Copy> MiGrid<T> {
         if r >= self.rows || c >= self.cols {
             return;
         }
+        if let Some(slide) = self.window.enter(r) {
+            slide.apply(&mut self.cells, self.cols, self.default);
+        }
         let row_end = r.saturating_add(n4h).min(self.rows);
         let col_end = c.saturating_add(n4w).min(self.cols);
-        for row in self
-            .cells
-            .chunks_exact_mut(self.cols)
-            .skip(r)
-            .take(row_end - r)
-        {
-            row[c..col_end].fill(value);
+        for row in r..row_end {
+            if let Some(plane_row) = self.window.plane_row(row) {
+                let start = plane_row * self.cols;
+                self.cells[start + c..start + col_end].fill(value);
+            }
         }
-    }
-
-    fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
-        crate::tile::local_grid_index(
-            row,
-            col,
-            self.origin_row,
-            self.origin_col,
-            self.rows,
-            self.cols,
-        )
     }
 }
 
 impl<T: Copy + Send + 'static> MiGrid<T> {
+    #[expect(clippy::too_many_arguments)]
     fn new_for_tile<E>(
         row_range: Range<usize>,
         col_range: Range<usize>,
+        sb_h4: usize,
         default: T,
         empty_dimensions: impl FnOnce(usize, usize) -> E,
         arithmetic_overflow: impl FnOnce(&'static str, usize, usize) -> E,
         allocation: impl FnOnce(TryReserveError) -> E,
         preallocate_check: Result<(), E>,
     ) -> Result<Self, E> {
-        let cells = row_range.len().saturating_mul(col_range.len());
+        let cells = SbRowWindow::new(row_range.len(), sb_h4)
+            .plane_rows()
+            .saturating_mul(col_range.len());
         Self::build(
             row_range,
             col_range,
+            sb_h4,
             default,
             take_pooled_vec::<T>(cells),
             empty_dimensions,
@@ -164,10 +183,11 @@ fn require_nonzero<E>(value: usize, error: E) -> Result<(), E> {
 }
 
 macro_rules! mi_grid_new_for_tile {
-    ($err:ident, $default:expr, $row_range:expr, $col_range:expr, $precheck:expr $(,)?) => {
+    ($err:ident, $default:expr, $row_range:expr, $col_range:expr, $sb_h4:expr, $precheck:expr $(,)?) => {
         MiGrid::new_for_tile(
             $row_range,
             $col_range,
+            $sb_h4,
             $default,
             |mi_rows, mi_cols| $err::EmptyDimensions { mi_rows, mi_cols },
             |operation, left, right| $err::ArithmeticOverflow {
@@ -188,6 +208,19 @@ macro_rules! impl_grid_origin {
                 pub(crate) fn with_origin(mut self, row: usize, col: usize) -> Self {
                     self.grid = self.grid.with_origin(row, col);
                     self
+                }
+            }
+        )+
+    };
+}
+
+macro_rules! impl_grid_window_violated {
+    ($($state:ty),+ $(,)?) => {
+        $(
+            impl $state {
+                /// Whether an access touched a row the window had already reused.
+                pub(crate) fn window_violated(&self) -> bool {
+                    self.grid.window_violated()
                 }
             }
         )+
@@ -259,6 +292,7 @@ impl TileLumaPaletteState {
             None::<NonZeroU32>,
             row_range,
             col_range,
+            sb_size4,
             require_nonzero(sb_size4, TileLumaPaletteStateError::EmptySuperblockSize),
         )?;
         Ok(Self {
@@ -331,12 +365,14 @@ impl TileIntraJointModeState {
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,
+        sb_size4: usize,
     ) -> Result<Self, TileIntraJointModeStateError> {
         let grid = mi_grid_new_for_tile!(
             TileIntraJointModeStateError,
             IntraJointMode::DC,
             row_range,
             col_range,
+            sb_size4,
             Ok(()),
         )?;
         Ok(Self { grid })
@@ -412,6 +448,7 @@ impl TileUsesMrlsState {
             MrlSelection::Disabled,
             row_range,
             col_range,
+            sb_size4,
             require_nonzero(sb_size4, TileUsesMrlsStateError::EmptySuperblockSize),
         )?;
         Ok(Self { grid, sb_size4 })
@@ -474,6 +511,7 @@ impl TileUseDipState {
             NO_DIP,
             row_range,
             col_range,
+            sb_size4,
             require_nonzero(sb_size4, TileUseDipStateError::EmptySuperblockSize),
         )?;
         Ok(Self { grid, sb_size4 })
@@ -520,11 +558,36 @@ impl TileSegmentIdState {
             0u8,
             mi_rows.clone(),
             mi_cols.clone(),
+            SbRowWindow::WHOLE_TILE_SB_H4,
             Ok(())
         )?;
-        let predicted =
-            mi_grid_new_for_tile!(TileSegmentIdStateError, 0u8, mi_rows, mi_cols, Ok(()))?;
+        let predicted = mi_grid_new_for_tile!(
+            TileSegmentIdStateError,
+            0u8,
+            mi_rows,
+            mi_cols,
+            SbRowWindow::WHOLE_TILE_SB_H4,
+            Ok(())
+        )?;
         Ok(Self { grid, predicted })
+    }
+
+    /// With segmentation off every segment id is zero, so the grids hold no
+    /// cells: reads fall outside them and records are dropped.
+    pub(crate) fn disabled() -> Self {
+        let grid = || MiGrid {
+            origin_row: 0,
+            origin_col: 0,
+            rows: 0,
+            cols: 0,
+            window: SbRowWindow::new(0, SbRowWindow::WHOLE_TILE_SB_H4),
+            default: 0,
+            cells: Vec::new(),
+        };
+        Self {
+            grid: grid(),
+            predicted: grid(),
+        }
     }
 
     pub(crate) fn cell(&self, r: usize, c: usize) -> Option<u8> {
@@ -610,7 +673,10 @@ impl TileSegmentIdState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// The default map is empty: a frame with segmentation off saves only zero
+/// segment ids, and an empty map loads as zeros (§ 6.17.2
+/// `load_previous_segment_ids`).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct FrameSegmentIdMap {
     mi_rows: usize,
     mi_cols: usize,
@@ -627,8 +693,14 @@ impl Drop for FrameSegmentIdMap {
 
 impl FrameSegmentIdMap {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileSegmentIdStateError> {
-        let grid =
-            mi_grid_new_for_tile!(TileSegmentIdStateError, 0u8, 0..mi_rows, 0..mi_cols, Ok(()))?;
+        let grid = mi_grid_new_for_tile!(
+            TileSegmentIdStateError,
+            0u8,
+            0..mi_rows,
+            0..mi_cols,
+            SbRowWindow::WHOLE_TILE_SB_H4,
+            Ok(())
+        )?;
         Ok(Self {
             mi_rows,
             mi_cols,
@@ -771,6 +843,7 @@ impl TileFscModeState {
             NO_FSC,
             row_range,
             col_range,
+            sb_size4,
             require_nonzero(sb_size4, TileFscModeStateError::EmptySuperblockSize),
         )?;
         Ok(Self { grid, sb_size4 })
@@ -903,8 +976,19 @@ pub(crate) struct TileUvCflState {
 }
 
 impl TileUvCflState {
-    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileUvCflStateError> {
-        let grid = mi_grid_new_for_tile!(TileUvCflStateError, 0, 0..mi_rows, 0..mi_cols, Ok(()))?;
+    pub(crate) fn new(
+        mi_rows: usize,
+        mi_cols: usize,
+        sb_size4: usize,
+    ) -> Result<Self, TileUvCflStateError> {
+        let grid = mi_grid_new_for_tile!(
+            TileUvCflStateError,
+            0,
+            0..mi_rows,
+            0..mi_cols,
+            sb_size4,
+            Ok(())
+        )?;
         Ok(Self { grid })
     }
 
@@ -1051,12 +1135,17 @@ pub(crate) struct TileIntraYModeState {
 }
 
 impl TileIntraYModeState {
-    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileIntraYModeStateError> {
+    pub(crate) fn new(
+        mi_rows: usize,
+        mi_cols: usize,
+        sb_size4: usize,
+    ) -> Result<Self, TileIntraYModeStateError> {
         let grid = mi_grid_new_for_tile!(
             TileIntraYModeStateError,
             None::<TileIntraYModeFacts>,
             0..mi_rows,
             0..mi_cols,
+            sb_size4,
             Ok(())
         )?;
         Ok(Self { grid })
@@ -1087,6 +1176,15 @@ impl TileIntraYModeState {
 }
 
 impl_grid_origin!(TileUvCflState, TileIntraYModeState);
+impl_grid_window_violated!(
+    TileIntraJointModeState,
+    TileUsesMrlsState,
+    TileUseDipState,
+    TileFscModeState,
+    TileLumaPaletteState,
+    TileUvCflState,
+    TileIntraYModeState,
+);
 impl_grid_recycle!(
     TileIntraJointModeState,
     TileUsesMrlsState,

@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::filters::source::DeblockedSource;
+use crate::filters::source::DeblockedWindow;
 use crate::test_support::yuv420_workspace as workspace_8bit;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
@@ -305,22 +305,14 @@ pub(super) fn deblock_block(
     lossless: bool,
 ) -> crate::filters::deblock::DeblockBlock {
     crate::filters::deblock::DeblockBlock {
-        r,
-        c,
-        luma_prediction: crate::filters::deblock::DeblockPredictionUnit {
-            base_r: r,
-            base_c: c,
-            default_sub_pu_tx: 0,
-        },
-        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit {
-            base_r: r,
-            base_c: c,
-            default_sub_pu_tx: 0,
-        },
-        chroma_base_r: r,
-        chroma_base_c: c,
-        n4w,
-        n4h,
+        r: r as u32,
+        c: c as u32,
+        luma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, 0),
+        chroma_prediction: crate::filters::deblock::DeblockPredictionUnit::new(r, c, 0),
+        chroma_base_r: r as u32,
+        chroma_base_c: c as u32,
+        n4w: n4w as u32,
+        n4h: n4h as u32,
         luma_tx: 0,
         chroma_tx: Some(0),
         sub_pu_size: None,
@@ -523,11 +515,16 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
     .unwrap();
 
     let ranges = [(0, 56), (56, 120), (120, 128)];
-    let mut source = DeblockedSource::new(striped);
-    assert!(source.publish_final_rows(128));
+    let (_progress, mut rows) = crate::test_support::frontier_rows(striped);
+    assert!(rows.publish_final_rows(128));
+    let mut carry = DeblockedWindow::default();
     let leases = ranges
         .iter()
-        .map(|&(start, end)| source.lease(start, end, 10).unwrap())
+        .map(|&range| {
+            let mut window = DeblockedWindow::default();
+            window.fill(&mut rows, &mut carry, range, 10).unwrap();
+            window
+        })
         .collect::<Vec<_>>();
     let middle = leases[1].planes().unwrap().y;
     assert_eq!((middle.origin_y(), middle.end_y()), (46, 128));

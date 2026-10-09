@@ -22,6 +22,7 @@ use splot_recon::{
     ReferenceSlot,
 };
 
+use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
     FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap, GeneralIntraResidualError,
     reconstruct_general_intra_chroma_cctx_pair_into,
@@ -85,7 +86,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &[u8],
+    bytes: SourceBytes<'_>,
     frame_envelope: ObuEnvelope<'_>,
     core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
@@ -119,12 +120,12 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait()?;
-        let planes = scratch.reclaim_retired_planes();
+        let planes = scratch.pooled_planes();
         return decode_tip_output_frame(
             scratch,
             planes,
             candidate,
-            frame_envelope,
+            frame_envelope.offset,
             core,
             sequence,
             options,
@@ -144,6 +145,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         }
     }
     let mut payload_scratch = core::mem::take(&mut scratch.payload);
+    let mut recycled = scratch.pooled_planes();
     let frame_walk::InterWalkPrologue {
         tile_plan,
         workspace,
@@ -155,14 +157,13 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         plan,
         candidate,
         bytes,
-        frame_envelope,
         &core,
         sequence,
         options,
         reference,
         bit_depth,
         geometry,
-        &mut scratch.reclaim_retired_planes(),
+        |info| splot_recon::CurrentFrameWorkspace::new_recycled_from(info, &mut recycled),
         Some(&mut scratch.initial_cdfs),
         &mut payload_scratch,
     )?;
@@ -200,7 +201,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     candidate: &DecodePlannedObu,
-    frame_envelope: ObuEnvelope<'_>,
+    offset: ByteOffset,
     core: Arc<FrameHeaderCore>,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
@@ -209,7 +210,6 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     products: &mut FrameProductWriters,
 ) -> Result<InterDecodeOutput<T>> {
     let bit_depth = geometry.info().bit_depth();
-    let offset = frame_envelope.offset;
     let frame_size = geometry.frame_size();
     ensure_runtime_limits(
         options.limits(),
@@ -229,7 +229,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
         .reset_output_from(&frame_cdfs, qindex);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = geometry.mi_dimensions();
-    products.segment_ids(mi_rows, mi_cols)?;
+    products.segment_ids(mi_rows, mi_cols, false)?;
     let segment_ids = products.finish_segment_ids()?;
     Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
 }
@@ -285,7 +285,7 @@ fn decode_bridge_frame<T: ReconSample>(
         .reset_output_from(&frame_cdfs, qindex);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = segment_id_map_dimensions(&core)?;
-    products.segment_ids(mi_rows, mi_cols)?;
+    products.segment_ids(mi_rows, mi_cols, false)?;
     let segment_ids = products.finish_segment_ids()?;
     Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
 }
@@ -1250,7 +1250,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) saved_global_motion_params:
         RefSlots<splot_core::headers::frame::SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: RefSlots<[u8; 3]>,
-    pub(crate) lr_frame_filter_taps: RefSlots<SlotFrameFilterTaps>,
+    pub(crate) lr_frame_filter_taps: Option<Arc<[SlotFrameFilterTaps]>>,
     pub(crate) ref_frame_cdfs: RefSlots<Option<FrameCdfHandle>>,
     pub(crate) ref_ccso_params: RefSlots<Option<splot_core::headers::frame::CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
@@ -1261,7 +1261,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
 impl<T: ReconSample> InterReferenceState<T> {
     pub(crate) fn retire_handles(&mut self) {
         self.store.clear();
-        self.lr_frame_filter_taps = RefSlots::default();
+        self.lr_frame_filter_taps = None;
         self.ref_frame_cdfs = RefSlots::default();
         self.ref_ccso_params = RefSlots::default();
         self.ref_ccso_unit_grids = RefSlots::default();
@@ -1525,7 +1525,7 @@ impl<T: ReconSample> InterReferenceState<T> {
             &self.ref_immediate_output_frame,
         )
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
-        .with_lr_frame_filter_taps(&self.lr_frame_filter_taps)
+        .with_lr_frame_filter_taps(self.lr_frame_filter_taps.as_deref().unwrap_or_default())
     }
 }
 pub(crate) fn parse_inter_frame_activation(

@@ -28,3 +28,18 @@ pub(crate) fn intrabc_bilinear_params(
         bit_depth,
     }
 }
+
+/// The first and last plane rows a § 7.13.3.18 `BILINEAR` prediction
+/// reads with a non-zero weight: row `p >> 10`, and the row below it when the
+/// phase `(p >> 6) & 15` is not zero, both clipped to `[firstY, lastY]`.
+pub(crate) fn intrabc_bilinear_rows(params: &SubpelPredictParams) -> (i32, i32) {
+    let rows = i32::try_from(params.h.saturating_sub(1)).unwrap_or(i32::MAX);
+    let last = params
+        .start_y
+        .saturating_add(rows.saturating_mul(params.step_y));
+    let clip = |row: i32| row.clamp(params.first_y, params.last_y);
+    (
+        clip(params.start_y >> 10),
+        clip((last >> 10) + i32::from((last >> 6) & 15 != 0)),
+    )
+}

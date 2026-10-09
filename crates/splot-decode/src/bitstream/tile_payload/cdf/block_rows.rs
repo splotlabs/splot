@@ -291,7 +291,7 @@ pub(crate) enum EobPtSize {
     Pt1024,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockCdfRows {
     pub(crate) use_dpcm_y: DpcmCdfRow,
     pub(crate) dpcm_mode_y: DpcmCdfRow,
@@ -544,7 +544,7 @@ macro_rules! block_cdf_count_rows {
 }
 
 impl BlockCdfRows {
-    pub(crate) fn from_defaults() -> Self {
+    pub(crate) const fn from_defaults() -> Self {
         Self {
             use_dpcm_y: DEFAULT_USE_DPCM_Y_CDF,
             dpcm_mode_y: DEFAULT_DPCM_MODE_Y_CDF,

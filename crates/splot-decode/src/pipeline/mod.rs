@@ -26,9 +26,9 @@ use splot_recon::BitDepth;
 use splot_recon::DecodedFrame;
 
 use crate::DecodeIvfFrameContext as IvfFrameContext;
-use crate::bitstream::byte_stream::FlatParsedBitstream;
-#[cfg(test)]
-use crate::bitstream::byte_stream::parse_bounded_bitstream;
+use crate::bitstream::byte_stream::{
+    InputScratch, PreparedInput, PreparedStream, ReadSeek, SourceBytes, recycle,
+};
 use crate::bitstream::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCdfSubset,
@@ -65,7 +65,8 @@ pub(crate) use runtime_support::{
     ensure_runtime_limits, malformed_tile_payload, unsupported, unsupported_at,
     unsupported_feature_at, unsupported_with_spec,
 };
-pub(crate) use stream_schedule::following_inter_envelope;
+#[cfg(test)]
+pub(crate) use stream_schedule::ivf_inter_envelope;
 #[cfg(test)]
 pub(crate) use stream_schedule::require_minimal_obu_order;
 use stream_schedule::*;
@@ -95,11 +96,11 @@ pub(crate) fn decode_frames_from_plan(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
-    let mut parsed = parse_bounded_bitstream(bytes, options.limits())?;
-    parsed.discard_runtime_noops();
+    let mut reader = std::io::Cursor::new(bytes);
+    let prepared = crate::bitstream::byte_stream::prepare_stream(&mut reader, options, Vec::new())?;
     decode_frames_from_plan_impl(
-        &parsed,
-        bytes,
+        &prepared.input,
+        &mut reader,
         options,
         plan,
         &DecodeSession::new(NonZeroUsize::MIN),
@@ -110,16 +111,22 @@ pub(crate) fn decode_frames_from_plan(
 }
 
 pub(crate) fn emit_frames_from_prepared(
-    bytes: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
+    prepared: &PreparedStream,
+    reader: &mut dyn ReadSeek,
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
     session: &DecodeSession,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
     emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
 ) -> Result<()> {
     decode_frames_from_plan_impl(
-        parsed, bytes, options, plan, session, preflight, false, emit,
+        &prepared.input,
+        reader,
+        options,
+        &prepared.plan,
+        session,
+        preflight,
+        false,
+        emit,
     )
     .map(drop)
 }
@@ -179,7 +186,7 @@ fn reclaim_unowned_frames(
                 )
             })?;
         scheduler.forget(frame_index);
-        frames.entries[slot_index].retired = Some(ring.keep_frame_planes(frame.frame, false));
+        frames.entries[slot_index].retired = Some(ring.keep_frame_planes(frame.frame));
     }
     Ok(())
 }
@@ -393,7 +400,7 @@ pub(crate) fn decode_key_frame(
             &mut ring,
             &mut frames,
             0,
-            bytes,
+            bytes.into(),
             options,
             plan,
             candidate,
@@ -432,7 +439,7 @@ fn decode_key_frame_with_effects<'job, 'scope>(
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
     frame_index: usize,
-    bytes: &[u8],
+    bytes: SourceBytes<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
@@ -546,8 +553,8 @@ where
 /// delay bounds in-flight storage at every worker count.
 #[allow(clippy::too_many_arguments)]
 fn decode_frames_from_plan_impl<'job>(
-    parsed: &'job FlatParsedBitstream<'job>,
-    bytes: &'job [u8],
+    input: &'job PreparedInput,
+    reader: &mut dyn ReadSeek,
     options: &'job DecodeOptions,
     plan: &'job DecodeStreamPlan,
     session: &DecodeSession,
@@ -570,8 +577,8 @@ fn decode_frames_from_plan_impl<'job>(
     let decoded = splot_parallel::ready_task_scope(|scope| {
         admission.run_with_runners(scope, || {
             drive_frames(
-                parsed,
-                bytes,
+                input,
+                reader,
                 options,
                 plan,
                 &mut retained,
@@ -604,8 +611,8 @@ type EntropyPair<'a, 'job> = (
 /// lowest-indexed collected failure is the one the caller sees.
 #[allow(clippy::too_many_arguments)]
 fn drive_frames<'job, 'scope>(
-    parsed: &'job FlatParsedBitstream<'job>,
-    bytes: &'job [u8],
+    input: &'job PreparedInput,
+    reader: &mut dyn ReadSeek,
     options: &'job DecodeOptions,
     plan: &'job DecodeStreamPlan,
     retained: &mut frame_store::RetainedDecode,
@@ -625,11 +632,12 @@ where
         ring,
         lane,
         frames,
+        input_scratch,
         ..
     } = retained;
     let decoded = decode_frames_in_order(
-        parsed,
-        bytes,
+        input,
+        reader,
         options,
         plan,
         preflight,
@@ -643,6 +651,7 @@ where
         entropy,
         scratch_eight,
         scratch_ten,
+        input_scratch,
     );
     ring.harvest_all(scratch_eight, scratch_ten, &|| {
         admission.assist_ready(scope)
@@ -655,8 +664,8 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn decode_frames_in_order<'job, 'scope>(
-    parsed: &'job FlatParsedBitstream<'job>,
-    bytes: &'job [u8],
+    input: &'job PreparedInput,
+    reader: &mut dyn ReadSeek,
     options: &'job DecodeOptions,
     plan: &'job DecodeStreamPlan,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
@@ -670,12 +679,17 @@ fn decode_frames_in_order<'job, 'scope>(
     (entropy_eight, entropy_ten): EntropyPair<'_, 'job>,
     decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
     decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
+    input_scratch: &mut InputScratch,
 ) -> Result<Vec<PipelineFrame>>
 where
     'job: 'scope,
 {
-    let stream = require_runtime_stream(parsed)?;
-    if matches!(stream, RuntimeStream::Ivf { ivf, .. } if ivf.frames.is_empty())
+    let InputScratch {
+        records,
+        obus: obu_storage,
+    } = input_scratch;
+    let mut stream = RuntimeStream::new(input, reader, records)?;
+    if matches!(stream, RuntimeStream::Ivf { .. })
         && plan.obu_count() == 0
         && plan.frame_candidate_count() == 0
     {
@@ -685,7 +699,10 @@ where
     preflight(stream.ivf_header())?;
     let frame_rate = stream.frame_rate();
 
-    let leading_obus = stream.leading_obus()?;
+    let leading_unit = stream.first_unit()?;
+    let key_candidate = stream.first_candidate(plan.candidate_types().next());
+    let mut leading_buffer = recycle(core::mem::take(obu_storage));
+    let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
     let ([_, sequence_envelope, key_envelope], leading_frame_unit_len) =
         require_leading_frame_unit(leading_obus)?;
 
@@ -710,14 +727,7 @@ where
     let mut emission_queue = output_schedule::EmissionQueue::default();
     let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
     in_band_long_term_prelude.begin_frame(true);
-    let mut candidates = plan.frame_candidates_all();
-    let key_candidate = candidates.next().ok_or_else(|| {
-        unsupported(
-            "missing_frame_candidate",
-            None,
-            "decode runtime requires one selected key frame candidate",
-        )
-    })?;
+    let key_candidate = &key_candidate?;
     let key_frame_index = key_candidate.ivf_frame().map(IvfFrameContext::frame_index);
     let key_core = match key_envelope.header.obu_type {
         ObuType::ClosedLoopKey => {
@@ -725,8 +735,7 @@ where
         }
         ObuType::OpenLoopKey => match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
-                let (store, meta) = reference.build_store_eight(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_eight(frames)?;
                 parse_olk_core_with_effects(
                     key_envelope,
                     &sequence,
@@ -736,8 +745,7 @@ where
                 )?
             }
             BitDepthIdc::Ten => {
-                let (store, meta) = reference.build_store_ten(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_ten(frames)?;
                 parse_olk_core_with_effects(
                     key_envelope,
                     &sequence,
@@ -749,8 +757,7 @@ where
         },
         ObuType::RasFrame => match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
-                let (store, meta) = reference.build_store_eight(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_eight(frames)?;
                 let activation = inter::parse_inter_frame_activation(
                     key_envelope,
                     &sequence,
@@ -773,8 +780,7 @@ where
                 )?
             }
             BitDepthIdc::Ten => {
-                let (store, meta) = reference.build_store_ten(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_ten(frames)?;
                 let activation = inter::parse_inter_frame_activation(
                     key_envelope,
                     &sequence,
@@ -817,10 +823,9 @@ where
         key_frame_index,
     )?;
     let key_display_grain = film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
-    output_effect_state.observe_suffix(frame_suffix_obus(stream, key_candidate)?)?;
+    output_effect_state.observe_suffix(suffix_after_candidate(leading_obus, key_candidate)?)?;
     let key_output_effects = output_effect_state.finish_frame();
     let mut retained_frame_bytes = 0;
-    let mut next_unvalidated_following_ivf_record = 1;
     let mut next_unvalidated_following_annexb_obu = leading_frame_unit_len;
     ensure_retained_frame_byte_limits_for_core(
         options.limits(),
@@ -833,8 +838,7 @@ where
     let key_frame = if key_envelope.header.obu_type == ObuType::RasFrame {
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
-                let (store, meta) = reference.build_store_eight(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_eight(frames)?;
                 ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
                     admission.assist_ready(scope)
                 });
@@ -848,7 +852,7 @@ where
                     decode_scratch_eight,
                     plan,
                     key_candidate,
-                    bytes,
+                    leading_unit.view(),
                     key_envelope,
                     frames.share_core(key_core.clone())?,
                     &sequence,
@@ -886,8 +890,7 @@ where
                 }
             }
             BitDepthIdc::Ten => {
-                let (store, meta) = reference.build_store_ten(frames)?;
-                let state = inter::InterReferenceState::from_metadata(store, meta);
+                let state = reference.state_ten(frames)?;
                 ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
                     admission.assist_ready(scope)
                 });
@@ -901,7 +904,7 @@ where
                     decode_scratch_ten,
                     plan,
                     key_candidate,
-                    bytes,
+                    leading_unit.view(),
                     key_envelope,
                     frames.share_core(key_core.clone())?,
                     &sequence,
@@ -949,7 +952,7 @@ where
             ring,
             frames,
             0,
-            bytes,
+            leading_unit.view(),
             options,
             plan,
             key_candidate,
@@ -1033,12 +1036,13 @@ where
         };
     }
 
+    *obu_storage = recycle(leading_buffer);
     let mut decoding_initial_tu = true;
     let mut pending_entropy = frame_pipeline::PendingEntropyQueue::default();
     let mut shared_sequence = None;
     let mut tip_eight = Vec::new();
     let mut tip_ten = Vec::new();
-    for next_candidate in candidates {
+    for next_type in plan.candidate_types().skip(1) {
         entropy_eight.retire_completed();
         entropy_ten.retire_completed();
         if !frames.has_space() {
@@ -1072,7 +1076,7 @@ where
             }
         }
         frames.reserve()?;
-        match next_candidate.obu_type() {
+        match next_type {
             ObuType::LeadingSef | ObuType::RegularSef => {
                 frame_pipeline::drain_entropy_before_barrier(
                     &mut pending_entropy,
@@ -1080,18 +1084,15 @@ where
                     admission,
                     recon_lane,
                 );
-                let (sef_prefix_obus, sef_envelope) = match stream {
-                    RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
-                        obus,
-                        next_candidate,
-                        &mut next_unvalidated_following_annexb_obu,
-                    )?,
-                    RuntimeStream::Ivf { ivf, .. } => following_inter_envelope(
-                        ivf,
-                        next_candidate,
-                        &mut next_unvalidated_following_ivf_record,
-                    )?,
-                };
+                let (next_candidate, unit) = stream.candidate(next_type, obu_storage, false)?;
+                let next_candidate = &next_candidate;
+                let mut obu_buffer = recycle(core::mem::take(obu_storage));
+                let obus = stream.obus(&unit, &mut obu_buffer)?;
+                let (sef_prefix_obus, sef_envelope) = stream.inter_envelope(
+                    obus,
+                    next_candidate,
+                    &mut next_unvalidated_following_annexb_obu,
+                )?;
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(sef_prefix_obus, &sequence)?;
                 film_grain_slots.update_from_obus(sef_prefix_obus)?;
@@ -1118,8 +1119,7 @@ where
                 reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
                 let sef_core = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
-                        let (store, meta) = reference.build_store_eight(frames)?;
-                        let state = inter::InterReferenceState::from_metadata(store, meta);
+                        let state = reference.state_eight(frames)?;
                         parse_inter_core_with_effects(
                             sef_envelope,
                             &sequence,
@@ -1130,8 +1130,7 @@ where
                         )?
                     }
                     BitDepthIdc::Ten => {
-                        let (store, meta) = reference.build_store_ten(frames)?;
-                        let state = inter::InterReferenceState::from_metadata(store, meta);
+                        let state = reference.state_ten(frames)?;
                         parse_inter_core_with_effects(
                             sef_envelope,
                             &sequence,
@@ -1157,7 +1156,8 @@ where
                 )?;
                 let display_grain =
                     film_grain_slots.active_for_core(&sef_core, sef_envelope.offset)?;
-                output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
+                output_effect_state
+                    .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
                 let output_effects = output_effect_state.finish_frame();
                 let output_rate = output_effects.frame_rate(frame_rate);
                 let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
@@ -1236,6 +1236,7 @@ where
                         &mut retained_frame_bytes,
                     )?;
                 }
+                *obu_storage = recycle(obu_buffer);
                 if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
                 }
@@ -1247,18 +1248,15 @@ where
             | ObuType::LeadingTip
             | ObuType::RegularTip
             | ObuType::BridgeFrame => {
-                let (inter_prefix_obus, inter_envelope) = match stream {
-                    RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
-                        obus,
-                        next_candidate,
-                        &mut next_unvalidated_following_annexb_obu,
-                    )?,
-                    RuntimeStream::Ivf { ivf, .. } => following_inter_envelope(
-                        ivf,
-                        next_candidate,
-                        &mut next_unvalidated_following_ivf_record,
-                    )?,
-                };
+                let (next_candidate, unit) = stream.candidate(next_type, obu_storage, false)?;
+                let next_candidate = &next_candidate;
+                let mut obu_buffer = recycle(core::mem::take(obu_storage));
+                let obus = stream.obus(&unit, &mut obu_buffer)?;
+                let (inter_prefix_obus, inter_envelope) = stream.inter_envelope(
+                    obus,
+                    next_candidate,
+                    &mut next_unvalidated_following_annexb_obu,
+                )?;
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(inter_prefix_obus, &sequence)?;
                 film_grain_slots.update_from_obus(inter_prefix_obus)?;
@@ -1289,8 +1287,7 @@ where
                 ) {
                     let activation = match sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
-                            let (store, meta) = reference.build_store_eight(frames)?;
-                            let state = inter::InterReferenceState::from_metadata(store, meta);
+                            let state = reference.state_eight(frames)?;
                             inter::parse_inter_frame_activation(
                                 inter_envelope,
                                 &sequence,
@@ -1300,8 +1297,7 @@ where
                             )?
                         }
                         BitDepthIdc::Ten => {
-                            let (store, meta) = reference.build_store_ten(frames)?;
-                            let state = inter::InterReferenceState::from_metadata(store, meta);
+                            let state = reference.state_ten(frames)?;
                             inter::parse_inter_frame_activation(
                                 inter_envelope,
                                 &sequence,
@@ -1342,8 +1338,7 @@ where
                 let frame_index = frames.len();
                 let decoded = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
-                        let (store, meta) = reference.build_store_eight(frames)?;
-                        let inter_state = inter::InterReferenceState::from_metadata(store, meta);
+                        let inter_state = reference.state_eight(frames)?;
                         let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
@@ -1431,9 +1426,7 @@ where
                                 inter::InterFrameStart {
                                     records,
                                     plan,
-                                    candidate: next_candidate,
-                                    bytes,
-                                    frame_envelope: inter_envelope,
+                                    candidate: next_candidate.clone(),
                                     core: inter_core,
                                     sequence: shared,
                                     options,
@@ -1445,6 +1438,7 @@ where
                                     quantizer,
                                     products: writers,
                                 },
+                                unit.clone(),
                                 entropy_context,
                                 frame_index,
                                 products.3.clone(),
@@ -1490,8 +1484,7 @@ where
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
                                 frame_pipeline::TipOutputJob {
-                                    candidate: next_candidate,
-                                    envelope: inter_envelope,
+                                    candidate: next_candidate.clone(),
                                     core: task_core,
                                     sequence: shared,
                                     options,
@@ -1531,7 +1524,7 @@ where
                                 decode_scratch_eight,
                                 plan,
                                 next_candidate,
-                                bytes,
+                                unit.view(),
                                 inter_envelope,
                                 inter_core,
                                 &sequence,
@@ -1565,8 +1558,7 @@ where
                         }
                     }
                     BitDepthIdc::Ten => {
-                        let (store, meta) = reference.build_store_ten(frames)?;
-                        let inter_state = inter::InterReferenceState::from_metadata(store, meta);
+                        let inter_state = reference.state_ten(frames)?;
                         let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
@@ -1654,9 +1646,7 @@ where
                                 inter::InterFrameStart {
                                     records,
                                     plan,
-                                    candidate: next_candidate,
-                                    bytes,
-                                    frame_envelope: inter_envelope,
+                                    candidate: next_candidate.clone(),
                                     core: inter_core,
                                     sequence: shared,
                                     options,
@@ -1668,6 +1658,7 @@ where
                                     quantizer,
                                     products: writers,
                                 },
+                                unit.clone(),
                                 entropy_context,
                                 frame_index,
                                 products.3.clone(),
@@ -1713,8 +1704,7 @@ where
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
                                 frame_pipeline::TipOutputJob {
-                                    candidate: next_candidate,
-                                    envelope: inter_envelope,
+                                    candidate: next_candidate.clone(),
                                     core: task_core,
                                     sequence: shared,
                                     options,
@@ -1754,7 +1744,7 @@ where
                                 decode_scratch_ten,
                                 plan,
                                 next_candidate,
-                                bytes,
+                                unit.view(),
                                 inter_envelope,
                                 inter_core,
                                 &sequence,
@@ -1791,7 +1781,8 @@ where
                 let (inter_slot, inter_core, products, motion_field) = decoded;
                 let inter_display_grain =
                     film_grain_slots.active_for_core(&inter_core, inter_envelope.offset)?;
-                output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
+                output_effect_state
+                    .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
                 let inter_output_effects = output_effect_state.finish_frame();
                 let inter_frame_rate = inter_output_effects.frame_rate(frame_rate);
                 let inter_update = frame_ref_update_from_core(
@@ -1872,6 +1863,7 @@ where
                         &mut retained_frame_bytes,
                     )?;
                 }
+                *obu_storage = recycle(obu_buffer);
                 if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
                 }
@@ -1883,35 +1875,26 @@ where
                     admission,
                     recon_lane,
                 );
-                let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
+                let starts_new_sequence = next_type == ObuType::ClosedLoopKey;
+                let (next_candidate, unit) =
+                    stream.candidate(next_type, obu_storage, starts_new_sequence)?;
+                let next_candidate = &next_candidate;
+                let mut obu_buffer = recycle(core::mem::take(obu_storage));
+                let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
                 {
-                    let (sequence_envelope, prefix, frame) = match stream {
-                        RuntimeStream::AnnexB { obus } => following_annexb_key_frame_unit(
-                            obus,
-                            next_candidate,
-                            &mut next_unvalidated_following_annexb_obu,
-                        )?,
-                        RuntimeStream::Ivf { ivf, .. } => following_key_frame_unit(
-                            ivf,
-                            next_candidate,
-                            &mut next_unvalidated_following_ivf_record,
-                        )?,
-                    };
+                    let (sequence_envelope, prefix, frame) = stream.key_frame_unit(
+                        obus,
+                        next_candidate,
+                        &mut next_unvalidated_following_annexb_obu,
+                    )?;
                     (Some(sequence_envelope), prefix, frame)
                 } else {
-                    let (prefix, frame) = match stream {
-                        RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
-                            obus,
-                            next_candidate,
-                            &mut next_unvalidated_following_annexb_obu,
-                        )?,
-                        RuntimeStream::Ivf { ivf, .. } => following_inter_envelope(
-                            ivf,
-                            next_candidate,
-                            &mut next_unvalidated_following_ivf_record,
-                        )?,
-                    };
+                    let (prefix, frame) = stream.inter_envelope(
+                        obus,
+                        next_candidate,
+                        &mut next_unvalidated_following_annexb_obu,
+                    )?;
                     let sequence_envelope = prefix
                         .iter()
                         .rev()
@@ -1977,8 +1960,7 @@ where
                 } else {
                     match key_sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
-                            let (store, meta) = reference.build_store_eight(frames)?;
-                            let state = inter::InterReferenceState::from_metadata(store, meta);
+                            let state = reference.state_eight(frames)?;
                             parse_olk_core_with_effects(
                                 key_envelope,
                                 &key_sequence,
@@ -1988,8 +1970,7 @@ where
                             )?
                         }
                         BitDepthIdc::Ten => {
-                            let (store, meta) = reference.build_store_ten(frames)?;
-                            let state = inter::InterReferenceState::from_metadata(store, meta);
+                            let state = reference.state_ten(frames)?;
                             parse_olk_core_with_effects(
                                 key_envelope,
                                 &key_sequence,
@@ -2048,7 +2029,8 @@ where
 
                 sequence = key_sequence;
                 shared_sequence = None;
-                output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
+                output_effect_state
+                    .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
                 let key_output_effects = output_effect_state.finish_frame();
                 ensure_retained_frame_byte_limits_for_core(
                     options.limits(),
@@ -2067,7 +2049,7 @@ where
                     ring,
                     frames,
                     frame_index,
-                    bytes,
+                    unit.view(),
                     options,
                     plan,
                     next_candidate,
@@ -2145,14 +2127,15 @@ where
                         &mut retained_frame_bytes,
                     )?;
                 }
+                *obu_storage = recycle(obu_buffer);
                 if output_frame_limit_reached(options, scheduler.emitted_count) {
                     break;
                 }
             }
             _ => {
-                return Err(unsupported_at(
+                return Err(unsupported(
                     "non_frame_candidate_in_frame_loop",
-                    next_candidate.offset(),
+                    None,
                     "internal invariant violation: non-frame-candidate obu reached the frame decode loop",
                 ));
             }
@@ -2247,7 +2230,7 @@ pub(crate) enum TileFactsKind {
 pub(crate) fn derive_tile_plan_with<'payload>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &'payload [u8],
+    bytes: SourceBytes<'payload>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
@@ -2270,7 +2253,9 @@ pub(crate) fn derive_tile_plan_with<'payload>(
     }
     .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
-    let candidates = frame_tile_group_candidates(plan, candidate);
+    let candidates = core::iter::once(candidate.clone()).chain(
+        crate::bitstream::stream_plan::tile_group_continuations(bytes, candidate),
+    );
     let group_count = candidates.clone().count();
     let recorded_header = record_frame_header(envelope, core, group_count > 1)?;
     let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> = None;
@@ -2281,7 +2266,7 @@ pub(crate) fn derive_tile_plan_with<'payload>(
                 &mut scratch.continuation_work_units,
             );
         }
-        let group_envelope = planned_envelope(bytes, group_candidate)?;
+        let group_envelope = planned_envelope(bytes, &group_candidate)?;
         let group_facts = if group_index == 0 {
             facts
         } else {
@@ -2298,7 +2283,7 @@ pub(crate) fn derive_tile_plan_with<'payload>(
         };
         let mut input = FrameCandidateTileBoundaryInput::new(
             plan,
-            group_candidate,
+            &group_candidate,
             bytes,
             group_envelope,
             TileGroupPositionFacts::new(group_index == 0, group_index + 1 == group_count),
@@ -2331,56 +2316,22 @@ pub(crate) fn derive_tile_plan_with<'payload>(
     })
 }
 
-fn frame_tile_group_candidates<'a>(
-    plan: &'a DecodeStreamPlan,
-    candidate: &'a DecodePlannedObu,
-) -> impl Iterator<Item = &'a DecodePlannedObu> + Clone {
-    let continuations = plan
-        .obus()
-        .skip(candidate.index() as usize + 1)
-        .take_while(move |planned| planned.ivf_frame() == candidate.ivf_frame())
-        .filter(|planned| planned.obu_type() != ObuType::Padding)
-        .take_while(move |planned| {
-            planned.role().is_frame_continuation()
-                && planned.obu_type() == candidate.obu_type()
-                && planned.header().temporal_layer_id == candidate.header().temporal_layer_id
-                && planned.header().embedded_layer_id == candidate.header().embedded_layer_id
-                && planned.header().extended_layer_id == candidate.header().extended_layer_id
-        });
-    core::iter::once(candidate).chain(continuations)
-}
-
-fn planned_envelope<'a>(bytes: &'a [u8], planned: &DecodePlannedObu) -> Result<ObuEnvelope<'a>> {
-    let start = usize::try_from(planned.offset().get()).map_err(|_| {
-        unsupported_at(
-            "source_range_out_of_bounds",
-            planned.offset(),
-            "planned tile-group offset is outside the decode input",
-        )
-    })?;
-    let payload_start = start
-        .checked_add(usize::from(planned.header().header_size_bytes))
+fn planned_envelope<'a>(
+    bytes: SourceBytes<'a>,
+    planned: &DecodePlannedObu,
+) -> Result<ObuEnvelope<'a>> {
+    let start = planned.offset().get();
+    let payload = start
+        .checked_add(u64::from(planned.header().header_size_bytes))
+        .zip(start.checked_add(u64::from(planned.size())))
+        .and_then(|(payload_start, end)| bytes.get(payload_start, end))
         .ok_or_else(|| {
             unsupported_at(
                 "source_range_out_of_bounds",
                 planned.offset(),
-                "planned tile-group payload offset overflowed",
+                "planned tile-group payload is outside the decode input",
             )
         })?;
-    let end = start.checked_add(planned.size() as usize).ok_or_else(|| {
-        unsupported_at(
-            "source_range_out_of_bounds",
-            planned.offset(),
-            "planned tile-group end offset overflowed",
-        )
-    })?;
-    let payload = bytes.get(payload_start..end).ok_or_else(|| {
-        unsupported_at(
-            "source_range_out_of_bounds",
-            planned.offset(),
-            "planned tile-group payload is outside the decode input",
-        )
-    })?;
     Ok(ObuEnvelope {
         offset: planned.offset(),
         size: planned.size(),
@@ -2474,7 +2425,7 @@ fn continuation_structure_start_bits(
 pub(crate) fn derive_tile_plan<'payload>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
-    bytes: &'payload [u8],
+    bytes: SourceBytes<'payload>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,

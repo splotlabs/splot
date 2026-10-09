@@ -138,8 +138,8 @@ pub(super) struct TrajectoryState {
     /// matched control, which is the cost this layout reclaims.
     pub(super) cells: Vec<PackedTrajectoryMv>,
     pub(super) reference_count: usize,
-    pub(super) positions: Vec<Vec<TrajectoryPositions>>,
-    pub(super) projection_offsets: Vec<i32>,
+    /// Position scratch for each band one projection round runs at once.
+    pub(super) scratch: Vec<OwnedTrajectoryScratch>,
     step: usize,
     unit_size8: usize,
     width8: usize,
@@ -161,8 +161,7 @@ impl TrajectoryState {
         Some(Self {
             cells: vec![PackedTrajectoryMv::INVALID; cell_count.checked_mul(reference_count)?],
             reference_count,
-            positions: vec![vec![TrajectoryPositions::EMPTY; cell_count]; reference_count],
-            projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
+            scratch: Vec::new(),
             step,
             unit_size8,
             width8,
@@ -209,14 +208,6 @@ impl TrajectoryState {
         self.reference_count = reference_count;
         self.cells.resize(total, PackedTrajectoryMv::INVALID);
         self.cells.fill(PackedTrajectoryMv::INVALID);
-        self.positions.resize_with(reference_count, Vec::new);
-        for positions in &mut self.positions {
-            positions.resize(cell_count, TrajectoryPositions::EMPTY);
-            positions.fill(TrajectoryPositions::EMPTY);
-        }
-        self.projection_offsets
-            .resize(cell_count, INVALID_PROJECTION_OFFSET);
-        self.projection_offsets.fill(INVALID_PROJECTION_OFFSET);
         self.step = step.clamp(1, 2);
         self.unit_size8 = unit_size8.max(1);
         (self.width8, self.height8) = (width8, height8);
@@ -239,8 +230,7 @@ impl TrajectoryState {
         Self {
             cells,
             reference_count,
-            positions: Vec::new(),
-            projection_offsets: Vec::new(),
+            scratch: Vec::new(),
             step: 1,
             unit_size8: 1,
             width8,
@@ -265,81 +255,60 @@ impl TrajectoryState {
             .collect()
     }
 
-    /// Splits every trajectory grid into `band_rows`-tall row bands.
+    /// Splits the trajectory grid into `band_rows`-tall row bands, with
+    /// `slots` scratches for the bands one projection round runs at once.
     ///
     /// Bands are unit-aligned, and AV2 § 7.9.8 keeps each projected sample in
     /// the TMVP unit row of the position it was sampled from, so the bands
-    /// partition every write the § 7.9.3 scan makes. Returns `None` when a grid
-    /// is not sized to this state's geometry, leaving the caller whole-field.
-    pub(super) fn bands(
+    /// partition every write the § 7.9.3 scan makes and a band's position
+    /// scratch is dead once its scan ends. Returns `None` when the grid is not
+    /// sized to this state's geometry, leaving the caller whole-field.
+    pub(super) fn grids(
         &mut self,
         band_rows: usize,
-    ) -> Option<impl Iterator<Item = TrajectoryBand<'_>>> {
-        let Self {
-            cells,
-            reference_count,
-            positions,
-            projection_offsets,
-            step,
-            unit_size8,
-            width8,
-            height8,
-        } = self;
-        let reference_count = *reference_count;
-        let (width8, height8) = (*width8, *height8);
-        let (step, unit_size8) = (*step, *unit_size8);
-        let total = width8.checked_mul(height8)?;
-        let stride = band_rows.checked_mul(width8)?;
+        slots: usize,
+    ) -> Option<(TrajectoryGrids<'_>, &mut [OwnedTrajectoryScratch])> {
+        let total = self.width8.checked_mul(self.height8)?;
         if band_rows == 0
-            || reference_count > MAX_TRAJECTORY_REFERENCES
-            || positions.len() != reference_count
-            || projection_offsets.len() != total
-            || cells.len() != total.checked_mul(reference_count)?
-            || positions.iter().any(|slots| slots.len() != total)
+            || self.reference_count > MAX_TRAJECTORY_REFERENCES
+            || self.cells.len() != total.checked_mul(self.reference_count)?
         {
             return None;
         }
-        let mut field_bands = cells.chunks_mut(stride.checked_mul(reference_count)?.max(1));
-        let mut references = positions.iter_mut();
-        let mut position_bands: [Option<core::slice::ChunksMut<'_, TrajectoryPositions>>;
-            MAX_TRAJECTORY_REFERENCES] = core::array::from_fn(|_| {
-            references
-                .next()
-                .map(|slots| slots.chunks_mut(stride.max(1)))
-        });
-        Some(
-            projection_offsets
-                .chunks_mut(stride.max(1))
-                .enumerate()
-                .map(move |(index, projection_offsets)| {
-                    let mut positions = BandSlices::new();
-                    for slots in position_bands.iter_mut().flatten() {
-                        if let Some(slots) = slots.next() {
-                            let _ = positions.push(slots);
-                        }
-                    }
-                    TrajectoryBand {
-                        fields: field_bands.next().unwrap_or_default(),
-                        reference_count,
-                        positions,
-                        projection_offsets,
-                        row_base: index * band_rows,
-                        step,
-                        step_mask: step - 1,
-                        unit_size8,
-                        unit_mask: unit_size8 - 1,
-                        unit_shift: unit_size8.trailing_zeros(),
-                        width8,
-                        height8,
-                    }
-                }),
-        )
+        if self.scratch.len() < slots {
+            self.scratch
+                .resize_with(slots, OwnedTrajectoryScratch::default);
+        }
+        let stride = band_rows.checked_mul(self.width8)?;
+        let grids = TrajectoryGrids {
+            fields: self
+                .cells
+                .chunks_mut(stride.checked_mul(self.reference_count)?.max(1)),
+            reference_count: self.reference_count,
+            band_rows,
+            next_row: 0,
+            step: self.step,
+            unit_size8: self.unit_size8,
+            width8: self.width8,
+            height8: self.height8,
+        };
+        Some((grids, self.scratch.get_mut(..slots)?))
     }
 
+    /// The whole field as one band whose position scratch persists across calls.
     #[cfg(test)]
     pub(super) fn whole_band(&mut self) -> Option<TrajectoryBand<'_>> {
+        let cells = self.width8.checked_mul(self.height8)?;
+        let reference_count = self.reference_count;
         let height8 = self.height8;
-        self.bands(height8).and_then(|mut bands| bands.next())
+        let fresh = self.scratch.is_empty();
+        let (mut grids, scratch) = self.grids(height8, 1)?;
+        let scratch = scratch.first_mut()?;
+        if fresh {
+            scratch.reset(cells, reference_count)?;
+        }
+        let fields = grids.fields.next().unwrap_or_default();
+        grids.band(fields, scratch, 0, cells)
     }
 
     pub(super) fn fill_gaps(&mut self) {
@@ -419,6 +388,60 @@ impl<'a, T> BandSlices<'a, T> {
     }
 }
 
+/// The row bands of a [`TrajectoryState`]'s grid, lent out one at a time.
+pub(super) struct TrajectoryGrids<'a> {
+    fields: core::slice::ChunksMut<'a, PackedTrajectoryMv>,
+    reference_count: usize,
+    band_rows: usize,
+    next_row: usize,
+    step: usize,
+    unit_size8: usize,
+    width8: usize,
+    height8: usize,
+}
+
+impl<'a> TrajectoryGrids<'a> {
+    /// The next band, with its position scratch cleared in `scratch`.
+    pub(super) fn next_band<'s>(
+        &mut self,
+        scratch: &'s mut OwnedTrajectoryScratch,
+    ) -> Option<TrajectoryBand<'s>>
+    where
+        'a: 's,
+    {
+        let row_base = self.next_row;
+        let rows = self.band_rows.min(self.height8.checked_sub(row_base)?);
+        self.next_row = row_base.checked_add(self.band_rows)?;
+        let cells = rows.checked_mul(self.width8)?;
+        scratch.reset(cells, self.reference_count)?;
+        let fields = self.fields.next().unwrap_or_default();
+        self.band(fields, scratch, row_base, cells)
+    }
+
+    fn band<'s>(
+        &self,
+        fields: &'s mut [PackedTrajectoryMv],
+        scratch: &'s mut OwnedTrajectoryScratch,
+        row_base: usize,
+        cells: usize,
+    ) -> Option<TrajectoryBand<'s>> {
+        Some(TrajectoryBand {
+            fields,
+            reference_count: self.reference_count,
+            positions: BandSlices::from_chunks(&mut scratch.positions, cells)?,
+            projection_offsets: &mut scratch.projection_offsets,
+            row_base,
+            step: self.step,
+            step_mask: self.step - 1,
+            unit_size8: self.unit_size8,
+            unit_mask: self.unit_size8 - 1,
+            unit_shift: self.unit_size8.trailing_zeros(),
+            width8: self.width8,
+            height8: self.height8,
+        })
+    }
+}
+
 pub(super) struct OwnedTrajectoryBand {
     fields: Vec<PackedTrajectoryMv>,
     positions: Vec<TrajectoryPositions>,
@@ -433,10 +456,25 @@ pub(super) struct OwnedTrajectoryBand {
     row_count: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct OwnedTrajectoryScratch {
-    positions: Vec<TrajectoryPositions>,
-    projection_offsets: Vec<i32>,
+    pub(super) positions: Vec<TrajectoryPositions>,
+    pub(super) projection_offsets: Vec<i32>,
+}
+
+impl OwnedTrajectoryScratch {
+    /// Clears the scratch for a band of `cells` cells per reference.
+    fn reset(&mut self, cells: usize, reference_count: usize) -> Option<()> {
+        let total = cells.checked_mul(reference_count)?;
+        self.positions.clear();
+        self.positions.try_reserve_exact(total).ok()?;
+        self.positions.resize(total, TrajectoryPositions::EMPTY);
+        self.projection_offsets.clear();
+        self.projection_offsets.try_reserve_exact(cells).ok()?;
+        self.projection_offsets
+            .resize(cells, INVALID_PROJECTION_OFFSET);
+        Some(())
+    }
 }
 
 #[derive(Debug)]
@@ -501,22 +539,13 @@ impl OwnedTrajectoryBand {
             .try_reserve_exact(total_cells)
             .map_err(|_| allocation())?;
         fields.resize(total_cells, PackedTrajectoryMv::INVALID);
-        let mut positions = core::mem::take(&mut scratch.positions);
-        positions.clear();
-        positions
-            .try_reserve_exact(total_cells)
-            .map_err(|_| allocation())?;
-        positions.resize(total_cells, TrajectoryPositions::EMPTY);
-        let mut projection_offsets = core::mem::take(&mut scratch.projection_offsets);
-        projection_offsets.clear();
-        projection_offsets
-            .try_reserve_exact(cell_count)
-            .map_err(|_| allocation())?;
-        projection_offsets.resize(cell_count, INVALID_PROJECTION_OFFSET);
+        scratch
+            .reset(cell_count, reference_count)
+            .ok_or_else(allocation)?;
         Ok(Self {
             fields,
-            positions,
-            projection_offsets,
+            positions: core::mem::take(&mut scratch.positions),
+            projection_offsets: core::mem::take(&mut scratch.projection_offsets),
             cells_per_reference: cell_count,
             reference_count,
             row_base,
@@ -1126,7 +1155,8 @@ mod tests {
     fn intersection_visits_only_the_recorded_sparse_phases() {
         let mut state = TrajectoryState::new((8, 8), 2, 1, 8).unwrap();
         let source_index = temporal_grid_index(state.width8, state.height8, 1, 2).unwrap();
-        state.positions[0][source_index] = TrajectoryPositions {
+        state.whole_band().unwrap();
+        state.scratch[0].positions[source_index] = TrajectoryPositions {
             phases: [
                 PackedPosition::new((1, 1)).unwrap(),
                 PackedPosition::INVALID,

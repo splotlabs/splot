@@ -21,6 +21,7 @@ use crate::prediction::inter::{
         mv_clamp_to_integer, read_newmv_block_mvd_with_config,
     },
 };
+use crate::tile::SbRowWindow;
 
 use super::intrabc_ref_mv_stack::{
     SpatialIntrabcProbes, SpatialScanGeometry, capture_spatial_intrabc_probes,
@@ -334,6 +335,7 @@ pub(crate) struct TileIntrabcPreludeState {
     tile_rows: usize,
     tile_cols: usize,
     sb_size4: usize,
+    window: SbRowWindow,
     values: Vec<IntrabcGridCell>,
 }
 
@@ -408,12 +410,16 @@ impl TileIntrabcPreludeState {
         let (mi_rows, mi_cols) = frame_mi_size;
         let rows = tile_rows.end.saturating_sub(tile_rows.start);
         let cols = tile_cols.end.saturating_sub(tile_cols.start);
+        let sb_size4 = intrabc_sb_size4(sequence, frame_is_intra_only)?;
+        let window = SbRowWindow::new(rows, sb_size4);
         let values_len = if enabled {
-            rows.checked_mul(cols).ok_or_else(intrabc_state_error)?
+            window
+                .plane_rows()
+                .checked_mul(cols)
+                .ok_or_else(intrabc_state_error)?
         } else {
             0
         };
-        let sb_size4 = intrabc_sb_size4(sequence, frame_is_intra_only)?;
         self.values.resize(values_len, IntrabcGridCell::default());
         self.values.fill(IntrabcGridCell::default());
         self.enabled = enabled;
@@ -424,6 +430,7 @@ impl TileIntrabcPreludeState {
         self.tile_rows = rows;
         self.tile_cols = cols;
         self.sb_size4 = sb_size4;
+        self.window = window;
         Ok(())
     }
 
@@ -448,8 +455,16 @@ impl TileIntrabcPreludeState {
         let value = IntrabcGridCell::new(facts)?;
         let area = self.clipped_record_area(row, col, n4w, n4h)?;
         if !area.cols.is_empty() {
+            if let Some(slide) = self
+                .window
+                .enter(area.rows.start.saturating_sub(self.origin_row))
+            {
+                slide.apply(&mut self.values, self.tile_cols, IntrabcGridCell::default());
+            }
             for r in area.rows {
-                let start = self.index(r, area.cols.start)?;
+                let Some(start) = self.index(r, area.cols.start)? else {
+                    continue;
+                };
                 let end = start
                     .checked_add(area.cols.len())
                     .ok_or_else(intrabc_state_error)?;
@@ -572,25 +587,33 @@ impl TileIntrabcPreludeState {
     }
 
     fn value(&self, row: usize, col: usize) -> Result<Option<IntrabcBlockFacts>> {
-        let index = self.index(row, col)?;
-        Ok(self.facts_at_index(index))
+        Ok(self
+            .index(row, col)?
+            .and_then(|index| self.facts_at_index(index)))
     }
 
-    fn index(&self, row: usize, col: usize) -> Result<usize> {
-        if row < self.origin_row
-            || col < self.origin_col
-            || row >= self.origin_row.saturating_add(self.tile_rows)
-            || col >= self.origin_col.saturating_add(self.tile_cols)
-        {
+    /// Plane index of a tile position, `None` while its row is unpublished.
+    fn index(&self, row: usize, col: usize) -> Result<Option<usize>> {
+        if !self.is_inside(row, col) {
             return Err(intrabc_state_error());
         }
-        row.checked_sub(self.origin_row)
-            .and_then(|row| row.checked_mul(self.tile_cols))
-            .and_then(|start| {
-                col.checked_sub(self.origin_col)
-                    .and_then(|col| start.checked_add(col))
-            })
-            .ok_or_else(intrabc_state_error)
+        let plane_row = self
+            .window
+            .checked_plane_row(row - self.origin_row)
+            .map_err(|_| intrabc_state_error())?;
+        Ok(plane_row.map(|plane_row| plane_row * self.tile_cols + (col - self.origin_col)))
+    }
+
+    fn is_inside(&self, row: usize, col: usize) -> bool {
+        row >= self.origin_row
+            && col >= self.origin_col
+            && row < self.origin_row.saturating_add(self.tile_rows)
+            && col < self.origin_col.saturating_add(self.tile_cols)
+    }
+
+    /// Whether a probe read a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.window.violated()
     }
 
     pub(crate) fn capture_spatial_intrabc_probes(
@@ -625,7 +648,11 @@ impl TileIntrabcPreludeState {
     }
 
     fn facts_at(&self, row: usize, col: usize) -> Option<IntrabcBlockFacts> {
-        self.facts_at_index(self.index(row, col).ok()?)
+        if !self.is_inside(row, col) {
+            return None;
+        }
+        let plane_row = self.window.plane_row(row - self.origin_row)?;
+        self.facts_at_index(plane_row * self.tile_cols + (col - self.origin_col))
     }
 
     fn facts_at_index(&self, index: usize) -> Option<IntrabcBlockFacts> {

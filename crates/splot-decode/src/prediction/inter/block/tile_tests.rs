@@ -332,6 +332,9 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
             frame: Arc::clone(&progress.residuals),
             planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
             range: 0..0,
+            entries: 0..0,
+            blocks: 0..0,
+            flags: 0..0,
             capacity: 0,
         }),
         ordinal,
@@ -494,6 +497,9 @@ fn frame_coefficient_snapshots_release_the_lock_and_pin_retirement() {
             frame: Arc::clone(&progress.residuals),
             planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
             range: 1..4,
+            entries: 0..0,
+            blocks: 0..0,
+            flags: 0..0,
             capacity: 16,
         };
         source.copy_into(&mut snapshot).expect("snapshot");
@@ -525,6 +531,9 @@ fn frame_coefficient_snapshots_release_the_lock_and_pin_retirement() {
         frame: Arc::clone(&progress.residuals),
         planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
         range: 0..65,
+        entries: 0..0,
+        blocks: 0..0,
+        flags: 0..0,
         capacity: 64,
     };
     assert!(source.copy_into(&mut snapshot).is_err());

@@ -2435,12 +2435,22 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
     scaling: super::mv_scaling::PlaneScaling,
 ) -> Result<()> {
     let storage = workspace.plane(plane)?.storage_size();
-    let params = crate::filters::wienerns_lr::recon::full_recon::intrabc_bilinear_params(
+    let mut params = crate::filters::wienerns_lr::recon::full_recon::intrabc_bilinear_params(
         scaling,
         target.width(),
         target.height(),
         workspace.info().bit_depth(),
     );
+    let (top, bottom) =
+        crate::filters::wienerns_lr::recon::full_recon::intrabc_bilinear_rows(&params);
+    let span = || ReconError::ArithmeticOverflow {
+        context: "IntraBC prediction row span",
+    };
+    let first_row = usize::try_from(top).map_err(|_| span())?;
+    let rows = usize::try_from(bottom - top + 1).map_err(|_| span())?;
+    params.start_y -= top << 10;
+    params.first_y = 0;
+    params.last_y = bottom - top;
     let prediction_len =
         target
             .width()
@@ -2453,10 +2463,11 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
         predicted.resize(prediction_len, 0);
         let result: Result<()> = (|| {
             {
-                let view = ReferencePlaneView::new(
-                    workspace.samples(plane)?,
+                let view = ReferencePlaneView::from_strided(
+                    workspace.plane(plane)?.rows(first_row, first_row + rows)?,
                     storage.width(),
-                    storage.height(),
+                    storage.width(),
+                    rows,
                 )?;
                 subpel_predict_block_into(&view, &params, &mut predicted)?;
             }
