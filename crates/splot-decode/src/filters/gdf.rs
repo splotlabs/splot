@@ -3,11 +3,7 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
-use std::simd::{
-    Simd,
-    cmp::SimdOrd,
-    num::{SimdInt, SimdUint},
-};
+use std::simd::Simd;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::tables::loop_restoration::{
@@ -26,7 +22,7 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 #[path = "gdf_simd.rs"]
 mod simd;
 
-use simd::{finish_gdf_width_simd, gdf_width4_rows, gdf_width8_rows, uniform_gdf_class};
+use simd::{GdfTapWeights, class_tap_weights, gdf_rows, uniform_gdf_class};
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -523,6 +519,43 @@ impl GdfUniformParams {
             }),
         }
     }
+
+    fn tap_weights<const W: usize>(&self) -> impl Fn(usize) -> GdfTapWeights<W> + '_ {
+        |k| GdfTapWeights {
+            alpha: Simd::splat(self.alpha[k]),
+            weights: core::array::from_fn(|index| Simd::splat(self.weights[index][k])),
+        }
+    }
+}
+
+/// Reads the `W` base samples at `start` and in the next frame row.
+fn base_row_pair<const W: usize>(
+    base_luma: &[u16],
+    start: usize,
+    frame_width: usize,
+) -> Result<[[u16; W]; 2]> {
+    let row = |start: usize| {
+        exact_slice(base_luma, start, W)
+            .and_then(|samples| <&[u16; W]>::try_from(samples).ok())
+            .copied()
+            .ok_or_else(gdf_state_error)
+    };
+    Ok([row(start)?, row(start + frame_width)?])
+}
+
+/// Filters the `W` samples at `start` and in the next frame row in place.
+fn filter_row_pair<const W: usize>(
+    base_luma: &mut [u16],
+    start: usize,
+    frame_width: usize,
+    filter: impl FnOnce([[u16; W]; 2]) -> Result<[[u16; W]; 2]>,
+) -> Result<()> {
+    let filtered = filter(base_row_pair(base_luma, start, frame_width)?)?;
+    for (row, samples) in filtered.iter().enumerate() {
+        let row_start = start + row * frame_width;
+        base_luma[row_start..row_start + W].copy_from_slice(samples);
+    }
+    Ok(())
 }
 
 fn compute_block<T: ReconSample>(
@@ -559,8 +592,11 @@ fn compute_block<T: ReconSample>(
     let class_col_base = (source_origin.0 - GDF_READ_RADIUS) >> 1;
     let mut output = [T::default(); MI_SIZE * MI_SIZE];
     if block.width == MI_SIZE {
-        for row in 0..block.height {
+        for row in (0..block.height).step_by(2) {
             let class_base = (row >> 1) * class_cols + class_col_base;
+            let classes = classes
+                .get(class_base..class_base + 2)
+                .ok_or_else(gdf_state_error)?;
             let base_start = block
                 .y
                 .checked_add(row)
@@ -568,22 +604,15 @@ fn compute_block<T: ReconSample>(
                 .and_then(|y| y.checked_mul(block.frame_width))
                 .and_then(|index| index.checked_add(block.x))
                 .ok_or_else(gdf_state_error)?;
-            let base_values = exact_slice(base_luma, base_start, MI_SIZE)
-                .and_then(|samples| <&[u16; MI_SIZE]>::try_from(samples).ok())
-                .copied()
-                .ok_or_else(gdf_state_error)?;
-            let samples = gdf_width4_rows(
-                [base_values],
-                source,
-                &tap_offsets,
-                [classes[class_base], classes[class_base + 1]],
-                &block,
-                row,
-                source_origin,
-            )?[0];
-            for (col, sample) in samples.into_iter().enumerate() {
-                output[row * MI_SIZE + col] =
-                    T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
+            let base = base_row_pair(base_luma, base_start, block.frame_width)?;
+            let origin = (source_origin.0, source_origin.1 + row);
+            let weights = class_tap_weights::<MI_SIZE>(classes, &block);
+            let rows = gdf_rows(base, source, classes, &block, origin, weights)?;
+            for (row_offset, samples) in rows.into_iter().enumerate() {
+                for (col, sample) in samples.into_iter().enumerate() {
+                    output[(row + row_offset) * MI_SIZE + col] =
+                        T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
+                }
             }
         }
         return Ok(output);
@@ -636,78 +665,47 @@ fn compute_enabled_segment(
         let mut local_x = cols.start;
         while local_x < cols.end {
             let output_start = output_row.checked_add(local_x).ok_or_else(geometry_error)?;
-            let next_output_start = output_start
-                .checked_add(block.frame_width)
-                .ok_or_else(geometry_error)?;
             let class_start = class_row
                 .checked_add(local_x >> 1)
                 .ok_or_else(geometry_error)?;
-            if cols.end - local_x >= 16 {
-                let uniform_classes = classes
-                    .get(class_start..class_start + 8)
-                    .and_then(|classes| <&[GdfClass; 8]>::try_from(classes).ok())
-                    .and_then(|classes| uniform_gdf_class(classes).map(|index| (classes, index)));
-                if let Some((uniform_classes, class_index)) = uniform_classes {
-                    let base_values = exact_slice(base_luma, output_start, 16)
-                        .and_then(|samples| <&[u16; 16]>::try_from(samples).ok())
-                        .copied()
-                        .ok_or_else(source_error)?;
-                    let next_base_values = exact_slice(base_luma, next_output_start, 16)
-                        .and_then(|samples| <&[u16; 16]>::try_from(samples).ok())
-                        .copied()
-                        .ok_or_else(source_error)?;
-                    let origin = (source_origin.0 + local_x, source_origin.1 + row);
-                    let filtered = gdf_uniform_width_rows::<16, 2>(
-                        [base_values, next_base_values],
-                        source,
-                        &tap_offsets,
-                        uniform_classes,
-                        &uniform_params[class_index as usize],
-                        block,
-                        origin,
-                    )?;
-                    base_luma[output_start..output_start + 16].copy_from_slice(&filtered[0]);
-                    base_luma[next_output_start..next_output_start + 16]
-                        .copy_from_slice(&filtered[1]);
-                    local_x += 16;
-                    continue;
-                }
-            }
-            if cols.end - local_x >= 8 {
-                let base_values = exact_slice(base_luma, output_start, 8)
-                    .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
-                    .copied()
-                    .ok_or_else(source_error)?;
-                let next_base_values = exact_slice(base_luma, next_output_start, 8)
-                    .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
-                    .copied()
-                    .ok_or_else(source_error)?;
+            let origin = (source_origin.0 + local_x, source_origin.1 + row);
+            let width = cols.end - local_x;
+            let uniform_16 = classes
+                .get(class_start..class_start + 8)
+                .filter(|_| width >= 16)
+                .and_then(|classes| <&[GdfClass; 8]>::try_from(classes).ok())
+                .and_then(|classes| uniform_gdf_class(classes).map(|index| (classes, index)));
+            if let Some((classes, class_index)) = uniform_16 {
+                let weights = uniform_params[class_index as usize].tap_weights::<16>();
+                filter_row_pair::<16>(base_luma, output_start, block.frame_width, |base| {
+                    gdf_rows(base, source, classes, block, origin, weights)
+                })?;
+                local_x += 16;
+            } else if width >= 8 {
                 let classes = classes
                     .get(class_start..class_start + 4)
                     .and_then(|classes| <&[GdfClass; 4]>::try_from(classes).ok())
-                    .copied()
                     .ok_or_else(geometry_error)?;
-                let args = [base_values, next_base_values];
-                let origin = (source_origin.0 + local_x, source_origin.1 + row);
-                let filtered = if let Some(class_index) = uniform_gdf_class(&classes) {
-                    gdf_uniform_width_rows::<8, 2>(
-                        args,
-                        source,
-                        &tap_offsets,
-                        &classes,
-                        &uniform_params[class_index as usize],
-                        block,
-                        origin,
-                    )?
-                } else {
-                    gdf_width8_rows(args, source, &tap_offsets, classes, block, origin)?
-                };
-                base_luma[output_start..output_start + 8].copy_from_slice(&filtered[0]);
-                base_luma[next_output_start..next_output_start + 8].copy_from_slice(&filtered[1]);
+                filter_row_pair::<8>(base_luma, output_start, block.frame_width, |base| {
+                    if let Some(class_index) = uniform_gdf_class(classes) {
+                        let weights = uniform_params[class_index as usize].tap_weights::<8>();
+                        gdf_rows(base, source, classes, block, origin, weights)
+                    } else {
+                        let weights = class_tap_weights::<8>(classes, block);
+                        gdf_rows(base, source, classes, block, origin, weights)
+                    }
+                })?;
                 local_x += 8;
-                continue;
-            }
-            if cols.end - local_x < MI_SIZE {
+            } else if width >= MI_SIZE {
+                let classes = classes
+                    .get(class_start..class_start + 2)
+                    .ok_or_else(geometry_error)?;
+                filter_row_pair::<MI_SIZE>(base_luma, output_start, block.frame_width, |base| {
+                    let weights = class_tap_weights::<MI_SIZE>(classes, block);
+                    gdf_rows(base, source, classes, block, origin, weights)
+                })?;
+                local_x += MI_SIZE;
+            } else {
                 let last_col = source_origin.0 + cols.end + GDF_READ_RADIUS - 1;
                 let window_end = (source_origin.1 + row + GDF_READ_RADIUS) * source.stride;
                 if source_origin.0 < GDF_READ_RADIUS
@@ -738,29 +736,6 @@ fn compute_enabled_segment(
                 }
                 break;
             }
-            let base_values = exact_slice(base_luma, output_start, MI_SIZE)
-                .and_then(|samples| <&[u16; MI_SIZE]>::try_from(samples).ok())
-                .copied()
-                .ok_or_else(source_error)?;
-            let next_base_values = exact_slice(base_luma, next_output_start, MI_SIZE)
-                .and_then(|samples| <&[u16; MI_SIZE]>::try_from(samples).ok())
-                .copied()
-                .ok_or_else(source_error)?;
-            let classes = classes
-                .get(class_start..class_start + 2)
-                .ok_or_else(geometry_error)?;
-            let filtered = gdf_width4_rows(
-                [base_values, next_base_values],
-                source,
-                &tap_offsets,
-                [classes[0], classes[1]],
-                block,
-                0,
-                (source_origin.0 + local_x, source_origin.1 + row),
-            )?;
-            base_luma[output_start..output_start + MI_SIZE].copy_from_slice(&filtered[0]);
-            base_luma[next_output_start..next_output_start + MI_SIZE].copy_from_slice(&filtered[1]);
-            local_x += MI_SIZE;
         }
     }
     Ok(())
@@ -1423,88 +1398,6 @@ fn gdf_tap_offsets(stride: usize) -> Result<[usize; GDF_COORDS.len()]> {
 
 fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
     samples.get(start..)?.get(..len)
-}
-
-#[inline(never)]
-fn gdf_uniform_width_rows<const WIDTH: usize, const ROWS: usize>(
-    base_values: [[u16; WIDTH]; ROWS],
-    source: &GdfSource<'_>,
-    tap_offsets: &[usize; GDF_COORDS.len()],
-    classes: &[GdfClass],
-    params: &GdfUniformParams,
-    block: &GdfBlock,
-    source_origin: (usize, usize),
-) -> Result<[[u16; WIDTH]; ROWS]> {
-    let source_error = gdf_state_error;
-    let mut bases = [0usize; ROWS];
-    let mut centers = [Simd::<i16, WIDTH>::splat(0); ROWS];
-    let mut gdf_indices = [[Simd::<i32, WIDTH>::splat(0); 3]; ROWS];
-    let mut output = [[0; WIDTH]; ROWS];
-    for row_offset in 0..ROWS {
-        let base = (source_origin.1 + row_offset) * source.stride + source_origin.0;
-        bases[row_offset] = base;
-        centers[row_offset] = Simd::<u16, WIDTH>::from_slice(
-            exact_slice(source.samples, base, WIDTH).ok_or_else(source_error)?,
-        )
-        .cast::<i16>();
-        gdf_indices[row_offset][2] = Simd::from_array(core::array::from_fn(|col| {
-            classes[col >> 1].gradient_bias()
-        }));
-    }
-    for (k, &tap) in tap_offsets.iter().enumerate() {
-        let alpha = params.alpha[k];
-        let low = Simd::splat(-alpha);
-        let high = Simd::splat(alpha);
-        for row_offset in 0..ROWS {
-            let base = bases[row_offset];
-            let negative = Simd::<u16, WIDTH>::from_slice(
-                exact_slice(source.samples, base - tap, WIDTH).ok_or_else(source_error)?,
-            )
-            .cast::<i16>();
-            let positive = Simd::<u16, WIDTH>::from_slice(
-                exact_slice(source.samples, base + tap, WIDTH).ok_or_else(source_error)?,
-            )
-            .cast::<i16>();
-            let above = (negative - centers[row_offset])
-                .simd_max(low)
-                .simd_min(high);
-            let below = (positive - centers[row_offset])
-                .simd_max(low)
-                .simd_min(high);
-            let comb = (above + below)
-                .simd_max(Simd::splat(-512))
-                .simd_min(Simd::splat(511))
-                .cast::<i32>();
-            for (idx, weights) in gdf_indices[row_offset].iter_mut().zip(&params.weights) {
-                let weight = weights[k];
-                if weight != 0 {
-                    *idx += comb * Simd::splat(i32::from(weight));
-                }
-            }
-        }
-    }
-    for (row_offset, gdf_idx) in gdf_indices.into_iter().enumerate() {
-        output[row_offset] = if block.ref_dst_idx == GDF_INTRA_REF_DST {
-            let error = &GDF_INTRA_ERROR[block.qp_idx];
-            finish_gdf_width_simd::<WIDTH, 8, 4096>(
-                Simd::from_array(base_values[row_offset]).cast::<i32>(),
-                block,
-                error,
-                gdf_idx,
-            )
-            .to_array()
-        } else {
-            let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
-            finish_gdf_width_simd::<WIDTH, 5, 1000>(
-                Simd::from_array(base_values[row_offset]).cast::<i32>(),
-                block,
-                error,
-                gdf_idx,
-            )
-            .to_array()
-        };
-    }
-    Ok(output)
 }
 
 #[allow(clippy::too_many_arguments)]
