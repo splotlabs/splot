@@ -2066,19 +2066,29 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "subpel intermediate sample count",
             })?;
+    let clamped_window = (x_window_start.is_none() && step_x == 1 << SCALE_SUBPEL_BITS)
+        .then(|| clipped_edges::ClampedWindow::new(reference, params));
+    let mut clamped_storage = None;
     let mut run = |intermediate: &mut [i16]| {
         for r in read_lo..read_hi {
             let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
             let ref_row = (ref_row as usize).min(reference.readable_rows - 1);
             let row_out = &mut intermediate[r * w..(r + 1) * w];
-            let window = x_window_start.and_then(|window_start| {
-                let row_base = ref_row * reference.stride + window_start;
-                let taps_end = row_base + w + NUM_TAPS - 1;
-                reference
-                    .samples
-                    .get(row_base..taps_end + SLIDE_RESERVE)
-                    .or_else(|| reference.samples.get(row_base..taps_end))
-            });
+            let window = match (x_window_start, clamped_window) {
+                (Some(window_start), _) => {
+                    let row_base = ref_row * reference.stride + window_start;
+                    let taps_end = row_base + w + NUM_TAPS - 1;
+                    reference
+                        .samples
+                        .get(row_base..taps_end + SLIDE_RESERVE)
+                        .or_else(|| reference.samples.get(row_base..taps_end))
+                }
+                (None, Some(clamped)) => Some(clamped.fill(
+                    reference.row(ref_row),
+                    clamped_storage.get_or_insert([T::default(); clipped_edges::WINDOW_STORAGE]),
+                )),
+                (None, None) => None,
+            };
             if let Some(window) = window {
                 let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
                 if phase == 0 {
@@ -2153,15 +2163,6 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                     }
                     row_out[c] = round2_i32(sum, INTER_ROUND0) as i16;
                 }
-                continue;
-            }
-            if clipped_edges::horizontal_intermediate(
-                reference,
-                params,
-                ref_row,
-                h_filter as usize,
-                row_out,
-            ) {
                 continue;
             }
             for c in 0..w {

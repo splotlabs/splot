@@ -356,83 +356,78 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
     let taps = &full_taps[tap_start..tap_end];
     let full_span = tap_start == 0 && tap_end == NUM_TAPS;
     let x_window_start = subpel_horizontal_window_x(reference, params);
+    let clamped_window = clipped_edges::ClampedWindow::new(reference, params);
+    let mut clamped_storage = None;
 
     for r in 0..params.h {
         let ref_row = ((params.start_y >> SCALE_SUBPEL_BITS) + r as i32)
             .clamp(params.first_y, params.last_y) as usize;
         let ref_row = ref_row.min(reference.readable_rows - 1);
         let row_out = &mut output[r * output_stride..][..params.w];
-        if let Some(window_start) = x_window_start {
+        let window = if let Some(window_start) = x_window_start {
             let row_base = ref_row * reference.stride + window_start;
             let taps_end = row_base + params.w + NUM_TAPS - 1;
-            let window = reference
+            reference
                 .samples
                 .get(row_base..taps_end + SLIDE_RESERVE)
-                .unwrap_or(&reference.samples[row_base..taps_end]);
-            let available = window.len();
-            let vector_width8 = params.w - params.w % 8;
-            for c in (0..vector_width8).step_by(8) {
-                let sum = if full_span && Simd::<i32, 8>::admits(available, c) {
-                    Simd::<i32, 8>::slid_tap_sum(window, c, full_taps)
-                } else {
-                    let mut sum = Simd::<i32, 8>::splat(0);
-                    for (tap_offset, &tap) in taps.iter().enumerate() {
-                        sum = tap_mac(
-                            sum,
-                            reference_lanes::<8, T>(window, c + tap_start + tap_offset).cast(),
-                            tap,
-                        );
-                    }
-                    sum
-                };
-                let values = round2_simd(
-                    round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
-                    inter_round1,
-                );
-                finish.eight(values, &mut row_out[c..c + 8]);
-            }
-            let vector_width4 = params.w - params.w % 4;
-            for c in (vector_width8..vector_width4).step_by(4) {
-                let sum = if full_span && Simd::<i32, 4>::admits(available, c) {
-                    Simd::<i32, 4>::slid_tap_sum(window, c, full_taps)
-                } else {
-                    let mut sum = Simd::<i32, 4>::splat(0);
-                    for (tap_offset, &tap) in taps.iter().enumerate() {
-                        sum = tap_mac(
-                            sum,
-                            reference_lanes::<4, T>(window, c + tap_start + tap_offset).cast(),
-                            tap,
-                        );
-                    }
-                    sum
-                };
-                let values = round2_simd(
-                    round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
-                    inter_round1,
-                );
-                finish.four(values, &mut row_out[c..c + 4]);
-            }
-            for c in vector_width4..params.w {
-                let mut sum = 0i32;
+                .unwrap_or(&reference.samples[row_base..taps_end])
+        } else {
+            clamped_window.fill(
+                reference.row(ref_row),
+                clamped_storage.get_or_insert([T::default(); clipped_edges::WINDOW_STORAGE]),
+            )
+        };
+        let available = window.len();
+        let vector_width8 = params.w - params.w % 8;
+        for c in (0..vector_width8).step_by(8) {
+            let sum = if full_span && Simd::<i32, 8>::admits(available, c) {
+                Simd::<i32, 8>::slid_tap_sum(window, c, full_taps)
+            } else {
+                let mut sum = Simd::<i32, 8>::splat(0);
                 for (tap_offset, &tap) in taps.iter().enumerate() {
-                    sum += tap * i32::from(window[c + tap_start + tap_offset].to_u16());
+                    sum = tap_mac(
+                        sum,
+                        reference_lanes::<8, T>(window, c + tap_start + tap_offset).cast(),
+                        tap,
+                    );
                 }
-                let horizontal = round2_i32(sum, INTER_ROUND0);
-                row_out[c] = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
-            }
-            continue;
+                sum
+            };
+            let values = round2_simd(
+                round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
+                inter_round1,
+            );
+            finish.eight(values, &mut row_out[c..c + 8]);
         }
-        clipped_edges::horizontal_only(
-            reference,
-            params,
-            ref_row,
-            taps,
-            tap_start,
-            tap_end,
-            inter_round1,
-            row_out,
-            finish,
-        );
+        let vector_width4 = params.w - params.w % 4;
+        for c in (vector_width8..vector_width4).step_by(4) {
+            let sum = if full_span && Simd::<i32, 4>::admits(available, c) {
+                Simd::<i32, 4>::slid_tap_sum(window, c, full_taps)
+            } else {
+                let mut sum = Simd::<i32, 4>::splat(0);
+                for (tap_offset, &tap) in taps.iter().enumerate() {
+                    sum = tap_mac(
+                        sum,
+                        reference_lanes::<4, T>(window, c + tap_start + tap_offset).cast(),
+                        tap,
+                    );
+                }
+                sum
+            };
+            let values = round2_simd(
+                round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
+                inter_round1,
+            );
+            finish.four(values, &mut row_out[c..c + 4]);
+        }
+        for c in vector_width4..params.w {
+            let mut sum = 0i32;
+            for (tap_offset, &tap) in taps.iter().enumerate() {
+                sum += tap * i32::from(window[c + tap_start + tap_offset].to_u16());
+            }
+            let horizontal = round2_i32(sum, INTER_ROUND0);
+            row_out[c] = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
+        }
     }
 }
 
