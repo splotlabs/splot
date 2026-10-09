@@ -10,8 +10,8 @@ use splot_core::tables::conversion::{
 use splot_parallel::prelude::*;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PixelFormat,
-    PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice,
-    deblock_filter_choice_and_sample_strided_4_fast_validated, deblock_filter_choice_strided,
+    PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_edge_columns_4,
+    deblock_edge_rows_4, deblock_filter_choice, deblock_filter_choice_strided,
     deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
     deblock_sample_filter_strided_4, deblock_side_threshold_index, max_quantizer_index,
 };
@@ -1640,12 +1640,11 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
         let y_origin = plane_ctx.y_origin;
         let (samples, stride) = plane_ctx.rows.contiguous_mut();
         let boundary = (y_p - y_origin) * stride + x_p;
-        let (perpendicular, lane) = if horizontal { (1, stride) } else { (stride, 1) };
         return filter_contiguous_edge(
             samples,
             boundary,
-            NonZeroUsize::new(perpendicular).ok_or(DeblockError::Workspace)?,
-            NonZeroUsize::new(lane).ok_or(DeblockError::Workspace)?,
+            stride,
+            horizontal,
             q_thr,
             side,
             max_width_neg,
@@ -1815,12 +1814,14 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
     )
 }
 
+/// Chooses and filters one four-line edge whose sample span lies inside
+/// `samples`; `lines_are_rows` is a vertical edge.
 #[allow(clippy::too_many_arguments)]
 fn filter_contiguous_edge<T: ReconSample>(
     samples: &mut [T],
     boundary: usize,
-    perpendicular_stride: NonZeroUsize,
-    lane_stride: NonZeroUsize,
+    stride: usize,
+    lines_are_rows: bool,
     q_thr: i32,
     side: i32,
     max_width_neg: usize,
@@ -1829,27 +1830,38 @@ fn filter_contiguous_edge<T: ReconSample>(
     curr_lossless: bool,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
-    deblock_filter_choice_and_sample_strided_4_fast_validated(
-        samples,
-        boundary + (MI_SIZE - 1) * lane_stride.get(),
-        perpendicular_stride,
-        lane_stride,
-        &DeblockFilterChoice {
-            boundary,
-            q_thr,
-            side_thr: side,
-            max_width_pos,
-            max_width_neg,
-            q_first: Q_FIRST,
-        },
-        &Q_THRESH_MULTS,
-        &W_MULT,
-        prev_lossless,
-        curr_lossless,
-        bit_depth,
-    )
-    .map(|_| ())
-    .map_err(|_| DeblockError::SampleFilter)
+    let choice = DeblockFilterChoice {
+        boundary,
+        q_thr,
+        side_thr: side,
+        max_width_pos,
+        max_width_neg,
+        q_first: Q_FIRST,
+    };
+    let filtered = if lines_are_rows {
+        deblock_edge_rows_4(
+            samples,
+            stride,
+            &choice,
+            &Q_THRESH_MULTS,
+            &W_MULT,
+            prev_lossless,
+            curr_lossless,
+            bit_depth,
+        )
+    } else {
+        deblock_edge_columns_4(
+            samples,
+            stride,
+            &choice,
+            &Q_THRESH_MULTS,
+            &W_MULT,
+            prev_lossless,
+            curr_lossless,
+            bit_depth,
+        )
+    };
+    filtered.map(|_| ()).map_err(|_| DeblockError::SampleFilter)
 }
 
 #[allow(clippy::too_many_arguments)]
