@@ -2,9 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use std::simd::{
-    Simd,
+    Simd, ToBytes,
     cmp::{SimdOrd, SimdPartialEq},
     num::{SimdInt, SimdUint},
+    simd_swizzle,
 };
 
 use splot_core::tables::loop_restoration::{
@@ -40,7 +41,13 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
-    let class_indices = classes.map(|class| usize::from(class.index()));
+    let lane_bytes = Simd::<u8, 16>::from_array(core::array::from_fn(|byte| {
+        classes[byte >> 2].index() * 2 + (byte & 1) as u8
+    }));
+    let per_class = |row: [i16; 4]| {
+        let table = simd_swizzle!(Simd::from_array(row), [0, 1, 2, 3, 0, 1, 2, 3]);
+        Simd::<i16, 8>::from_ne_bytes(table.to_ne_bytes().swizzle_dyn(lane_bytes))
+    };
     let gradient_bias = Simd::from_array(core::array::from_fn(|lane| {
         classes[lane >> 1].gradient_bias()
     }));
@@ -58,15 +65,10 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
         gdf_indices[row_offset][2] = gradient_bias;
     }
     for (k, &tap) in tap_offsets.iter().enumerate() {
-        let alpha = Simd::from_array(core::array::from_fn(|lane| {
-            alpha_table[k][class_indices[lane >> 1]] as i16
-        }));
+        let alpha = per_class(alpha_table[k].map(|alpha| alpha as i16));
         let low = -alpha;
-        let weights: [Simd<i32, 8>; 3] = core::array::from_fn(|index| {
-            Simd::from_array(core::array::from_fn(|lane| {
-                i32::from(weight_table[index][k][class_indices[lane >> 1]])
-            }))
-        });
+        let weights: [Simd<i16, 8>; 3] =
+            core::array::from_fn(|index| per_class(weight_table[index][k]));
         for row_offset in 0..ROWS {
             let base = bases[row_offset];
             let negative = Simd::<u16, 8>::from_slice(
@@ -88,7 +90,7 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
                 .simd_min(Simd::splat(511))
                 .cast::<i32>();
             for (index, weight) in gdf_indices[row_offset].iter_mut().zip(weights) {
-                *index += comb * weight;
+                *index += comb * weight.cast::<i32>();
             }
         }
     }
