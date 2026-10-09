@@ -4,9 +4,10 @@
 //! AV2 § 7.20.5 guided detail filter application.
 
 use std::simd::{
-    Simd,
-    cmp::SimdOrd,
-    num::{SimdInt, SimdUint},
+    Select, Simd, ToBytes,
+    cmp::{SimdOrd, SimdPartialOrd},
+    num::SimdUint,
+    simd_swizzle,
 };
 
 use splot_core::headers::frame::FrameHeaderCore;
@@ -1376,16 +1377,9 @@ fn band_classes_from_source(
     gradient_pair_row(source, source_origin, 0, class_cols, previous, gradient_tmp)?;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx][GDF_COORDS.len()..];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx][2][GDF_COORDS.len()..];
-    let alpha: [Simd<u32, GDF_DIRECTIONS>; 4] = core::array::from_fn(|cls| {
-        Simd::from_array(core::array::from_fn(|direction| {
-            u32::from(alpha_table[direction][cls])
-        }))
-    });
-    let weight: [Simd<i32, GDF_DIRECTIONS>; 4] = core::array::from_fn(|cls| {
-        Simd::from_array(core::array::from_fn(|direction| {
-            i32::from(weight_table[direction][cls])
-        }))
-    });
+    let class_table = |row: [i32; 4]| Simd::from_array(row).to_ne_bytes();
+    let alpha = core::array::from_fn(|d| class_table(alpha_table[d].map(i32::from)));
+    let weight = core::array::from_fn(|d| class_table(weight_table[d].map(i32::from)));
     for (row, classes) in classes.chunks_exact_mut(class_cols).enumerate() {
         gradient_pair_row(
             source,
@@ -1395,18 +1389,72 @@ fn band_classes_from_source(
             current,
             gradient_tmp,
         )?;
-        for ((class, previous), current) in classes.iter_mut().zip(&*previous).zip(&*current) {
-            let strengths = Simd::from_array(*previous).cast::<u32>()
-                + Simd::from_array(*current).cast::<u32>();
-            let index = u8::from(strengths[0] <= strengths[1])
-                | (u8::from(strengths[2] <= strengths[3]) << 1);
-            let cls = usize::from(index);
-            let comb = (strengths >> 4).simd_min(alpha[cls]).cast::<i32>();
-            *class = GdfClass::new(index, (comb * weight[cls]).reduce_sum());
+        let (previous_chunks, previous_tail) = previous.as_chunks::<8>();
+        let (current_chunks, current_tail) = current.as_chunks::<8>();
+        let (class_chunks, class_tail) = classes.as_chunks_mut::<8>();
+        for ((classes, previous), current) in class_chunks
+            .iter_mut()
+            .zip(previous_chunks)
+            .zip(current_chunks)
+        {
+            *classes = classify_eight(previous, current, &alpha, &weight);
+        }
+        if !class_tail.is_empty() {
+            let mut tail = [[[0; GDF_DIRECTIONS]; 8]; 2];
+            tail[0][..previous_tail.len()].copy_from_slice(previous_tail);
+            tail[1][..current_tail.len()].copy_from_slice(current_tail);
+            let tail_classes = classify_eight(&tail[0], &tail[1], &alpha, &weight);
+            class_tail.copy_from_slice(&tail_classes[..class_tail.len()]);
         }
         core::mem::swap(previous, current);
     }
     Ok(())
+}
+
+/// Classifies eight 2x2 blocks from their direction strengths in two
+/// gradient row pairs; `alpha` and `weight` hold each direction's per-class
+/// row as bytes.
+fn classify_eight(
+    previous: &[[u16; GDF_DIRECTIONS]; 8],
+    current: &[[u16; GDF_DIRECTIONS]; 8],
+    alpha: &[Simd<u8, 16>; GDF_DIRECTIONS],
+    weight: &[Simd<u8, 16>; GDF_DIRECTIONS],
+) -> [GdfClass; 8] {
+    let directions = |pairs: &[[u16; GDF_DIRECTIONS]; 8]| {
+        let all = Simd::<u16, 32>::from_slice(pairs.as_flattened());
+        [
+            simd_swizzle!(all, [0, 4, 8, 12, 16, 20, 24, 28]),
+            simd_swizzle!(all, [1, 5, 9, 13, 17, 21, 25, 29]),
+            simd_swizzle!(all, [2, 6, 10, 14, 18, 22, 26, 30]),
+            simd_swizzle!(all, [3, 7, 11, 15, 19, 23, 27, 31]),
+        ]
+    };
+    let (previous, current) = (directions(previous), directions(current));
+    let strengths: [Simd<u32, 8>; GDF_DIRECTIONS] =
+        core::array::from_fn(|d| previous[d].cast::<u32>() + current[d].cast::<u32>());
+    let bit =
+        |a: Simd<u32, 8>, b, value: u32| a.simd_le(b).select(Simd::splat(value), Simd::splat(0));
+    let index = bit(strengths[0], strengths[1], 1) | bit(strengths[2], strengths[3], 2);
+    let index_bytes = (index << 2).cast::<u8>();
+    let byte = Simd::from_array([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]);
+    let low = simd_swizzle!(
+        index_bytes,
+        [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
+    ) + byte;
+    let high = simd_swizzle!(
+        index_bytes,
+        [4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7]
+    ) + byte;
+    let lookup = |table: Simd<u8, 16>| {
+        let half = |bytes| Simd::<i32, 4>::from_ne_bytes(table.swizzle_dyn(bytes));
+        simd_swizzle!(half(low), half(high), [0, 1, 2, 3, 4, 5, 6, 7])
+    };
+    let mut bias = Simd::<i32, 8>::splat(0);
+    for d in 0..GDF_DIRECTIONS {
+        let comb = (strengths[d] >> 4).cast::<i32>().simd_min(lookup(alpha[d]));
+        bias += comb * lookup(weight[d]);
+    }
+    core::array::from_fn(|lane| GdfClass::new(index[lane] as u8, bias[lane]))
 }
 
 fn gdf_tap_offsets(stride: usize) -> Result<[usize; GDF_COORDS.len()]> {

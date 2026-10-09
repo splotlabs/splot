@@ -203,3 +203,45 @@ fn segment_columns_with_two_wide_tail_match_scalar_samples() {
     assert!(result.is_ok());
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn band_classes_match_reference_over_chunks_and_tail() {
+    let (width, height) = (20, 4);
+    let stride = width + GDF_READ_RADIUS * 2;
+    let samples: Vec<u16> = (0..stride * (height + GDF_READ_RADIUS * 2))
+        .map(|index| ((index * 73 + index / stride * 29) % 1024) as u16)
+        .collect();
+    let radius = GDF_READ_RADIUS as isize;
+    let source = GdfSource {
+        samples: &samples,
+        stride,
+        origin_x: -radius,
+        origin_y: -radius,
+    };
+    let grad_cols = width + 2;
+    let mut grad = Vec::new();
+    band_gradients(&source, ORIGIN, height + 2, grad_cols, &mut grad).expect("valid gradients");
+    for ref_dst_idx in 0..GDF_ALPHA.len() {
+        for qp_idx in 0..GDF_ALPHA[0].len() {
+            let block = GdfBlock {
+                height,
+                frame_height: height,
+                ..test_block(width, BitDepth::Ten, ref_dst_idx, qp_idx)
+            };
+            let mut expected = Vec::new();
+            band_classes(&grad, grad_cols, &block, &mut expected).expect("valid reference");
+            let mut actual = Vec::new();
+            let mut pairs = [Vec::new(), Vec::new()];
+            let result = band_classes_from_source(
+                &source,
+                ORIGIN,
+                &block,
+                &mut actual,
+                &mut pairs,
+                &mut Vec::new(),
+            );
+            assert!(result.is_ok());
+            assert_eq!(actual, expected, "reference {ref_dst_idx}, qp {qp_idx}");
+        }
+    }
+}
