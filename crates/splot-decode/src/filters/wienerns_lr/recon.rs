@@ -570,6 +570,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         sections.as_mut(),
                         &mut rows,
                         range,
+                        setup.window_margin(),
                         setup.subsampling.1,
                         bit_depth,
                     )
@@ -669,10 +670,20 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         &self.ranges
     }
 
+    /// The plane rows a stripe's window holds past each end of the stripe.
+    fn window_margin(&self) -> usize {
+        let one_tile_row = self
+            .core
+            .tile_info
+            .as_ref()
+            .is_none_or(|tile| tile.mi_row_starts.len() <= 2);
+        STRIPE_WINDOW_MARGIN + usize::from(!one_tile_row) * TILE_ROW_FRINGE_MARGIN
+    }
+
     fn ready_stripe(&self, stripe: usize, final_rows: usize) -> Result<Option<(usize, usize)>> {
         let (start, end) = self.stripe_bounds(stripe)?;
         let needed = end
-            .checked_add(STRIPE_WINDOW_MARGIN << self.subsampling.1)
+            .checked_add(self.window_margin() << self.subsampling.1)
             .ok_or_else(lr_pipeline_state_error)?
             .min(self.luma_height);
         Ok((final_rows.min(self.luma_height) >= needed).then_some((start, end)))
@@ -707,7 +718,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .ok_or_else(lr_pipeline_state_error)?;
         let mut window = self.take_window();
         if window
-            .fill(frame, carry, range, STRIPE_WINDOW_MARGIN)
+            .fill(frame, carry, range, self.window_margin())
             .is_none()
         {
             self.give_window(window);
@@ -728,7 +739,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .ready_stripe(stripe, frame.final_luma_rows())?
             .ok_or_else(lr_pipeline_state_error)?;
         window
-            .slide(frame, range, STRIPE_WINDOW_MARGIN)
+            .slide(frame, range, self.window_margin())
             .ok_or_else(lr_pipeline_state_error)
     }
 
@@ -1156,12 +1167,14 @@ impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
 
 /// How many plane rows past each end of a stripe the § 7.2 chain reads.
 ///
-/// CDEF reaches two samples past the stripe, § 7.17 loop restoration clamps its
-/// own reads to the stripe it is filtering plus one row, and a tile end that is
-/// not stripe aligned adds eight. Ten rows of each plane covers all of them,
-/// and every read outside the window is refused rather than served from another
-/// stripe's rows.
-const STRIPE_WINDOW_MARGIN: usize = 10;
+/// CDEF reaches two samples past the stripe and § 7.17 loop restoration clamps
+/// its own reads to the stripe it is filtering plus one row. Every read outside
+/// the window is refused rather than served from another stripe's rows.
+const STRIPE_WINDOW_MARGIN: usize = 2;
+
+/// The extra rows the post-CCSO fringes of a frame with more than one tile row
+/// read past each stripe end (`cdef_overlap_planes`).
+const TILE_ROW_FRINGE_MARGIN: usize = 8;
 
 /// Deblocks far enough to copy one stripe's finalized input window.
 ///
@@ -1171,10 +1184,11 @@ fn advance_deblock_for_stripe<T: ReconSample>(
     sections: Option<&mut crate::filters::deblock::FrameDeblock<'_>>,
     source: &mut crate::pipeline::frame_progress::FrontierRows<T>,
     range: &(usize, usize),
+    margin: usize,
     subsampling_y: usize,
     bit_depth: BitDepth,
 ) -> Result<()> {
-    let needed = range.1 + (STRIPE_WINDOW_MARGIN << subsampling_y);
+    let needed = range.1 + (margin << subsampling_y);
     if let Some(sections) = sections {
         let reach = crate::filters::deblock::DEBLOCK_PASS_1_REACH << subsampling_y;
         sections
