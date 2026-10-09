@@ -740,45 +740,25 @@ fn build_interior_intermediate<T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
 ) {
-    if shear.alpha == 0 {
-        let mut supported = true;
-        for row in 0..WARP_INTERMEDIATE_ROWS {
-            let i1 = row as i32 - 7;
-            let source = reference.row(first_row + row);
-            let Some(source) = T::u16_slice(source) else {
-                supported = false;
-                break;
-            };
-            let taps = warped_filter_row(projected.sx4 + shear.beta * i1);
-            let windows = warp_windows(source, first_col);
-            let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-            for (&window, &weight) in windows.iter().zip(taps.iter()) {
-                sum = warp_tap_mac(sum, window, weight);
-            }
-            let rounded = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
-            intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
-                .copy_from_slice(&rounded.cast::<i16>().to_array()); // splot-copy-ok: store uniform-phase row-wide SIMD warp intermediate
-        }
-        if supported {
-            return;
-        }
-    }
     for row in 0..WARP_INTERMEDIATE_ROWS {
         let i1 = row as i32 - 7;
-        let source = reference.row(first_row + row);
-        for col in 0..WARPED_BLOCK_SIZE {
-            let i2 = col as i32 - 4;
-            let sx = projected.sx4 + shear.alpha * i2 + shear.beta * i1;
-            let taps = warped_filter_row(sx);
-            let samples = &source[first_col + col..first_col + col + WARP_FILTER_TAPS];
-            let sum = taps
-                .iter()
-                .zip(samples)
-                .map(|(&tap, &sample)| i32::from(tap) * i32::from(sample.to_u16()))
-                .sum();
-            intermediate[row * WARPED_BLOCK_SIZE + col] =
-                narrow_warp_intermediate(round2_i32(sum, INTER_ROUND0));
+        let windows = warp_windows(reference.row(first_row + row), first_col);
+        let sx = projected.sx4 + shear.beta * i1;
+        let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
+        if shear.alpha == 0 {
+            for (&window, &weight) in windows.iter().zip(warped_filter_row(sx)) {
+                sum = warp_tap_mac(sum, window, weight);
+            }
+        } else {
+            let columns =
+                core::array::from_fn(|col| warped_filter_row(sx + shear.alpha * (col as i32 - 4)));
+            for (window, taps) in windows.into_iter().zip(transpose_warp_taps(&columns)) {
+                sum += window.cast::<i32>() * taps.cast::<i32>();
+            }
         }
+        let rounded = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+        intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
+            .copy_from_slice(&rounded.cast::<i16>().to_array()); // splot-copy-ok: store row-wide SIMD warp intermediate
     }
 }
 
@@ -883,8 +863,16 @@ fn build_output(
 /// the same narrowing the § 7.13.3.18 sub-pel taps already use.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn warp_source_lanes(source: &[u16], start: usize) -> Simd<i16, WARPED_BLOCK_SIZE> {
-    Simd::<u16, WARPED_BLOCK_SIZE>::from_slice(&source[start..]).cast()
+fn warp_source_lanes<T: ReconSample>(source: &[T], start: usize) -> Simd<i16, WARPED_BLOCK_SIZE> {
+    if let Some(source) = T::u16_slice(source) {
+        return Simd::<u16, WARPED_BLOCK_SIZE>::from_slice(&source[start..]).cast();
+    }
+    if let Some(source) = T::u8_slice(source) {
+        return Simd::<u8, WARPED_BLOCK_SIZE>::from_slice(&source[start..]).cast();
+    }
+    Simd::from_array(core::array::from_fn(|lane| {
+        source[start + lane].to_u16().cast_signed()
+    }))
 }
 
 /// Builds the eight overlapping tap windows from two loads instead of eight.
@@ -894,7 +882,10 @@ fn warp_source_lanes(source: &[u16], start: usize) -> Simd<i16, WARPED_BLOCK_SIZ
 /// the § 7.13.3.19 sum is unchanged; only the load shape differs.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn warp_windows(source: &[u16], first_col: usize) -> [Simd<i16, WARPED_BLOCK_SIZE>; 8] {
+fn warp_windows<T: ReconSample>(
+    source: &[T],
+    first_col: usize,
+) -> [Simd<i16, WARPED_BLOCK_SIZE>; 8] {
     let lo = warp_source_lanes(source, first_col);
     let hi = warp_source_lanes(source, first_col + WARPED_BLOCK_SIZE);
     [
@@ -1255,6 +1246,11 @@ mod tests {
             .collect::<Vec<u16>>();
         assert!(samples.contains(&1023));
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let samples8 = samples
+            .iter()
+            .map(|&sample| (sample >> 2) as u8)
+            .collect::<Vec<u8>>();
+        let view8 = ReferencePlaneView::new(&samples8, ref_w, ref_h).unwrap();
 
         let models = [
             IDENTITY_WARP_PARAMS,
@@ -1298,6 +1294,9 @@ mod tests {
                     fast, want,
                     "model {warp_params:?} at ({block_x}, {block_y})"
                 );
+                build_interior_intermediate(&view8, &shear, &projected, origin, &mut fast);
+                build_intermediate(&view8, &params, &shear, &projected, &mut want);
+                assert_eq!(fast, want, "8-bit model {warp_params:?}");
             }
         }
         assert_eq!(covered, (true, true), "both shear column cases exercised");
