@@ -88,25 +88,9 @@ const fn floor_log2(x: u32) -> u32 {
 /// The `partial[][]` sums of eight 8-bit-normalized terms fit in `i16`.
 /// The squared partials times `Div_Table` use the same `i32` accumulators as AVM;
 /// the spec-bounded pre-shifted samples keep every directional cost in range.
-#[allow(clippy::needless_range_loop)]
 pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
-    let mut partial_hv = [[0i16; 8]; 2];
-    let mut partial_diag = [[0i16; 15]; 2];
-    let mut partial_alt = [[0i16; 11]; 4];
-    let mut vertical = Simd::<i16, 8>::splat(0);
-    for i in 0..8 {
-        debug_assert!(
-            block[i]
-                .iter()
-                .all(|&sample| (-128..=127).contains(&sample))
-        );
-        let row = Simd::from_array(block[i]).cast::<i16>();
-        partial_hv[0][i] = row.reduce_sum();
-        vertical += row;
-        accumulate_cdef_direction_row(i, row, &mut partial_diag, &mut partial_alt);
-    }
-    partial_hv[1] = vertical.to_array();
-    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+    debug_assert!(block.iter().flatten().all(|&x| (-128..=127).contains(&x)));
+    cdef_direction_rows(block.map(|row| Simd::from_array(row).cast::<i16>()))
 }
 
 /// AV2 § 7.18.2 CDEF direction process over the interior padded block layout.
@@ -115,207 +99,131 @@ pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
 /// `BitDepth - 8`. The result matches [`cdef_direction`] without materializing
 /// the intermediate shifted 8x8 array.
 pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) -> (usize, i32) {
-    let mut partial_hv = [[0i16; 8]; 2];
-    let mut vertical = Simd::<i16, 8>::splat(0);
-    let mut diag_low = [Simd::<i16, 8>::splat(0); 2];
-    let mut diag_high = [Simd::<i16, 8>::splat(0); 2];
-    let mut alt_low = [Simd::<i16, 8>::splat(0); 4];
-    let mut alt_high = [Simd::<i16, 8>::splat(0); 4];
-    macro_rules! accumulate_row {
-        ($row:literal, $alt2:literal, $alt3:literal) => {{
-            let start = ($row + 2) * CDEF_PADDED_SIDE + 2;
-            let samples = (Simd::<u16, 8>::from_slice(&pad[start..]) >> coeff_shift as u16)
-                .cast::<i16>()
-                - Simd::splat(128);
-            partial_hv[0][$row] = samples.reduce_sum();
-            vertical += samples;
-            accumulate_cdef_diagonal::<$row>(samples, &mut diag_low[0], &mut diag_high[0]);
-            let reversed = simd_swizzle!(samples, [7, 6, 5, 4, 3, 2, 1, 0]);
-            accumulate_cdef_diagonal::<$row>(reversed, &mut diag_low[1], &mut diag_high[1]);
-            let pairs = simd_swizzle!(samples, [0, 2, 4, 6]) + simd_swizzle!(samples, [1, 3, 5, 7]);
-            let pairs = Simd::from_array([pairs[0], pairs[1], pairs[2], pairs[3], 0, 0, 0, 0]);
-            accumulate_cdef_diagonal::<$row>(pairs, &mut alt_low[0], &mut alt_high[0]);
-            let reversed_pairs = simd_swizzle!(pairs, [3, 2, 1, 0, 4, 5, 6, 7]);
-            accumulate_cdef_diagonal::<$row>(reversed_pairs, &mut alt_low[1], &mut alt_high[1]);
-            accumulate_cdef_diagonal::<$alt2>(samples, &mut alt_low[2], &mut alt_high[2]);
-            accumulate_cdef_diagonal::<$alt3>(samples, &mut alt_low[3], &mut alt_high[3]);
-        }};
-    }
-    accumulate_row!(0, 3, 0);
-    accumulate_row!(1, 3, 0);
-    accumulate_row!(2, 2, 1);
-    accumulate_row!(3, 2, 1);
-    accumulate_row!(4, 1, 2);
-    accumulate_row!(5, 1, 2);
-    accumulate_row!(6, 0, 3);
-    accumulate_row!(7, 0, 3);
-    partial_hv[1] = vertical.to_array();
-    let partial_diag = [
-        combine_cdef_diagonal(diag_low[0], diag_high[0]),
-        combine_cdef_diagonal(diag_low[1], diag_high[1]),
-    ];
-    let partial_alt = core::array::from_fn(|i| combine_cdef_alt(alt_low[i], alt_high[i]));
-    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+    let rows = core::array::from_fn(|i| {
+        let start = (i + 2) * CDEF_PADDED_SIDE + 2;
+        (Simd::<u16, 8>::from_slice(&pad[start..start + 8]) >> coeff_shift as u16).cast::<i16>()
+            - Simd::splat(128)
+    });
+    cdef_direction_rows(rows)
 }
 
+/// A 16-lane partial-sum accumulator held as its low and high halves.
+type CdefPartial = [Simd<i16, 8>; 2];
+
+/// Moves every lane of a partial up by one, dropping the top lane.
 #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
-fn accumulate_cdef_diagonal<const ROW: usize>(
-    samples: Simd<i16, 8>,
-    low: &mut Simd<i16, 8>,
-    high: &mut Simd<i16, 8>,
-) {
+fn shift_partial_up(partial: CdefPartial) -> CdefPartial {
     let zero = Simd::splat(0);
-    let (low_add, high_add) = match ROW {
-        0 => (samples, zero),
-        1 => (
-            simd_swizzle!(zero, samples, [0, 8, 9, 10, 11, 12, 13, 14]),
-            simd_swizzle!(zero, samples, [15, 0, 1, 2, 3, 4, 5, 6]),
-        ),
-        2 => (
-            simd_swizzle!(zero, samples, [0, 1, 8, 9, 10, 11, 12, 13]),
-            simd_swizzle!(zero, samples, [14, 15, 0, 1, 2, 3, 4, 5]),
-        ),
-        3 => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 8, 9, 10, 11, 12]),
-            simd_swizzle!(zero, samples, [13, 14, 15, 0, 1, 2, 3, 4]),
-        ),
-        4 => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 3, 8, 9, 10, 11]),
-            simd_swizzle!(zero, samples, [12, 13, 14, 15, 0, 1, 2, 3]),
-        ),
-        5 => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 3, 4, 8, 9, 10]),
-            simd_swizzle!(zero, samples, [11, 12, 13, 14, 15, 0, 1, 2]),
-        ),
-        6 => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 3, 4, 5, 8, 9]),
-            simd_swizzle!(zero, samples, [10, 11, 12, 13, 14, 15, 0, 1]),
-        ),
-        _ => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 3, 4, 5, 6, 8]),
-            simd_swizzle!(zero, samples, [9, 10, 11, 12, 13, 14, 15, 0]),
-        ),
-    };
-    *low += low_add;
-    *high += high_add;
-}
-
-fn combine_cdef_diagonal(low: Simd<i16, 8>, high: Simd<i16, 8>) -> [i16; 15] {
-    let low = low.to_array();
-    let high = high.to_array();
     [
-        low[0], low[1], low[2], low[3], low[4], low[5], low[6], low[7], high[0], high[1], high[2],
-        high[3], high[4], high[5], high[6],
+        simd_swizzle!(zero, partial[0], [7, 8, 9, 10, 11, 12, 13, 14]),
+        simd_swizzle!(partial[0], partial[1], [7, 8, 9, 10, 11, 12, 13, 14]),
     ]
 }
 
-fn combine_cdef_alt(low: Simd<i16, 8>, high: Simd<i16, 8>) -> [i16; 11] {
-    let low = low.to_array();
-    let high = high.to_array();
+/// Moves every lane of a partial down by one, dropping lane 0.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn shift_partial_down(partial: CdefPartial) -> CdefPartial {
+    let zero = Simd::splat(0);
     [
-        low[0], low[1], low[2], low[3], low[4], low[5], low[6], low[7], high[0], high[1], high[2],
+        simd_swizzle!(partial[0], partial[1], [1, 2, 3, 4, 5, 6, 7, 8]),
+        simd_swizzle!(partial[1], zero, [1, 2, 3, 4, 5, 6, 7, 8]),
     ]
 }
 
+/// Sums of adjacent lane pairs, `a`'s pairs then `b`'s.
 #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
-fn accumulate_cdef_direction_row(
-    row: usize,
-    samples: Simd<i16, 8>,
-    partial_diag: &mut [[i16; 15]; 2],
-    partial_alt: &mut [[i16; 11]; 4],
-) {
-    let reversed = simd_swizzle!(samples, [7, 6, 5, 4, 3, 2, 1, 0]);
-    let add8 = |target: &mut [i16], values: Simd<i16, 8>| {
-        let sum = Simd::from_slice(target) + values;
-        target[..8].copy_from_slice(&sum.to_array()); // splot-copy-ok: publish SIMD sums into direction scratch
-    };
-    add8(&mut partial_diag[0][row..], samples);
-    add8(&mut partial_diag[1][row..], reversed);
-    accumulate_cdef_alt_row(row, samples, partial_alt);
+fn pairwise_sum(a: Simd<i16, 8>, b: Simd<i16, 8>) -> Simd<i16, 8> {
+    simd_swizzle!(a, b, [0, 2, 4, 6, 8, 10, 12, 14])
+        + simd_swizzle!(a, b, [1, 3, 5, 7, 9, 11, 13, 15])
 }
 
+/// `Σ partial² · weight` over a partial, in `i32`.
+fn cdef_cost(partial: CdefPartial, weights: [[i32; 8]; 2]) -> i32 {
+    let low = partial[0].cast::<i32>();
+    let high = partial[1].cast::<i32>();
+    (low * low * Simd::from_array(weights[0]) + high * high * Simd::from_array(weights[1]))
+        .reduce_sum()
+}
+
+/// § 7.18.2 `Div_Table` weights of a `len`-entry partial (15 for the
+/// diagonals, 11 for the alternates) whose entry `n` sits in lane `n + lane`.
+const fn cdef_cost_weights(len: usize, lane: usize) -> [[i32; 8]; 2] {
+    let mut weights = [[0; 8]; 2];
+    let mut n = 0;
+    while n < len {
+        let mirror = if n < len - 1 - n { n } else { len - 1 - n };
+        weights[(n + lane) / 8][(n + lane) % 8] = if len == 15 {
+            DIV_TABLE[mirror + 1]
+        } else if mirror >= 3 {
+            DIV_TABLE[8]
+        } else {
+            DIV_TABLE[2 * mirror + 2]
+        };
+        n += 1;
+    }
+    weights
+}
+
+/// § 7.18.2 partial sums and costs over eight pre-shifted rows.
+///
+/// Each partial is built by Horner steps: before row `i` is added, the
+/// accumulator moves one lane, so row `i` ends `7 - i` lanes from where it was
+/// added. Partials 1, 4 and 5 grow upward and partials 0, 3 and 7 downward,
+/// the last three ending one or five lanes up. Every cost weighs entry `n`
+/// like entry `len - 1 - n`, so the reversed order of partials 3 and 4 does
+/// not change it.
 #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
-fn accumulate_cdef_alt_row(row: usize, samples: Simd<i16, 8>, partial_alt: &mut [[i16; 11]; 4]) {
-    let pair_sums = simd_swizzle!(samples, [0, 2, 4, 6]) + simd_swizzle!(samples, [1, 3, 5, 7]);
-    let reversed_pairs = simd_swizzle!(pair_sums, [3, 2, 1, 0]);
-    let add8 = |target: &mut [i16], values: Simd<i16, 8>| {
-        let sum = Simd::from_slice(target) + values;
-        target[..8].copy_from_slice(&sum.to_array()); // splot-copy-ok: publish SIMD sums into direction scratch
-    };
-    let add4 = |target: &mut [i16], values: Simd<i16, 4>| {
-        let sum = Simd::from_slice(target) + values;
-        target[..4].copy_from_slice(&sum.to_array()); // splot-copy-ok: publish SIMD sums into direction scratch
-    };
-    add4(&mut partial_alt[0][row..], pair_sums);
-    add4(&mut partial_alt[1][row..], reversed_pairs);
-    add8(&mut partial_alt[2][3 - row / 2..], samples);
-    add8(&mut partial_alt[3][row / 2..], samples);
-}
-
-fn finish_cdef_direction(
-    partial_hv: &[[i16; 8]; 2],
-    partial_diag: &[[i16; 15]; 2],
-    partial_alt: &[[i16; 11]; 4],
-) -> (usize, i32) {
-    let mut cost = [0i32; 8];
-    let horizontal = Simd::from_array(partial_hv[0]).cast::<i32>();
-    let vertical = Simd::from_array(partial_hv[1]).cast::<i32>();
-    cost[2] = (horizontal * horizontal).reduce_sum() * DIV_TABLE[8];
-    cost[6] = (vertical * vertical).reduce_sum() * DIV_TABLE[8];
-    for (dir, partial) in [(0, &partial_diag[0]), (4, &partial_diag[1])] {
-        let low = Simd::from_array([
-            partial[0], partial[1], partial[2], partial[3], partial[4], partial[5], partial[6],
-            partial[7],
-        ])
-        .cast::<i32>();
-        let high = Simd::from_array([
-            partial[14],
-            partial[13],
-            partial[12],
-            partial[11],
-            partial[10],
-            partial[9],
-            partial[8],
-            0,
-        ])
-        .cast::<i32>();
-        let weights = Simd::from_array([
-            DIV_TABLE[1],
-            DIV_TABLE[2],
-            DIV_TABLE[3],
-            DIV_TABLE[4],
-            DIV_TABLE[5],
-            DIV_TABLE[6],
-            DIV_TABLE[7],
-            DIV_TABLE[8],
-        ]);
-        cost[dir] = ((low * low + high * high) * weights).reduce_sum();
+fn cdef_direction_rows(rows: [Simd<i16, 8>; 8]) -> (usize, i32) {
+    let zero = Simd::splat(0);
+    let mut partial0 = [zero; 2];
+    let mut partial1 = [zero; 2];
+    let mut partial3 = [zero; 2];
+    let mut partial4 = [zero; 2];
+    let mut partial5 = [zero; 2];
+    let mut partial7 = [zero; 2];
+    let mut vertical = zero;
+    let mut row_sums = [zero; 4];
+    for (k, row_sum) in row_sums.iter_mut().enumerate() {
+        let (first, second) = (rows[2 * k], rows[2 * k + 1]);
+        *row_sum = pairwise_sum(first, second);
+        let first_pairs = simd_swizzle!(*row_sum, zero, [0, 1, 2, 3, 8, 8, 8, 8]);
+        let second_pairs = simd_swizzle!(*row_sum, zero, [4, 5, 6, 7, 8, 8, 8, 8]);
+        for (row, pairs) in [(first, first_pairs), (second, second_pairs)] {
+            partial0 = shift_partial_down(partial0);
+            partial0[1] += row;
+            partial4 = shift_partial_up(partial4);
+            partial4[0] += row;
+            partial1 = shift_partial_down(partial1);
+            partial1[1] += pairs;
+            partial3 = shift_partial_up(partial3);
+            partial3[0] += pairs;
+        }
+        let both = first + second;
+        partial5 = shift_partial_up(partial5);
+        partial5[0] += both;
+        partial7 = shift_partial_down(partial7);
+        partial7[1] += both;
+        vertical += both;
     }
-    for (n, partial) in partial_alt.iter().enumerate() {
-        let i = n * 2 + 1;
-        let low = Simd::from_array([
-            partial[3], partial[4], partial[5], partial[6], partial[7], partial[0], partial[1],
-            partial[2],
-        ])
-        .cast::<i32>();
-        let high =
-            Simd::from_array([0, 0, 0, 0, 0, partial[10], partial[9], partial[8]]).cast::<i32>();
-        let weights = Simd::from_array([
-            DIV_TABLE[8],
-            DIV_TABLE[8],
-            DIV_TABLE[8],
-            DIV_TABLE[8],
-            DIV_TABLE[8],
-            DIV_TABLE[2],
-            DIV_TABLE[4],
-            DIV_TABLE[6],
-        ]);
-        cost[i] = ((low * low + high * high) * weights).reduce_sum();
-    }
-
+    let horizontal = pairwise_sum(
+        pairwise_sum(row_sums[0], row_sums[1]),
+        pairwise_sum(row_sums[2], row_sums[3]),
+    );
+    let line_weights = [[DIV_TABLE[8]; 8], [0; 8]];
+    let cost = [
+        cdef_cost(partial0, const { cdef_cost_weights(15, 1) }),
+        cdef_cost(partial1, const { cdef_cost_weights(11, 1) }),
+        cdef_cost([horizontal, zero], line_weights),
+        cdef_cost(partial3, const { cdef_cost_weights(11, 0) }),
+        cdef_cost(partial4, const { cdef_cost_weights(15, 0) }),
+        cdef_cost(partial5, const { cdef_cost_weights(11, 0) }),
+        cdef_cost([vertical, zero], line_weights),
+        cdef_cost(partial7, const { cdef_cost_weights(11, 5) }),
+    ];
     let mut best_cost = 0i32;
     let mut y_dir = 0usize;
     for (dir, &c) in cost.iter().enumerate() {
@@ -996,6 +904,87 @@ mod tests {
         let (y_dir, var) = cdef_direction(&block);
         assert_eq!(y_dir, 2, "row-varying block selects direction 2");
         assert!(var > 0, "a non-flat block has positive variance: var={var}");
+    }
+
+    /// § 7.18.2 as written, one sample at a time.
+    #[allow(clippy::needless_range_loop)]
+    fn spec_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
+        let mut partial = [[0i32; 15]; 8];
+        for i in 0..8 {
+            for j in 0..8 {
+                let x = block[i][j];
+                partial[0][i + j] += x;
+                partial[1][i + j / 2] += x;
+                partial[2][i] += x;
+                partial[3][3 + i - j / 2] += x;
+                partial[4][7 + i - j] += x;
+                partial[5][3 - i / 2 + j] += x;
+                partial[6][j] += x;
+                partial[7][i / 2 + j] += x;
+            }
+        }
+        let square = |v: i32| v * v;
+        let mut cost = [0i32; 8];
+        for i in 0..8 {
+            cost[2] += square(partial[2][i]);
+            cost[6] += square(partial[6][i]);
+        }
+        cost[2] *= DIV_TABLE[8];
+        cost[6] *= DIV_TABLE[8];
+        for i in 0..7 {
+            for d in [0, 4] {
+                cost[d] += (square(partial[d][i]) + square(partial[d][14 - i])) * DIV_TABLE[i + 1];
+            }
+        }
+        cost[0] += square(partial[0][7]) * DIV_TABLE[8];
+        cost[4] += square(partial[4][7]) * DIV_TABLE[8];
+        for i in (1..8).step_by(2) {
+            for j in 0..5 {
+                cost[i] += square(partial[i][3 + j]);
+            }
+            cost[i] *= DIV_TABLE[8];
+            for j in 0..3 {
+                cost[i] +=
+                    (square(partial[i][j]) + square(partial[i][10 - j])) * DIV_TABLE[2 * j + 2];
+            }
+        }
+        let (mut best_cost, mut y_dir) = (0, 0);
+        for (i, &c) in cost.iter().enumerate() {
+            if c > best_cost {
+                best_cost = c;
+                y_dir = i;
+            }
+        }
+        (y_dir, (best_cost - cost[(y_dir + 4) & 7]) >> 10)
+    }
+
+    #[test]
+    fn direction_matches_spec_partials_and_costs() {
+        let mut state = 0x2545_f491u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state >> 8
+        };
+        let mut directions = [0usize; 8];
+        for case in 0..4000usize {
+            let mut block = [[0i32; 8]; 8];
+            let slope = (case % 9) as i32 - 4;
+            for (i, row) in block.iter_mut().enumerate() {
+                for (j, cell) in row.iter_mut().enumerate() {
+                    let ramp =
+                        slope * (i as i32 * (case % 3) as i32 + j as i32 * (case % 5) as i32);
+                    let noise = (next() % 64) as i32 - 32;
+                    *cell = (ramp * 6 + noise).clamp(-128, 127);
+                }
+            }
+            if case % 7 == 0 {
+                block = [[if case % 2 == 0 { -128 } else { 127 }; 8]; 8];
+            }
+            let expected = spec_direction(&block);
+            directions[expected.0] += 1;
+            assert_eq!(cdef_direction(&block), expected, "case {case}");
+        }
+        assert!(directions.iter().all(|&count| count > 0), "{directions:?}");
     }
 
     #[test]
