@@ -19,7 +19,7 @@ use std::{
     cell::Cell,
     num::NonZeroUsize,
     ops::Range,
-    simd::{Mask, Simd, cmp::SimdPartialEq},
+    simd::{Simd, cmp::SimdPartialEq},
     sync::Arc,
 };
 
@@ -1085,6 +1085,9 @@ const CANDIDATE_CHUNK: usize = 32;
 
 /// The per-cell `is_candidate` test for the `CANDIDATE_CHUNK` columns of `row` from
 /// `start` on the pass's column step, as a bitmask.
+///
+/// The flag terms are OR-ed as bytes before one compare: a mask OR-ed from
+/// several compares lowers to a lane-by-lane bitmask on NEON.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn candidate_mask<const PASS: usize>(
@@ -1117,10 +1120,12 @@ fn candidate_mask<const PASS: usize>(
     } else {
         0
     };
-    let mut eligible = (values & Simd::splat(edge | sub_pu)).simd_ne(zero);
-    if !grid.fully_covered {
-        eligible |= (values & Simd::splat(COVERED_CANDIDATE)).simd_eq(zero);
-    }
+    let uncovered = if grid.fully_covered {
+        0
+    } else {
+        COVERED_CANDIDATE
+    };
+    let mut eligible = (values & Simd::splat(edge | sub_pu)) | (!values & Simd::splat(uncovered));
     if PASS == 0 && plane_pass.plane_sub_x != 0 {
         let left = if let Some(left) = start.checked_sub(1) {
             chunk(flags, left)
@@ -1130,17 +1135,15 @@ fn candidate_mask<const PASS: usize>(
             shifted[1..=len].copy_from_slice(&flags[..len]);
             Simd::from_array(shifted)
         };
-        eligible |= (left & Simd::splat(VERTICAL_TX_CANDIDATE)).simd_ne(zero);
+        eligible |= left & Simd::splat(VERTICAL_TX_CANDIDATE);
     }
     if PASS == 1 && plane_pass.plane_sub_y != 0 && row != 0 {
         eligible |= match grid.candidate_row(row - 1) {
-            Some(above) => {
-                (chunk(above, start) & Simd::splat(HORIZONTAL_TX_CANDIDATE)).simd_ne(zero)
-            }
-            None => Mask::splat(true),
+            Some(above) => chunk(above, start) & Simd::splat(HORIZONTAL_TX_CANDIDATE),
+            None => Simd::splat(u8::MAX),
         };
     }
-    let mut mask = eligible.to_bitmask() as u32;
+    let mut mask = eligible.simd_ne(zero).to_bitmask() as u32;
     let len = flags.len().saturating_sub(start);
     if len < CANDIDATE_CHUNK {
         mask &= (1 << len) - 1;
