@@ -18,11 +18,6 @@
 //! that would be clipped at the frame edge yields `Ok(None)` and never a partial
 //! write, leaving that block on the caller's buffered path.
 //!
-//! [`CurrentFrameWorkspace::copy_rows_into`] is the same access one plane row
-//! range at a time, between two frames instead of within one: a stage that
-//! filters completed rows in place takes its own copy of them rather than
-//! sharing the frame the reconstruction spine is still writing.
-//!
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`, `RECON-RESIDUAL-ADDITION`,
 //! `INFRA-DECODE-PARALLEL-STAGES`.
 
