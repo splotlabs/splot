@@ -228,7 +228,7 @@ pub(crate) fn get_plane_residual_size(
 
     let width_4x4 = raw_width_4x4.max(1);
     let height_4x4 = raw_height_4x4.max(1);
-    Ok(BlockSize::from_4x4_dimensions(width_4x4, height_4x4)?)
+    Ok(BlockSize::from_4x4_dimensions(width_4x4, height_4x4))
 }
 
 pub(crate) fn rect_type_implied_by_bsize(
