@@ -735,9 +735,8 @@ struct ProjectedTemporalMotionField {
 
 /// Returns a spent projection grid to the per-thread pool.
 ///
-/// A band's averaging grid is frame-sized and lives only for the projection
-/// that builds it, and `prepare_tip_field` swaps its result out through it, so
-/// this is where both become free again.
+/// The averaging scratch keeps one superblock row and lives only for the
+/// projection that builds it, so this is where it becomes free again.
 impl Drop for ProjectedTemporalMotionField {
     fn drop(&mut self) {
         crate::support::reusable_scratch::recycle_pooled_vec(core::mem::take(&mut self.cells));
