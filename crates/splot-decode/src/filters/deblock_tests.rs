@@ -1078,6 +1078,237 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
     }
 }
 
+#[test]
+fn candidate_masks_match_per_cell_candidates() {
+    let block = |r: usize, c: usize, n4w: usize, n4h: usize| DeblockBlock {
+        r: r as u32,
+        c: c as u32,
+        luma_prediction: prediction(r, c, 3),
+        chroma_prediction: prediction(r, c, 2),
+        chroma_base_r: r as u32,
+        chroma_base_c: c as u32,
+        n4w: n4w as u32,
+        n4h: n4h as u32,
+        luma_tx: 3,
+        chroma_tx: Some(2),
+        sub_pu_size: (n4w > 4).then(|| DeblockSubPuSize::new(8, 16)),
+        chroma_transform_only: false,
+        qindex: 100,
+        skip: false,
+        lossless: false,
+    };
+    let (mi_rows, mi_cols) = (6, 45);
+    let luma = [
+        block(0, 0, 3, 2),
+        block(0, 3, 30, 2),
+        block(0, 33, 12, 4),
+        block(2, 0, 7, 4),
+        block(2, 7, 1, 1),
+        block(3, 7, 1, 3),
+        block(2, 8, 25, 4),
+        block(4, 33, 8, 2),
+    ];
+    let mut chroma = ChromaDeblockRecords::default();
+    chroma.push_both(block(0, 30, 6, 4));
+    let mut storage = DeblockGridStorage::default();
+    let base = build_mi_grid(&luma, mi_rows, mi_cols, &mut storage).unwrap();
+    let overlay = overlay_mi_grid(
+        &base,
+        &chroma,
+        0,
+        mi_rows,
+        mi_cols,
+        1,
+        1,
+        &mut DeblockGridStorage::default().chroma[0],
+    )
+    .unwrap();
+    for (grid, sub) in [
+        (MiGrid::new(&base, None, &luma, &chroma), 0),
+        (MiGrid::new(&base, Some(&overlay), &luma, &chroma), 1),
+    ] {
+        assert!(!grid.fully_covered);
+        for (allow_df_sub_pu, row) in [false, true]
+            .into_iter()
+            .flat_map(|allow| (0..mi_rows).map(move |row| (allow, row)))
+        {
+            for pass in 0..2 {
+                let plane_pass = PlanePass {
+                    plane: sub,
+                    mi_row_range: (0, mi_rows),
+                    pass,
+                    plane_sub_x: sub,
+                    plane_sub_y: sub,
+                    row_step: 1 << sub,
+                    df_delta_q: 0,
+                    quant_delta: 0,
+                    bit_depth: BitDepth::Eight,
+                    allow_df_sub_pu,
+                };
+                for start in (0..mi_cols).step_by(CANDIDATE_CHUNK) {
+                    let mask = if pass == 0 {
+                        candidate_mask::<0>(&grid, row, start, &plane_pass)
+                    } else {
+                        candidate_mask::<1>(&grid, row, start, &plane_pass)
+                    }
+                    .unwrap();
+                    for col in start..(start + CANDIDATE_CHUNK).min(mi_cols) {
+                        let expected = col % (1 << sub) == 0
+                            && grid.is_candidate(row, col, pass, allow_df_sub_pu, sub, sub);
+                        assert_eq!(
+                            mask >> (col - start) & 1 != 0,
+                            expected,
+                            "sub {sub} allow {allow_df_sub_pu} pass {pass} ({row}, {col})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn memoized_candidate_walk_matches_every_edge_in_spec_order() {
+    #[allow(clippy::too_many_arguments)]
+    let block = |r: usize, c: usize, n4w, n4h, tx: u8, pu: (usize, usize), sub_pu, skip, qindex| {
+        DeblockBlock {
+            r: r as u32,
+            c: c as u32,
+            luma_prediction: prediction(pu.0, pu.1, 1),
+            chroma_prediction: prediction(pu.0, pu.1, 1),
+            chroma_base_r: r as u32,
+            chroma_base_c: c as u32,
+            n4w,
+            n4h,
+            luma_tx: tx,
+            chroma_tx: None,
+            sub_pu_size: sub_pu,
+            chroma_transform_only: false,
+            qindex,
+            skip,
+            lossless: false,
+        }
+    };
+    let square = Some(DeblockSubPuSize::square(8));
+    let wide = Some(DeblockSubPuSize::new(16, 8));
+    let blocks = [
+        block(0, 0, 4, 8, 9, (0, 0), None, false, 100),
+        block(0, 4, 4, 4, 2, (0, 4), square, false, 180),
+        block(4, 4, 4, 4, 2, (0, 4), square, false, 180),
+        block(0, 8, 8, 4, 10, (0, 8), None, false, 160),
+        block(4, 8, 4, 4, 2, (4, 8), None, true, 140),
+        block(4, 12, 4, 4, 2, (4, 8), None, true, 140),
+        block(8, 0, 8, 8, 3, (8, 0), wide, false, 90),
+        block(8, 8, 8, 8, 3, (8, 0), wide, false, 90),
+    ];
+    let (mi_rows, mi_cols) = (16, 16);
+    let storage = build_mi_grid(
+        &blocks,
+        mi_rows,
+        mi_cols,
+        &mut DeblockGridStorage::default(),
+    )
+    .unwrap();
+    let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
+    let workspace = || {
+        let mut workspace = yuv420_workspace(64, 64, 0);
+        for y in 0..64 {
+            for x in 0..64 {
+                let step = 10 * (((x >> 4) ^ (y >> 3)) & 1);
+                let noise = if x >= 32 && y < 32 {
+                    (x * 7 + y * 5) % 5
+                } else {
+                    0
+                };
+                let value = 80 + ((x + 2 * y) >> 2) + step + noise;
+                workspace
+                    .set_reconstructed_sample(PlaneId::Y, x, y, value as u8)
+                    .unwrap();
+            }
+        }
+        workspace
+    };
+    let mut filter = filter([true, true, false, false]);
+    filter.allow_df_sub_pu = true;
+    let pass = |pass| {
+        PlanePass::active(
+            0,
+            pass,
+            filter,
+            DeblockQuantDeltas::ZERO,
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            &(0..mi_rows),
+        )
+        .unwrap()
+    };
+    let strengths = StrengthCache::new(0, 0, BitDepth::Eight);
+
+    let mut walked = workspace();
+    with_plane_band(&mut walked, |band| {
+        for plane_pass in [pass(0), pass(1)] {
+            deblock_plane_pass_serial(band, &grid, plane_pass, mi_rows, mi_cols, None, false)
+                .unwrap();
+        }
+    });
+    let mut reference = workspace();
+    with_plane_ctx(&mut reference, PlaneId::Y, |ctx| {
+        for row in 0..mi_rows {
+            for col in 0..mi_cols {
+                let edge = pass(0).edge_context(row, col, None);
+                deblock_filter_edge_specialized::<u8, 0, 0>(
+                    ctx, &grid, edge, false, &strengths, &mut None,
+                )
+                .unwrap();
+            }
+        }
+        for row in 0..mi_rows {
+            for col in 0..mi_cols {
+                let edge = pass(1).edge_context(row, col, None);
+                deblock_filter_edge_specialized::<u8, 0, 1>(
+                    ctx, &grid, edge, false, &strengths, &mut None,
+                )
+                .unwrap();
+            }
+        }
+    });
+    let original = workspace();
+    let sample = |workspace: &CurrentFrameWorkspace<u8>, x, y| {
+        workspace.reconstructed_sample(PlaneId::Y, x, y).unwrap()
+    };
+    let mut changed = 0;
+    for y in 0..64 {
+        for x in 0..64 {
+            assert_eq!(
+                sample(&walked, x, y),
+                sample(&reference, x, y),
+                "({x}, {y})"
+            );
+            changed += usize::from(sample(&reference, x, y) != sample(&original, x, y));
+        }
+    }
+    assert!(
+        changed > 64,
+        "the reference filters a meaningful share: {changed}"
+    );
+}
+
+fn with_plane_band<R>(
+    ws: &mut CurrentFrameWorkspace<u8>,
+    f: impl FnOnce(&mut PlaneBand<'_, u8>) -> R,
+) -> R {
+    let (width, height) = coded_plane_dimensions(ws, PlaneId::Y).unwrap();
+    let mut frame = ws.as_frame_mut().unwrap();
+    let view = frame.plane_mut(PlaneId::Y).unwrap();
+    let stride = view.stride_samples();
+    f(&mut PlaneBand::plane(
+        view.samples_mut(),
+        stride,
+        width,
+        height,
+    ))
+}
+
 fn assert_smoothed_step(p0: u8, q0: u8, reason: &str) {
     assert!(
         (100..=108).contains(&p0) && (100..=108).contains(&q0),
@@ -1408,7 +1639,6 @@ fn chroma_plane_pass_uses_yuv422_subsampling() {
     assert_eq!(pass.plane_sub_x, 1);
     assert_eq!(pass.plane_sub_y, 0);
     assert_eq!(pass.row_step, 1);
-    assert_eq!(pass.col_step, 2);
 }
 
 #[test]

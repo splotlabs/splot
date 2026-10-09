@@ -150,8 +150,7 @@ impl MiGrid<'_> {
         })
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
-    #[inline(always)]
+    #[cfg(test)]
     pub(super) fn is_candidate(
         &self,
         row: usize,
