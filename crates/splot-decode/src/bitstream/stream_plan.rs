@@ -107,6 +107,7 @@ pub struct DecodeStreamPlan {
     selected_layer: DecodeLayerSelection,
     input_len_bytes: u64,
     obus: Vec<DecodePlannedObu>,
+    obu_count: u64,
     frame_candidate_count: u64,
     source_warnings: Vec<DecodeSourceIssue>,
 }
@@ -132,8 +133,8 @@ impl DecodeStreamPlan {
 
     /// Count of planned OBUs.
     #[must_use]
-    pub fn obu_count(&self) -> u64 {
-        self.obus.len() as u64
+    pub const fn obu_count(&self) -> u64 {
+        self.obu_count
     }
 
     /// Count of accepted frame candidates.
@@ -152,6 +153,26 @@ impl DecodeStreamPlan {
     /// walks (AV2 § 5.2.1, § 6.18).
     pub fn frame_candidates_all(&self) -> impl Iterator<Item = &DecodePlannedObu> {
         self.obus.iter().filter(|obu| obu.role.is_frame_candidate())
+    }
+
+    /// Keeps only the OBUs the decode pass reads: frame candidates, their
+    /// continuations, and the padding that may sit between them.
+    pub(crate) fn retain_decode_obus(&mut self) {
+        self.obus.retain(|obu| {
+            obu.role.is_frame_candidate()
+                || obu.role.is_frame_continuation()
+                || obu.obu_type() == ObuType::Padding
+        });
+        self.obus.shrink_to_fit();
+    }
+
+    /// The planned OBUs after `candidate`; their `index` values skip the OBUs
+    /// [`Self::retain_decode_obus`] dropped.
+    pub(crate) fn obus_after(&self, candidate: &DecodePlannedObu) -> &[DecodePlannedObu] {
+        let start = self
+            .obus
+            .partition_point(|obu| obu.index <= candidate.index);
+        &self.obus[start..]
     }
 
     /// Non-fatal source/container warnings carried into the plan.
@@ -872,6 +893,7 @@ impl PlanBuilder {
             format: self.format,
             selected_layer: self.selected_layer,
             input_len_bytes: self.input_len_bytes,
+            obu_count: self.obus.len() as u64,
             obus: self.obus,
             frame_candidate_count: self.frame_candidate_count,
             source_warnings: self.source_warnings,

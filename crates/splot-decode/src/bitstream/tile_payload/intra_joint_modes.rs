@@ -135,8 +135,8 @@ impl<T: Copy> MiGrid<T> {
         if r >= self.rows || c >= self.cols {
             return;
         }
-        if let Some(stale) = self.window.enter(r) {
-            self.cells[stale.start * self.cols..stale.end * self.cols].fill(self.default);
+        if let Some(slide) = self.window.enter(r) {
+            slide.apply(&mut self.cells, self.cols, self.default);
         }
         let row_end = r.saturating_add(n4h).min(self.rows);
         let col_end = c.saturating_add(n4w).min(self.cols);

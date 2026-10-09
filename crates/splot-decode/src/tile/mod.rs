@@ -24,29 +24,52 @@ pub(crate) fn local_grid_index(
     row.checked_mul(cols)?.checked_add(col)
 }
 
-/// Window of two superblock rows over a tile's mode-info rows.
+/// Window of one superblock row and the mode-info rows above it.
 ///
-/// Neighbour state read only by the superblock row being decoded and the row
-/// above it stores [`SbRowWindow::plane_rows`] rows, and reuses a row once its
-/// superblock row is two rows old. The window is enough because no neighbour
-/// read reaches above the superblock row above: the § 7.12.2.6 scan points,
-/// § 7.12.2.4 warp corners and § 5.20.5.3 contexts read one MI row above the
-/// block, and the § 7.12.2.15 TIP candidate aligns that row down to its TIP
-/// block, at most 4 MI rows above. A row of a later superblock row reads as
-/// unpublished. A row older than the window is a decoder defect: the access
-/// fails and [`SbRowWindow::violated`] stays set until the next reset.
+/// Neighbour state read only by the superblock row being decoded and the
+/// [`SB_ROW_WINDOW_ABOVE_ROWS`] rows above it stores [`SbRowWindow::plane_rows`]
+/// rows, and moves those rows up as the window moves down. That is enough
+/// because the § 7.12.2.6 scan points, § 7.12.2.4 warp corners and § 5.20.5.3
+/// contexts read one MI row above the block, and the § 7.12.2.15 TIP candidate
+/// aligns that row down to its TIP block, at most 4 MI rows above. A row of a
+/// later superblock row reads as unpublished. A row older than the window is a
+/// decoder defect: the access fails and [`SbRowWindow::violated`] stays set.
 #[derive(Debug, Default)]
 pub(crate) struct SbRowWindow {
     rows: usize,
     sb_h4_log2: u32,
-    ring_mask: usize,
+    windowed: bool,
     current: Option<usize>,
     violated: AtomicBool,
 }
 
+/// Mode-info rows above the current superblock row that [`SbRowWindow`] keeps.
+pub(crate) const SB_ROW_WINDOW_ABOVE_ROWS: usize = 4;
+
 /// An access to a row the window has already reused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct OutsideSbRowWindow;
+
+/// The plane rows one [`SbRowWindow::enter`] keeps and clears.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SbRowSlide {
+    keep: Range<usize>,
+    clear: Range<usize>,
+}
+
+impl SbRowSlide {
+    /// Moves the kept rows of a `cols`-wide plane to its top, then clears the
+    /// current superblock row's rows. An unsized plane is left alone.
+    pub(crate) fn apply<T: Copy>(&self, plane: &mut [T], cols: usize, default: T) {
+        let keep = self.keep.start * cols..self.keep.end * cols;
+        if plane.get(keep.clone()).is_some() {
+            plane.copy_within(keep, 0);
+        }
+        if let Some(clear) = plane.get_mut(self.clear.start * cols..self.clear.end * cols) {
+            clear.fill(default);
+        }
+    }
+}
 
 impl Clone for SbRowWindow {
     fn clone(&self) -> Self {
@@ -62,13 +85,13 @@ impl PartialEq for SbRowWindow {
         (
             self.rows,
             self.sb_h4_log2,
-            self.ring_mask,
+            self.windowed,
             self.current,
             self.violated(),
         ) == (
             other.rows,
             other.sb_h4_log2,
-            other.ring_mask,
+            other.windowed,
             other.current,
             other.violated(),
         )
@@ -83,44 +106,43 @@ impl SbRowWindow {
 
     pub(crate) fn new(rows: usize, sb_h4: usize) -> Self {
         let sb_h4 = sb_h4.max(1).next_power_of_two();
-        let ring_rows = sb_h4.saturating_mul(2);
         Self {
             rows,
             sb_h4_log2: sb_h4.trailing_zeros(),
-            ring_mask: if rows > ring_rows {
-                ring_rows - 1
-            } else {
-                usize::MAX
-            },
+            windowed: sb_h4 < Self::WHOLE_TILE_SB_H4 && rows > sb_h4.saturating_mul(2),
             current: None,
             violated: AtomicBool::new(false),
         }
     }
 
     pub(crate) const fn plane_rows(&self) -> usize {
-        if self.ring_mask == usize::MAX {
-            self.rows
+        if self.windowed {
+            (1 << self.sb_h4_log2) + SB_ROW_WINDOW_ABOVE_ROWS
         } else {
-            self.ring_mask + 1
+            self.rows
         }
     }
 
     /// Moves the window down to the superblock row holding tile row `row` and
-    /// returns the plane rows that now belong to it and must be cleared.
-    pub(crate) fn enter(&mut self, row: usize) -> Option<Range<usize>> {
+    /// returns the plane rows to keep and to clear.
+    pub(crate) fn enter(&mut self, row: usize) -> Option<SbRowSlide> {
         let sb_row = row >> self.sb_h4_log2;
         let previous = self.current;
         if previous.is_some_and(|current| current >= sb_row) {
             return None;
         }
         self.current = Some(sb_row);
+        let sb_h4 = 1 << self.sb_h4_log2;
         match previous {
-            Some(_) if self.ring_mask == usize::MAX => None,
-            Some(current) if current + 1 == sb_row => {
-                let start = (sb_row << self.sb_h4_log2) & self.ring_mask;
-                Some(start..start + (1 << self.sb_h4_log2))
-            }
-            Some(_) => Some(0..self.plane_rows()),
+            Some(_) if !self.windowed => None,
+            Some(current) if current + 1 == sb_row => Some(SbRowSlide {
+                keep: sb_h4..sb_h4 + SB_ROW_WINDOW_ABOVE_ROWS,
+                clear: SB_ROW_WINDOW_ABOVE_ROWS..self.plane_rows(),
+            }),
+            Some(_) => Some(SbRowSlide {
+                keep: 0..0,
+                clear: 0..self.plane_rows(),
+            }),
             None => None,
         }
     }
@@ -138,10 +160,13 @@ impl SbRowWindow {
         if row >= self.rows || sb_row > current {
             return Ok(None);
         }
-        if sb_row + 1 < current {
-            return Err(OutsideSbRowWindow);
+        if !self.windowed {
+            return Ok(Some(row));
         }
-        Ok(Some(row & self.ring_mask))
+        (row + SB_ROW_WINDOW_ABOVE_ROWS)
+            .checked_sub(current << self.sb_h4_log2)
+            .map(Some)
+            .ok_or(OutsideSbRowWindow)
     }
 
     /// [`SbRowWindow::checked_plane_row`] for a caller with no error path:
@@ -166,17 +191,26 @@ mod tests {
 
     #[test]
     fn a_row_the_window_reused_is_an_error_not_an_absent_cell() {
-        let mut window = SbRowWindow::new(12, 4);
+        let mut window = SbRowWindow::new(24, 8);
+        assert_eq!(window.plane_rows(), 12);
         assert_eq!(window.checked_plane_row(0), Ok(None));
-        let _ = window.enter(0);
-        let _ = window.enter(4);
-        assert_eq!(window.enter(8), Some(0..4));
-        assert_eq!(window.checked_plane_row(9), Ok(Some(1)));
-        assert_eq!(window.checked_plane_row(5), Ok(Some(5)));
-        assert_eq!(window.checked_plane_row(11), Ok(Some(3)));
+        assert_eq!(window.enter(0), None);
+        assert_eq!(window.checked_plane_row(7), Ok(Some(11)));
+        let mut plane: Vec<usize> = (0..12).collect();
+        if let Some(slide) = window.enter(8) {
+            slide.apply(&mut plane, 1, 0);
+        }
+        assert_eq!(plane, [8, 9, 10, 11, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(window.checked_plane_row(4), Ok(Some(0)));
+        assert_eq!(window.checked_plane_row(9), Ok(Some(5)));
+        assert_eq!(window.checked_plane_row(16), Ok(None));
         assert_eq!(window.checked_plane_row(3), Err(OutsideSbRowWindow));
         assert!(!window.violated());
         assert_eq!(window.plane_row(3), None);
         assert!(window.violated());
+        if let Some(jump) = window.enter(23) {
+            jump.apply(&mut plane, 1, 0);
+        }
+        assert_eq!(plane, [0; 12]);
     }
 }

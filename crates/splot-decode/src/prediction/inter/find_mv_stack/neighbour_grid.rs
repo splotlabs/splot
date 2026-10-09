@@ -760,16 +760,11 @@ impl NeighbourMvGrid {
 
     /// Moves the window down to the superblock row holding tile row `row`.
     fn enter_sb_row(&mut self, row: usize) {
-        let Some(rows) = self.window.enter(row.saturating_sub(self.origin_row)) else {
+        let Some(slide) = self.window.enter(row.saturating_sub(self.origin_row)) else {
             return;
         };
-        let span = rows.start * self.mi_cols..rows.end * self.mi_cols;
-        if let Some(flags) = self.planes.flags.get_mut(span.clone()) {
-            flags.fill(None);
-        }
-        if let Some(motion) = self.planes.motion.get_mut(span) {
-            motion.fill(EMPTY_MOTION_CELL);
-        }
+        slide.apply(&mut self.planes.flags, self.mi_cols, None);
+        slide.apply(&mut self.planes.motion, self.mi_cols, EMPTY_MOTION_CELL);
     }
 
     /// Plane row of tile row `row`, `None` outside the readable window.

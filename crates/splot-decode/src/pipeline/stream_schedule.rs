@@ -47,8 +47,8 @@ impl<'a> RuntimeStream<'a> {
                 }
                 Ok(Self::AnnexB { unit, obus })
             }
-            PreparedInput::Ivf(header, end) => Ok(Self::Ivf {
-                records: IvfRecords::new(reader, *header, *end, buffers)?,
+            PreparedInput::Ivf(header, end, obus) => Ok(Self::Ivf {
+                records: IvfRecords::new(reader, *header, *end, *obus, buffers)?,
                 header: *header,
             }),
         }
