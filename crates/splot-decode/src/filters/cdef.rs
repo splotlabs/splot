@@ -525,12 +525,21 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             end_y: chroma_end,
         }),
     ];
-    let initializations = cdef_initializations(
+    let mut initializations = cdef_initializations(
         lookup.as_ref(),
         target.as_ref(),
         geometry,
         (luma_start, luma_end),
     )?;
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        if target
+            .as_ref()
+            .and_then(|target| target.get(plane))
+            .is_some_and(|target| target.is_u16() && target.holds_deblocked())
+        {
+            initializations[plane.index()] = StripeInitialization::FullyOverwritten;
+        }
+    }
     StripePlane::preflight_copy_from_into(
         deblocked_y,
         luma_start,

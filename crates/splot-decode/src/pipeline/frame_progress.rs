@@ -210,6 +210,7 @@ pub(crate) struct DirectPlaneTarget {
     region: DirectPlaneRegion,
     progress: Arc<dyn DirectLeaseRelease>,
     stripe: usize,
+    deblocked: bool,
 }
 
 /// SAFETY: moving this unique disjoint-band capability transfers ownership.
@@ -240,6 +241,12 @@ impl DirectPlaneTarget {
 
     pub(crate) const fn is_u16(&self) -> bool {
         matches!(self.region.samples, DirectPlaneSamples::U16(_))
+    }
+
+    /// The region still holds the deblocked rows the frontier released to
+    /// this stripe's window.
+    pub(crate) const fn holds_deblocked(&self) -> bool {
+        self.deblocked
     }
 
     #[inline]
@@ -274,11 +281,13 @@ impl DirectPlaneRegion {
         self,
         progress: Arc<dyn DirectLeaseRelease>,
         stripe: usize,
+        deblocked: bool,
     ) -> DirectPlaneTarget {
         DirectPlaneTarget {
             region: self,
             progress,
             stripe,
+            deblocked,
         }
     }
 }
@@ -550,9 +559,11 @@ impl<T: ReconSample> FrameProgress<T> {
             layout.stripes.get(stripe - 1)?.end
         };
         let end = layout.stripes.get(stripe)?.end;
-        if end > self.frontier.load(Ordering::Acquire) {
+        let frontier = self.frontier.load(Ordering::Acquire);
+        if end > frontier {
             return None;
         }
+        let deblocked = frontier != UNCLAIMED;
         let workspace_guard = self.workspace.read();
         let workspace = workspace_guard.as_ref()?;
         let chroma_start = start >> self.subsampling_y;
@@ -575,9 +586,9 @@ impl<T: ReconSample> FrameProgress<T> {
         drop(workspace_guard);
         drop(layout);
         let progress: Arc<dyn DirectLeaseRelease> = self.clone();
-        let y = y.into_target(Arc::clone(&progress), stripe);
-        let u = u.map(|region| region.into_target(Arc::clone(&progress), stripe));
-        let v = v.map(|region| region.into_target(progress, stripe));
+        let y = y.into_target(Arc::clone(&progress), stripe, deblocked);
+        let u = u.map(|region| region.into_target(Arc::clone(&progress), stripe, deblocked));
+        let v = v.map(|region| region.into_target(progress, stripe, deblocked));
         Some(DirectStripeLease {
             progress: Arc::clone(self),
             stripe,

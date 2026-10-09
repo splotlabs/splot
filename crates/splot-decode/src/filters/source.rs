@@ -300,37 +300,81 @@ impl<T: ReconSample> DeblockedWindow<T> {
         luma: (usize, usize),
         margin: usize,
     ) -> Option<()> {
+        self.copy_window(frame, Some(carry), luma, margin)
+    }
+
+    /// Fills this window for the stripe after the one it last held, when that
+    /// stripe ran before this call: the rows both share move down in place,
+    /// so the window is its own carry.
+    pub(crate) fn slide(
+        &mut self,
+        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
+        luma: (usize, usize),
+        margin: usize,
+    ) -> Option<()> {
+        self.copy_window(frame, None, luma, margin)
+    }
+
+    fn copy_window(
+        &mut self,
+        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
+        mut carry: Option<&mut Self>,
+        luma: (usize, usize),
+        margin: usize,
+    ) -> Option<()> {
         let sub_y = usize::from(frame.info().pixel_format().subsampling_y());
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             let index = plane.index();
-            self.rows[index] = None;
+            let held = self.rows[index].take();
             let Some((width, height)) = frame.plane_size(plane) else {
-                carry.rows[index] = None;
+                if let Some(carry) = carry.as_deref_mut() {
+                    carry.rows[index] = None;
+                }
                 continue;
             };
             let shift = usize::from(plane != PlaneId::Y) * sub_y;
             let (start, end) = window_bounds(luma, shift, margin, height).ok()?;
+            let held = held.filter(|_| self.sizes[index] == (width, height));
             let samples = &mut self.planes[index];
-            samples.clear();
-            samples.try_reserve_exact((end - start) * width).ok()?;
+            let shared = |(held_start, held_end): (usize, usize)| {
+                (held_start <= start && start < held_end).then(|| {
+                    let next = held_end.min(end);
+                    (
+                        next,
+                        (start - held_start) * width..(next - held_start) * width,
+                    )
+                })
+            };
             let mut next = start;
-            if let Some((carry_start, carry_end)) = carry.rows[index]
-                && carry_start <= start
-                && start < carry_end
-            {
-                next = carry_end.min(end);
-                samples.extend_from_slice(
-                    carry.planes[index]
-                        .get((start - carry_start) * width..(next - carry_start) * width)?,
-                );
+            match carry.as_deref() {
+                Some(carry) => {
+                    samples.clear();
+                    samples.try_reserve_exact((end - start) * width).ok()?;
+                    if let Some((kept, rows)) = carry.rows[index].and_then(shared) {
+                        next = kept;
+                        samples.extend_from_slice(carry.planes[index].get(rows)?);
+                    }
+                }
+                None => match held.and_then(shared) {
+                    Some((kept, rows)) => {
+                        let count = samples.get(rows.clone())?.len();
+                        samples.copy_within(rows, 0);
+                        samples.truncate(count);
+                        next = kept;
+                    }
+                    None => samples.clear(),
+                },
             }
+            samples.try_reserve_exact((end - next) * width).ok()?;
             if next < end {
                 frame.append_rows(plane, next, end, samples)?;
             }
-            let tail = (luma.1 >> shift).saturating_sub(margin).clamp(start, end);
-            carry.planes[index].clear();
-            carry.planes[index].extend_from_slice(samples.get((tail - start) * width..)?);
-            carry.rows[index] = Some((tail, end));
+            if let Some(carry) = carry.as_deref_mut() {
+                let tail = (luma.1 >> shift).saturating_sub(margin).clamp(start, end);
+                carry.planes[index].clear();
+                carry.planes[index].extend_from_slice(samples.get((tail - start) * width..)?);
+                carry.rows[index] = Some((tail, end));
+            }
             self.rows[index] = Some((start, end));
             self.sizes[index] = (width, height);
         }
@@ -565,7 +609,8 @@ pub(crate) enum StripeOutputPlane {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StripeInitialization {
     CopyAll,
-    /// The caller proves every destination sample is written before publication.
+    /// The caller proves every destination sample is written, or already holds
+    /// its source sample, before publication.
     FullyOverwritten,
 }
 

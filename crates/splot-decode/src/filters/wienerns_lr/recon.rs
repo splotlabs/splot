@@ -573,21 +573,25 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         setup.subsampling.1,
                         bit_depth,
                     )
-                    .and_then(|()| setup.fill_window(stripe, &mut rows, &mut carry));
-                    let window = match window {
-                        Ok(window) => window,
+                    .and_then(|()| {
+                        if alone {
+                            setup
+                                .slide_window(stripe, &mut rows, &mut carry)
+                                .map(|()| None)
+                        } else {
+                            setup.fill_window(stripe, &mut rows, &mut carry).map(Some)
+                        }
+                    });
+                    let setup = &setup;
+                    match window {
+                        Ok(None) => *slot = Some(setup.run_filled(stripe, &carry)),
+                        Ok(Some(window)) => scope.spawn(move |_| {
+                            *slot = Some(setup.run_window(stripe, window));
+                        }),
                         Err(error) => {
                             owed = Some(error);
                             return;
                         }
-                    };
-                    let setup = &setup;
-                    if alone {
-                        *slot = Some(setup.run_window(stripe, window));
-                    } else {
-                        scope.spawn(move |_| {
-                            *slot = Some(setup.run_window(stripe, window));
-                        });
                     }
                 }
             });
@@ -614,8 +618,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     .map_err(|_| lr_pipeline_state_error())?;
             }
             for stripe in 0..setup.stripe_ranges().len() {
-                let window = setup.fill_window(stripe, &mut rows, &mut carry)?;
-                setup.run_window(stripe, window)?;
+                setup.slide_window(stripe, &mut rows, &mut carry)?;
+                setup.run_filled(stripe, &carry)?;
             }
         }
         drop(rows);
@@ -712,21 +716,45 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         Ok(window)
     }
 
+    /// Moves `window` down to one stripe's input once that stripe's rows are
+    /// final; the stripe it held must have run.
+    fn slide_window(
+        &self,
+        stripe: usize,
+        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
+        window: &mut crate::filters::source::DeblockedWindow<T>,
+    ) -> Result<()> {
+        let range = self
+            .ready_stripe(stripe, frame.final_luma_rows())?
+            .ok_or_else(lr_pipeline_state_error)?;
+        window
+            .slide(frame, range, STRIPE_WINDOW_MARGIN)
+            .ok_or_else(lr_pipeline_state_error)
+    }
+
     /// Claims, filters and publishes one stripe, then keeps its window.
     fn run_window(
         &self,
         stripe: usize,
         window: crate::filters::source::DeblockedWindow<T>,
     ) -> Result<()> {
-        let result = self
-            .claim(stripe)
+        let result = self.run_filled(stripe, &window);
+        self.give_window(window);
+        result
+    }
+
+    /// Claims, filters and publishes one stripe from its filled window.
+    fn run_filled(
+        &self,
+        stripe: usize,
+        window: &crate::filters::source::DeblockedWindow<T>,
+    ) -> Result<()> {
+        self.claim(stripe)
             .and_then(|range| {
                 let planes = window.planes().ok_or_else(lr_pipeline_state_error)?;
                 self.run_claimed_planes(stripe, range, planes)
             })
-            .and_then(|filtered| self.publish(filtered));
-        self.give_window(window);
-        result
+            .and_then(|filtered| self.publish(filtered))
     }
 
     fn stripe_bounds(&self, stripe: usize) -> Result<(usize, usize)> {
