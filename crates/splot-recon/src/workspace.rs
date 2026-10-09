@@ -816,10 +816,11 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         }
         for row_index in 0..rect.height() {
             let target_start = target_base + row_index * target_stride;
-            for (column, sample) in target[target_start..target_start + rect.width()]
-                .iter()
-                .enumerate()
-            {
+            let row = &target[target_start..target_start + rect.width()];
+            if !samples_exceed(row, max_sample) {
+                continue;
+            }
+            for (column, sample) in row.iter().enumerate() {
                 let value = sample.to_u16();
                 if value > max_sample {
                     return Err(ReconError::ReconstructPredictionOutOfRange {
