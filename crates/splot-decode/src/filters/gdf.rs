@@ -197,19 +197,24 @@ impl GdfBlockGrid {
         self.values.get(index).map(|&value| value != 0)
     }
 
-    fn any_enabled(&self, stripe_row: usize, x: usize, width: usize) -> Option<bool> {
-        let row = stripe_row.checked_mul(MI_SIZE)? / self.block_size;
-        let first_col = x / self.block_size;
-        let last_col = x.checked_add(width)?.checked_sub(1)? / self.block_size;
-        if row >= self.rows || last_col >= self.cols {
-            return None;
+    /// Returns the first run of enabled units in `x..end` as a column range;
+    /// the range is empty when no unit in `x..end` is enabled.
+    fn enabled_run(
+        &self,
+        stripe_row: usize,
+        x: usize,
+        end: usize,
+    ) -> Option<core::ops::Range<usize>> {
+        let unit_end = |x: usize| ((x / self.block_size + 1) * self.block_size).min(end);
+        let mut start = x;
+        while start < end && !self.enabled(stripe_row, start)? {
+            start = unit_end(start);
         }
-        let row_start = row.checked_mul(self.cols)?;
-        let start = row_start.checked_add(first_col)?;
-        let end = row_start.checked_add(last_col)?.checked_add(1)?;
-        self.values
-            .get(start..end)
-            .map(|values| values.contains(&1))
+        let mut stop = start;
+        while stop < end && self.enabled(stripe_row, stop)? {
+            stop = unit_end(stop);
+        }
+        Some(start..stop)
     }
 }
 
@@ -336,139 +341,119 @@ pub(crate) fn apply_stripe<T: ReconSample>(
             } else {
                 (0, width)
             };
-            if config.per_block
-                && !block_grid
-                    .and_then(|grid| grid.any_enabled(stripe_row, segment_x, segment_width))
-                    .ok_or_else(gdf_state_error)?
-            {
-                continue;
-            }
-            let stripe_block = GdfBlock {
-                x: segment_x,
-                y,
-                width: segment_width,
-                height,
-                frame_width: width,
-                frame_height,
-                base_origin_y: y,
-                bit_depth,
-                qp_idx: config.qp_idx,
-                ref_dst_idx: config.ref_dst_idx,
-                pix_scale: config.pix_scale,
-                max_sample: config.max_sample,
-            };
-            let bounds = source_bounds(core, &stripe_block, disable_loopfilters_across_tiles)?;
-            let cdef_luma = separate_cdef_luma.unwrap_or(post_lr_luma);
-            let source = GdfSource::materialize_stripe(
-                &mut scratch.source,
-                deblocked_luma,
-                cdef_luma,
-                cdef_overlap,
-                &bounds,
-                &stripe_block,
-            )?;
-            let band_origin = source
-                .relative_position(segment_x, y)
-                .ok_or_else(gdf_state_error)?;
-            band_classes_from_source(
-                &source,
-                band_origin,
-                &stripe_block,
-                &mut scratch.classes,
-                &mut scratch.gradient_pairs,
-                &mut scratch.gradient_tmp,
-            )?;
             let segment_end = segment_x
                 .checked_add(segment_width)
                 .ok_or_else(gdf_state_error)?;
-            if lossless_grid.is_none() {
-                let Some(grid) = block_grid.filter(|_| config.per_block) else {
+            let mut next_x = segment_x;
+            while next_x < segment_end {
+                let run = if config.per_block {
+                    block_grid
+                        .and_then(|grid| grid.enabled_run(stripe_row, next_x, segment_end))
+                        .ok_or_else(gdf_state_error)?
+                } else {
+                    segment_x..segment_end
+                };
+                next_x = run.end;
+                if run.is_empty() {
+                    continue;
+                }
+                let run_block = GdfBlock {
+                    x: run.start,
+                    y,
+                    width: run.len(),
+                    height,
+                    frame_width: width,
+                    frame_height,
+                    base_origin_y: y,
+                    bit_depth,
+                    qp_idx: config.qp_idx,
+                    ref_dst_idx: config.ref_dst_idx,
+                    pix_scale: config.pix_scale,
+                    max_sample: config.max_sample,
+                };
+                let bounds = source_bounds(core, &run_block, disable_loopfilters_across_tiles)?;
+                let cdef_luma = separate_cdef_luma.unwrap_or(post_lr_luma);
+                let source = GdfSource::materialize_stripe(
+                    &mut scratch.source,
+                    deblocked_luma,
+                    cdef_luma,
+                    cdef_overlap,
+                    &bounds,
+                    &run_block,
+                )?;
+                let band_origin = source
+                    .relative_position(run.start, y)
+                    .ok_or_else(gdf_state_error)?;
+                band_classes_from_source(
+                    &source,
+                    band_origin,
+                    &run_block,
+                    &mut scratch.classes,
+                    &mut scratch.gradient_pairs,
+                    &mut scratch.gradient_tmp,
+                )?;
+                if lossless_grid.is_none() {
                     compute_enabled_segment(
                         &source,
                         post_lr_luma.samples_mut(),
                         &scratch.classes,
-                        &stripe_block,
+                        &run_block,
                         band_origin,
-                        0..segment_width,
+                        0..run.len(),
                     )?;
                     continue;
-                };
-                let mut x = segment_x;
-                while x < segment_end {
-                    let next = ((x / grid.block_size + 1) * grid.block_size).min(segment_end);
-                    if grid.enabled(stripe_row, x).ok_or_else(gdf_state_error)? {
-                        compute_enabled_segment(
-                            &source,
-                            post_lr_luma.samples_mut(),
-                            &scratch.classes,
-                            &stripe_block,
-                            band_origin,
-                            x - segment_x..next - segment_x,
-                        )?;
-                    }
-                    x = next;
                 }
-                continue;
-            }
-            let class_cols = segment_width >> 1;
-            for local_y in (0..height).step_by(MI_SIZE) {
-                let block_y = y + local_y;
-                let block_height = MI_SIZE.min(height - local_y);
-                let class_start = (local_y >> 1)
-                    .checked_mul(class_cols)
-                    .ok_or_else(gdf_state_error)?;
-                let classes = scratch
-                    .classes
-                    .get(class_start..)
-                    .ok_or_else(gdf_state_error)?;
-                for x in (segment_x..segment_end).step_by(MI_SIZE) {
-                    let block_width = MI_SIZE.min(segment_end - x);
-                    if block_width < 2
-                        || block_height < 2
-                        || !block_width.is_multiple_of(2)
-                        || !block_height.is_multiple_of(2)
-                    {
-                        return Err(gdf_state_error());
-                    }
-                    let block_enabled = if config.per_block {
-                        block_grid
-                            .and_then(|grid| grid.enabled(stripe_row, x))
-                            .ok_or_else(gdf_state_error)?
-                    } else {
-                        true
-                    };
-                    if !block_enabled {
-                        continue;
-                    }
-                    let block = GdfBlock {
-                        x,
-                        y: block_y,
-                        width: block_width,
-                        height: block_height,
-                        ..stripe_block
-                    };
-                    let mut output = compute_block::<u16>(
-                        &source,
-                        post_lr_luma.samples(),
-                        classes,
-                        class_cols,
-                        block,
-                    )?;
-                    preserve_lossless_luma_samples(
-                        lossless_grid,
-                        post_lr_luma.samples(),
-                        width,
-                        y,
-                        x,
-                        block_y,
-                        block_width,
-                        block_height,
-                        &mut output,
-                    )?;
-                    for row in 0..block_height {
-                        let src = &output[row * block_width..(row + 1) * block_width];
-                        let start = (local_y + row) * width + x;
-                        post_lr_luma.samples_mut()[start..start + block_width].copy_from_slice(src);
+                let class_cols = run.len() >> 1;
+                for local_y in (0..height).step_by(MI_SIZE) {
+                    let block_y = y + local_y;
+                    let block_height = MI_SIZE.min(height - local_y);
+                    let class_start = (local_y >> 1)
+                        .checked_mul(class_cols)
+                        .ok_or_else(gdf_state_error)?;
+                    let classes = scratch
+                        .classes
+                        .get(class_start..)
+                        .ok_or_else(gdf_state_error)?;
+                    for x in run.clone().step_by(MI_SIZE) {
+                        let block_width = MI_SIZE.min(run.end - x);
+                        if block_width < 2
+                            || block_height < 2
+                            || !block_width.is_multiple_of(2)
+                            || !block_height.is_multiple_of(2)
+                        {
+                            return Err(gdf_state_error());
+                        }
+                        let block = GdfBlock {
+                            x,
+                            y: block_y,
+                            width: block_width,
+                            height: block_height,
+                            ..run_block
+                        };
+                        let mut output = compute_block::<u16>(
+                            &source,
+                            post_lr_luma.samples(),
+                            classes,
+                            class_cols,
+                            block,
+                        )?;
+                        preserve_lossless_luma_samples(
+                            lossless_grid,
+                            post_lr_luma.samples(),
+                            width,
+                            y,
+                            x,
+                            block_y,
+                            block_width,
+                            block_height,
+                            &mut output,
+                        )?;
+                        for row in 0..block_height {
+                            let src = &output[row * block_width..(row + 1) * block_width];
+                            let start = (local_y + row) * width + x;
+                            post_lr_luma.samples_mut()[start..start + block_width]
+                                .copy_from_slice(src);
+                        }
                     }
                 }
             }
@@ -1654,26 +1639,17 @@ mod tests {
     }
 
     #[test]
-    fn per_block_grid_skips_only_fully_disabled_segments() {
-        let result = GdfBlockGrid::new(64, 1, 3, vec![0, 1, 0]);
+    fn per_block_grid_runs_cover_only_enabled_units() {
+        let result = GdfBlockGrid::new(64, 1, 5, vec![0, 1, 1, 0, 1]);
         let grid = result.expect("valid result");
 
-        assert_eq!(grid.any_enabled(0, 0, 64), Some(false));
-        assert_eq!(grid.any_enabled(0, 64, 64), Some(true));
-        assert_eq!(grid.any_enabled(0, 0, 192), Some(true));
-        assert_eq!(grid.any_enabled(0, 128, 64), Some(false));
-    }
-
-    #[test]
-    fn per_block_grid_segment_scan_includes_partial_units() {
-        let result = GdfBlockGrid::new(64, 1, 2, vec![0, 1]);
-        let grid = result.expect("valid result");
-
-        assert_eq!(grid.any_enabled(0, 0, 64), Some(false));
-        assert_eq!(grid.any_enabled(0, 60, 4), Some(false));
-        assert_eq!(grid.any_enabled(0, 60, 8), Some(true));
-        assert_eq!(grid.any_enabled(0, 124, 8), None);
-        assert_eq!(grid.any_enabled(0, 0, 0), None);
+        assert_eq!(grid.enabled_run(0, 0, 320), Some(64..192));
+        assert_eq!(grid.enabled_run(0, 192, 320), Some(256..320));
+        assert_eq!(grid.enabled_run(0, 100, 150), Some(100..150));
+        assert_eq!(grid.enabled_run(0, 0, 60), Some(60..60));
+        assert_eq!(grid.enabled_run(0, 192, 256), Some(256..256));
+        assert_eq!(grid.enabled_run(0, 256, 324), None);
+        assert_eq!(grid.enabled_run(16, 0, 64), None);
     }
 
     #[test]
