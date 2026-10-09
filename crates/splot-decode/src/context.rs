@@ -99,7 +99,8 @@ impl DecodeContext {
         decode: impl FnOnce(&PreparedStream, &mut dyn ReadSeek) -> Result<T> + Send,
     ) -> Result<T> {
         let reader: &mut dyn ReadSeek = &mut reader;
-        let prepared = self.pool.install(|| prepare_stream(reader, options))?;
+        let mut prepared = self.pool.install(|| prepare_stream(reader, options))?;
+        prepared.plan.retain_decode_obus();
         self.pool.install(|| decode(&prepared, reader))
     }
 

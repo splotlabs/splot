@@ -2321,9 +2321,13 @@ fn frame_tile_group_candidates<'a>(
     candidate: &'a DecodePlannedObu,
 ) -> impl Iterator<Item = &'a DecodePlannedObu> + Clone {
     let continuations = plan
-        .obus()
-        .skip(candidate.index() as usize + 1)
-        .take_while(move |planned| planned.ivf_frame() == candidate.ivf_frame())
+        .obus_after(candidate)
+        .iter()
+        .zip(candidate.index() + 1..)
+        .take_while(move |(planned, index)| {
+            planned.index() == *index && planned.ivf_frame() == candidate.ivf_frame()
+        })
+        .map(|(planned, _)| planned)
         .filter(|planned| planned.obu_type() != ObuType::Padding)
         .take_while(move |planned| {
             planned.role().is_frame_continuation()
