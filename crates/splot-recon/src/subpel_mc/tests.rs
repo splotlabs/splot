@@ -1000,6 +1000,10 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
             }
         })
         .collect::<Vec<_>>();
+    let wide = samples
+        .iter()
+        .map(|&sample| u16::from(sample))
+        .collect::<Vec<_>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let filters = [
         InterpolationFilter::EightTap,
@@ -1019,10 +1023,28 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
                         + usize::from(scaled) * 256
                         + horizontal_phase as usize * 16
                         + vertical_phase as usize;
-                    let w = widths[case % widths.len()];
-                    let h = heights[(case / widths.len()) % heights.len()];
-                    let base_x = [-3, 7, ref_w as i32 - 2][case % 3];
-                    let base_y = [-2, 9, ref_h as i32 - 2][(case / 3) % 3];
+                    let fixed_window = case % 5 == 4;
+                    let (w, h) = if fixed_window {
+                        (16, 16)
+                    } else {
+                        (
+                            widths[case % widths.len()],
+                            heights[(case / widths.len()) % heights.len()],
+                        )
+                    };
+                    let (base_x, base_y) = if fixed_window {
+                        (7, 9)
+                    } else {
+                        (
+                            [-3, 7, ref_w as i32 - 2][case % 3],
+                            [-2, 9, ref_h as i32 - 2][(case / 3) % 3],
+                        )
+                    };
+                    let (first_x, last_x, first_y, last_y) = if fixed_window {
+                        (base_x + 1, base_x + 15, base_y + 1, base_y + 15)
+                    } else {
+                        (0, ref_w as i32 - 1, 0, ref_h as i32 - 1)
+                    };
                     let params = SubpelPredictParams {
                         interp,
                         w,
@@ -1031,16 +1053,31 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
                         start_y: (base_y << SCALE_SUBPEL_BITS) + (vertical_phase << 6),
                         step_x: if scaled { 896 } else { 1 << SCALE_SUBPEL_BITS },
                         step_y: if scaled { 1152 } else { 1 << SCALE_SUBPEL_BITS },
-                        first_x: 0,
-                        first_y: 0,
-                        last_x: ref_w as i32 - 1,
-                        last_y: ref_h as i32 - 1,
+                        first_x,
+                        first_y,
+                        last_x,
+                        last_y,
                         bit_depth: BitDepth::Eight,
                     };
                     let stride = w + 5;
+                    let oracle = reference_subpel(&wide, ref_w, ref_h, &params);
                     let mut expected = vec![u16::MAX; stride * h + 3];
                     subpel_predict_block_strided_into(&view, &params, &mut expected, stride)
                         .unwrap();
+                    let mut compound = vec![0i32; w * h];
+                    subpel_predict_block_compound_intermediate_into(
+                        &view,
+                        &params,
+                        None,
+                        &mut compound,
+                        w,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        compound,
+                        reference_subpel_compound(&wide, ref_w, ref_h, &params),
+                        "compound {interp:?} scaled={scaled} {w}x{h} phases={horizontal_phase},{vertical_phase}"
+                    );
                     let mut actual = (0..expected.len())
                         .map(|index| (index as u8).wrapping_mul(37).wrapping_add(0x5a))
                         .collect::<Vec<_>>();
@@ -1050,6 +1087,7 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
 
                     for row in 0..h {
                         let expected_row = &expected[row * stride..row * stride + w];
+                        assert_eq!(expected_row, &oracle[row * w..(row + 1) * w], "u16 output");
                         saw_clip_ends[0] |= expected_row.contains(&0);
                         saw_clip_ends[1] |= expected_row.contains(&u16::from(u8::MAX));
                         assert!(

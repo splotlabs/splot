@@ -716,8 +716,8 @@ fn subpel_bilinear_horizontal_into<T: ReconSample, O: BilinearOutput>(
         && params.first_y == y0 + 1
         && params.last_y == y0 + 15
         && fixed_16x16_window_in_bounds(reference, x0, y0)
-        && let Some(samples) = T::u16_slice(reference.samples)
     {
+        let samples = reference.samples;
         let first = (x0 + 1) as usize;
         let second = (x0 + 8) as usize;
         for row in 0..params.h {
@@ -725,14 +725,14 @@ fn subpel_bilinear_horizontal_into<T: ReconSample, O: BilinearOutput>(
             let source = &samples[source_row * reference.stride..];
             let destination = &mut output[row * output_stride..][..params.w];
             let low = bilinear_u16(
-                Simd::<u16, 8>::from_slice(&source[first..]),
-                Simd::<u16, 8>::from_slice(&source[first + 1..]),
+                reference_lanes::<8, T>(source, first),
+                reference_lanes::<8, T>(source, first + 1),
                 phase,
             );
             O::store(low, &mut destination[1..9]);
             let high = tip_overlap::overlap_bilinear_u16x8(source, source, second, None, phase, 0);
             O::store(high, &mut destination[8..]);
-            destination[0] = O::from_sample(source[first]);
+            destination[0] = O::from_sample(source[first].to_u16());
         }
         return Ok(());
     }
@@ -813,8 +813,8 @@ fn subpel_bilinear_vertical_into<T: ReconSample, O: BilinearOutput>(
         && params.first_y == y0 + 1
         && params.last_y == y0 + 15
         && fixed_16x16_window_in_bounds(reference, x0, y0)
-        && let Some(samples) = T::u16_slice(reference.samples)
     {
+        let samples = reference.samples;
         let first = (x0 + 1) as usize;
         let second = (x0 + 8) as usize;
         for row in 0..params.h {
@@ -824,18 +824,22 @@ fn subpel_bilinear_vertical_into<T: ReconSample, O: BilinearOutput>(
             let bottom = &samples[bottom * reference.stride..];
             let destination = &mut output[row * output_stride..][..params.w];
             let low = bilinear_u16(
-                Simd::<u16, 8>::from_slice(&top[first..]),
-                Simd::<u16, 8>::from_slice(&bottom[first..]),
+                reference_lanes::<8, T>(top, first),
+                reference_lanes::<8, T>(bottom, first),
                 phase,
             );
             O::store(low, &mut destination[1..9]);
             let high = bilinear_u16(
-                Simd::<u16, 8>::from_slice(&top[second..]),
-                Simd::<u16, 8>::from_slice(&bottom[second..]),
+                reference_lanes::<8, T>(top, second),
+                reference_lanes::<8, T>(bottom, second),
                 phase,
             );
             O::store(high, &mut destination[8..]);
-            destination[0] = O::from_sample(bilinear_sample(top[first], bottom[first], phase));
+            destination[0] = O::from_sample(bilinear_sample(
+                top[first].to_u16(),
+                bottom[first].to_u16(),
+                phase,
+            ));
         }
         return Ok(());
     }
@@ -919,8 +923,8 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
         && params.first_y == y0 + 1
         && params.last_y == y0 + 15
         && fixed_16x16_window_in_bounds(reference, x0, y0)
-        && let Some(samples) = T::u16_slice(reference.samples)
     {
+        let samples = reference.samples;
         let first = (x0 + 1) as usize;
         let second = (x0 + 8) as usize;
         let max_sample = params.bit_depth.max_sample();
@@ -951,7 +955,8 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
             .simd_min(Simd::splat(max_sample));
             O::store(high, &mut destination[8..]);
             destination[0] = O::from_sample(
-                bilinear_sample(top[first], bottom[first], v_phase as i32).min(max_sample),
+                bilinear_sample(top[first].to_u16(), bottom[first].to_u16(), v_phase as i32)
+                    .min(max_sample),
             );
         }
         return Ok(());
@@ -963,7 +968,8 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
                     && i32::try_from(last).is_ok_and(|last| last <= params.last_x)
             })
     });
-    if let (Some(x), Some(samples)) = (direct_x, T::u16_slice(reference.samples)) {
+    if let Some(x) = direct_x {
+        let samples = reference.samples;
         let max_sample = params.bit_depth.max_sample();
         for r in 0..params.h {
             let top_row = (y0 + r as i32)
@@ -989,10 +995,10 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
                 O::store(filtered, &mut destination[c..]);
             }
             for c in vector_width..params.w {
-                let top_value = (16 - h_phase as i32) * i32::from(top[x + c])
-                    + h_phase as i32 * i32::from(top[x + c + 1]);
-                let bottom_value = (16 - h_phase as i32) * i32::from(bottom[x + c])
-                    + h_phase as i32 * i32::from(bottom[x + c + 1]);
+                let top_value = (16 - h_phase as i32) * i32::from(top[x + c].to_u16())
+                    + h_phase as i32 * i32::from(top[x + c + 1].to_u16());
+                let bottom_value = (16 - h_phase as i32) * i32::from(bottom[x + c].to_u16())
+                    + h_phase as i32 * i32::from(bottom[x + c + 1].to_u16());
                 destination[c] = O::from_sample(
                     (round2_i32(
                         (16 - v_phase as i32) * top_value + v_phase as i32 * bottom_value,
@@ -1005,36 +1011,22 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
         return Ok(());
     }
     let mut clipped_x = [0usize; MAX_BLOCK_DIM + 1];
-    if direct_x.is_none() {
-        for (c, col) in clipped_x[..=params.w].iter_mut().enumerate() {
-            *col = (x0 + c as i32)
-                .clamp(params.first_x, params.last_x)
-                .clamp(0, reference.width as i32 - 1) as usize;
-        }
+    for (c, col) in clipped_x[..=params.w].iter_mut().enumerate() {
+        *col = (x0 + c as i32)
+            .clamp(params.first_x, params.last_x)
+            .clamp(0, reference.width as i32 - 1) as usize;
     }
     let horizontal_row = |row: i32, destination: &mut [i32]| {
         let row = row
             .clamp(params.first_y, params.last_y)
             .clamp(0, reference.readable_rows as i32 - 1) as usize;
         let source = reference.row(row);
-        if let Some(x) = direct_x {
-            for (out, pair) in destination
-                .iter_mut()
-                .zip(source[x..=x + params.w].windows(2))
-            {
-                *out = round2_i32(
-                    h0 * i32::from(pair[0].to_u16()) + h1 * i32::from(pair[1].to_u16()),
-                    INTER_ROUND0,
-                );
-            }
-        } else {
-            for (c, out) in destination.iter_mut().enumerate() {
-                *out = round2_i32(
-                    h0 * i32::from(source[clipped_x[c]].to_u16())
-                        + h1 * i32::from(source[clipped_x[c + 1]].to_u16()),
-                    INTER_ROUND0,
-                );
-            }
+        for (c, out) in destination.iter_mut().enumerate() {
+            *out = round2_i32(
+                h0 * i32::from(source[clipped_x[c]].to_u16())
+                    + h1 * i32::from(source[clipped_x[c + 1]].to_u16()),
+                INTER_ROUND0,
+            );
         }
     };
 
@@ -2098,88 +2090,68 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let full_taps = &h_filter_rows[phase];
                 let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
                 let taps = &full_taps[tap_start..tap_end];
-                if let Some(window) = T::u16_slice(window) {
-                    let full_span = tap_start == 0 && tap_end == NUM_TAPS;
-                    let available = window.len();
-                    let vector_width16 = w - w % 16;
-                    for c in (0..vector_width16).step_by(16) {
-                        let sum = if full_span && Simd::<i32, 16>::admits(available, c) {
-                            Simd::<i32, 16>::slid_tap_sum(window, c, full_taps)
-                        } else {
-                            let mut sum = Simd::<i32, 16>::splat(0);
-                            for (tap_offset, &tap) in taps.iter().enumerate() {
-                                sum = tap_mac(
-                                    sum,
-                                    Simd::<u16, 16>::from_slice(
-                                        &window[c + tap_start + tap_offset..],
-                                    )
-                                    .cast(),
-                                    tap,
-                                );
-                            }
-                            sum
-                        };
-                        let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
-                        row_out[c..c + 16].copy_from_slice(&filtered); // splot-copy-ok: publish sixteen SIMD convolution outputs
-                    }
-                    let vector_width8 = w - w % 8;
-                    for c in (vector_width16..vector_width8).step_by(8) {
-                        let sum = if full_span && Simd::<i32, 8>::admits(available, c) {
-                            Simd::<i32, 8>::slid_tap_sum(window, c, full_taps)
-                        } else {
-                            let mut sum = Simd::<i32, 8>::splat(0);
-                            for (tap_offset, &tap) in taps.iter().enumerate() {
-                                sum = tap_mac(
-                                    sum,
-                                    Simd::<u16, 8>::from_slice(
-                                        &window[c + tap_start + tap_offset..],
-                                    )
-                                    .cast(),
-                                    tap,
-                                );
-                            }
-                            sum
-                        };
-                        let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
-                        row_out[c..c + 8].copy_from_slice(&filtered); // splot-copy-ok: publish eight SIMD convolution outputs
-                    }
-                    let vector_width4 = w - w % 4;
-                    for c in (vector_width8..vector_width4).step_by(4) {
-                        let sum = if full_span && Simd::<i32, 4>::admits(available, c) {
-                            Simd::<i32, 4>::slid_tap_sum(window, c, full_taps)
-                        } else {
-                            let mut sum = Simd::<i32, 4>::splat(0);
-                            for (tap_offset, &tap) in taps.iter().enumerate() {
-                                sum = tap_mac(
-                                    sum,
-                                    Simd::<u16, 4>::from_slice(
-                                        &window[c + tap_start + tap_offset..],
-                                    )
-                                    .cast(),
-                                    tap,
-                                );
-                            }
-                            sum
-                        };
-                        let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
-                        row_out[c..c + 4].copy_from_slice(&filtered); // splot-copy-ok: publish four SIMD convolution lanes into row scratch
-                    }
-                    for c in vector_width4..w {
-                        let mut sum = 0i32;
+                let full_span = tap_start == 0 && tap_end == NUM_TAPS;
+                let available = window.len();
+                let vector_width16 = w - w % 16;
+                for c in (0..vector_width16).step_by(16) {
+                    let sum = if full_span && Simd::<i32, 16>::admits(available, c) {
+                        Simd::<i32, 16>::slid_tap_sum(window, c, full_taps)
+                    } else {
+                        let mut sum = Simd::<i32, 16>::splat(0);
                         for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum += tap * i32::from(window[c + tap_start + tap_offset]);
+                            sum = tap_mac(
+                                sum,
+                                reference_lanes::<16, T>(window, c + tap_start + tap_offset).cast(),
+                                tap,
+                            );
                         }
-                        row_out[c] = round2_i32(sum, INTER_ROUND0) as i16;
-                    }
-                    continue;
+                        sum
+                    };
+                    let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
+                    row_out[c..c + 16].copy_from_slice(&filtered); // splot-copy-ok: publish sixteen SIMD convolution outputs
                 }
-                for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
-                    let mut s = 0i32;
-                    let samples = &win[tap_start..tap_start + taps.len()];
-                    for (&tap, &sample) in taps.iter().zip(samples) {
-                        s += tap * i32::from(sample.to_u16());
+                let vector_width8 = w - w % 8;
+                for c in (vector_width16..vector_width8).step_by(8) {
+                    let sum = if full_span && Simd::<i32, 8>::admits(available, c) {
+                        Simd::<i32, 8>::slid_tap_sum(window, c, full_taps)
+                    } else {
+                        let mut sum = Simd::<i32, 8>::splat(0);
+                        for (tap_offset, &tap) in taps.iter().enumerate() {
+                            sum = tap_mac(
+                                sum,
+                                reference_lanes::<8, T>(window, c + tap_start + tap_offset).cast(),
+                                tap,
+                            );
+                        }
+                        sum
+                    };
+                    let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
+                    row_out[c..c + 8].copy_from_slice(&filtered); // splot-copy-ok: publish eight SIMD convolution outputs
+                }
+                let vector_width4 = w - w % 4;
+                for c in (vector_width8..vector_width4).step_by(4) {
+                    let sum = if full_span && Simd::<i32, 4>::admits(available, c) {
+                        Simd::<i32, 4>::slid_tap_sum(window, c, full_taps)
+                    } else {
+                        let mut sum = Simd::<i32, 4>::splat(0);
+                        for (tap_offset, &tap) in taps.iter().enumerate() {
+                            sum = tap_mac(
+                                sum,
+                                reference_lanes::<4, T>(window, c + tap_start + tap_offset).cast(),
+                                tap,
+                            );
+                        }
+                        sum
+                    };
+                    let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
+                    row_out[c..c + 4].copy_from_slice(&filtered); // splot-copy-ok: publish four SIMD convolution lanes into row scratch
+                }
+                for c in vector_width4..w {
+                    let mut sum = 0i32;
+                    for (tap_offset, &tap) in taps.iter().enumerate() {
+                        sum += tap * i32::from(window[c + tap_start + tap_offset].to_u16());
                     }
-                    *out = round2_i32(s, INTER_ROUND0) as i16;
+                    row_out[c] = round2_i32(sum, INTER_ROUND0) as i16;
                 }
                 continue;
             }

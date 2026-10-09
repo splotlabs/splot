@@ -10,7 +10,8 @@
 //! AArch64, which is what turns eight overlapping unaligned loads into two
 //! loads plus seven slides.
 
-use super::{NUM_TAPS, tap_mac};
+use super::{NUM_TAPS, reference_lanes, tap_mac};
+use crate::format::ReconSample;
 use std::simd::{Simd, num::SimdUint, simd_swizzle};
 
 /// One accumulator width's full-span horizontal convolution over slid windows.
@@ -29,7 +30,7 @@ pub(super) trait SlideLanes: Sized {
     }
 
     /// Accumulates the eight full-span taps at `first` from two loads.
-    fn slid_tap_sum(source: &[u16], first: usize, taps: &[i32; NUM_TAPS]) -> Self;
+    fn slid_tap_sum<T: ReconSample>(source: &[T], first: usize, taps: &[i32; NUM_TAPS]) -> Self;
 }
 
 /// Reads `LANES` consecutive samples as `i16`.
@@ -39,8 +40,8 @@ pub(super) trait SlideLanes: Sized {
 /// [`tap_mac`] already relies on.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn lanes_at<const LANES: usize>(source: &[u16], start: usize) -> Simd<i16, LANES> {
-    Simd::<u16, LANES>::from_slice(&source[start..]).cast()
+fn lanes_at<const LANES: usize, T: ReconSample>(source: &[T], start: usize) -> Simd<i16, LANES> {
+    reference_lanes::<LANES, T>(source, start).cast()
 }
 
 /// Accumulates prebuilt windows with a constant tap index so they stay in
@@ -63,9 +64,9 @@ impl SlideLanes for Simd<i32, 4> {
 
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
-    fn slid_tap_sum(source: &[u16], first: usize, taps: &[i32; NUM_TAPS]) -> Self {
-        let lo = lanes_at::<8>(source, first);
-        let hi = lanes_at::<8>(source, first + 8);
+    fn slid_tap_sum<T: ReconSample>(source: &[T], first: usize, taps: &[i32; NUM_TAPS]) -> Self {
+        let lo = lanes_at::<8, T>(source, first);
+        let hi = lanes_at::<8, T>(source, first + 8);
         accumulate(
             [
                 simd_swizzle!(lo, hi, [0, 1, 2, 3]),
@@ -87,9 +88,9 @@ impl SlideLanes for Simd<i32, 8> {
 
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
-    fn slid_tap_sum(source: &[u16], first: usize, taps: &[i32; NUM_TAPS]) -> Self {
-        let lo = lanes_at::<8>(source, first);
-        let hi = lanes_at::<8>(source, first + 8);
+    fn slid_tap_sum<T: ReconSample>(source: &[T], first: usize, taps: &[i32; NUM_TAPS]) -> Self {
+        let lo = lanes_at::<8, T>(source, first);
+        let hi = lanes_at::<8, T>(source, first + 8);
         accumulate(
             [
                 lo,
@@ -111,9 +112,9 @@ impl SlideLanes for Simd<i32, 16> {
 
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
-    fn slid_tap_sum(source: &[u16], first: usize, taps: &[i32; NUM_TAPS]) -> Self {
-        let lo = lanes_at::<16>(source, first);
-        let hi = lanes_at::<16>(source, first + 16);
+    fn slid_tap_sum<T: ReconSample>(source: &[T], first: usize, taps: &[i32; NUM_TAPS]) -> Self {
+        let lo = lanes_at::<16, T>(source, first);
+        let hi = lanes_at::<16, T>(source, first + 16);
         accumulate(
             [
                 lo,

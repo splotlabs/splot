@@ -346,7 +346,6 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
     let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter][phase];
     let taps = &full_taps[tap_start..tap_end];
     let full_span = tap_start == 0 && tap_end == NUM_TAPS;
-    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let x_window_start = subpel_horizontal_window_x(reference, params);
 
     for r in 0..params.h {
@@ -361,74 +360,60 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
                 .samples
                 .get(row_base..taps_end + SLIDE_RESERVE)
                 .unwrap_or(&reference.samples[row_base..taps_end]);
-            if let Some(window) = T::u16_slice(window) {
-                let available = window.len();
-                let vector_width8 = params.w - params.w % 8;
-                for c in (0..vector_width8).step_by(8) {
-                    let sum = if full_span && Simd::<i32, 8>::admits(available, c) {
-                        Simd::<i32, 8>::slid_tap_sum(window, c, full_taps)
-                    } else {
-                        let mut sum = Simd::<i32, 8>::splat(0);
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                Simd::<u16, 8>::from_slice(&window[c + tap_start + tap_offset..])
-                                    .cast(),
-                                tap,
-                            );
-                        }
-                        sum
-                    };
-                    let values = round2_simd(
-                        round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
-                        inter_round1,
-                    );
-                    finish.eight(values, &mut row_out[c..c + 8]);
-                }
-                let vector_width4 = params.w - params.w % 4;
-                for c in (vector_width8..vector_width4).step_by(4) {
-                    let sum = if full_span && Simd::<i32, 4>::admits(available, c) {
-                        Simd::<i32, 4>::slid_tap_sum(window, c, full_taps)
-                    } else {
-                        let mut sum = Simd::<i32, 4>::splat(0);
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                Simd::<u16, 4>::from_slice(&window[c + tap_start + tap_offset..])
-                                    .cast(),
-                                tap,
-                            );
-                        }
-                        sum
-                    };
-                    let values = round2_simd(
-                        round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
-                        inter_round1,
-                    );
-                    finish.four(values, &mut row_out[c..c + 4]);
-                }
-                for c in vector_width4..params.w {
-                    let mut sum = 0i32;
+            let available = window.len();
+            let vector_width8 = params.w - params.w % 8;
+            for c in (0..vector_width8).step_by(8) {
+                let sum = if full_span && Simd::<i32, 8>::admits(available, c) {
+                    Simd::<i32, 8>::slid_tap_sum(window, c, full_taps)
+                } else {
+                    let mut sum = Simd::<i32, 8>::splat(0);
                     for (tap_offset, &tap) in taps.iter().enumerate() {
-                        sum += tap * i32::from(window[c + tap_start + tap_offset]);
+                        sum = tap_mac(
+                            sum,
+                            reference_lanes::<8, T>(window, c + tap_start + tap_offset).cast(),
+                            tap,
+                        );
                     }
-                    let horizontal = round2_i32(sum, INTER_ROUND0);
-                    row_out[c] = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
-                }
-                continue;
+                    sum
+                };
+                let values = round2_simd(
+                    round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
+                    inter_round1,
+                );
+                finish.eight(values, &mut row_out[c..c + 8]);
             }
-            for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
-                let samples = &win[tap_start..tap_start + taps.len()];
+            let vector_width4 = params.w - params.w % 4;
+            for c in (vector_width8..vector_width4).step_by(4) {
+                let sum = if full_span && Simd::<i32, 4>::admits(available, c) {
+                    Simd::<i32, 4>::slid_tap_sum(window, c, full_taps)
+                } else {
+                    let mut sum = Simd::<i32, 4>::splat(0);
+                    for (tap_offset, &tap) in taps.iter().enumerate() {
+                        sum = tap_mac(
+                            sum,
+                            reference_lanes::<4, T>(window, c + tap_start + tap_offset).cast(),
+                            tap,
+                        );
+                    }
+                    sum
+                };
+                let values = round2_simd(
+                    round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
+                    inter_round1,
+                );
+                finish.four(values, &mut row_out[c..c + 4]);
+            }
+            for c in vector_width4..params.w {
                 let mut sum = 0i32;
-                for (&tap, &sample) in taps.iter().zip(samples) {
-                    sum += tap * i32::from(sample.to_u16());
+                for (tap_offset, &tap) in taps.iter().enumerate() {
+                    sum += tap * i32::from(window[c + tap_start + tap_offset].to_u16());
                 }
                 let horizontal = round2_i32(sum, INTER_ROUND0);
-                *out = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
+                row_out[c] = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
             }
             continue;
         }
-        if clipped_edges::horizontal_only(
+        clipped_edges::horizontal_only(
             reference,
             params,
             ref_row,
@@ -438,20 +423,7 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
             inter_round1,
             row_out,
             finish,
-        ) {
-            continue;
-        }
-        for (c, out) in row_out.iter_mut().enumerate() {
-            let mut sum = 0i32;
-            for (tap_offset, &tap) in taps.iter().enumerate() {
-                let t = tap_start + tap_offset;
-                let ref_col =
-                    (x0 + c as i32 + t as i32 - 3).clamp(params.first_x, params.last_x) as usize;
-                sum += tap * reference.sample(ref_row, ref_col);
-            }
-            let horizontal = round2_i32(sum, INTER_ROUND0);
-            *out = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
-        }
+        );
     }
 }
 
@@ -481,8 +453,8 @@ fn vertical_interior_top<T: ReconSample>(
 /// constant trip count keeps the tap coefficients and the eight row bases in
 /// registers across the column loop.
 #[allow(clippy::too_many_arguments)]
-fn subpel_vertical_interior_into<O>(
-    source: &[u16],
+fn subpel_vertical_interior_into<T: ReconSample, O>(
+    source: &[T],
     stride: usize,
     params: &SubpelPredictParams,
     taps: &[i32; NUM_TAPS],
@@ -497,17 +469,13 @@ fn subpel_vertical_interior_into<O>(
     let vector_width4 = params.w - params.w % 4;
     for r in 0..params.h {
         let base = (top + r) * stride + x;
-        let rows: [&[u16]; NUM_TAPS] =
+        let rows: [&[T]; NUM_TAPS] =
             core::array::from_fn(|t| &source[base + t * stride..][..params.w]);
         let row_out = &mut output[r * output_stride..][..params.w];
         for c in (0..vector_width8).step_by(8) {
             let mut sum = Simd::<i32, 8>::splat(0);
             for t in 0..NUM_TAPS {
-                sum = tap_mac(
-                    sum,
-                    Simd::<u16, 8>::from_slice(&rows[t][c..]).cast(),
-                    taps[t],
-                );
+                sum = tap_mac(sum, reference_lanes::<8, T>(rows[t], c).cast(), taps[t]);
             }
             let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
             finish.eight(values, &mut row_out[c..c + 8]);
@@ -515,11 +483,7 @@ fn subpel_vertical_interior_into<O>(
         for c in (vector_width8..vector_width4).step_by(4) {
             let mut sum = Simd::<i32, 4>::splat(0);
             for t in 0..NUM_TAPS {
-                sum = tap_mac(
-                    sum,
-                    Simd::<u16, 4>::from_slice(&rows[t][c..]).cast(),
-                    taps[t],
-                );
+                sum = tap_mac(sum, reference_lanes::<4, T>(rows[t], c).cast(), taps[t]);
             }
             let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
             finish.four(values, &mut row_out[c..c + 4]);
@@ -527,7 +491,7 @@ fn subpel_vertical_interior_into<O>(
         for c in vector_width4..params.w {
             let mut sum = 0i32;
             for t in 0..NUM_TAPS {
-                sum += taps[t] * i32::from(rows[t][c]);
+                sum += taps[t] * i32::from(rows[t][c].to_u16());
             }
             row_out[c] = finish.one(round2_i32(
                 sum << (FILTER_BITS - INTER_ROUND0),
@@ -550,17 +514,12 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
     let full_taps = &SUBPEL_FILTERS[v_filter][phase];
     let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter][phase];
     let taps = &full_taps[tap_start..tap_end];
-    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let direct_x = subpel_direct_copy_x(reference, params);
 
-    if let (Some(x), Some(source), Some(top)) = (
-        direct_x,
-        T::u16_slice(reference.samples),
-        vertical_interior_top(reference, params, y0),
-    ) {
+    if let (Some(x), Some(top)) = (direct_x, vertical_interior_top(reference, params, y0)) {
         subpel_vertical_interior_into(
-            source,
+            reference.samples,
             reference.stride,
             params,
             full_taps,
@@ -574,10 +533,9 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
         return;
     }
 
-    let mut acc = [0i32; MAX_BLOCK_DIM];
-
     for r in 0..params.h {
-        if let (Some(x), Some(source)) = (direct_x, T::u16_slice(reference.samples)) {
+        if let Some(x) = direct_x {
+            let source = reference.samples;
             let vector_width8 = params.w - params.w % 8;
             for c in (0..vector_width8).step_by(8) {
                 let mut sum = Simd::<i32, 8>::splat(0);
@@ -588,11 +546,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
                         as usize;
                     let ref_row = ref_row.min(reference.readable_rows - 1);
                     let start = ref_row * reference.stride + x + c;
-                    sum = tap_mac(
-                        sum,
-                        Simd::<u16, 8>::from_slice(&source[start..]).cast(),
-                        tap,
-                    );
+                    sum = tap_mac(sum, reference_lanes::<8, T>(source, start).cast(), tap);
                 }
                 let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
                 finish.eight(values, &mut output[r * output_stride + c..][..8]);
@@ -607,11 +561,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
                         as usize;
                     let ref_row = ref_row.min(reference.readable_rows - 1);
                     let start = ref_row * reference.stride + x + c;
-                    sum = tap_mac(
-                        sum,
-                        Simd::<u16, 4>::from_slice(&source[start..]).cast(),
-                        tap,
-                    );
+                    sum = tap_mac(sum, reference_lanes::<4, T>(source, start).cast(), tap);
                 }
                 let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
                 finish.four(values, &mut output[r * output_stride + c..][..4]);
@@ -633,7 +583,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
             }
             continue;
         }
-        if clipped_edges::vertical_only(
+        clipped_edges::vertical_only(
             reference,
             params,
             r,
@@ -643,37 +593,6 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
             output,
             output_stride,
             finish,
-        ) {
-            continue;
-        }
-        let acc = &mut acc[..params.w];
-        acc.fill(0);
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            let t = tap_start + tap_offset;
-            let ref_row =
-                (y0 + r as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
-            let ref_row = ref_row.min(reference.readable_rows - 1);
-            if let Some(x) = direct_x {
-                let start = ref_row * reference.stride + x;
-                for (sum, sample) in acc
-                    .iter_mut()
-                    .zip(&reference.samples[start..start + params.w])
-                {
-                    *sum += tap * i32::from(sample.to_u16());
-                }
-            } else {
-                for (c, sum) in acc.iter_mut().enumerate() {
-                    let ref_col = (x0 + c as i32).clamp(params.first_x, params.last_x) as usize;
-                    *sum += tap * reference.sample(ref_row, ref_col);
-                }
-            }
-        }
-        let row_out = &mut output[r * output_stride..][..params.w];
-        for (out, &sum) in row_out.iter_mut().zip(acc.iter()) {
-            *out = finish.one(round2_i32(
-                sum << (FILTER_BITS - INTER_ROUND0),
-                inter_round1,
-            ));
-        }
+        );
     }
 }

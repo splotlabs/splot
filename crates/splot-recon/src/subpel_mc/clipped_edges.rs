@@ -33,10 +33,8 @@ pub(super) fn horizontal_only<T: ReconSample, O>(
     inter_round1: u32,
     row_out: &mut [O],
     finish: &mut impl SubpelOutput<O>,
-) -> bool {
-    let Some(source) = T::u16_slice(reference.row(ref_row)) else {
-        return false;
-    };
+) {
+    let source = reference.row(ref_row);
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let interior = interior(
         params.w,
@@ -65,7 +63,7 @@ pub(super) fn horizontal_only<T: ReconSample, O>(
         for (tap_offset, &tap) in taps.iter().enumerate() {
             sum = tap_mac(
                 sum,
-                Simd::<u16, 8>::from_slice(&source[start + tap_offset..]).cast(),
+                reference_lanes::<8, T>(source, start + tap_offset).cast(),
                 tap,
             );
         }
@@ -82,7 +80,7 @@ pub(super) fn horizontal_only<T: ReconSample, O>(
         for (tap_offset, &tap) in taps.iter().enumerate() {
             sum = tap_mac(
                 sum,
-                Simd::<u16, 4>::from_slice(&source[start + tap_offset..]).cast(),
+                reference_lanes::<4, T>(source, start + tap_offset).cast(),
                 tap,
             );
         }
@@ -97,7 +95,7 @@ pub(super) fn horizontal_only<T: ReconSample, O>(
         let mut sum = 0i32;
         for (tap_offset, &tap) in taps.iter().enumerate() {
             let t = tap_start + tap_offset;
-            sum += tap * i32::from(source[(x0 + c as i32 + t as i32 - 3) as usize]);
+            sum += tap * i32::from(source[(x0 + c as i32 + t as i32 - 3) as usize].to_u16());
         }
         let horizontal = round2_i32(sum, INTER_ROUND0);
         *output = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
@@ -114,7 +112,6 @@ pub(super) fn horizontal_only<T: ReconSample, O>(
         let horizontal = round2_i32(sum, INTER_ROUND0);
         *output = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
     }
-    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -130,10 +127,8 @@ pub(super) fn vertical_only<T: ReconSample, O>(
     output: &mut [O],
     output_stride: usize,
     finish: &mut impl SubpelOutput<O>,
-) -> bool {
-    let Some(source) = T::u16_slice(reference.samples) else {
-        return false;
-    };
+) {
+    let source = reference.samples;
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let interior = interior(
@@ -166,11 +161,7 @@ pub(super) fn vertical_only<T: ReconSample, O>(
                 (y0 + row as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
             let start = ref_row.min(reference.readable_rows - 1) * reference.stride
                 + (x0 + c as i32) as usize;
-            sum = tap_mac(
-                sum,
-                Simd::<u16, 8>::from_slice(&source[start..]).cast(),
-                tap,
-            );
+            sum = tap_mac(sum, reference_lanes::<8, T>(source, start).cast(), tap);
         }
         let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
         finish.eight(values, &mut row_out[c..c + 8]);
@@ -184,11 +175,7 @@ pub(super) fn vertical_only<T: ReconSample, O>(
                 (y0 + row as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
             let start = ref_row.min(reference.readable_rows - 1) * reference.stride
                 + (x0 + c as i32) as usize;
-            sum = tap_mac(
-                sum,
-                Simd::<u16, 4>::from_slice(&source[start..]).cast(),
-                tap,
-            );
+            sum = tap_mac(sum, reference_lanes::<4, T>(source, start).cast(), tap);
         }
         let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
         finish.four(values, &mut row_out[c..c + 4]);
@@ -204,7 +191,6 @@ pub(super) fn vertical_only<T: ReconSample, O>(
             inter_round1,
         ));
     }
-    true
 }
 
 fn vertical_scalar_value<T: ReconSample>(
@@ -241,9 +227,7 @@ pub(super) fn horizontal_intermediate<T: ReconSample>(
     if params.step_x != 1 << SCALE_SUBPEL_BITS {
         return false;
     }
-    let Some(source) = T::u16_slice(reference.row(ref_row)) else {
-        return false;
-    };
+    let source = reference.row(ref_row);
     let phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
     let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter][phase];
     let taps = &SUBPEL_FILTERS[h_filter][phase][tap_start..tap_end];
@@ -267,7 +251,7 @@ pub(super) fn horizontal_intermediate<T: ReconSample>(
         for (tap_offset, &tap) in taps.iter().enumerate() {
             sum = tap_mac(
                 sum,
-                Simd::<u16, 8>::from_slice(&source[start + tap_offset..]).cast(),
+                reference_lanes::<8, T>(source, start + tap_offset).cast(),
                 tap,
             );
         }
@@ -280,7 +264,7 @@ pub(super) fn horizontal_intermediate<T: ReconSample>(
         for (tap_offset, &tap) in taps.iter().enumerate() {
             sum = tap_mac(
                 sum,
-                Simd::<u16, 4>::from_slice(&source[start + tap_offset..]).cast(),
+                reference_lanes::<4, T>(source, start + tap_offset).cast(),
                 tap,
             );
         }

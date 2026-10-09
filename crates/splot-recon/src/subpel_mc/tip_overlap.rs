@@ -58,8 +58,8 @@ pub fn subpel_predict_16x16_bilinear_horizontal_overlap_into<T: ReconSample>(
         && params.first_y == y0 + 1
         && params.last_y == y0 + 15
         && fixed_16x16_window_in_bounds(reference, x0, y0)
-        && let Some(samples) = T::u16_slice(reference.samples)
     {
+        let samples = reference.samples;
         let first = (x0 + 1) as usize;
         let middle = (x0 + 7) as usize;
         let vector = (x0 + 8) as usize;
@@ -75,14 +75,14 @@ pub fn subpel_predict_16x16_bilinear_horizontal_overlap_into<T: ReconSample>(
                 overlap_bilinear_u16x8(top, bottom, vector, None, h_phase, v_phase).to_array();
             destination[SHIFT..].copy_from_slice(&filtered); // splot-copy-ok: publish fixed-window TIP overlap lanes
             for (column, left, right) in [(0, first, first), (7, middle, middle + 1)] {
-                let top_left = top[left];
+                let top_left = top[left].to_u16();
                 destination[column] = match (h_phase, v_phase) {
-                    (0, v_phase) => bilinear_sample(top_left, bottom[left], v_phase),
-                    (h_phase, 0) => bilinear_sample(top_left, top[right], h_phase),
+                    (0, v_phase) => bilinear_sample(top_left, bottom[left].to_u16(), v_phase),
+                    (h_phase, 0) => bilinear_sample(top_left, top[right].to_u16(), h_phase),
                     (h_phase, v_phase) => {
-                        let top_right = i32::from(top[right]);
-                        let bottom_left = i32::from(bottom[left]);
-                        let bottom_right = i32::from(bottom[right]);
+                        let top_right = i32::from(top[right].to_u16());
+                        let bottom_left = i32::from(bottom[left].to_u16());
+                        let bottom_right = i32::from(bottom[right].to_u16());
                         let top = (16 - h_phase) * i32::from(top_left) + h_phase * top_right;
                         let bottom = (16 - h_phase) * bottom_left + h_phase * bottom_right;
                         round2_i32((16 - v_phase) * top + v_phase * bottom, 8).clamp(0, max_sample)
@@ -129,14 +129,16 @@ pub fn subpel_predict_16x16_bilinear_horizontal_overlap_into<T: ReconSample>(
         let bottom_samples = reference.row(bottom);
         let destination = &mut output[row * params.w..][..params.w];
         destination.copy_within(SHIFT.., 0); // splot-copy-ok: retain stable TIP predictor columns
-        let vectorized = if let (Some((start, right_start)), Some(top), Some(bottom)) = (
-            vector_source,
-            T::u16_slice(top_samples),
-            T::u16_slice(bottom_samples),
-        ) {
-            let filtered =
-                overlap_bilinear_u16x8(top, bottom, start, right_start, h_phase, v_phase)
-                    .to_array();
+        let vectorized = if let Some((start, right_start)) = vector_source {
+            let filtered = overlap_bilinear_u16x8(
+                top_samples,
+                bottom_samples,
+                start,
+                right_start,
+                h_phase,
+                v_phase,
+            )
+            .to_array();
             destination[SHIFT..].copy_from_slice(&filtered); // splot-copy-ok: publish eight clamped TIP overlap lanes
             true
         } else {
@@ -179,20 +181,20 @@ pub fn subpel_predict_16x16_bilinear_horizontal_overlap_into<T: ReconSample>(
 
 #[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
-pub(super) fn overlap_bilinear_u16x8(
-    top: &[u16],
-    bottom: &[u16],
+pub(super) fn overlap_bilinear_u16x8<T: ReconSample>(
+    top: &[T],
+    bottom: &[T],
     start: usize,
     right_start: Option<usize>,
     h_phase: i32,
     v_phase: i32,
 ) -> Simd<u16, 8> {
-    let top_left_samples = Simd::<u16, 8>::from_slice(&top[start..]);
+    let top_left_samples = reference_lanes::<8, T>(top, start);
     match (h_phase, v_phase) {
         (0, v_phase) => {
             let v_phase = v_phase as u16;
             (top_left_samples * Simd::splat(16 - v_phase)
-                + Simd::<u16, 8>::from_slice(&bottom[start..]) * Simd::splat(v_phase)
+                + reference_lanes::<8, T>(bottom, start) * Simd::splat(v_phase)
                 + Simd::splat(8))
                 >> 4
         }
@@ -200,7 +202,7 @@ pub(super) fn overlap_bilinear_u16x8(
             let h_phase = h_phase as u16;
             let top_right = right_start.map_or_else(
                 || top_left_samples.shift_elements_left::<1>(top_left_samples[7]),
-                |right_start| Simd::<u16, 8>::from_slice(&top[right_start..]),
+                |right_start| reference_lanes::<8, T>(top, right_start),
             );
             (top_left_samples * Simd::splat(16 - h_phase)
                 + top_right * Simd::splat(h_phase)
@@ -209,7 +211,7 @@ pub(super) fn overlap_bilinear_u16x8(
         }
         (h_phase, v_phase) => {
             let h_phase = h_phase as u16;
-            let bottom_left_samples = Simd::<u16, 8>::from_slice(&bottom[start..]);
+            let bottom_left_samples = reference_lanes::<8, T>(bottom, start);
             let (top_right, bottom_right) = right_start.map_or_else(
                 || {
                     (
@@ -219,8 +221,8 @@ pub(super) fn overlap_bilinear_u16x8(
                 },
                 |right_start| {
                     (
-                        Simd::<u16, 8>::from_slice(&top[right_start..]),
-                        Simd::<u16, 8>::from_slice(&bottom[right_start..]),
+                        reference_lanes::<8, T>(top, right_start),
+                        reference_lanes::<8, T>(bottom, right_start),
                     )
                 },
             );
