@@ -1004,26 +1004,46 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     }
 
     /// Borrows the workspace as an immutable [`FrameRef`] without copying.
-    pub fn as_frame_ref(&self) -> FrameRef<'_, T> {
-        FrameRef::from_parts(
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for a band workspace, which does not store the
+    /// whole frame.
+    pub fn as_frame_ref(&self) -> Result<FrameRef<'_, T>> {
+        Ok(FrameRef::from_parts(
             self.info,
-            self.y.as_plane_ref(),
-            self.u.as_ref().map(CurrentFramePlane::as_plane_ref),
-            self.v.as_ref().map(CurrentFramePlane::as_plane_ref),
-        )
+            self.y.as_plane_ref()?,
+            self.u
+                .as_ref()
+                .map(CurrentFramePlane::as_plane_ref)
+                .transpose()?,
+            self.v
+                .as_ref()
+                .map(CurrentFramePlane::as_plane_ref)
+                .transpose()?,
+        ))
     }
 
     /// Borrows the workspace as an exclusive [`FrameMut`] without copying.
     ///
     /// The Y/U/V planes are distinct fields, so the three exclusive plane views
     /// borrow disjoint storage and may be written independently.
-    pub fn as_frame_mut(&mut self) -> FrameMut<'_, T> {
-        FrameMut::from_parts(
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for a band workspace, which does not store the
+    /// whole frame.
+    pub fn as_frame_mut(&mut self) -> Result<FrameMut<'_, T>> {
+        Ok(FrameMut::from_parts(
             self.info,
-            self.y.as_plane_mut(),
-            self.u.as_mut().map(CurrentFramePlane::as_plane_mut),
-            self.v.as_mut().map(CurrentFramePlane::as_plane_mut),
-        )
+            self.y.as_plane_mut()?,
+            self.u
+                .as_mut()
+                .map(CurrentFramePlane::as_plane_mut)
+                .transpose()?,
+            self.v
+                .as_mut()
+                .map(CurrentFramePlane::as_plane_mut)
+                .transpose()?,
+        ))
     }
 
     /// Partitions the frame into exclusive Y/U/V surfaces over full-width bands.
@@ -1546,16 +1566,44 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     }
 
     /// Borrows this plane's storage as an immutable [`PlaneRef`] without copying.
-    pub fn as_plane_ref(&self) -> PlaneRef<'_, T> {
-        debug_assert_eq!(self.origin_y, 0, "a band has no whole-plane view");
-        PlaneRef::from_parts(&self.samples, self.stride_samples(), self.visible_rect)
+    ///
+    /// # Errors
+    /// Returns [`ReconError::WorkspaceRectOutOfBounds`] for a band, which does
+    /// not store the whole plane.
+    pub fn as_plane_ref(&self) -> Result<PlaneRef<'_, T>> {
+        self.ensure_whole_plane()?;
+        Ok(PlaneRef::from_parts(
+            &self.samples,
+            self.stride_samples(),
+            self.visible_rect,
+        ))
     }
 
     /// Borrows this plane's storage as an exclusive [`PlaneMut`] without copying.
-    pub fn as_plane_mut(&mut self) -> PlaneMut<'_, T> {
-        debug_assert_eq!(self.origin_y, 0, "a band has no whole-plane view");
+    ///
+    /// # Errors
+    /// Returns [`ReconError::WorkspaceRectOutOfBounds`] for a band, which does
+    /// not store the whole plane.
+    pub fn as_plane_mut(&mut self) -> Result<PlaneMut<'_, T>> {
+        self.ensure_whole_plane()?;
         let stride_samples = self.stride_samples();
-        PlaneMut::from_parts(&mut self.samples, stride_samples, self.visible_rect)
+        Ok(PlaneMut::from_parts(
+            &mut self.samples,
+            stride_samples,
+            self.visible_rect,
+        ))
+    }
+
+    fn ensure_whole_plane(&self) -> Result<()> {
+        let stride = self.stride_samples();
+        if self.origin_y == 0 && self.samples.len() >= stride * self.storage_size.height() {
+            return Ok(());
+        }
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane: self.plane,
+            storage: self.storage_size,
+            rect: PlaneRect::new(0, 0, stride, self.storage_size.height())?,
+        })
     }
 
     /// Iterates over a checked rectangular region in this plane.

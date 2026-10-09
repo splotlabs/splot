@@ -800,7 +800,9 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
             bit_depth,
         );
         let (width, height) = coded_plane_dimensions(workspace, plane_id)?;
-        let mut frame = workspace.as_frame_mut();
+        let mut frame = workspace
+            .as_frame_mut()
+            .map_err(|_| DeblockError::Workspace)?;
         let view = frame.plane_mut(plane_id).ok_or(DeblockError::Workspace)?;
         let stride = view.stride_samples();
         let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);

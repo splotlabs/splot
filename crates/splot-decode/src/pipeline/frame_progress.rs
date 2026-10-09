@@ -109,12 +109,12 @@ unsafe impl<T: ReconSample> Send for DirectWorkspace<T> {}
 unsafe impl<T: ReconSample> Sync for DirectWorkspace<T> {}
 
 impl<T: ReconSample> DirectWorkspace<T> {
-    fn new(mut workspace: CurrentFrameWorkspace<T>) -> Self {
+    fn new(mut workspace: CurrentFrameWorkspace<T>) -> crate::Result<Self> {
         let info = workspace.info();
         let mut planes = [None, None, None];
         let sizes = crate::filters::wienerns_lr::recon::plane_storage_sizes(&workspace);
         {
-            let mut frame = workspace.as_frame_mut();
+            let mut frame = workspace.as_frame_mut()?;
             for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
                 let Some(view) = frame.plane_mut(plane) else {
                     continue;
@@ -151,11 +151,11 @@ impl<T: ReconSample> DirectWorkspace<T> {
                 });
             }
         }
-        Self {
+        Ok(Self {
             workspace: UnsafeCell::new(workspace),
             info,
             planes,
-        }
+        })
     }
 
     fn direct_region(&self, plane: PlaneId, start: usize, end: usize) -> Option<DirectPlaneRegion> {
@@ -437,11 +437,11 @@ impl<T: ReconSample> FrameProgress<T> {
     pub(crate) fn from_workspace(
         workspace: CurrentFrameWorkspace<T>,
         buffers: Option<&std::sync::Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    ) -> Self {
+    ) -> crate::Result<Self> {
         let buffers = buffers.cloned();
         let info = workspace.info();
-        let workspace = DirectWorkspace::new(workspace);
-        Self {
+        let workspace = DirectWorkspace::new(workspace)?;
+        Ok(Self {
             buffers,
             info,
             planes: workspace.planes,
@@ -453,12 +453,12 @@ impl<T: ReconSample> FrameProgress<T> {
             terminal_published: CompletionCell::new(),
             luma_height: info.storage_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
-        }
+        })
     }
 
-    pub(crate) fn reset(&mut self, workspace: CurrentFrameWorkspace<T>) {
+    pub(crate) fn reset(&mut self, workspace: CurrentFrameWorkspace<T>) -> crate::Result<()> {
         let info = workspace.info();
-        let workspace = DirectWorkspace::new(workspace);
+        let workspace = DirectWorkspace::new(workspace)?;
         if let Some(layout) = self.layout.take() {
             *self.spare_stripes.get_mut() = layout.into_inner().stripes;
         }
@@ -471,17 +471,18 @@ impl<T: ReconSample> FrameProgress<T> {
         self.terminal_published.reset();
         self.luma_height = info.storage_luma_size().height();
         self.subsampling_y = usize::from(info.pixel_format().subsampling_y());
+        Ok(())
     }
 
     #[cfg(test)]
     pub(crate) fn new(info: DecodedFrameInfo) -> Result<Self> {
-        Ok(Self::from_workspace(
+        Self::from_workspace(
             CurrentFrameWorkspace::new_recycled_from(
                 info,
                 &mut splot_recon::FramePlaneSamples::default(),
             )?,
             None,
-        ))
+        )
     }
 
     /// Publishes the terminal watermark of a filter phase that ended.

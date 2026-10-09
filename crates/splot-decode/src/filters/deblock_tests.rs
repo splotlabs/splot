@@ -22,7 +22,7 @@ fn with_plane_ctx<T: ReconSample, R>(
     f: impl FnOnce(&mut PlaneCtx<'_, '_, T>) -> R,
 ) -> R {
     let (width, height) = coded_plane_dimensions(ws, plane).unwrap();
-    let mut frame = ws.as_frame_mut();
+    let mut frame = ws.as_frame_mut().unwrap();
     let view = frame.plane_mut(plane).unwrap();
     let stride = view.stride_samples();
     let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);

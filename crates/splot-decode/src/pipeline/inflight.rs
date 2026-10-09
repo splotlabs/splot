@@ -91,10 +91,10 @@ impl<T: ReconSample> RefFrameSlot<T> {
     pub(crate) fn pending_recycled(
         workspace: CurrentFrameWorkspace<T>,
         buffers: Option<&Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    ) -> (Self, FrameSlotWriter<T>) {
+    ) -> Result<(Self, FrameSlotWriter<T>)> {
         let info = workspace.info();
         let cell = Arc::new(CompletionCell::new());
-        let progress = Arc::new(FrameProgress::from_workspace(workspace, buffers));
+        let progress = Arc::new(FrameProgress::from_workspace(workspace, buffers)?);
         let writer = FrameSlotWriter {
             cell: Arc::clone(&cell),
             progress: Arc::clone(&progress),
@@ -108,7 +108,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
             info,
             shell: None,
         };
-        (slot, writer)
+        Ok((slot, writer))
     }
 
     fn reuse_pending(
@@ -122,12 +122,12 @@ impl<T: ReconSample> RefFrameSlot<T> {
         if let Some(progress) = self.progress.as_mut() {
             Arc::get_mut(progress)
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?
-                .reset(workspace);
+                .reset(workspace)?;
         } else {
             self.progress = Some(Arc::new(FrameProgress::from_workspace(
                 workspace,
                 Some(buffers),
-            )));
+            )?));
         }
         cell.reset();
         self.info = info;
@@ -165,13 +165,13 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     #[cfg(test)]
     pub(crate) fn pending(info: DecodedFrameInfo) -> Result<(Self, FrameSlotWriter<T>)> {
-        Ok(Self::pending_recycled(
+        Self::pending_recycled(
             CurrentFrameWorkspace::new_recycled_from(
                 info,
                 &mut splot_recon::FramePlaneSamples::default(),
             )?,
             None,
-        ))
+        )
     }
 
     /// Takes the published frame when this is the last handle to both the slot
@@ -897,7 +897,7 @@ fn reserve_slot<T: SpareFramePlanes>(
     };
     let (slot, writer) = match frames.take_retired()?.and_then(T::take_slot) {
         Some(slot) => slot.reuse_pending(workspace, &buffers)?,
-        None => RefFrameSlot::pending_recycled(workspace, Some(&buffers)),
+        None => RefFrameSlot::pending_recycled(workspace, Some(&buffers))?,
     };
     let progress = Arc::clone(&writer.progress);
     ring.push(InflightEntry {

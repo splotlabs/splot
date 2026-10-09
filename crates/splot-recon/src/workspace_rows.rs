@@ -234,9 +234,14 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             });
         };
         let skip = skip.saturating_mul(stride);
-        if skip < self.samples.len() {
-            self.samples.copy_within(skip.., 0); // splot-copy-ok: keep the edge rows the next superblock row reads
+        if skip >= self.samples.len() {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: self.storage_size,
+                rect: PlaneRect::new(0, origin_y, stride, 1)?,
+            });
         }
+        self.samples.copy_within(skip.., 0); // splot-copy-ok: keep the edge rows the next superblock row reads
         self.origin_y = origin_y;
         Ok(())
     }
@@ -518,9 +523,14 @@ mod tests {
         assert!(band.plane(PlaneId::Y).unwrap().rows(64, 128).is_ok());
         assert!(band.plane(PlaneId::Y).unwrap().rows(60, 64).is_err());
         assert!(band.move_band(0).is_err());
+        assert!(band.move_band(256).is_err());
+        assert_eq!(band.reconstructed_sample(PlaneId::Y, 3, 63).unwrap(), 77);
+        assert!(band.as_frame_ref().is_err());
+        assert!(band.as_frame_mut().is_err());
 
         let whole = CurrentFrameWorkspace::<u16>::new_band(frame(64), 64, Some(band)).unwrap();
         assert!(whole.samples(PlaneId::Y).is_ok());
+        assert!(whole.as_frame_ref().is_ok());
     }
 
     /// The write-through path must reproduce the buffered reference exactly for

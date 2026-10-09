@@ -553,7 +553,7 @@ fn retired_publications_keep_their_identity_and_exclude_direct_readers() {
         splot_recon::CurrentFrameWorkspace::new_recycled_from(info, planes).unwrap()
     };
     let (mut slot, writer) =
-        RefFrameSlot::<u8>::pending_recycled(workspace(&mut planes), Some(&buffers));
+        RefFrameSlot::<u8>::pending_recycled(workspace(&mut planes), Some(&buffers)).unwrap();
     let cell = Arc::as_ptr(&slot.cell);
     let progress = Arc::as_ptr(slot.progress.as_ref().unwrap());
     drop(writer);

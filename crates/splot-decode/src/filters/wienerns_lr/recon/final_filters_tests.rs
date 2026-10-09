@@ -218,10 +218,7 @@ fn deblock_workspace() -> CurrentFrameWorkspace<u8> {
 fn progress_of<T: splot_recon::ReconSample>(
     sink: &mut WienerNsLrReconSink<T>,
 ) -> Arc<FrameProgress<T>> {
-    Arc::new(FrameProgress::from_workspace(
-        sink.take_workspace().unwrap(),
-        None,
-    ))
+    Arc::new(FrameProgress::from_workspace(sink.take_workspace().unwrap(), None).unwrap())
 }
 
 /// Copies every stripe's window out of the frame `setup` filters, in order.

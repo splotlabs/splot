@@ -77,7 +77,7 @@ pub(crate) fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
 pub(crate) fn frontier_rows<T: ReconSample>(
     workspace: CurrentFrameWorkspace<T>,
 ) -> (Arc<FrameProgress<T>>, FrontierRows<T>) {
-    let progress = Arc::new(FrameProgress::from_workspace(workspace, None));
+    let progress = Arc::new(FrameProgress::from_workspace(workspace, None).unwrap());
     let rows = progress.frontier_rows().unwrap();
     (progress, rows)
 }

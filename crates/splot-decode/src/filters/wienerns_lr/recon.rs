@@ -46,7 +46,7 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
         let progress = match (progress, workspace) {
             (Some(progress), None) => progress,
             (None, Some(workspace)) => Arc::new(
-                crate::pipeline::frame_progress::FrameProgress::from_workspace(workspace, None),
+                crate::pipeline::frame_progress::FrameProgress::from_workspace(workspace, None)?,
             ),
             _ => return Err(lr_pipeline_state_error()),
         };
