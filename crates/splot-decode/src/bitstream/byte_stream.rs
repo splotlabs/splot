@@ -126,12 +126,13 @@ impl RecordHashes {
         }
     }
 
-    fn push(&mut self, bytes: &[u8]) {
-        self.hashes.push(self.keys.hash_one(bytes));
+    /// Hashes a record's bytes with its input offset, so moved framing fails too.
+    fn push(&mut self, offset: u64, bytes: &[u8]) {
+        self.hashes.push(self.keys.hash_one((offset, bytes)));
     }
 
-    fn matches(&self, record: usize, bytes: &[u8]) -> bool {
-        self.hashes.get(record) == Some(&self.keys.hash_one(bytes))
+    fn matches(&self, record: usize, offset: u64, bytes: &[u8]) -> bool {
+        self.hashes.get(record) == Some(&self.keys.hash_one((offset, bytes)))
     }
 
     pub(crate) fn into_vec(self) -> Vec<u64> {
@@ -242,7 +243,7 @@ fn plan_ivf(
         };
         limits.ensure(DecodeLimitName::MaxIvfFrameRecords, index as u64 + 1)?;
         if !payload.is_empty() {
-            hashes.push(payload);
+            hashes.push(payload_offset.get(), payload);
         }
         let mut obus = recycle(core::mem::take(&mut spare));
         let frame_error = parse_bounded_annex_b_at(
@@ -377,7 +378,7 @@ impl<'r> IvfRecords<'r> {
             if let Some(bytes) = Arc::get_mut(buffer) {
                 bytes.resize(size as usize, 0);
                 self.reader.read_exact(bytes).map_err(DecodeError::input)?;
-                if !self.hashes.matches(self.record, bytes) {
+                if !self.hashes.matches(self.record, base, bytes) {
                     return Err(input_changed());
                 }
             }

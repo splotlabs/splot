@@ -26,8 +26,6 @@
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`, `RECON-RESIDUAL-ADDITION`,
 //! `INFRA-DECODE-PARALLEL-STAGES`.
 
-use core::ops::Range;
-
 use super::owned_rect::OwnedFrameRectRows;
 use super::{
     CurrentFramePlane, CurrentFrameWorkspace, IntraPredictionScratch, block_rect,
@@ -40,8 +38,8 @@ use crate::{
 };
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
-    /// Creates the target of [`Self::copy_rows_into`] over recycled plane
-    /// storage, without initializing its samples.
+    /// Creates a workspace over recycled plane storage, without initializing
+    /// its samples.
     ///
     /// The pooled buffers keep whatever the previous frame left in them, so
     /// this is only for a stage that seals every row before it reads it.
@@ -53,8 +51,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         Self::with_fill(info, None)
     }
 
-    /// Creates the target of [`Self::copy_rows_into`] over the sample buffers a
-    /// retired frame handed back, without initializing its samples.
+    /// Creates a workspace over the sample buffers a retired frame handed back,
+    /// without initializing its samples.
     ///
     /// Buffers the geometry cannot use are dropped and replaced, so a stream
     /// that changes frame size costs one allocation rather than a wrong frame.
@@ -145,39 +143,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         }
         Ok(())
     }
-
-    /// Copies the completed luma rows and their matching chroma rows into
-    /// another workspace of the same geometry.
-    ///
-    /// A scheduler that must keep reading reconstructed rows while another
-    /// stage filters them in place seals them here instead of sharing one
-    /// mutable frame.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] when the row range leaves the coded frame or the
-    /// two workspaces do not describe the same frame.
-    pub fn copy_rows_into(&self, target: &mut Self, luma_rows: Range<usize>) -> Result<()> {
-        let subsampling_y = u32::from(self.info.pixel_format().subsampling_y());
-        for (source, target) in [
-            Some((&self.y, &mut target.y)),
-            self.u.as_ref().zip(target.u.as_mut()),
-            self.v.as_ref().zip(target.v.as_mut()),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let (start, end) = if source.plane == PlaneId::Y {
-                (luma_rows.start, luma_rows.end)
-            } else {
-                (
-                    luma_rows.start >> subsampling_y,
-                    luma_rows.end.div_ceil(1 << subsampling_y),
-                )
-            };
-            source.copy_rows_into(target, start, end)?;
-        }
-        Ok(())
-    }
 }
 
 /// Plane rows a band keeps above its superblock row.
@@ -260,38 +225,6 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         let (stride, rows) = (self.stride_samples(), end.saturating_sub(start));
         let local = self.band_row(start, rows)?;
         Ok(&self.samples[local * stride..(local + rows) * stride])
-    }
-
-    /// Copies rows `start..end` into the matching plane of another workspace.
-    ///
-    /// Both planes are tightly strided over the same storage size, so the row
-    /// range is one contiguous run in each.
-    fn copy_rows_into(&self, target: &mut Self, start: usize, end: usize) -> Result<()> {
-        if target.storage_size != self.storage_size {
-            return Err(ReconError::PlaneSizeMismatch {
-                plane: self.plane,
-                expected: self.storage_size,
-                actual: target.storage_size,
-            });
-        }
-        if start > end || end > self.storage_size.height() {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: self.storage_size,
-                rect: PlaneRect::new(
-                    0,
-                    start,
-                    self.storage_size.width(),
-                    end.saturating_sub(start).max(1),
-                )?,
-            });
-        }
-        let stride_samples = self.stride_samples();
-        let local = target.band_row(start, end - start)?;
-        let sealed = self.rows(start, end)?;
-        target.samples[local * stride_samples..(local + end - start) * stride_samples]
-            .copy_from_slice(sealed); // splot-copy-ok: seal completed rows for the stage that filters them
-        Ok(())
     }
 }
 
@@ -544,16 +477,6 @@ mod tests {
         assert!(bottom.plane(PlaneId::Y).unwrap().rows(191, 200).is_ok());
         assert!(bottom.plane(PlaneId::Y).unwrap().rows(200, 201).is_err());
         assert!(bottom.reconstructed_sample(PlaneId::Y, 0, 200).is_err());
-
-        let mut source = CurrentFrameWorkspace::<u16>::new_band(frame(256), 64, None).unwrap();
-        let mut target = CurrentFrameWorkspace::<u16>::new_band(frame(256), 64, None).unwrap();
-        source.move_band(64).unwrap();
-        target.move_band(64).unwrap();
-        source
-            .set_reconstructed_sample(PlaneId::Y, 5, 100, 9)
-            .unwrap();
-        source.copy_rows_into(&mut target, 64..128).unwrap();
-        assert_eq!(target.reconstructed_sample(PlaneId::Y, 5, 100).unwrap(), 9);
     }
 
     /// The write-through path must reproduce the buffered reference exactly for

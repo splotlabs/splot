@@ -94,6 +94,31 @@ fn a_reread_record_that_changed_after_planning_is_refused() {
     assert!(records.advance().unwrap());
 }
 
+#[test]
+fn a_reread_record_moved_by_an_empty_record_is_refused() {
+    let header = IvfHeader::new(*b"AV02", 16, 16, 24, 1, 2);
+    let mut planned = Vec::new();
+    write_ivf_header(&mut planned, &header).unwrap();
+    write_ivf_frame(&mut planned, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
+    write_ivf_frame(&mut planned, 1, &[]).unwrap();
+    let mut moved = Vec::new();
+    write_ivf_header(&mut moved, &header).unwrap();
+    write_ivf_frame(&mut moved, 1, &[]).unwrap();
+    write_ivf_frame(&mut moved, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
+    assert_eq!(moved.len(), planned.len());
+    let prepared = prepare_stream(
+        &mut Cursor::new(&planned),
+        &DecodeOptions::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    let (end, hashes) = planned_records(&prepared);
+    let mut buffers = Vec::new();
+    let mut reader = Cursor::new(&moved);
+    let mut records = IvfRecords::new(&mut reader, header, end, hashes, &mut buffers).unwrap();
+    assert!(matches!(records.advance(), Err(DecodeError::Input { .. })));
+}
+
 /// A source whose end seek reports less than it then yields, like a file that
 /// grows while it is planned.
 struct StaleLength<'a>(Cursor<&'a [u8]>);
