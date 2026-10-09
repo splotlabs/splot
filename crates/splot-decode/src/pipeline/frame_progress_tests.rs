@@ -457,7 +457,9 @@ fn frontier_rows_lend_only_rows_no_stripe_or_reader_holds() {
     let progress = Arc::new(
         FrameProgress::<u16>::new(info(4, 32, PixelFormat::Monochrome)).expect("frame progress"),
     );
-    assert!(progress.begin(&[(0, 16), (16, 32)]));
+    progress
+        .begin(&[(0, 16), (16, 32)])
+        .expect("stripe geometry");
     let mut rows = progress.frontier_rows().expect("frontier rows");
     assert!(progress.frontier_rows().is_none(), "the frontier is unique");
     rows.with_plane_rows_mut(
