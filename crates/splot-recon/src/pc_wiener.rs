@@ -1694,24 +1694,17 @@ fn filter_pc_wiener_padded_u16<T: PcWienerPaddedSample>(
     samples: &[T],
     setup: &PcWienerPaddedFilterSetup,
 ) {
+    const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
+    let padded_width = params.width + 2 * R;
     let subclass_cols = params.width.div_ceil(params.subclass_block_size);
     for row in 0..params.height {
         let subclass_row = row / params.subclass_block_size;
         let row_subclasses =
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
-        let row_base = row * setup.stride;
         let output = &mut destination[row * params.output_stride..][..params.width];
-        let center_row = &samples[row_base + setup.center_offset..][..params.width];
-        let mut tap_rows: [(&[T], &[T]); PC_WIENER_CONFIG.len()] =
-            [(&[], &[]); PC_WIENER_CONFIG.len()];
-        for (tap, (&pos, &neg)) in tap_rows
-            .iter_mut()
-            .zip(setup.pos_offsets.iter().zip(setup.neg_offsets.iter()))
-        {
-            *tap = (
-                &samples[row_base + pos..][..params.width],
-                &samples[row_base + neg..][..params.width],
-            );
+        let mut rows: [&[T]; PC_WIENER_WINDOW_ROWS] = [&[]; PC_WIENER_WINDOW_ROWS];
+        for (dy, window_row) in rows.iter_mut().enumerate() {
+            *window_row = &samples[(row + dy) * setup.stride..][..padded_width];
         }
         let mut c0 = 0usize;
         while c0 < params.width {
@@ -1730,33 +1723,29 @@ fn filter_pc_wiener_padded_u16<T: PcWienerPaddedSample>(
                     while col + $lanes <= c1 {
                         filter_pc_wiener_padded_u16_simd::<$lanes, T>(
                             &mut output[col..],
-                            center_row,
-                            &tap_rows,
+                            &rows,
                             col,
-                            &coeffs16,
+                            coeffs16,
                             setup.max_sample,
                         );
                         col += $lanes;
                     }
                 };
             }
-            filter_chunks!(64);
             filter_chunks!(32);
             filter_chunks!(16);
             filter_chunks!(8);
             filter_chunks!(4);
-            for (offset, slot) in output[col..c1].iter_mut().enumerate() {
-                let base = row_base + col + offset;
-                let center = i32::from(samples[base + setup.center_offset].to_u16());
+            for (x, slot) in output.iter_mut().enumerate().take(c1).skip(col) {
+                let tap = |dy: isize, dx: isize| {
+                    i32::from(
+                        rows[R.wrapping_add_signed(dy)][(x + R).wrapping_add_signed(dx)].to_u16(),
+                    )
+                };
+                let center = tap(0, 0);
                 let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
-                for ((&coeff, &pos), &neg) in coeffs
-                    .iter()
-                    .zip(&setup.pos_offsets)
-                    .zip(&setup.neg_offsets)
-                {
-                    sum += (i32::from(samples[base + pos].to_u16())
-                        + i32::from(samples[base + neg].to_u16()))
-                        * coeff;
+                for (&(dy, dx), &coeff) in PC_WIENER_CONFIG.iter().zip(coeffs) {
+                    sum += (tap(dy, dx) + tap(-dy, -dx)) * coeff;
                 }
                 *slot = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, i32::from(setup.max_sample))
                     as u16;
@@ -1766,34 +1755,62 @@ fn filter_pc_wiener_padded_u16<T: PcWienerPaddedSample>(
     }
 }
 
-/// One `LANES`-wide group of [`filter_pc_wiener_padded_u16`], with both § 7.20.4
-/// multiply factors paired as `i16`: `Pc_Wiener_Filters` spans `-208..=127`, and
-/// § 6 Table 6.3 caps `BitDepth` at 10 over a source this path has already
-/// validated, so `plus + minus` is at most 2046 and `coeffs[12]` carries the
-/// folded `(1 << PC_WIENER_PREC_BITS) + centerCoeff` scale.
+/// Padded source rows one § 7.20.4 PC-Wiener output row reads.
+const PC_WIENER_WINDOW_ROWS: usize = 2 * PC_WIENER_FILTER_TAP_RADIUS + 1;
+
+/// One `LANES`-wide group of [`filter_pc_wiener_padded_u16`] at output column
+/// `col`, with both § 7.20.4 multiply factors paired as `i16`:
+/// `Pc_Wiener_Filters` spans `-208..=127`, and § 6 Table 6.3 caps `BitDepth` at
+/// 10 over a source this path has already validated, so `plus + minus` is at
+/// most 2046 and `coeffs[12]` carries the folded
+/// `(1 << PC_WIENER_PREC_BITS) + centerCoeff` scale. Each row is sliced once to
+/// the group's reach, so the unrolled constant tap offsets need no further
+/// bounds checks.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn filter_pc_wiener_padded_u16_simd<const LANES: usize, T: PcWienerPaddedSample>(
     output: &mut [u16],
-    center_row: &[T],
-    tap_rows: &[(&[T], &[T]); PC_WIENER_CONFIG.len()],
+    rows: &[&[T]; PC_WIENER_WINDOW_ROWS],
     col: usize,
     coeffs: &[i16; 13],
     max_sample: u16,
 ) {
-    let center = T::load_lanes::<LANES>(center_row, col);
-    let mut sum = center.cast::<i32>() * Simd::<i16, LANES>::splat(coeffs[12]).cast::<i32>();
-    for (i, &(pos, neg)) in tap_rows.iter().enumerate() {
-        let plus = T::load_lanes::<LANES>(pos, col);
-        let minus = T::load_lanes::<LANES>(neg, col);
-        sum += (plus + minus).cast::<i32>() * Simd::<i16, LANES>::splat(coeffs[i]).cast::<i32>();
+    const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
+    let window = rows.map(|row| &row[col..col + LANES + 2 * R]);
+    let mut sum = T::load_lanes::<LANES>(window[R], R).cast::<i32>()
+        * Simd::<i16, LANES>::splat(coeffs[12]).cast::<i32>();
+    macro_rules! tap_pairs {
+        ($($j:literal)*) => {
+            $(add_pc_wiener_tap_pair::<LANES, $j, T>(&mut sum, &window, coeffs);)*
+        };
     }
+    tap_pairs!(0 1 2 3 4 5 6 7 8 9 10 11);
     let values = ((sum + Simd::splat(1 << (PC_WIENER_PREC_BITS - 1)))
-        >> PC_WIENER_PREC_BITS as i32)
-        .simd_clamp(Simd::splat(0), Simd::splat(i32::from(max_sample)))
-        .cast::<u16>()
-        .to_array();
+        >> Simd::splat(PC_WIENER_PREC_BITS as i32))
+    .simd_clamp(Simd::splat(0), Simd::splat(i32::from(u16::MAX)))
+    .cast::<u16>()
+    .simd_min(Simd::splat(max_sample))
+    .to_array();
     output[..LANES].copy_from_slice(&values); // splot-copy-ok: publish PC-Wiener SIMD lanes
+}
+
+/// Adds § 7.20.4 symmetric tap pair `J` of a [`filter_pc_wiener_padded_u16_simd`]
+/// group.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn add_pc_wiener_tap_pair<const LANES: usize, const J: usize, T: PcWienerPaddedSample>(
+    sum: &mut Simd<i32, LANES>,
+    window: &[&[T]; PC_WIENER_WINDOW_ROWS],
+    coeffs: &[i16; 13],
+) {
+    const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
+    let (dy, dx) = PC_WIENER_CONFIG[J];
+    let plus = T::load_lanes::<LANES>(window[R.wrapping_add_signed(dy)], R.wrapping_add_signed(dx));
+    let minus = T::load_lanes::<LANES>(
+        window[R.wrapping_add_signed(-dy)],
+        R.wrapping_add_signed(-dx),
+    );
+    *sum += (plus + minus).cast::<i32>() * Simd::<i16, LANES>::splat(coeffs[J]).cast::<i32>();
 }
 
 fn validate_pc_wiener_filter(
