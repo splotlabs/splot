@@ -17,6 +17,7 @@
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 use std::simd::{
     Simd,
+    cmp::SimdOrd,
     num::{SimdInt, SimdUint},
     simd_swizzle,
 };
@@ -147,27 +148,45 @@ impl PreparedWarpPrediction {
         output: &mut [T],
         stride: usize,
     ) -> Result<()> {
-        let max_sample = i32::from(self.params.bit_depth.max_sample());
-        let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+        let span = height
+            .checked_sub(1)
+            .and_then(|rows| rows.checked_mul(stride))
+            .and_then(|start| start.checked_add(width))
+            .filter(|&span| span <= output.len())
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: height.saturating_mul(stride),
+                actual: output.len(),
+            })?;
+        let output = &mut output[..span];
+        let max_sample = i32::from(self.params.bit_depth.max_sample().min(T::MAX_VALUE));
         for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
             for local_x in (0..width).step_by(WARPED_BLOCK_SIZE) {
-                let section = [x + local_x, y + local_y].map(|value| value as i32);
-                self.predict_block_into(reference, section[0], section[1], false, &mut predicted)?;
+                let params = WarpPredictBlockParams {
+                    block_x: (x + local_x) as i32,
+                    block_y: (y + local_y) as i32,
+                    ..self.params
+                };
                 let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
-                let rows = predicted.chunks_exact(WARPED_BLOCK_SIZE);
-                for (row, source) in rows.take(height - local_y).enumerate() {
-                    let start = (local_y + row) * stride + local_x;
-                    let available = output.len();
-                    let target = output.get_mut(start..start + section_w).ok_or(
-                        ReconError::BufferLengthMismatch {
-                            expected: start + section_w,
-                            actual: available,
-                        },
-                    )?;
-                    for (target, &sample) in target.iter_mut().zip(source) {
-                        *target = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
+                let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
+                let store = |row: usize, rounded: Simd<i32, WARPED_BLOCK_SIZE>| {
+                    if row >= section_h {
+                        return Ok(());
                     }
-                }
+                    let start = (local_y + row) * stride + local_x;
+                    let clipped = rounded.simd_clamp(Simd::splat(0), Simd::splat(max_sample));
+                    let target = &mut output[start..start + section_w];
+                    for (target, &sample) in target.iter_mut().zip(&clipped.to_array()) {
+                        *target = T::try_from_u16(sample as u16)?;
+                    }
+                    Ok(())
+                };
+                warp_predict_section(
+                    reference,
+                    &params,
+                    &self.shear,
+                    INTER_ROUND1_NON_COMPOUND,
+                    store,
+                )?;
             }
         }
         Ok(())
@@ -459,6 +478,22 @@ fn warp_predict_block_prepared_into<T: ReconSample>(
     } else {
         INTER_ROUND1_NON_COMPOUND
     };
+    warp_predict_section(reference, params, shear, round1, |row, rounded| {
+        output[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
+            .copy_from_slice(&rounded.to_array()); // splot-copy-ok: publish row-wide SIMD warp output
+        Ok(())
+    })
+}
+
+/// Runs both § 7.13.3.19 passes for one 8x8 section and hands each rounded
+/// output row to `store`.
+fn warp_predict_section<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    shear: &Shear,
+    round1: u32,
+    store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
+) -> Result<()> {
     let projected = project_section_center(params)?;
     let mut intermediate = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
     if let Some(source_origin) = interior_warp_source_origin(reference, params, &projected) {
@@ -472,8 +507,7 @@ fn warp_predict_block_prepared_into<T: ReconSample>(
     } else {
         build_intermediate(reference, params, shear, &projected, &mut intermediate);
     }
-    build_output(shear, &projected, &intermediate, round1, output);
-    Ok(())
+    build_output(shear, &projected, &intermediate, round1, store)
 }
 
 /// Admits the unclamped interior source origin for one 8x8 warp section.
@@ -859,8 +893,8 @@ fn build_output(
     projected: &ProjectedCenter,
     intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
     round1: u32,
-    output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
-) {
+    mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
+) -> Result<()> {
     if shear.gamma == 0 {
         for row in 0..WARPED_BLOCK_SIZE {
             let i1 = row as i32 - 4;
@@ -871,11 +905,9 @@ fn build_output(
                     .cast::<i32>();
                 sum += Simd::splat(i32::from(weight)) * samples;
             }
-            let rounded = (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32;
-            output[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
-                .copy_from_slice(&rounded.to_array()); // splot-copy-ok: publish uniform-phase row-wide SIMD warp output
+            store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
         }
-        return;
+        return Ok(());
     }
     for row in 0..WARPED_BLOCK_SIZE {
         let i1 = row as i32 - 4;
@@ -891,10 +923,9 @@ fn build_output(
                 Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]).cast::<i32>();
             sum += taps.cast::<i32>() * samples;
         }
-        let rounded = (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32;
-        output[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
-            .copy_from_slice(&rounded.to_array()); // splot-copy-ok: publish row-wide SIMD warp output
+        store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
     }
+    Ok(())
 }
 
 /// Reads eight consecutive reference samples as `i16` lanes.
