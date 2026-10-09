@@ -186,7 +186,7 @@ pub(super) fn gdf_rows<const W: usize, const ZERO_WEIGHTS: u64>(
     });
     let mut output = [[0; W]; 2];
     for ((output, base), sums) in output.iter_mut().zip(base_values).zip(sums) {
-        let base = Simd::from_array(base).cast::<i32>();
+        let base = Simd::from_array(base);
         *output = if block.ref_dst_idx == GDF_INTRA_REF_DST {
             let error = &GDF_INTRA_ERROR[block.qp_idx];
             finish_gdf_width_simd::<W, 8, 4096>(base, block, error, sums)
@@ -210,34 +210,37 @@ fn tap_samples<const W: usize>(row: &[u16], col: usize) -> Simd<i16, W> {
     Simd::<u16, W>::from_slice(&row[col..col + W]).cast()
 }
 
-/// Maps the biased gradient sums to the filtered sample.
+/// Maps the biased gradient sums to the filtered sample. Round2Signed(v * 8, 15)
+/// equals Round2Signed(v, 12), so the intra scale of 8 needs no multiply.
 fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: usize>(
-    base: Simd<i32, WIDTH>,
+    base: Simd<u16, WIDTH>,
     block: &GdfBlock,
     error: &[i32; ERROR_LEN],
     gdf_idx: [Simd<i32, WIDTH>; 3],
 ) -> Simd<u16, WIDTH> {
-    let mut pos = Simd::<u16, WIDTH>::splat(0);
+    let shift = if SCALE == 8 { 12 } else { 15 };
+    let digit_offset = Simd::splat((1 << (shift - 1)) + (SCALE << shift));
+    let mut pos = Simd::<i16, WIDTH>::splat(0);
     for value in gdf_idx {
-        let digit = round2_signed_simd(value * Simd::splat(SCALE), 15)
-            .simd_max(Simd::splat(-SCALE))
-            .simd_min(Simd::splat(SCALE - 1))
-            + Simd::splat(SCALE);
-        pos = pos * Simd::splat((SCALE * 2) as u16) + digit.cast::<u16>();
+        let scaled = if SCALE == 8 {
+            value
+        } else {
+            value * Simd::splat(SCALE)
+        };
+        let digit = ((scaled + digit_offset + (scaled >> 31)) >> shift)
+            .cast::<i16>()
+            .simd_clamp(Simd::splat(0), Simd::splat(2 * SCALE as i16 - 1));
+        pos = pos * Simd::splat(2 * SCALE as i16) + digit;
     }
-    let scaled_error =
-        Simd::gather_or_default(error, pos.cast::<usize>()) * Simd::splat(block.pix_scale);
-    let residual = round2_signed_simd(scaled_error, 12 - u32::from(block.bit_depth.bits()));
-    (base + residual)
-        .simd_max(Simd::splat(0))
-        .simd_min(Simd::splat(block.max_sample))
+    let error = Simd::gather_or_default(error, pos.cast::<usize>()).cast::<i16>();
+    let scaled_error = error * Simd::splat(block.pix_scale as i16);
+    let rounding = 12 - i16::from(block.bit_depth.bits());
+    let residual = if rounding == 0 {
+        scaled_error
+    } else {
+        (scaled_error + Simd::splat(1 << (rounding - 1)) + (scaled_error >> 15)) >> rounding
+    };
+    (base.cast::<i16>() + residual)
+        .simd_clamp(Simd::splat(0), Simd::splat(block.max_sample as i16))
         .cast::<u16>()
-}
-
-fn round2_signed_simd<const WIDTH: usize>(value: Simd<i32, WIDTH>, shift: u32) -> Simd<i32, WIDTH> {
-    if shift == 0 {
-        return value;
-    }
-    (value + Simd::splat(1 << (shift - 1)) + (value >> Simd::splat(31)))
-        >> Simd::splat(shift as i32)
 }
