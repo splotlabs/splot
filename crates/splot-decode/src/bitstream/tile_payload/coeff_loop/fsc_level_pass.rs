@@ -9,7 +9,7 @@ use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::{
     coeff_base_bob_ctx, coeff_base_idtx_ctx, coeff_br_idtx_ctx,
 };
-use super::super::cdf::{CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
+use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::NonZeroCoeffEob;
 use super::branch::NonZeroCoeffBlockStart;
@@ -202,9 +202,7 @@ fn read_fsc_level_symbol(
     input: CoeffFscLevelReadInput,
 ) -> Result<u32, CoeffFscLevelPassError> {
     let mut read_symbol = |selector| -> Result<u8, CoeffFscLevelPassError> {
-        Ok(cdfs
-            .read_block_symbol_trace(TileCdfSelector::Coeff(selector), symbols)?
-            .get())
+        Ok(cdfs.read_coeff_symbol(selector, symbols)?)
     };
     let (selector, base_offset) = match input.base {
         CoeffFscLevelSymbolSource::BaseBob { selector } => (selector, 1),

@@ -6,7 +6,7 @@
 use splot_core::Error as CoreError;
 use splot_core::symbol::{Symbol, SymbolDecoder};
 
-use super::{TileCdfError, TileCdfSelector, TileCdfSubset};
+use super::{CoeffCdfSelector, TileCdfError, TileCdfSelector, TileCdfSubset};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum BlockSymbolTraceReadError {
@@ -24,6 +24,18 @@ impl TileCdfSubset {
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, BlockSymbolTraceReadError> {
         Ok(self.with_row_mut(selector, |row| symbol_decoder.read_symbol_u16(row))??)
+    }
+
+    /// Reads a coefficient symbol from the coefficient rows directly,
+    /// skipping the generic tile-selector dispatch.
+    #[inline]
+    pub(crate) fn read_coeff_symbol(
+        &mut self,
+        selector: CoeffCdfSelector,
+        symbol_decoder: &mut SymbolDecoder<'_>,
+    ) -> Result<u8, BlockSymbolTraceReadError> {
+        let row = self.rows.block.coeff.row_mut(selector)?;
+        Ok(symbol_decoder.read_symbol_u16(row)?.get())
     }
 }
 

@@ -732,6 +732,8 @@ pub(crate) enum TileCdfSelector {
     },
     WienerNsUvSym,
     WienerNsBase,
+    /// Decode reads coefficient rows through `read_coeff_symbol`.
+    #[cfg(test)]
     Coeff(CoeffCdfSelector),
 }
 

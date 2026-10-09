@@ -7,7 +7,7 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::idtx_sign_ctx;
-use super::super::cdf::{CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
+use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::fsc_level_pass::{CoeffFscLevelPassConfig, expected_fsc_entry_pos};
 use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk};
@@ -117,10 +117,7 @@ pub(crate) fn read_fsc_sign_symbol(
 ) -> Result<bool, CoeffFscSignPassError> {
     let sign = match input.source {
         CoeffFscSignReadSource::IdtxSign { selector } => {
-            let symbol = cdfs
-                .read_block_symbol_trace(TileCdfSelector::Coeff(selector), symbols)?
-                .get();
-            symbol != 0
+            cdfs.read_coeff_symbol(selector, symbols)? != 0
         }
         CoeffFscSignReadSource::None => false,
     };

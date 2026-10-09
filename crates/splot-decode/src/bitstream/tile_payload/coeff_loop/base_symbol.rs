@@ -8,7 +8,7 @@
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
-use super::super::cdf::{CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
+use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffBaseSymbolSource {
@@ -61,7 +61,5 @@ fn read_coeff_symbol(
     symbols: &mut SymbolDecoder<'_>,
     selector: CoeffCdfSelector,
 ) -> Result<u8, CoeffBaseSymbolReadError> {
-    Ok(cdfs
-        .read_block_symbol_trace(TileCdfSelector::Coeff(selector), symbols)?
-        .get())
+    Ok(cdfs.read_coeff_symbol(selector, symbols)?)
 }
