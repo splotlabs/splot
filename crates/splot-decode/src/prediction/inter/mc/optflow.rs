@@ -11,7 +11,7 @@ use splot_recon::{
 
 use super::*;
 
-pub(super) trait CompoundAverageOutput: Sized {
+pub(super) trait CompoundAverageOutput: ReconSample {
     fn predict_second<T: ReconSample>(
         reference: &ReferencePlaneView<'_, T>,
         params: &SubpelPredictParams,
@@ -1222,12 +1222,13 @@ pub(super) fn predict_motion_grid_compound_average_into<
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
+    let bit_depth = sink.info().bit_depth();
     let process_row = |cell_row: usize,
                        row: usize,
                        output: &mut [O],
-                       pred0_scratch: &mut [i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES],
+                       pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
                        intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE]|
-     -> Result<bool> {
+     -> Result<()> {
         for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
             let width = subblock_w.min(prediction.block_w - col);
             let height = subblock_h.min(prediction.block_h - row);
@@ -1243,7 +1244,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     sub_y,
                 )
             });
-            if !super::compound_average_weights_are_uniform(
+            let uniform = super::compound_average_weights_are_uniform(
                 implicit_mask,
                 cwp_weight,
                 width,
@@ -1251,9 +1252,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 prediction.scalings,
                 Some(scalings),
                 (frame_w, frame_h),
-            ) {
-                return Ok(false);
-            }
+            );
             let params = compound_optflow_subpel_params(
                 sink,
                 block,
@@ -1270,6 +1269,32 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 width,
                 height,
             );
+            if !uniform {
+                let [pred0, pred1] = &mut *pred_scratch;
+                let preds = prediction.views.iter().zip([&mut *pred0, &mut *pred1]);
+                for ((view, pred), params) in preds.zip(&params) {
+                    subpel_predict_block_compound_intermediate_into(
+                        view,
+                        params,
+                        Some(&mut *intermediate_scratch),
+                        &mut pred[..width * height],
+                        width,
+                    )?;
+                }
+                blend_implicit_mask_region(
+                    [&pred0[..], &pred1[..]],
+                    width,
+                    [col, row, width, height],
+                    motion,
+                    (prediction.plane_x, prediction.plane_y),
+                    prediction.scalings,
+                    ImplicitMaskBlend::new(bit_depth, frame_w, frame_h),
+                    (sub_x, sub_y),
+                    &mut output[col..],
+                    prediction.block_w,
+                )?;
+                continue;
+            }
             let subplane = CompoundSubpelPlane {
                 views: prediction.views,
                 plane_x: prediction.plane_x + col,
@@ -1294,13 +1319,13 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 &subplane,
                 &params,
                 cwp_weight,
-                Some(pred0_scratch),
+                Some(&mut pred_scratch[0]),
                 Some(intermediate_scratch),
                 &mut output[col..],
                 prediction.block_w,
             )?;
         }
-        Ok(true)
+        Ok(())
     };
     let parallel = prediction
         .block_w
@@ -1308,41 +1333,34 @@ pub(super) fn predict_motion_grid_compound_average_into<
         .is_some_and(|samples| samples >= 256 * 256)
         && splot_parallel::on_worker_pool();
     if parallel {
-        let uniform = std::sync::atomic::AtomicBool::new(true);
         let row_samples = prediction.block_w * subblock_h;
         output
             .par_chunks_mut(row_samples)
             .enumerate()
             .try_for_each(|(cell_row, output)| {
-                let row = cell_row * subblock_h;
-                let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
+                let mut pred_scratch = [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
                 let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
-                if !process_row(
+                process_row(
                     cell_row,
-                    row,
+                    cell_row * subblock_h,
                     output,
-                    &mut pred0_scratch,
+                    &mut pred_scratch,
                     &mut intermediate_scratch,
-                )? {
-                    uniform.store(false, std::sync::atomic::Ordering::Relaxed);
-                }
-                Ok::<_, crate::error::DecodeError>(())
+                )
             })?;
-        return Ok(uniform.load(std::sync::atomic::Ordering::Relaxed));
+        return Ok(true);
     }
-    let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
+    let mut pred_scratch = [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
     let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
         let output_start = row * prediction.block_w;
-        if !process_row(
+        process_row(
             cell_row,
             row,
             &mut output[output_start..],
-            &mut pred0_scratch,
+            &mut pred_scratch,
             &mut intermediate_scratch,
-        )? {
-            return Ok(false);
-        }
+        )?;
     }
     Ok(true)
 }
@@ -1367,57 +1385,20 @@ pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
     if output.is_empty() {
         return Ok(());
     }
-    let last_x = frame_w as i32 - 1;
-    let last_y = frame_h as i32 - 1;
-    let max_sample = i32::from(bit_depth.max_sample());
-    let shift = 1 + compound_inter_post_round();
-    let blend = |slot: &mut T, left: i32, right: i32, starts: [(i32, i32); 2]| {
-        let ref0_onscreen =
-            (0..=last_x).contains(&starts[0].0) && (0..=last_y).contains(&starts[0].1);
-        let ref1_onscreen =
-            (0..=last_x).contains(&starts[1].0) && (0..=last_y).contains(&starts[1].1);
-        let mask = match (ref0_onscreen, ref1_onscreen) {
-            (true, false) => 2,
-            (false, true) => 0,
-            _ => 1,
-        };
-        let sample = round2_i32(mask * left + (2 - mask) * right, shift);
-        *slot = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
-        Ok(())
-    };
+    let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
     if let Some(motion) = motion {
-        let unit_width = (motion.unit_size >> sub_x).max(1);
-        let unit_height = (motion.unit_size >> sub_y).max(1);
-        for cell_y in (0..height).step_by(unit_height) {
-            for cell_x in (0..width).step_by(unit_width) {
-                let mvs = motion.at_luma_offset(cell_x << sub_x, cell_y << sub_y)?;
-                let cell_end_x = (cell_x + unit_width).min(width);
-                let cell_end_y = (cell_y + unit_height).min(height);
-                for row in cell_y..cell_end_y {
-                    let start = row * width + cell_x;
-                    let end = row * width + cell_end_x;
-                    let row_samples = output[start..end]
-                        .iter_mut()
-                        .zip(pred0[start..end].iter().zip(&pred1[start..end]));
-                    for (local_col, (slot, (&left, &right))) in row_samples.enumerate() {
-                        let col = cell_x + local_col;
-                        let starts = core::array::from_fn(|reference| {
-                            let scaling = scaling_templates[reference].with_prescaled_mv(
-                                (plane_x + col) as i32,
-                                (plane_y + row) as i32,
-                                mvs[reference][0],
-                                mvs[reference][1],
-                                sub_x,
-                                sub_y,
-                            );
-                            (scaling.start_x >> 10, scaling.start_y >> 10)
-                        });
-                        blend(slot, left, right, starts)?;
-                    }
-                }
-            }
-        }
-        return Ok(());
+        return blend_implicit_mask_region(
+            [pred0, pred1],
+            width,
+            [0, 0, width, height],
+            motion,
+            (plane_x, plane_y),
+            scaling_templates,
+            blend,
+            (sub_x, sub_y),
+            output,
+            width,
+        );
     }
     let reference_starts =
         scaling_templates.map(|scaling| (scaling.start_x >> 10, scaling.start_y >> 10));
@@ -1431,7 +1412,88 @@ pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
             output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
         {
             let starts = reference_starts.map(|(x, y)| (x + col as i32, y + row as i32));
-            blend(slot, left, right, starts)?;
+            *slot = blend.sample(left, right, starts)?;
+        }
+    }
+    Ok(())
+}
+
+/// The implicit-mask weights: a reference whose sample position falls outside
+/// the frame yields its whole weight to the other reference.
+#[derive(Clone, Copy)]
+struct ImplicitMaskBlend {
+    last: (i32, i32),
+    max_sample: i32,
+}
+
+impl ImplicitMaskBlend {
+    fn new(bit_depth: splot_recon::BitDepth, frame_w: usize, frame_h: usize) -> Self {
+        Self {
+            last: (frame_w as i32 - 1, frame_h as i32 - 1),
+            max_sample: i32::from(bit_depth.max_sample()),
+        }
+    }
+
+    fn sample<T: ReconSample>(
+        self,
+        left: i32,
+        right: i32,
+        starts: [(i32, i32); 2],
+    ) -> splot_recon::Result<T> {
+        let onscreen =
+            starts.map(|(x, y)| (0..=self.last.0).contains(&x) && (0..=self.last.1).contains(&y));
+        let mask = match onscreen {
+            [true, false] => 2,
+            [false, true] => 0,
+            _ => 1,
+        };
+        let sample = round2_i32(
+            mask * left + (2 - mask) * right,
+            1 + compound_inter_post_round(),
+        );
+        T::try_from_u16(sample.clamp(0, self.max_sample) as u16)
+    }
+}
+
+/// Blends the `[x, y, width, height]` region of a motion-grid plane, whose
+/// predictions and output are region-local with their own row strides, with
+/// each sample's implicit mask taken from its own motion-grid cell.
+#[allow(clippy::too_many_arguments)]
+fn blend_implicit_mask_region<T: ReconSample>(
+    preds: [&[i32]; 2],
+    pred_stride: usize,
+    [x, y, width, height]: [usize; 4],
+    motion: &CompoundMotionGrid,
+    (plane_x, plane_y): (usize, usize),
+    scaling_templates: [PlaneScaling; 2],
+    blend: ImplicitMaskBlend,
+    (sub_x, sub_y): (u32, u32),
+    output: &mut [T],
+    output_stride: usize,
+) -> splot_recon::Result<()> {
+    let unit_width = (motion.unit_size >> sub_x).max(1);
+    let unit_height = (motion.unit_size >> sub_y).max(1);
+    for cell_y in (y..y + height).step_by(unit_height) {
+        for cell_x in (x..x + width).step_by(unit_width) {
+            let mvs = motion.at_luma_offset(cell_x << sub_x, cell_y << sub_y)?;
+            for row in cell_y..(cell_y + unit_height).min(y + height) {
+                for col in cell_x..(cell_x + unit_width).min(x + width) {
+                    let starts = core::array::from_fn(|reference| {
+                        let scaling = scaling_templates[reference].with_prescaled_mv(
+                            (plane_x + col) as i32,
+                            (plane_y + row) as i32,
+                            mvs[reference][0],
+                            mvs[reference][1],
+                            sub_x,
+                            sub_y,
+                        );
+                        (scaling.start_x >> 10, scaling.start_y >> 10)
+                    });
+                    let source = (row - y) * pred_stride + col - x;
+                    output[(row - y) * output_stride + col - x] =
+                        blend.sample(preds[0][source], preds[1][source], starts)?;
+                }
+            }
         }
     }
     Ok(())

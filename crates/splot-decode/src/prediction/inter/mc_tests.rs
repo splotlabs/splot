@@ -1500,6 +1500,113 @@ fn uniform_motion_direct_average_matches_materialized_path() {
 }
 
 #[test]
+fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
+    let (width, height) = (32usize, 16usize);
+    let chroma_len = (width / 2) * (height / 2);
+    let reference = |seed: usize| {
+        frame_for(
+            BitDepth::Ten,
+            PixelFormat::Yuv420,
+            width,
+            height,
+            (0..width * height)
+                .map(|index| 64 + (index * seed % 900) as u16)
+                .collect(),
+            vec![384; chroma_len],
+            vec![512; chroma_len],
+        )
+    };
+    let (reference0, reference1) = (reference(13), reference(17));
+    let rect = McBlockRect::from_luma_rect(0, 0, 16, 8);
+    let blend = CompoundBlend::average_with_implicit_mask(true);
+    let mvs = [Mv { row: 1, col: 3 }, Mv { row: -1, col: 2 }];
+    let off_screen = [Mv { row: 0, col: -40 }, Mv { row: 2, col: 1 }];
+    let cells = vec![
+        MotionCell::from_refinemv(off_screen),
+        MotionCell::from_refinemv(mvs),
+    ];
+    let grid = CompoundMotionGrid::from_refinemv(2, mvs, cells);
+    let mut workspace = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
+    let sink = WorkspaceSink::Frame(&mut workspace);
+    let mut hybrid = vec![0u16; 16 * 8];
+    predict_compound_plane_output(
+        &sink,
+        ReferenceSamples::settled(&reference0),
+        ReferenceSamples::settled(&reference1),
+        PlaneId::Y,
+        rect,
+        mvs[0],
+        mvs[1],
+        InterpolationFilter::EightTap,
+        blend,
+        [None; 2],
+        0,
+        0,
+        &mut None,
+        Some(&grid),
+        ByteOffset::new(0),
+        &mut hybrid,
+    )
+    .expect("per-cell compound prediction");
+
+    let block = InterBlockParams::compound_average(
+        ReferenceSamples::settled(&reference0),
+        ReferenceSamples::settled(&reference1),
+        rect,
+        mvs[0],
+        mvs[1],
+        InterpolationFilter::EightTap,
+        blend,
+    )
+    .into_compound()
+    .expect("compound block");
+    let prediction = compound_plane_prediction_for_block(
+        &sink,
+        block,
+        PlaneId::Y,
+        0,
+        0,
+        Some(&grid),
+        ByteOffset::new(0),
+    )
+    .expect("whole-plane prediction");
+    let mut whole_plane = vec![0u16; 16 * 8];
+    blend_compound_average::<u16>(
+        &prediction.pred0,
+        &prediction.pred1,
+        BitDepth::Ten,
+        16,
+        8,
+        blend,
+        16,
+        8,
+        Some(&grid),
+        0,
+        0,
+        prediction.scaling0,
+        prediction.scaling1,
+        width,
+        height,
+        None,
+        0,
+        0,
+        &mut whole_plane,
+    )
+    .expect("whole-plane implicit-mask blend");
+    let equal_weights = prediction
+        .pred0
+        .iter()
+        .zip(&prediction.pred1)
+        .map(|(&left, &right)| round2_i32(left + right, 5).clamp(0, 1023) as u16);
+
+    assert_eq!(hybrid, whole_plane);
+    assert!(
+        !equal_weights.eq(whole_plane.iter().copied()),
+        "a cell is off screen"
+    );
+}
+
+#[test]
 fn translational_compound_average_direct_output_matches_staged_publication() {
     let width = 16usize;
     let height = 16usize;
