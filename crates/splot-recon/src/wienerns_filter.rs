@@ -124,6 +124,7 @@ pub struct WienerNsLumaScratch<T> {
 struct PreparedLumaClass {
     center_scale: i32,
     coeffs: [i16; WIENER_NS_LUMA_COEFFS],
+    nonzero: u16,
 }
 
 /// Padded source rows one § 7.20.3 luma output row reads.
@@ -535,16 +536,17 @@ fn prepare_luma_padded<T: ReconSample>(
         })?;
     scratch
         .prepared_classes
-        .extend(
-            params
-                .coeffs_by_class
-                .iter()
-                .map(|&coeffs| PreparedLumaClass {
-                    center_scale: (1 << WIENER_NS_PREC_BITS)
-                        - 2 * coeffs.iter().map(|&coeff| i32::from(coeff)).sum::<i32>(),
-                    coeffs,
-                }),
-        );
+        .extend(params.coeffs_by_class.iter().map(|&coeffs| {
+            PreparedLumaClass {
+                center_scale: (1 << WIENER_NS_PREC_BITS)
+                    - 2 * coeffs.iter().map(|&coeff| i32::from(coeff)).sum::<i32>(),
+                coeffs,
+                nonzero: coeffs
+                    .iter()
+                    .rev()
+                    .fold(0, |mask, &coeff| (mask << 1) | u16::from(coeff != 0)),
+            }
+        }));
     // Scanning the stride gaps too only ever falls back to the per-row scan.
     let region_clean = source.prevalidated
         || (padded_rows - 1)
@@ -968,7 +970,7 @@ fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
                         rows,
                         c0 + col,
                         center_scale,
-                        &class.coeffs,
+                        class,
                         max_sample,
                     );
                     col += $lanes;
@@ -1015,7 +1017,7 @@ fn filter_luma_lanes<const LANES: usize, T: LumaSimdSource, O: LumaSimdOutput>(
     rows: &[&[T]; LUMA_WINDOW_ROWS],
     col: usize,
     center_scale: i16,
-    coeffs: &[i16; WIENER_NS_LUMA_COEFFS],
+    class: &PreparedLumaClass,
     max_sample: u16,
 ) {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
@@ -1024,7 +1026,7 @@ fn filter_luma_lanes<const LANES: usize, T: LumaSimdSource, O: LumaSimdOutput>(
         * Simd::<i16, LANES>::splat(center_scale).cast::<i32>();
     macro_rules! tap_pairs {
         ($($j:literal)*) => {
-            $(add_luma_tap_pair::<LANES, $j, T>(&mut sum, &window, coeffs);)*
+            $(add_luma_tap_pair::<LANES, $j, T>(&mut sum, &window, class);)*
         };
     }
     tap_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
@@ -1037,19 +1039,19 @@ fn filter_luma_lanes<const LANES: usize, T: LumaSimdSource, O: LumaSimdOutput>(
 }
 
 /// Adds § 7.20.3 symmetric tap pair `J` of a [`filter_luma_lanes`] group,
-/// skipping a zero coefficient.
+/// skipping a zero coefficient by its bit in [`PreparedLumaClass::nonzero`].
 #[allow(clippy::inline_always, reason = "measured Wiener NS luma hot path")]
 #[inline(always)]
 fn add_luma_tap_pair<const LANES: usize, const J: usize, T: LumaSimdSource>(
     sum: &mut Simd<i32, LANES>,
     window: &[&[T]; LUMA_WINDOW_ROWS],
-    coeffs: &[i16; WIENER_NS_LUMA_COEFFS],
+    class: &PreparedLumaClass,
 ) {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
-    let coeff = coeffs[J];
-    if coeff == 0 {
+    if class.nonzero & (1 << J) == 0 {
         return;
     }
+    let coeff = class.coeffs[J];
     let (dy, dx, _) = WIENER_NS_CONFIG_Y_PAIRS[J];
     let plus = T::load::<LANES>(window[R.wrapping_add_signed(dy)], R.wrapping_add_signed(dx));
     let minus = T::load::<LANES>(
