@@ -1206,9 +1206,13 @@ impl StripeChain<'_> {
                     block_y.saturating_sub(tap_radius),
                 )
                 .ok_or_else(super::lr_pipeline_state_error)?;
-            let padded_source =
-                PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
-                    .map_err(lr_window_error)?;
+            let padded_source = PcWienerPaddedSource::new_prevalidated(
+                padded,
+                padded_stride,
+                block.width,
+                block.height,
+            )
+            .map_err(lr_window_error)?;
             if let Some(output) = T::from_u16_slice_mut(output) {
                 pc_wiener_filter_block_padded(output, &params, &padded_source)
                     .map_err(lr_window_error)?;
@@ -1473,9 +1477,13 @@ impl StripeChain<'_> {
                     block_y.saturating_sub(tap_radius),
                 )
                 .ok_or_else(super::lr_pipeline_state_error)?;
-            let padded_source =
-                WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
-                    .map_err(lr_window_error)?;
+            let padded_source = WienerNsLumaPaddedSource::new_prevalidated(
+                padded,
+                padded_stride,
+                block.width,
+                block.height,
+            )
+            .map_err(lr_window_error)?;
             with_wiener_ns_luma_scratch(sample_count, |scratch| match &mut output {
                 LrDestination::U16(output) => {
                     if let Some(output) = T::from_u16_slice_mut(output) {

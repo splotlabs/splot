@@ -1449,6 +1449,7 @@ where
 pub struct PcWienerPaddedSource<'a, T> {
     samples: &'a [T],
     stride: usize,
+    prevalidated: bool,
 }
 
 impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
@@ -1484,7 +1485,29 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
                 actual: samples.len(),
             });
         }
-        Ok(Self { samples, stride })
+        Ok(Self {
+            samples,
+            stride,
+            prevalidated: false,
+        })
+    }
+
+    /// Wraps decoder-owned samples whose range reconstruction already
+    /// guarantees, so filtering skips the per-block source range scan.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::new`].
+    #[doc(hidden)]
+    pub fn new_prevalidated(
+        samples: &'a [T],
+        stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            prevalidated: true,
+            ..Self::new(samples, stride, width, height)?
+        })
     }
 }
 
@@ -1546,7 +1569,8 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
     let max_sample = params.bit_depth.max_sample();
     let padded_width = params.width + 2 * PC_WIENER_FILTER_TAP_RADIUS;
     let padded_rows = params.height + 2 * PC_WIENER_FILTER_TAP_RADIUS;
-    let source_is_valid = T::MAX_VALUE <= max_sample
+    let source_is_valid = source.prevalidated
+        || T::MAX_VALUE <= max_sample
         || (0..padded_rows).all(|row| {
             let start = row * stride;
             !crate::workspace::samples_exceed(

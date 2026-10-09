@@ -204,6 +204,7 @@ where
 pub struct WienerNsLumaPaddedSource<'a, T> {
     samples: &'a [T],
     stride: usize,
+    prevalidated: bool,
 }
 
 impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
@@ -240,7 +241,29 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
                 actual: samples.len(),
             });
         }
-        Ok(Self { samples, stride })
+        Ok(Self {
+            samples,
+            stride,
+            prevalidated: false,
+        })
+    }
+
+    /// Wraps decoder-owned samples whose range reconstruction already
+    /// guarantees, so filtering skips the per-block source range scan.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::new`].
+    #[doc(hidden)]
+    pub fn new_prevalidated(
+        samples: &'a [T],
+        stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            prevalidated: true,
+            ..Self::new(samples, stride, width, height)?
+        })
     }
 }
 
@@ -523,13 +546,14 @@ fn prepare_luma_padded<T: ReconSample>(
                 }),
         );
     // Scanning the stride gaps too only ever falls back to the per-row scan.
-    let region_clean = (padded_rows - 1)
-        .checked_mul(stride)
-        .and_then(|prefix| prefix.checked_add(padded_width))
-        .and_then(|span| source.samples.get(..span))
-        .is_some_and(|region| {
-            T::u16_slice(region).is_none_or(|samples| !u16_samples_exceed(samples, max_sample))
-        });
+    let region_clean = source.prevalidated
+        || (padded_rows - 1)
+            .checked_mul(stride)
+            .and_then(|prefix| prefix.checked_add(padded_width))
+            .and_then(|span| source.samples.get(..span))
+            .is_some_and(|region| {
+                T::u16_slice(region).is_none_or(|samples| !u16_samples_exceed(samples, max_sample))
+            });
     if region_clean {
         scratch.clean_rows.resize(padded_rows, true);
     } else {
@@ -1662,6 +1686,7 @@ mod tests {
         let short_source = WienerNsLumaPaddedSource {
             samples: &samples[..samples.len() - 1],
             stride: source_stride,
+            prevalidated: false,
         };
         let coeffs = [ZERO];
         let short_cells: [usize; 0] = [];
@@ -2107,17 +2132,21 @@ mod tests {
             let mut reference = vec![0u16; width * height];
             wiener_ns_filter_luma_block(&mut reference, &reference_params, source_at).unwrap();
             let cell_params = params(width, height, width, BitDepth::Ten, &coeffs, None);
-            let mut actual = vec![0u16; width * height];
-            let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-            wiener_ns_filter_luma_block_padded_cells_into(
-                &mut actual,
-                &cell_params,
-                &source,
-                &cells,
-                &mut WienerNsLumaScratch::default(),
-            )
-            .unwrap();
-            assert_eq!(actual, reference, "{width}x{height}");
+            for source in [
+                WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap(),
+                WienerNsLumaPaddedSource::new_prevalidated(&padded, stride, width, height).unwrap(),
+            ] {
+                let mut actual = vec![0u16; width * height];
+                wiener_ns_filter_luma_block_padded_cells_into(
+                    &mut actual,
+                    &cell_params,
+                    &source,
+                    &cells,
+                    &mut WienerNsLumaScratch::default(),
+                )
+                .unwrap();
+                assert_eq!(actual, reference, "{width}x{height}");
+            }
         }
     }
 
