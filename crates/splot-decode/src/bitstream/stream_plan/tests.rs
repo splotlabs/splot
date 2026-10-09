@@ -1029,3 +1029,71 @@ fn byte_planning_errors_are_deterministic_across_thread_policies() {
         assert_eq!(one, fixed);
     }
 }
+
+fn replanned(
+    units: &[(SourceBytes<'_>, Option<DecodeIvfFrameContext>)],
+) -> (Vec<DecodePlannedObu>, Vec<DecodePlannedObu>) {
+    let mut scan = CandidateScan::default();
+    let (mut candidates, mut continuations) = (Vec::new(), Vec::new());
+    for &(bytes, frame) in units {
+        while let Some(candidate) = scan.next(bytes, frame).unwrap() {
+            continuations.extend(tile_group_continuations(bytes, &candidate));
+            candidates.push(candidate);
+        }
+    }
+    (candidates, continuations)
+}
+
+#[test]
+fn the_decode_pass_replans_the_planned_candidates_and_continuations() {
+    let key = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        &obu(OBU_SEQUENCE_HEADER),
+        &obu_with_payload(OBU_CLOSED_LOOP_KEY, 0x80),
+        &obu(OBU_PADDING),
+        &obu_with_payload(OBU_CLOSED_LOOP_KEY, 0x00),
+        &obu(OBU_RESERVED_26),
+    ]
+    .concat();
+    let inter = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        &obu_with_payload(OBU_REGULAR_TILE_GROUP, 0x80),
+        &obu_with_payload(OBU_REGULAR_TILE_GROUP, 0x80),
+        &obu_with_payload(OBU_REGULAR_TILE_GROUP, 0x00),
+    ]
+    .concat();
+    let ivf = ivf_with_payloads(&[&key, &[], &inter]);
+    let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(&ivf) else {
+        unreachable!("IVF input");
+    };
+    let records: Vec<_> = parsed
+        .frames
+        .iter()
+        .map(|frame| {
+            (
+                SourceBytes::new(frame.frame.payload, frame.frame.payload_offset.get()),
+                Some(ivf_frame_context(frame.frame)),
+            )
+        })
+        .collect();
+    let annex_b = [key, inter].concat();
+    for (bytes, units) in [
+        (ivf.as_slice(), records),
+        (annex_b.as_slice(), vec![(annex_b.as_slice().into(), None)]),
+    ] {
+        let plan = plan_bytes(bytes);
+        let (candidates, continuations) = replanned(&units);
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(continuations.len(), 2);
+        assert!(candidates.iter().eq(plan.frame_candidates_all()));
+        assert!(
+            continuations
+                .iter()
+                .eq(plan.obus().filter(|obu| obu.role().is_frame_continuation()))
+        );
+        assert!(
+            plan.candidate_types()
+                .eq(candidates.iter().map(DecodePlannedObu::obu_type))
+        );
+    }
+}

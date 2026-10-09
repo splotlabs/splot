@@ -700,6 +700,7 @@ where
     let frame_rate = stream.frame_rate();
 
     let leading_unit = stream.first_unit()?;
+    let key_candidate = stream.first_candidate(plan.candidate_types().next());
     let mut leading_buffer = recycle(core::mem::take(obu_storage));
     let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
     let ([_, sequence_envelope, key_envelope], leading_frame_unit_len) =
@@ -726,14 +727,7 @@ where
     let mut emission_queue = output_schedule::EmissionQueue::default();
     let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
     in_band_long_term_prelude.begin_frame(true);
-    let mut candidates = plan.frame_candidates_all();
-    let key_candidate = candidates.next().ok_or_else(|| {
-        unsupported(
-            "missing_frame_candidate",
-            None,
-            "decode runtime requires one selected key frame candidate",
-        )
-    })?;
+    let key_candidate = &key_candidate?;
     let key_frame_index = key_candidate.ivf_frame().map(IvfFrameContext::frame_index);
     let key_core = match key_envelope.header.obu_type {
         ObuType::ClosedLoopKey => {
@@ -1048,7 +1042,7 @@ where
     let mut shared_sequence = None;
     let mut tip_eight = Vec::new();
     let mut tip_ten = Vec::new();
-    for next_candidate in candidates {
+    for next_type in plan.candidate_types().skip(1) {
         entropy_eight.retire_completed();
         entropy_ten.retire_completed();
         if !frames.has_space() {
@@ -1082,7 +1076,7 @@ where
             }
         }
         frames.reserve()?;
-        match next_candidate.obu_type() {
+        match next_type {
             ObuType::LeadingSef | ObuType::RegularSef => {
                 frame_pipeline::drain_entropy_before_barrier(
                     &mut pending_entropy,
@@ -1090,7 +1084,8 @@ where
                     admission,
                     recon_lane,
                 );
-                let unit = stream.unit(next_candidate, obu_storage, false)?;
+                let (next_candidate, unit) = stream.candidate(next_type, obu_storage, false)?;
+                let next_candidate = &next_candidate;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) = stream.inter_envelope(
@@ -1253,7 +1248,8 @@ where
             | ObuType::LeadingTip
             | ObuType::RegularTip
             | ObuType::BridgeFrame => {
-                let unit = stream.unit(next_candidate, obu_storage, false)?;
+                let (next_candidate, unit) = stream.candidate(next_type, obu_storage, false)?;
+                let next_candidate = &next_candidate;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (inter_prefix_obus, inter_envelope) = stream.inter_envelope(
@@ -1430,7 +1426,7 @@ where
                                 inter::InterFrameStart {
                                     records,
                                     plan,
-                                    candidate: next_candidate,
+                                    candidate: next_candidate.clone(),
                                     core: inter_core,
                                     sequence: shared,
                                     options,
@@ -1488,7 +1484,7 @@ where
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
                                 frame_pipeline::TipOutputJob {
-                                    candidate: next_candidate,
+                                    candidate: next_candidate.clone(),
                                     core: task_core,
                                     sequence: shared,
                                     options,
@@ -1650,7 +1646,7 @@ where
                                 inter::InterFrameStart {
                                     records,
                                     plan,
-                                    candidate: next_candidate,
+                                    candidate: next_candidate.clone(),
                                     core: inter_core,
                                     sequence: shared,
                                     options,
@@ -1708,7 +1704,7 @@ where
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
                                 frame_pipeline::TipOutputJob {
-                                    candidate: next_candidate,
+                                    candidate: next_candidate.clone(),
                                     core: task_core,
                                     sequence: shared,
                                     options,
@@ -1879,8 +1875,10 @@ where
                     admission,
                     recon_lane,
                 );
-                let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
-                let unit = stream.unit(next_candidate, obu_storage, starts_new_sequence)?;
+                let starts_new_sequence = next_type == ObuType::ClosedLoopKey;
+                let (next_candidate, unit) =
+                    stream.candidate(next_type, obu_storage, starts_new_sequence)?;
+                let next_candidate = &next_candidate;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
@@ -2135,9 +2133,9 @@ where
                 }
             }
             _ => {
-                return Err(unsupported_at(
+                return Err(unsupported(
                     "non_frame_candidate_in_frame_loop",
-                    next_candidate.offset(),
+                    None,
                     "internal invariant violation: non-frame-candidate obu reached the frame decode loop",
                 ));
             }
@@ -2255,7 +2253,9 @@ pub(crate) fn derive_tile_plan_with<'payload>(
     }
     .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
-    let candidates = frame_tile_group_candidates(plan, candidate);
+    let candidates = core::iter::once(candidate.clone()).chain(
+        crate::bitstream::stream_plan::tile_group_continuations(bytes, candidate),
+    );
     let group_count = candidates.clone().count();
     let recorded_header = record_frame_header(envelope, core, group_count > 1)?;
     let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> = None;
@@ -2266,7 +2266,7 @@ pub(crate) fn derive_tile_plan_with<'payload>(
                 &mut scratch.continuation_work_units,
             );
         }
-        let group_envelope = planned_envelope(bytes, group_candidate)?;
+        let group_envelope = planned_envelope(bytes, &group_candidate)?;
         let group_facts = if group_index == 0 {
             facts
         } else {
@@ -2283,7 +2283,7 @@ pub(crate) fn derive_tile_plan_with<'payload>(
         };
         let mut input = FrameCandidateTileBoundaryInput::new(
             plan,
-            group_candidate,
+            &group_candidate,
             bytes,
             group_envelope,
             TileGroupPositionFacts::new(group_index == 0, group_index + 1 == group_count),
@@ -2314,29 +2314,6 @@ pub(crate) fn derive_tile_plan_with<'payload>(
             "decode runtime requires at least one tile group for a coded frame",
         )
     })
-}
-
-fn frame_tile_group_candidates<'a>(
-    plan: &'a DecodeStreamPlan,
-    candidate: &'a DecodePlannedObu,
-) -> impl Iterator<Item = &'a DecodePlannedObu> + Clone {
-    let continuations = plan
-        .obus_after(candidate)
-        .iter()
-        .zip(candidate.index() + 1..)
-        .take_while(move |(planned, index)| {
-            planned.index() == *index && planned.ivf_frame() == candidate.ivf_frame()
-        })
-        .map(|(planned, _)| planned)
-        .filter(|planned| planned.obu_type() != ObuType::Padding)
-        .take_while(move |planned| {
-            planned.role().is_frame_continuation()
-                && planned.obu_type() == candidate.obu_type()
-                && planned.header().temporal_layer_id == candidate.header().temporal_layer_id
-                && planned.header().embedded_layer_id == candidate.header().embedded_layer_id
-                && planned.header().extended_layer_id == candidate.header().extended_layer_id
-        });
-    core::iter::once(candidate).chain(continuations)
 }
 
 fn planned_envelope<'a>(

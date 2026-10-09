@@ -347,7 +347,7 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
 pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) records: FrameFilterRecords,
     pub(crate) plan: &'payload DecodeStreamPlan,
-    pub(crate) candidate: &'payload DecodePlannedObu,
+    pub(crate) candidate: DecodePlannedObu,
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
     pub(crate) options: &'payload DecodeOptions,
@@ -386,7 +386,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         let spare_band = reusable.recon_band.take();
         let prologue = derive_inter_walk_prologue(
             plan,
-            candidate,
+            &candidate,
             bytes,
             &core,
             &sequence,

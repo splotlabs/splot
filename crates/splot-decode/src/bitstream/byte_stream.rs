@@ -19,8 +19,8 @@ use splot_core::stream_reader::{ReaderError, StreamUnit, TemporalUnitReader};
 use splot_core::types::ObuType;
 
 use crate::bitstream::stream_plan::{
-    DecodeLayerSelection, DecodeStreamPlan, DecodeUnsupportedStructure, IvfPlanner, PlanBuilder,
-    ensure_supported_obu, plan_annex_b,
+    DecodeIvfFrameContext, DecodeLayerSelection, DecodeStreamPlan, DecodeUnsupportedStructure,
+    IvfPlanner, PlanBuilder, ensure_supported_obu, plan_annex_b,
 };
 use crate::error::{DecodeError, Result};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
@@ -61,10 +61,6 @@ impl<'a> SourceBytes<'a> {
     pub(crate) fn end(self) -> u64 {
         self.base.saturating_add(self.bytes.len() as u64)
     }
-
-    pub(crate) fn contains(self, offset: ByteOffset) -> bool {
-        (self.base..self.end()).contains(&offset.get())
-    }
 }
 
 impl<'a> From<&'a [u8]> for SourceBytes<'a> {
@@ -91,7 +87,7 @@ impl UnitBytes {
 }
 
 pub(crate) fn plan_byte_stream(bytes: &[u8], options: &DecodeOptions) -> Result<DecodeStreamPlan> {
-    prepare_stream(&mut Cursor::new(bytes), options, Vec::new()).map(|prepared| prepared.plan)
+    prepare(&mut Cursor::new(bytes), options, Vec::new(), true).map(|prepared| prepared.plan)
 }
 
 /// A planned input and what the decode pass needs to read it again.
@@ -142,11 +138,21 @@ impl RecordHashes {
 
 /// Plans `reader` without keeping IVF payloads: each frame record is parsed
 /// and planned, then dropped. IVF record hashes go into `hashes`, which a
-/// caller keeps between decodes.
+/// caller keeps between decodes. The plan keeps no per-OBU entries; the decode
+/// pass plans each record's OBUs again when it reads the record.
 pub(crate) fn prepare_stream(
     reader: &mut dyn ReadSeek,
     options: &DecodeOptions,
     hashes: Vec<u64>,
+) -> Result<PreparedStream> {
+    prepare(reader, options, hashes, false)
+}
+
+fn prepare(
+    reader: &mut dyn ReadSeek,
+    options: &DecodeOptions,
+    hashes: Vec<u64>,
+    keep_obus: bool,
 ) -> Result<PreparedStream> {
     let limits = options.limits();
     let input_len = reader.seek(SeekFrom::End(0)).map_err(DecodeError::input)?;
@@ -160,8 +166,13 @@ pub(crate) fn prepare_stream(
     };
     rewind(reader)?;
     if ivf {
-        let (plan, header, end, hashes) =
-            plan_ivf(reader, input_len, limits, RecordHashes::new(hashes))?;
+        let (plan, header, end, hashes) = plan_ivf(
+            reader,
+            input_len,
+            limits,
+            RecordHashes::new(hashes),
+            keep_obus,
+        )?;
         return Ok(PreparedStream {
             plan,
             input: PreparedInput::Ivf(header, end, hashes),
@@ -179,6 +190,7 @@ pub(crate) fn prepare_stream(
         &parse_bounded_annex_b(bytes.view().bytes(), limits)?,
         input_len,
         options,
+        keep_obus,
     )?;
     Ok(PreparedStream {
         plan,
@@ -207,11 +219,12 @@ fn plan_ivf(
     input_len: u64,
     limits: DecodeLimits,
     mut hashes: RecordHashes,
+    keep_obus: bool,
 ) -> Result<(DecodeStreamPlan, IvfHeader, u64, RecordHashes)> {
     let cap = input_cap(limits);
     let mut capped = Read::take(&mut *reader, cap);
     let mut units = TemporalUnitReader::with_max_unit_bytes(&mut capped, usize::MAX);
-    let mut builder = PlanBuilder::new(BitstreamFormat::Ivf, input_len, limits);
+    let mut builder = PlanBuilder::new(BitstreamFormat::Ivf, input_len, limits, keep_obus);
     let mut planner = IvfPlanner::default();
     let mut counts = (0u64, 0u64);
     let mut first_unsupported = None;
@@ -314,6 +327,8 @@ pub(crate) struct IvfRecords<'r> {
     hashes: &'r RecordHashes,
     current: Option<UnitBytes>,
     record: usize,
+    frames_read: usize,
+    pts: u64,
     buffers: &'r mut Vec<Arc<Vec<u8>>>,
 }
 
@@ -336,6 +351,8 @@ impl<'r> IvfRecords<'r> {
             hashes,
             current: None,
             record: 0,
+            frames_read: 0,
+            pts: 0,
             buffers,
         })
     }
@@ -343,6 +360,17 @@ impl<'r> IvfRecords<'r> {
     /// The current record and its index among non-empty records.
     pub(crate) fn current(&self) -> Option<(&UnitBytes, usize)> {
         self.current.as_ref().map(|unit| (unit, self.record))
+    }
+
+    /// The IVF frame context of the current record.
+    pub(crate) fn frame(&self) -> Option<DecodeIvfFrameContext> {
+        let view = self.current.as_ref()?.view();
+        Some(DecodeIvfFrameContext::new(
+            self.frames_read - 1,
+            ByteOffset::new(view.base()),
+            view.bytes().len() as u32,
+            self.pts,
+        ))
     }
 
     /// Makes the next non-empty record current; `false` at end of input.
@@ -355,6 +383,11 @@ impl<'r> IvfRecords<'r> {
                 Err(error) => return Err(DecodeError::input(error)),
             }
             let size = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+            self.frames_read += 1;
+            self.pts = u64::from_le_bytes([
+                header[4], header[5], header[6], header[7], header[8], header[9], header[10],
+                header[11],
+            ]);
             let base = self.position + IVF_FRAME_HEADER_SIZE as u64;
             self.position = base + u64::from(size);
             if self.position > self.end {
@@ -387,32 +420,23 @@ impl<'r> IvfRecords<'r> {
         }
     }
 
-    /// Reads forward to the record holding `offset`, checking each record it
-    /// reads with `check`.
-    pub(crate) fn seek_offset(
+    /// [`Self::advance`], then checks the new record's OBUs with `check`.
+    pub(crate) fn advance_checked(
         &mut self,
-        offset: ByteOffset,
         storage: &mut Vec<ObuEnvelope<'static>>,
         check: fn(&[ObuEnvelope<'_>], usize) -> Result<()>,
-        missing: impl Fn() -> DecodeError,
-    ) -> Result<UnitBytes> {
-        loop {
-            if let Some(unit) = &self.current
-                && unit.view().contains(offset)
-            {
-                return Ok(unit.clone());
-            }
-            if !self.advance()? {
-                return Err(missing());
-            }
-            let Some(unit) = &self.current else {
-                return Err(missing());
-            };
-            let mut obus = recycle(core::mem::take(storage));
-            runtime_obus(unit.view(), &mut obus)?;
-            check(&obus, self.record)?;
-            *storage = recycle(obus);
+    ) -> Result<bool> {
+        if !self.advance()? {
+            return Ok(false);
         }
+        let Some(unit) = &self.current else {
+            return Ok(false);
+        };
+        let mut obus = recycle(core::mem::take(storage));
+        runtime_obus(unit.view(), &mut obus)?;
+        check(&obus, self.record)?;
+        *storage = recycle(obus);
+        Ok(true)
     }
 }
 

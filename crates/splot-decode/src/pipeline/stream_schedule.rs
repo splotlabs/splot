@@ -11,6 +11,7 @@ use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 
 use crate::bitstream::byte_stream::{IvfRecords, PreparedInput, ReadSeek, UnitBytes, runtime_obus};
+use crate::bitstream::stream_plan::CandidateScan;
 use crate::error::Result;
 use crate::support::capability::missing_capability_message;
 use crate::{DecodePlannedObu, DecodeStreamPlan};
@@ -21,10 +22,12 @@ pub(super) enum RuntimeStream<'a> {
     AnnexB {
         unit: &'a UnitBytes,
         obus: Vec<ObuEnvelope<'a>>,
+        scan: CandidateScan,
     },
     Ivf {
         records: IvfRecords<'a>,
         header: IvfHeader,
+        scan: CandidateScan,
     },
 }
 
@@ -45,11 +48,16 @@ impl<'a> RuntimeStream<'a> {
                         "decode runtime requires at least one Annex B OBU",
                     ));
                 }
-                Ok(Self::AnnexB { unit, obus })
+                Ok(Self::AnnexB {
+                    unit,
+                    obus,
+                    scan: CandidateScan::default(),
+                })
             }
             PreparedInput::Ivf(header, end, hashes) => Ok(Self::Ivf {
                 records: IvfRecords::new(reader, *header, *end, hashes, buffers)?,
                 header: *header,
+                scan: CandidateScan::default(),
             }),
         }
     }
@@ -88,32 +96,66 @@ impl<'a> RuntimeStream<'a> {
         }
     }
 
-    /// The unit holding `candidate`, checking each IVF record read on the way
-    /// as a key frame unit when `key`, else in inter order.
-    pub(super) fn unit(
+    /// The next frame candidate in the current unit, planned again.
+    fn next_in_unit(&mut self) -> Result<Option<(DecodePlannedObu, UnitBytes)>> {
+        match self {
+            Self::AnnexB { unit, scan, .. } => Ok(scan
+                .next(unit.view(), None)?
+                .map(|found| (found, (*unit).clone()))),
+            Self::Ivf { records, scan, .. } => {
+                let Some((unit, _)) = records.current() else {
+                    return Ok(None);
+                };
+                Ok(scan
+                    .next(unit.view(), records.frame())?
+                    .map(|found| (found, unit.clone())))
+            }
+        }
+    }
+
+    /// The leading unit's first frame candidate, which the plan typed `planned`.
+    pub(super) fn first_candidate(&mut self, planned: Option<ObuType>) -> Result<DecodePlannedObu> {
+        match (planned, self.next_in_unit()?) {
+            (Some(obu_type), Some((candidate, _))) if candidate.obu_type() == obu_type => {
+                Ok(candidate)
+            }
+            _ => Err(unsupported(
+                "missing_frame_candidate",
+                None,
+                "decode runtime requires one selected key frame candidate",
+            )),
+        }
+    }
+
+    /// The next frame candidate, which the plan typed `planned`, and the unit
+    /// holding it, checking each IVF record read on the way as a key frame
+    /// unit when `key`, else in inter order.
+    pub(super) fn candidate(
         &mut self,
-        candidate: &DecodePlannedObu,
+        planned: ObuType,
         storage: &mut Vec<ObuEnvelope<'static>>,
         key: bool,
-    ) -> Result<UnitBytes> {
-        match self {
-            Self::AnnexB { unit, .. } => Ok((*unit).clone()),
-            Self::Ivf { records, .. } => records.seek_offset(
-                candidate.offset(),
-                storage,
-                if key {
-                    |obus, _| require_key_ivf_obu_order(obus)
-                } else {
-                    require_following_ivf_record_obu_order
-                },
-                || {
-                    if key {
-                        missing_key_ivf_obu(candidate)
-                    } else {
-                        missing_inter_ivf_obu(candidate)
-                    }
-                },
-            ),
+    ) -> Result<(DecodePlannedObu, UnitBytes)> {
+        let found = loop {
+            if let Some(found) = self.next_in_unit()? {
+                break Some(found);
+            }
+            let Self::Ivf { records, .. } = self else {
+                break None;
+            };
+            let check = if key {
+                |obus: &[ObuEnvelope<'_>], _| require_key_ivf_obu_order(obus)
+            } else {
+                require_following_ivf_record_obu_order
+            };
+            if !records.advance_checked(storage, check)? {
+                break None;
+            }
+        };
+        match found {
+            Some((candidate, unit)) if candidate.obu_type() == planned => Ok((candidate, unit)),
+            _ if key => Err(missing_key_ivf_obu(None)),
+            _ => Err(missing_inter_ivf_obu(None)),
         }
     }
 
@@ -171,18 +213,18 @@ impl<'a> RuntimeStream<'a> {
     }
 }
 
-fn missing_inter_ivf_obu(candidate: &DecodePlannedObu) -> crate::DecodeError {
-    unsupported_at(
+fn missing_inter_ivf_obu(offset: Option<ByteOffset>) -> crate::DecodeError {
+    unsupported(
         "missing_inter_ivf_obu",
-        candidate.offset(),
+        offset,
         "the planned inter candidate offset was not found in the parsed IVF payloads",
     )
 }
 
-fn missing_key_ivf_obu(candidate: &DecodePlannedObu) -> crate::DecodeError {
-    unsupported_at(
+fn missing_key_ivf_obu(offset: Option<ByteOffset>) -> crate::DecodeError {
+    unsupported(
         "missing_key_ivf_obu",
-        candidate.offset(),
+        offset,
         "the planned key candidate offset was not found in the parsed IVF payloads",
     )
 }
@@ -196,7 +238,7 @@ pub(crate) fn ivf_inter_envelope<'a>(
     let position = obus
         .iter()
         .position(|envelope| envelope.offset == candidate.offset())
-        .ok_or_else(|| missing_inter_ivf_obu(candidate))?;
+        .ok_or_else(|| missing_inter_ivf_obu(Some(candidate.offset())))?;
     inter_frame_envelope(obus, position, record)
 }
 
@@ -252,7 +294,7 @@ fn ivf_key_frame_unit<'a>(
     let position = obus
         .iter()
         .position(|envelope| envelope.offset == candidate.offset())
-        .ok_or_else(|| missing_key_ivf_obu(candidate))?;
+        .ok_or_else(|| missing_key_ivf_obu(Some(candidate.offset())))?;
     let ([_, sequence_envelope, key_envelope], _) = require_key_frame_unit(obus)?;
     if key_envelope.offset != candidate.offset() {
         return Err(unsupported_at(

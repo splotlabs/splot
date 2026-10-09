@@ -101,10 +101,9 @@ impl DecodeContext {
         decode: impl FnOnce(&PreparedStream, &mut dyn ReadSeek) -> Result<T> + Send,
     ) -> Result<T> {
         let hashes = self.session.take_record_hashes();
-        let mut prepared = self
+        let prepared = self
             .pool
             .install(|| prepare_stream(reader, options, hashes))?;
-        prepared.plan.retain_decode_obus();
         let result = self.pool.install(|| decode(&prepared, reader));
         if let PreparedInput::Ivf(_, _, hashes) = prepared.input {
             self.session.keep_record_hashes(hashes.into_vec());

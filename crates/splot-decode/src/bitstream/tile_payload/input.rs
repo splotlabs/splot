@@ -359,7 +359,6 @@ pub(crate) enum FrameCandidateTileBoundaryError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FrameCandidateTileMalformed {
-    CandidateNotInPlan,
     PlanSourceKindMismatch {
         format: BitstreamFormat,
         source_kind: DecodeObuSourceKind,
@@ -393,7 +392,6 @@ pub(crate) enum FrameCandidateTileMalformed {
 impl fmt::Display for FrameCandidateTileMalformed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CandidateNotInPlan => f.write_str("candidate is not present in stream plan"),
             Self::PlanSourceKindMismatch {
                 format,
                 source_kind,
@@ -571,11 +569,6 @@ fn validate_candidate(
     input_bytes: SourceBytes<'_>,
     envelope: ObuEnvelope<'_>,
 ) -> Result<(), FrameCandidateTileBoundaryError> {
-    if !plan.obus().any(|planned| planned == candidate) {
-        return Err(FrameCandidateTileBoundaryError::Malformed(
-            FrameCandidateTileMalformed::CandidateNotInPlan,
-        ));
-    }
     if !candidate.role().is_frame_candidate() && !candidate.role().is_frame_continuation() {
         return Err(FrameCandidateTileBoundaryError::Unsupported {
             reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,

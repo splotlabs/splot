@@ -506,7 +506,7 @@ pub(super) fn reserve_tip_output<T: super::inflight::SpareFramePlanes>(
 /// One TIP output frame's reconstruction inputs, parked in a reusable cell
 /// until its scheduler task takes them.
 pub(crate) struct TipOutputJob<'job, T: splot_recon::ReconSample> {
-    pub(super) candidate: &'job crate::bitstream::stream_plan::DecodePlannedObu,
+    pub(super) candidate: crate::bitstream::stream_plan::DecodePlannedObu,
     pub(super) core: Arc<FrameHeaderCore>,
     pub(super) sequence: Arc<SequenceHeader>,
     pub(super) options: &'job crate::DecodeOptions,
@@ -589,7 +589,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ParkedTipOutput<'_, T> {
         match inter::decode_tip_output_frame(
             &mut scratch,
             planes,
-            candidate,
+            &candidate,
             candidate.offset(),
             core,
             &sequence,
