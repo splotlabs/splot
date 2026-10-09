@@ -1457,7 +1457,9 @@ impl ImplicitMaskBlend {
 
 /// Blends the `[x, y, width, height]` region of a motion-grid plane, whose
 /// predictions and output are region-local with their own row strides, with
-/// each sample's implicit mask taken from its own motion-grid cell.
+/// each sample's implicit mask taken from its own motion-grid cell. With
+/// unscaled references a start is the sample position plus one per-cell
+/// offset, so only scaled references derive it per sample.
 #[allow(clippy::too_many_arguments)]
 fn blend_implicit_mask_region<T: ReconSample>(
     preds: [&[i32]; 2],
@@ -1473,21 +1475,39 @@ fn blend_implicit_mask_region<T: ReconSample>(
 ) -> splot_recon::Result<()> {
     let unit_width = (motion.unit_size >> sub_x).max(1);
     let unit_height = (motion.unit_size >> sub_y).max(1);
+    let unscaled = !scaling_templates.iter().any(|scaling| scaling.is_scaled());
     for cell_y in (y..y + height).step_by(unit_height) {
         for cell_x in (x..x + width).step_by(unit_width) {
             let mvs = motion.at_luma_offset(cell_x << sub_x, cell_y << sub_y)?;
+            let start_at = |reference: usize, col: usize, row: usize| {
+                let scaling = scaling_templates[reference].with_prescaled_mv(
+                    (plane_x + col) as i32,
+                    (plane_y + row) as i32,
+                    mvs[reference][0],
+                    mvs[reference][1],
+                    sub_x,
+                    sub_y,
+                );
+                (scaling.start_x >> 10, scaling.start_y >> 10)
+            };
+            let offsets: [(i32, i32); 2] = core::array::from_fn(|reference| {
+                let (start_x, start_y) = start_at(reference, cell_x, cell_y);
+                (
+                    start_x - (plane_x + cell_x) as i32,
+                    start_y - (plane_y + cell_y) as i32,
+                )
+            });
             for row in cell_y..(cell_y + unit_height).min(y + height) {
                 for col in cell_x..(cell_x + unit_width).min(x + width) {
                     let starts = core::array::from_fn(|reference| {
-                        let scaling = scaling_templates[reference].with_prescaled_mv(
-                            (plane_x + col) as i32,
-                            (plane_y + row) as i32,
-                            mvs[reference][0],
-                            mvs[reference][1],
-                            sub_x,
-                            sub_y,
-                        );
-                        (scaling.start_x >> 10, scaling.start_y >> 10)
+                        if unscaled {
+                            (
+                                (plane_x + col) as i32 + offsets[reference].0,
+                                (plane_y + row) as i32 + offsets[reference].1,
+                            )
+                        } else {
+                            start_at(reference, col, row)
+                        }
                     });
                     let source = (row - y) * pred_stride + col - x;
                     output[(row - y) * output_stride + col - x] =
