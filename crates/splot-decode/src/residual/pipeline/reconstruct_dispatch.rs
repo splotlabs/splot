@@ -201,11 +201,11 @@ impl ResidualPlanePlan {
         let block_ctx = self.block_ctx;
         match self.unit_directional_replan(luma_context) {
             ResidualReconstructionPlan::Luma(RectLumaPlan::Palette { palette, use_tcq }) => {
-                let color_map = palette_color_map.ok_or(
-                    GeneralIntraResidualError::InvalidReconstructionState {
+                let Some(color_map) = palette_color_map else {
+                    return Err(GeneralIntraResidualError::InvalidReconstructionState {
                         context: "luma palette color map",
-                    },
-                )?;
+                    });
+                };
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_palette_block_into(
                     workspace,
                     coeffs,

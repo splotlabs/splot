@@ -54,7 +54,7 @@ pub(super) fn resolve_secondary_inverse_transform(
     let (kernel, transpose) = if let Some(luma_context) = luma_context {
         let most_probable_stx_set = ist
             .most_probable_stx_set
-            .ok_or(invalid_reconstruction_state_error("active intra IST set"))?;
+            .ok_or_else(|| invalid_reconstruction_state_error("active intra IST set"))?;
         let mode = intra_secondary_transform_mode(luma_context, tx_width, tx_height)?;
         (
             intra_secondary_transform_kernel(

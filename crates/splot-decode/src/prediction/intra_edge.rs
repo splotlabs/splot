@@ -223,12 +223,14 @@ fn assemble_unit_edge_filter<T: ReconSample>(
         (y, storage.height())
     };
     let in_block = (max_axis.saturating_sub(origin)).min(primary as usize);
-    let num_px = in_block
+    let Some(num_px) = in_block
         .checked_add(if spec.need_far { secondary as usize } else { 0 })
         .and_then(|v| v.checked_add(1))
-        .ok_or(GeneralIntraResidualError::InvalidReconstructionState {
+    else {
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "directional edge sample count",
-        })?;
+        });
+    };
     let corner_opposite = if spec.corner_applies && (w + h) >= 24 {
         let (sx, sy) = if spec.above {
             (x.saturating_sub(1), y)
