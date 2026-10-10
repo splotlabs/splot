@@ -153,7 +153,8 @@ pub use pc_wiener::{
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
 pub use reconstruct_block::{
-    reconstruct_transform_block_residual, reconstruct_transform_block_residual_with_secondary,
+    dequantize_with_secondary, reconstruct_transform_block_residual,
+    reconstruct_transform_block_residual_with_secondary,
 };
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,

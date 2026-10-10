@@ -86,7 +86,8 @@ pub struct InverseTransform2d {
 /// Applies the AV2 § 7.15.4.1 2D matrix transform to the `w * h` row-major
 /// `dequant` block, writing the `w * h` row-major `residual`, where `w` and `h`
 /// are the adjusted dimensions `1 << Min(log2_width, 5)` and
-/// `1 << Min(log2_height, 5)`.
+/// `1 << Min(log2_height, 5)`. `dequant` may hold only the block's leading whole
+/// rows; the rows it omits are zero.
 ///
 /// The row pass transforms each row (with the § 7.15.4.1 `Round2(x * 2896, 12)`
 /// rescale when `|log2_width - log2_height|` is odd — computed from the
@@ -106,8 +107,8 @@ pub struct InverseTransform2d {
 /// # Errors
 /// Returns [`ReconError::InvalidInverseTransform2dShape`] if `log2_width` /
 /// `log2_height` are not each in `2..=6` (or not both `2` when lossless), and
-/// [`ReconError::InverseTransform2dBufferMismatch`] if `dequant` or `residual`
-/// is not exactly `w * h` long.
+/// [`ReconError::InverseTransform2dBufferMismatch`] if `dequant` is not a
+/// whole-row prefix of `w * h` or `residual` is not exactly `w * h` long.
 pub fn inverse_transform_2d(
     params: &InverseTransform2d,
     dequant: &[i32],
@@ -138,7 +139,7 @@ pub(super) fn inverse_transform_2d_with_scratch(
     let w = 1usize << log2_w.min(5);
     let h = 1usize << log2_h.min(5);
     let expected = w * h;
-    if dequant.len() != expected || residual.len() != expected {
+    if dequant.len() > expected || !dequant.len().is_multiple_of(w) || residual.len() != expected {
         return Err(ReconError::InverseTransform2dBufferMismatch {
             expected,
             dequant_len: dequant.len(),
@@ -176,7 +177,7 @@ pub(super) fn inverse_transform_2d_with_scratch(
         .take(h)
         .enumerate()
     {
-        if dequant_row.iter().all(|&coeff| coeff == 0) {
+        if dequant_row.iter().fold(0, |any, &coeff| any | coeff) == 0 {
             if !masked {
                 intermediate_row.fill(0);
             }
@@ -191,6 +192,9 @@ pub(super) fn inverse_transform_2d_with_scratch(
             run_1d(dequant_row, intermediate_row, row_pass)?;
         }
         nonzero_rows |= 1u32 << row;
+    }
+    if !masked {
+        intermediate[dequant.len()..].fill(0);
     }
 
     if column_pass_lane_groups(intermediate, residual, w, nonzero_rows, col_pass) {

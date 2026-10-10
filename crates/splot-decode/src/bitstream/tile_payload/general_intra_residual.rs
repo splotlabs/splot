@@ -120,8 +120,6 @@ thread_local! {
     static FRAME_QM: core::cell::Cell<Option<QmFrameLevels>> = const { core::cell::Cell::new(None) };
     static FRAME_USER_QM: RefCell<Option<FrameUserQmLevels>> = const { RefCell::new(None) };
     static FRAME_QM_SEGMENT_ID: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
-    /// [`CoeffBlock::with_dense`] storage, so a block clears only its own zero tail.
-    static DENSE_QUANT: core::cell::Cell<Vec<i32>> = const { core::cell::Cell::new(Vec::new()) };
 }
 
 macro_rules! frame_cell_scope {
@@ -519,31 +517,9 @@ impl<'a> CoeffBlock<'a> {
         };
         Ok(Self { block, quant })
     }
-    fn is_dense(self) -> bool {
-        self.quant.len() == self.quant_range.len().saturating_add(self.zero_tail)
-    }
-
-    fn with_dense<R>(
-        self,
-        reconstruct: impl FnOnce(CoeffBlock<'_>) -> Result<R, GeneralIntraResidualError>,
-    ) -> Result<R, GeneralIntraResidualError> {
-        let len = self.quant_range.len().saturating_add(self.zero_tail);
-        if len > MAX_ADJUSTED_COEFFS || self.quant.len() > len {
-            return Err(GeneralIntraResidualError::QuantLength {
-                expected: MAX_ADJUSTED_COEFFS,
-                actual: len.max(self.quant.len()),
-            });
-        }
-        let mut quant = DENSE_QUANT.take();
-        quant.clear();
-        quant.extend_from_slice(self.quant);
-        quant.resize(len, 0);
-        let result = reconstruct(CoeffBlock {
-            block: self.block,
-            quant: &quant,
-        });
-        DENSE_QUANT.set(quant);
-        result
+    /// The block's coefficient count with its zero tail restored.
+    fn dense_len(self) -> usize {
+        self.quant.len().saturating_add(self.zero_tail)
     }
 }
 
@@ -1991,7 +1967,7 @@ fn invalid_reconstruction_state<T>(context: &'static str) -> Result<T, GeneralIn
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
-    quant: &[i32],
+    block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,
     qindex: u32,
@@ -2019,10 +1995,10 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
         dpcm,
         bit_depth,
     )?;
-    if quant.len() != setup.adjusted {
+    if block.dense_len() != setup.adjusted {
         return Err(GeneralIntraResidualError::QuantLength {
             expected: setup.adjusted,
-            actual: quant.len(),
+            actual: block.dense_len(),
         });
     }
     out.resize(setup.samples, T::default());
@@ -2031,7 +2007,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
         let residual_scratch = &mut scratch.residual[..setup.samples];
         reconstruct_transform_block_residual_with_secondary(
             prediction,
-            quant,
+            block.quant,
             &setup.params,
             &setup.transform,
             secondary,
