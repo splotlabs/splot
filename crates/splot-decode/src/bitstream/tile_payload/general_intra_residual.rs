@@ -120,6 +120,8 @@ thread_local! {
     static FRAME_QM: core::cell::Cell<Option<QmFrameLevels>> = const { core::cell::Cell::new(None) };
     static FRAME_USER_QM: RefCell<Option<FrameUserQmLevels>> = const { RefCell::new(None) };
     static FRAME_QM_SEGMENT_ID: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// [`CoeffBlock::with_dense`] storage, so a block clears only its own zero tail.
+    static DENSE_QUANT: core::cell::Cell<Vec<i32>> = const { core::cell::Cell::new(Vec::new()) };
 }
 
 macro_rules! frame_cell_scope {
@@ -532,12 +534,16 @@ impl<'a> CoeffBlock<'a> {
                 actual: len.max(self.quant.len()),
             });
         }
-        let mut quant = [0; MAX_ADJUSTED_COEFFS];
-        quant[..self.quant.len()].copy_from_slice(self.quant);
-        reconstruct(CoeffBlock {
+        let mut quant = DENSE_QUANT.take();
+        quant.clear();
+        quant.extend_from_slice(self.quant);
+        quant.resize(len, 0);
+        let result = reconstruct(CoeffBlock {
             block: self.block,
-            quant: &quant[..len],
-        })
+            quant: &quant,
+        });
+        DENSE_QUANT.set(quant);
+        result
     }
 }
 
