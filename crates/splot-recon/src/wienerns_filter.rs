@@ -25,7 +25,8 @@ use crate::{BitDepth, ReconError, ReconSample, Result};
 
 #[path = "wienerns_flat.rs"]
 mod flat;
-use flat::{FlatChunks, LumaFlatGroup};
+pub(crate) use flat::FlatChunks;
+use flat::LumaFlatGroup;
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
 const WIENER_NS_PREC_BITS: u32 = 7;

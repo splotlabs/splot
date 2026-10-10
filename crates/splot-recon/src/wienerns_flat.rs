@@ -109,6 +109,9 @@ impl<const R: usize> FlatChunks<R> {
     /// columns to filter end at the returned column, and the flat run that
     /// follows, if any, has the returned value and end.
     pub(crate) fn split(&self, col: usize, end: usize) -> (usize, Option<(u16, usize)>) {
+        if self.mask == 0 {
+            return (end, None);
+        }
         let ahead = self.mask.checked_shr((col / CHUNK) as u32).unwrap_or(0);
         let chunk = col / CHUNK + ahead.trailing_zeros() as usize;
         let start = (CHUNK * chunk).max(col);

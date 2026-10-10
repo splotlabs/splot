@@ -444,6 +444,72 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
     }
 }
 
+/// Flat areas with uneven patches and a gradient filter like the per-sample
+/// reference for every filter set, in `u16` and `u8` storage, also when a
+/// flat chunk sits inside a subclass run.
+#[test]
+fn padded_flat_chunks_match_the_callback_reference() {
+    let radius = PC_WIENER_FILTER_TAP_RADIUS;
+    for (width, height) in [(96, 16), (67, 13), (40, 6)] {
+        let stride = width + 2 * radius;
+        let padded: Vec<u16> = (0..(height + 2 * radius) * stride)
+            .map(|index| {
+                let (x, y) = (index % stride, index / stride);
+                match (x, y) {
+                    (50..=55, 3..=5) => 900,
+                    (_, 9) if x % 7 == 0 => 201,
+                    _ if x + 12 >= stride => y as u16,
+                    _ => 200,
+                }
+            })
+            .collect();
+        let source_at = |x: isize, y: isize| {
+            let index = (y + radius as isize) as usize * stride + (x + radius as isize) as usize;
+            padded[index]
+        };
+        let cells: Vec<u8> = (0..width.div_ceil(4) * height.div_ceil(4))
+            .map(|cell| (cell / 5 % 64) as u8)
+            .collect();
+        for filter_set_index in 0..4 {
+            for bit_depth in [BitDepth::Ten, BitDepth::Eight] {
+                let params = PcWienerFilter {
+                    width,
+                    height,
+                    output_stride: width,
+                    bit_depth,
+                    filter_set_index,
+                    subclass_block_size: PC_WIENER_BLOCK_SIZE,
+                    subclasses: &cells,
+                };
+                let mut reference = vec![0u16; width * height];
+                pc_wiener_filter_block(&mut reference, &params, |x, y| {
+                    Ok(source_at(x, y) % (bit_depth.max_sample() + 1))
+                })
+                .unwrap();
+                let narrowed: Vec<u16> = padded
+                    .iter()
+                    .map(|&value| value % (bit_depth.max_sample() + 1))
+                    .collect();
+                let source = PcWienerPaddedSource::new(&narrowed, stride, width, height).unwrap();
+                let mut actual = vec![0u16; width * height];
+                pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
+                assert_eq!(actual, reference, "{width}x{height} set {filter_set_index}");
+                if bit_depth == BitDepth::Eight {
+                    let bytes: Vec<u8> = narrowed.iter().map(|&value| value as u8).collect();
+                    let source = PcWienerPaddedSource::new(&bytes, stride, width, height).unwrap();
+                    let mut actual = vec![0u8; width * height];
+                    pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
+                    let actual: Vec<u16> = actual.into_iter().map(u16::from).collect();
+                    assert_eq!(
+                        actual, reference,
+                        "{width}x{height} set {filter_set_index} u8"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn packed_and_strided_pc_wiener_match<T: ReconSample>(
     bit_depth: BitDepth,
     width: usize,

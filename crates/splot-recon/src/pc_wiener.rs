@@ -24,6 +24,7 @@ use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
 use crate::loop_restoration::PaddedRows;
 use crate::math::{round2_i32, round2_signed_i32};
+use crate::wienerns_filter::{FlatChunks, LumaSimdSource};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `PC_WIENER_NUM_FEATURES`.
@@ -1863,7 +1864,6 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     params: &PcWienerFilter<'_>,
     source: &PcWienerPaddedSource<'_, T>,
 ) -> Result<()> {
-    const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
     let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
     if !setup.source_is_valid {
         return pc_wiener_filter_block(output, params, |x, y| source.sample(x, y, params.width));
@@ -1873,51 +1873,18 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
         return filter_pc_wiener_padded_u16(destination, params, source.rows, T::u16_slice, &setup);
     }
 
-    let padded_width = params.width + 2 * R;
-    let mut filtered = Vec::with_capacity(setup.sample_count);
-    let mut acc = vec![0i32; params.width];
-    let max_sample = i32::from(setup.max_sample);
-    let subclass_cols = params.width.div_ceil(params.subclass_block_size);
-    for row in 0..params.height {
-        let subclass_row = row / params.subclass_block_size;
-        let row_subclasses =
-            &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
-        let window = pc_wiener_window_rows(source.rows, row, padded_width, Some)?;
-        let mut c0 = 0usize;
-        while c0 < params.width {
-            let subclass_col = c0 / params.subclass_block_size;
-            let subclass = row_subclasses[subclass_col];
-            let mut subclass_end = subclass_col + 1;
-            while subclass_end < subclass_cols && row_subclasses[subclass_end] == subclass {
-                subclass_end += 1;
-            }
-            let c1 = (subclass_end * params.subclass_block_size).min(params.width);
-            let coeffs = &setup.filters[usize::from(subclass)];
-            let len = c1 - c0;
-            let seg = &mut acc[..len];
-            let tap_row = |dy: isize, dx: isize| {
-                &window[R.wrapping_add_signed(dy)][(c0 + R).wrapping_add_signed(dx)..][..len]
-            };
-            for (a, &m) in seg.iter_mut().zip(tap_row(0, 0)) {
-                let m = i32::from(m.to_u16());
-                *a = (m << PC_WIENER_PREC_BITS) + m * coeffs[12];
-            }
-            for (&coeff, &(dy, dx)) in coeffs.iter().zip(&PC_WIENER_CONFIG) {
-                let plus = tap_row(dy, dx);
-                let minus = tap_row(-dy, -dx);
-                for ((a, &tp), &tm) in seg.iter_mut().zip(plus).zip(minus) {
-                    *a += (i32::from(tp.to_u16()) + i32::from(tm.to_u16())) * coeff;
-                }
-            }
-            for &sum in seg.iter() {
-                let sample = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, max_sample);
-                filtered.push(T::try_from_u16(sample as u16)?);
-            }
-            c0 = c1;
+    let mut filtered = vec![0u16; setup.sample_count];
+    let packed = PcWienerFilter {
+        output_stride: params.width,
+        ..*params
+    };
+    filter_pc_wiener_padded_u16(&mut filtered, &packed, source.rows, T::u8_slice, &setup)?;
+    let rows = output.chunks_mut(params.output_stride);
+    for (output, filtered) in rows.zip(filtered.chunks(params.width)) {
+        for (output, &sample) in output.iter_mut().zip(filtered) {
+            *output = T::try_from_u16(sample)?;
         }
     }
-
-    write_pc_wiener_block(output, &filtered, params);
     Ok(())
 }
 
@@ -1966,25 +1933,6 @@ pub fn pc_wiener_filter_block_padded_u16_into<T: ReconSample>(
     })
 }
 
-/// The seven padded source rows output row `row` reads, each viewed by
-/// `cast` as the kernel's sample type.
-fn pc_wiener_window_rows<'a, S, T: 'a>(
-    source: PaddedRows<'a, S>,
-    row: usize,
-    padded_width: usize,
-    cast: impl Fn(&'a [S]) -> Option<&'a [T]>,
-) -> Result<[&'a [T]; PC_WIENER_WINDOW_ROWS]> {
-    let mut rows: [&[T]; PC_WIENER_WINDOW_ROWS] = [&[]; PC_WIENER_WINDOW_ROWS];
-    for (dy, window_row) in rows.iter_mut().enumerate() {
-        *window_row = source.row(row + dy, padded_width).and_then(&cast).ok_or(
-            ReconError::PcWienerInvalidBounds {
-                field: "PC-Wiener padded source rows",
-            },
-        )?;
-    }
-    Ok(rows)
-}
-
 trait PcWienerPaddedSample: ReconSample {
     fn load_lanes<const LANES: usize>(samples: &[Self], start: usize) -> Simd<i16, LANES>;
 }
@@ -2001,7 +1949,10 @@ impl PcWienerPaddedSample for u8 {
     }
 }
 
-fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + 'a>(
+/// Filters the block row by row; a 32-column chunk whose whole tap reach in a
+/// 4-row group holds one value takes that value, since every
+/// `Pc_Wiener_Filters` row sums to zero, as checked at compile time below.
+fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + LumaSimdSource + 'a>(
     destination: &mut [u16],
     params: &PcWienerFilter<'_>,
     source: PaddedRows<'a, S>,
@@ -2011,21 +1962,47 @@ fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + 'a>(
     const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
     let padded_width = params.width + 2 * R;
     let subclass_cols = params.width.div_ceil(params.subclass_block_size);
+    let rows_error = || ReconError::PcWienerInvalidBounds {
+        field: "PC-Wiener padded source rows",
+    };
+    let mut flat = FlatChunks::<R>::new();
+    let mut window = [&[][..]; PC_WIENER_BLOCK_SIZE + 2 * R];
     for row in 0..params.height {
+        if row % PC_WIENER_BLOCK_SIZE == 0 {
+            let reach = PC_WIENER_BLOCK_SIZE.min(params.height - row) + 2 * R;
+            for (dy, slot) in window.iter_mut().enumerate().take(reach) {
+                *slot = source
+                    .row(row + dy, padded_width)
+                    .and_then(&cast)
+                    .ok_or_else(rows_error)?;
+            }
+            flat.update(&window[..reach], row, params.width);
+        }
         let subclass_row = row / params.subclass_block_size;
         let row_subclasses =
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
         let output = &mut destination[row * params.output_stride..][..params.width];
-        let rows = pc_wiener_window_rows(source, row, padded_width, &cast)?;
+        let rows = window[row % PC_WIENER_BLOCK_SIZE..]
+            .first_chunk::<PC_WIENER_WINDOW_ROWS>()
+            .ok_or_else(rows_error)?;
         let mut c0 = 0usize;
+        let (mut end, mut run) = flat.split(0, params.width);
         while c0 < params.width {
+            if c0 == end
+                && let Some((value, run_end)) = run
+            {
+                output[c0..run_end].fill(value.min(setup.max_sample));
+                c0 = run_end;
+                (end, run) = flat.split(c0, params.width);
+                continue;
+            }
             let subclass_col = c0 / params.subclass_block_size;
             let subclass = row_subclasses[subclass_col];
             let mut subclass_end = subclass_col + 1;
             while subclass_end < subclass_cols && row_subclasses[subclass_end] == subclass {
                 subclass_end += 1;
             }
-            let c1 = (subclass_end * params.subclass_block_size).min(params.width);
+            let c1 = (subclass_end * params.subclass_block_size).min(end);
             let coeffs = &setup.filters[usize::from(subclass)];
             let coeffs16 = &setup.filters16[usize::from(subclass)];
             let mut col = c0;
@@ -2034,7 +2011,7 @@ fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + 'a>(
                     while col + $lanes <= c1 {
                         filter_pc_wiener_padded_u16_simd::<$lanes, T>(
                             &mut output[col..],
-                            &rows,
+                            rows,
                             col,
                             coeffs16,
                             setup.max_sample,
@@ -2066,6 +2043,24 @@ fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + 'a>(
     }
     Ok(())
 }
+
+/// Every `Pc_Wiener_Filters` row sums to zero over its 25 taps, so a window
+/// that holds one value filters to that value.
+const _: () = {
+    let mut index = 0;
+    while index < PC_WIENER_FILTERS.len() * PC_WIENER_FULL_CLASSES {
+        let taps =
+            &PC_WIENER_FILTERS[index / PC_WIENER_FULL_CLASSES][index % PC_WIENER_FULL_CLASSES];
+        let mut sum = taps[12];
+        let mut tap = 0;
+        while tap < 12 {
+            sum += 2 * taps[tap];
+            tap += 1;
+        }
+        assert!(sum == 0);
+        index += 1;
+    }
+};
 
 /// Padded source rows one § 7.20.4 PC-Wiener output row reads.
 const PC_WIENER_WINDOW_ROWS: usize = 2 * PC_WIENER_FILTER_TAP_RADIUS + 1;
