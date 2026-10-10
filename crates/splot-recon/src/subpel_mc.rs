@@ -1520,6 +1520,17 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         &plane_bounded(reference0, params0),
         &plane_bounded(reference1, params1),
     );
+    if small_compound::predict(
+        reference0,
+        params0,
+        reference1,
+        params1,
+        cwp_weight,
+        output,
+        output_stride,
+    ) {
+        return Ok(true);
+    }
     if O::u16_slice(&[]).is_some()
         && [params0, params1]
             .iter()
@@ -1551,17 +1562,6 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
             output_stride,
         )
     {
-        return Ok(true);
-    }
-    if small_compound::predict(
-        reference0,
-        params0,
-        reference1,
-        params1,
-        cwp_weight,
-        output,
-        output_stride,
-    ) {
         return Ok(true);
     }
     let mut pred0 = [0i32; COMPOUND_PRED0_CAPACITY];
