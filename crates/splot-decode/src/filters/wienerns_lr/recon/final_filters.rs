@@ -15,13 +15,13 @@ use crate::filters::source::{
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
 use splot_recon::{
-    BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
-    PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyPaddedSource,
-    PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PlaneId,
-    PlaneRect, ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
-    WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
-    WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch, WienerNsLumaFilter,
-    WienerNsLumaPaddedSource, WienerNsLumaScratch, loop_restoration_source_sample,
+    BitDepth, LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
+    PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES,
+    PcWienerClassifyPaddedSource, PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter,
+    PcWienerPaddedSource, PlaneId, PlaneRect, ReconError, ReconSample, Result as ReconResult,
+    WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS,
+    WIENER_NS_LUMA_TAP_RADIUS, WienerNsChromaFilter, WienerNsChromaPaddedSource,
+    WienerNsChromaScratch, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
     pc_wiener_filter_set_index, pc_wiener_subclass_table,
     wiener_ns_filter_chroma_block_padded_u8_into, wiener_ns_filter_chroma_block_padded_u16_into,
@@ -778,13 +778,14 @@ impl<'a> LrSourceWindow<'a> {
             })?;
             samples.resize(sample_count, 0);
         }
+        let resolved = LoopRestorationPlaneBounds::new(plane, bounds)?;
         for row_index in 0..rows {
             let y = block_y
                 .checked_sub(radius_y)
                 .and_then(|top| top.checked_add(isize::try_from(row_index).ok()?))
                 .ok_or(OVERFLOW_WINDOW)?;
-            let left = loop_restoration_source_sample(plane, isize::MIN, y, bounds)?;
-            let right = loop_restoration_source_sample(plane, isize::MAX, y, bounds)?;
+            let left = resolved.sample(isize::MIN, y);
+            let right = resolved.sample(isize::MAX, y);
             if right.x >= plane_width || left.y >= plane_height {
                 return Err(ReconError::PcWienerInvalidBounds {
                     field: "LR source frame bounds",

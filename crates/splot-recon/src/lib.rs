@@ -132,8 +132,8 @@ pub use inverse_transform_2d_outer::{
     inverse_transform_2d_outer_adjusted,
 };
 pub use loop_restoration::{
-    LoopRestorationSource, LoopRestorationSourceBounds, LoopRestorationSourceSample,
-    LoopRestorationSourceSampleValue, loop_restoration_source_sample,
+    LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
+    LoopRestorationSourceSample, LoopRestorationSourceSampleValue, loop_restoration_source_sample,
     loop_restoration_source_sample_value,
 };
 pub use optflow::{

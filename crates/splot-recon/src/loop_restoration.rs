@@ -90,41 +90,68 @@ pub fn loop_restoration_source_sample(
     y: isize,
     bounds: &LoopRestorationSourceBounds,
 ) -> Result<LoopRestorationSourceSample> {
-    validate_source_bounds(bounds)?;
-    let (sub_x, sub_y) = plane_subsampling(plane, bounds);
+    Ok(LoopRestorationPlaneBounds::new(plane, bounds)?.sample(x, y))
+}
 
-    let min_x = shifted_bound(bounds.luma_start_x, sub_x, "loop restoration min x")?;
-    let max_x = shifted_bound(bounds.luma_end_x, sub_x, "loop restoration max x")?;
-    let min_y = shifted_bound(bounds.luma_start_y, sub_y, "loop restoration min y")?;
-    let max_y = shifted_bound(bounds.luma_end_y, sub_y, "loop restoration max y")?;
-    let stripe_start = shifted_bound(
-        bounds.luma_stripe_start_y,
-        sub_y,
-        "loop restoration stripe start y",
-    )?;
-    let stripe_end = shifted_bound(
-        bounds.luma_stripe_end_y,
-        sub_y,
-        "loop restoration stripe end y",
-    )?;
+/// [`LoopRestorationSourceBounds`] validated and shifted into one plane's
+/// coordinates, so resolving many samples repeats only the § 7.20.2 clipping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LoopRestorationPlaneBounds {
+    min_x: isize,
+    max_x: isize,
+    min_y: isize,
+    max_y: isize,
+    stripe_start: isize,
+    stripe_end: isize,
+}
 
-    let clipped_x = x.clamp(min_x, max_x);
-    let mut clipped_y = y.clamp(min_y, max_y);
-    let source = if clipped_y < stripe_start {
-        clipped_y = clipped_y.max(stripe_start.saturating_sub(2));
-        LoopRestorationSource::CurrFrame
-    } else if clipped_y > stripe_end {
-        clipped_y = clipped_y.min(stripe_end.saturating_add(2));
-        LoopRestorationSource::CurrFrame
-    } else {
-        LoopRestorationSource::CdefFrame
-    };
+impl LoopRestorationPlaneBounds {
+    /// Resolves `bounds` for `plane`.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`loop_restoration_source_sample`].
+    pub fn new(plane: PlaneId, bounds: &LoopRestorationSourceBounds) -> Result<Self> {
+        validate_source_bounds(bounds)?;
+        let (sub_x, sub_y) = plane_subsampling(plane, bounds);
+        Ok(Self {
+            min_x: shifted_bound(bounds.luma_start_x, sub_x, "loop restoration min x")?,
+            max_x: shifted_bound(bounds.luma_end_x, sub_x, "loop restoration max x")?,
+            min_y: shifted_bound(bounds.luma_start_y, sub_y, "loop restoration min y")?,
+            max_y: shifted_bound(bounds.luma_end_y, sub_y, "loop restoration max y")?,
+            stripe_start: shifted_bound(
+                bounds.luma_stripe_start_y,
+                sub_y,
+                "loop restoration stripe start y",
+            )?,
+            stripe_end: shifted_bound(
+                bounds.luma_stripe_end_y,
+                sub_y,
+                "loop restoration stripe end y",
+            )?,
+        })
+    }
 
-    Ok(LoopRestorationSourceSample {
-        x: clipped_x as usize,
-        y: clipped_y as usize,
-        source,
-    })
+    /// Resolves the § 7.20.2 source sample for plane coordinates `(x, y)`.
+    #[must_use]
+    pub fn sample(&self, x: isize, y: isize) -> LoopRestorationSourceSample {
+        let clipped_x = x.clamp(self.min_x, self.max_x);
+        let mut clipped_y = y.clamp(self.min_y, self.max_y);
+        let source = if clipped_y < self.stripe_start {
+            clipped_y = clipped_y.max(self.stripe_start.saturating_sub(2));
+            LoopRestorationSource::CurrFrame
+        } else if clipped_y > self.stripe_end {
+            clipped_y = clipped_y.min(self.stripe_end.saturating_add(2));
+            LoopRestorationSource::CurrFrame
+        } else {
+            LoopRestorationSource::CdefFrame
+        };
+
+        LoopRestorationSourceSample {
+            x: clipped_x as usize,
+            y: clipped_y as usize,
+            source,
+        }
+    }
 }
 
 /// Resolves and reads the AV2 § 7.20.2 loop-restoration source sample.
