@@ -143,7 +143,6 @@ fn blend_compound_diff_weighted<T: ReconSample>(
         .map(|mask| diff_weighted_luma_mask_scales(mask, w, h, sub_x, sub_y))
         .transpose()?;
     let max_sample = i32::from(bit_depth.max_sample().min(T::MAX_VALUE));
-    let blend_shift = 6 + compound_inter_post_round();
     let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
     let mut mask_row = [0i32; MAX_MC_BLOCK_DIM];
     let mask_row = mask_row
@@ -159,26 +158,29 @@ fn blend_compound_diff_weighted<T: ReconSample>(
         if let (Some(luma_mask), Some((scale_x, scale_y, luma_w))) =
             (luma_diff_weighted_mask, scales)
         {
+            let luma_rows = &luma_mask[y * scale_y * luma_w..][..scale_y * luma_w];
+            match (scale_x, scale_y) {
+                (1, 1) => {
+                    let masks = luma_rows.iter().map(|&mask| i32::from(mask));
+                    blend_mask_row(output, masks, pred0, pred1, max_sample)?;
+                    continue;
+                }
+                (2, 2) => {
+                    let (top, bottom) = luma_rows.split_at(luma_w);
+                    let masks = top.as_chunks::<2>().0.iter().zip(bottom.as_chunks::<2>().0);
+                    let masks = masks.map(|(top, bottom)| {
+                        let sum = i32::from(top[0]) + i32::from(top[1]);
+                        (sum + i32::from(bottom[0]) + i32::from(bottom[1]) + 2) >> 2
+                    });
+                    blend_mask_row(output, masks, pred0, pred1, max_sample)?;
+                    continue;
+                }
+                _ => {}
+            }
             mask_row.fill(0);
-            for dy in 0..scale_y {
-                let luma_row = &luma_mask[(y * scale_y + dy) * luma_w..][..luma_w];
-                match scale_x {
-                    1 => {
-                        for (mask, &luma) in mask_row.iter_mut().zip(luma_row) {
-                            *mask += i32::from(luma);
-                        }
-                    }
-                    2 => {
-                        for (mask, pair) in mask_row.iter_mut().zip(luma_row.as_chunks::<2>().0) {
-                            *mask += i32::from(pair[0]) + i32::from(pair[1]);
-                        }
-                    }
-                    _ => {
-                        for (mask, luma) in mask_row.iter_mut().zip(luma_row.chunks_exact(scale_x))
-                        {
-                            *mask += luma.iter().map(|&value| i32::from(value)).sum::<i32>();
-                        }
-                    }
+            for luma_row in luma_rows.chunks_exact(luma_w) {
+                for (mask, luma) in mask_row.iter_mut().zip(luma_row.chunks_exact(scale_x)) {
+                    *mask += luma.iter().map(|&value| i32::from(value)).sum::<i32>();
                 }
             }
             let average_shift = sub_x + sub_y;
@@ -190,16 +192,31 @@ fn blend_compound_diff_weighted<T: ReconSample>(
                 *mask = i32::from(difference_weight(left, right, diff_round, inverse));
             }
         }
-        let blended =
-            mask_row
-                .iter()
-                .zip(pred0.iter().zip(pred1))
-                .map(|(&mask, (&left, &right))| {
-                    (mask * left + (64 - mask) * right + (1 << (blend_shift - 1))) >> blend_shift
-                });
-        store_clamped_samples(output, max_sample, blended)?;
+        blend_mask_row(output, mask_row.iter().copied(), pred0, pred1, max_sample)?;
     }
     Ok(())
+}
+
+/// The § 7.13.3.30 blend of one row with the mask values `masks`.
+#[allow(
+    clippy::inline_always,
+    reason = "the mask iterator must fuse with the blend loop"
+)]
+#[inline(always)]
+fn blend_mask_row<T: ReconSample>(
+    output: &mut [T],
+    masks: impl Iterator<Item = i32>,
+    pred0: &[i32],
+    pred1: &[i32],
+    max_sample: i32,
+) -> splot_recon::Result<()> {
+    let shift = 6 + compound_inter_post_round();
+    let blended = masks
+        .zip(pred0.iter().zip(pred1))
+        .map(|(mask, (&left, &right))| {
+            (mask * left + (64 - mask) * right + (1 << (shift - 1))) >> shift
+        });
+    store_clamped_samples(output, max_sample, blended)
 }
 
 /// Clamps each sample to `0..=max_sample` and stores it. When `max_sample`
