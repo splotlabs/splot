@@ -1223,7 +1223,8 @@ fn narrow_warp_intermediate(value: i32) -> i16 {
 }
 
 fn warped_filter_row(phase: i32) -> &'static [i8; WARP_FILTER_TAPS] {
-    let offset = round2_i32(phase, WARPEDDIFF_PREC_BITS) + WARP_FILTER_CENTER;
+    let offset =
+        ((phase + (1 << (WARPEDDIFF_PREC_BITS - 1))) >> WARPEDDIFF_PREC_BITS) + WARP_FILTER_CENTER;
     debug_assert!((0..WARPED_FILTERS.len() as i32).contains(&offset));
     &WARPED_FILTERS[offset as usize]
 }
