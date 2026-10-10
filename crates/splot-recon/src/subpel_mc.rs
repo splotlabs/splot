@@ -705,6 +705,11 @@ fn subpel_bilinear_horizontal_into<T: ReconSample, O: BilinearOutput>(
                     && i32::try_from(last).is_ok_and(|last| last <= params.last_x)
             })
     });
+    if let Some(x) = in_plane_x(reference, params, direct_x, 1) {
+        let rows = |r| [row_at(reference, params, y0 + r as i32); 2];
+        bilinear_in_plane(reference, params, rows, x, 1, phase, output, output_stride);
+        return Ok(());
+    }
     let mut clipped_x = [0usize; MAX_BLOCK_DIM + 1];
     if direct_x.is_none() {
         for (c, col) in clipped_x[..=params.w].iter_mut().enumerate() {
@@ -806,6 +811,14 @@ fn subpel_bilinear_vertical_into<T: ReconSample, O: BilinearOutput>(
         return Ok(());
     }
     let direct_x = subpel_direct_copy_x(reference, params);
+    if let Some(x) = in_plane_x(reference, params, direct_x, 0) {
+        let rows = |r| {
+            let row = |offset| row_at(reference, params, y0 + (r + offset) as i32);
+            [row(0), row(1)]
+        };
+        bilinear_in_plane(reference, params, rows, x, 0, phase, output, output_stride);
+        return Ok(());
+    }
     for r in 0..params.h {
         let top = (y0 + r as i32)
             .clamp(params.first_y, params.last_y)
@@ -986,7 +999,7 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
             }
         }
         if direct_x.is_none() {
-            let [first, last, lo, hi] = unclipped_columns(reference, params);
+            let [first, last, lo, hi] = unclipped_columns(reference, params, 1);
             for r in 0..params.h {
                 let (top, bottom) = (source_row(r), source_row(r + 1));
                 let edge = |col: usize| {
@@ -1048,22 +1061,94 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
     Ok(())
 }
 
-/// The plane-bounded `firstX` and `lastX` of an unscaled two-axis
-/// `BILINEAR` block, and the columns `[lo, hi)` whose reads at `x0 + c` and
-/// `x0 + c + 1` both lie in them. Both reads left of `lo` clip to `firstX`
-/// and both reads from `hi` on clip to `lastX`, which is the § 7.13.3.18
-/// `Clip3` followed by the plane clamp.
+/// The plane-bounded `firstX` and `lastX` of an unscaled `BILINEAR` block,
+/// and the columns `[lo, hi)` whose reads at `x0 + c` and `x0 + c + reach`
+/// both lie in them. Every read left of `lo` clips to `firstX` and every
+/// read from `hi` on clips to `lastX`, which is the § 7.13.3.18 `Clip3`
+/// followed by the plane clamp.
 fn unclipped_columns<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
+    reach: i64,
 ) -> [usize; 4] {
     let plane_last = reference.width as i64 - 1;
     let first = i64::from(params.first_x).clamp(0, plane_last);
     let last = i64::from(params.last_x).clamp(first, plane_last.max(first));
     let x0 = i64::from(params.start_x >> SCALE_SUBPEL_BITS);
     let lo = (first - x0).clamp(0, params.w as i64);
-    let hi = (last - x0).clamp(lo, params.w as i64);
+    let hi = (last - x0 + 1 - reach).clamp(lo, params.w as i64);
     [first as usize, last as usize, lo as usize, hi as usize]
+}
+
+/// A clipped one-axis `BILINEAR` block whose unclipped reads stay inside the
+/// plane: each row runs the unclipped kernel from `x`, then takes the
+/// `firstX` and `lastX` values outside [`unclipped_columns`], where both
+/// reads of a column clip to the same sample.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn bilinear_in_plane<'a, T: ReconSample + 'a, O: BilinearOutput>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    rows: impl Fn(usize) -> [&'a [T]; 2],
+    x: usize,
+    reach: usize,
+    phase: i32,
+    output: &mut [O],
+    output_stride: usize,
+) {
+    let [first, last, lo, hi] = unclipped_columns(reference, params, reach as i64);
+    let vector_width8 = params.w - params.w % 8;
+    let vector_width4 = params.w - params.w % 4;
+    for r in 0..params.h {
+        let sources = rows(r);
+        let destination = &mut output[r * output_stride..][..params.w];
+        for c in (0..vector_width8).step_by(8) {
+            let left = reference_lanes::<8, T>(sources[0], x + c);
+            let right = reference_lanes::<8, T>(sources[1], x + reach + c);
+            O::store(bilinear_u16(left, right, phase), &mut destination[c..]);
+        }
+        for c in (vector_width8..vector_width4).step_by(4) {
+            let left = reference_lanes::<4, T>(sources[0], x + c);
+            let right = reference_lanes::<4, T>(sources[1], x + reach + c);
+            O::store(bilinear_u16(left, right, phase), &mut destination[c..]);
+        }
+        for c in vector_width4..params.w {
+            let [left, right] = [sources[0][x + c], sources[1][x + reach + c]];
+            destination[c] = O::from_sample(bilinear_sample(left.to_u16(), right.to_u16(), phase));
+        }
+        let edge = |col: usize| {
+            let [first, second] = sources.map(|row| row[col].to_u16());
+            O::from_sample(bilinear_sample(first, second, phase))
+        };
+        destination[..lo].fill(edge(first));
+        destination[hi..].fill(edge(last));
+    }
+}
+
+/// The first column of a clipped unscaled block whose unclipped reads at
+/// `x0 + c` and `x0 + c + reach` stay inside the plane row.
+fn in_plane_x<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    direct_x: Option<usize>,
+    reach: usize,
+) -> Option<usize> {
+    usize::try_from(params.start_x >> SCALE_SUBPEL_BITS)
+        .ok()
+        .filter(|&x| direct_x.is_none() && x + params.w + reach <= reference.width)
+}
+
+/// Reference row `Clip3(firstY, lastY, y)` clamped into the readable rows.
+fn row_at<'a, T: ReconSample>(
+    reference: &'a ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    y: i32,
+) -> &'a [T] {
+    let last_row = reference.readable_rows as i32 - 1;
+    reference.row(
+        y.min(params.last_y.min(last_row))
+            .max(params.first_y.clamp(0, last_row)) as usize,
+    )
 }
 
 /// One `LANES`-wide column of the unclipped two-axis `BILINEAR` kernel. Each
