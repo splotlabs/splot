@@ -8,34 +8,24 @@ use super::{
     HORIZONTAL_TX_CANDIDATE, SUB_PU_CANDIDATE, VERTICAL_TX_CANDIDATE,
 };
 
-const NO_BLOCK_INDEX: u32 = u32::MAX;
+/// A cell holds its record index plus one, so that an empty cell is zero and a
+/// window grows by zeroing.
+const NO_BLOCK: u32 = 0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct MiCell {
     pub(super) base: u32,
 }
 
-impl Default for MiCell {
-    fn default() -> Self {
-        Self {
-            base: NO_BLOCK_INDEX,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct ChromaMiCell {
     pub(super) overlay: u32,
     pub(super) chroma_transform: u32,
 }
 
-impl Default for ChromaMiCell {
-    fn default() -> Self {
-        Self {
-            overlay: NO_BLOCK_INDEX,
-            chroma_transform: NO_BLOCK_INDEX,
-        }
-    }
+/// The record a cell value names; an empty cell names none.
+const fn record(cell: u32) -> usize {
+    (cell as usize).wrapping_sub(1)
 }
 
 /// The luma grid over the mode-info rows its window has built; reads outside
@@ -117,7 +107,7 @@ impl MiGrid<'_> {
     pub(super) fn get_luma_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
         let cell = self.base.cells.get(self.index(row, col))?;
         Some(EdgeBlock {
-            block: self.base_blocks.get(cell.base as usize)?,
+            block: self.base_blocks.get(record(cell.base))?,
             chroma_transform: None,
         })
     }
@@ -133,14 +123,12 @@ impl MiGrid<'_> {
             )
         });
         let block = match chroma.map(|cell| cell.overlay) {
-            Some(overlay) if overlay != NO_BLOCK_INDEX => {
-                self.overlay_blocks.get(overlay as usize)?
-            }
-            _ => self.base_blocks.get(base.base as usize)?,
+            Some(overlay) if overlay != NO_BLOCK => self.overlay_blocks.get(record(overlay))?,
+            _ => self.base_blocks.get(record(base.base))?,
         };
         let chroma_transform = match chroma.map(|cell| cell.chroma_transform) {
-            Some(transform) if transform != NO_BLOCK_INDEX => {
-                Some(self.overlay_blocks.get(transform as usize)?)
+            Some(transform) if transform != NO_BLOCK => {
+                Some(self.overlay_blocks.get(record(transform))?)
             }
             _ => None,
         };
@@ -329,11 +317,7 @@ fn slide_cells<T: Clone + Default>(
 /// Records overwrite each other in record order, so the higher index wins
 /// whichever order a window visits them in.
 fn later(current: u32, index: u32) -> u32 {
-    if current.wrapping_add(1) <= index {
-        index
-    } else {
-        current
-    }
+    current.max(index + 1)
 }
 
 fn all_covered(candidates: &[u8]) -> bool {
@@ -404,11 +388,11 @@ impl MiGridStorage {
             .get(built..)
             .unwrap_or_default()
             .iter()
-            .fold(0, |highest, cell| highest.max(cell.base))
-            != NO_BLOCK_INDEX;
+            .fold(u32::MAX, |lowest, cell| lowest.min(cell.base))
+            != NO_BLOCK;
         if !self.fully_covered {
             for (candidate, cell) in self.candidates.iter_mut().zip(&self.cells) {
-                if cell.base != NO_BLOCK_INDEX {
+                if cell.base != NO_BLOCK {
                     *candidate |= COVERED_CANDIDATE;
                 }
             }
@@ -606,7 +590,7 @@ fn block_row_spans(
 
 fn mi_block_index(index: usize) -> Result<u32, DeblockError> {
     let index = u32::try_from(index).map_err(|_| DeblockError::Workspace)?;
-    if index == NO_BLOCK_INDEX {
+    if index == u32::MAX {
         return Err(DeblockError::Workspace);
     }
     Ok(index)

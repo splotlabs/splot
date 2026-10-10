@@ -892,8 +892,8 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
         },
     ]));
     let mut cells = vec![MiCell::default(); 4 * 16];
-    cells[4].base = 0;
-    cells[5].base = 1;
+    cells[4].base = 1;
+    cells[5].base = 2;
     let storage = Box::leak(Box::new(MiGridStorage {
         mi_cols: 16,
         window: Window::default(),
@@ -1045,7 +1045,7 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
                 .flat_map(|(at, row)| (0..mi_cols).map(move |col| (at * mi_cols + col, row, col)))
                 .filter(|_| !base.fully_covered)
             {
-                let luma_covered = base.cells[index].base != u32::MAX;
+                let luma_covered = base.cells[index].base != 0;
                 assert_eq!(covered(&base.candidates, index), luma_covered);
                 let record_covered = chroma.iter_plane(plane).any(|(_, block)| {
                     let rows = block.r as usize..(block.r + block.n4h) as usize;
