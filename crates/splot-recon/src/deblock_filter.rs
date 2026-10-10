@@ -1222,12 +1222,9 @@ impl<'a> EdgeKernel<'a> {
     fn weights(&self, width: usize) -> (usize, usize, i16, i16, i16) {
         let width_neg = width.min(self.choice.max_width_neg);
         let width_pos = width.min(self.choice.max_width_pos);
-        let q_thr_clamp = self
-            .choice
-            .q_thr
-            .saturating_mul(self.q_thresh_mults[width_neg.max(width_pos) - 1])
-            .max(0)
-            .min(i32::from(i16::MAX)) as i16;
+        let q_thr_clamp = (i64::from(self.choice.q_thr)
+            * i64::from(self.q_thresh_mults[width_neg.max(width_pos) - 1]))
+        .clamp(0, i64::from(i16::MAX)) as i16;
         let weight = |lossless: bool, width: usize| {
             if lossless {
                 0
