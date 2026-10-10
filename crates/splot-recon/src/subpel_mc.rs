@@ -1398,8 +1398,9 @@ fn prefetches<T>(samples: &[T]) -> bool {
 
 /// Starts the cache fills of the `w` samples from column `x` of reference row
 /// `y`. A prefetch never faults, so a row outside the plane only wastes the
-/// hint; offsets `0`, `w / 2` and `w - 1` reach every 128-byte line of a
-/// row of at most 128 samples.
+/// hint; offsets `0`, `w / 2` and `w - 1` reach every line of a row of at
+/// most 128 samples only with 128-byte cache lines (Apple M-series, where the
+/// gain was measured). With 64-byte lines some lines of a row get no hint.
 #[allow(clippy::inline_always, reason = "per-row hint in the MC hot loops")]
 #[inline(always)]
 fn prefetch_reference_row<T: ReconSample>(
