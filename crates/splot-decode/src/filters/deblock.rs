@@ -1040,8 +1040,20 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
     } else {
         1 << sub_x
     };
-    let mut visit = |r: usize, c: usize, tile_edge: bool, follows: bool| {
+    // Returns how many of the `chain` same-record edges after this one repeat its outcome.
+    let mut visit = |r: usize, c: usize, tile_edge: bool, follows: bool, chain: usize| {
         let (line, pos) = if PASS == 0 { (c, r) } else { (r, c) };
+        let spanned = |ctx: &PlaneCtx<'_, '_, T>, mut chain: usize| {
+            while chain > 0 {
+                let next = pos + chain * step;
+                let (row, col) = if PASS == 0 { (next, c) } else { (r, next) };
+                if ctx.in_span::<PASS>(row, col, sub_x, sub_y) {
+                    break;
+                }
+                chain -= 1;
+            }
+            chain
+        };
         let mut blocks = None;
         let same = follows || {
             let pair = edge_blocks::<PLANE, PASS>(grid, r, c, sub_x, sub_y)?;
@@ -1052,14 +1064,15 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
         };
         if same && let Some((_, held_pos, _, repeat)) = last.as_mut() {
             match repeat {
-                Repeat::Skip => return Ok(()),
+                Repeat::Skip => return Ok(chain),
                 Repeat::Join
                     if *held_pos + step == pos && ctx.in_span::<PASS>(r, c, sub_x, sub_y) =>
                 {
                     if let Some((_, edges)) = run.as_mut() {
-                        *edges += 1;
-                        *held_pos = pos;
-                        return Ok(());
+                        let joined = spanned(&ctx, chain);
+                        *edges += 1 + joined;
+                        *held_pos = pos + joined * step;
+                        return Ok(joined);
                     }
                 }
                 Repeat::Join | Repeat::Derive => {}
@@ -1078,8 +1091,17 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
             &mut cache,
             &mut run,
         )?;
-        last = Some((line, pos, blocks, repeat));
-        Ok::<_, DeblockError>(())
+        let repeated = match (repeat, run.as_mut()) {
+            (Repeat::Skip, _) => chain,
+            (Repeat::Join, Some((_, edges))) => {
+                let joined = spanned(&ctx, chain);
+                *edges += joined;
+                joined
+            }
+            _ => 0,
+        };
+        last = Some((line, pos + repeated * step, blocks, repeat));
+        Ok::<_, DeblockError>(repeated)
     };
     let row_step = plane_pass.row_step;
     let end = plane_pass.mi_row_range.1.min(mi_rows);
@@ -1126,12 +1148,38 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
                 let bit = any.trailing_zeros();
                 let col = start + bit as usize;
                 let tile_edge = row_tile_edge || PASS == 0 && starts_tile(tile_starts, col);
-                for ((mask, follow), r) in masks.iter().zip(&follows).zip(rows.clone()) {
-                    if mask >> bit & 1 != 0 {
-                        visit(r, col, tile_edge, follow >> bit & 1 != 0)?;
-                    }
-                }
                 any &= any - 1;
+                if PASS == 1 {
+                    let follow = u64::from(follows[0]) >> bit;
+                    let lanes = if step == 1 {
+                        u64::MAX
+                    } else {
+                        0x5555_5555_5555_5555
+                    };
+                    let chain = (!(follow >> step) & lanes).trailing_zeros() as usize / step;
+                    let repeated = visit(block_start, col, tile_edge, follow & 1 != 0, chain)?;
+                    any &= !((((1u64 << (repeated * step)) - 1) << (bit + 1)) as u32);
+                    continue;
+                }
+                let column = follows
+                    .iter()
+                    .zip(rows.clone())
+                    .enumerate()
+                    .fold(0u32, |column, (i, (follow, _))| {
+                        column | (follow >> bit & 1) << i
+                    });
+                let mut repeated = 0;
+                for (i, (mask, r)) in masks.iter().zip(rows.clone()).enumerate() {
+                    if mask >> bit & 1 == 0 {
+                        continue;
+                    }
+                    if repeated > 0 {
+                        repeated -= 1;
+                        continue;
+                    }
+                    let chain = (!(column >> (i + 1))).trailing_zeros() as usize;
+                    repeated = visit(r, col, tile_edge, column >> i & 1 != 0, chain)?;
+                }
             }
         }
     }
