@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use super::tip_field::divide_tip_average;
 use super::*;
 use splot_parallel::{ThreadCount, WorkerPool};
 
@@ -115,7 +116,6 @@ fn tip_context(
         current_order_hint,
         ref_order_hints,
         field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
-        average_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
         trajectories: None,
         trajectory_scratch: None,
         tip: None,
@@ -830,6 +830,150 @@ fn tip_averaging_never_inherits_the_previous_frame_between_sampled_cells() {
                 "cell ({y8}, {x8}) kept the previous frame's TIP motion"
             );
         }
+    }
+}
+
+/// The whole-field § 7.10.4 passes that the per-unit preparation replaced:
+/// scale every cell, fill holes, then average through a row scratch.
+fn reference_prepare_tip_field(
+    field: &mut ProjectedTemporalMotionField,
+    references: TipReferencePair,
+    step: usize,
+    unit: usize,
+    fill_holes: bool,
+) {
+    let (width8, height8) = (field.width8, field.height8);
+    for (index, cell) in field.cells.iter_mut().enumerate() {
+        *cell = if (index / width8).is_multiple_of(step) && (index % width8).is_multiple_of(step) {
+            let projected = cell.valid.then(|| {
+                let mv = project_tmvp_mv(cell.mv(), references.ref_offset, cell.ref_offset());
+                Mv {
+                    row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                    col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                }
+            });
+            let mv = projected.unwrap_or(Mv::ZERO);
+            ProjectedTemporalMotionCell::new(projected.is_some(), mv, references.ref_offset)
+        } else {
+            ProjectedTemporalMotionCell::default()
+        };
+    }
+    if fill_holes {
+        let units = |range: usize| {
+            (0..range)
+                .step_by(unit)
+                .map(move |start| (start, (start + unit).min(range)))
+        };
+        for (block_y, end_y) in units(height8) {
+            for (block_x, end_x) in units(width8) {
+                for y8 in (block_y..end_y).step_by(step) {
+                    for x8 in (block_x..end_x).step_by(step) {
+                        let index = y8 * width8 + x8;
+                        let source = field.cells[index];
+                        let mut fill = |destination: usize| {
+                            if !field.cells[destination].valid {
+                                field.cells[destination] = source;
+                            }
+                        };
+                        if y8 >= block_y + step {
+                            fill(index - step * width8);
+                        }
+                        if x8 >= block_x + step {
+                            fill(index - step);
+                        }
+                        if y8 + step < end_y {
+                            fill(index + step * width8);
+                        }
+                        if x8 + step < end_x {
+                            fill(index + step);
+                        }
+                    }
+                }
+            }
+        }
+        let filled = field.cells.clone();
+        for (block_y, end_y) in units(height8) {
+            for (block_x, end_x) in units(width8) {
+                for y8 in (block_y..end_y).step_by(step) {
+                    for x8 in (block_x..end_x).step_by(step) {
+                        let index = y8 * width8 + x8;
+                        let mut neighbours = vec![index];
+                        if y8 >= block_y + step {
+                            neighbours.push(index - step * width8);
+                        }
+                        if x8 >= block_x + step {
+                            neighbours.push(index - step);
+                        }
+                        if y8 + step < end_y {
+                            neighbours.push(index + step * width8);
+                        }
+                        if x8 + step < end_x {
+                            neighbours.push(index + step);
+                        }
+                        let valid: Vec<_> = neighbours
+                            .iter()
+                            .map(|&i| filled[i])
+                            .filter(|cell| cell.valid)
+                            .collect();
+                        field.cells[index] = if valid.is_empty() {
+                            ProjectedTemporalMotionCell::default()
+                        } else {
+                            let sum = |component: fn(Mv) -> i32| {
+                                valid.iter().map(|cell| component(cell.mv())).sum()
+                            };
+                            ProjectedTemporalMotionCell::new(
+                                true,
+                                Mv {
+                                    row: divide_tip_average(sum(|mv| mv.row), valid.len()),
+                                    col: divide_tip_average(sum(|mv| mv.col), valid.len()),
+                                },
+                                filled[index].ref_offset(),
+                            )
+                        };
+                    }
+                }
+            }
+        }
+    }
+    fill_temporal_sampling_gaps(field, step, unit);
+}
+
+#[test]
+fn unit_tip_preparation_matches_the_whole_field_passes() {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = |bound: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % bound
+    };
+    for case in 0..600 {
+        let (step, unit) = [(1, 8), (2, 8), (2, 16), (1, 16), (2, 2)][case % 5];
+        let fill_holes = case % 3 != 0;
+        let density = [0, 100, 50, 90, 97][(case / 5) % 5];
+        let (height8, width8) = (1 + next(40) as usize, 1 + next(40) as usize);
+        let mut field = ProjectedTemporalMotionField::new(height8 * 2, width8 * 2).unwrap();
+        for cell in &mut field.cells {
+            let mv = Mv {
+                row: next(5000) as i32 - 2500,
+                col: next(70_000) as i32 - 35_000,
+            };
+            *cell = ProjectedTemporalMotionCell::new(next(100) < density, mv, next(40) as i32 - 4);
+        }
+        let references = TipReferencePair {
+            past_ref: 0,
+            future_ref: 1,
+            past_offset: -1,
+            future_offset: 1,
+            ref_offset: next(33) as i32 - 1,
+        };
+        let mut expected = field.clone();
+        reference_prepare_tip_field(&mut expected, references, step, unit, fill_holes);
+        prepare_tip_field(&mut field, references, step, unit, fill_holes).unwrap();
+        assert_eq!(
+            field, expected,
+            "case {case}: step {step} unit {unit} holes {fill_holes}"
+        );
     }
 }
 

@@ -13,6 +13,7 @@ use super::{
 use band::BandCells;
 pub(crate) use band::TemporalMotionBand;
 use selection::projection_queue;
+use tip_field::prepare_tip_field;
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
 use trajectory::{
@@ -22,6 +23,7 @@ use trajectory::{
 
 mod band;
 mod selection;
+mod tip_field;
 mod trajectory;
 
 const MAX_FRAME_DISTANCE: i32 = 31;
@@ -809,7 +811,6 @@ pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
     field: ProjectedTemporalMotionField,
-    average_scratch: ProjectedTemporalMotionField,
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
     tip: Option<TipReferencePair>,
@@ -1026,7 +1027,6 @@ impl TemporalBandPlan {
             if let Some(references) = self.tip {
                 prepare_tip_field(
                     &mut field,
-                    &mut scratch.average,
                     references,
                     self.config.step,
                     self.config.unit_size8,
@@ -1061,7 +1061,6 @@ impl TemporalBandPlan {
 
 #[derive(Debug, Default)]
 struct TemporalMvScratch {
-    average: ProjectedTemporalMotionField,
     trajectory: OwnedTrajectoryScratch,
 }
 
@@ -1113,7 +1112,6 @@ impl TemporalMvContext {
             current_order_hint: 0,
             ref_order_hints: Vec::new(),
             field: ProjectedTemporalMotionField::default(),
-            average_scratch: ProjectedTemporalMotionField::default(),
             trajectories: None,
             trajectory_scratch: None,
             tip: None,
@@ -1448,7 +1446,6 @@ impl TemporalMvContext {
         };
         prepare_tip_field(
             &mut self.field,
-            &mut self.average_scratch,
             references,
             projection_step,
             tmvp_unit_size8,
@@ -1725,160 +1722,6 @@ fn sorted_reference_hints(
         }
     }
     len
-}
-
-fn prepare_tip_field(
-    field: &mut ProjectedTemporalMotionField,
-    average: &mut ProjectedTemporalMotionField,
-    references: TipReferencePair,
-    projection_step: usize,
-    tmvp_unit_size8: usize,
-    fill_holes: bool,
-) -> crate::Result<()> {
-    let width8 = field.width8.max(1);
-    for (y8, row) in field.cells.chunks_mut(width8).enumerate() {
-        for (x8, cell) in row.iter_mut().enumerate() {
-            *cell = if y8 % projection_step == 0 && x8 % projection_step == 0 {
-                let projected = cell.valid.then(|| {
-                    let mv = project_tmvp_mv(cell.mv(), references.ref_offset, cell.ref_offset());
-                    Mv {
-                        row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                        col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                    }
-                });
-                ProjectedTemporalMotionCell::new(
-                    projected.is_some(),
-                    projected.unwrap_or(Mv::ZERO),
-                    references.ref_offset,
-                )
-            } else {
-                ProjectedTemporalMotionCell::default()
-            };
-        }
-    }
-    if fill_holes {
-        fill_tip_holes(field, projection_step, tmvp_unit_size8);
-        average_tip_motion(field, average, projection_step, tmvp_unit_size8)?;
-    }
-    fill_temporal_sampling_gaps(field, projection_step, tmvp_unit_size8);
-    Ok(())
-}
-
-fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superblock_size8: usize) {
-    let width8 = field.width8;
-    for block_y in (0..field.height8).step_by(superblock_size8) {
-        for block_x in (0..field.width8).step_by(superblock_size8) {
-            let end_y = (block_y + superblock_size8).min(field.height8);
-            let end_x = (block_x + superblock_size8).min(field.width8);
-            for y8 in (block_y..end_y).step_by(step) {
-                for x8 in (block_x..end_x).step_by(step) {
-                    let index = y8 * width8 + x8;
-                    let source = field.cells[index];
-                    let mut fill = |destination: usize| {
-                        if !field.cells[destination].valid {
-                            field.cells[destination] = source;
-                        }
-                    };
-                    if y8 >= block_y + step {
-                        fill(index - step * width8);
-                    }
-                    if x8 >= block_x + step {
-                        fill(index - step);
-                    }
-                    if y8 + step < end_y {
-                        fill(index + step * width8);
-                    }
-                    if x8 + step < end_x {
-                        fill(index + step);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Replaces every sampled cell with its § 7.10.4 TIP motion average.
-///
-/// An average reads only its own superblock, so each superblock row is
-/// averaged into the one-row `averaged` scratch and then copied back over its
-/// rows. The scratch is cleared per row rather than resized: above a
-/// projection step of one this writes only the sampled cells, so a reused
-/// scratch would carry other motion in the cells between them, and
-/// [`fill_temporal_sampling_gaps`] overwrites those only where the sampled
-/// anchor is valid.
-fn average_tip_motion(
-    field: &mut ProjectedTemporalMotionField,
-    averaged: &mut ProjectedTemporalMotionField,
-    step: usize,
-    superblock_size8: usize,
-) -> crate::Result<()> {
-    let state = || crate::DecodeHeaderStateError::InvalidInterTemporalMotionState;
-    let band_rows = superblock_size8.min(field.height8);
-    let mi_rows = band_rows.checked_mul(2).ok_or_else(state)?;
-    let mi_cols = field.width8.checked_mul(2).ok_or_else(state)?;
-    averaged.reset(mi_rows, mi_cols)?;
-    let width8 = field.width8;
-    for block_y in (0..field.height8).step_by(superblock_size8) {
-        let end_y = (block_y + superblock_size8).min(field.height8);
-        averaged.cells.fill(ProjectedTemporalMotionCell::default());
-        for block_x in (0..field.width8).step_by(superblock_size8) {
-            let end_x = (block_x + superblock_size8).min(field.width8);
-            for y8 in (block_y..end_y).step_by(step) {
-                for x8 in (block_x..end_x).step_by(step) {
-                    let mut sum = Mv::ZERO;
-                    let mut count = 0usize;
-                    let index = y8 * width8 + x8;
-                    let mut add = |candidate: usize| {
-                        let cell = field.cells[candidate];
-                        if cell.valid {
-                            sum.row += cell.mv().row;
-                            sum.col += cell.mv().col;
-                            count += 1;
-                        }
-                    };
-                    add(index);
-                    if y8 >= block_y + step {
-                        add(index - step * width8);
-                    }
-                    if x8 >= block_x + step {
-                        add(index - step);
-                    }
-                    if y8 + step < end_y {
-                        add(index + step * width8);
-                    }
-                    if x8 + step < end_x {
-                        add(index + step);
-                    }
-                    averaged.cells[index - block_y * width8] = if count == 0 {
-                        ProjectedTemporalMotionCell::default()
-                    } else {
-                        ProjectedTemporalMotionCell::new(
-                            true,
-                            Mv {
-                                row: divide_tip_average(sum.row, count),
-                                col: divide_tip_average(sum.col, count),
-                            },
-                            field.cells[index].ref_offset(),
-                        )
-                    };
-                }
-            }
-        }
-        let rows = block_y * width8..end_y * width8;
-        let band = averaged.cells.get(..rows.len()).ok_or_else(state)?;
-        field
-            .cells
-            .get_mut(rows)
-            .ok_or_else(state)?
-            .copy_from_slice(band);
-    }
-    Ok(())
-}
-
-#[doc = "AV2 § 7.10.4 Weight_Div_Mult motion-vector average."]
-fn divide_tip_average(value: i32, count: usize) -> i32 {
-    const WEIGHTS: [i32; 6] = [0, 65_536, 32_768, 21_845, 16_384, 13_107];
-    round2_signed(i64::from(value) * i64::from(WEIGHTS[count]), 16) as i32
 }
 
 fn fill_temporal_sampling_gaps(
