@@ -248,6 +248,9 @@ struct CdefBlockLookup<'a> {
     has_chroma: bool,
     coeff_shift: u32,
     max_sample: i32,
+    /// Planes whose stripe does not yet hold the deblocked samples, so a flat
+    /// block must still be written.
+    fill_flat: [bool; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -335,6 +338,7 @@ impl CdefBlockLookup<'_> {
             sub_y: self.sub_y,
             luma_lossless,
             chroma_lossless,
+            fill_flat: self.fill_flat,
         }))
     }
 }
@@ -497,7 +501,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     };
     let chroma_start = luma_start >> sub_y;
     let chroma_end = luma_end.div_ceil(1usize << sub_y);
-    let lookup = if let (Some(strengths), Some(grid)) = (strengths, grid) {
+    let mut lookup = if let (Some(strengths), Some(grid)) = (strengths, grid) {
         Some(CdefBlockLookup {
             strengths,
             grid,
@@ -512,6 +516,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             has_chroma,
             coeff_shift,
             max_sample,
+            fill_flat: [true; 3],
         })
     } else {
         None
@@ -552,6 +557,9 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             initializations[plane.index()] = StripeInitialization::FullyOverwritten;
             fill_flat[plane.index()] = false;
         }
+    }
+    if let Some(lookup) = lookup.as_mut() {
+        lookup.fill_flat = fill_flat;
     }
     StripePlane::preflight_copy_from_into(
         deblocked_y,
@@ -649,7 +657,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
                     && let Some(values) =
                         flat_segment(lookup, params, (r, c), row_span, whole_y, whole_u, whole_v)
                 {
-                    fill_flat_segment(&mut frame, lookup, (r, c), values, fill_flat)?;
+                    fill_flat_segment(&mut frame, lookup, (r, c), values)?;
                     c = unit_end;
                     continue;
                 }
@@ -774,14 +782,12 @@ where
     })
 }
 
-/// Writes a flat segment's values into the planes `fill` marks, whose
-/// `FullyOverwritten` stripes hold no source samples yet.
+/// Writes a flat segment's values into the planes `lookup.fill_flat` marks.
 fn fill_flat_segment<T>(
     frame: &mut CdefFrame<'_, T>,
     lookup: &CdefBlockLookup<'_>,
     (r, c): (usize, usize),
     values: [Option<u16>; 3],
-    fill: [bool; 3],
 ) -> Result<(), CdefError> {
     let planes = [
         Some(&mut frame.filtered_y),
@@ -789,7 +795,8 @@ fn fill_flat_segment<T>(
         frame.filtered_v.as_mut(),
     ];
     for (index, plane) in planes.into_iter().enumerate() {
-        let (Some(value), true, Some(plane)) = (values[index], fill[index], plane) else {
+        let (Some(value), true, Some(plane)) = (values[index], lookup.fill_flat[index], plane)
+        else {
             continue;
         };
         let (sx, sy) = if index == 0 {
@@ -975,7 +982,9 @@ fn compute_cdef_segment_block<S>(
     let [y_filter, uv_filter] = block_filters(ctx, y_dir, var);
     if !((y_filter.pri_str == 0 && y_filter.sec_str == 0) || ctx.luma_lossless) {
         if luma_flat {
-            fill_rect(&mut frame.filtered_y, x0, y0, 8, 8, luma[0])?;
+            if ctx.fill_flat[0] {
+                fill_rect(&mut frame.filtered_y, x0, y0, 8, 8, luma[0])?;
+            }
         } else {
             let rect = PlaneRect::new(x0, y0, 8, 8).map_err(|_| CdefError::Geometry)?;
             let (output, stride) = frame
@@ -1004,6 +1013,7 @@ fn compute_cdef_segment_block<S>(
     write_chroma_pair::<CDEF_PAIR_SEGMENT_STRIDE, CDEF_PAIR_SEGMENT_BLOCK_AREA>(
         pair,
         ctx.coeff_shift > 0,
+        [ctx.fill_flat[1], ctx.fill_flat[2]],
         |output| cdef_filter_block_chroma_pair_segment(pair, &uv_filter, output),
         (filtered_u, filtered_v),
         (x0 >> 1, y0 >> 1),
@@ -1150,6 +1160,7 @@ struct CdefBlockCtx {
     sub_y: usize,
     luma_lossless: bool,
     chroma_lossless: bool,
+    fill_flat: [bool; 3],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1215,7 +1226,9 @@ fn compute_cdef_block<S: ReconSample>(
     let uv_zero = uv_pri == 0 && uv_sec == 0;
     if !(y_zero || ctx.luma_lossless) {
         if luma_flat {
-            fill_rect(filtered_y, x0, y0, block_w, block_h, pad[0])?;
+            if ctx.fill_flat[0] {
+                fill_rect(filtered_y, x0, y0, block_w, block_h, pad[0])?;
+            }
         } else if luma_pad_ready {
             filter_pad_into(filtered_y, pad, x0, y0, block_w, block_h, &y_filter, false)?;
         } else {
@@ -1292,6 +1305,7 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
     write_chroma_pair::<CDEF_PAIR_STRIDE, CDEF_PADDED_AREA>(
         pad,
         S::MAX_VALUE > u16::from(u8::MAX) && filter.coeff_shift > 0,
+        [ctx.fill_flat[1], ctx.fill_flat[2]],
         |output| cdef_filter_block_chroma_pair(pad, h, filter, output),
         (filtered_u, filtered_v),
         (x0, y0),
@@ -1300,8 +1314,8 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
 }
 
 /// Writes one interior chroma pair from its gathered interleaved taps in
-/// `pad`: the flat values when `check_flat` finds both planes flat, else the
-/// output of `filter_pair`.
+/// `pad`: when `check_flat` finds both planes flat, the flat values of the
+/// planes `fill` marks, else the output of `filter_pair`.
 #[allow(
     clippy::inline_always,
     reason = "measured: out of line it slowed 8-bit CDEF"
@@ -1310,27 +1324,20 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
 fn write_chroma_pair<const STRIDE: usize, const AREA: usize>(
     pad: &[u16; AREA],
     check_flat: bool,
+    fill: [bool; 2],
     filter_pair: impl FnOnce(&mut [u16; CDEF_PAIR_OUTPUT]) -> bool,
     (filtered_u, filtered_v): (&mut StripePlane, &mut StripePlane),
     (x0, y0): (usize, usize),
 ) -> Result<(), CdefError> {
     if check_flat && window_flat::<STRIDE, 8, 16, 2, AREA>(pad) {
-        fill_rect(
-            filtered_u,
-            x0,
-            y0,
-            CHROMA_PAIR_SIDE,
-            CHROMA_PAIR_SIDE,
-            pad[0],
-        )?;
-        return fill_rect(
-            filtered_v,
-            x0,
-            y0,
-            CHROMA_PAIR_SIDE,
-            CHROMA_PAIR_SIDE,
-            pad[1],
-        );
+        let side = CHROMA_PAIR_SIDE;
+        if fill[0] {
+            fill_rect(filtered_u, x0, y0, side, side, pad[0])?;
+        }
+        if fill[1] {
+            fill_rect(filtered_v, x0, y0, side, side, pad[1])?;
+        }
+        return Ok(());
     }
     let mut output = [0u16; CDEF_PAIR_OUTPUT];
     if !filter_pair(&mut output) {

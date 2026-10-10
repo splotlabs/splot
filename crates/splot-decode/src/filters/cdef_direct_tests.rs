@@ -106,6 +106,7 @@ fn direct_cdef_10bit(
         has_chroma: true,
         coeff_shift: 2,
         max_sample: 1023,
+        fill_flat: [true; 3],
     };
     let geometry = [
         Some(CdefPlaneGeometry {
@@ -588,6 +589,72 @@ fn chroma_pair_with_one_flat_plane_is_filtered() {
     assert_flat(&owned[1], 16, 4..8, 4..8);
 }
 
+/// A flat block writes nothing into a direct target that holds the deblocked
+/// rows, on the per-block path (width 32) and the segment path (width 144).
+#[test]
+fn flat_blocks_keep_a_deblocked_direct_target() {
+    const POISON: u16 = 1023;
+    let params = active_params();
+    for (width, flat, block) in [(32, 4..20, 8..16), (144, 52..68, 56..64)] {
+        let workspace = flat_workspace(width, flat.clone(), None);
+        let mi_size = (6, width / MI_SIZE);
+        let grid = constant_cdef_grid(mi_size.0, mi_size.1, 0).unwrap();
+        let filled = direct_cdef_10bit(
+            &workspace,
+            &params,
+            &grid,
+            None,
+            None,
+            StripeInitialization::FullyOverwritten,
+        );
+        let block_rows = |plane: usize| {
+            let shift = usize::from(plane != 0);
+            let xs = block.start >> shift..block.end >> shift;
+            (width >> shift, xs, 8 >> shift..16 >> shift)
+        };
+        let mut held = flat_workspace(width, flat, None);
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            let (_, xs, ys) = block_rows(plane.index());
+            let rect = PlaneRect::new(xs.start, ys.start, xs.len(), ys.len()).unwrap();
+            held.fill_rect(plane, rect, POISON).unwrap();
+        }
+        let progress = Arc::new(FrameProgress::<u16>::new(workspace.info()).unwrap());
+        progress.begin(&[(0, 24)]).unwrap();
+        let mut rows = progress.frontier_rows().unwrap();
+        rows.copy_rows_from(&held, 0..24).unwrap();
+        assert!(rows.publish_final_rows(24) && rows.release_rows(24));
+        let mut lease = progress.direct_stripe(0).unwrap();
+        let frame = cdef_stripe_into(
+            DeblockedPlanes::frame(&workspace).unwrap(),
+            Some(&params),
+            Some(&grid),
+            None,
+            None,
+            mi_size,
+            (1, 1),
+            BitDepth::Ten,
+            None,
+            0,
+            24,
+            lease.take_target(),
+        )
+        .unwrap();
+        let mut kept = cdef_frame_samples(&frame);
+        for (plane, samples) in kept.iter_mut().enumerate() {
+            let (stride, xs, ys) = block_rows(plane);
+            for y in ys {
+                let row = &mut samples[y * stride + xs.start..y * stride + xs.end];
+                assert!(
+                    row.iter().all(|&sample| sample == POISON),
+                    "{width} {plane}"
+                );
+                row.fill(512);
+            }
+        }
+        assert_eq!(kept, filled, "{width}");
+    }
+}
+
 #[test]
 fn flat_pad_gives_direction_zero_and_variance_zero() {
     for value in [0, 37, 512, 1023] {
@@ -634,6 +701,7 @@ fn run_segment(
         has_chroma: true,
         coeff_shift: 2,
         max_sample: 1023,
+        fill_flat: [true; 3],
     };
     if segment {
         let mut scratch = CdefSegmentScratch {
@@ -723,6 +791,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         has_chroma: true,
         coeff_shift: 2,
         max_sample: 1023,
+        fill_flat: [true; 3],
     };
     let mut frame = cdef_stripe(
         DeblockedPlanes::frame(&workspace).unwrap(),

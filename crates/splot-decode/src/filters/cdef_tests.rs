@@ -407,6 +407,7 @@ fn assert_cdef_block_matches_per_sample_reference(
                 sub_y: 1,
                 luma_lossless: false,
                 chroma_lossless: false,
+                fill_flat: [true; 3],
             };
             let filter = CdefBlockFilter {
                 pri_str,
