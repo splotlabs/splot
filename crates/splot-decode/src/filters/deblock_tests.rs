@@ -1362,7 +1362,7 @@ fn filter_edge_alone<const PLANE: usize, const PASS: usize>(
     let strengths = StrengthCache::new(0, 0, BitDepth::Eight);
     let edge = plane_pass.edge_context(row, col, false);
     deblock_filter_edge_specialized::<u8, PLANE, PASS>(
-        ctx, blocks, edge, false, &strengths, &mut None, &mut run,
+        ctx, blocks, edge, false, &strengths, &mut run,
     )
     .unwrap();
     flush_run::<u8, PASS>(&mut run, ctx, BitDepth::Eight).unwrap();

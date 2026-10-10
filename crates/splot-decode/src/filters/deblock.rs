@@ -1032,7 +1032,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
         plane_pass.df_delta_q,
         plane_pass.bit_depth,
     );
-    let (mut cache, mut run): (_, EdgeRun) = (None, None);
+    let mut run: EdgeRun = None;
     let mut last: Option<(usize, usize, (EdgeBlock<'_>, EdgeBlock<'_>), Repeat)> = None;
     let (sub_x, sub_y) = (plane_pass.plane_sub_x, plane_pass.plane_sub_y);
     let step = if PASS == 0 {
@@ -1088,7 +1088,6 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
             plane_pass.edge_context(r, c, tile_edge),
             disable_loopfilters_across_tiles,
             &strengths,
-            &mut cache,
             &mut run,
         )?;
         let repeated = match (repeat, run.as_mut()) {
@@ -1681,7 +1680,6 @@ fn deblock_filter_edge<T: ReconSample>(
         ctx,
         disable_loopfilters_across_tiles,
         strengths,
-        &mut None,
         &mut run,
     )?;
     flush_run::<T, 0>(&mut run, plane_ctx, ctx.bit_depth)
@@ -1697,10 +1695,6 @@ struct EdgeDecision {
     prev_lossless: bool,
     curr_lossless: bool,
 }
-
-/// The last decision a pass derived, with the row (horizontal pass) or column
-/// (vertical pass) and the two records it was derived for.
-type EdgeCache<'g> = Option<(usize, EdgeBlock<'g>, EdgeBlock<'g>, Option<EdgeDecision>)>;
 
 /// What a pass walk may do with the next edge of the same two records on the
 /// same row (horizontal pass) or column (vertical pass).
@@ -1835,7 +1829,6 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
     ctx: EdgeContext,
     disable_loopfilters_across_tiles: bool,
     strengths: &StrengthCache,
-    cache: &mut EdgeCache<'g>,
     run: &mut EdgeRun,
 ) -> Result<Repeat, DeblockError> {
     let EdgeContext {
@@ -1864,20 +1857,7 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
     let x_p = x >> plane_sub_x;
     let y_p = y >> plane_sub_y;
 
-    let line = if pass == 0 { col } else { row };
-    let (decision, uniform) = match *cache {
-        Some((cached_line, cached_curr, cached_prev, decision))
-            if cached_line == line && cached_curr.same(curr) && cached_prev.same(prev) =>
-        {
-            (decision, true)
-        }
-        _ => {
-            let (decision, uniform) =
-                edge_decision::<PLANE, PASS>(curr, prev, x_p, y_p, ctx, strengths);
-            *cache = uniform.then_some((line, curr, prev, decision));
-            (decision, uniform)
-        }
-    };
+    let (decision, uniform) = edge_decision::<PLANE, PASS>(curr, prev, x_p, y_p, ctx, strengths);
     let repeat = |repeat| if uniform { repeat } else { Repeat::Derive };
     let Some(EdgeDecision {
         mut filter_size,
