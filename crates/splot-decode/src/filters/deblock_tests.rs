@@ -61,7 +61,7 @@ fn with_plane_ctx<T: ReconSample, R>(
     f(&mut ctx)
 }
 
-fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
+pub(super) fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
     let mut blocks = Vec::new();
     for r in (0..mi_rows).step_by(8) {
         for c in (0..mi_cols).step_by(8) {
@@ -87,11 +87,11 @@ fn deblock_blocks(mi_rows: usize, mi_cols: usize) -> Vec<DeblockBlock> {
     blocks
 }
 
-const fn filter(apply_deblocking_filter: [bool; 4]) -> DeblockingFilterParams {
+pub(super) const fn filter(apply_deblocking_filter: [bool; 4]) -> DeblockingFilterParams {
     DeblockingFilterParams::new(apply_deblocking_filter, [false; 4], [0; 4])
 }
 
-fn source_from_workspace<T: ReconSample>(
+pub(super) fn source_from_workspace<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
 ) -> FrontierRows<T> {
     let replacement = CurrentFrameWorkspace::<T>::new(workspace.info(), T::default()).unwrap();

@@ -18,6 +18,7 @@ use splot_recon::{
 use std::{cell::Cell, num::NonZeroUsize, ops::Range, sync::Arc};
 
 mod grid;
+mod replay;
 
 pub(crate) use grid::DeblockGridStorage;
 /// Mode-info rows above itself that a horizontal edge reads.
@@ -29,6 +30,8 @@ use grid::{
     COVERED_PLANE, ChromaMiGridStorage, HORIZONTAL_PLANE, MiGrid, MiGridStorage, RowOrder,
     SUB_PU_PLANE, VERTICAL_PLANE, flag_word,
 };
+
+use replay::{LoneEdge, ReplayLog, ReplayStep};
 
 use crate::pipeline::frame_progress::FrontierRows;
 
@@ -533,6 +536,7 @@ impl<'a> FrameDeblock<'a> {
                         width,
                         height,
                         y_origin,
+                        log: None,
                     },
                     grid: self.plane_grid(plane),
                     passes: [
@@ -613,6 +617,8 @@ impl<'a> FrameDeblock<'a> {
             return Ok(());
         }
         let pixel_format = source.info().pixel_format();
+        let mut log = self.replays_u_on_v().then(replay::take_log);
+        let mut logged = None;
         for plane in 0..3 {
             let plane_id = plane_index_to_id(plane);
             if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
@@ -647,20 +653,37 @@ impl<'a> FrameDeblock<'a> {
                     start,
                     end,
                     |samples, stride, width, height, y_origin| {
+                        let mut band = PlaneBand {
+                            storage: PlaneRows { samples, stride },
+                            width,
+                            height,
+                            y_origin,
+                            row_count: end - start,
+                            log: None,
+                        };
+                        let geometry = Some((stride, width, height, y_origin, end));
+                        match (plane, log.as_mut()) {
+                            (1, Some(log)) => {
+                                log.iter_mut().for_each(Vec::clear);
+                                logged = geometry;
+                                band.log = Some(log);
+                            }
+                            (2, Some(log)) if logged == geometry => {
+                                return replay::replay(band, passes, log);
+                            }
+                            _ => {}
+                        }
                         self.run_plane_job(PlaneJob {
-                            band: PlaneBand {
-                                storage: PlaneRows { samples, stride },
-                                width,
-                                height,
-                                y_origin,
-                                row_count: end - start,
-                            },
+                            band,
                             grid: self.plane_grid(plane),
                             passes,
                         })
                     },
                 )
                 .ok_or(DeblockError::Workspace)??;
+        }
+        if let Some(log) = log {
+            replay::keep_log(log);
         }
         Ok(())
     }
@@ -1324,6 +1347,7 @@ struct PlaneCtx<'rows, 'samples, T: ReconSample> {
     height: usize,
     y_origin: usize,
     band_rows: usize,
+    log: Option<&'rows mut ReplayLog>,
 }
 
 /// The plane rows one deblock job filters: a whole plane, or a contiguous band
@@ -1337,6 +1361,8 @@ struct PlaneBand<'a, T> {
     height: usize,
     y_origin: usize,
     row_count: usize,
+    /// Where a U band logs its steps for V to replay.
+    log: Option<&'a mut ReplayLog>,
 }
 
 impl<'a, T> PlaneBand<'a, T> {
@@ -1347,6 +1373,7 @@ impl<'a, T> PlaneBand<'a, T> {
             height,
             y_origin: 0,
             row_count: height,
+            log: None,
         }
     }
 }
@@ -1377,6 +1404,7 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
             height,
             y_origin,
             band_rows: rows,
+            log: band.log.as_deref_mut(),
         })
     }
 
@@ -1753,6 +1781,7 @@ fn replace_run<T: ReconSample, const PASS: usize>(
 ) -> Result<(), DeblockError> {
     match core::mem::replace(run, next.map(|edge| (edge, 1))) {
         Some((first, edges)) => {
+            plane_ctx.record::<PASS>(ReplayStep::Run(first, edges))?;
             filter_contiguous_run::<T, PASS>(plane_ctx, first, edges, bit_depth)
         }
         None => Ok(()),
@@ -1890,45 +1919,18 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
         return Ok(repeat(Repeat::Join));
     }
 
-    let width = choose_filter_width(
-        plane_ctx,
+    let edge = LoneEdge {
         x_p,
         y_p,
-        dx,
-        dy,
         q_thr,
         side,
-        max_width_neg,
-        max_width_pos,
-    )?;
-    if width == 0 {
-        return Ok(Repeat::Derive);
-    }
-
-    let eff_neg = width.min(max_width_neg);
-    let eff_pos = width.min(max_width_pos);
-    let q_thresh_mult = Q_THRESH_MULTS[eff_neg.max(eff_pos) - 1];
-    let w_mult_neg = W_MULT[eff_neg - 1];
-    let w_mult_pos = W_MULT[eff_pos - 1];
-    let sample_params = DeblockSampleFilter {
-        boundary: GATHER_HALF,
-        q_thr,
-        max_width_neg: eff_neg,
-        max_width_pos: eff_pos,
-        q_thresh_mult,
-        w_mult_neg,
-        w_mult_pos,
+        max_width_neg: max_width_neg as u8,
+        max_width_pos: max_width_pos as u8,
         prev_lossless,
         curr_lossless,
-        bit_depth,
     };
-
-    apply_edge_samples(
-        plane_ctx,
-        PerpLine::new(x_p, y_p, dx, dy),
-        MI_SIZE,
-        sample_params,
-    )?;
+    plane_ctx.record::<PASS>(ReplayStep::Lone(edge))?;
+    edge.filter::<T, PASS>(plane_ctx, bit_depth)?;
     Ok(Repeat::Derive)
 }
 
