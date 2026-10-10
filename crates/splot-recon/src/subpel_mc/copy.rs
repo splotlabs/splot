@@ -184,41 +184,34 @@ pub(super) fn subpel_copy_block_u16_into<T: ReconSample>(
                 }
             }
         } else {
-            let row = row.min(reference.readable_rows - 1);
-            if let Some(source) = T::u16_slice(reference.row(row)) {
-                let first_x = params.first_x.clamp(0, reference.width as i32 - 1);
-                let last_x = params.last_x.clamp(0, reference.width as i32 - 1);
-                let leading =
-                    (i64::from(first_x) - i64::from(x0)).clamp(0, params.w as i64) as usize;
-                let middle_end =
-                    (i64::from(last_x) - i64::from(x0) + 1).clamp(0, params.w as i64) as usize;
-                output[..leading].fill(source[first_x as usize].min(max_sample));
-                if leading < middle_end {
-                    let middle =
-                        &source[(x0 + leading as i32) as usize..(x0 + middle_end as i32) as usize];
+            let source = reference.row(row.min(reference.readable_rows - 1));
+            let first_x = params.first_x.clamp(0, reference.width as i32 - 1);
+            let last_x = params.last_x.clamp(0, reference.width as i32 - 1);
+            let leading = (i64::from(first_x) - i64::from(x0)).clamp(0, params.w as i64) as usize;
+            let middle_end =
+                (i64::from(last_x) - i64::from(x0) + 1).clamp(0, params.w as i64) as usize;
+            output[..leading].fill(source[first_x as usize].to_u16().min(max_sample));
+            if leading < middle_end {
+                let middle =
+                    &source[(x0 + leading as i32) as usize..(x0 + middle_end as i32) as usize];
+                let output = &mut output[leading..middle_end];
+                if let Some(middle) = T::u16_slice(middle) {
                     let mut chunks = middle.chunks_exact(LANES);
-                    for (output, source) in output[leading..middle_end]
-                        .chunks_exact_mut(LANES)
-                        .zip(&mut chunks)
-                    {
+                    for (output, source) in output.chunks_exact_mut(LANES).zip(&mut chunks) {
                         output
                             .copy_from_slice(&Simd::from_slice(source).simd_min(limit).to_array()); // splot-copy-ok: publish SIMD prediction lanes into caller output
                     }
                     let copied = middle.len() - chunks.remainder().len();
-                    for (output, &source) in output[leading + copied..middle_end]
-                        .iter_mut()
-                        .zip(chunks.remainder())
-                    {
+                    for (output, &source) in output[copied..].iter_mut().zip(chunks.remainder()) {
                         *output = source.min(max_sample);
                     }
-                }
-                output[middle_end..].fill(source[last_x as usize].min(max_sample));
-            } else {
-                for (c, output) in output.iter_mut().enumerate() {
-                    let col = (x0 + c as i32).clamp(params.first_x, params.last_x) as usize;
-                    *output = (reference.sample(row, col) as u16).min(max_sample);
+                } else {
+                    for (output, source) in output.iter_mut().zip(middle) {
+                        *output = source.to_u16().min(max_sample);
+                    }
                 }
             }
+            output[middle_end..].fill(source[last_x as usize].to_u16().min(max_sample));
         }
     }
     Ok(())
