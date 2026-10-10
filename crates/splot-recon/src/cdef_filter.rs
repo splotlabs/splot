@@ -140,12 +140,39 @@ fn pairwise_sum(a: Simd<i16, 8>, b: Simd<i16, 8>) -> Simd<i16, 8> {
         + simd_swizzle!(a, b, [1, 3, 5, 7, 9, 11, 13, 15])
 }
 
-/// `Σ partial² · weight` over a partial, in `i32`.
-fn cdef_cost(partial: CdefPartial, weights: [[i32; 8]; 2]) -> i32 {
+/// `Σ partial² · weight` over a partial, in four `i32` lanes that sum to it.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_cost(partial: CdefPartial, weights: [[i32; 8]; 2]) -> Simd<i32, 4> {
     let low = partial[0].cast::<i32>();
     let high = partial[1].cast::<i32>();
-    (low * low * Simd::from_array(weights[0]) + high * high * Simd::from_array(weights[1]))
-        .reduce_sum()
+    let cost =
+        low * low * Simd::from_array(weights[0]) + high * high * Simd::from_array(weights[1]);
+    simd_swizzle!(cost, [0, 1, 2, 3]) + simd_swizzle!(cost, [4, 5, 6, 7])
+}
+
+/// [`cdef_cost`] of a line partial, every entry of which weighs `Div_Table[8]`.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_line_cost(partial: Simd<i16, 8>) -> Simd<i32, 4> {
+    let square = partial.cast::<i32>() * partial.cast::<i32>();
+    (simd_swizzle!(square, [0, 1, 2, 3]) + simd_swizzle!(square, [4, 5, 6, 7]))
+        * Simd::splat(DIV_TABLE[8])
+}
+
+/// The eight costs, each summed from its four lanes by a pairwise-add tree.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_cost_sums(lanes: [Simd<i32, 4>; 8]) -> [Simd<i32, 4>; 2] {
+    let pairs = |a: Simd<i32, 4>, b: Simd<i32, 4>| {
+        simd_swizzle!(a, b, [0, 2, 4, 6]) + simd_swizzle!(a, b, [1, 3, 5, 7])
+    };
+    [0, 4].map(|at| {
+        pairs(
+            pairs(lanes[at], lanes[at + 1]),
+            pairs(lanes[at + 2], lanes[at + 3]),
+        )
+    })
 }
 
 /// § 7.18.2 `Div_Table` weights of a `len`-entry partial (15 for the
@@ -174,7 +201,9 @@ const fn cdef_cost_weights(len: usize, lane: usize) -> [[i32; 8]; 2] {
 /// added. Partials 1, 4 and 5 grow upward and partials 0, 3 and 7 downward,
 /// the last three ending one or five lanes up. Every cost weighs entry `n`
 /// like entry `len - 1 - n`, so the reversed order of partials 3 and 4 does
-/// not change it.
+/// not change it. Costs are never negative, so the § 7.18.2 scan, which
+/// keeps a direction only when its cost beats the best so far (from 0),
+/// ends on the first direction that holds the largest cost.
 #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 fn cdef_direction_rows(rows: [Simd<i16, 8>; 8]) -> (usize, i32) {
@@ -213,25 +242,25 @@ fn cdef_direction_rows(rows: [Simd<i16, 8>; 8]) -> (usize, i32) {
         pairwise_sum(row_sums[0], row_sums[1]),
         pairwise_sum(row_sums[2], row_sums[3]),
     );
-    let line_weights = [[DIV_TABLE[8]; 8], [0; 8]];
-    let cost = [
+    let [low, high] = cdef_cost_sums([
         cdef_cost(partial0, const { cdef_cost_weights(15, 1) }),
         cdef_cost(partial1, const { cdef_cost_weights(11, 1) }),
-        cdef_cost([horizontal, zero], line_weights),
+        cdef_line_cost(horizontal),
         cdef_cost(partial3, const { cdef_cost_weights(11, 0) }),
         cdef_cost(partial4, const { cdef_cost_weights(15, 0) }),
         cdef_cost(partial5, const { cdef_cost_weights(11, 0) }),
-        cdef_cost([vertical, zero], line_weights),
+        cdef_line_cost(vertical),
         cdef_cost(partial7, const { cdef_cost_weights(11, 5) }),
-    ];
-    let mut best_cost = 0i32;
-    let mut y_dir = 0usize;
-    for (dir, &c) in cost.iter().enumerate() {
-        if c > best_cost {
-            best_cost = c;
-            y_dir = dir;
-        }
-    }
+    ]);
+    let best_cost = low.simd_max(high).reduce_max();
+    let first = |cost: Simd<i32, 4>, dir: [u32; 4]| {
+        cost.simd_eq(Simd::splat(best_cost))
+            .select(Simd::from_array(dir), Simd::splat(8))
+    };
+    let y_dir = first(low, [0, 1, 2, 3])
+        .simd_min(first(high, [4, 5, 6, 7]))
+        .reduce_min() as usize;
+    let cost = simd_swizzle!(low, high, [0, 1, 2, 3, 4, 5, 6, 7]).to_array();
     let var = (best_cost - cost[(y_dir + 4) & 7]) >> 10;
     (y_dir, var)
 }
