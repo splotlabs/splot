@@ -291,6 +291,8 @@ struct Cell8<'a, T> {
     /// The [`clamped_window`] shuffle when a window column is clamped.
     gather: Option<[Simd<u8, 16>; 2]>,
     top: i32,
+    /// The offset of row `top` when no row the cell reads is clamped.
+    unclamped: Option<usize>,
     first_y: i32,
     last_y: i32,
     h_taps: Simd<i16, NUM_TAPS>,
@@ -304,9 +306,46 @@ struct Cell8<'a, T> {
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
 fn window8<'a, T>(cell: &Cell8<'a, T>, row: usize, len: usize) -> Option<&'a [T]> {
-    let y = (cell.top + row as i32).max(cell.first_y).min(cell.last_y) as usize;
-    let offset = y * cell.stride + cell.column;
+    let offset = cell.unclamped.map_or_else(
+        || {
+            let y = (cell.top + row as i32).max(cell.first_y).min(cell.last_y) as usize;
+            y * cell.stride + cell.column
+        },
+        |top| top + row * cell.stride,
+    );
     cell.samples.get(offset..offset + len)
+}
+
+/// One 8-bit horizontal-pass row of an 8x8 cell from its 16-sample window,
+/// with the halved taps of `slide::intermediate_taps`. Widening by
+/// interleaving zero bytes stays a zip, so each window is one 16-byte slide;
+/// LLVM turns a plain cast into a slide and a widen per window.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn eight_bit_row(bytes: Simd<u8, 16>, taps: Simd<i16, NUM_TAPS>) -> Line8 {
+    let zero = Simd::splat(0);
+    let (low, high) = if cfg!(target_endian = "big") {
+        zero.interleave(bytes)
+    } else {
+        bytes.interleave(zero)
+    };
+    let low = Simd::<u16, 8>::from_ne_bytes(low).cast::<i16>();
+    let high = Simd::<u16, 8>::from_ne_bytes(high).cast::<i16>();
+    let windows = [
+        low,
+        simd_swizzle!(low, high, [1, 2, 3, 4, 5, 6, 7, 8]),
+        simd_swizzle!(low, high, [2, 3, 4, 5, 6, 7, 8, 9]),
+        simd_swizzle!(low, high, [3, 4, 5, 6, 7, 8, 9, 10]),
+        simd_swizzle!(low, high, [4, 5, 6, 7, 8, 9, 10, 11]),
+        simd_swizzle!(low, high, [5, 6, 7, 8, 9, 10, 11, 12]),
+        simd_swizzle!(low, high, [6, 7, 8, 9, 10, 11, 12, 13]),
+        simd_swizzle!(low, high, [7, 8, 9, 10, 11, 12, 13, 14]),
+    ];
+    let mut half = Line8::splat(1 << (INTER_ROUND0 - 2));
+    for (tap, window) in windows.into_iter().enumerate() {
+        half += window * Simd::splat(taps[tap]);
+    }
+    half >> (INTER_ROUND0 - 1) as i16
 }
 
 /// Source row `row` of the cell: the horizontal-pass intermediate when
@@ -317,6 +356,9 @@ fn line8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>, row: usize
     if HORIZONTAL {
         let window = window8(cell, row, 2 * NUM_TAPS)?;
         let Some(index) = cell.gather else {
+            if let Some(bytes) = T::u8_slice(window) {
+                return Some(eight_bit_row(Simd::from_slice(bytes), cell.h_taps));
+            }
             return Some(Row8::slid_intermediate(window, 0, cell.h_taps));
         };
         let lanes = gather16(reference_lanes::<16, T>(window, 0), index).to_array();
@@ -385,12 +427,16 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
             _ => NUM_TAPS,
         };
         let v_start = v_start.min(NUM_TAPS - v_count);
+        let top = (params.start_y >> SCALE_SUBPEL_BITS) - 3 + v_start as i32;
+        let unclamped = (top >= params.first_y && top + 6 + NUM_TAPS as i32 <= params.last_y)
+            .then(|| top as usize * reference.stride + column);
         Some(Cell8 {
             samples: reference.samples,
             stride: reference.stride,
             column,
             gather,
-            top: (params.start_y >> SCALE_SUBPEL_BITS) - 3 + v_start as i32,
+            top,
+            unclamped,
             first_y: params.first_y,
             last_y: params.last_y,
             h_taps: slide::intermediate_taps::<T>(&SUBPEL_FILTERS[filter][h_phase]),
