@@ -55,7 +55,7 @@ pub(super) fn reference_area_bounds(
     candidate: Mv,
     sub_x: u32,
     sub_y: u32,
-    scaling: PlaneScaling,
+    scaling: &PlaneScaling,
 ) -> ReferenceAreaBounds {
     let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
@@ -522,7 +522,7 @@ mod tests {
             16, 16, 0, 0, 0, 0, 64, 64, 64, 64,
         );
         assert_eq!(
-            reference_area_bounds(16, 16, 16, 16, Mv::ZERO, 0, 0, scaling),
+            reference_area_bounds(16, 16, 16, 16, Mv::ZERO, 0, 0, &scaling),
             ReferenceAreaBounds {
                 first_x: 13,
                 first_y: 13,

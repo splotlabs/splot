@@ -1074,7 +1074,7 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
             candidate,
             0,
             0,
-            scaling,
+            &scaling,
         )
     });
     let params = SubpelPredictParams {
@@ -1137,7 +1137,7 @@ fn compound_optflow_subpel_params<T: ReconSample>(
                 mvs[reference],
                 sub_x,
                 sub_y,
-                prediction.scalings[reference],
+                &prediction.scalings[reference],
             ))
         })
     } else if let Some((area_width, area_height)) = subblock_area {
@@ -1150,7 +1150,7 @@ fn compound_optflow_subpel_params<T: ReconSample>(
                 cell.base_mvs[reference],
                 sub_x,
                 sub_y,
-                prediction.scalings[reference],
+                &prediction.scalings[reference],
             ))
         })
     } else {
