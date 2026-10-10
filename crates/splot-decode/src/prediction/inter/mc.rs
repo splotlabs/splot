@@ -1238,13 +1238,14 @@ fn predict_compound_plane_output<T: ReconSample>(
             compound_plane_prediction_for_block(sink, block, plane, sub_x, sub_y, motion, offset)?
         }
     };
+    let (pred0, pred1) = prediction.predictions();
     if plane == PlaneId::Y
         && let CompoundBlend::DiffWeighted { inverse } = blend
     {
         let mut mask = RecycledMcSamples::take();
         diff_weighted_mask_into(
-            &prediction.pred0,
-            &prediction.pred1,
+            pred0,
+            pred1,
             sink.info().bit_depth(),
             prediction.block_w,
             prediction.block_h,
@@ -1254,8 +1255,8 @@ fn predict_compound_plane_output<T: ReconSample>(
         *luma_diff_weighted_mask = Some(mask);
     }
     blend_compound_average::<T>(
-        &prediction.pred0,
-        &prediction.pred1,
+        pred0,
+        pred1,
         sink.info().bit_depth(),
         prediction.block_w,
         prediction.block_h,
@@ -1518,11 +1519,17 @@ fn recycle_mc_samples<T: Send + 'static>(samples: &mut Vec<T>) {
     });
 }
 
+/// Takes the two compound intermediates, each at least `len` long.
+///
+/// A buffer only grows: every prediction writes all of its `len` leading
+/// samples, so zero-filling a regrown tail would be overwritten unread.
 fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {
     COMPOUND_PREDICTION_BUFFERS.with(|slot| {
         let mut buffers = slot.take().unwrap_or_default();
         for buffer in &mut buffers {
-            buffer.resize(len, 0);
+            if buffer.len() < len {
+                buffer.resize(len, 0);
+            }
         }
         buffers
     })
@@ -1534,8 +1541,10 @@ fn with_compound_primary_prediction<R>(
 ) -> splot_recon::Result<R> {
     COMPOUND_PREDICTION_BUFFERS.with(|slot| {
         let mut buffers = slot.take().unwrap_or_default();
-        buffers[0].resize(len, 0);
-        let result = predict(&mut buffers[0]);
+        if buffers[0].len() < len {
+            buffers[0].resize(len, 0);
+        }
+        let result = predict(&mut buffers[0][..len]);
         slot.set(Some(buffers));
         result
     })
@@ -1562,6 +1571,17 @@ fn with_initial_luma_predictions<R>(
         slot.set(Some(storage));
         result
     })
+}
+
+impl CompoundPlanePrediction {
+    /// The two `block_w * block_h` intermediates; the pooled buffers may be longer.
+    fn predictions(&self) -> (&[i32], &[i32]) {
+        let len = self.block_w * self.block_h;
+        (
+            self.pred0.get(..len).unwrap_or_default(),
+            self.pred1.get(..len).unwrap_or_default(),
+        )
+    }
 }
 
 impl Drop for CompoundPlanePrediction {
@@ -1730,14 +1750,14 @@ fn compound_plane_prediction_from_translation<T: ReconSample>(
         &views[0],
         &params[0],
         None,
-        &mut prediction.pred0,
+        &mut prediction.pred0[..sample_count],
         block_w,
     )?;
     subpel_predict_block_compound_intermediate_into(
         &views[1],
         &params[1],
         None,
-        &mut prediction.pred1,
+        &mut prediction.pred1[..sample_count],
         block_w,
     )?;
     Ok(prediction)
@@ -1773,7 +1793,7 @@ fn compound_warp_plane_prediction<T: ReconSample>(
         sub_x,
         sub_y,
         offset,
-        &mut pred0,
+        &mut pred0[..sample_count],
     )?;
     let scaling1 = compound_ref_intermediate(
         sink,
@@ -1786,7 +1806,7 @@ fn compound_warp_plane_prediction<T: ReconSample>(
         sub_x,
         sub_y,
         offset,
-        &mut pred1,
+        &mut pred1[..sample_count],
     )?;
     Ok(CompoundPlanePrediction {
         pred0,

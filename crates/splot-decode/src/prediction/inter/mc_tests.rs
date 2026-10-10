@@ -1570,10 +1570,11 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
         ByteOffset::new(0),
     )
     .expect("whole-plane prediction");
+    let (pred0, pred1) = prediction.predictions();
     let mut whole_plane = vec![0u16; 16 * 8];
     blend_compound_average::<u16>(
-        &prediction.pred0,
-        &prediction.pred1,
+        pred0,
+        pred1,
         BitDepth::Ten,
         16,
         8,
@@ -1593,10 +1594,9 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
         &mut whole_plane,
     )
     .expect("whole-plane implicit-mask blend");
-    let equal_weights = prediction
-        .pred0
+    let equal_weights = pred0
         .iter()
-        .zip(&prediction.pred1)
+        .zip(pred1)
         .map(|(&left, &right)| round2_i32(left + right, 5).clamp(0, 1023) as u16);
 
     assert_eq!(hybrid, whole_plane);
