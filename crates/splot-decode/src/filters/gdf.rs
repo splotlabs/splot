@@ -6,7 +6,7 @@
 use std::simd::{
     Mask, Select, Simd, ToBytes,
     cmp::{SimdOrd, SimdPartialOrd},
-    num::SimdUint,
+    num::{SimdInt, SimdUint},
     simd_swizzle,
 };
 
@@ -1409,9 +1409,13 @@ fn band_classes_from_source(
     gradient_pair_row(source, source_origin, 0, class_cols, previous, gradient_tmp)?;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx][GDF_COORDS.len()..];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx][2][GDF_COORDS.len()..];
-    let class_table = |row: [i32; 4]| Simd::from_array(row).to_ne_bytes();
-    let alpha = core::array::from_fn(|d| class_table(alpha_table[d].map(i32::from)));
-    let weight = core::array::from_fn(|d| class_table(weight_table[d].map(i32::from)));
+    let tables = core::array::from_fn(|d| {
+        let lanes = core::array::from_fn(|lane| match lane {
+            0..4 => alpha_table[d][lane] as i16,
+            _ => weight_table[d][lane - 4],
+        });
+        Simd::<i16, 8>::from_array(lanes).to_ne_bytes()
+    });
     for (row, classes) in classes.chunks_exact_mut(class_cols).enumerate() {
         gradient_pair_row(
             source,
@@ -1429,13 +1433,13 @@ fn band_classes_from_source(
             .zip(previous_chunks)
             .zip(current_chunks)
         {
-            *classes = classify_eight(previous, current, &alpha, &weight);
+            *classes = classify_eight(previous, current, &tables);
         }
         if !class_tail.is_empty() {
             let mut tail = [[[0; GDF_DIRECTIONS]; 8]; 2];
             tail[0][..previous_tail.len()].copy_from_slice(previous_tail);
             tail[1][..current_tail.len()].copy_from_slice(current_tail);
-            let tail_classes = classify_eight(&tail[0], &tail[1], &alpha, &weight);
+            let tail_classes = classify_eight(&tail[0], &tail[1], &tables);
             class_tail.copy_from_slice(&tail_classes[..class_tail.len()]);
         }
         core::mem::swap(previous, current);
@@ -1444,13 +1448,12 @@ fn band_classes_from_source(
 }
 
 /// Classifies eight 2x2 blocks from their direction strengths in two
-/// gradient row pairs; `alpha` and `weight` hold each direction's per-class
-/// row as bytes.
+/// gradient row pairs; `tables` holds each direction's per-class clip bounds
+/// and then its per-class weights as i16 bytes.
 fn classify_eight(
     previous: &[[u16; GDF_DIRECTIONS]; 8],
     current: &[[u16; GDF_DIRECTIONS]; 8],
-    alpha: &[Simd<u8, 16>; GDF_DIRECTIONS],
-    weight: &[Simd<u8, 16>; GDF_DIRECTIONS],
+    tables: &[Simd<u8, 16>; GDF_DIRECTIONS],
 ) -> [GdfClass; 8] {
     let directions = |pairs: &[[u16; GDF_DIRECTIONS]; 8]| {
         let all = Simd::<u16, 32>::from_slice(pairs.as_flattened());
@@ -1467,24 +1470,19 @@ fn classify_eight(
     let bit =
         |a: Simd<u32, 8>, b, value: u32| a.simd_le(b).select(Simd::splat(value), Simd::splat(0));
     let index = bit(strengths[0], strengths[1], 1) | bit(strengths[2], strengths[3], 2);
-    let index_bytes = (index << 2).cast::<u8>();
-    let byte = Simd::from_array([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]);
-    let low = simd_swizzle!(
-        index_bytes,
-        [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
-    ) + byte;
-    let high = simd_swizzle!(
-        index_bytes,
-        [4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7]
-    ) + byte;
-    let lookup = |table: Simd<u8, 16>| {
-        let half = |bytes| Simd::<i32, 4>::from_ne_bytes(table.swizzle_dyn(bytes));
-        simd_swizzle!(half(low), half(high), [0, 1, 2, 3, 4, 5, 6, 7])
-    };
+    let doubled = (index + index).cast::<u8>();
+    let byte = Simd::from_array([0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
+    let alpha_bytes =
+        simd_swizzle!(doubled, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]) + byte;
+    let weight_bytes = alpha_bytes + Simd::splat(8);
+    let lookup =
+        |table: Simd<u8, 16>, bytes| Simd::<i16, 8>::from_ne_bytes(table.swizzle_dyn(bytes));
     let mut bias = Simd::<i32, 8>::splat(0);
-    for d in 0..GDF_DIRECTIONS {
-        let comb = (strengths[d] >> 4).cast::<i32>().simd_min(lookup(alpha[d]));
-        bias += comb * lookup(weight[d]);
+    for (strength, table) in strengths.into_iter().zip(tables) {
+        let comb = (strength >> 4)
+            .cast::<i16>()
+            .simd_min(lookup(*table, alpha_bytes));
+        bias += comb.cast::<i32>() * lookup(*table, weight_bytes).cast::<i32>();
     }
     core::array::from_fn(|lane| GdfClass::new(index[lane] as u8, bias[lane]))
 }
