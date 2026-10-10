@@ -668,14 +668,47 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         &self.ranges
     }
 
-    /// The plane rows a stripe's window holds past each end of the stripe.
-    fn window_margin(&self) -> usize {
-        let one_tile_row = self
-            .core
+    fn one_tile_row(&self) -> bool {
+        self.core
             .tile_info
             .as_ref()
-            .is_none_or(|tile| tile.mi_row_starts.len() <= 2);
-        STRIPE_WINDOW_MARGIN + usize::from(!one_tile_row) * TILE_ROW_FRINGE_MARGIN
+            .is_none_or(|tile| tile.mi_row_starts.len() <= 2)
+    }
+
+    /// The plane rows a stripe's window holds past each end of the stripe.
+    fn window_margin(&self) -> usize {
+        STRIPE_WINDOW_MARGIN + usize::from(!self.one_tile_row()) * TILE_ROW_FRINGE_MARGIN
+    }
+
+    /// The planes whose deblocked window rows a filter of this frame may read.
+    ///
+    /// A plane is left out only when CDEF is off, no `cdef_overlap_planes`
+    /// fringe is built, and the `u16` stripe target already holds the
+    /// deblocked rows, so CDEF initializes it without a read. Then GDF and
+    /// CCSO read only luma, and loop restoration of any plane reads luma and
+    /// its own plane.
+    fn window_reads(&self) -> Result<[bool; 3]> {
+        if !self.one_tile_row()
+            || T::u16_slice(&[]).is_none()
+            || (self.cdef_strengths.is_some() && self.cdef_grid.is_some())
+        {
+            return Ok([true; 3]);
+        }
+        let [y_end, u_end] = self.lr_plane_ends;
+        let lr = [
+            y_end > 0,
+            u_end > y_end,
+            self.lr_source_blocks.len() > u_end,
+        ];
+        let luma = lr.contains(&true)
+            || (self.ccso_grid.is_some() && self.ccso_config.is_some())
+            || crate::filters::gdf::is_active(
+                &self.core,
+                self.gdf_grid.as_ref(),
+                self.bit_depth,
+                self.gdf_reference,
+            )?;
+        Ok([luma, lr[1], lr[2]])
     }
 
     fn ready_stripe(&self, stripe: usize, final_rows: usize) -> Result<Option<(usize, usize)>> {
@@ -715,7 +748,10 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .ready_stripe(stripe, frame.final_luma_rows())?
             .ok_or_else(lr_pipeline_state_error)?;
         let mut window = self.take_window();
-        if let Err(error) = window.fill(frame, carry, range, self.window_margin()) {
+        let filled = self.window_reads().and_then(|read| {
+            window.copy_window(frame, Some(carry), range, self.window_margin(), read)
+        });
+        if let Err(error) = filled {
             self.give_window(window);
             return Err(error);
         }
@@ -733,7 +769,13 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let range = self
             .ready_stripe(stripe, frame.final_luma_rows())?
             .ok_or_else(lr_pipeline_state_error)?;
-        window.slide(frame, range, self.window_margin())
+        window.copy_window(
+            frame,
+            None,
+            range,
+            self.window_margin(),
+            self.window_reads()?,
+        )
     }
 
     /// Claims, filters and publishes one stripe, then keeps its window.
@@ -903,12 +945,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
     ) -> Result<final_filters::CdefOverlap> {
         const CDEF_START_ALIGN: usize = 8;
         let mut overlap = final_filters::CdefOverlap::default();
-        if self
-            .core
-            .tile_info
-            .as_ref()
-            .is_none_or(|tile| tile.mi_row_starts.len() <= 2)
-        {
+        if self.one_tile_row() {
             return Ok(overlap);
         }
         let frame_height = self.ranges.last().map_or(0, |&(_, last_end)| last_end);

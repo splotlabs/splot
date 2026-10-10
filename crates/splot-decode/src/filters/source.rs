@@ -290,9 +290,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
         self.rows = [None; 3];
     }
 
-    /// Copies stripe `luma` and `margin` rows around it: rows the carry holds
-    /// from it, the rest from the frame. The carry then keeps this window's
-    /// rows the next stripe's window shares.
+    #[cfg(test)]
     pub(crate) fn fill(
         &mut self,
         frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
@@ -300,27 +298,24 @@ impl<T: ReconSample> DeblockedWindow<T> {
         luma: (usize, usize),
         margin: usize,
     ) -> crate::Result<()> {
-        self.copy_window(frame, Some(carry), luma, margin)
+        self.copy_window(frame, Some(carry), luma, margin, [true; 3])
     }
 
-    /// Fills this window for the stripe after the one it last held, when that
-    /// stripe ran before this call: the rows both share move down in place,
-    /// so the window is its own carry.
-    pub(crate) fn slide(
-        &mut self,
-        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
-        luma: (usize, usize),
-        margin: usize,
-    ) -> crate::Result<()> {
-        self.copy_window(frame, None, luma, margin)
-    }
-
-    fn copy_window(
+    /// Copies stripe `luma` and `margin` rows around it: rows the carry holds
+    /// from it, the rest from the frame. The carry then keeps this window's
+    /// rows the next stripe's window shares. Without a carry the window must
+    /// hold the stripe before this one, which has run: the rows both share
+    /// move down in place, so the window is its own carry.
+    ///
+    /// A plane that `read` clears gets no rows, so each read of it is refused.
+    /// Every stripe of a frame must pass the same `read`.
+    pub(crate) fn copy_window(
         &mut self,
         frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
         mut carry: Option<&mut Self>,
         luma: (usize, usize),
         margin: usize,
+        read: [bool; 3],
     ) -> crate::Result<()> {
         let state = || crate::DecodeHeaderStateError::InvalidLoopRestorationFilterState;
         let sub_y = usize::from(frame.info().pixel_format().subsampling_y());
@@ -341,6 +336,15 @@ impl<T: ReconSample> DeblockedWindow<T> {
             };
             let held = held.filter(|_| self.sizes[index] == (width, height));
             let samples = &mut self.planes[index];
+            if !read[index] {
+                samples.clear();
+                if let Some(carry) = carry.as_deref_mut() {
+                    carry.rows[index] = None;
+                }
+                self.rows[index] = Some((start, start));
+                self.sizes[index] = (width, height);
+                continue;
+            }
             let shared = |(held_start, held_end): (usize, usize)| {
                 (held_start <= start && start < held_end).then(|| {
                     let next = held_end.min(end);
