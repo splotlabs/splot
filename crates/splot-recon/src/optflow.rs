@@ -683,8 +683,8 @@ mod tests {
         let want16: Vec<i16> = (0..16)
             .map(|col| horizontal_gradient_scalar(&source16, col))
             .collect();
-        assert_eq!(horizontal_gradient_lanes(&source8).to_vec(), want8);
-        assert_eq!(horizontal_gradient_lanes(&source16).to_vec(), want16);
+        assert_eq!(horizontal_gradient_lanes(&source8)[..], want8[..]);
+        assert_eq!(horizontal_gradient_lanes(&source16)[..], want16[..]);
     }
 
     #[test]
