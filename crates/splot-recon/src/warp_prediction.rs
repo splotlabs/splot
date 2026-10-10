@@ -443,31 +443,29 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
             .ok_or(ReconError::WarpFilterOffsetOutOfRange { offset: offs })
     };
     let taps_x = phase(sx4)?;
-    let fetch = |row: i32, col: i32| -> i32 {
-        let rr = row.clamp(params.first_y, params.last_y);
-        let cc = col.clamp(params.first_x, params.last_x);
-        reference.sample(rr as usize, cc as usize)
-    };
-    let mut intermediate = [0i32; 9 * 4];
-    for k in -4i32..5 {
-        for l in -2i32..2 {
-            let mut sum = 0i32;
-            for (m, &tap) in taps_x.iter().enumerate() {
-                sum += tap * fetch(iy4 + k, ix4 + l - 2 + m as i32);
-            }
-            intermediate[((k + 4) * 4 + (l + 2)) as usize] = round2_i32(sum, INTER_ROUND0);
-        }
-    }
     let taps_y = phase(sy4)?;
-    let mut output = [0i32; 16];
-    for k in -2i32..2 {
-        for l in -2i32..2 {
-            let mut sum = 0i32;
-            for (m, &tap) in taps_y.iter().enumerate() {
-                sum += tap * intermediate[((k + m as i32 + 2) * 4 + (l + 2)) as usize];
-            }
-            output[((k + 2) * 4 + (l + 2)) as usize] = round2_i32(sum, round1);
+    let cols: [usize; 9] = core::array::from_fn(|col| {
+        ((ix4 - 4 + col as i32).clamp(params.first_x, params.last_x) as usize)
+            .min(reference.width() - 1)
+    });
+    let mut intermediate = [Simd::<i32, 4>::splat(0); 9];
+    for (k, intermediate) in intermediate.iter_mut().enumerate() {
+        let row = (iy4 + k as i32 - 4).clamp(params.first_y, params.last_y) as usize;
+        let row = reference.row(row);
+        let window: [i32; 9] = core::array::from_fn(|col| i32::from(row[cols[col]].to_u16()));
+        let mut sum = Simd::splat(0);
+        for (m, &tap) in taps_x.iter().enumerate() {
+            sum += Simd::splat(tap) * Simd::from_slice(&window[m..]);
         }
+        *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+    }
+    let mut output = [0i32; 16];
+    for (k, output) in output.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let mut sum = Simd::splat(0);
+        for (m, &tap) in taps_y.iter().enumerate() {
+            sum += Simd::splat(tap) * intermediate[k + m];
+        }
+        *output = ((sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32).to_array();
     }
     Ok(output)
 }
@@ -1790,6 +1788,60 @@ mod tests {
             for c in 0..4 {
                 let src = samples[(12 + 2 + r) * ref_w + 8 + 4 + 3 + c];
                 assert_eq!(out[r * 4 + c], src, "r={r} c={c}");
+            }
+        }
+    }
+
+    /// Fractional translations at all four plane edges and inside: every
+    /// sample is the per-tap § 7.13.3.20 sum of the clamped reference reads.
+    #[test]
+    fn ext_warp_unit_matches_the_per_tap_sum_at_edges() {
+        let (ref_w, ref_h) = (24usize, 20usize);
+        let samples = noise_samples(ref_w * ref_h, 1023, 11);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let fetch = |row: i32, col: i32| {
+            let (row, col) = (
+                row.clamp(0, ref_h as i32 - 1),
+                col.clamp(0, ref_w as i32 - 1),
+            );
+            i32::from(samples[row as usize * ref_w + col as usize])
+        };
+        let cases = [
+            (0, 0, -150_000, -90_000, 0usize, 0usize),
+            (16, 12, 170_000, 140_000, 1, 1),
+            (8, 4, 12_345, 54_321, 0, 1),
+            (4, 8, -7_777, 33_000, 1, 0),
+        ];
+        for (block_x, block_y, tx, ty, i4, j4) in cases {
+            let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
+            params.bit_depth = BitDepth::Ten;
+            params.warp_params[0] = tx;
+            params.warp_params[1] = ty;
+            let x4 = i64::from(block_x + j4 as i32 * 4 + 2) * 65536 + i64::from(tx);
+            let y4 = i64::from(block_y + i4 as i32 * 4 + 2) * 65536 + i64::from(ty);
+            let (ix4, iy4) = ((x4 >> 16) as i32, (y4 >> 16) as i32);
+            let taps = |s: i64| &EXT_WARPED_FILTERS[round2_i32((s & 0xffff) as i32, 10) as usize];
+            let (taps_x, taps_y) = (taps(x4), taps(y4));
+            let mut intermediate = [0i32; 36];
+            for k in 0..9 {
+                for l in 0..4 {
+                    let sum: i32 = (0..6)
+                        .map(|m| taps_x[m] * fetch(iy4 + k as i32 - 4, ix4 + (l + m) as i32 - 4))
+                        .sum();
+                    intermediate[k * 4 + l] = round2_i32(sum, INTER_ROUND0);
+                }
+            }
+            for compound in [false, true] {
+                let round1 = if compound { 7 } else { 11 };
+                let want: [i32; 16] = core::array::from_fn(|index| {
+                    let (k, l) = (index / 4, index % 4);
+                    let sum = (0..6)
+                        .map(|m| taps_y[m] * intermediate[(k + m) * 4 + l])
+                        .sum();
+                    round2_i32(sum, round1)
+                });
+                let got = ext_warp_predict_unit(&view, &params, i4, j4, compound).unwrap();
+                assert_eq!(got, want, "{block_x} {block_y} {tx} {ty} {compound}");
             }
         }
     }
