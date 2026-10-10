@@ -1256,19 +1256,23 @@ fn memoized_candidate_walk_matches_every_edge_in_spec_order() {
         for row in 0..mi_rows {
             for col in 0..mi_cols {
                 let edge = pass(0).edge_context(row, col, None);
+                let mut run = None;
                 deblock_filter_edge_specialized::<u8, 0, 0>(
-                    ctx, &grid, edge, false, &strengths, &mut None,
+                    ctx, &grid, edge, false, &strengths, &mut None, &mut run,
                 )
                 .unwrap();
+                flush_run::<u8, 0>(&mut run, ctx, BitDepth::Eight).unwrap();
             }
         }
         for row in 0..mi_rows {
             for col in 0..mi_cols {
                 let edge = pass(1).edge_context(row, col, None);
+                let mut run = None;
                 deblock_filter_edge_specialized::<u8, 0, 1>(
-                    ctx, &grid, edge, false, &strengths, &mut None,
+                    ctx, &grid, edge, false, &strengths, &mut None, &mut run,
                 )
                 .unwrap();
+                flush_run::<u8, 1>(&mut run, ctx, BitDepth::Eight).unwrap();
             }
         }
     });

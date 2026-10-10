@@ -71,7 +71,7 @@ pub use coefficient_scan::{
 };
 pub use deblock_filter::{
     DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
-    deblock_edge_columns_4, deblock_edge_rows_4, deblock_filter_choice,
+    deblock_edge_columns, deblock_edge_rows, deblock_filter_choice,
     deblock_filter_choice_and_sample_strided_4, deblock_filter_choice_strided,
     deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
     deblock_sample_filter_strided_4, deblock_side_threshold_index,

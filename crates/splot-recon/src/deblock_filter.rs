@@ -984,12 +984,13 @@ pub fn deblock_filter_choice_and_sample_strided_4<T: ReconSample>(
     )
 }
 
-/// Chooses and applies one four-line § 7.17.7 edge whose lines are sample rows
-/// (a vertical edge): `choice.boundary` is the first row's `q0` and `stride`
-/// steps from one row to the next.
+/// Chooses and applies `edges` consecutive four-line § 7.17.7 edges whose
+/// lines are sample rows (vertical edges) and which share one edge decision:
+/// `choice.boundary` is the first row's `q0`, `stride` steps from one row to
+/// the next, and each edge starts four rows below the previous one.
 ///
-/// The filter choice reads the first and last rows around the edge as
-/// vectors, and the sample filter updates each row as one vector.
+/// Per edge, the filter choice reads its first and last rows around the edge
+/// as vectors, and the sample filter updates each row as one vector.
 ///
 /// # Errors
 /// Returns [`ReconError::DeblockFilterInvalidWidth`] for widths outside
@@ -999,21 +1000,20 @@ pub fn deblock_filter_choice_and_sample_strided_4<T: ReconSample>(
 /// `bit_depth`.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
-pub fn deblock_edge_rows_4<T: ReconSample>(
+pub fn deblock_edge_rows<T: ReconSample>(
     samples: &mut [T],
     stride: usize,
     choice: &DeblockFilterChoice,
+    edges: usize,
     q_thresh_mults: &[i32; MAX_DBL_FLT_LEN],
     w_mults: &[i32; MAX_DBL_FLT_LEN],
     prev_lossless: bool,
     curr_lossless: bool,
     bit_depth: BitDepth,
-) -> Result<usize> {
+) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
     if choice.q_thr == 0 || choice.side_thr == 0 {
-        return Ok(0);
+        return Ok(());
     }
     let edge = EdgeKernel::new(
         choice,
@@ -1028,45 +1028,53 @@ pub fn deblock_edge_rows_4<T: ReconSample>(
         .boundary
         .checked_sub(EDGE_REACH)
         .filter(|first| {
-            stride
-                .checked_mul(MI_LINES - 1)
+            edges
+                .checked_mul(MI_LINES)
+                .and_then(|lines| lines.checked_sub(1))
+                .and_then(|last| stride.checked_mul(last))
                 .and_then(|offset| first.checked_add(offset))
                 .and_then(|last| last.checked_add(2 * EDGE_REACH))
                 .is_some_and(|end| end <= len)
         })
         .ok_or_else(|| edge.too_short(len))?;
+    let step = MI_LINES * stride;
     if let Some(samples) = T::u16_slice_mut(samples) {
-        Ok(edge.rows(samples, first, stride))
+        for index in 0..edges {
+            edge.rows(samples, first + index * step, stride);
+        }
     } else if let Some(samples) = T::u8_slice_mut(samples) {
-        Ok(edge.rows(samples, first, stride))
+        for index in 0..edges {
+            edge.rows(samples, first + index * step, stride);
+        }
     } else {
-        Err(edge.too_short(len))
+        return Err(edge.too_short(len));
     }
+    Ok(())
 }
 
-/// Chooses and applies one four-line § 7.17.7 edge whose lines are sample
-/// columns (a horizontal edge): `choice.boundary` is the first column's `q0`
-/// and `stride` steps across the edge.
+/// Chooses and applies `edges` consecutive four-line § 7.17.7 edges whose
+/// lines are sample columns (horizontal edges) and which share one edge
+/// decision: `choice.boundary` is the first column's `q0`, `stride` steps
+/// across the edge, and each edge starts four columns right of the previous.
 ///
 /// # Errors
-/// Returns the same errors as [`deblock_edge_rows_4`].
+/// Returns the same errors as [`deblock_edge_rows`].
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
-pub fn deblock_edge_columns_4<T: ReconSample>(
+pub fn deblock_edge_columns<T: ReconSample>(
     samples: &mut [T],
     stride: usize,
     choice: &DeblockFilterChoice,
+    edges: usize,
     q_thresh_mults: &[i32; MAX_DBL_FLT_LEN],
     w_mults: &[i32; MAX_DBL_FLT_LEN],
     prev_lossless: bool,
     curr_lossless: bool,
     bit_depth: BitDepth,
-) -> Result<usize> {
+) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
     if choice.q_thr == 0 || choice.side_thr == 0 {
-        return Ok(0);
+        return Ok(());
     }
     let edge = EdgeKernel::new(
         choice,
@@ -1084,17 +1092,22 @@ pub fn deblock_edge_columns_4<T: ReconSample>(
             stride
                 .checked_mul(2 * EDGE_REACH - 1)
                 .and_then(|offset| first.checked_add(offset))
-                .and_then(|last| last.checked_add(MI_LINES))
+                .and_then(|last| edges.checked_mul(MI_LINES)?.checked_add(last))
                 .is_some_and(|end| end <= len)
         })
         .ok_or_else(|| edge.too_short(len))?;
     if let Some(samples) = T::u16_slice_mut(samples) {
-        Ok(edge.columns(samples, first, stride))
+        for index in 0..edges {
+            edge.columns(samples, first + index * MI_LINES, stride);
+        }
     } else if let Some(samples) = T::u8_slice_mut(samples) {
-        Ok(edge.columns(samples, first, stride))
+        for index in 0..edges {
+            edge.columns(samples, first + index * MI_LINES, stride);
+        }
     } else {
-        Err(edge.too_short(len))
+        return Err(edge.too_short(len));
     }
+    Ok(())
 }
 
 /// Samples the widest § 7.17.7 filter reads on either side of an edge.
@@ -1669,11 +1682,11 @@ mod tests {
                     T::try_from_u16(value.clamp(0, max) as u16).unwrap()
                 })
                 .collect();
-            for lines_are_rows in [true, false] {
+            for (lines_are_rows, edges) in [(true, 1), (true, 2), (false, 1), (false, 2)] {
                 let (boundary, perpendicular, lane) = if lines_are_rows {
-                    (6 * stride + 12, 1, stride)
+                    ((8 - 2 * edges) * stride + 12, 1, stride)
                 } else {
-                    (8 * stride + 10, stride, 1)
+                    (8 * stride + 12 - 2 * edges, stride, 1)
                 };
                 let choice = DeblockFilterChoice {
                     boundary,
@@ -1684,29 +1697,34 @@ mod tests {
                     q_first: Q_FIRST,
                 };
                 let mut expected = source.clone();
-                let width = deblock_filter_choice_and_sample_strided_4(
-                    &mut expected,
-                    boundary + 3 * lane,
-                    NonZeroUsize::new(perpendicular).unwrap(),
-                    NonZeroUsize::new(lane).unwrap(),
-                    &choice,
-                    &Q_THRESH_MULTS,
-                    &W_MULT,
-                    lossless & 1 != 0,
-                    lossless & 2 != 0,
-                    bit_depth,
-                )
-                .unwrap();
+                for edge in 0..edges {
+                    let boundary = boundary + edge * MI_LINES * lane;
+                    let width = deblock_filter_choice_and_sample_strided_4(
+                        &mut expected,
+                        boundary + 3 * lane,
+                        NonZeroUsize::new(perpendicular).unwrap(),
+                        NonZeroUsize::new(lane).unwrap(),
+                        &DeblockFilterChoice { boundary, ..choice },
+                        &Q_THRESH_MULTS,
+                        &W_MULT,
+                        lossless & 1 != 0,
+                        lossless & 2 != 0,
+                        bit_depth,
+                    )
+                    .unwrap();
+                    seen[width] = true;
+                }
                 let kernel = if lines_are_rows {
-                    deblock_edge_rows_4::<T>
+                    deblock_edge_rows::<T>
                 } else {
-                    deblock_edge_columns_4::<T>
+                    deblock_edge_columns::<T>
                 };
                 let mut actual = source.clone();
-                let actual_width = kernel(
+                kernel(
                     &mut actual,
                     stride,
                     &choice,
+                    edges,
                     &Q_THRESH_MULTS,
                     &W_MULT,
                     lossless & 1 != 0,
@@ -1714,9 +1732,10 @@ mod tests {
                     bit_depth,
                 )
                 .unwrap();
-                assert_eq!(actual_width, width, "case {case} rows {lines_are_rows}");
-                assert_eq!(actual, expected, "case {case} rows {lines_are_rows}");
-                seen[width] = true;
+                assert_eq!(
+                    actual, expected,
+                    "case {case} rows {lines_are_rows} edges {edges}"
+                );
             }
         }
         assert!(
@@ -1742,10 +1761,11 @@ mod tests {
             q_first: Q_FIRST,
         };
         let mut samples = [0u16; 64];
-        let rows = deblock_edge_rows_4(
+        let rows = deblock_edge_rows(
             &mut samples,
             16,
             &choice,
+            1,
             &Q_THRESH_MULTS,
             &W_MULT,
             false,
@@ -1756,13 +1776,14 @@ mod tests {
             rows,
             Err(ReconError::DeblockFilterLineTooShort { .. })
         ));
-        let columns = deblock_edge_columns_4(
+        let columns = deblock_edge_columns(
             &mut samples,
             4,
             &DeblockFilterChoice {
                 boundary: 30,
                 ..choice
             },
+            1,
             &Q_THRESH_MULTS,
             &W_MULT,
             false,
@@ -1773,7 +1794,7 @@ mod tests {
             columns,
             Err(ReconError::DeblockFilterLineTooShort { .. })
         ));
-        let wide = deblock_edge_columns_4(
+        let wide = deblock_edge_columns(
             &mut samples,
             4,
             &DeblockFilterChoice {
@@ -1781,6 +1802,7 @@ mod tests {
                 max_width_pos: 9,
                 ..choice
             },
+            1,
             &Q_THRESH_MULTS,
             &W_MULT,
             false,

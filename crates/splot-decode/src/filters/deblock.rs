@@ -10,8 +10,8 @@ use splot_core::tables::conversion::{
 use splot_parallel::prelude::*;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PixelFormat,
-    PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_edge_columns_4,
-    deblock_edge_rows_4, deblock_filter_choice, deblock_filter_choice_strided,
+    PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_edge_columns,
+    deblock_edge_rows, deblock_filter_choice, deblock_filter_choice_strided,
     deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
     deblock_sample_filter_strided_4, deblock_side_threshold_index, max_quantizer_index,
 };
@@ -1032,7 +1032,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
         plane_pass.df_delta_q,
         plane_pass.bit_depth,
     );
-    let mut cache = None;
+    let (mut cache, mut run) = (None, None);
     let mut visit = |r: usize, c: usize| {
         deblock_filter_edge_specialized::<T, PLANE, PASS>(
             &mut ctx,
@@ -1041,6 +1041,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
             disable_loopfilters_across_tiles,
             &strengths,
             &mut cache,
+            &mut run,
         )
     };
     let row_step = plane_pass.row_step;
@@ -1077,7 +1078,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
             }
         }
     }
-    Ok(())
+    flush_run::<T, PASS>(&mut run, &mut ctx, plane_pass.bit_depth)
 }
 
 /// Mode-info columns one candidate mask covers.
@@ -1492,6 +1493,7 @@ fn deblock_filter_edge<T: ReconSample>(
     disable_loopfilters_across_tiles: bool,
     strengths: &StrengthCache,
 ) -> Result<(), DeblockError> {
+    let mut run = None;
     deblock_filter_edge_specialized::<T, 0, 0>(
         plane_ctx,
         grid,
@@ -1499,7 +1501,9 @@ fn deblock_filter_edge<T: ReconSample>(
         disable_loopfilters_across_tiles,
         strengths,
         &mut None,
-    )
+        &mut run,
+    )?;
+    flush_run::<T, 0>(&mut run, plane_ctx, ctx.bit_depth)
 }
 
 /// What the records on both sides of an edge decide, before the clamps that
@@ -1516,6 +1520,77 @@ struct EdgeDecision {
 /// The last decision a pass derived, with the row (horizontal pass) or column
 /// (vertical pass) and the two records it was derived for.
 type EdgeCache<'g> = Option<(usize, EdgeBlock<'g>, EdgeBlock<'g>, Option<EdgeDecision>)>;
+
+/// One contiguous edge's sample-filter inputs, with `boundary` the band index
+/// of its first line's `q0`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ContiguousEdge {
+    boundary: usize,
+    q_thr: i32,
+    side: i32,
+    max_width_neg: u8,
+    max_width_pos: u8,
+    prev_lossless: bool,
+    curr_lossless: bool,
+}
+
+/// The run of contiguous edges a pass walk holds back, with its edge count.
+///
+/// Each edge that continues the run (the next four columns on the horizontal
+/// pass, the next four rows on the vertical one) with the same filter inputs
+/// joins it; any other edge flushes the run through one kernel call. § 7.17.1
+/// makes the edges of one pass independent, so the delay changes no sample.
+type EdgeRun = Option<(ContiguousEdge, usize)>;
+
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn queue_edge<T: ReconSample, const PASS: usize>(
+    run: &mut EdgeRun,
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    edge: ContiguousEdge,
+    bit_depth: BitDepth,
+) -> Result<(), DeblockError> {
+    if let Some((first, edges)) = run {
+        let step = if PASS == 0 {
+            MI_SIZE * plane_ctx.rows.stride
+        } else {
+            MI_SIZE
+        };
+        let next = ContiguousEdge {
+            boundary: first.boundary + *edges * step,
+            ..*first
+        };
+        if next == edge {
+            *edges += 1;
+            return Ok(());
+        }
+    }
+    replace_run::<T, PASS>(run, plane_ctx, Some(edge), bit_depth)
+}
+
+fn flush_run<T: ReconSample, const PASS: usize>(
+    run: &mut EdgeRun,
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    bit_depth: BitDepth,
+) -> Result<(), DeblockError> {
+    replace_run::<T, PASS>(run, plane_ctx, None, bit_depth)
+}
+
+/// Filters the held run, then holds `next` as a new run.
+#[inline(never)]
+fn replace_run<T: ReconSample, const PASS: usize>(
+    run: &mut EdgeRun,
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    next: Option<ContiguousEdge>,
+    bit_depth: BitDepth,
+) -> Result<(), DeblockError> {
+    match core::mem::replace(run, next.map(|edge| (edge, 1))) {
+        Some((first, edges)) => {
+            filter_contiguous_run::<T, PASS>(plane_ctx, first, edges, bit_depth)
+        }
+        None => Ok(()),
+    }
+}
 
 impl EdgeBlock<'_> {
     fn same(self, other: Self) -> bool {
@@ -1537,6 +1612,7 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
     disable_loopfilters_across_tiles: bool,
     strengths: &StrengthCache,
     cache: &mut EdgeCache<'g>,
+    run: &mut EdgeRun,
 ) -> Result<(), DeblockError> {
     let EdgeContext {
         row,
@@ -1640,22 +1716,16 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
             .checked_add(MI_SIZE)
             .is_some_and(|end| end <= plane_ctx.width);
     if horizontal || vertical {
-        let y_origin = plane_ctx.y_origin;
-        let (samples, stride) = plane_ctx.rows.contiguous_mut();
-        let boundary = (y_p - y_origin) * stride + x_p;
-        return filter_contiguous_edge(
-            samples,
-            boundary,
-            stride,
-            horizontal,
+        let edge = ContiguousEdge {
+            boundary: (y_p - plane_ctx.y_origin) * plane_ctx.rows.stride + x_p,
             q_thr,
             side,
-            max_width_neg,
-            max_width_pos,
+            max_width_neg: max_width_neg as u8,
+            max_width_pos: max_width_pos as u8,
             prev_lossless,
             curr_lossless,
-            bit_depth,
-        );
+        };
+        return queue_edge::<T, PASS>(run, plane_ctx, edge, bit_depth);
     }
 
     let width = choose_filter_width(
@@ -1817,54 +1887,40 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
     )
 }
 
-/// Chooses and filters one four-line edge whose sample span lies inside
-/// `samples`; `lines_are_rows` is a vertical edge.
-#[allow(clippy::too_many_arguments)]
-fn filter_contiguous_edge<T: ReconSample>(
-    samples: &mut [T],
-    boundary: usize,
-    stride: usize,
-    lines_are_rows: bool,
-    q_thr: i32,
-    side: i32,
-    max_width_neg: usize,
-    max_width_pos: usize,
-    prev_lossless: bool,
-    curr_lossless: bool,
+/// Chooses and filters a run of `edges` contiguous edges that start at
+/// `first` and share its filter inputs.
+fn filter_contiguous_run<T: ReconSample, const PASS: usize>(
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    first: ContiguousEdge,
+    edges: usize,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
+    let (samples, stride) = plane_ctx.rows.contiguous_mut();
     let choice = DeblockFilterChoice {
-        boundary,
-        q_thr,
-        side_thr: side,
-        max_width_pos,
-        max_width_neg,
+        boundary: first.boundary,
+        q_thr: first.q_thr,
+        side_thr: first.side,
+        max_width_pos: usize::from(first.max_width_pos),
+        max_width_neg: usize::from(first.max_width_neg),
         q_first: Q_FIRST,
     };
-    let filtered = if lines_are_rows {
-        deblock_edge_rows_4(
-            samples,
-            stride,
-            &choice,
-            &Q_THRESH_MULTS,
-            &W_MULT,
-            prev_lossless,
-            curr_lossless,
-            bit_depth,
-        )
+    let filter = if PASS == 0 {
+        deblock_edge_rows::<T>
     } else {
-        deblock_edge_columns_4(
-            samples,
-            stride,
-            &choice,
-            &Q_THRESH_MULTS,
-            &W_MULT,
-            prev_lossless,
-            curr_lossless,
-            bit_depth,
-        )
+        deblock_edge_columns::<T>
     };
-    filtered.map(|_| ()).map_err(|_| DeblockError::SampleFilter)
+    filter(
+        samples,
+        stride,
+        &choice,
+        edges,
+        &Q_THRESH_MULTS,
+        &W_MULT,
+        first.prev_lossless,
+        first.curr_lossless,
+        bit_depth,
+    )
+    .map_err(|_| DeblockError::SampleFilter)
 }
 
 #[allow(clippy::too_many_arguments)]
