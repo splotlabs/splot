@@ -285,10 +285,18 @@ fn cdef_params_guarantee_write(params: CdefFrameParams, plane: PlaneId) -> bool 
 }
 
 impl CdefBlockLookup<'_> {
-    fn at(&self, r: usize, c: usize) -> Result<Option<CdefBlockCtx>, CdefError> {
-        let Some(strength_index) = self.grid.strength_for_mi(r, c)? else {
-            return Ok(None);
-        };
+    /// The context of the 8x8 block at `(r, c)`, given its 64x64 unit's
+    /// strength set (`None` when the unit's strength index is out of range)
+    /// and the MI span of its tile row.
+    #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
+    #[inline(always)]
+    fn at(
+        &self,
+        r: usize,
+        c: usize,
+        params: Option<CdefFrameParams>,
+        (mi_row_start, mi_rows): (usize, usize),
+    ) -> Result<Option<CdefBlockCtx>, CdefError> {
         if let Some(skip_grid) = self.skip_grid
             && skip_grid.all_skipped_8x8(r, c, self.mi_rows, self.mi_cols)?
         {
@@ -304,11 +312,7 @@ impl CdefBlockLookup<'_> {
         if luma_lossless && (!self.has_chroma || chroma_lossless) {
             return Ok(None);
         }
-        let params = *self
-            .strengths
-            .get(strength_index)
-            .ok_or(CdefError::Geometry)?;
-        let (mi_row_start, mi_rows) = tile_span(self.tile_row_starts, r, self.mi_rows);
+        let params = params.ok_or(CdefError::Geometry)?;
         let (mi_col_start, mi_cols) = tile_span(self.tile_col_starts, c, self.mi_cols);
         Ok(Some(CdefBlockCtx {
             r,
@@ -614,21 +618,30 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         let whole_u = frame.deblocked_u;
         let whole_v = frame.deblocked_v;
         while r < r_end {
+            let row_span = tile_span(lookup.tile_row_starts, r, mi_rows);
             let mut c = 0;
             while c < mi_cols {
-                if let Some(ctx) = lookup.at(r, c)? {
-                    compute_cdef_block::<T>(
-                        &ctx,
-                        &mut pad,
-                        whole_y,
-                        whole_u,
-                        whole_v,
-                        &mut frame.filtered_y,
-                        frame.filtered_u.as_mut(),
-                        frame.filtered_v.as_mut(),
-                    )?;
+                let unit_end = (c / CDEF_UNIT_MI + 1) * CDEF_UNIT_MI;
+                let Some(strength_index) = lookup.grid.strength_for_mi(r, c)? else {
+                    c = unit_end;
+                    continue;
+                };
+                let params = lookup.strengths.get(strength_index).copied();
+                while c < unit_end.min(mi_cols) {
+                    if let Some(ctx) = lookup.at(r, c, params, row_span)? {
+                        compute_cdef_block::<T>(
+                            &ctx,
+                            &mut pad,
+                            whole_y,
+                            whole_u,
+                            whole_v,
+                            &mut frame.filtered_y,
+                            frame.filtered_u.as_mut(),
+                            frame.filtered_v.as_mut(),
+                        )?;
+                    }
+                    c += STEP4;
                 }
-                c += STEP4;
             }
             r += STEP4;
         }
