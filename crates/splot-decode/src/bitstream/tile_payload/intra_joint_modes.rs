@@ -133,7 +133,7 @@ impl<T: Copy> MiGrid<T> {
         for row in r..row_end {
             if let Some(plane_row) = self.window.plane_row(row) {
                 let start = plane_row * self.cols;
-                self.cells[start + c..start + col_end].fill(value);
+                crate::support::fill_mi_run(&mut self.cells[start + c..start + col_end], value);
             }
         }
     }

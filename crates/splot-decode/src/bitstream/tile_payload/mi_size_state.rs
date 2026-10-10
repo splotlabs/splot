@@ -193,11 +193,17 @@ impl TileMiSizeState {
                 && let Some(plane_row) = self.window.plane_row(row)
             {
                 let row_start = plane_row * stride;
-                self.storage[row_start + col_start..row_start + col_end].fill(mi_size_value);
+                crate::support::fill_mi_run(
+                    &mut self.storage[row_start + col_start..row_start + col_end],
+                    mi_size_value,
+                );
             }
             self.storage[left_base + row] = left_partition_context;
         }
-        self.storage[above_base + col_start..above_base + col_end].fill(above_partition_context);
+        crate::support::fill_mi_run(
+            &mut self.storage[above_base + col_start..above_base + col_end],
+            above_partition_context,
+        );
         Ok(())
     }
 

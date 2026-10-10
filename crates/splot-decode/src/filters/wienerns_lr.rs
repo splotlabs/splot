@@ -368,7 +368,7 @@ fn write_wienerns_lr_tx_skip_record(
             .iter()
             .all(|&slot| slot == WIENERNS_LR_TX_SKIP_UNWRITTEN)
         {
-            slots.fill(value);
+            crate::support::fill_mi_run(slots, value);
             slots.len()
         } else {
             let mut unwritten = 0;
