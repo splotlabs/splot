@@ -362,8 +362,11 @@ pub fn cdef_filter_sample(
 /// `Cdef_Directions` tap reach of 2 on every side.
 pub const CDEF_PADDED_SIDE: usize = 12;
 
-/// Sample count of the padded per-block scratch: `CDEF_PADDED_SIDE` squared.
-pub const CDEF_PADDED_AREA: usize = CDEF_PADDED_SIDE * CDEF_PADDED_SIDE;
+/// Sample count of the padded per-block scratch. It holds the
+/// `CDEF_PADDED_SIDE`-square layout and leaves room for a tap view of up to
+/// 96 samples from any byte-sized start, so binding a view needs no bounds
+/// check.
+pub const CDEF_PADDED_AREA: usize = u8::MAX as usize + 97;
 
 /// Padded-tap marker used by the SIMD boundary kernel for unavailable samples.
 pub const CDEF_UNAVAILABLE: u16 = i16::MAX as u16;
@@ -507,8 +510,8 @@ fn cdef_pair<const W: usize, const V: usize>(first: &[u16; W], second: &[u16; W]
 /// § 7.18.3 over a padded block, two rows per `V`-lane vector.
 ///
 /// Each of the twelve taps is bound once per block to a `SPAN`-lane view of
-/// `pad` that starts at its displacement from the block's first sample. Every
-/// table start already leaves room for a view; clamping it shows the compiler
+/// `pad` that starts at its displacement from the block's first sample. The
+/// scratch leaves room for a view from any byte start, so the compiler knows
 /// that the view is in bounds. The row pairs are unrolled, so every row load
 /// is a constant offset from a view. `ROWS` is the most rows the layout
 /// holds; rows at or past `h` are computed and discarded. With
@@ -534,11 +537,10 @@ fn cdef_filter_rows<
     out: &mut [u16],
     out_stride: usize,
 ) -> Option<()> {
+    const { assert!(u8::MAX as usize + SPAN <= CDEF_PADDED_AREA) };
     let starts = &starts[filter.dir & 7];
-    let view = |tap: usize| -> Option<&[u16; SPAN]> {
-        pad.get(usize::from(starts[tap]).min(CDEF_PADDED_AREA - SPAN)..)?
-            .first_chunk()
-    };
+    let view =
+        |tap: usize| -> Option<&[u16; SPAN]> { pad.get(usize::from(starts[tap])..)?.first_chunk() };
     let center_view = pad.get(2 * STRIDE + CENTER..)?.first_chunk()?;
     let pri_views = if PRI {
         [view(0)?, view(1)?, view(2)?, view(3)?]
@@ -1379,7 +1381,7 @@ mod tests {
                 starts
                     .iter()
                     .flatten()
-                    .all(|&start| usize::from(start) + span <= CDEF_PADDED_AREA)
+                    .all(|&start| usize::from(start) + span <= CDEF_PADDED_SIDE * CDEF_PADDED_SIDE)
             );
         }
     }

@@ -993,57 +993,70 @@ fn gather_interior_pad<S: ReconSample>(
     let inside = y0 >= snap.origin_y() + CDEF_TAP_REACH && y0 + h + CDEF_TAP_REACH <= snap.end_y();
     let window_y = inside.then(|| y0 - snap.origin_y());
     let (width, stride) = (snap.width(), snap.stride());
-    match (
-        S::u16_slice(snap.samples()),
-        S::u8_slice(snap.samples()),
-        window_y,
-        w,
-    ) {
-        (Some(samples), _, Some(y0), 8) => {
-            gather_interior_rows::<12, _>(samples, width, stride, pad, x0, y0, h)
+    let windowed = window_y.and_then(|y0| {
+        let samples = snap.samples();
+        match (S::u16_slice(samples), S::u8_slice(samples)) {
+            (Some(samples), _) => gather_interior_window(samples, width, stride, pad, x0, y0, w, h),
+            (_, Some(samples)) => gather_interior_window(samples, width, stride, pad, x0, y0, w, h),
+            _ => None,
         }
-        (Some(samples), _, Some(y0), 4) => {
-            gather_interior_rows::<8, _>(samples, width, stride, pad, x0, y0, h)
-        }
-        (_, Some(samples), Some(y0), 8) => {
-            gather_interior_rows::<12, _>(samples, width, stride, pad, x0, y0, h)
-        }
-        (_, Some(samples), Some(y0), 4) => {
-            gather_interior_rows::<8, _>(samples, width, stride, pad, x0, y0, h)
-        }
-        _ => {
-            for r in 0..h + 2 * CDEF_TAP_REACH {
-                let src = snap
-                    .row(y0 - CDEF_TAP_REACH + r)
-                    .and_then(|row| row.get(x0 - CDEF_TAP_REACH..x0 + w + CDEF_TAP_REACH))
-                    .ok_or(CdefError::Workspace)?;
-                let dst_start = r * CDEF_PADDED_SIDE;
-                let dst = pad
-                    .get_mut(dst_start..dst_start + src.len())
-                    .ok_or(CdefError::Workspace)?;
-                if let Some(src) = S::u16_slice(src) {
-                    dst.copy_from_slice(src);
-                } else {
-                    for (dst, src) in dst.iter_mut().zip(src) {
-                        *dst = src.to_u16();
-                    }
-                }
+    });
+    if let Some(gathered) = windowed {
+        return gathered;
+    }
+    for r in 0..h + 2 * CDEF_TAP_REACH {
+        let src = snap
+            .row(y0 - CDEF_TAP_REACH + r)
+            .and_then(|row| row.get(x0 - CDEF_TAP_REACH..x0 + w + CDEF_TAP_REACH))
+            .ok_or(CdefError::Workspace)?;
+        let dst_start = r * CDEF_PADDED_SIDE;
+        let dst = pad
+            .get_mut(dst_start..dst_start + src.len())
+            .ok_or(CdefError::Workspace)?;
+        if let Some(src) = S::u16_slice(src) {
+            dst.copy_from_slice(src);
+        } else {
+            for (dst, src) in dst.iter_mut().zip(src) {
+                *dst = src.to_u16();
             }
-            Ok(())
         }
     }
+    Ok(())
 }
 
-/// [`gather_interior_pad`] for `u16` or `u8` plane storage, widening `SPAN`
-/// samples per row off one hoisted row base.
-fn gather_interior_rows<const SPAN: usize, T: Copy>(
+/// [`gather_interior_rows`] for the block sizes CDEF filters, or `None` for
+/// any other size.
+#[allow(clippy::too_many_arguments)]
+fn gather_interior_window<T: Copy>(
     samples: &[T],
     width: usize,
     stride: usize,
     pad: &mut [u16; CDEF_PADDED_AREA],
     x0: usize,
     y0: usize,
+    w: usize,
     h: usize,
+) -> Option<Result<(), CdefError>>
+where
+    u16: From<T>,
+{
+    Some(match (w, h) {
+        (8, 8) => gather_interior_rows::<12, 12, _>(samples, width, stride, pad, x0, y0),
+        (4, 4) => gather_interior_rows::<8, 8, _>(samples, width, stride, pad, x0, y0),
+        (4, 8) => gather_interior_rows::<8, 12, _>(samples, width, stride, pad, x0, y0),
+        _ => return None,
+    })
+}
+
+/// [`gather_interior_pad`] for `u16` or `u8` plane storage, widening `SPAN`
+/// samples per row of `ROWS` rows off one hoisted row base.
+fn gather_interior_rows<const SPAN: usize, const ROWS: usize, T: Copy>(
+    samples: &[T],
+    width: usize,
+    stride: usize,
+    pad: &mut [u16; CDEF_PADDED_AREA],
+    x0: usize,
+    y0: usize,
 ) -> Result<(), CdefError>
 where
     u16: From<T>,
@@ -1057,7 +1070,7 @@ where
         .and_then(|top| top.checked_mul(stride))
         .and_then(|row| row.checked_add(left))
         .ok_or(CdefError::Workspace)?;
-    for r in 0..h + 2 * CDEF_TAP_REACH {
+    for r in 0..ROWS {
         let src = samples
             .get(base..)
             .and_then(<[T]>::first_chunk::<SPAN>)
@@ -1087,7 +1100,7 @@ fn gather_boundary_pad<S: ReconSample>(
     inside_x: usize,
     inside_y: usize,
 ) -> Result<(), CdefError> {
-    pad.fill(CDEF_UNAVAILABLE);
+    pad[..CDEF_PADDED_SIDE * CDEF_PADDED_SIDE].fill(CDEF_UNAVAILABLE);
     let source_x_start = x0.saturating_sub(CDEF_TAP_REACH).max(start_x);
     let source_x_end = x0
         .saturating_add(w)
