@@ -450,7 +450,7 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
 #[test]
 fn padded_flat_chunks_match_the_callback_reference() {
     let radius = PC_WIENER_FILTER_TAP_RADIUS;
-    for (width, height) in [(96, 16), (67, 13), (40, 6)] {
+    for (width, height) in [(96, 16), (67, 13), (40, 6), (1, 5), (33, 7), (65, 4)] {
         let stride = width + 2 * radius;
         let padded: Vec<u16> = (0..(height + 2 * radius) * stride)
             .map(|index| {

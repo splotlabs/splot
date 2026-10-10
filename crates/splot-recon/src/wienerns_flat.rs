@@ -24,6 +24,8 @@ use crate::Result;
 const CHUNK: usize = 32;
 /// Chunks a row may hold; later chunks are never flat.
 const MAX_CHUNKS: usize = 32;
+/// Lanes of the flatness check; a narrower partial chunk is never flat.
+const LANES: usize = 8;
 
 /// The flat chunks of consecutive row groups whose tap reach extends `R`
 /// columns past each side of the output.
@@ -73,7 +75,7 @@ impl<const R: usize> FlatChunks<R> {
         for chunk in 0..full {
             self.update_chunk(window, first, chunk, CHUNK + 2 * R);
         }
-        if full < MAX_CHUNKS && !width.is_multiple_of(CHUNK) {
+        if full < MAX_CHUNKS && !width.is_multiple_of(CHUNK) && width % CHUNK + 2 * R >= LANES {
             self.update_chunk(window, first, full, width % CHUNK + 2 * R);
         }
     }
@@ -209,12 +211,12 @@ fn flat_value<T: LumaSimdSource>(
     for (index, row) in window.iter().enumerate().skip(known).rev() {
         let row = &row[start..start + width];
         let sample = T::scalar(row, 0);
-        let splat = Simd::<u16, 8>::splat(sample);
-        let mut diff = T::load::<8>(row, width - 8) ^ splat;
+        let splat = Simd::<u16, LANES>::splat(sample);
+        let mut diff = T::load::<LANES>(row, width - LANES) ^ splat;
         let mut x = 0;
-        while x + 8 < width {
-            diff |= T::load::<8>(row, x) ^ splat;
-            x += 8;
+        while x + LANES < width {
+            diff |= T::load::<LANES>(row, x) ^ splat;
+            x += LANES;
         }
         if diff.reduce_max() != 0 {
             return Err(index);
