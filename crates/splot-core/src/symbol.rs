@@ -359,6 +359,7 @@ impl<'a> SymbolDecoder<'a> {
     /// # Errors
     /// Returns [`Error::InvalidSymbolDecoderState`] if `n > 32`, or propagates
     /// [`Error::UnexpectedEof`] from the bounded bit reader.
+    #[inline]
     pub fn read_literal(&mut self, n: u32) -> Result<u32> {
         if n > MAX_LITERAL_BITS {
             return Err(
