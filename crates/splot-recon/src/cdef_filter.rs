@@ -887,6 +887,121 @@ fn cdef_copy_centre_rows<
     Some(())
 }
 
+/// Whether [`cdef_filter_rows_diff8`] computes `filter` exactly: strengths
+/// below 64, and `strength << dampingAdj` at most 127, so that `constrain`
+/// is already zero for every difference that saturates `i8`.
+fn cdef_i8_diffs_fit(filter: &CdefBlockFilter) -> bool {
+    [filter.pri_str, filter.sec_str]
+        .into_iter()
+        .all(|strength| {
+            (0..64).contains(&strength)
+                && strength << constrain_damping_adj(strength, filter.damping) <= 127
+        })
+}
+
+impl CdefConstrain8 {
+    /// `constrain(diff)` on a tap difference in `i8` lanes; the wrapping
+    /// `abs` read as `u8` is `|diff|` also for `-128`.
+    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[inline(always)]
+    fn apply_diff(self, diff: Simd<i8, 16>) -> Simd<i8, 16> {
+        let magnitude = diff.abs().cast::<u8>();
+        let clip = self
+            .threshold
+            .saturating_sub(magnitude >> self.shift)
+            .cast::<i8>();
+        diff.simd_min(clip).simd_max(-clip)
+    }
+}
+
+/// [`cdef_filter_rows`] in an interior layout 8 lanes wide on tap
+/// differences saturated to `i8`, for filters [`cdef_i8_diffs_fit`] admits.
+/// A saturated difference constrains to zero like the true one, the
+/// rounded sum moves the centre by less than 128, and the `min`/`max` clamp
+/// reads the differences, so the result is the same as the `i16` kernel's.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_filter_rows_diff8<
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const SPAN: usize,
+    const AREA: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
+    pad: &[u16; AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    starts: &CdefTapStarts,
+    out: &mut [u16],
+    out_stride: usize,
+) -> Option<()> {
+    let (center_view, pri_views, sec_views) =
+        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
+    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
+    let pri = CdefConstrain8::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain8::new(filter.sec_str, filter.damping);
+    let (low, high) = (
+        Simd::splat(i16::from(i8::MIN)),
+        Simd::splat(i16::from(i8::MAX)),
+    );
+    macro_rules! filter_row_pair {
+        ($row:literal) => {{
+            let row: usize = $row;
+            if row < ROWS && row < h {
+                let center = cdef_row_pair::<8, 16, STRIDE, SPAN>(center_view, row)?;
+                let mut sum = Simd::<i16, 16>::splat(0);
+                let mut min = Simd::<i8, 16>::splat(0);
+                let mut max = Simd::<i8, 16>::splat(0);
+                macro_rules! add_pair {
+                    ($first:expr, $second:expr, $constrain:expr, $weight:expr) => {{
+                        let first = cdef_row_pair::<8, 16, STRIDE, SPAN>($first, row)? - center;
+                        let second = cdef_row_pair::<8, 16, STRIDE, SPAN>($second, row)? - center;
+                        let first = first.simd_clamp(low, high).cast::<i8>();
+                        let second = second.simd_clamp(low, high).cast::<i8>();
+                        if PRI && SEC {
+                            min = min.simd_min(first).simd_min(second);
+                            max = max.simd_max(first).simd_max(second);
+                        }
+                        let pair = $constrain.apply_diff(first) + $constrain.apply_diff(second);
+                        sum += pair.cast::<i16>() * $weight;
+                    }};
+                }
+                if PRI {
+                    add_pair!(pri_views[0], pri_views[1], pri, pri_taps[0]);
+                    add_pair!(pri_views[2], pri_views[3], pri, pri_taps[1]);
+                }
+                if SEC {
+                    add_pair!(sec_views[0], sec_views[1], sec, sec_taps[0]);
+                    add_pair!(sec_views[2], sec_views[3], sec, sec_taps[0]);
+                    add_pair!(sec_views[4], sec_views[5], sec, sec_taps[1]);
+                    add_pair!(sec_views[6], sec_views[7], sec, sec_taps[1]);
+                }
+                let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
+                let offset = (Simd::splat(8) + sum - negative) >> 4;
+                let filtered = if PRI && SEC {
+                    center + offset.cast::<i8>().simd_max(min).simd_min(max).cast()
+                } else {
+                    center + offset
+                };
+                let filtered = filtered.cast::<u16>().to_array();
+                cdef_output_row::<8>(out, out_stride, row)?.copy_from_slice(&filtered[..8]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                if row + 1 < h {
+                    cdef_output_row::<8>(out, out_stride, row + 1)?.copy_from_slice(&filtered[8..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                }
+            }
+        }};
+    }
+    filter_row_pair!(0);
+    filter_row_pair!(2);
+    filter_row_pair!(4);
+    filter_row_pair!(6);
+    Some(())
+}
+
 /// Dispatches [`cdef_filter_rows`] on which tap families are active; with
 /// neither, the block is its centre samples.
 fn cdef_filter_block_rows<
@@ -916,6 +1031,15 @@ fn cdef_filter_block_rows<
             filter,
             cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA>(
                 pad, h, filter, starts, out, out_stride, 0
+            ),
+            copy!()
+        );
+    }
+    if W == 8 && !HAS_UNAVAILABLE && filter.coeff_shift > 0 && cdef_i8_diffs_fit(filter) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_diff8::<STRIDE, CENTER, ROWS, SPAN, AREA>(
+                pad, h, filter, starts, out, out_stride
             ),
             copy!()
         );
@@ -1820,6 +1944,46 @@ mod tests {
                                 per_sample_reference(&single, i, j, &filter),
                                 "base={base} dir={dir} pri={pri_str} sec={sec_str} i={i} j={j}"
                             );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saturated_tap_differences_match_per_sample_filter() {
+        let mut state = 0x7f4a_7c15u32;
+        let mut pad = [0u16; CDEF_PADDED_AREA];
+        for round in 0..6u32 {
+            for sample in &mut pad[..CDEF_PADDED_SIDE * CDEF_PADDED_SIDE] {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let step = [0, 126, 127, 128, 129, 260][((state >> 9) % 6) as usize];
+                let sign = if (state >> 20) & 1 == 0 { 1 } else { -1 };
+                *sample = (512 + sign * step + (round as i32 % 3) - 1) as u16;
+            }
+            for dir in 0..8 {
+                for strength in [1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 60, 63] {
+                    for damping in 4..=8 {
+                        for (pri_str, sec_str) in [(strength, 0), (0, strength), (strength, 16)] {
+                            let filter = CdefBlockFilter {
+                                pri_str,
+                                sec_str,
+                                damping,
+                                dir,
+                                coeff_shift: 2,
+                            };
+                            let mut out = [0u16; 64];
+                            assert!(cdef_filter_block_interior_to(
+                                &pad, 8, 8, &filter, &mut out, 8
+                            ));
+                            for (i, j) in (0..8).flat_map(|i| (0..8).map(move |j| (i, j))) {
+                                assert_eq!(
+                                    i32::from(out[i * 8 + j]),
+                                    per_sample_reference(&pad, i, j, &filter),
+                                    "dir={dir} pri={pri_str} sec={sec_str} damping={damping}"
+                                );
+                            }
                         }
                     }
                 }
