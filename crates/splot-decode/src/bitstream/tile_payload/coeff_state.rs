@@ -385,14 +385,14 @@ impl TileCoeffContextState {
             above,
             input.cul_level,
             input.dc_category,
-        );
+        )?;
         fill_context_line(
             &mut self.left_level[plane],
             &mut self.left_dc[plane],
             left,
             input.cul_level,
             input.dc_category,
-        );
+        )?;
         Ok(())
     }
 
@@ -440,14 +440,14 @@ impl TileCoeffContextState {
             above,
             0,
             0,
-        );
+        )?;
         fill_context_line(
             &mut self.left_level[plane],
             &mut self.left_dc[plane],
             left,
             0,
             0,
-        );
+        )?;
         Ok(())
     }
 }
@@ -665,11 +665,19 @@ fn fill_context_line(
     range: Range<usize>,
     level_value: u8,
     dc_value: u8,
-) {
-    for idx in range {
-        level[idx] = level_value;
-        dc[idx] = dc_value;
-    }
+) -> Result<(), TileCoeffStateError> {
+    let len = level.len().min(dc.len());
+    let (Some(level), Some(dc)) = (level.get_mut(range.clone()), dc.get_mut(range.clone())) else {
+        return Err(TileCoeffStateError::ContextRangeOutOfBounds {
+            context: "context line",
+            start: range.start,
+            end: range.end,
+            len,
+        });
+    };
+    level.fill(level_value);
+    dc.fill(dc_value);
+    Ok(())
 }
 
 fn zero_plane_lines<T: Default>(
