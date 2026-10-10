@@ -80,6 +80,27 @@ fn non_intra_block_neighbours_read_as_dc_and_still_move_the_window() {
 }
 
 #[test]
+fn default_joint_mode_block_reads_as_dc_and_still_moves_the_window() {
+    let mut state = TileIntraJointModeState::new_for_tile(0..64, 0..64, SB_N4).unwrap();
+    state.record_block(0, 0, 16, 16, joint_mode(36));
+    state.record_block(16, 0, 16, 16, IntraJointMode::DC);
+    assert_eq!(
+        state.neighbour_joint_modes(32, 0, 16, 16)[1],
+        IntraJointMode::DC
+    );
+    assert_eq!(
+        state.neighbour_joint_modes(16, 0, 16, 16)[1],
+        joint_mode(36)
+    );
+    state.record_block(48, 0, 16, 16, IntraJointMode::DC);
+    assert_eq!(
+        state.neighbour_joint_modes(16, 0, 16, 16)[1],
+        IntraJointMode::DC
+    );
+    assert!(state.window_violated());
+}
+
+#[test]
 fn get_joint_mode_uses_the_spec_neighbour_positions() {
     let mut state = TileIntraJointModeState::new_for_tile(0..8, 0..8, WHOLE_TILE).unwrap();
     state.record_block(3, 1, 1, 1, joint_mode(36));

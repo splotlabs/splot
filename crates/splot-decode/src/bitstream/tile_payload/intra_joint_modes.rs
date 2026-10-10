@@ -147,6 +147,23 @@ impl<T: Copy> MiGrid<T> {
         self.enter_block(pos);
     }
 
+    /// [`MiGrid::record_block`] that writes only a non-default value, for a
+    /// grid that keeps the [`MiGrid::record_default_block`] cell ownership.
+    pub(crate) fn record_owned_block(
+        &mut self,
+        pos: (usize, usize),
+        extent: (usize, usize),
+        value: T,
+    ) where
+        T: PartialEq,
+    {
+        if value == self.default {
+            self.record_default_block(pos);
+        } else {
+            self.record_block(pos, extent, value);
+        }
+    }
+
     /// Moves the window to a block at tile position `pos` and returns it
     /// tile-relative, or `None` outside the tile.
     fn enter_block(&mut self, (r, c): (usize, usize)) -> Option<(usize, usize)> {
@@ -353,7 +370,7 @@ impl TileLumaPaletteState {
             self.palettes.push(palette);
             Some(index)
         });
-        self.grid.record_block((r, c), (n4w, n4h), palette);
+        self.grid.record_owned_block((r, c), (n4w, n4h), palette);
     }
 
     fn palette_at(&self, row: usize, col: usize) -> Option<LumaPalette> {
@@ -435,7 +452,7 @@ impl TileIntraJointModeState {
         n4h: usize,
         joint_mode: IntraJointMode,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), joint_mode);
+        self.grid.record_owned_block((r, c), (n4w, n4h), joint_mode);
     }
 
     pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
@@ -502,7 +519,7 @@ impl TileUsesMrlsState {
         n4h: usize,
         selection: MrlSelection,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), selection);
+        self.grid.record_owned_block((r, c), (n4w, n4h), selection);
     }
 }
 
@@ -536,7 +553,7 @@ impl TileUseDipState {
 
     pub(crate) fn record_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, use_dip: u8) {
         self.grid
-            .record_block((r, c), (n4w, n4h), u8::from(use_dip != 0));
+            .record_owned_block((r, c), (n4w, n4h), u8::from(use_dip != 0));
     }
 
     pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
@@ -878,7 +895,7 @@ impl TileFscModeState {
         n4h: usize,
         fsc_mode: u8,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), fsc_mode);
+        self.grid.record_owned_block((r, c), (n4w, n4h), fsc_mode);
     }
 
     pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
