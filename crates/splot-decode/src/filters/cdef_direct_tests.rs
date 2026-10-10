@@ -537,6 +537,24 @@ fn flat_window_spans_exactly_the_tap_reach() {
         assert_eq!(window(Some(outside), tile.0), Some(512), "{outside:?}");
     }
     assert_eq!(window(None, (63, 0)), None);
+    for (spike, expected) in [
+        (None, Some(90)),
+        (Some((129, 17)), None),
+        (Some((130, 11)), Some(90)),
+    ] {
+        let mut workspace = yuv420_workspace(144, 24, 90);
+        if let Some((x, y)) = spike {
+            workspace
+                .set_reconstructed_sample(PlaneId::Y, x, y, 91)
+                .unwrap();
+        }
+        let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
+        assert_eq!(
+            flat_window::<u8, 64, 8>(plane, (64, 8), tile.0, tile.1),
+            expected,
+            "{spike:?}"
+        );
+    }
 }
 
 #[test]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::simd::{Simd, simd_swizzle};
+use std::simd::{Mask, Simd, SimdElement, cmp::SimdPartialEq, simd_swizzle};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
@@ -746,11 +746,30 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
     let value = plane.row(top)?.get(left)?.to_u16();
     for row in top..top + H + 2 * CDEF_TAP_REACH {
         let samples = plane.row(row)?.get(left..)?.get(..W + 2 * CDEF_TAP_REACH)?;
-        if samples.iter().fold(0, |acc, s| acc | (s.to_u16() ^ value)) != 0 {
+        let flat = match (S::u16_slice(samples), S::u8_slice(samples)) {
+            (Some(samples), _) => lanes_repeat(samples, value),
+            (_, Some(samples)) => lanes_repeat(samples, u8::try_from(value).ok()?),
+            _ => false,
+        };
+        if !flat {
             return None;
         }
     }
     Some(value)
+}
+
+/// Whether every sample of `samples`, at least 16 long, equals `value`.
+fn lanes_repeat<T: SimdElement>(samples: &[T], value: T) -> bool
+where
+    Simd<T, 16>: SimdPartialEq<Mask = Mask<T::Mask, 16>>,
+{
+    let value = Simd::splat(value);
+    let last = samples.len().saturating_sub(16);
+    (0..last).step_by(16).chain([last]).all(|start| {
+        samples
+            .get(start..start + 16)
+            .is_some_and(|lanes| Simd::from_slice(lanes).simd_eq(value).all())
+    })
 }
 
 /// Writes a flat segment's values into the planes `fill` marks, whose
