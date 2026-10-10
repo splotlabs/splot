@@ -9,7 +9,7 @@ use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::idtx_sign_ctx;
 use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
-use super::fsc_level_pass::{CoeffFscLevelPassConfig, expected_fsc_entry_pos};
+use super::fsc_level_pass::CoeffFscLevelPassConfig;
 use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffFscSignReadSource {
@@ -33,14 +33,8 @@ pub(crate) enum CoeffFscSignPassError {
         config_width: usize,
         config_height: usize,
     },
-    #[error(
-        "coefficient FSC sign scan entry {entry:?} maps to position {expected_pos}, not {actual_pos}"
-    )]
-    ScanEntryPositionMismatch {
-        entry: CoeffScanEntry,
-        expected_pos: usize,
-        actual_pos: usize,
-    },
+    #[error("coefficient FSC sign scan walk was built for another block geometry")]
+    WalkBlockMismatch,
     #[error("coefficient FSC sign symbol read failed: {0}")]
     SymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient FSC sign state error: {0}")]
@@ -60,26 +54,8 @@ pub(crate) fn checked_fsc_sign_walk(
             config_height: config.tx_height,
         });
     }
-    for entry in level_walk.entries() {
-        preflight_entry(block, entry)?;
-    }
-    Ok(())
-}
-
-fn preflight_entry(
-    block: &TransformCoeffBlockState,
-    entry: CoeffScanEntry,
-) -> Result<(), CoeffFscSignPassError> {
-    block.level_at(entry.row(), entry.col())?;
-    block.quant_sign_at(entry.row(), entry.col())?;
-    block.quant_at(entry.pos())?;
-    let expected_pos = expected_fsc_entry_pos(block, entry)?;
-    if expected_pos != entry.pos() {
-        return Err(CoeffFscSignPassError::ScanEntryPositionMismatch {
-            entry,
-            expected_pos,
-            actual_pos: entry.pos(),
-        });
+    if !level_walk.matches_block(block) {
+        return Err(CoeffFscSignPassError::WalkBlockMismatch);
     }
     Ok(())
 }

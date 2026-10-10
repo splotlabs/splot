@@ -65,14 +65,8 @@ pub(crate) enum CoeffFscLevelPassError {
         config_width: usize,
         config_height: usize,
     },
-    #[error(
-        "coefficient FSC level scan entry {entry:?} maps to position {expected_pos}, not {actual_pos}"
-    )]
-    ScanEntryPositionMismatch {
-        entry: CoeffScanEntry,
-        expected_pos: usize,
-        actual_pos: usize,
-    },
+    #[error("coefficient FSC level scan walk was built for another block geometry")]
+    WalkBlockMismatch,
     #[error("coefficient FSC level symbol read failed: {0}")]
     SymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient FSC level state error: {0}")]
@@ -120,34 +114,10 @@ fn preflight_pass(
             entries: walk.len(),
         });
     }
-    for entry in walk.entries() {
-        block.level_at(entry.row(), entry.col())?;
-        block.quant_at(entry.pos())?;
-        let expected_pos = expected_fsc_entry_pos(block, entry)?;
-        if expected_pos != entry.pos() {
-            return Err(CoeffFscLevelPassError::ScanEntryPositionMismatch {
-                entry,
-                expected_pos,
-                actual_pos: entry.pos(),
-            });
-        }
+    if !walk.matches_block(block) {
+        return Err(CoeffFscLevelPassError::WalkBlockMismatch);
     }
     Ok(())
-}
-
-pub(crate) fn expected_fsc_entry_pos(
-    block: &TransformCoeffBlockState,
-    entry: CoeffScanEntry,
-) -> Result<usize, TileCoeffStateError> {
-    entry
-        .row()
-        .checked_mul(block.width())
-        .and_then(|base| base.checked_add(entry.col()))
-        .ok_or(TileCoeffStateError::ArithmeticOverflow {
-            operation: "row * width + col",
-            left: entry.row(),
-            right: block.width(),
-        })
 }
 
 fn derive_fsc_level_input(

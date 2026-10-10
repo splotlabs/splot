@@ -7,6 +7,7 @@
 //! `DECODE-COEFF-FSC-SCAN-WALK`, and
 //! `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER`.
 
+use super::super::coeff_state::TransformCoeffBlockState;
 use super::CoeffLoopContextError;
 use super::branch::NonZeroCoeffBlockStart;
 
@@ -77,6 +78,7 @@ impl NonZeroCoeffScanWalk<'_> {
 pub(crate) struct FscCoeffScanWalk {
     scan: &'static [u16],
     width: usize,
+    coeff_count: usize,
     bob: usize,
     seg_eob: usize,
 }
@@ -90,6 +92,14 @@ impl FscCoeffScanWalk {
     #[must_use]
     pub(crate) const fn seg_eob(&self) -> usize {
         self.seg_eob
+    }
+
+    /// Whether `block` has the geometry the walk validated its positions
+    /// against; then every entry indexes the block's level, sign and quant
+    /// buffers in range, and its row and column give back its position.
+    #[must_use]
+    pub(crate) fn matches_block(&self, block: &TransformCoeffBlockState) -> bool {
+        self.width == block.width() && self.coeff_count == block.coeff_count()
     }
 
     #[must_use]
@@ -181,6 +191,7 @@ pub(crate) fn walk_fsc_coeff_scan(
     Ok(FscCoeffScanWalk {
         scan,
         width,
+        coeff_count,
         bob,
         seg_eob,
     })

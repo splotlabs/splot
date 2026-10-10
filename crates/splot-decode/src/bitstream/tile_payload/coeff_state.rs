@@ -191,10 +191,12 @@ impl TransformCoeffBlockState {
         Ok(u32::from(self.level[self.index(row, col)?]))
     }
 
+    #[cfg(test)]
     pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i8, TileCoeffStateError> {
         Ok(self.quant_sign()[self.index(row, col)?])
     }
 
+    #[cfg(test)]
     pub(crate) fn quant_at(&self, pos: usize) -> Result<i32, TileCoeffStateError> {
         Ok(self.quant[self.quant_index(pos)?])
     }
