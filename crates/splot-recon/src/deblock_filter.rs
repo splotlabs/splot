@@ -991,7 +991,9 @@ pub fn deblock_filter_choice_and_sample_strided_4<T: ReconSample>(
 /// the next, and each edge starts four rows below the previous one.
 ///
 /// Per edge, the filter choice reads its first and last rows around the edge
-/// as vectors, and the sample filter updates each row as one vector.
+/// as vectors, and the sample filter updates each row as one vector. The
+/// kernel skips an edge that the § 9.2 `W_Mult` weights do not change, so
+/// `w_mults` must be that table.
 ///
 /// # Errors
 /// Returns [`ReconError::DeblockFilterInvalidWidth`] for widths outside
@@ -1057,6 +1059,7 @@ pub fn deblock_edge_rows<T: ReconSample>(
 /// lines are sample columns (horizontal edges) and which share one edge
 /// decision: `choice.boundary` is the first column's `q0`, `stride` steps
 /// across the edge, and each edge starts four columns right of the previous.
+/// `w_mults` must be the § 9.2 `W_Mult` table, as for [`deblock_edge_rows`].
 ///
 /// # Errors
 /// Returns the same errors as [`deblock_edge_rows`].
@@ -1164,6 +1167,11 @@ struct EdgeKernel<'a> {
     prev_lossless: bool,
     curr_lossless: bool,
     max_sample: i16,
+    /// Largest `|p1 - q1 + 3 * (q0 - p0)|` on every line for which § 7.17.7.1
+    /// moves no sample. A tap weight is at most `W_Mult[w - 1] * w`, which is
+    /// 85 for `w = 1` and at most 120 for any `w`, `Round2(x, 11)` is zero for
+    /// `|x| <= 1023`, and `maxWidthPos == 1` chooses `w = 1`.
+    noop_delta: i16,
 }
 
 impl<'a> EdgeKernel<'a> {
@@ -1193,6 +1201,7 @@ impl<'a> EdgeKernel<'a> {
             prev_lossless,
             curr_lossless,
             max_sample: bit_depth.max_sample() as i16,
+            noop_delta: if max_width_pos == 1 { 3 } else { 2 },
         })
     }
 
@@ -1235,12 +1244,40 @@ impl<'a> EdgeKernel<'a> {
         )
     }
 
+    /// Whether § 7.17.7.1 leaves all four lines unchanged; the § 7.17.7.2
+    /// width then does not matter.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn is_noop(
+        &self,
+        p1: Simd<i16, MI_LINES>,
+        p0: Simd<i16, MI_LINES>,
+        q0: Simd<i16, MI_LINES>,
+        q1: Simd<i16, MI_LINES>,
+    ) -> bool {
+        (p1 - q1 + (q0 - p0) * Simd::splat(3))
+            .abs()
+            .simd_le(Simd::splat(self.noop_delta))
+            .all()
+    }
+
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn rows<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) -> usize {
         let line =
             |start: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[start..start + 2 * EDGE_REACH]);
         let (s, t) = (line(first), line(first + (MI_LINES - 1) * stride));
+        let (u, v) = (line(first + stride), line(first + 2 * stride));
+        let top = simd_swizzle!(s, u, [6, 7, 8, 9, 22, 23, 24, 25]);
+        let bottom = simd_swizzle!(v, t, [6, 7, 8, 9, 22, 23, 24, 25]);
+        if self.is_noop(
+            simd_swizzle!(top, bottom, [0, 4, 8, 12]),
+            simd_swizzle!(top, bottom, [1, 5, 9, 13]),
+            simd_swizzle!(top, bottom, [2, 6, 10, 14]),
+            simd_swizzle!(top, bottom, [3, 7, 11, 15]),
+        ) {
+            return 0;
+        }
         let centre = simd_swizzle!(s, t, [6, 7, 8, 9, 22, 23, 24, 25]);
         let left = simd_swizzle!(s, t, [5, 6, 7, 8, 21, 22, 23, 24]);
         let right = simd_swizzle!(s, t, [7, 8, 9, 10, 23, 24, 25, 26]);
@@ -1310,6 +1347,9 @@ impl<'a> EdgeKernel<'a> {
             E::widen::<MI_LINES>(&samples[start..start + MI_LINES])
         };
         let rows: [Simd<i16, MI_LINES>; 6] = core::array::from_fn(|k| row(samples, k as isize - 3));
+        if self.is_noop(rows[1], rows[2], rows[3], rows[4]) {
+            return 0;
+        }
         let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
         let (d0, d1, d2, d3) = (second(0), second(1), second(2), second(3));
         let pairs =
@@ -1676,6 +1716,64 @@ mod tests {
     const Q_THRESH_MULTS: [i32; MAX_DBL_FLT_LEN] = [32, 25, 19, 19, 18, 18, 17, 17];
     const W_MULT: [i32; MAX_DBL_FLT_LEN] = [85, 51, 37, 28, 23, 20, 17, 15];
 
+    /// Filters `edges` edges of a 24-wide `source` with the edge kernel and
+    /// with the per-edge strided primitives; returns both outputs and the
+    /// widths the primitives chose.
+    fn edge_kernel_and_reference<T: ReconSample>(
+        source: Vec<T>,
+        lines_are_rows: bool,
+        edges: usize,
+        choice: DeblockFilterChoice,
+        lossless: usize,
+        bit_depth: BitDepth,
+    ) -> (Vec<T>, Vec<T>, Vec<usize>) {
+        let stride = 24;
+        let (boundary, perpendicular, lane) = if lines_are_rows {
+            ((8 - 2 * edges) * stride + 12, 1, stride)
+        } else {
+            (8 * stride + 12 - 2 * edges, stride, 1)
+        };
+        let choice = DeblockFilterChoice { boundary, ..choice };
+        let mut expected = source.clone();
+        let widths = (0..edges)
+            .map(|edge| {
+                let boundary = boundary + edge * MI_LINES * lane;
+                deblock_filter_choice_and_sample_strided_4(
+                    &mut expected,
+                    boundary + 3 * lane,
+                    NonZeroUsize::new(perpendicular).unwrap(),
+                    NonZeroUsize::new(lane).unwrap(),
+                    &DeblockFilterChoice { boundary, ..choice },
+                    &Q_THRESH_MULTS,
+                    &W_MULT,
+                    lossless & 1 != 0,
+                    lossless & 2 != 0,
+                    bit_depth,
+                )
+                .unwrap()
+            })
+            .collect();
+        let kernel = if lines_are_rows {
+            deblock_edge_rows::<T>
+        } else {
+            deblock_edge_columns::<T>
+        };
+        let mut actual = source;
+        kernel(
+            &mut actual,
+            stride,
+            &choice,
+            edges,
+            &Q_THRESH_MULTS,
+            &W_MULT,
+            lossless & 1 != 0,
+            lossless & 2 != 0,
+            bit_depth,
+        )
+        .unwrap();
+        (actual, expected, widths)
+    }
+
     fn assert_edge_kernels_match_strided_primitives<T>(bit_depth: BitDepth)
     where
         T: ReconSample + core::fmt::Debug + PartialEq,
@@ -1716,55 +1814,25 @@ mod tests {
                 })
                 .collect();
             for (lines_are_rows, edges) in [(true, 1), (true, 2), (false, 1), (false, 2)] {
-                let (boundary, perpendicular, lane) = if lines_are_rows {
-                    ((8 - 2 * edges) * stride + 12, 1, stride)
-                } else {
-                    (8 * stride + 12 - 2 * edges, stride, 1)
-                };
                 let choice = DeblockFilterChoice {
-                    boundary,
+                    boundary: 0,
                     q_thr,
                     side_thr,
                     max_width_pos,
                     max_width_neg,
                     q_first: Q_FIRST,
                 };
-                let mut expected = source.clone();
-                for edge in 0..edges {
-                    let boundary = boundary + edge * MI_LINES * lane;
-                    let width = deblock_filter_choice_and_sample_strided_4(
-                        &mut expected,
-                        boundary + 3 * lane,
-                        NonZeroUsize::new(perpendicular).unwrap(),
-                        NonZeroUsize::new(lane).unwrap(),
-                        &DeblockFilterChoice { boundary, ..choice },
-                        &Q_THRESH_MULTS,
-                        &W_MULT,
-                        lossless & 1 != 0,
-                        lossless & 2 != 0,
-                        bit_depth,
-                    )
-                    .unwrap();
+                let (actual, expected, widths) = edge_kernel_and_reference(
+                    source.clone(),
+                    lines_are_rows,
+                    edges,
+                    choice,
+                    lossless,
+                    bit_depth,
+                );
+                for width in widths {
                     seen[width] = true;
                 }
-                let kernel = if lines_are_rows {
-                    deblock_edge_rows::<T>
-                } else {
-                    deblock_edge_columns::<T>
-                };
-                let mut actual = source.clone();
-                kernel(
-                    &mut actual,
-                    stride,
-                    &choice,
-                    edges,
-                    &Q_THRESH_MULTS,
-                    &W_MULT,
-                    lossless & 1 != 0,
-                    lossless & 2 != 0,
-                    bit_depth,
-                )
-                .unwrap();
                 assert_eq!(
                     actual, expected,
                     "case {case} rows {lines_are_rows} edges {edges}"
@@ -1781,6 +1849,74 @@ mod tests {
     fn edge_kernels_match_strided_primitives() {
         assert_edge_kernels_match_strided_primitives::<u8>(BitDepth::Eight);
         assert_edge_kernels_match_strided_primitives::<u16>(BitDepth::Ten);
+    }
+
+    /// Lines with `|p1 - q1 + 3 * (q0 - p0)| <= bound` leave the edge unchanged
+    /// although § 7.17.7.2 chooses a width; one line at `bound + 1` filters.
+    fn assert_edge_kernels_skip_only_unchanged_edges<T>(bit_depth: BitDepth)
+    where
+        T: ReconSample + core::fmt::Debug + PartialEq,
+    {
+        let base = i64::from(bit_depth.max_sample()) / 3;
+        let configs = [
+            (1, 1, 3),
+            (4, 1, 3),
+            (2, 3, 2),
+            (3, 4, 2),
+            (6, 6, 2),
+            (8, 8, 2),
+        ];
+        for (max_width_neg, max_width_pos, bound) in configs {
+            for (lines_are_rows, over) in [(true, 0), (true, 1), (false, 0), (false, 1)] {
+                let deltas = [bound, -bound, -over * (bound + 1), bound - 1];
+                let (bumps, slopes) = ([1, -2, 0, 3], [0, 2, -1, 1]);
+                let source: Vec<T> = (0..16 * 24)
+                    .map(|index| {
+                        let (y, x) = ((index / 24) as i64, (index % 24) as i64);
+                        let (line, offset) = if lines_are_rows {
+                            ((y - 6) as usize, x - 12)
+                        } else {
+                            ((x - 10) as usize, y - 8)
+                        };
+                        let Some(&d) = deltas.get(line) else {
+                            return T::try_from_u16(base as u16).unwrap();
+                        };
+                        let bump = match offset {
+                            0 => bumps[line],
+                            1 => 3 * bumps[line] - d,
+                            _ => 0,
+                        };
+                        T::try_from_u16((base + slopes[line] * offset + bump) as u16).unwrap()
+                    })
+                    .collect();
+                let choice = DeblockFilterChoice {
+                    boundary: 0,
+                    q_thr: 300,
+                    side_thr: 2000,
+                    max_width_pos,
+                    max_width_neg,
+                    q_first: Q_FIRST,
+                };
+                let (actual, expected, widths) = edge_kernel_and_reference(
+                    source.clone(),
+                    lines_are_rows,
+                    1,
+                    choice,
+                    0,
+                    bit_depth,
+                );
+                let case = format!("{max_width_neg}x{max_width_pos} rows {lines_are_rows}");
+                assert_eq!(actual, expected, "{case} over {over}");
+                assert_ne!(widths[0], 0, "{case}");
+                assert_eq!(actual == source, over == 0, "{case} over {over}");
+            }
+        }
+    }
+
+    #[test]
+    fn edge_kernels_skip_only_unchanged_edges() {
+        assert_edge_kernels_skip_only_unchanged_edges::<u8>(BitDepth::Eight);
+        assert_edge_kernels_skip_only_unchanged_edges::<u16>(BitDepth::Ten);
     }
 
     #[test]
