@@ -253,16 +253,18 @@ fn bilinear_12x12_overlap_matches_the_block_prediction() {
         .iter()
         .map(|&sample| (sample >> 2) as u8)
         .collect::<Vec<u8>>();
-    let view = ReferencePlaneView::new(&wide, ref_w, ref_h).unwrap();
+    let view = ReferencePlaneView::from_published_strided(&wide, ref_w, 40, ref_h, 30).unwrap();
     check_bilinear_12x12(&view, BitDepth::Ten);
-    let view = ReferencePlaneView::new(&narrow, ref_w, ref_h).unwrap();
+    let view = ReferencePlaneView::from_published_strided(&narrow, ref_w, 40, ref_h, 30).unwrap();
     check_bilinear_12x12(&view, BitDepth::Eight);
 }
 
 /// For every phase pair, predicts the 12x12 centres of TIP-like units at
 /// `(x, y)` (bounds `x - 3..=x + 11`): a unit clamped at the left plane edge
 /// goes to the generic path, and its right neighbour, a fresh unit, the
-/// fresh unit's right neighbour and a clipped unit go to the kernel.
+/// fresh unit's right neighbour and a clipped unit go to the kernel. Units
+/// whose last tap is on the right plane edge or the last readable row go to
+/// the kernel, and units one sample past those limits do not.
 fn check_bilinear_12x12<T: ReconSample>(view: &ReferencePlaneView<'_, T>, bit_depth: BitDepth) {
     let stride = 16;
     let mut predicted = vec![0; 11 * stride + 12];
@@ -281,6 +283,7 @@ fn check_bilinear_12x12<T: ReconSample>(view: &ReferencePlaneView<'_, T>, bit_de
             );
         }
     };
+    let (width, rows) = (view.width as i32, view.readable_rows as i32);
     for (h_phase, v_phase) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
         let unit = |x: i32, y: i32| SubpelPredictParams {
             interp: InterpolationFilter::Bilinear,
@@ -303,6 +306,8 @@ fn check_bilinear_12x12<T: ReconSample>(view: &ReferencePlaneView<'_, T>, bit_de
             (unit(7, 8), true),
             (unit(15, 9), false),
             (unit(23, 9), true),
+            (unit(width - 11, 8), false),
+            (unit(7, rows - 11), false),
         ] {
             assert!(kernel(&params, &mut predicted, reuse));
             expect(&params, &predicted);
@@ -311,7 +316,9 @@ fn check_bilinear_12x12<T: ReconSample>(view: &ReferencePlaneView<'_, T>, bit_de
             last_x: 5 + 11,
             ..unit(7, 8)
         };
-        assert!(!kernel(&clipped, &mut predicted, false));
+        for rejected in [clipped, unit(width - 10, 8), unit(7, rows - 10)] {
+            assert!(!kernel(&rejected, &mut predicted, false), "{rejected:?}");
+        }
     }
 }
 
