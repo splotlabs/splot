@@ -973,7 +973,8 @@ where
         relative(block_lo),
         relative(block_hi),
     );
-    let skip_len = cell_count + 16 + 3 * pooled_width;
+    let slot_width = pooled_width.next_multiple_of(8);
+    let skip_len = cell_count + 16 + 2 * slot_width + pooled_width;
     skip_rows
         .try_reserve_exact(skip_len.saturating_sub(skip_rows.len()))
         .map_err(|_| ReconError::WorkspaceAllocationFailed {
@@ -982,7 +983,7 @@ where
         })?;
     skip_rows.resize(skip_len, 0);
     let (cells, pooled_skips) = skip_rows.split_at_mut(cell_count + 16);
-    let (slots, pair_skip) = pooled_skips.split_at_mut(2 * pooled_width);
+    let (slots, pair_skip) = pooled_skips.split_at_mut(2 * slot_width);
     let mut slot_rows: [Option<usize>; 2] = [None; 2];
     let mut pair_rows = None;
     let source_row = |row: usize| {
@@ -1025,7 +1026,7 @@ where
                 [Some(first), Some(second)] => usize::from(second < first),
             };
             pool_skip_row(
-                &mut slots[slot * pooled_width..(slot + 1) * pooled_width],
+                &mut slots[slot * slot_width..(slot + 1) * slot_width],
                 cells,
                 start_x,
                 [low_x, high_x],
@@ -1036,8 +1037,12 @@ where
         if pair_rows != Some(skip_grid_rows) {
             let slot_of = |grid_row| usize::from(slot_rows[0] != Some(grid_row));
             let (top, bottom) = (slot_of(skip_grid_rows[0]), slot_of(skip_grid_rows[1]));
-            for (j, pooled) in pair_skip.iter_mut().enumerate() {
-                *pooled = slots[top * pooled_width + j] + slots[bottom * pooled_width + j];
+            for ((pooled, &top), &bottom) in pair_skip
+                .iter_mut()
+                .zip(&slots[top * slot_width..])
+                .zip(&slots[bottom * slot_width..])
+            {
+                *pooled = top + bottom;
             }
             pair_rows = Some(skip_grid_rows);
         }
@@ -1084,14 +1089,14 @@ where
 }
 
 /// Sums the `LrTxSkip` values of feature columns `2j` and `2j + 1` into
-/// `pooled[j]`.
+/// `pooled[j]`, writing whole eight-entry chunks only.
 ///
 /// Feature column `c` reads `cells[(Clip3(low, high, start + c)) >> 2]`, with
 /// every coordinate relative to the first fetched cell. Sixteen columns span
 /// at most five cells, so each chunk gathers from a sixteen-cell window.
 fn pool_skip_row(pooled: &mut [u16], cells: &[u16], start: i32, [low, high]: [i32; 2]) {
     const EVEN: [i32; 8] = [0, 2, 4, 6, 8, 10, 12, 14];
-    for (chunk, pooled) in pooled.chunks_mut(8).enumerate() {
+    for (chunk, pooled) in pooled.as_chunks_mut::<8>().0.iter_mut().enumerate() {
         let first = Simd::splat(start + 16 * chunk as i32) + Simd::from_array(EVEN);
         let clip = |x: Simd<i32, 8>| x.simd_clamp(Simd::splat(low), Simd::splat(high)) >> 2;
         let (even, odd) = (clip(first), clip(first + Simd::splat(1)));
@@ -1108,12 +1113,10 @@ fn pool_skip_row(pooled: &mut [u16], cells: &[u16], start: i32, [low, high]: [i3
         )
         .cast::<u8>();
         let values = table.swizzle_dyn(indices);
-        let sums = (simd_swizzle!(values, [0, 1, 2, 3, 4, 5, 6, 7])
+        *pooled = (simd_swizzle!(values, [0, 1, 2, 3, 4, 5, 6, 7])
             + simd_swizzle!(values, [8, 9, 10, 11, 12, 13, 14, 15]))
-        .cast::<u16>();
-        for (pooled, &sum) in pooled.iter_mut().zip(sums.as_array()) {
-            *pooled = sum;
-        }
+        .cast::<u16>()
+        .to_array();
     }
 }
 
