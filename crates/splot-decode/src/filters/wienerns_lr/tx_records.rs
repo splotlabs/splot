@@ -66,17 +66,12 @@ pub(crate) struct SelectableLumaTxRecord {
     pub(crate) tx_size: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SelectableLumaTxCell {
-    scan_order: bool,
-}
-
+/// A block's luma transform records, clipped to a `rows x cols` frame grid.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SelectableLumaTxGrid {
     rows: usize,
     cols: usize,
-    cells: Vec<Option<SelectableLumaTxCell>>,
-    records: Vec<SelectableLumaTxRecord>,
+    records: Vec<(SelectableLumaTxRecord, bool)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -527,32 +522,31 @@ fn with_selectable_tx_grid<R>(
 
 impl SelectableLumaTxGrid {
     fn new(rows: usize, cols: usize) -> std::result::Result<Self, SelectableTransformRecordError> {
-        let cells = rows
-            .checked_mul(cols)
+        rows.checked_mul(cols)
             .ok_or(SelectableTransformRecordError::Unsupported {
                 reason: "grid-size-overflow",
             })?;
         Ok(Self {
             rows,
             cols,
-            cells: vec![None; cells],
             records: Vec::new(),
         })
     }
 
     fn reset(&mut self) {
-        for record in &self.records {
-            let row_end = record.row.saturating_add(record.rows).min(self.rows);
-            let col_end = record.col.saturating_add(record.cols).min(self.cols);
-            for row in record.row..row_end {
-                let start = row.saturating_mul(self.cols).saturating_add(record.col);
-                let end = row.saturating_mul(self.cols).saturating_add(col_end);
-                if let Some(cells) = self.cells.get_mut(start..end) {
-                    cells.fill(None);
-                }
-            }
-        }
         self.records.clear();
+    }
+
+    /// The record's `(row_start, row_end, col_start, col_end)` clipped to the
+    /// grid. `set_tx_size` rejects overlaps, so summed clipped areas count the
+    /// covered cells.
+    fn clipped(&self, record: &SelectableLumaTxRecord) -> (usize, usize, usize, usize) {
+        (
+            record.row,
+            record.row.saturating_add(record.rows).min(self.rows),
+            record.col,
+            record.col.saturating_add(record.cols).min(self.cols),
+        )
     }
 
     fn set_tx_size(
@@ -588,32 +582,24 @@ impl SelectableLumaTxGrid {
             .map_err(|_| SelectableTransformRecordError::Unsupported {
                 reason: "record-allocation",
             })?;
-        let row_end = row.saturating_add(h4).min(self.rows);
-        let cols = col.saturating_add(w4).min(self.cols) - col;
-        for r in row..row_end {
-            let start = self.index(r, col)?;
-            if let Some(offset) = self.cells[start..start + cols]
-                .iter()
-                .position(Option::is_some)
-            {
-                return Err(SelectableTransformRecordError::Overlap {
-                    row: r,
-                    col: col + offset,
-                });
-            }
-        }
-        let cell = SelectableLumaTxCell { scan_order };
-        for r in row..row_end {
-            let start = self.index(r, col)?;
-            self.cells[start..start + cols].fill(Some(cell));
-        }
-        self.records.push(SelectableLumaTxRecord {
+        let record = SelectableLumaTxRecord {
             row,
             col,
             rows: h4,
             cols: w4,
             tx_size,
-        });
+        };
+        let (r0, r1, c0, c1) = self.clipped(&record);
+        for (other, _) in &self.records {
+            let (o0, o1, p0, p1) = self.clipped(other);
+            if r0 < o1 && o0 < r1 && c0 < p1 && p0 < c1 {
+                return Err(SelectableTransformRecordError::Overlap {
+                    row: r0.max(o0),
+                    col: c0.max(p0),
+                });
+            }
+        }
+        self.records.push((record, scan_order));
         Ok(tx_size)
     }
 
@@ -632,17 +618,16 @@ impl SelectableLumaTxGrid {
                 reason: "region-size-overflow",
             },
         )?;
-        let mut actual = 0usize;
-        for r in row..row.saturating_add(region_rows) {
-            if region_cols == 0 {
-                break;
-            }
-            let start = self.index(r, col)?;
-            actual += self.cells[start..start + region_cols]
-                .iter()
-                .filter(|cell| cell.is_some())
-                .count();
-        }
+        let (row_end, col_end) = (row + region_rows, col + region_cols);
+        let actual: usize = self
+            .records
+            .iter()
+            .map(|(record, _)| {
+                let (r0, r1, c0, c1) = self.clipped(record);
+                r1.min(row_end).saturating_sub(r0.max(row))
+                    * c1.min(col_end).saturating_sub(c0.max(col))
+            })
+            .sum();
         if actual != expected {
             return Err(SelectableTransformRecordError::Incomplete { expected, actual });
         }
@@ -653,13 +638,25 @@ impl SelectableLumaTxGrid {
                 reason: "record-allocation",
             }
         })?;
-        records.extend(self.records.iter().copied().filter(|record| {
-            record.row >= row
+        let mut scan_order = None;
+        for &(record, record_scan_order) in &self.records {
+            let (r0, r1, c0, c1) = self.clipped(&record);
+            if r0 <= row && row < r1 && c0 <= col && col < c1 {
+                scan_order = Some(record_scan_order);
+            }
+            if record.row >= row
                 && record.col >= col
                 && record.row < row + rows
                 && record.col < col + cols
-        }));
-        let scan_order = self.cell(row, col)?.scan_order;
+            {
+                records.push(record);
+            }
+        }
+        self.index(row, col)?;
+        let scan_order = scan_order.ok_or(SelectableTransformRecordError::Incomplete {
+            expected: 1,
+            actual: 0,
+        })?;
         if scan_order {
             records.sort_by_key(|record| (record.col, record.row));
         } else {
@@ -679,18 +676,6 @@ impl SelectableLumaTxGrid {
         let mut records = Vec::new();
         self.records_for_region_into(row, col, rows, cols, &mut records)?;
         Ok(records)
-    }
-
-    fn cell(
-        &self,
-        row: usize,
-        col: usize,
-    ) -> std::result::Result<SelectableLumaTxCell, SelectableTransformRecordError> {
-        let index = self.index(row, col)?;
-        self.cells[index].ok_or(SelectableTransformRecordError::Incomplete {
-            expected: 1,
-            actual: 0,
-        })
     }
 
     fn index(
