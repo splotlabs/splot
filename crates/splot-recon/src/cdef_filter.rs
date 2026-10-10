@@ -775,8 +775,8 @@ fn cdef_filter_rows_8bit<
         cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let (base_u8, base_i16) = (Simd::splat(base as u8), Simd::splat(base as i16));
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
+    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
+    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
     let pri = CdefConstrain8::new(filter.pri_str, filter.damping);
     let sec = CdefConstrain8::new(filter.sec_str, filter.damping);
     let row_pair = |view: &[u16; SPAN], row: usize| -> Option<Simd<u8, 16>> {
@@ -807,7 +807,7 @@ fn cdef_filter_rows_8bit<
                             max = max.simd_max(first).simd_max(second);
                         }
                         let pair = $constrain.apply(first, center) + $constrain.apply(second, center);
-                        sum += pair.cast::<i16>() * $weight;
+                        sum += pair.cast::<i16>() * $weight.cast::<i16>();
                     }};
                 }
                 if PRI {
@@ -940,8 +940,8 @@ fn cdef_filter_rows_diff8<
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
+    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
+    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
     let pri = CdefConstrain8::new(filter.pri_str, filter.damping);
     let sec = CdefConstrain8::new(filter.sec_str, filter.damping);
     let (low, high) = (
@@ -967,7 +967,7 @@ fn cdef_filter_rows_diff8<
                             max = max.simd_max(first).simd_max(second);
                         }
                         let pair = $constrain.apply_diff(first) + $constrain.apply_diff(second);
-                        sum += pair.cast::<i16>() * $weight;
+                        sum += pair.cast::<i16>() * $weight.cast::<i16>();
                     }};
                 }
                 if PRI {
