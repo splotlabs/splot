@@ -1273,9 +1273,24 @@ fn repeated_edges_match_every_edge_across_chunks_frame_edges_and_chroma() {
         block(8, 0, 8, 12, 1, (8, 0), tall, false, 90),
         block(8, 8, 8, 12, 1, (8, 0), None, true, 90),
         block(8, 16, 12, 4, 2, (8, 16), None, false, 140),
-        block(12, 16, 12, 8, 1, (12, 16), None, false, 60),
+        block(12, 16, 12, 6, 1, (12, 16), None, false, 60),
+        block(18, 16, 3, 1, 1, (18, 16), None, false, 60),
+        DeblockBlock {
+            lossless: true,
+            ..block(18, 19, 9, 1, 1, (18, 19), None, false, 60)
+        },
+        block(19, 16, 12, 1, 1, (19, 16), None, false, 60),
         block(8, 28, 16, 12, 3, (8, 28), None, true, 180),
-        block(20, 0, 44, 8, 3, (20, 0), None, false, 110),
+        block(20, 0, 15, 1, 3, (20, 0), None, false, 220),
+        DeblockBlock {
+            lossless: true,
+            ..block(21, 0, 15, 7, 2, (21, 0), None, false, 40)
+        },
+        block(20, 15, 8, 8, 3, (20, 15), None, false, 220),
+        DeblockBlock {
+            lossless: true,
+            ..block(20, 23, 21, 8, 3, (20, 23), None, false, 150)
+        },
     ];
     let (mi_rows, mi_cols) = (28, 44);
     let storage = build_mi_grid(
