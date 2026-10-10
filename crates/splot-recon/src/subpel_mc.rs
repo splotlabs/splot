@@ -1384,6 +1384,62 @@ fn validate_compound_output<O>(
     Ok(())
 }
 
+/// Validating entry to the compound-average fast dispatch for unscaled blocks.
+///
+/// Returns `Ok(false)` without writing when either reference is scaled, the
+/// blocks differ in size or bit depth, a clipping range is inverted, or the
+/// block is outside the fast subset; the caller then uses the two-call path.
+///
+/// # Errors
+/// Returns the parameter errors of [`subpel_predict_block`], a sample-type
+/// error when `O` cannot hold the bit depth, and the output-layout errors of
+/// [`subpel_predict_block_compound_average_strided_into`].
+pub fn subpel_predict_block_compound_average_unscaled_strided_into<
+    T: ReconSample,
+    O: ReconSample,
+>(
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+) -> Result<bool> {
+    let fullpel_u16 = O::u16_slice(&[]).is_some()
+        && [params0, params1]
+            .iter()
+            .all(|params| (params.start_x | params.start_y) >> 6 & SUBPEL_MASK == 0);
+    if !fullpel_u16 && params0.w.saturating_mul(params0.h) > COMPOUND_PRED0_CAPACITY {
+        return Ok(false);
+    }
+    crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
+    validate_subpel_params(params0)?;
+    validate_subpel_params(params1)?;
+    let admitted = |params: &SubpelPredictParams| {
+        params.step_x == 1 << SCALE_SUBPEL_BITS
+            && params.step_y == 1 << SCALE_SUBPEL_BITS
+            && params.first_x <= params.last_x
+            && params.first_y <= params.last_y
+    };
+    if !admitted(params0)
+        || !admitted(params1)
+        || (params0.w, params0.h, params0.bit_depth) != (params1.w, params1.h, params1.bit_depth)
+    {
+        return Ok(false);
+    }
+    subpel_predict_block_compound_average_fast_validated_strided_into(
+        reference0,
+        params0,
+        reference1,
+        params1,
+        cwp_weight,
+        &mut [],
+        output,
+        output_stride,
+    )
+}
+
 /// Internal fast dispatch for caller-constructed, already validated parameters.
 ///
 /// # Errors

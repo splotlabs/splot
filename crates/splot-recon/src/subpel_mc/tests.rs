@@ -2455,3 +2455,46 @@ fn vertical_only_matches_independent_reference_across_shapes() {
         }
     }
 }
+
+#[test]
+fn unscaled_compound_entry_matches_two_call_path_and_declines_scaled() {
+    let samples = (0..768)
+        .map(|i| (i * 37 + 5) as u16 % 1024)
+        .collect::<Vec<_>>();
+    let view = ReferencePlaneView::new(&samples, 32, 24).unwrap();
+    let entry = |p0: &SubpelPredictParams, p1: &SubpelPredictParams, weight, out: &mut [u16]| {
+        subpel_predict_block_compound_average_unscaled_strided_into(
+            &view, p0, &view, p1, weight, out, p0.w,
+        )
+    };
+    let at = |w, h, start_x, start_y| SubpelPredictParams {
+        bit_depth: BitDepth::Ten,
+        start_x,
+        start_y,
+        ..full_pel_params(InterpolationFilter::EightTapSharp, w, h, 0, 0, 32, 24)
+    };
+    for (w, h, phase0, phase1) in [(16, 8, 0, 0), (8, 8, 5 << 6, 0), (4, 4, 0, 9 << 6)] {
+        let p0 = at(w, h, (6 << 10) + phase0, 5 << 10);
+        let p1 = at(w, h, 6 << 10, (8 << 10) + phase1);
+        let pred0 = subpel_predict_block_compound_intermediate(&view, &p0).unwrap();
+        let pred1 = subpel_predict_block_compound_intermediate(&view, &p1).unwrap();
+        for weight in [8, 11] {
+            let mut out = vec![0u16; w * h];
+            assert_eq!(entry(&p0, &p1, weight, &mut out), Ok(true));
+            assert_eq!(
+                Ok(out),
+                blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight)
+            );
+        }
+    }
+    let (base, narrower) = (at(16, 8, 6 << 10, 5 << 10), at(8, 8, 6 << 10, 5 << 10));
+    let scaled = SubpelPredictParams {
+        step_x: 1100,
+        ..base
+    };
+    for other in [scaled, narrower] {
+        let mut out = vec![u16::MAX; 16 * 8];
+        assert_eq!(entry(&base, &other, 8, &mut out), Ok(false));
+        assert!(out.iter().all(|&sample| sample == u16::MAX));
+    }
+}
