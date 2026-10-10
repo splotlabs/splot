@@ -9,6 +9,9 @@
 //! before § 8.3 syntax-element CDF selection, tile CDF bank ownership,
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
+use core::simd::cmp::SimdPartialOrd;
+use core::simd::{Select, Simd};
+
 use crate::bitio::be_window;
 use crate::error::{Error, Result, SymbolCdfErrorKind, SymbolDecoderErrorKind};
 use crate::span::{BitOffset, ByteOffset};
@@ -30,6 +33,13 @@ const PROB_INC_CONST: [[i32; 8]; 7] = PROB_INC;
 pub(crate) trait CdfStorage: Copy {
     fn to_i32(self) -> i32;
     fn from_i32(value: i32) -> Self;
+
+    /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn adapt_probabilities(cdf: &mut [Self], n: usize, rate: u32, symbol: usize) {
+        adapt_probabilities_scalar(cdf, 0..n - 1, rate, symbol);
+    }
 }
 
 impl CdfStorage for i32 {
@@ -51,6 +61,77 @@ impl CdfStorage for u16 {
         debug_assert!((0..=i32::from(u16::MAX)).contains(&value));
         value as u16
     }
+
+    /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
+    /// read, so the arity match folds away.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn adapt_probabilities(cdf: &mut [u16], n: usize, rate: u32, symbol: usize) {
+        match n {
+            3..=5 => adapt_probability_lanes::<4>(cdf, 0, n - 1, rate, symbol),
+            6 => {
+                adapt_probabilities_scalar(cdf, 0..1, rate, symbol);
+                adapt_probability_lanes::<4>(cdf, 1, n - 1, rate, symbol);
+            }
+            7 | 8 => adapt_probability_lanes::<8>(cdf, 0, n - 1, rate, symbol),
+            _ => adapt_probabilities_scalar(cdf, 0..n.saturating_sub(1), rate, symbol),
+        }
+    }
+}
+
+/// The two-sided § 8.2.6 step on `range`. The grow branch uses wrapping
+/// arithmetic: identical for in-range entries, and panic-free under overflow
+/// checks for trusted rows with hostile entries.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn adapt_probabilities_scalar<T: CdfStorage>(
+    cdf: &mut [T],
+    range: core::ops::Range<usize>,
+    rate: u32,
+    symbol: usize,
+) {
+    let start = range.start;
+    let Some(entries) = cdf.get_mut(range) else {
+        return;
+    };
+    for (offset, entry) in entries.iter_mut().enumerate() {
+        let value = entry.to_i32();
+        if start + offset < symbol {
+            *entry = T::from_i32(value - (value >> rate));
+        } else {
+            let gap = (CDF_PROB_SCALE as i32).wrapping_sub(value);
+            *entry = T::from_i32(value.wrapping_add(gap >> rate));
+        }
+    }
+}
+
+/// The § 8.2.6 step on the `L` entries from `first`, of which those below
+/// `probabilities` are probabilities. Equal to the scalar step for entries up
+/// to `CDF_PROB_SCALE`.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn adapt_probability_lanes<const L: usize>(
+    cdf: &mut [u16],
+    first: usize,
+    probabilities: usize,
+    rate: u32,
+    symbol: usize,
+) {
+    let Some(lanes) = cdf.get_mut(first..first + L) else {
+        return;
+    };
+    let index = Simd::<u16, L>::from_array(core::array::from_fn(|lane| (first + lane) as u16));
+    let value = Simd::<u16, L>::from_slice(lanes);
+    let rate = Simd::splat(rate as u16);
+    let shrunk = value - (value >> rate);
+    let grown = value + ((Simd::splat(CDF_PROB_SCALE as u16) - value) >> rate);
+    let adapted = index
+        .simd_lt(Simd::splat(symbol as u16))
+        .select(shrunk, grown);
+    index
+        .simd_lt(Simd::splat(probabilities as u16))
+        .select(adapted, value)
+        .copy_to_slice(lanes);
 }
 
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
@@ -842,9 +923,7 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
     u32::BITS - 1 - value.leading_zeros()
 }
 
-/// Applies the AV2 § 8.2.6 adaptation step. The grow branch uses wrapping
-/// arithmetic: identical for in-range entries, and panic-free under overflow
-/// checks for trusted rows with hostile entries.
+/// Applies the AV2 § 8.2.6 adaptation step.
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: usize) {
@@ -857,17 +936,7 @@ pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: 
         + time_interval as i32
         + floor_log2(shape.n as u32).min(2) as i32
         + PARA_ADJUSTMENT_LIST[shape.rate_index][time_interval];
-    let rate = rate as u32;
-
-    for (index, entry) in cdf.iter_mut().take(shape.n - 1).enumerate() {
-        let value = entry.to_i32();
-        if index < symbol {
-            *entry = T::from_i32(value - (value >> rate));
-        } else {
-            let gap = (CDF_PROB_SCALE as i32).wrapping_sub(value);
-            *entry = T::from_i32(value.wrapping_add(gap >> rate));
-        }
-    }
+    T::adapt_probabilities(cdf, shape.n, rate as u32, symbol);
     let count = cdf[shape.n].to_i32();
     if count < MAX_CDF_COUNT {
         cdf[shape.n] = T::from_i32(count + 1);
