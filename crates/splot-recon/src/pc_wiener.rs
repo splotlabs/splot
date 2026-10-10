@@ -137,6 +137,23 @@ pub struct PcWienerTxSkipLookup {
     pub col: usize,
 }
 
+/// A run of clipped AV2 § 7.20.4 `LrTxSkip` lookups one classification grid
+/// row makes: grid row `row`, columns `col` onward.
+///
+/// The first lookup reads luma column `x`, and lookup `i > 0` reads luma
+/// column `4 * (col + i)`; every lookup reads luma row `y`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PcWienerTxSkipRun {
+    /// Luma sample x coordinate of the first lookup after § 7.20.4 clipping.
+    pub x: usize,
+    /// Luma sample y coordinate after § 7.20.4 clipping.
+    pub y: usize,
+    /// Zero-based `LrTxSkip` row.
+    pub row: usize,
+    /// Zero-based `LrTxSkip` column of the first lookup.
+    pub col: usize,
+}
+
 /// AV2 § 7.20.4 skip-filter classification result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcWienerClassification {
@@ -429,7 +446,7 @@ where
         &mut skip_row,
         &qval_offsets,
         &mut classifications,
-        tx_skip,
+        tx_skip_cells(tx_skip),
         finish_pc_wiener_classification_cached,
     )?;
     Ok(classifications)
@@ -498,7 +515,7 @@ where
         cell_cols,
         cell_rows,
         source,
-        tx_skip,
+        tx_skip_cells(tx_skip),
         &mut scratch.source_cache,
         &mut scratch.feature_grid,
         &mut scratch.skip_row,
@@ -511,6 +528,9 @@ where
 
 /// Compact runtime form of [`pc_wiener_classify_grid_padded_into`] that returns
 /// only the final class byte for each cell.
+///
+/// `tx_skip(run, cells)` fills `cells` with the `LrTxSkip` values of a whole
+/// [`PcWienerTxSkipRun`] instead of answering one lookup at a time.
 /// # Errors
 /// Returns the same errors as [`pc_wiener_classify_grid_padded_into`].
 #[inline]
@@ -524,7 +544,7 @@ pub fn pc_wiener_classify_grid_padded_classes_into<'a, T, FT>(
 ) -> Result<&'a [u8]>
 where
     T: ReconSample,
-    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+    FT: FnMut(PcWienerTxSkipRun, &mut [u16]) -> Result<()>,
 {
     classify_grid_padded_mapped_into(
         params,
@@ -559,7 +579,7 @@ fn classify_grid_padded_mapped_into<'a, T, FT, O, FM>(
 ) -> Result<&'a [O]>
 where
     T: ReconSample,
-    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+    FT: FnMut(PcWienerTxSkipRun, &mut [u16]) -> Result<()>,
     FM: FnMut([i32; PC_WIENER_NUM_FEATURES], usize, BitDepth, &QvalOffsetsCache) -> Result<O>,
 {
     source_scratch.clear();
@@ -866,7 +886,7 @@ fn classify_grid_from_cache<'s, FR, FT, O, FM>(
 ) -> Result<()>
 where
     FR: Fn(usize) -> Result<&'s [u16]>,
-    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+    FT: FnMut(PcWienerTxSkipRun, &mut [u16]) -> Result<()>,
     FM: FnMut([i32; PC_WIENER_NUM_FEATURES], usize, BitDepth, &QvalOffsetsCache) -> Result<O>,
 {
     build_feature_grid(
@@ -966,7 +986,7 @@ fn build_feature_grid<'s, FR, FT>(
 ) -> Result<()>
 where
     FR: Fn(usize) -> Result<&'s [u16]>,
-    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+    FT: FnMut(PcWienerTxSkipRun, &mut [u16]) -> Result<()>,
 {
     let block_lo = usize_to_isize(params.block_start_x, "PC-Wiener tx-skip x bounds")?;
     let block_hi = usize_to_isize(params.block_end_x, "PC-Wiener tx-skip x bounds")?;
@@ -1057,9 +1077,26 @@ where
             if slot_rows.contains(&Some(*skip_grid_row)) {
                 continue;
             }
-            for (index, value) in cells[..cell_count].iter_mut().enumerate() {
-                let x = (4 * (first_cell + index as isize)).max(first_x) as usize;
-                *value = checked_tx_skip(tx_skip, x, clipped_y, *skip_grid_row)?;
+            let run = PcWienerTxSkipRun {
+                x: first_x as usize,
+                y: clipped_y,
+                row: *skip_grid_row,
+                col: first_cell as usize,
+            };
+            tx_skip(run, &mut cells[..cell_count])?;
+            if cells[..cell_count]
+                .iter()
+                .fold(0, |any, &value| any | value)
+                > 1
+                && let Some(index) = cells[..cell_count].iter().position(|&value| value > 1)
+            {
+                return Err(ReconError::PcWienerInvalidTxSkip {
+                    x: run_x(run, index),
+                    y: clipped_y,
+                    row: run.row,
+                    col: run.col + index,
+                    value: i32::from(cells[index]),
+                });
             }
             let slot = match slot_rows {
                 [None, _] => 0,
@@ -1227,6 +1264,29 @@ fn second_derivative_features(up: &[u16], cur: &[u16], down: &[u16], center: usi
         (i32::from(up[center + 1]) - m2 + i32::from(down[center - 1])).abs(),
         (i32::from(up[center - 1]) - m2 + i32::from(down[center + 1])).abs(),
     ]
+}
+
+/// Luma column of lookup `index` of `run`.
+fn run_x(run: PcWienerTxSkipRun, index: usize) -> usize {
+    if index == 0 {
+        run.x
+    } else {
+        4 * (run.col + index)
+    }
+}
+
+/// Answers whole [`PcWienerTxSkipRun`]s with a per-lookup `tx_skip`, in the
+/// same lookup order and with the same `0..=1` check.
+fn tx_skip_cells<FT>(mut tx_skip: FT) -> impl FnMut(PcWienerTxSkipRun, &mut [u16]) -> Result<()>
+where
+    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+{
+    move |run, cells| {
+        for (index, value) in cells.iter_mut().enumerate() {
+            *value = checked_tx_skip(&mut tx_skip, run_x(run, index), run.y, run.row)?;
+        }
+        Ok(())
+    }
 }
 
 #[inline]

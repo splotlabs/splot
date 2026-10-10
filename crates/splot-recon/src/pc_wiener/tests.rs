@@ -796,6 +796,60 @@ fn padded_and_callback_classify_grids_match_bit_exactly() {
     assert_eq!(callback, from_table);
 }
 
+#[test]
+fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
+    let mut params = params(BitDepth::Ten);
+    params.x = 40;
+    params.y = 24;
+    params.base_q_idx = 96;
+    let (cell_cols, cell_rows, mut scratch) = (5, 3, PcWienerClassifyScratch::default());
+    let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
+    let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
+    let expected: Vec<u8> = pc_wiener_classify_grid_padded::<u16, _>(
+        &params,
+        cell_cols,
+        cell_rows,
+        &source,
+        alternating_tx_skip,
+    )
+    .unwrap()
+    .iter()
+    .map(|classification| classification.class)
+    .collect();
+    let runs = |run: PcWienerTxSkipRun, cells: &mut [u16]| {
+        for (index, cell) in cells.iter_mut().enumerate() {
+            *cell = ((run.row * 3 + run.col + index) & 1) as u16;
+        }
+        Ok(())
+    };
+    let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+        &params,
+        cell_cols,
+        cell_rows,
+        &source,
+        runs,
+        &mut scratch,
+    )
+    .unwrap();
+    assert_eq!(classes, expected);
+    let error = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+        &params,
+        cell_cols,
+        cell_rows,
+        &source,
+        |_, cells: &mut [u16]| {
+            cells.fill(2);
+            Ok(())
+        },
+        &mut scratch,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        ReconError::PcWienerInvalidTxSkip { value: 2, .. }
+    ));
+}
+
 fn padded_classify_fixture(params: &PcWienerClassifyParams) -> (Vec<u16>, usize, isize, isize) {
     let origin_x = params.x - PC_WIENER_CLASSIFY_READ_RADIUS as isize;
     let origin_y = params.y - PC_WIENER_CLASSIFY_READ_RADIUS as isize;

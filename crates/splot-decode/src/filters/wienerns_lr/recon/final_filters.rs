@@ -1852,11 +1852,7 @@ impl StripeChain<'_> {
                     group_cols,
                     cell_rows,
                     &padded_source,
-                    |lookup| {
-                        tx_skip_grid.lookup(
-                            crate::filters::wienerns_lr::wienerns_lr_tx_skip_lookup_from_pc(lookup),
-                        )
-                    },
+                    |run, cells| tx_skip_grid.copy_run(run.row, run.col, cells),
                     scratch,
                 )
                 .map_err(lr_window_error)?;

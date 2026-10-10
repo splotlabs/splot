@@ -145,7 +145,7 @@ pub use pc_wiener::{
     PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
     PcWienerClassification, PcWienerClassifyPaddedSource, PcWienerClassifyParams,
     PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PcWienerTxSkipLookup,
-    pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
+    PcWienerTxSkipRun, pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_into,
     pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_block_padded_u16_into,
     pc_wiener_filter_set_index, pc_wiener_subclass_table,

@@ -2,9 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::{
-    LoopRestorationSourceBounds, PcWienerTxSkipLookup, ReconError, Result as ReconResult,
-};
+use splot_recon::{LoopRestorationSourceBounds, ReconError, Result as ReconResult};
 
 const MI_SIZE: usize = 4;
 
@@ -150,6 +148,7 @@ pub(crate) use self::diagnostics::{
     intra_capped_seq_sb_size, selectable_missing_quantization_error, selectable_symbol_read_error,
 };
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrTxSkipLookup {
     pub(crate) row: usize,
@@ -175,7 +174,7 @@ impl WienerNsLrTxSkipGrid {
         Ok(Self { rows, cols, values })
     }
 
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn lookup(&self, lookup: WienerNsLrTxSkipLookup) -> ReconResult<i32> {
         if lookup.row >= self.rows || lookup.col >= self.cols {
             return Err(ReconError::PcWienerInvalidBounds {
@@ -190,6 +189,25 @@ impl WienerNsLrTxSkipGrid {
             });
         };
         Ok(i32::from(*value))
+    }
+
+    /// Widens the `cells.len()` values of row `row` from column `col` into
+    /// `cells`.
+    pub(crate) fn copy_run(&self, row: usize, col: usize, cells: &mut [u16]) -> ReconResult<()> {
+        let run = col
+            .checked_add(cells.len())
+            .filter(|&end| row < self.rows && end <= self.cols)
+            .and_then(|end| {
+                let start = wienerns_lr_tx_skip_grid_index(row, col, self.cols).ok()?;
+                self.values.get(start..start + (end - col))
+            })
+            .ok_or(ReconError::PcWienerInvalidBounds {
+                field: "LrTxSkip grid lookup",
+            })?;
+        for (cell, &value) in cells.iter_mut().zip(run) {
+            *cell = u16::from(value);
+        }
+        Ok(())
     }
 
     pub(crate) fn into_values(self) -> Vec<u8> {
@@ -470,15 +488,6 @@ pub(crate) fn wienerns_lr_source_block_bounds(
         luma_stripe_end_y: block.luma_stripe_end_y,
         subsampling_x,
         subsampling_y,
-    }
-}
-
-pub(crate) const fn wienerns_lr_tx_skip_lookup_from_pc(
-    lookup: PcWienerTxSkipLookup,
-) -> WienerNsLrTxSkipLookup {
-    WienerNsLrTxSkipLookup {
-        row: lookup.row,
-        col: lookup.col,
     }
 }
 
