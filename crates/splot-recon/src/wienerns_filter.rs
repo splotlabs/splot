@@ -135,7 +135,7 @@ const LUMA_WINDOW_ROWS: usize = 2 * WIENER_NS_LUMA_TAP_RADIUS + 1;
 enum LumaSubclassLayout<'a> {
     Uniform,
     Samples(&'a [usize]),
-    Cells { values: &'a [usize], cols: usize },
+    Cells { values: &'a [u8], cols: usize },
 }
 
 struct PreparedLumaFilter {
@@ -365,7 +365,7 @@ pub fn wiener_ns_filter_luma_block_padded_cells_into<T: ReconSample>(
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
-    cell_subclasses: &[usize],
+    cell_subclasses: &[u8],
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
     wiener_ns_filter_luma_block_padded_layout_into(
@@ -414,7 +414,7 @@ pub fn wiener_ns_filter_luma_block_padded_cells_u16_into<T: ReconSample>(
     output: &mut [u16],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
-    cell_subclasses: &[usize],
+    cell_subclasses: &[u8],
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
     wiener_ns_filter_luma_block_padded_layout_u16_into(
@@ -461,7 +461,7 @@ pub fn wiener_ns_filter_luma_block_padded_cells_u8_into<T: ReconSample>(
     output: &mut [u8],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
-    cell_subclasses: &[usize],
+    cell_subclasses: &[u8],
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
     wiener_ns_filter_luma_block_padded_layout_u8_into(
@@ -785,7 +785,11 @@ fn for_each_luma_segment(
                 }
                 let segment_start = cell_start * 4;
                 let segment_end = (cell_end * 4).min(width);
-                filter(segment_start, segment_end - segment_start, subclass)?;
+                filter(
+                    segment_start,
+                    segment_end - segment_start,
+                    usize::from(subclass),
+                )?;
                 cell_start = cell_end;
             }
         }
@@ -1189,8 +1193,21 @@ fn validate_subclass_layout(
             actual: values.len(),
         });
     }
-    for (cell_index, &subclass) in values.iter().take(expected).enumerate() {
-        if subclass >= params.coeffs_by_class.len() {
+    let classes = params.coeffs_by_class.len();
+    if usize::from(
+        values[..expected]
+            .iter()
+            .fold(0, |max, &value| max.max(value)),
+    ) < classes
+    {
+        return Ok(());
+    }
+    for (cell_index, subclass) in values[..expected]
+        .iter()
+        .map(|&value| usize::from(value))
+        .enumerate()
+    {
+        if subclass >= classes {
             let cell_row = cell_index / cols;
             let cell_col = cell_index % cols;
             return Err(ReconError::WienerNsFilterSubclassOutOfRange {
@@ -1212,7 +1229,9 @@ fn subclass_for_position(
     match subclasses {
         LumaSubclassLayout::Uniform => 0,
         LumaSubclassLayout::Samples(values) => values[row * width + col],
-        LumaSubclassLayout::Cells { values, cols } => values[(row / 4) * cols + col / 4],
+        LumaSubclassLayout::Cells { values, cols } => {
+            usize::from(values[(row / 4) * cols + col / 4])
+        }
     }
 }
 
@@ -1387,8 +1406,8 @@ mod tests {
             .collect();
         let source =
             WienerNsLumaPaddedSource::new(&source_samples, source_stride, width, height).unwrap();
-        let cells: Vec<usize> = (0..width.div_ceil(4) * height.div_ceil(4))
-            .map(|index| index % class_count)
+        let cells: Vec<u8> = (0..width.div_ceil(4) * height.div_ceil(4))
+            .map(|index| (index % class_count) as u8)
             .collect();
 
         let packed_params = params(width, height, width, bit_depth, &coeffs, None);
@@ -1544,8 +1563,8 @@ mod tests {
                     height,
                 )
                 .unwrap();
-                let cells: Vec<usize> = (0..width.div_ceil(4) * height.div_ceil(4))
-                    .map(|index| index % class_count)
+                let cells: Vec<u8> = (0..width.div_ceil(4) * height.div_ceil(4))
+                    .map(|index| (index % class_count) as u8)
                     .collect();
                 let output_stride = width + 5;
                 let params = params(width, height, output_stride, BitDepth::Eight, &coeffs, None);
@@ -1688,7 +1707,7 @@ mod tests {
             prevalidated: false,
         };
         let coeffs = [ZERO];
-        let short_cells: [usize; 0] = [];
+        let short_cells: [u8; 0] = [];
 
         let mut output = [77u16; 8];
         let invalid_stride_params = params(width, height, 1, BitDepth::Eight, &coeffs, None);
@@ -1746,7 +1765,7 @@ mod tests {
         );
         assert_eq!(output, [77; 8]);
 
-        let cells = [0usize];
+        let cells = [0u8];
         let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
             &mut output,
             &params,
@@ -1928,11 +1947,12 @@ mod tests {
         class_b[4] = -5;
         class_b[15] = 9;
         let coeffs = [class_a, class_b];
-        let cell_subclasses = [0usize, 0, 1, 1, 1, 0];
+        let cell_subclasses = [0u8, 0, 1, 1, 1, 0];
         let cell_cols = width.div_ceil(4);
         let subclasses: Vec<usize> = (0..height)
             .flat_map(|row| {
-                (0..width).map(move |col| cell_subclasses[(row / 4) * cell_cols + col / 4])
+                (0..width)
+                    .map(move |col| usize::from(cell_subclasses[(row / 4) * cell_cols + col / 4]))
             })
             .collect();
         let source_at =
@@ -2110,11 +2130,13 @@ mod tests {
                 ((x * 29 + y * 41 + x * y).rem_euclid(1024)) as u16
             });
             let cell_cols = width.div_ceil(4);
-            let cells: Vec<usize> = (0..cell_cols * height.div_ceil(4))
-                .map(|index| index * 7 / 3 % coeffs.len())
+            let cells: Vec<u8> = (0..cell_cols * height.div_ceil(4))
+                .map(|index| (index * 7 / 3 % coeffs.len()) as u8)
                 .collect();
             let expanded: Vec<usize> = (0..width * height)
-                .map(|index| cells[(index / width / 4) * cell_cols + index % width / 4])
+                .map(|index| {
+                    usize::from(cells[(index / width / 4) * cell_cols + index % width / 4])
+                })
                 .collect();
             let radius = WIENER_NS_LUMA_TAP_RADIUS as isize;
             let source_at = |x: isize, y: isize| {

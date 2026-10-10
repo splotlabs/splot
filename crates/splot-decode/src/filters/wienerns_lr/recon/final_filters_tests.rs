@@ -1335,7 +1335,7 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     pc_block.restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
     let wiener_ns_block = block(0, 8, 0);
     with_lr_source_scratch(|scratch| {
-        scratch.cell_subclasses.resize(32, usize::MAX);
+        scratch.cell_subclasses.resize(32, u8::MAX);
     });
     let mixed_luma = apply_luma_lr(
         &lr_sink(&snapshot),

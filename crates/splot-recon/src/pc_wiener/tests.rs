@@ -362,7 +362,7 @@ fn fixed_filter_rejects_out_of_range_subclass_without_writing() {
         bit_depth: BitDepth::Eight,
         filter_set_index: 0,
         subclass_block_size: 1,
-        subclasses: &[PC_WIENER_FULL_CLASSES],
+        subclasses: &[PC_WIENER_FULL_CLASSES as u8],
     };
     let err = pc_wiener_filter_block(&mut output, &params, |_, _| Ok(0)).unwrap_err();
 
@@ -391,8 +391,8 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
                 }
             };
             for (filter_set_index, run) in [(0, 1), (1, 5), (2, 16), (3, width)] {
-                let subclasses: Vec<usize> = (0..width * height)
-                    .map(|index| (index / run) % 64)
+                let subclasses: Vec<u8> = (0..width * height)
+                    .map(|index| ((index / run) % 64) as u8)
                     .collect();
                 let params = PcWienerFilter {
                     width,
@@ -460,8 +460,8 @@ fn packed_and_strided_pc_wiener_match<T: ReconSample>(
     let source = PcWienerPaddedSource::new(&source_values, source_stride, width, height).unwrap();
     let subclass_cols = width.div_ceil(PC_WIENER_BLOCK_SIZE);
     let subclass_rows = height.div_ceil(PC_WIENER_BLOCK_SIZE);
-    let subclasses: Vec<usize> = (0..subclass_cols * subclass_rows)
-        .map(|index| index % PC_WIENER_FULL_CLASSES)
+    let subclasses: Vec<u8> = (0..subclass_cols * subclass_rows)
+        .map(|index| (index % PC_WIENER_FULL_CLASSES) as u8)
         .collect();
 
     for filter_set_index in 0..4 {
@@ -607,7 +607,9 @@ fn padded_and_callback_filters_match_bit_exactly() {
     let height = 5;
     let radius = PC_WIENER_FILTER_TAP_RADIUS;
     let stride = width + 2 * radius + 1;
-    let subclasses: Vec<usize> = (0..width * height).map(|i| (i / width) % 5).collect();
+    let subclasses: Vec<u8> = (0..width * height)
+        .map(|i| ((i / width) % 5) as u8)
+        .collect();
     let source_at =
         |x: isize, y: isize| -> u16 { ((x * 23 + y * 11 + 400).rem_euclid(1024)) as u16 };
     let params = PcWienerFilter {
@@ -655,7 +657,7 @@ fn cell_subclasses_match_expanded_subclasses() {
         .collect();
     let source = PcWienerPaddedSource::new(&source_values, stride, width, height).unwrap();
     let cell_subclasses = [1, 3, 4, 2];
-    let expanded_subclasses: Vec<usize> = (0..height)
+    let expanded_subclasses: Vec<u8> = (0..height)
         .flat_map(|row| {
             (0..width).map(move |col| {
                 cell_subclasses[(row / PC_WIENER_BLOCK_SIZE) * 2 + col / PC_WIENER_BLOCK_SIZE]
@@ -805,17 +807,9 @@ fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
     let (cell_cols, cell_rows, mut scratch) = (5, 3, PcWienerClassifyScratch::default());
     let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
     let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
-    let expected: Vec<u8> = pc_wiener_classify_grid_padded::<u16, _>(
-        &params,
-        cell_cols,
-        cell_rows,
-        &source,
-        alternating_tx_skip,
-    )
-    .unwrap()
-    .iter()
-    .map(|classification| classification.class)
-    .collect();
+    let grid =
+        pc_wiener_classify_grid_padded(&params, cell_cols, cell_rows, &source, alternating_tx_skip);
+    let expected: Vec<u8> = grid.unwrap().iter().map(|cell| cell.class).collect();
     let runs = |run: PcWienerTxSkipRun, cells: &mut [u16]| {
         for (index, cell) in cells.iter_mut().enumerate() {
             *cell = ((run.row * 3 + run.col + index) & 1) as u16;

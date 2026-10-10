@@ -296,7 +296,7 @@ pub struct PcWienerFilter<'a> {
     /// `4` for the normative PC-Wiener classification grid.
     pub subclass_block_size: usize,
     /// Row-major filter indices at [`Self::subclass_block_size`] spacing.
-    pub subclasses: &'a [usize],
+    pub subclasses: &'a [u8],
 }
 
 /// Derives an AV2 § 7.20.4 pixel-classified Wiener skip-filter class.
@@ -1783,7 +1783,7 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
                 subclass_end += 1;
             }
             let c1 = (subclass_end * params.subclass_block_size).min(params.width);
-            let coeffs = &setup.filters[subclass];
+            let coeffs = &setup.filters[usize::from(subclass)];
             let len = c1 - c0;
             let seg = &mut acc[..len];
             let tap_row = |dy: isize, dx: isize| {
@@ -1917,8 +1917,8 @@ fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + 'a>(
                 subclass_end += 1;
             }
             let c1 = (subclass_end * params.subclass_block_size).min(params.width);
-            let coeffs = &setup.filters[subclass];
-            let coeffs16 = &setup.filters16[subclass];
+            let coeffs = &setup.filters[usize::from(subclass)];
+            let coeffs16 = &setup.filters16[usize::from(subclass)];
             let mut col = c0;
             macro_rules! filter_chunks {
                 ($lanes:literal) => {
@@ -2060,9 +2060,11 @@ fn validate_pc_wiener_filter(
             field: "PC-Wiener filter set index",
         });
     };
-    if params.subclasses[..subclass_count]
-        .iter()
-        .any(|&subclass| subclass >= filters.len())
+    if usize::from(
+        params.subclasses[..subclass_count]
+            .iter()
+            .fold(0, |max, &subclass| max.max(subclass)),
+    ) >= filters.len()
     {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "PC-Wiener filter index",
@@ -2073,8 +2075,10 @@ fn validate_pc_wiener_filter(
 
 fn pc_wiener_subclass_at(params: &PcWienerFilter<'_>, row: usize, col: usize) -> usize {
     let subclass_cols = params.width.div_ceil(params.subclass_block_size);
-    params.subclasses
-        [(row / params.subclass_block_size) * subclass_cols + col / params.subclass_block_size]
+    usize::from(
+        params.subclasses
+            [(row / params.subclass_block_size) * subclass_cols + col / params.subclass_block_size],
+    )
 }
 
 fn write_pc_wiener_block<T: ReconSample>(

@@ -80,7 +80,7 @@ const MAX_RETAINED_LR_SCRATCH_ELEMENTS: usize = 64 * 1024;
 struct LrSourceScratch {
     primary: Vec<u16>,
     secondary: Vec<u16>,
-    cell_subclasses: Vec<usize>,
+    cell_subclasses: Vec<u8>,
 }
 
 pub(crate) struct LrFrame<'a, T> {
@@ -1773,8 +1773,8 @@ impl StripeChain<'_> {
         qindex: u32,
         num_classes: usize,
         filter_set_index: usize,
-        cell_subclasses: &'a mut Vec<usize>,
-    ) -> Result<&'a [usize]> {
+        cell_subclasses: &'a mut Vec<u8>,
+    ) -> Result<&'a [u8]> {
         let cell_cols = block.width.div_ceil(MI_SIZE).max(1);
         let cell_rows = block.height.div_ceil(MI_SIZE).max(1);
         let Some(tx_skip_grid) = self.tx_skip_grid else {
@@ -1877,7 +1877,7 @@ impl StripeChain<'_> {
                         return Err(super::lr_pipeline_state_error());
                     };
                     for (cell, &class) in cells.iter_mut().zip(classes) {
-                        *cell = usize::from(subclass_table[usize::from(class)]);
+                        *cell = subclass_table[usize::from(class)];
                     }
                 }
                 Ok(())
