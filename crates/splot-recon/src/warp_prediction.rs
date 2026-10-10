@@ -16,7 +16,7 @@
 
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 use std::simd::{
-    Simd,
+    Simd, SimdElement,
     cmp::SimdOrd,
     num::{SimdInt, SimdUint},
     simd_swizzle,
@@ -173,12 +173,7 @@ impl PreparedWarpPrediction {
                         return Ok(());
                     }
                     let start = (local_y + row) * stride + local_x;
-                    let clipped = rounded.simd_clamp(Simd::splat(0), Simd::splat(max_sample));
-                    let target = &mut output[start..start + section_w];
-                    for (target, &sample) in target.iter_mut().zip(&clipped.to_array()) {
-                        *target = T::try_from_u16(sample as u16)?;
-                    }
-                    Ok(())
+                    store_clipped_row(&mut output[start..start + section_w], rounded, max_sample)
                 };
                 warp_predict_section(
                     reference,
@@ -190,6 +185,46 @@ impl PreparedWarpPrediction {
             }
         }
         Ok(())
+    }
+}
+
+/// Stores the leading `target.len()` lanes of one non-compound warp output row
+/// clipped to `0..=max_sample`, a bound within the storage type.
+///
+/// An `i16` intermediate times filter taps of absolute sum at most 222, after
+/// `Round2(_, InterRound1)` with the non-compound 11, stays within 3552, so
+/// narrowing the row to `i16` before the clamp is exact.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn store_clipped_row<T: ReconSample>(
+    target: &mut [T],
+    rounded: Simd<i32, WARPED_BLOCK_SIZE>,
+    max_sample: i32,
+) -> Result<()> {
+    let clipped = rounded
+        .cast::<i16>()
+        .simd_clamp(Simd::splat(0), Simd::splat(max_sample as i16));
+    if let Some(target) = T::u16_slice_mut(target) {
+        store_lanes(target, clipped.cast());
+    } else if let Some(target) = T::u8_slice_mut(target) {
+        store_lanes(target, clipped.cast());
+    } else {
+        for (target, &sample) in target.iter_mut().zip(&clipped.to_array()) {
+            *target = T::try_from_u16(sample as u16)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn store_lanes<S: SimdElement>(target: &mut [S], lanes: Simd<S, WARPED_BLOCK_SIZE>) {
+    if target.len() == WARPED_BLOCK_SIZE {
+        lanes.copy_to_slice(target);
+    } else {
+        for (target, lane) in target.iter_mut().zip(lanes.to_array()) {
+            *target = lane;
+        }
     }
 }
 
@@ -1169,6 +1204,7 @@ mod tests {
                 128,
                 "row {index}"
             );
+            assert!(row.iter().map(|&tap| i32::from(tap).abs()).sum::<i32>() <= 222);
         }
     }
 
