@@ -1852,7 +1852,7 @@ impl StripeChain<'_> {
                     group_cols,
                     cell_rows,
                     &padded_source,
-                    |run, cells| tx_skip_grid.copy_run(run.row, run.col, cells),
+                    |run| tx_skip_grid.run(run.row, run.col, run.len),
                     scratch,
                 )
                 .map_err(lr_window_error)?;

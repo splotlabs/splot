@@ -191,23 +191,17 @@ impl WienerNsLrTxSkipGrid {
         Ok(i32::from(*value))
     }
 
-    /// Widens the `cells.len()` values of row `row` from column `col` into
-    /// `cells`.
-    pub(crate) fn copy_run(&self, row: usize, col: usize, cells: &mut [u16]) -> ReconResult<()> {
-        let run = col
-            .checked_add(cells.len())
+    /// Row `row` from column `col` to its end, checked to hold `len` values.
+    pub(crate) fn run(&self, row: usize, col: usize, len: usize) -> ReconResult<&[u8]> {
+        col.checked_add(len)
             .filter(|&end| row < self.rows && end <= self.cols)
-            .and_then(|end| {
+            .and_then(|_| {
                 let start = wienerns_lr_tx_skip_grid_index(row, col, self.cols).ok()?;
-                self.values.get(start..start + (end - col))
+                self.values.get(start..start + (self.cols - col))
             })
             .ok_or(ReconError::PcWienerInvalidBounds {
                 field: "LrTxSkip grid lookup",
-            })?;
-        for (cell, &value) in cells.iter_mut().zip(run) {
-            *cell = u16::from(value);
-        }
-        Ok(())
+            })
     }
 
     pub(crate) fn into_values(self) -> Vec<u8> {
