@@ -610,30 +610,38 @@ fn mark_block_candidates(
     let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
     let row_start = r.min(row_end);
     let col_start = c.min(col_end);
-    let mut mark = |row: usize, cols: Range<usize>, flag: u8| {
-        if rows.contains(&row) {
-            let base = (row - first) * mi_cols;
-            if let Some(flags) = candidates.get_mut(base + cols.start..base + cols.end) {
-                for candidate in flags {
-                    *candidate |= flag;
-                }
-            }
-        }
+    let width = col_end - col_start;
+    let sub_pu = if block.sub_pu_size.is_some() {
+        SUB_PU_CANDIDATE
+    } else {
+        0
     };
-    let window_rows = row_start.max(rows.start)..row_end.min(rows.end);
-    for row in window_rows.clone() {
-        for col in [col_start, col_end] {
-            if col < mi_cols {
-                mark(row, col..col + 1, VERTICAL_TX_CANDIDATE);
+    let reach = width + usize::from(col_end < mi_cols);
+    for row in row_start.max(rows.start)..row_end.min(rows.end) {
+        let start = (row - first) * mi_cols + col_start;
+        let Some(flags) = candidates.get_mut(start..start + reach) else {
+            continue;
+        };
+        if let Some(left) = flags.first_mut() {
+            *left |= VERTICAL_TX_CANDIDATE;
+        }
+        if let Some(right) = flags.get_mut(width) {
+            *right |= VERTICAL_TX_CANDIDATE;
+        }
+        if sub_pu != 0 {
+            for candidate in flags.iter_mut().take(width) {
+                *candidate |= sub_pu;
             }
         }
     }
     for row in [row_start, row_end] {
-        mark(row, col_start..col_end, HORIZONTAL_TX_CANDIDATE);
-    }
-    if block.sub_pu_size.is_some() {
-        for row in window_rows {
-            mark(row, col_start..col_end, SUB_PU_CANDIDATE);
+        if rows.contains(&row) {
+            let start = (row - first) * mi_cols + col_start;
+            if let Some(flags) = candidates.get_mut(start..start + width) {
+                for candidate in flags {
+                    *candidate |= HORIZONTAL_TX_CANDIDATE;
+                }
+            }
         }
     }
 }
