@@ -181,6 +181,9 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
     State(#[from] TileCoeffStateError),
 }
 
+/// Kept out of line: inlined into the ordinary-branch function, the level
+/// loop shares that function's registers and spills its context state.
+#[inline(never)]
 pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
