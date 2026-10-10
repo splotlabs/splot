@@ -1238,16 +1238,22 @@ fn repeated_edges_match_every_edge_across_chunks_frame_edges_and_chroma() {
     let tall = Some(DeblockSubPuSize::new(64, 8));
     let blocks = [
         block(0, 0, 24, 8, 2, (0, 0), None, false, 100),
-        block(0, 24, 16, 8, 2, (0, 24), None, true, 160),
+        block(0, 24, 8, 4, 1, (0, 24), None, true, 160),
+        DeblockBlock {
+            lossless: true,
+            ..block(4, 24, 8, 4, 1, (4, 24), None, false, 70)
+        },
+        block(0, 32, 8, 8, 2, (0, 32), None, false, 150),
         block(0, 40, 1, 8, 0, (0, 40), None, false, 120),
         block(0, 41, 3, 8, 0, (0, 41), None, false, 200),
         block(8, 0, 8, 12, 1, (8, 0), tall, false, 90),
         block(8, 8, 8, 12, 1, (8, 0), None, true, 90),
-        block(8, 16, 20, 4, 2, (8, 16), None, false, 140),
-        block(12, 16, 20, 8, 2, (12, 16), None, false, 140),
-        block(8, 36, 8, 12, 3, (8, 36), None, true, 180),
+        block(8, 16, 12, 4, 2, (8, 16), None, false, 140),
+        block(12, 16, 12, 8, 1, (12, 16), None, false, 60),
+        block(8, 28, 16, 12, 3, (8, 28), None, true, 180),
+        block(20, 0, 44, 8, 3, (20, 0), None, false, 110),
     ];
-    let (mi_rows, mi_cols) = (20, 44);
+    let (mi_rows, mi_cols) = (28, 44);
     let storage = build_mi_grid(
         &blocks,
         mi_rows,
@@ -1261,7 +1267,7 @@ fn repeated_edges_match_every_edge_across_chunks_frame_edges_and_chroma() {
 
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push_both(block(0, 40, 4, 8, 1, (0, 40), None, false, 60));
-    let mut transform = block(8, 16, 12, 12, 2, (8, 16), None, false, 140);
+    let mut transform = block(8, 16, 12, 12, 2, (8, 16), None, false, 60);
     transform.chroma_transform_only = true;
     chroma.push_both(transform);
     let overlay = overlay_mi_grid(
@@ -1288,7 +1294,7 @@ fn walk_test_workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8>
         for y in 0..plane_height {
             for x in 0..plane_width {
                 let step = 10 * (((x >> 4) ^ (y >> 3)) & 1);
-                let noisy = x >= plane_width / 2 && y < plane_height / 2;
+                let noisy = x < plane_width / 2 && y >= plane_height / 2;
                 let noise = if noisy { (x * 7 + y * 5) % 5 } else { 0 };
                 let value = 80 + ((x + 2 * y) >> 2) % 64 + step + noise;
                 workspace
