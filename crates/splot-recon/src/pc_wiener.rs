@@ -995,11 +995,10 @@ where
             *groups = tail;
         }
         let mut shared = leading.cast::<i32>();
-        for ((cell_col, cell), &skip_sum) in cells.iter_mut().enumerate().zip(row_sums) {
-            let mut pair = Simd::<u16, 8>::splat(0);
-            for groups in window_rows {
-                pair += Simd::from_array(groups[cell_col]);
-            }
+        let [top, mid, bot] = window_rows.map(<[_]>::iter);
+        let pairs = top.zip(mid).zip(bot);
+        for ((cell, &skip_sum), ((top, mid), bot)) in cells.iter_mut().zip(row_sums).zip(pairs) {
+            let pair = Simd::from_array(*top) + Simd::from_array(*mid) + Simd::from_array(*bot);
             let last = simd_swizzle!(pair, [4, 5, 6, 7]).cast::<i32>();
             let sums = (shared + simd_swizzle!(pair, [0, 1, 2, 3]).cast::<i32>() + last).to_array();
             let Some(rounding) = offsets_cache.get(usize::from(skip_sum)) else {
@@ -1495,7 +1494,8 @@ impl ClassifiedCell for u8 {
         rounding: &[i32; PC_WIENER_NUM_FEATURES],
         bit_depth: BitDepth,
     ) -> Self {
-        PC_WIENER_LUT_TO_CLASS[usize::from(rounded_lut_input(raw_features, rounding, bit_depth))]
+        let lut_input = usize::from(rounded_lut_input(raw_features, rounding, bit_depth));
+        PC_WIENER_LUT_TO_CLASS[lut_input % PC_WIENER_LUT_INPUTS]
     }
 }
 
