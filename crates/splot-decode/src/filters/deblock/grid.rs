@@ -95,11 +95,14 @@ impl MiGrid<'_> {
             .wrapping_sub(self.offset)
     }
 
-    /// One mode-info row's edge flags, or `None` outside the window.
+    /// One mode-info row's edge flags followed by those of the window rows
+    /// below it, or `None` outside the window. A chunk read past the row end
+    /// gets flags of the next row, so readers clip or only widen with them.
     pub(super) fn candidate_row(&self, row: usize) -> Option<&[u8]> {
         let start = self.index(row, 0);
         self.candidates
-            .get(start..start.wrapping_add(self.base.mi_cols))
+            .get(start..)
+            .filter(|flags| flags.len() >= self.base.mi_cols)
     }
 
     #[allow(clippy::inline_always, reason = "measured luma deblock hot path")]

@@ -1227,7 +1227,7 @@ fn candidate_mask<const PASS: usize>(
             flag_chunk(flags, left)
         } else {
             let mut shifted = [0; CANDIDATE_CHUNK];
-            let len = flags.len().min(CANDIDATE_CHUNK - 1);
+            let len = grid.base.mi_cols.min(CANDIDATE_CHUNK - 1);
             shifted[1..=len].copy_from_slice(&flags[..len]);
             Simd::from_array(shifted)
         };
@@ -1240,7 +1240,7 @@ fn candidate_mask<const PASS: usize>(
         };
     }
     let mut mask = eligible.simd_ne(zero).to_bitmask() as u32;
-    let len = flags.len().saturating_sub(start);
+    let len = grid.base.mi_cols.saturating_sub(start);
     if len < CANDIDATE_CHUNK {
         mask &= (1 << len) - 1;
     }
