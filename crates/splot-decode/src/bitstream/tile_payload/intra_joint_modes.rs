@@ -1042,7 +1042,8 @@ impl TileUvCflState {
         n4h: usize,
         is_cfl: bool,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), u8::from(is_cfl));
+        self.grid
+            .record_owned_block((r, c), (n4w, n4h), u8::from(is_cfl));
     }
 }
 
