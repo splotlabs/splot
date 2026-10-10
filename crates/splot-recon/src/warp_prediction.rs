@@ -632,15 +632,25 @@ fn warp_predict_section<T: ReconSample>(
     let projected = project_section_center(params)?;
     let mut intermediate = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
     if let Some(source_origin) = interior_warp_source_origin(reference, params, &projected) {
-        build_interior_intermediate(
-            reference,
-            shear,
-            &projected,
-            source_origin,
-            &mut intermediate,
-        );
+        if shear.alpha == 0
+            && shear.beta == 0
+            && let Some(high) = two_tap_phase(projected.sx4)
+        {
+            two_tap_intermediate(reference, source_origin, high, &mut intermediate);
+        } else {
+            build_interior_intermediate(
+                reference,
+                shear,
+                &projected,
+                source_origin,
+                &mut intermediate,
+            );
+        }
     } else {
         build_intermediate(reference, params, shear, &projected, &mut intermediate);
+    }
+    if shear.gamma == 0 && shear.delta == 0 && two_tap_phase(projected.sy4).is_some() {
+        return two_tap_output(projected.sy4, &intermediate, round1, store);
     }
     build_output(shear, &projected, &intermediate, round1, store)
 }
@@ -679,6 +689,23 @@ fn two_tap_horizontal<T: ReconSample, const LANES: usize>(
     let side = warp_source_lanes(source, start + 1 - high);
     (main << (7 - INTER_ROUND0) as i16)
         + ((side - main + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i16)
+}
+
+/// Runs the § 7.13.3.19 horizontal pass of a two-tap phase over the interior
+/// window at `(first_col, first_row)`.
+fn two_tap_intermediate<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    (first_col, first_row): (usize, usize),
+    high: usize,
+    intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+) {
+    for row in 0..WARP_INTERMEDIATE_ROWS {
+        let source = reference.row(first_row + row);
+        two_tap_horizontal::<T, WARPED_BLOCK_SIZE>(source, first_col + TWO_TAP_FIRST, high)
+            .copy_to_slice(
+                &mut intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE],
+            );
+    }
 }
 
 /// Runs the § 7.13.3.19 vertical pass of a two-tap phase, which reads only
@@ -1007,19 +1034,6 @@ fn build_interior_intermediate<T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
 ) {
-    if shear.alpha == 0
-        && shear.beta == 0
-        && let Some(high) = two_tap_phase(projected.sx4)
-    {
-        for row in 0..WARP_INTERMEDIATE_ROWS {
-            let source = reference.row(first_row + row);
-            two_tap_horizontal::<T, WARPED_BLOCK_SIZE>(source, first_col + TWO_TAP_FIRST, high)
-                .copy_to_slice(
-                    &mut intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE],
-                );
-        }
-        return;
-    }
     for row in 0..WARP_INTERMEDIATE_ROWS {
         let i1 = row as i32 - 7;
         let windows = warp_windows(reference.row(first_row + row), first_col);
@@ -1101,9 +1115,6 @@ fn build_output(
     round1: u32,
     mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
 ) -> Result<()> {
-    if shear.gamma == 0 && shear.delta == 0 && two_tap_phase(projected.sy4).is_some() {
-        return two_tap_output(projected.sy4, intermediate, round1, store);
-    }
     if shear.gamma == 0 {
         for row in 0..WARPED_BLOCK_SIZE {
             let i1 = row as i32 - 4;
