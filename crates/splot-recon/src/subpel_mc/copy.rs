@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use std::simd::{Select, cmp::SimdPartialOrd};
 
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
 /// COMPOUND_AVERAGE and the supplied `cwpWeight`, then applies the final § 4.8
@@ -143,6 +144,8 @@ pub(super) fn subpel_copy_block_into<T: ReconSample, O>(
     }
 }
 
+const LANE_INDEX: [u16; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
 pub(super) fn subpel_copy_block_u16_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -162,10 +165,32 @@ pub(super) fn subpel_copy_block_u16_into<T: ReconSample>(
     let direct_x = subpel_direct_copy_x(reference, params);
     let max_sample = params.bit_depth.max_sample();
     let limit = Simd::<u16, LANES>::splat(max_sample);
+    let first_x = params.first_x.clamp(0, reference.width as i32 - 1);
+    let last_x = params.last_x.clamp(0, reference.width as i32 - 1);
+    let leading = (i64::from(first_x) - i64::from(x0)).clamp(0, params.w as i64) as usize;
+    let middle_end = (i64::from(last_x) - i64::from(x0) + 1).clamp(0, params.w as i64) as usize;
+    let lanes_x = usize::try_from(x0)
+        .ok()
+        .filter(|&x| params.w.is_multiple_of(LANES) && x + params.w <= reference.width);
     for r in 0..params.h {
         let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
         let output = &mut output[r * output_stride..][..params.w];
-        if let Some(x) = direct_x {
+        if let (None, Some(x)) = (direct_x, lanes_x) {
+            let source = reference.row(row.min(reference.readable_rows - 1));
+            let first = Simd::splat(source[first_x as usize].to_u16());
+            let last = Simd::splat(source[last_x as usize].to_u16());
+            for (chunk, output) in output.chunks_exact_mut(LANES).enumerate() {
+                let column = Simd::from_array(LANE_INDEX) + Simd::splat((chunk * LANES) as u16);
+                let lanes = reference_lanes::<LANES, T>(source, x + chunk * LANES);
+                let lanes = column
+                    .simd_lt(Simd::splat(leading as u16))
+                    .select(first, lanes);
+                let lanes = column
+                    .simd_ge(Simd::splat(middle_end as u16))
+                    .select(last, lanes);
+                output.copy_from_slice(lanes.simd_min(limit).as_array()); // splot-copy-ok: publish SIMD prediction lanes into caller output
+            }
+        } else if let Some(x) = direct_x {
             let row = row.min(reference.readable_rows - 1);
             let start = row * reference.stride + x;
             let source = &reference.samples[start..start + params.w];
@@ -185,11 +210,6 @@ pub(super) fn subpel_copy_block_u16_into<T: ReconSample>(
             }
         } else {
             let source = reference.row(row.min(reference.readable_rows - 1));
-            let first_x = params.first_x.clamp(0, reference.width as i32 - 1);
-            let last_x = params.last_x.clamp(0, reference.width as i32 - 1);
-            let leading = (i64::from(first_x) - i64::from(x0)).clamp(0, params.w as i64) as usize;
-            let middle_end =
-                (i64::from(last_x) - i64::from(x0) + 1).clamp(0, params.w as i64) as usize;
             output[..leading].fill(source[first_x as usize].to_u16().min(max_sample));
             if leading < middle_end {
                 let middle =
@@ -603,6 +623,7 @@ impl<T: ReconSample> ReferencePlaneView<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subpel_mc::tests::full_pel_params;
 
     #[test]
     fn readable_row_stops_at_the_published_prefix() -> Result<()> {
@@ -613,5 +634,42 @@ mod tests {
         assert_eq!(view.readable_row(3), None);
         assert_eq!(view.readable_row(usize::MAX), None);
         Ok(())
+    }
+
+    fn check_clipped_copies<T: ReconSample>(bit_depth: BitDepth) -> Result<()> {
+        let (width, height) = (40usize, 12usize);
+        let max = u32::from(bit_depth.max_sample());
+        let samples = (0..width * height)
+            .map(|i| T::try_from_u16(((i as u32 * 7919 + 13) % (max + 1)) as u16))
+            .collect::<Result<Vec<T>>>()?;
+        let view = ReferencePlaneView::new(&samples, width, height)?;
+        for w in [8, 16, 24, 32] {
+            for x0 in -3..(width as i32 - w as i32 + 3) {
+                for (first, last) in [(x0 + 1, x0 + w as i32 - 1), (x0 + 5, x0 + 6), (-9, 99)] {
+                    let mut params = full_pel_params(
+                        InterpolationFilter::EightTap,
+                        w,
+                        3,
+                        x0,
+                        2,
+                        width as i32,
+                        height as i32,
+                    );
+                    params.bit_depth = bit_depth;
+                    (params.first_x, params.last_x) = (first, last);
+                    let mut copied = vec![0; w * 3];
+                    subpel_predict_block_into(&view, &params, &mut copied)?;
+                    let expected = subpel_predict_block(&view, &params)?;
+                    assert_eq!(copied, expected, "w={w} x0={x0} first={first} last={last}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn clipped_fullpel_copies_match_the_per_sample_copy() -> Result<()> {
+        check_clipped_copies::<u16>(BitDepth::Ten)?;
+        check_clipped_copies::<u8>(BitDepth::Eight)
     }
 }
