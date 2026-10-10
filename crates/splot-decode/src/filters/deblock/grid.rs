@@ -388,11 +388,6 @@ impl MiGridStorage {
                         cell.base = later(cell.base, index);
                     }
                 }
-                if let Some(candidates) = self.candidates.get_mut(start..end) {
-                    for candidate in candidates {
-                        *candidate |= COVERED_CANDIDATE;
-                    }
-                }
             }
             mark_block_candidates(
                 &mut self.candidates,
@@ -404,7 +399,20 @@ impl MiGridStorage {
             );
         }
         let built = (new.start - base) * self.mi_cols;
-        self.fully_covered &= all_covered(self.candidates.get(built..).unwrap_or_default());
+        self.fully_covered &= self
+            .cells
+            .get(built..)
+            .unwrap_or_default()
+            .iter()
+            .fold(0, |highest, cell| highest.max(cell.base))
+            != NO_BLOCK_INDEX;
+        if !self.fully_covered {
+            for (candidate, cell) in self.candidates.iter_mut().zip(&self.cells) {
+                if cell.base != NO_BLOCK_INDEX {
+                    *candidate |= COVERED_CANDIDATE;
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -494,15 +502,6 @@ impl ChromaMiGridStorage {
                     }
                 }
             }
-            if !block.chroma_transform_only {
-                for (start, end) in block_row_spans(block, mi_rows, mi_cols, &new, row_base) {
-                    if let Some(candidates) = self.candidates.get_mut(start..end) {
-                        for candidate in candidates {
-                            *candidate |= COVERED_CANDIDATE;
-                        }
-                    }
-                }
-            }
             mark_block_candidates(
                 &mut self.candidates,
                 block,
@@ -512,8 +511,52 @@ impl ChromaMiGridStorage {
                 row_base,
             );
         }
+        if !base.fully_covered {
+            self.mark_covered(base, records, order, mask, mi_rows, &(row_base..rows.end))?;
+        }
         self.fully_covered &=
             base.fully_covered || all_covered(self.candidates.get(built..).unwrap_or_default());
+        Ok(())
+    }
+
+    /// Marks every cell of the window `rows` that the luma grid or an overlay
+    /// record covers. Only a window whose luma grid is not fully covered
+    /// reads these marks, so a covered one never writes them.
+    fn mark_covered(
+        &mut self,
+        base: &MiGridStorage,
+        records: &ChromaDeblockRecords,
+        order: &RowOrder,
+        mask: u8,
+        mi_rows: usize,
+        rows: &Range<usize>,
+    ) -> Result<(), DeblockError> {
+        let mi_cols = base.mi_cols;
+        let luma = rows
+            .start
+            .checked_sub(base.window.row_base)
+            .ok_or(DeblockError::Workspace)?
+            * mi_cols;
+        let luma_flags = base.candidates.get(luma..).unwrap_or_default();
+        for (candidate, flags) in self.candidates.iter_mut().zip(luma_flags) {
+            *candidate |= flags & COVERED_CANDIDATE;
+        }
+        for &index in order.reaching(rows) {
+            let record = records
+                .blocks
+                .get(index as usize)
+                .ok_or(DeblockError::Workspace)?;
+            if record.planes & mask == 0 || record.block.chroma_transform_only {
+                continue;
+            }
+            for (start, end) in block_row_spans(&record.block, mi_rows, mi_cols, rows, rows.start) {
+                if let Some(candidates) = self.candidates.get_mut(start..end) {
+                    for candidate in candidates {
+                        *candidate |= COVERED_CANDIDATE;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

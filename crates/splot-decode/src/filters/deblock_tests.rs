@@ -1007,7 +1007,9 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
     };
     let (mi_rows, mi_cols) = (9, 6);
     let luma = [
-        block(4, 0, 6, 5, false),
+        block(4, 0, 6, 2, false),
+        block(6, 0, 3, 3, false),
+        block(6, 4, 2, 3, false),
         block(0, 0, 3, 4, false),
         block(0, 3, 3, 2, false),
         block(2, 3, 3, 2, false),
@@ -1018,6 +1020,7 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
     chroma.push_both(block(0, 0, 4, 4, false));
     chroma.push(0, block(2, 0, 2, 2, true));
     chroma.push(1, block(4, 4, 2, 4, false));
+    chroma.push(1, block(6, 3, 1, 2, true));
     let whole = build_mi_grid(&luma, mi_rows, mi_cols, &mut DeblockGridStorage::default()).unwrap();
     let mut order = [RowOrder::default(), RowOrder::default()];
     order[0].sort(luma.iter(), mi_rows).unwrap();
@@ -1028,12 +1031,33 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
     let mut base = MiGridStorage::new(mi_cols, &mut storage);
     let mut overlays =
         [0, 1].map(|plane| ChromaMiGridStorage::new(mi_cols, (1, 1), &mut storage.chroma[plane]));
+    let covered = |flags: &[u8], index: usize| flags[index] & COVERED_CANDIDATE != 0;
     for window in [0..4, 2..6, 4..8, 6..9, 2..6, 4..9] {
         base.fill(&luma, &order[0], mi_rows, &window).unwrap();
+        assert_eq!(base.fully_covered, window.end <= 6, "window {window:?}");
         for (plane, overlay) in overlays.iter_mut().enumerate() {
             overlay
                 .fill(&base, &chroma, &order[1], plane, mi_rows, &window)
                 .unwrap();
+            for (index, row, col) in window
+                .clone()
+                .enumerate()
+                .flat_map(|(at, row)| (0..mi_cols).map(move |col| (at * mi_cols + col, row, col)))
+                .filter(|_| !base.fully_covered)
+            {
+                let luma_covered = base.cells[index].base != u32::MAX;
+                assert_eq!(covered(&base.candidates, index), luma_covered);
+                let record_covered = chroma.iter_plane(plane).any(|(_, block)| {
+                    let rows = block.r as usize..(block.r + block.n4h) as usize;
+                    let cols = block.c as usize..(block.c + block.n4w) as usize;
+                    !block.chroma_transform_only && rows.contains(&row) && cols.contains(&col)
+                });
+                assert_eq!(
+                    covered(&overlay.candidates, index),
+                    luma_covered || record_covered,
+                    "window {window:?} plane {plane} ({row}, {col})"
+                );
+            }
             let expected = overlay_mi_grid(
                 &whole,
                 &chroma,
