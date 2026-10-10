@@ -2054,7 +2054,7 @@ fn workspace_with_format(
     workspace_for(BitDepth::Eight, pixel_format, width, height)
 }
 
-fn workspace_for<T: ReconSample>(
+pub(super) fn workspace_for<T: ReconSample>(
     bit_depth: BitDepth,
     pixel_format: PixelFormat,
     width: usize,

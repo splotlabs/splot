@@ -598,3 +598,31 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
         );
     }
 }
+
+impl<T: ReconSample> ReferencePlaneView<'_, T> {
+    /// Returns the `width()` samples of row `row`, or `None` when the row is
+    /// past the published prefix a § 7.13.3.18 read may use.
+    #[must_use]
+    pub fn readable_row(&self, row: usize) -> Option<&[T]> {
+        if row >= self.readable_rows {
+            return None;
+        }
+        self.samples.get(row * self.stride..)?.get(..self.width)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readable_row_stops_at_the_published_prefix() -> Result<()> {
+        let samples: Vec<u16> = (0..40).collect();
+        let view = ReferencePlaneView::from_published_strided(&samples, 10, 8, 4, 3)?;
+        assert_eq!(view.readable_row(0), Some(&samples[..8]));
+        assert_eq!(view.readable_row(2), Some(&samples[20..28]));
+        assert_eq!(view.readable_row(3), None);
+        assert_eq!(view.readable_row(usize::MAX), None);
+        Ok(())
+    }
+}

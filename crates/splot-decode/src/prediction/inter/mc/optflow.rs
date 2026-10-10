@@ -136,7 +136,7 @@ pub(super) struct MotionCell {
 }
 
 impl MotionCell {
-    fn from_optflow(base_mvs: [Mv; 2], delta: [[i32; 2]; 2]) -> Self {
+    pub(super) fn from_optflow(base_mvs: [Mv; 2], delta: [[i32; 2]; 2]) -> Self {
         let mut refined = [[0i32; 2]; 2];
         for reference in 0..2 {
             let base = [base_mvs[reference].row, base_mvs[reference].col];
@@ -158,7 +158,7 @@ impl MotionCell {
         }
     }
 
-    fn is_initialized(&self) -> bool {
+    pub(super) fn is_initialized(&self) -> bool {
         self.mvs[0][0] != i32::MIN
     }
 
@@ -966,6 +966,9 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             unit_count,
             MotionCell::uninitialized([block.mv0, block.mv1]),
         );
+        let fast = super::refinemv::tip_fullpel_cells(
+            sink, &block, &unit_at, unit_size, offset, &mut cells,
+        )?;
         cells
             .par_chunks_mut(columns)
             .enumerate()
@@ -975,6 +978,11 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                 let mut previous_refined = false;
                 for (column, destination) in cells.iter_mut().enumerate() {
                     let (rect, mvs) = unit_at(row * columns + column);
+                    if fast && destination.is_initialized() {
+                        previous_unit = Some((rect, mvs));
+                        previous_refined = false;
+                        continue;
+                    }
                     let reuse_horizontal =
                         previous_unit.map_or([false; 2], |(previous_rect, previous_mvs)| {
                             core::array::from_fn(|reference| {
@@ -1023,6 +1031,8 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit_count,
         MotionCell::uninitialized([block.mv0, block.mv1]),
     );
+    let fast =
+        super::refinemv::tip_fullpel_cells(sink, &block, &unit_at, unit_size, offset, &mut cells)?;
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;
@@ -1037,6 +1047,11 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             })
         });
         refinemv_candidates.push(mvs);
+        if fast && cells.get(index).is_some_and(MotionCell::is_initialized) {
+            previous_unit = Some((rect, mvs));
+            previous_refined = false;
+            continue;
+        }
         let mut unit = block;
         unit.rect = rect;
         unit.mv0 = mvs[0];
