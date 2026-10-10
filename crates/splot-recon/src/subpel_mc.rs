@@ -1536,6 +1536,22 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
             )
         }));
     }
+    if [params0, params1]
+        .iter()
+        .all(|params| (params.start_x | params.start_y) >> 6 & SUBPEL_MASK == 0)
+        && let Some(output) = O::u8_slice_mut(output)
+        && fullpel_u8::blend_fullpel_u8_validated(
+            reference0,
+            params0,
+            reference1,
+            params1,
+            cwp_weight,
+            output,
+            output_stride,
+        )
+    {
+        return Ok(true);
+    }
     let mut pred0 = [0i32; COMPOUND_PRED0_CAPACITY];
     let Some(pred0) = compound_first_predictor(reference0, params0, scratch, &mut pred0)? else {
         return Ok(false);

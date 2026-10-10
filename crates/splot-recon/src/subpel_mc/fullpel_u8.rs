@@ -150,14 +150,45 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSam
     if params0.w != params1.w || params0.h != params1.h || params0.bit_depth != params1.bit_depth {
         return Ok(false);
     }
+    if subpel_direct_copy_x(reference0, params0).is_none()
+        || subpel_direct_copy_x(reference1, params1).is_none()
+    {
+        return Ok(false);
+    }
+    validate_compound_output(params0, output, output_stride)?;
+    Ok(blend_fullpel_u8_validated(
+        reference0,
+        params0,
+        reference1,
+        params1,
+        cwp_weight,
+        output,
+        output_stride,
+    ))
+}
+
+/// Blends two zero-phase unscaled predictors whose rows are direct source
+/// slices into eight-bit output whose geometry the caller has validated.
+/// Returns `false`, having written nothing, when a source window is clipped
+/// or the reference storage is not eight-bit.
+pub(super) fn blend_fullpel_u8_validated<T: ReconSample>(
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [u8],
+    output_stride: usize,
+) -> bool {
     let (Some(x0), Some(x1)) = (
         subpel_direct_copy_x(reference0, params0),
         subpel_direct_copy_x(reference1, params1),
     ) else {
-        return Ok(false);
+        return false;
     };
-    validate_compound_output(params0, output, output_stride)?;
-
+    if T::u8_slice(reference0.row(0)).is_none() {
+        return false;
+    }
     let y0 = [
         params0.start_y >> SCALE_SUBPEL_BITS,
         params1.start_y >> SCALE_SUBPEL_BITS,
@@ -172,7 +203,7 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSam
         let left = &reference0.row(source_row[0])[x0..x0 + params0.w];
         let right = &reference1.row(source_row[1])[x1..x1 + params0.w];
         let (Some(left), Some(right)) = (T::u8_slice(left), T::u8_slice(right)) else {
-            return Ok(false);
+            return false;
         };
         let destination = &mut output[row * output_stride..][..params0.w];
         if forward == 8 {
@@ -186,7 +217,7 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSam
             }
         }
     }
-    Ok(true)
+    true
 }
 
 #[cfg(test)]
