@@ -210,7 +210,7 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     reason = "the loop must fuse with the caller's iterator"
 )]
 #[inline(always)]
-fn store_clamped_samples<T: ReconSample>(
+pub(super) fn store_clamped_samples<T: ReconSample>(
     output: &mut [T],
     max_sample: i32,
     samples: impl Iterator<Item = i32>,

@@ -1763,12 +1763,8 @@ pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
         .zip(pred1.chunks(width))
         .enumerate()
     {
-        for (col, (slot, (&left, &right))) in
-            output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
-        {
-            let starts = reference_starts.map(|(x, y)| (x + col as i32, y + row as i32));
-            *slot = blend.sample(left, right, starts)?;
-        }
+        let starts = reference_starts.map(|(x, y)| (x, y + row as i32));
+        blend.row(pred0, pred1, starts, output)?;
     }
     Ok(())
 }
@@ -1812,6 +1808,39 @@ impl ImplicitMaskBlend {
             1 + compound_inter_post_round(),
         );
         T::try_from_u16(sample.clamp(0, self.max_sample) as u16)
+    }
+
+    /// [`Self::sample`] over one row whose first sample reads the reference
+    /// positions `starts` and whose later samples step one column right.
+    #[allow(
+        clippy::inline_always,
+        reason = "per-row blend; the loop must vectorize in every caller"
+    )]
+    #[inline(always)]
+    fn row<T: ReconSample>(
+        self,
+        left: &[i32],
+        right: &[i32],
+        starts: [(i32, i32); 2],
+        output: &mut [T],
+    ) -> splot_recon::Result<()> {
+        let row_onscreen = starts.map(|(_, y)| (0..=self.last.1).contains(&y));
+        let samples = left
+            .iter()
+            .zip(right)
+            .enumerate()
+            .map(|(col, (&left, &right))| {
+                let onscreen = |reference: usize| {
+                    row_onscreen[reference]
+                        && (0..=self.last.0).contains(&(starts[reference].0 + col as i32))
+                };
+                let mask = 1 + i32::from(onscreen(0)) - i32::from(onscreen(1));
+                round2_i32(
+                    mask * left + (2 - mask) * right,
+                    1 + compound_inter_post_round(),
+                )
+            });
+        super::blend::store_clamped_samples(output, self.max_sample, samples)
     }
 }
 
@@ -1857,21 +1886,30 @@ fn blend_implicit_mask_region<T: ReconSample>(
                     start_y - (plane_y + cell_y) as i32,
                 )
             });
+            let cols = cell_x - x..(cell_x + unit_width).min(x + width) - x;
             for row in cell_y..(cell_y + unit_height).min(y + height) {
-                for col in cell_x..(cell_x + unit_width).min(x + width) {
-                    let starts = core::array::from_fn(|reference| {
-                        if unscaled {
-                            (
-                                (plane_x + col) as i32 + offsets[reference].0,
-                                (plane_y + row) as i32 + offsets[reference].1,
-                            )
-                        } else {
-                            start_at(reference, col, row)
-                        }
+                let source = (row - y) * pred_stride;
+                let destination = (row - y) * output_stride;
+                if unscaled {
+                    let starts = offsets.map(|(offset_x, offset_y)| {
+                        (
+                            (plane_x + x + cols.start) as i32 + offset_x,
+                            (plane_y + row) as i32 + offset_y,
+                        )
                     });
-                    let source = (row - y) * pred_stride + col - x;
-                    output[(row - y) * output_stride + col - x] =
-                        blend.sample(preds[0][source], preds[1][source], starts)?;
+                    blend.row(
+                        &preds[0][source + cols.start..source + cols.end],
+                        &preds[1][source + cols.start..source + cols.end],
+                        starts,
+                        &mut output[destination + cols.start..destination + cols.end],
+                    )?;
+                    continue;
+                }
+                for col in cols.clone() {
+                    let starts =
+                        core::array::from_fn(|reference| start_at(reference, x + col, row));
+                    output[destination + col] =
+                        blend.sample(preds[0][source + col], preds[1][source + col], starts)?;
                 }
             }
         }
@@ -2108,6 +2146,57 @@ mod tests {
             grid.temporal_mvs_at_luma_offset(0, 0).unwrap(),
             [Mv { row: 1, col: -1 }, Mv::ZERO]
         );
+    }
+
+    /// Both references leave the frame on different sides, so a row holds
+    /// all three masks; the sums exceed both clamp bounds.
+    fn translational_rows_match_the_per_sample_blend<T: ReconSample>(
+        bit_depth: splot_recon::BitDepth,
+    ) {
+        let (w, h, frame_w, frame_h) = (24usize, 7usize, 20usize, 5usize);
+        let pred0: Vec<i32> = (0..w * h).map(|i| (i as i32 * 7 % 900) * 48).collect();
+        let pred1: Vec<i32> = (0..w * h)
+            .map(|i| (i as i32 * 11 % 800) * 48 - 900)
+            .collect();
+        let scalings = [(-8, -24), (16, 40)].map(|(mv_row, mv_col)| {
+            let (frame_w, frame_h) = (frame_w as i32, frame_h as i32);
+            derive_plane_scaling(
+                0, 0, mv_row, mv_col, 0, 0, frame_w, frame_h, frame_w, frame_h,
+            )
+        });
+        let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
+        let mut output = vec![T::default(); w * h];
+        blend_nonuniform_implicit_mask(
+            &pred0,
+            &pred1,
+            bit_depth,
+            w,
+            h,
+            None,
+            0,
+            0,
+            scalings,
+            frame_w,
+            frame_h,
+            0,
+            0,
+            &mut output,
+        )
+        .unwrap();
+        for (index, sample) in output.iter().enumerate() {
+            let (row, col) = ((index / w) as i32, (index % w) as i32);
+            let starts = scalings.map(|s| ((s.start_x >> 10) + col, (s.start_y >> 10) + row));
+            let want: T = blend.sample(pred0[index], pred1[index], starts).unwrap();
+            assert_eq!(sample.to_u16(), want.to_u16(), "{bit_depth:?} {index}");
+        }
+        let samples: Vec<u16> = output.iter().map(|sample| sample.to_u16()).collect();
+        assert!(samples.contains(&0) && samples.contains(&bit_depth.max_sample()));
+    }
+
+    #[test]
+    fn translational_implicit_mask_rows_match_the_per_sample_blend() {
+        translational_rows_match_the_per_sample_blend::<u8>(splot_recon::BitDepth::Eight);
+        translational_rows_match_the_per_sample_blend::<u16>(splot_recon::BitDepth::Ten);
     }
 
     #[test]
