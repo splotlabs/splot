@@ -140,6 +140,50 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
     assert!(low_range > 0 && clipped > 0 && clipped < low_range);
 }
 
+/// A flat window has range 0 and skips the taps; one sample that the
+/// farthest tap of the last lane reads, one above the rest, keeps the range
+/// at 1. Both match the scalar samples for every table, class and bit depth.
+#[test]
+fn flat_uniform_windows_match_scalar_samples() {
+    let stride = 16 + GDF_READ_RADIUS * 2;
+    let far = (ORIGIN.1 + 1 + TAP_REACH) * stride + ORIGIN.0 + 15;
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        for differ in [0, 1] {
+            let mut samples = vec![bit_depth.max_sample() / 3; stride * (2 + GDF_READ_RADIUS * 2)];
+            samples[far] += differ;
+            for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
+                for qp_idx in 0..alpha_by_qp.len() {
+                    let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
+                    for class_index in 0..4_u8 {
+                        let classes: [GdfClass; 8] = core::array::from_fn(|index| {
+                            let delta = i32::try_from(index).unwrap_or_default() * 37;
+                            GdfClass::new(class_index, 511 - delta)
+                        });
+                        let params = GdfUniformParams::new(&block, usize::from(class_index));
+                        let (actual, expected) = filter_both_ways::<16, 28>(
+                            &samples,
+                            stride,
+                            &block,
+                            &classes,
+                            |window, output| {
+                                let range = tap_range::<16, 28>(window, params.clip_taps.limit);
+                                let low = differ < params.clip_taps.limit;
+                                assert_eq!(range, low.then_some(differ));
+                                params.rows(window, output, &classes, &block, range);
+                            },
+                        );
+                        assert_eq!(
+                            actual, expected,
+                            "{bit_depth:?}, differ {differ}, reference {ref_dst_idx}, qp \
+                             {qp_idx}, class {class_index}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn mixed_classes_match_scalar_samples_for_all_tables() {
     let classes = [

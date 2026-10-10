@@ -388,7 +388,9 @@ pub(super) fn mixed_class_rows<const W: usize, const WIN: usize>(
 /// `first_row` of the row pair whose source rows are `rows`. The three sums
 /// start at `init`, scaled by `gdf_index_scale` like the weights; weights
 /// marked in `ZERO_WEIGHTS` are skipped. With `SWAPPED`, the lanes in `odd`
-/// hold their first two sums swapped.
+/// hold their first two sums swapped. A `low` range of 0 skips the taps:
+/// each would add `2 * center` times its weights and the clip pass would
+/// subtract the same sum.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 pub(super) fn gdf_rows<
@@ -413,9 +415,11 @@ pub(super) fn gdf_rows<
         core::array::from_fn(|row| tap_samples(rows[TAP_REACH + first_row + row], TAP_REACH));
     let mut sums = [*init; ROWS];
     if let Some(low) = low.filter(|_| W == LOW_RANGE_LANES) {
-        let add = add_taps::<W, WIN, ROWS, ZERO_WEIGHTS, false>;
-        add(rows, first_row, &centers, &mut sums, tap_weights);
-        add_low_range_clips(rows, first_row, &centers, &mut sums, tap_weights, low);
+        if low.range != 0 {
+            let add = add_taps::<W, WIN, ROWS, ZERO_WEIGHTS, false>;
+            add(rows, first_row, &centers, &mut sums, tap_weights);
+            add_low_range_clips(rows, first_row, &centers, &mut sums, tap_weights, low);
+        }
     } else {
         let add = add_taps::<W, WIN, ROWS, ZERO_WEIGHTS, true>;
         add(rows, first_row, &centers, &mut sums, tap_weights);
