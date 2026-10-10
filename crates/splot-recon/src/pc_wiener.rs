@@ -975,7 +975,8 @@ fn pooled_row_window(
 /// `feature_width + 8`, which never changes a clip result. Each clipped grid
 /// row is fetched once and kept in two pooled slots: clipped grid rows never
 /// decrease down the grid, so evicting the older slot never drops a row the
-/// current pooled row reads.
+/// current pooled row reads. A row whose columns are all unclipped ends with
+/// a SIMD chunk that overlaps the previous one instead of a scalar tail.
 fn build_feature_grid<'s, FR, FT>(
     params: &PcWienerClassifyParams,
     geo: &ClassifyGridGeometry,
@@ -1131,8 +1132,15 @@ where
             source_row(2 * pooled_row + 3)?,
         ];
         let mut j = 0;
-        while 2 * j + 16 <= linear_cols {
-            let chunk = 2 * j..2 * j + 18;
+        while j < pooled_width {
+            let start = if 2 * j + 16 <= linear_cols {
+                j
+            } else if linear_cols == geo.feature_width && pooled_width >= 8 {
+                pooled_width - 8
+            } else {
+                break;
+            };
+            let chunk = 2 * start..2 * start + 18;
             pooled_features_simd(
                 [
                     &rows[0][chunk.clone()],
@@ -1140,10 +1148,10 @@ where
                     &rows[2][chunk.clone()],
                     &rows[3][chunk],
                 ],
-                &pair_skip[j..j + 8],
-                &mut grid_row[j..j + 8],
+                &pair_skip[start..start + 8],
+                &mut grid_row[start..start + 8],
             );
-            j += 8;
+            j = start + 8;
         }
         for (j, entry) in grid_row.iter_mut().enumerate().skip(j) {
             let mut sums = [0i32; 3];
