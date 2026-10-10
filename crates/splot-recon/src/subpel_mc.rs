@@ -1808,7 +1808,7 @@ fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
+fn subpel_predict_block_internal_into_validated<T: ReconSample, O, F: SubpelOutput<O>>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     inter_round1: u32,
@@ -1816,8 +1816,9 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
     scratch: Option<&mut [i16]>,
     output: &mut [O],
     output_stride: usize,
-    mut finish: impl SubpelOutput<O>,
+    mut finish: F,
 ) -> Result<()> {
+    debug_assert!(F::INTER_ROUND1.is_none_or(|fixed| fixed == inter_round1));
     let output_len = subpel_output_len(params, output_stride)?;
     if output.len() < output_len {
         return Err(ReconError::BufferLengthMismatch {

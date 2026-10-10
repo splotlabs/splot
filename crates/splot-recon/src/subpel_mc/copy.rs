@@ -381,44 +381,32 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
                 clamped_storage.get_or_insert([T::default(); clipped_edges::WINDOW_STORAGE]),
             )
         };
-        let available = window.len();
-        let vector_width8 = params.w - params.w % 8;
-        for c in (0..vector_width8).step_by(8) {
-            let horizontal = if Simd::<i32, 8>::admits(available, c) {
-                Simd::<i32, 8>::slid_intermediate(window, c, packed_taps).cast()
-            } else {
-                let mut sum = Simd::<i32, 8>::splat(0);
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    sum = tap_mac(
-                        sum,
-                        reference_lanes::<8, T>(window, c + tap_start + tap_offset).cast(),
-                        tap,
-                    );
+        let mut c = 0;
+        macro_rules! vectors {
+            ($lanes:literal) => {
+                while c + $lanes <= params.w {
+                    let span = window.get(c..c + <Simd<i32, $lanes> as SlideLanes>::SPAN);
+                    let horizontal = if let Some(span) = span {
+                        Simd::<i32, $lanes>::slid_intermediate(span, 0, packed_taps).cast()
+                    } else {
+                        let mut sum = Simd::<i32, $lanes>::splat(0);
+                        for (tap_offset, &tap) in taps.iter().enumerate() {
+                            let lanes =
+                                reference_lanes::<$lanes, T>(window, c + tap_start + tap_offset);
+                            sum = tap_mac(sum, lanes.cast(), tap);
+                        }
+                        round2_simd(sum, INTER_ROUND0)
+                    };
+                    let row_out = &mut row_out[c..c + $lanes];
+                    finish.rounded(horizontal, FILTER_BITS, inter_round1, row_out);
+                    c += $lanes;
                 }
-                round2_simd(sum, INTER_ROUND0)
             };
-            let values = round2_simd(horizontal << FILTER_BITS as i32, inter_round1);
-            finish.eight(values, &mut row_out[c..c + 8]);
         }
-        let vector_width4 = params.w - params.w % 4;
-        for c in (vector_width8..vector_width4).step_by(4) {
-            let horizontal = if Simd::<i32, 4>::admits(available, c) {
-                Simd::<i32, 4>::slid_intermediate(window, c, packed_taps).cast()
-            } else {
-                let mut sum = Simd::<i32, 4>::splat(0);
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    sum = tap_mac(
-                        sum,
-                        reference_lanes::<4, T>(window, c + tap_start + tap_offset).cast(),
-                        tap,
-                    );
-                }
-                round2_simd(sum, INTER_ROUND0)
-            };
-            let values = round2_simd(horizontal << FILTER_BITS as i32, inter_round1);
-            finish.four(values, &mut row_out[c..c + 4]);
-        }
-        for c in vector_width4..params.w {
+        vectors!(16);
+        vectors!(8);
+        vectors!(4);
+        for c in c..params.w {
             let mut sum = 0i32;
             for (tap_offset, &tap) in taps.iter().enumerate() {
                 sum += tap * i32::from(window[c + tap_start + tap_offset].to_u16());
@@ -467,30 +455,31 @@ fn subpel_vertical_interior_into<T: ReconSample, O>(
     output_stride: usize,
     finish: &mut impl SubpelOutput<O>,
 ) {
-    let vector_width8 = params.w - params.w % 8;
-    let vector_width4 = params.w - params.w % 4;
+    let w = params.w;
+    let packed = Simd::from_array(*taps).cast::<i16>();
     for r in 0..params.h {
         let base = (top + r) * stride + x;
-        let rows: [&[T]; NUM_TAPS] =
-            core::array::from_fn(|t| &source[base + t * stride..][..params.w]);
-        let row_out = &mut output[r * output_stride..][..params.w];
-        for c in (0..vector_width8).step_by(8) {
-            let mut sum = Simd::<i32, 8>::splat(0);
-            for t in 0..NUM_TAPS {
-                sum = tap_mac(sum, reference_lanes::<8, T>(rows[t], c).cast(), taps[t]);
-            }
-            let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
-            finish.eight(values, &mut row_out[c..c + 8]);
+        let rows: [&[T]; NUM_TAPS] = core::array::from_fn(|t| &source[base + t * stride..][..w]);
+        let row_out = &mut output[r * output_stride..][..w];
+        let mut c = 0;
+        macro_rules! vectors {
+            ($lanes:literal) => {
+                while c + $lanes <= w {
+                    let mut sum = Simd::<i32, $lanes>::splat(0);
+                    for t in 0..NUM_TAPS {
+                        let lanes = reference_lanes::<$lanes, T>(rows[t], c).cast();
+                        sum = tap_mac(sum, lanes, i32::from(packed[t]));
+                    }
+                    let prescale = FILTER_BITS - INTER_ROUND0;
+                    finish.rounded(sum, prescale, inter_round1, &mut row_out[c..c + $lanes]);
+                    c += $lanes;
+                }
+            };
         }
-        for c in (vector_width8..vector_width4).step_by(4) {
-            let mut sum = Simd::<i32, 4>::splat(0);
-            for t in 0..NUM_TAPS {
-                sum = tap_mac(sum, reference_lanes::<4, T>(rows[t], c).cast(), taps[t]);
-            }
-            let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
-            finish.four(values, &mut row_out[c..c + 4]);
-        }
-        for c in vector_width4..params.w {
+        vectors!(16);
+        vectors!(8);
+        vectors!(4);
+        for c in c..w {
             let mut sum = 0i32;
             for t in 0..NUM_TAPS {
                 sum += taps[t] * i32::from(rows[t][c].to_u16());

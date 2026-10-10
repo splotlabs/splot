@@ -20,14 +20,8 @@ pub(super) trait SlideLanes: Sized {
     ///
     /// The windows only use `first..first + NUM_TAPS - 1 + LANES`; the rest of
     /// the second load is discarded by the slide but still has to be readable,
-    /// which is what [`SlideLanes::admits`] checks.
+    /// so callers pass a source of at least `SPAN` samples.
     const SPAN: usize;
-
-    /// Reports whether `available` samples from the window origin admit the
-    /// sliding load shape for the column starting at `column`.
-    fn admits(available: usize, column: usize) -> bool {
-        available >= column + Self::SPAN
-    }
 
     /// The `i16` lanes of one horizontal-pass intermediate row.
     type Intermediate;
@@ -263,16 +257,5 @@ mod tests {
                 check(&extreme, taps);
             }
         }
-    }
-
-    #[test]
-    fn admits_reserves_the_whole_second_load() {
-        assert!(!<Simd<i32, 8> as SlideLanes>::admits(15, 0));
-        assert!(<Simd<i32, 8> as SlideLanes>::admits(16, 0));
-        assert!(!<Simd<i32, 8> as SlideLanes>::admits(16, 1));
-        assert!(!<Simd<i32, 4> as SlideLanes>::admits(15, 0));
-        assert!(<Simd<i32, 4> as SlideLanes>::admits(16, 0));
-        assert!(!<Simd<i32, 16> as SlideLanes>::admits(31, 0));
-        assert!(<Simd<i32, 16> as SlideLanes>::admits(32, 0));
     }
 }

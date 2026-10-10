@@ -14,17 +14,17 @@ use super::*;
 /// Runs the convolution when `params.w` is 4, 8 or a multiple of 16; any
 /// other width is left to the general core.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn two_axis<T: ReconSample, O>(
+pub(super) fn two_axis<T: ReconSample, O, F: SubpelOutput<O>>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     inter_round1: u32,
     intermediate: &mut [i16],
     output: &mut [O],
     output_stride: usize,
-    finish: &mut impl SubpelOutput<O>,
+    finish: &mut F,
 ) {
     match params.w {
-        4 => rows::<4, T, O>(
+        4 => rows::<4, T, O, F>(
             reference,
             params,
             inter_round1,
@@ -33,7 +33,7 @@ pub(super) fn two_axis<T: ReconSample, O>(
             output_stride,
             finish,
         ),
-        8 => rows::<8, T, O>(
+        8 => rows::<8, T, O, F>(
             reference,
             params,
             inter_round1,
@@ -42,7 +42,7 @@ pub(super) fn two_axis<T: ReconSample, O>(
             output_stride,
             finish,
         ),
-        w if w % 16 == 0 => rows::<16, T, O>(
+        w if w % 16 == 0 => rows::<16, T, O, F>(
             reference,
             params,
             inter_round1,
@@ -56,14 +56,14 @@ pub(super) fn two_axis<T: ReconSample, O>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rows<const LANES: usize, T: ReconSample, O>(
+fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     inter_round1: u32,
     intermediate: &mut [i16],
     output: &mut [O],
     output_stride: usize,
-    finish: &mut impl SubpelOutput<O>,
+    finish: &mut F,
 ) where
     Simd<i32, LANES>: SlideLanes<Intermediate = Simd<i16, LANES>>,
 {
@@ -88,51 +88,57 @@ fn rows<const LANES: usize, T: ReconSample, O>(
     let mut clamped_storage = None;
     let top = (params.start_y >> SCALE_SUBPEL_BITS) - 3 + v_start as i32;
     let row_count = params.h + v_count - 1;
-    for (row, row_lanes) in intermediate[..row_count * width]
-        .chunks_exact_mut(width)
-        .enumerate()
-    {
-        let ref_row = ((top + row as i32).clamp(params.first_y, params.last_y) as usize)
-            .min(reference.readable_rows - 1);
-        let window = match window_x {
-            Some(x) => {
-                let base = ref_row * reference.stride + x;
-                let end = base + width + NUM_TAPS - 1;
-                reference
-                    .samples
-                    .get(base..end + SLIDE_RESERVE)
-                    .unwrap_or(&reference.samples[base..end])
+    let intermediate = &mut intermediate[..row_count * width];
+    let source = |row: usize| {
+        ((top + row as i32).clamp(params.first_y, params.last_y) as usize)
+            .min(reference.readable_rows - 1)
+    };
+    let filter = |window: &[T], column: usize| -> Simd<i16, LANES> {
+        let span = window.get(column..column + <Simd<i32, LANES> as SlideLanes>::SPAN);
+        if let Some(span) = span {
+            return Simd::<i32, LANES>::slid_intermediate(span, 0, packed_taps);
+        }
+        let mut sum = Simd::splat(0);
+        for (tap_index, &tap) in h_taps.iter().enumerate() {
+            let lanes = reference_lanes::<LANES, T>(window, column + tap_index);
+            sum = tap_mac(sum, lanes.cast(), tap);
+        }
+        round2_simd(sum, INTER_ROUND0).cast()
+    };
+    if LANES < 16 {
+        for (row, lanes) in intermediate.chunks_exact_mut(LANES).enumerate() {
+            let window = tap_window(
+                reference,
+                window_x,
+                &clamped,
+                &mut clamped_storage,
+                source(row),
+                width,
+            );
+            lanes.copy_from_slice(filter(window, 0).as_array()); // splot-copy-ok: publish one intermediate vector
+        }
+    } else {
+        for row in 0..row_count {
+            let window = tap_window(
+                reference,
+                window_x,
+                &clamped,
+                &mut clamped_storage,
+                source(row),
+                width,
+            );
+            for (strip, lanes) in intermediate.chunks_exact_mut(row_count * LANES).enumerate() {
+                let filtered = filter(window, strip * LANES);
+                lanes[row * LANES..][..LANES].copy_from_slice(filtered.as_array()); // splot-copy-ok: publish one intermediate vector
             }
-            None => clamped.fill(
-                reference.row(ref_row),
-                clamped_storage.get_or_insert([T::default(); WINDOW_STORAGE]),
-            ),
-        };
-        for (chunk, lanes) in row_lanes.chunks_exact_mut(LANES).enumerate() {
-            let column = chunk * LANES;
-            let filtered = if Simd::<i32, LANES>::admits(window.len(), column) {
-                Simd::<i32, LANES>::slid_intermediate(window, column, packed_taps)
-            } else {
-                let mut sum = Simd::splat(0);
-                for (tap_index, &tap) in h_taps.iter().enumerate() {
-                    sum = tap_mac(
-                        sum,
-                        reference_lanes::<LANES, T>(window, column + tap_index).cast(),
-                        tap,
-                    );
-                }
-                round2_simd(sum, INTER_ROUND0).cast()
-            };
-            lanes.copy_from_slice(filtered.as_array()); // splot-copy-ok: publish one intermediate vector
         }
     }
 
-    let intermediate = &intermediate[..row_count * width];
     let vertical = match v_count {
-        2 => vertical::<LANES, 2, O>,
-        4 => vertical::<LANES, 4, O>,
-        6 => vertical::<LANES, 6, O>,
-        _ => vertical::<LANES, NUM_TAPS, O>,
+        2 => vertical::<LANES, 2, O, F>,
+        4 => vertical::<LANES, 4, O, F>,
+        6 => vertical::<LANES, 6, O, F>,
+        _ => vertical::<LANES, NUM_TAPS, O, F>,
     };
     vertical(
         v_taps,
@@ -146,10 +152,40 @@ fn rows<const LANES: usize, T: ReconSample, O>(
     );
 }
 
+/// The `width + 7`-sample tap window of reference row `row`, read in place
+/// when `window_x` admits it, else built clamped in `storage`.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn tap_window<'a, T: ReconSample>(
+    reference: &'a ReferencePlaneView<'_, T>,
+    window_x: Option<usize>,
+    clamped: &ClampedWindow,
+    storage: &'a mut Option<[T; WINDOW_STORAGE]>,
+    row: usize,
+    width: usize,
+) -> &'a [T] {
+    match window_x {
+        Some(x) => {
+            let base = row * reference.stride + x;
+            let end = base + width + NUM_TAPS - 1;
+            reference
+                .samples
+                .get(base..end + SLIDE_RESERVE)
+                .unwrap_or(&reference.samples[base..end])
+        }
+        None => clamped.fill(
+            reference.row(row),
+            storage.get_or_insert([T::default(); WINDOW_STORAGE]),
+        ),
+    }
+}
+
 /// The vertical pass with a constant tap count, so the taps stay in
-/// registers. Zero taps around the active span add exactly zero.
+/// registers. Zero taps around the active span add exactly zero. The
+/// intermediate holds each `LANES`-wide column strip as consecutive rows, so
+/// the tap rows of an output vector sit at constant offsets.
 #[allow(clippy::too_many_arguments)]
-fn vertical<const LANES: usize, const TAPS: usize, O>(
+fn vertical<const LANES: usize, const TAPS: usize, O, F: SubpelOutput<O>>(
     taps: &[i32],
     intermediate: &[i16],
     width: usize,
@@ -157,27 +193,71 @@ fn vertical<const LANES: usize, const TAPS: usize, O>(
     inter_round1: u32,
     output: &mut [O],
     output_stride: usize,
-    finish: &mut impl SubpelOutput<O>,
+    finish: &mut F,
 ) {
     let width = if LANES == 16 { width } else { LANES };
-    let taps: [i32; TAPS] = core::array::from_fn(|tap| taps[tap]);
+    let taps = Simd::<i16, NUM_TAPS>::from_array(core::array::from_fn(|tap| {
+        taps.get(tap).map_or(0, |&tap| tap as i16)
+    }));
+    let strip_len = (height + TAPS - 1) * LANES;
     for row in 0..height {
-        let rows = &intermediate[row * width..][..TAPS * width];
         let row_out = &mut output[row * output_stride..][..width];
-        for (column, lanes_out) in (0..width)
-            .step_by(LANES)
-            .zip(row_out.chunks_exact_mut(LANES))
-        {
+        for (strip, lanes_out) in row_out.chunks_exact_mut(LANES).enumerate() {
+            let window = &intermediate[strip * strip_len + row * LANES..][..TAPS * LANES];
             let mut sum = Simd::<i32, LANES>::splat(0);
-            for (tap_index, &tap) in taps.iter().enumerate() {
-                let start = tap_index * width + column;
-                sum = tap_mac(sum, Simd::from_slice(&rows[start..start + LANES]), tap);
+            for tap in 0..TAPS {
+                let lanes = Simd::from_slice(&window[tap * LANES..]);
+                sum = tap_mac(sum, lanes, i32::from(taps[tap]));
             }
-            let values = round2_simd(sum, inter_round1);
-            match LANES {
-                4 => finish.four(Simd::from_slice(values.as_array()), lanes_out),
-                8 => finish.eight(Simd::from_slice(values.as_array()), lanes_out),
-                _ => finish.sixteen(Simd::from_slice(values.as_array()), lanes_out),
+            finish.rounded(sum, 0, inter_round1, lanes_out);
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// The clipped output narrows its rounded sums to `i16`; extreme 10-bit
+    /// contrast under the sharpest taps must still match the unnarrowed path.
+    #[test]
+    fn clipped_rounding_matches_the_unnarrowed_path_at_extreme_contrast() {
+        let (width, height) = (48, 48);
+        let widest = SUBPEL_FILTERS[EIGHTTAP_SHARP as usize][8];
+        let peak = |i: usize| u16::from(widest[i % NUM_TAPS] > 0) * 1023;
+        let planes: [Vec<u16>; 3] = [
+            (0..width * height).map(|i| peak(i % width)).collect(),
+            (0..width * height)
+                .map(|i| peak(i % width).min(peak(i / width)))
+                .collect(),
+            (0..width * height)
+                .map(|i| 1023 - peak(i % width).min(peak(i / width)))
+                .collect(),
+        ];
+        for samples in &planes {
+            let view = ReferencePlaneView::new(samples, width, height).unwrap();
+            for (w, h) in [(4, 4), (8, 8), (16, 16), (32, 8), (32, 32)] {
+                for phase in 0..256 {
+                    let params = SubpelPredictParams {
+                        interp: InterpolationFilter::EightTapSharp,
+                        w,
+                        h,
+                        start_x: (4 << SCALE_SUBPEL_BITS) + ((phase % 16) << 6),
+                        start_y: (4 << SCALE_SUBPEL_BITS) + ((phase / 16) << 6),
+                        step_x: 1 << SCALE_SUBPEL_BITS,
+                        step_y: 1 << SCALE_SUBPEL_BITS,
+                        first_x: 0,
+                        first_y: 0,
+                        last_x: width as i32 - 1,
+                        last_y: height as i32 - 1,
+                        bit_depth: BitDepth::Ten,
+                    };
+                    let mut clipped = vec![0; w * h];
+                    subpel_predict_block_into(&view, &params, &mut clipped).unwrap();
+                    let unnarrowed = subpel_predict_block(&view, &params).unwrap();
+                    assert_eq!(clipped, unnarrowed, "{w}x{h} phase {phase}");
+                }
             }
         }
     }
