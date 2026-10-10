@@ -100,8 +100,26 @@ pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
 /// `BitDepth - 8`. The result matches [`cdef_direction`] without materializing
 /// the intermediate shifted 8x8 array.
 pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) -> (usize, i32) {
+    cdef_direction_strided::<CDEF_PADDED_SIDE, _>(pad, coeff_shift)
+}
+
+/// [`cdef_direction_padded`] for one block of the luma segment scratch that
+/// [`cdef_filter_block_segment`] reads.
+pub fn cdef_direction_segment(
+    pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
+    coeff_shift: u32,
+) -> (usize, i32) {
+    cdef_direction_strided::<CDEF_SEGMENT_STRIDE, _>(pad, coeff_shift)
+}
+
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_direction_strided<const STRIDE: usize, const AREA: usize>(
+    pad: &[u16; AREA],
+    coeff_shift: u32,
+) -> (usize, i32) {
     let rows = core::array::from_fn(|i| {
-        let start = (i + 2) * CDEF_PADDED_SIDE + 2;
+        let start = (i + 2) * STRIDE + 2;
         (Simd::<u16, 8>::from_slice(&pad[start..start + 8]) >> coeff_shift as u16).cast::<i16>()
             - Simd::splat(128)
     });
@@ -372,6 +390,27 @@ pub const CDEF_PADDED_AREA: usize = u8::MAX as usize + 97;
 /// Padded-tap marker used by the SIMD boundary kernel for unavailable samples.
 pub const CDEF_UNAVAILABLE: u16 = i16::MAX as u16;
 
+/// Blocks in one row segment of the strip scratch that
+/// [`cdef_filter_block_segment`] and [`cdef_filter_block_chroma_pair_segment`]
+/// read: the segment is gathered once for all of its blocks.
+pub const CDEF_SEGMENT_BLOCKS: usize = 4;
+
+/// Lanes per row of the luma segment scratch: the segment's 8-sample blocks
+/// plus the tap reach of two on each side. Block `b` starts at lane `8 * b`.
+pub const CDEF_SEGMENT_STRIDE: usize = 8 * CDEF_SEGMENT_BLOCKS + 4;
+
+/// Samples of the luma segment scratch from one block's first lane on: room
+/// for a tap view from any byte start, as in [`CDEF_PADDED_AREA`].
+pub const CDEF_SEGMENT_BLOCK_AREA: usize = u8::MAX as usize + 7 * CDEF_SEGMENT_STRIDE + 8;
+
+/// Lanes per row of the interleaved chroma-pair segment scratch: four
+/// columns of both planes per block plus the tap reach. Block `b` starts at
+/// lane `8 * b`.
+pub const CDEF_PAIR_SEGMENT_STRIDE: usize = 8 * CDEF_SEGMENT_BLOCKS + 8;
+
+/// [`CDEF_SEGMENT_BLOCK_AREA`] for the chroma-pair segment scratch.
+pub const CDEF_PAIR_SEGMENT_BLOCK_AREA: usize = u8::MAX as usize + 3 * CDEF_PAIR_SEGMENT_STRIDE + 8;
+
 /// Per-block § 7.18.3 filter constants for [`cdef_filter_block_interior`].
 #[derive(Clone, Copy, Debug)]
 pub struct CdefBlockFilter {
@@ -440,9 +479,9 @@ const fn cdef_tap_starts(offsets: &CdefTapOffsets, center: usize) -> CdefTapStar
             let mut sign = 0;
             while sign < 2 {
                 let center = center as isize;
-                starts[dir][tap * 2 + sign] = (center + primary[tap][sign]) as u8;
-                starts[dir][4 + tap * 4 + sign * 2] = (center + secondary[tap][sign][0]) as u8;
-                starts[dir][5 + tap * 4 + sign * 2] = (center + secondary[tap][sign][1]) as u8;
+                starts[dir][tap * 2 + sign] = tap_start(center + primary[tap][sign]);
+                starts[dir][4 + tap * 4 + sign * 2] = tap_start(center + secondary[tap][sign][0]);
+                starts[dir][5 + tap * 4 + sign * 2] = tap_start(center + secondary[tap][sign][1]);
                 sign += 1;
             }
             tap += 1;
@@ -452,8 +491,18 @@ const fn cdef_tap_starts(offsets: &CdefTapOffsets, center: usize) -> CdefTapStar
     starts
 }
 
+const fn tap_start(start: isize) -> u8 {
+    assert!(0 <= start && start <= u8::MAX as isize);
+    start as u8
+}
+
 const CDEF_TAP_STARTS: CdefTapStarts =
     cdef_tap_starts(&CDEF_RELATIVE_OFFSETS, 2 * CDEF_PADDED_SIDE + 2);
+
+const CDEF_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
+    &cdef_tap_offsets(CDEF_SEGMENT_STRIDE as isize, 1),
+    2 * CDEF_SEGMENT_STRIDE + 2,
+);
 
 /// [`CDEF_TAP_STARTS`] for the interleaved chroma-pair layout: rows are
 /// `CDEF_PAIR_STRIDE` lanes apart and a column displacement moves two lanes
@@ -461,6 +510,11 @@ const CDEF_TAP_STARTS: CdefTapStarts =
 const CDEF_PAIR_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
     &cdef_tap_offsets(CDEF_PAIR_STRIDE as isize, 2),
     2 * CDEF_PAIR_STRIDE + 4,
+);
+
+const CDEF_PAIR_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
+    &cdef_tap_offsets(CDEF_PAIR_SEGMENT_STRIDE as isize, 2),
+    2 * CDEF_PAIR_SEGMENT_STRIDE + 4,
 );
 
 /// Two consecutive `W`-lane rows of one tap view as one `V`-lane vector.
@@ -526,14 +580,15 @@ fn cdef_tap_views<
     const STRIDE: usize,
     const CENTER: usize,
     const SPAN: usize,
+    const AREA: usize,
     const PRI: bool,
     const SEC: bool,
 >(
-    pad: &'a [u16; CDEF_PADDED_AREA],
+    pad: &'a [u16; AREA],
     dir: usize,
     starts: &CdefTapStarts,
 ) -> Option<CdefTapViews<'a, SPAN>> {
-    const { assert!(u8::MAX as usize + SPAN <= CDEF_PADDED_AREA) };
+    const { assert!(u8::MAX as usize + SPAN <= AREA) };
     let starts = &starts[dir & 7];
     let view =
         |tap: usize| -> Option<&[u16; SPAN]> { pad.get(usize::from(starts[tap])..)?.first_chunk() };
@@ -577,10 +632,11 @@ fn cdef_filter_rows<
     const CENTER: usize,
     const ROWS: usize,
     const SPAN: usize,
+    const AREA: usize,
     const PRI: bool,
     const SEC: bool,
 >(
-    pad: &[u16; CDEF_PADDED_AREA],
+    pad: &[u16; AREA],
     h: usize,
     filter: &CdefBlockFilter,
     starts: &CdefTapStarts,
@@ -588,7 +644,7 @@ fn cdef_filter_rows<
     out_stride: usize,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<STRIDE, CENTER, SPAN, PRI, SEC>(pad, filter.dir, starts)?;
+        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, V>::splat(tap as i16));
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, V>::splat(tap as i16));
@@ -703,10 +759,11 @@ fn cdef_filter_rows_8bit<
     const CENTER: usize,
     const ROWS: usize,
     const SPAN: usize,
+    const AREA: usize,
     const PRI: bool,
     const SEC: bool,
 >(
-    pad: &[u16; CDEF_PADDED_AREA],
+    pad: &[u16; AREA],
     h: usize,
     filter: &CdefBlockFilter,
     starts: &CdefTapStarts,
@@ -714,7 +771,7 @@ fn cdef_filter_rows_8bit<
     out_stride: usize,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<STRIDE, CENTER, SPAN, PRI, SEC>(pad, filter.dir, starts)?;
+        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = (filter.pri_str & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
@@ -799,8 +856,9 @@ fn cdef_filter_block_rows<
     const CENTER: usize,
     const ROWS: usize,
     const SPAN: usize,
+    const AREA: usize,
 >(
-    pad: &[u16; CDEF_PADDED_AREA],
+    pad: &[u16; AREA],
     h: usize,
     filter: &CdefBlockFilter,
     starts: &CdefTapStarts,
@@ -810,17 +868,17 @@ fn cdef_filter_block_rows<
     if W == 8 && !HAS_UNAVAILABLE && cdef_8bit_lanes_fit(filter) {
         match (filter.pri_str != 0, filter.sec_str != 0) {
             (true, true) => {
-                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, true, true>(
+                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA, true, true>(
                     pad, h, filter, starts, out, out_stride,
                 );
             }
             (true, false) => {
-                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, true, false>(
+                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA, true, false>(
                     pad, h, filter, starts, out, out_stride,
                 );
             }
             (false, true) => {
-                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, false, true>(
+                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA, false, true>(
                     pad, h, filter, starts, out, out_stride,
                 );
             }
@@ -829,17 +887,17 @@ fn cdef_filter_block_rows<
     }
     match (filter.pri_str != 0, filter.sec_str != 0) {
         (true, true) => {
-            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, true, true>(
+            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA, true, true>(
                 pad, h, filter, starts, out, out_stride,
             )
         }
         (true, false) => {
-            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, true, false>(
+            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA, true, false>(
                 pad, h, filter, starts, out, out_stride,
             )
         }
         (false, true) => {
-            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, false, true>(
+            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA, false, true>(
                 pad, h, filter, starts, out, out_stride,
             )
         }
@@ -921,6 +979,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
             2,
             8,
             { 7 * CDEF_PADDED_SIDE + 8 },
+            CDEF_PADDED_AREA,
         >(pad, h, filter, starts, out, out_stride),
         4 => cdef_filter_block_rows::<
             4,
@@ -930,6 +989,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
             2,
             8,
             { 7 * CDEF_PADDED_SIDE + 4 },
+            CDEF_PADDED_AREA,
         >(pad, h, filter, starts, out, out_stride),
         _ => None,
     }
@@ -966,14 +1026,60 @@ pub fn cdef_filter_block_chroma_pair(
     if h > 4 {
         return false;
     }
-    cdef_filter_block_rows::<8, 16, false, CDEF_PAIR_STRIDE, 4, 4, { 3 * CDEF_PAIR_STRIDE + 8 }>(
-        pad,
-        h,
-        filter,
-        &CDEF_PAIR_TAP_STARTS,
-        out,
+    cdef_filter_block_rows::<
         8,
-    )
+        16,
+        false,
+        CDEF_PAIR_STRIDE,
+        4,
+        4,
+        { 3 * CDEF_PAIR_STRIDE + 8 },
+        CDEF_PADDED_AREA,
+    >(pad, h, filter, &CDEF_PAIR_TAP_STARTS, out, 8)
+    .is_some()
+}
+
+/// [`cdef_filter_block_chroma_pair`] for one block of the chroma-pair segment
+/// scratch: rows `CDEF_PAIR_SEGMENT_STRIDE` lanes apart, with the block's
+/// first tap-reach lane at index 0.
+pub fn cdef_filter_block_chroma_pair_segment(
+    pad: &[u16; CDEF_PAIR_SEGMENT_BLOCK_AREA],
+    filter: &CdefBlockFilter,
+    out: &mut [u16; CDEF_PAIR_OUTPUT],
+) -> bool {
+    cdef_filter_block_rows::<
+        8,
+        16,
+        false,
+        CDEF_PAIR_SEGMENT_STRIDE,
+        4,
+        4,
+        { 3 * CDEF_PAIR_SEGMENT_STRIDE + 8 },
+        CDEF_PAIR_SEGMENT_BLOCK_AREA,
+    >(pad, 4, filter, &CDEF_PAIR_SEGMENT_TAP_STARTS, out, 8)
+    .is_some()
+}
+
+/// AV2 § 7.18.3 CDEF over one interior 8x8 luma block of the luma segment
+/// scratch: rows `CDEF_SEGMENT_STRIDE` lanes apart, with the block's first
+/// tap-reach lane at index 0. Returns `false` when `out` cannot hold the
+/// block at `out_stride`.
+pub fn cdef_filter_block_segment(
+    pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
+    filter: &CdefBlockFilter,
+    out: &mut [u16],
+    out_stride: usize,
+) -> bool {
+    cdef_filter_block_rows::<
+        8,
+        16,
+        false,
+        CDEF_SEGMENT_STRIDE,
+        2,
+        8,
+        { 7 * CDEF_SEGMENT_STRIDE + 8 },
+        CDEF_SEGMENT_BLOCK_AREA,
+    >(pad, 8, filter, &CDEF_SEGMENT_TAP_STARTS, out, out_stride)
     .is_some()
 }
 
@@ -1553,16 +1659,102 @@ mod tests {
 
     #[test]
     fn tap_starts_leave_room_for_their_views() {
-        for (starts, span) in [
-            (CDEF_TAP_STARTS, 7 * CDEF_PADDED_SIDE + 8),
-            (CDEF_PAIR_TAP_STARTS, 3 * CDEF_PAIR_STRIDE + 8),
+        for (starts, span, window) in [
+            (
+                CDEF_TAP_STARTS,
+                7 * CDEF_PADDED_SIDE + 8,
+                12 * CDEF_PADDED_SIDE,
+            ),
+            (
+                CDEF_PAIR_TAP_STARTS,
+                3 * CDEF_PAIR_STRIDE + 8,
+                8 * CDEF_PAIR_STRIDE,
+            ),
+            (
+                CDEF_SEGMENT_TAP_STARTS,
+                7 * CDEF_SEGMENT_STRIDE + 8,
+                11 * CDEF_SEGMENT_STRIDE + 12,
+            ),
+            (
+                CDEF_PAIR_SEGMENT_TAP_STARTS,
+                3 * CDEF_PAIR_SEGMENT_STRIDE + 8,
+                7 * CDEF_PAIR_SEGMENT_STRIDE + 16,
+            ),
         ] {
             assert!(
                 starts
                     .iter()
                     .flatten()
-                    .all(|&start| usize::from(start) + span <= CDEF_PADDED_SIDE * CDEF_PADDED_SIDE)
+                    .all(|&start| usize::from(start) + span <= window)
             );
+        }
+    }
+
+    #[test]
+    fn segment_blocks_match_single_block_kernels() {
+        for coeff_shift in [2u32, 0] {
+            let mut state = 0x9e37_79b9u32;
+            let mut next = || {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((state >> 13) & ((256 << coeff_shift) - 1)) as u16
+            };
+            let mut luma = [0u16; 8 * (CDEF_SEGMENT_BLOCKS - 1) + CDEF_SEGMENT_BLOCK_AREA];
+            let mut pair = [0u16; 8 * (CDEF_SEGMENT_BLOCKS - 1) + CDEF_PAIR_SEGMENT_BLOCK_AREA];
+            luma[..12 * CDEF_SEGMENT_STRIDE].fill_with(&mut next);
+            pair[..8 * CDEF_PAIR_SEGMENT_STRIDE].fill_with(&mut next);
+            for block in 0..CDEF_SEGMENT_BLOCKS {
+                let luma_block: &[u16; CDEF_SEGMENT_BLOCK_AREA] =
+                    &core::array::from_fn(|lane| luma[8 * block + lane]);
+                let pair_block: &[u16; CDEF_PAIR_SEGMENT_BLOCK_AREA] =
+                    &core::array::from_fn(|lane| pair[8 * block + lane]);
+                let mut single = [0u16; CDEF_PADDED_AREA];
+                let mut single_pair = [0u16; CDEF_PADDED_AREA];
+                for row in 0..12 {
+                    for col in 0..12 {
+                        single[row * CDEF_PADDED_SIDE + col] =
+                            luma_block[row * CDEF_SEGMENT_STRIDE + col];
+                    }
+                }
+                for row in 0..8 {
+                    for lane in 0..16 {
+                        single_pair[row * CDEF_PAIR_STRIDE + lane] =
+                            pair_block[row * CDEF_PAIR_SEGMENT_STRIDE + lane];
+                    }
+                }
+                assert_eq!(
+                    cdef_direction_segment(luma_block, coeff_shift),
+                    cdef_direction_padded(&single, coeff_shift)
+                );
+                for dir in 0..8 {
+                    for (pri_str, sec_str) in [(0, 0), (12, 0), (0, 8), (12, 8), (16, 4), (5, 3)] {
+                        let filter = CdefBlockFilter {
+                            pri_str: pri_str << coeff_shift,
+                            sec_str: sec_str << coeff_shift,
+                            damping: 5 + coeff_shift as i32,
+                            dir,
+                            coeff_shift,
+                        };
+                        let (mut got, mut want) = ([0u16; 80], [0u16; 80]);
+                        assert!(cdef_filter_block_segment(luma_block, &filter, &mut got, 10));
+                        assert!(cdef_filter_block_interior_to_valid_stride(
+                            &single, 8, 8, &filter, &mut want, 10
+                        ));
+                        assert_eq!(got, want, "luma block={block} dir={dir} pri={pri_str}");
+                        let (mut got, mut want) =
+                            ([0u16; CDEF_PAIR_OUTPUT], [0u16; CDEF_PAIR_OUTPUT]);
+                        assert!(cdef_filter_block_chroma_pair_segment(
+                            pair_block, &filter, &mut got
+                        ));
+                        assert!(cdef_filter_block_chroma_pair(
+                            &single_pair,
+                            4,
+                            &filter,
+                            &mut want
+                        ));
+                        assert_eq!(got, want, "pair block={block} dir={dir} pri={pri_str}");
+                    }
+                }
+            }
         }
     }
 
