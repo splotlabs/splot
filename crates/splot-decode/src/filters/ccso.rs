@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::simd::{Select, Simd, cmp::SimdOrd, cmp::SimdPartialOrd, num::SimdInt, num::SimdUint};
+use std::simd::{
+    Select, Simd, SimdElement, cmp::SimdOrd, cmp::SimdPartialOrd, num::SimdInt, num::SimdUint,
+};
 
 use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore, ccso_quant_step};
 use splot_recon::{BitDepth, PlaneId, ReconSample};
@@ -481,24 +483,13 @@ fn ccso_apply<L: ReconSample>(
 
 const CCSO_LANES: usize = 16;
 
-/// Loads `u16` lanes of luma from `start`; with `SUB_X == 1` it keeps the
-/// even columns, the luma a 2:1 chroma row samples.
-fn luma_lanes<L: ReconSample, const SUB_X: usize>(
-    row: &[L],
+/// Loads lanes of luma from `start`; with `SUB_X == 1` it keeps the even
+/// columns, the luma a 2:1 chroma row samples.
+fn luma_lanes<T: SimdElement + Default, const SUB_X: usize>(
+    row: &[T],
     start: usize,
-) -> Option<Simd<u16, CCSO_LANES>> {
-    if let Some(row) = L::u8_slice(row) {
-        let row = row.get(start..)?;
-        if SUB_X == 0 {
-            return Some(Simd::<u8, CCSO_LANES>::from_array(*row.first_chunk()?).cast());
-        }
-        let (low, high) = row
-            .first_chunk::<{ 2 * CCSO_LANES }>()?
-            .split_at(CCSO_LANES);
-        let even = Simd::<u8, CCSO_LANES>::from_slice(low).deinterleave(Simd::from_slice(high));
-        return Some(even.0.cast());
-    }
-    let row = L::u16_slice(row)?.get(start..)?;
+) -> Option<Simd<T, CCSO_LANES>> {
+    let row = row.get(start..)?;
     if SUB_X == 0 {
         return Some(Simd::from_array(*row.first_chunk()?));
     }
@@ -548,7 +539,9 @@ fn ccso_simd_row<L: ReconSample>(
 }
 
 /// Classifies `s - c >= -q` as `s + q >= c` and `s - c > q` as `s > c + q` in
-/// saturating `u16` lanes; saturation cannot flip either compare.
+/// saturating lanes as wide as the luma samples; saturation cannot flip
+/// either compare. With 8-bit luma, `q` saturates to 255, which flips
+/// neither compare either, because no 8-bit difference reaches 256.
 fn ccso_lanes_span<L: ReconSample, const SUB_X: usize>(
     destination: &mut [u16],
     center_row: &[L],
@@ -570,45 +563,80 @@ fn ccso_lanes_span<L: ReconSample, const SUB_X: usize>(
         .max(x_start)
         .min(x_end);
     let last_tap = max_luma_x as isize - max_dx - ((CCSO_LANES - 1) << SUB_X) as isize;
-    let zero = Simd::<u16, CCSO_LANES>::splat(0);
-    let one = Simd::<u16, CCSO_LANES>::splat(1);
     let quant_step = Simd::<u16, CCSO_LANES>::splat(config.quant_step as u16);
     let classify = |source: Simd<u16, CCSO_LANES>, centers: Simd<u16, CCSO_LANES>| {
-        let low = source.saturating_add(quant_step).simd_ge(centers);
-        let class = low.select(one, zero);
+        let (one, zero) = (Simd::<u16, CCSO_LANES>::splat(1), Simd::splat(0));
+        let class = source
+            .saturating_add(quant_step)
+            .simd_ge(centers)
+            .select(one, zero);
         if config.edge_clf {
-            class
-        } else {
-            class
-                + source
-                    .simd_gt(centers.saturating_add(quant_step))
-                    .select(one, zero)
+            return class;
         }
+        class
+            + source
+                .simd_gt(centers.saturating_add(quant_step))
+                .select(one, zero)
     };
-    let edge_scale = Simd::splat(config.max_edge_interval as u16);
-    let band_scale = Simd::splat(config.max_band as u16);
+    let index_u16 = |luma_x: usize| -> Option<Simd<u8, CCSO_LANES>> {
+        let load =
+            |row, dx| luma_lanes::<u16, SUB_X>(L::u16_slice(row)?, luma_x.wrapping_add_signed(dx));
+        let centers = load(center_row, 0)?;
+        let class = match offset_rows {
+            None => Simd::splat(0),
+            Some((row0, row1)) => {
+                classify(load(row0, dx0)?, centers) * Simd::splat(config.max_edge_interval as u16)
+                    + classify(load(row1, dx1)?, centers)
+            }
+        };
+        let band = centers >> u16::from(config.band_shift);
+        Some((class * Simd::splat(config.max_band as u16) + band).cast::<u8>())
+    };
+    let quant_step = Simd::<u8, CCSO_LANES>::splat(config.quant_step.clamp(0, 255) as u8);
+    let classify = |source: Simd<u8, CCSO_LANES>, centers: Simd<u8, CCSO_LANES>| {
+        let (one, zero) = (Simd::<u8, CCSO_LANES>::splat(1), Simd::splat(0));
+        let class = source
+            .saturating_add(quant_step)
+            .simd_ge(centers)
+            .select(one, zero);
+        if config.edge_clf {
+            return class;
+        }
+        class
+            + source
+                .simd_gt(centers.saturating_add(quant_step))
+                .select(one, zero)
+    };
+    let index_u8 = |luma_x: usize| -> Option<Simd<u8, CCSO_LANES>> {
+        let load =
+            |row, dx| luma_lanes::<u8, SUB_X>(L::u8_slice(row)?, luma_x.wrapping_add_signed(dx));
+        let centers = load(center_row, 0)?;
+        let class = match offset_rows {
+            None => Simd::splat(0),
+            Some((row0, row1)) => {
+                classify(load(row0, dx0)?, centers) * Simd::splat(config.max_edge_interval as u8)
+                    + classify(load(row1, dx1)?, centers)
+            }
+        };
+        let band = match config.band_shift {
+            shift @ 0..8 => centers >> shift,
+            _ => Simd::splat(0),
+        };
+        Some(class * Simd::splat(config.max_band as u8) + band)
+    };
     let chunks = config.offset_lut.len().div_ceil(CCSO_LANES);
     let max_sample = Simd::<i16, CCSO_LANES>::splat(config.max_sample as i16);
     let mut x = first;
     while x + CCSO_LANES <= x_end && ((x << SUB_X) as isize) <= last_tap {
         let luma_x = x << SUB_X;
-        let Some(centers) = luma_lanes::<L, SUB_X>(center_row, luma_x) else {
+        let lut_index = if L::u8_slice(center_row).is_some() {
+            index_u8(luma_x)
+        } else {
+            index_u16(luma_x)
+        };
+        let Some(lut_index) = lut_index else {
             break;
         };
-        let class = match offset_rows {
-            None => zero,
-            Some((row0, row1)) => {
-                let (Some(source0), Some(source1)) = (
-                    luma_lanes::<L, SUB_X>(row0, luma_x.wrapping_add_signed(dx0)),
-                    luma_lanes::<L, SUB_X>(row1, luma_x.wrapping_add_signed(dx1)),
-                ) else {
-                    break;
-                };
-                classify(source0, centers) * edge_scale + classify(source1, centers)
-            }
-        };
-        let lut_index =
-            (class * band_scale + (centers >> u16::from(config.band_shift))).cast::<u8>();
         let mut offset = Simd::<u8, CCSO_LANES>::splat(0);
         for (chunk, values) in config.offset_lut_simd.iter().take(chunks).enumerate() {
             offset |= Simd::from_array(*values)
