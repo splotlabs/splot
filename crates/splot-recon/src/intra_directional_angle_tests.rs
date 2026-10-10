@@ -1109,3 +1109,103 @@ fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
         }
     }
 }
+
+/// The zone-2 IDIF row writer (scalar left run, `u16` lane above run) must
+/// reproduce the per-sample § 7.13.2.8 reference for every block shape, middle
+/// angle and MRL index, and every reference tap must lie inside its edge.
+#[test]
+fn middle_idif_u16_rows_match_the_per_sample_reference() {
+    const PAD: u16 = 0xbeef;
+    for p_angle in (ZONE_1_MAX + 1)..ZONE_3_MIN {
+        let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle).unwrap();
+        let branch = angle.branch();
+        for log2_width in 2..=6u8 {
+            for log2_height in 2..=6u8 {
+                let size = rect_size(log2_width, log2_height);
+                for mrl_index in 0..4usize {
+                    let edge = |len: usize, seed: usize| -> Vec<u16> {
+                        (0..len)
+                            .map(|index| match index % 4 {
+                                0 => 1023,
+                                1 => 0,
+                                _ => ((index * 37 + seed) % 1024) as u16,
+                            })
+                            .collect()
+                    };
+                    let left = edge(
+                        required_middle_idif_mrl_left_len(size, mrl_index).unwrap(),
+                        11,
+                    );
+                    let above = edge(
+                        required_middle_idif_mrl_above_len(size, mrl_index).unwrap(),
+                        usize::from(p_angle),
+                    );
+                    let stride = size.width() + 3;
+                    let mut output = vec![PAD; stride * size.height()];
+                    predict_intra_middle_directional_angle_rect_idif_mrl_into(
+                        BitDepth::Ten,
+                        size,
+                        angle,
+                        IntraMiddleDirectionalAngleIdifMrlEdges::both(&left, &above),
+                        mrl_index,
+                        &mut output,
+                        stride,
+                    )
+                    .unwrap();
+                    if mrl_index == 0 {
+                        let mut plain = vec![PAD; output.len()];
+                        predict_intra_middle_directional_angle_rect_idif_into(
+                            BitDepth::Ten,
+                            size,
+                            angle,
+                            IntraMiddleDirectionalAngleIdifEdges::both(&left, &above),
+                            &mut plain,
+                            stride,
+                        )
+                        .unwrap();
+                        assert_eq!(plain, output);
+                    }
+                    for row in 0..size.height() {
+                        for column in 0..stride {
+                            let got = output[row * stride + column];
+                            if column >= size.width() {
+                                assert_eq!(got, PAD);
+                                continue;
+                            }
+                            let reference =
+                                middle_sample_reference_mrl(row, column, branch, mrl_index)
+                                    .unwrap();
+                            let edge = match reference.edge {
+                                IntraDirectionalAngleEdge::Left => &left,
+                                IntraDirectionalAngleEdge::Above => &above,
+                            };
+                            for tap in -1..=2 {
+                                logical_idif_edge_offset_mrl(
+                                    reference.base + tap,
+                                    edge.len(),
+                                    mrl_index,
+                                )
+                                .unwrap();
+                            }
+                            let expected = idif_tap_with_mrl(
+                                edge,
+                                reference.base,
+                                reference.shift,
+                                BitDepth::Ten,
+                                mrl_index,
+                            )
+                            .unwrap();
+                            assert_eq!(
+                                got,
+                                expected,
+                                "p_angle {p_angle} size {}x{} mrl {mrl_index} at ({row}, {column})",
+                                size.width(),
+                                size.height()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
