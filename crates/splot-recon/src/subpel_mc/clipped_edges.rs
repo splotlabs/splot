@@ -216,3 +216,41 @@ impl ClampedWindow {
         Some(())
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::subpel_mc::tests::full_pel_params;
+
+    fn assert_clamped_windows<T: ReconSample + core::fmt::Debug + PartialEq>(row: &[T]) {
+        let width = row.len() as i32;
+        let view = ReferencePlaneView::new(row, row.len(), 1).unwrap();
+        for (x0, first, last, w) in [
+            (20, 19, 30, 8),
+            (10, 5, 50, 32),
+            (5, 40, 50, 8),
+            (40, 0, 10, 8),
+            (1, 0, 63, 8),
+            (56, 0, 63, 8),
+            (30, -4, 99, 16),
+        ] {
+            let mut params = full_pel_params(InterpolationFilter::EightTap, w, 1, x0, 0, width, 1);
+            (params.first_x, params.last_x) = (first, last);
+            let window = ClampedWindow::new(&view, &params);
+            let mut storage = [T::default(); WINDOW_STORAGE];
+            let got = window.fill(view.row(0), &mut storage);
+            let (first, last) = (first.clamp(0, width - 1), last.clamp(0, width - 1));
+            let want: Vec<T> = (0..w as i32 + 7)
+                .map(|k| row[(x0 - 3 + k).clamp(first, last) as usize])
+                .collect();
+            assert_eq!(&got[..want.len()], want.as_slice(), "x0={x0} w={w}");
+        }
+    }
+
+    #[test]
+    fn clamped_window_matches_the_clipped_tap_columns_on_both_paths() {
+        assert_clamped_windows(&(0..64u16).map(|x| 1000 - 7 * x).collect::<Vec<_>>());
+        assert_clamped_windows(&(0..64u8).map(|x| 250 - 3 * x).collect::<Vec<_>>());
+    }
+}
