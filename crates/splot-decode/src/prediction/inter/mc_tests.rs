@@ -1945,6 +1945,71 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
 }
 
 #[test]
+fn tip_unit_motion_cell_matches_the_motion_grid_cell() {
+    let (width, height) = (32usize, 32usize);
+    let chroma_len = (width / 2) * (height / 2);
+    let reference = |seed: usize| {
+        let luma = (0..width * height).map(|i| 64 + (i * seed % 900) as u16);
+        let chroma = vec![384; chroma_len];
+        frame_for(
+            BitDepth::Ten,
+            PixelFormat::Yuv420,
+            width,
+            height,
+            luma.collect(),
+            chroma.clone(),
+            chroma,
+        )
+    };
+    let (reference0, reference1) = (reference(13), reference(17));
+    let mut workspace = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
+    let sink = WorkspaceSink::Frame(&mut workspace);
+    let offset = ByteOffset::new(0);
+    let (mv0, mv1) = (Mv { row: 3, col: -5 }, Mv { row: -2, col: 7 });
+    for (threshold, use_refinemv, distances) in [
+        (None, false, Some([1, -1])),
+        (None, true, Some([2, -1])),
+        (Some(u32::MAX), true, Some([1, -2])),
+        (None, true, None),
+    ] {
+        let rect = McBlockRect::from_luma_rect(8, 8, 8, 8);
+        let block = InterBlockParams::compound_average(
+            ReferenceSamples::settled(&reference0),
+            ReferenceSamples::settled(&reference1),
+            rect,
+            mv0,
+            mv1,
+            InterpolationFilter::EightTap,
+            CompoundBlend::default(),
+        )
+        .with_optflow_distances(distances)
+        .with_optflow_sad_threshold(threshold)
+        .with_refinemv(use_refinemv)
+        .into_compound()
+        .expect("compound block");
+        let cell = optflow::tip_unit_motion_cell(&sink, block, 8, offset).expect("unit cell");
+        let fast = CompoundMotionGrid::from_single_refinemv([mv0, mv1], cell);
+        let refinemv = use_refinemv
+            .then(|| refinemv::compound_default_refinemv_motion_grid(&sink, block, offset))
+            .transpose()
+            .expect("refine-MV grid");
+        let grid = optflow::compound_motion_grid(&sink, block, Some(8), refinemv, offset)
+            .expect("motion grid");
+        let stored = grid
+            .as_ref()
+            .map(|grid| grid.stored_mvs_at_luma_offset(0, 0));
+        let uniform = grid.as_ref().and_then(CompoundMotionGrid::uniform_mvs);
+        assert_eq!(
+            stored.unwrap_or(Ok([mv0, mv1])),
+            fast.stored_mvs_at_luma_offset(0, 0)
+        );
+        if grid.is_some() {
+            assert_eq!(uniform, fast.uniform_mvs());
+        }
+    }
+}
+
+#[test]
 fn packed_output_lands_in_strided_rows_and_rejects_short_storage() {
     let packed = |stride: usize, len: usize| {
         let mut output = vec![u8::MAX; len];

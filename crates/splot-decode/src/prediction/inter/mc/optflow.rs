@@ -825,6 +825,81 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
     }))
 }
 
+/// The motion cell of one TIP unit that the refine-MV optical-flow search did
+/// not take. An 8x8 unit is a single optical-flow unit, so its two initial
+/// predictions and § 7.13.3.9 delta stay on the stack instead of going through
+/// a motion grid.
+pub(super) fn tip_unit_motion_cell<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    unit: CompoundMcBlock<'_, T>,
+    unit_size: usize,
+    offset: ByteOffset,
+) -> Result<MotionCell> {
+    let mvs = [unit.mv0, unit.mv1];
+    let refinemv = unit
+        .use_refinemv
+        .then(|| super::refinemv::compound_default_refinemv_motion_grid(sink, unit, offset))
+        .transpose()?;
+    let refined_cell = |refinemv: Option<CompoundMotionGrid>| {
+        refinemv
+            .map(|motion| motion.cell_at_luma_offset(0, 0))
+            .transpose()
+            .map(|cell| cell.unwrap_or_else(|| MotionCell::from_refinemv(mvs)))
+    };
+    let (Some(distances), 8, 8, 8) = (
+        unit.optflow_distances,
+        unit_size,
+        unit.rect.luma_w,
+        unit.rect.luma_h,
+    ) else {
+        let motion = compound_motion_grid(sink, unit, Some(unit_size), refinemv, offset)?;
+        return Ok(refined_cell(motion)?);
+    };
+    let base_mvs = refinemv
+        .as_ref()
+        .map_or(Ok(mvs), |grid| grid.stored_mvs_at_luma_offset(0, 0))?;
+    let candidates = refinemv
+        .as_ref()
+        .and_then(CompoundMotionGrid::uniform_refinemv_candidates);
+    let bit_depth = sink.info().bit_depth();
+    let mut predictions = [[0u16; 64]; 2];
+    for (reference, (samples, prediction)) in [unit.reference0, unit.reference1]
+        .into_iter()
+        .zip(&mut predictions)
+        .enumerate()
+    {
+        initial_luma_prediction(
+            sink,
+            samples,
+            unit.rect,
+            base_mvs[reference],
+            InterpolationFilter::Bilinear,
+            candidates.map(|mvs| (mvs[reference], 8, 8)),
+            offset,
+            false,
+            prediction,
+        )?;
+    }
+    let [pred0, pred1] = &predictions;
+    if unit
+        .optflow_sad_threshold
+        .is_some_and(|threshold| normalized_sad(pred0, pred1, bit_depth) < threshold)
+    {
+        return Ok(refined_cell(refinemv)?);
+    }
+    let delta = derive_optflow_mv_delta_8x8_strided_into(
+        pred0,
+        0,
+        pred1,
+        0,
+        8,
+        bit_depth,
+        distances,
+        &mut OptflowScratch::default(),
+    )?;
+    Ok(MotionCell::from_optflow(base_mvs, delta))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tip_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
@@ -888,22 +963,9 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                     )?;
                     previous_unit = Some((rect, mvs));
                     previous_refined = refined.is_some();
-                    *destination = if let Some(cell) = refined {
-                        cell
-                    } else {
-                        let refinemv = unit
-                            .use_refinemv
-                            .then(|| {
-                                super::refinemv::compound_default_refinemv_motion_grid(
-                                    sink, unit, offset,
-                                )
-                            })
-                            .transpose()?;
-                        compound_motion_grid(sink, unit, Some(unit_size), refinemv, offset)?
-                            .as_ref()
-                            .map(|motion| motion.cell_at_luma_offset(0, 0))
-                            .transpose()?
-                            .unwrap_or_else(|| MotionCell::from_refinemv(mvs))
+                    *destination = match refined {
+                        Some(cell) => cell,
+                        None => tip_unit_motion_cell(sink, unit, unit_size, offset)?,
                     };
                 }
                 Ok::<_, crate::error::DecodeError>(())
@@ -961,16 +1023,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             *destination = cell;
             continue;
         }
-        let refinemv = unit
-            .use_refinemv
-            .then(|| super::refinemv::compound_default_refinemv_motion_grid(sink, unit, offset))
-            .transpose()?;
-        let motion = compound_motion_grid(sink, unit, Some(unit_size), refinemv, offset)?;
-        let cell = motion
-            .as_ref()
-            .map(|motion| motion.cell_at_luma_offset(0, 0))
-            .transpose()?
-            .unwrap_or_else(|| MotionCell::from_refinemv(mvs));
+        let cell = tip_unit_motion_cell(sink, unit, unit_size, offset)?;
         let destination = cells.get_mut(index).ok_or(ReconError::ArithmeticOverflow {
             context: "TIP compound motion-grid write",
         })?;
