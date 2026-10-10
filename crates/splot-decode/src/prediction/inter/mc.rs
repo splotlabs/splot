@@ -30,7 +30,7 @@ mod blend;
 mod compound_average;
 mod optflow;
 mod refinemv;
-use blend::{blend_compound_average, diff_weighted_mask_into};
+use blend::{blend_compound_average, diff_weighted_mask_into, store_clamped_samples};
 use optflow::{CompoundAverageOutput, MotionCell};
 pub(crate) use optflow::{CompoundMotionGrid, MotionRowStorage, StoredMotionGrid};
 pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
@@ -1045,6 +1045,55 @@ fn predict_warp_plane<T: ReconSample>(
         || block_h < WARPED_BLOCK_SIZE
         || scaling.is_scaled();
     if skip_pred {
+        let unit = |i4: usize, j4: usize| {
+            let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
+                rect,
+                plane,
+                warp_params,
+                (plane_x + (j4 & !1) * 4) as i32,
+                (plane_y + (i4 & !1) * 4) as i32,
+                block_w.min(8) as i32,
+                block_h.min(8) as i32,
+                sub_x,
+                sub_y,
+                ref_mi_cols,
+                ref_mi_rows,
+                scaling,
+            );
+            let params = WarpPredictBlockParams {
+                warp_params,
+                block_x: plane_x as i32,
+                block_y: plane_y as i32,
+                subsampling_x: sub_x as u8,
+                subsampling_y: sub_y as u8,
+                reference_scale_x: scaling.scale_x,
+                reference_scale_y: scaling.scale_y,
+                first_x,
+                first_y,
+                last_x,
+                last_y,
+                bit_depth,
+            };
+            ext_warp_predict_unit(&view, &params, i4, j4, false)
+        };
+        let max_sample = i32::from(bit_depth.max_sample());
+        let block_rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
+        let direct = sink.with_contiguous_rect_mut(plane, block_rect, |output, stride| {
+            for i4 in 0..block_h.div_euclid(4) {
+                for j4 in 0..block_w.div_euclid(4) {
+                    let predicted = unit(i4, j4)?;
+                    for (row, predicted) in predicted.as_chunks::<4>().0.iter().enumerate() {
+                        let start = (i4 * 4 + row) * stride + j4 * 4;
+                        let samples = predicted.iter().copied();
+                        store_clamped_samples(&mut output[start..start + 4], max_sample, samples)?;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        if direct.is_some() {
+            return Ok(());
+        }
         for i4 in 0..block_h.div_euclid(4) {
             for j4 in 0..block_w.div_euclid(4) {
                 let write_x = plane_x + j4 * 4;
@@ -1052,39 +1101,7 @@ fn predict_warp_plane<T: ReconSample>(
                 if write_x >= destination_width || write_y >= destination_height {
                     continue;
                 }
-                let unit_x = (plane_x + (j4 & !1) * 4) as i32;
-                let unit_y = (plane_y + (i4 & !1) * 4) as i32;
-                let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
-                    rect,
-                    plane,
-                    warp_params,
-                    unit_x,
-                    unit_y,
-                    block_w.min(8) as i32,
-                    block_h.min(8) as i32,
-                    sub_x,
-                    sub_y,
-                    ref_mi_cols,
-                    ref_mi_rows,
-                    scaling,
-                );
-                let params = WarpPredictBlockParams {
-                    warp_params,
-                    block_x: plane_x as i32,
-                    block_y: plane_y as i32,
-                    subsampling_x: sub_x as u8,
-                    subsampling_y: sub_y as u8,
-                    reference_scale_x: scaling.scale_x,
-                    reference_scale_y: scaling.scale_y,
-                    first_x,
-                    first_y,
-                    last_x,
-                    last_y,
-                    bit_depth,
-                };
-                let predicted = ext_warp_predict_unit(&view, &params, i4, j4, false)?;
-                let packed =
-                    clip_and_pack_warp_samples(&predicted, i32::from(bit_depth.max_sample()))?;
+                let packed = clip_and_pack_warp_samples(&unit(i4, j4)?, max_sample)?;
                 let rect = PlaneRect::new(write_x, write_y, 4, 4)?;
                 sink.write_rect(plane, rect, &packed, 4)?;
             }
