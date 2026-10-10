@@ -153,6 +153,11 @@ impl RelativeProbe {
         grid.flags_at(row, col)
     }
 
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: keeps the probed cell in registers"
+    )]
+    #[inline(always)]
     fn stack_cell(
         self,
         grid: &NeighbourMvGrid,
