@@ -1451,6 +1451,8 @@ fn subpel_predict_block_compound_average_fullpel_validated<T: ReconSample>(
     true
 }
 
+/// The equal-weight average widens to `u32` lanes, which LLVM lowers to one
+/// rounding-halving add per vector.
 #[inline(always)]
 fn blend_fullpel_u16_row(
     left: &[u16],
@@ -1464,16 +1466,23 @@ fn blend_fullpel_u16_row(
     const LANES: usize = 8;
     if cwp_weight == 8 {
         let mut copied = 0;
-        for ((output, left), right) in destination
-            .chunks_exact_mut(LANES)
-            .zip(left.chunks_exact(LANES))
-            .zip(right.chunks_exact(LANES))
-        {
-            let left = Simd::<u16, LANES>::from_slice(left);
-            let right = Simd::<u16, LANES>::from_slice(right);
-            output.copy_from_slice(&((left + right + Simd::splat(1)) >> 1).to_array()); // splot-copy-ok: publish equal-weight SIMD fullpel lanes
-            copied += LANES;
+        macro_rules! average {
+            ($lanes:tt) => {
+                for ((output, left), right) in destination[copied..]
+                    .chunks_exact_mut($lanes)
+                    .zip(left[copied..].chunks_exact($lanes))
+                    .zip(right[copied..].chunks_exact($lanes))
+                {
+                    let left = Simd::<u16, $lanes>::from_slice(left).cast::<u32>();
+                    let right = Simd::<u16, $lanes>::from_slice(right).cast::<u32>();
+                    let average = ((left + right + Simd::splat(1)) >> 1).cast::<u16>();
+                    output.copy_from_slice(average.as_array()); // splot-copy-ok: publish equal-weight SIMD fullpel lanes
+                    copied += $lanes;
+                }
+            };
         }
+        average!(16);
+        average!(LANES);
         for ((slot, &left), &right) in destination[copied..]
             .iter_mut()
             .zip(&left[copied..])

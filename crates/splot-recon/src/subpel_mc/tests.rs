@@ -1625,7 +1625,7 @@ fn compound_average_sink_matches_scalar_oracle_across_shapes_and_clamps() {
 
 #[test]
 fn fullpel_compound_average_matches_materialized_predictors() {
-    let ref_w = 24usize;
+    let ref_w = 48usize;
     let ref_h = 20usize;
     let samples0 = (0..ref_w * ref_h)
         .map(|index| ((index * 17 + 3) % 1024) as u16)
@@ -1635,29 +1635,29 @@ fn fullpel_compound_average_matches_materialized_predictors() {
         .collect::<Vec<u16>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
-    let params0 = SubpelPredictParams {
-        interp: InterpolationFilter::EightTapSharp,
-        w: 7,
-        h: 5,
-        start_x: 6 << SCALE_SUBPEL_BITS,
-        start_y: 7 << SCALE_SUBPEL_BITS,
-        step_x: 1 << SCALE_SUBPEL_BITS,
-        step_y: 1 << SCALE_SUBPEL_BITS,
-        first_x: 0,
-        first_y: 0,
-        last_x: ref_w as i32 - 1,
-        last_y: ref_h as i32 - 1,
-        bit_depth: BitDepth::Ten,
-    };
-    let params1 = SubpelPredictParams {
-        start_x: 9 << SCALE_SUBPEL_BITS,
-        start_y: 4 << SCALE_SUBPEL_BITS,
-        ..params0
-    };
-    let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
-    let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
+    for (w, cwp_weight) in [7, 31].into_iter().flat_map(|w| [(w, 8), (w, 12)]) {
+        let params0 = SubpelPredictParams {
+            interp: InterpolationFilter::EightTapSharp,
+            w,
+            h: 5,
+            start_x: 6 << SCALE_SUBPEL_BITS,
+            start_y: 7 << SCALE_SUBPEL_BITS,
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_w as i32 - 1,
+            last_y: ref_h as i32 - 1,
+            bit_depth: BitDepth::Ten,
+        };
+        let params1 = SubpelPredictParams {
+            start_x: 9 << SCALE_SUBPEL_BITS,
+            start_y: 4 << SCALE_SUBPEL_BITS,
+            ..params0
+        };
+        let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
+        let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
 
-    for cwp_weight in [8, 12] {
         let expected =
             blend_compound_average_weighted(&pred0, &pred1, params0.bit_depth, cwp_weight).unwrap();
         let stride = params0.w + 3;
