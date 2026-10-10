@@ -339,12 +339,14 @@ fn prepare_optflow_strided_rows(
     Ok(())
 }
 
+/// `Round2Signed` lane-wise: a negative value rounds its half away from zero
+/// by adding one less before the arithmetic shift. The callers' sums stay far
+/// below the `i32` limits, so the addition cannot wrap.
 fn round2_signed_simd<const LANES: usize>(value: Simd<i32, LANES>, shift: u32) -> Simd<i32, LANES> {
     if shift == 0 {
         return value;
     }
-    let rounded = (value.abs() + Simd::splat(1 << (shift - 1))) >> shift as i32;
-    value.is_negative().select(-rounded, rounded)
+    (value + Simd::splat(1 << (shift - 1)) + (value >> 31)) >> shift as i32
 }
 
 fn reduce_distances(distances: [i32; 2]) -> [i32; 2] {
