@@ -1789,6 +1789,11 @@ impl ImplicitMaskBlend {
         }
     }
 
+    #[allow(
+        clippy::inline_always,
+        reason = "per-sample blend; must inline in every crate's copy of the decoder"
+    )]
+    #[inline(always)]
     fn sample<T: ReconSample>(
         self,
         left: i32,
