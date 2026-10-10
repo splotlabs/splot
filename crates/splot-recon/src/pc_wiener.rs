@@ -21,6 +21,7 @@ use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
 use crate::PlaneId;
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
+use crate::loop_restoration::PaddedRows;
 use crate::math::{round2_i32, round2_signed_i32};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
@@ -187,8 +188,7 @@ impl Default for PcWienerClassifyScratch {
 /// `samples[(y - origin_y) * stride + (x - origin_x)]`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcWienerClassifyPaddedSource<'a, T> {
-    samples: &'a [T],
-    stride: usize,
+    rows: PaddedRows<'a, T>,
     origin_x: isize,
     origin_y: isize,
     validated_bit_depth: Option<BitDepth>,
@@ -200,8 +200,7 @@ impl<'a, T: ReconSample> PcWienerClassifyPaddedSource<'a, T> {
     #[must_use]
     pub fn new(samples: &'a [T], stride: usize, origin_x: isize, origin_y: isize) -> Self {
         Self {
-            samples,
-            stride,
+            rows: PaddedRows::Strided { samples, stride },
             origin_x,
             origin_y,
             validated_bit_depth: None,
@@ -231,8 +230,31 @@ impl<'a, T: ReconSample> PcWienerClassifyPaddedSource<'a, T> {
             });
         }
         Ok(Self {
-            samples,
-            stride,
+            rows: PaddedRows::Strided { samples, stride },
+            origin_x,
+            origin_y,
+            validated_bit_depth: Some(bit_depth),
+        })
+    }
+
+    /// Wraps decoder-owned padded rows like [`Self::new_prevalidated`]:
+    /// row `i` starts at column `col` of `rows[i]`, and its first sample is
+    /// current-plane luma coordinate `(origin_x, origin_y + i)`.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] if the sample storage cannot represent
+    /// `bit_depth`.
+    #[doc(hidden)]
+    pub fn from_rows(
+        rows: &'a [&'a [T]],
+        col: usize,
+        origin_x: isize,
+        origin_y: isize,
+        bit_depth: BitDepth,
+    ) -> Result<Self> {
+        validate_sample_type::<T>(bit_depth)?;
+        Ok(Self {
+            rows: PaddedRows::table(rows, col),
             origin_x,
             origin_y,
             validated_bit_depth: Some(bit_depth),
@@ -402,8 +424,7 @@ where
         cell_cols,
         cell_rows,
         &geo,
-        &source_cache,
-        geo.source_width,
+        |row| cache_row(&source_cache, row, geo.source_width),
         &mut feature_grid,
         &mut skip_row,
         &qval_offsets,
@@ -549,39 +570,40 @@ where
         return Ok(output);
     }
     let geo = classify_grid_geometry(params, cell_cols, cell_rows)?;
-    let source_stride;
-    let source_cache: &[u16];
-    if let Some(samples) = T::u16_slice(source.samples) {
-        let (start, end) = padded_source_region(source, &geo)?;
-        let region = &samples[start..end];
-        if source.validated_bit_depth != Some(params.bit_depth) {
-            validate_padded_u16_source(region, source.stride, &geo, params.bit_depth)?;
+    let region = padded_source_region(source, &geo)?;
+    let validate = source.validated_bit_depth != Some(params.bit_depth);
+    let direct = T::u16_slice(&[]).is_some();
+    if direct {
+        if validate {
+            validate_padded_u16_source(region, &geo, params.bit_depth)?;
         }
-        source_stride = source.stride;
-        source_cache = region;
     } else {
-        build_padded_source_cache_into(
-            source,
-            &geo,
-            params.bit_depth,
-            source.validated_bit_depth != Some(params.bit_depth),
-            source_scratch,
-        )?;
-        source_stride = geo.source_width;
-        source_cache = source_scratch;
+        build_padded_source_cache_into(region, &geo, params.bit_depth, validate, source_scratch)?;
     }
     let key = (params.base_q_idx, params.bit_depth);
     if *qval_cache_key != Some(key) {
         prepare_qval_offsets_cache(params.base_q_idx, params.bit_depth, qval_offsets)?;
         *qval_cache_key = Some(key);
     }
+    let cache: &[u16] = source_scratch;
     let result = classify_grid_from_cache(
         params,
         cell_cols,
         cell_rows,
         &geo,
-        source_cache,
-        source_stride,
+        |row| {
+            if direct {
+                region
+                    .row(row, geo.source_width)
+                    .and_then(T::u16_slice)
+                    .ok_or(ReconError::BufferLengthMismatch {
+                        expected: geo.source_width,
+                        actual: 0,
+                    })
+            } else {
+                cache_row(cache, row, geo.source_width)
+            }
+        },
         feature_grid,
         skip_row,
         qval_offsets,
@@ -687,14 +709,24 @@ fn classify_grid_geometry(
     })
 }
 
+/// Row `row` of a contiguous `width`-wide source cache.
+fn cache_row(cache: &[u16], row: usize, width: usize) -> Result<&[u16]> {
+    let start = row * width;
+    cache
+        .get(start..start + width)
+        .ok_or(ReconError::BufferLengthMismatch {
+            expected: start + width,
+            actual: cache.len(),
+        })
+}
+
 fn build_padded_source_cache_into<T: ReconSample>(
-    source: &PcWienerClassifyPaddedSource<'_, T>,
+    region: PaddedRows<'_, T>,
     geo: &ClassifyGridGeometry,
     bit_depth: BitDepth,
     validate: bool,
     source_cache: &mut Vec<u16>,
 ) -> Result<()> {
-    let (region_start, _) = padded_source_region(source, geo)?;
     let max_sample = bit_depth.max_sample();
     source_cache
         .try_reserve_exact(geo.source_count)
@@ -703,8 +735,13 @@ fn build_padded_source_cache_into<T: ReconSample>(
             context: "PC-Wiener source-grid",
         })?;
     for row in 0..geo.source_height {
-        let base = region_start + row * source.stride;
-        let row_samples = &source.samples[base..base + geo.source_width];
+        let row_samples =
+            region
+                .row(row, geo.source_width)
+                .ok_or(ReconError::BufferLengthMismatch {
+                    expected: geo.source_width,
+                    actual: 0,
+                })?;
         let cached_start = source_cache.len();
         source_cache.extend(row_samples.iter().map(|sample| sample.to_u16()));
         if validate
@@ -723,10 +760,12 @@ fn build_padded_source_cache_into<T: ReconSample>(
     Ok(())
 }
 
-fn padded_source_region<T: ReconSample>(
-    source: &PcWienerClassifyPaddedSource<'_, T>,
+/// The padded rows of `source` starting at the classification region,
+/// checked to cover all of it.
+fn padded_source_region<'a, T: ReconSample>(
+    source: &PcWienerClassifyPaddedSource<'a, T>,
     geo: &ClassifyGridGeometry,
-) -> Result<(usize, usize)> {
+) -> Result<PaddedRows<'a, T>> {
     let region_col = geo
         .source_start_x
         .checked_sub(source.origin_x)
@@ -741,13 +780,22 @@ fn padded_source_region<T: ReconSample>(
         .ok_or(ReconError::PcWienerInvalidBounds {
             field: "PC-Wiener padded source row",
         })?;
+    let PaddedRows::Strided { samples, stride } = source.rows else {
+        return source
+            .rows
+            .offset(region_row, region_col)
+            .filter(|region| region.covers(geo.source_height, geo.source_width))
+            .ok_or(ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener padded source rows",
+            });
+    };
     let row_span =
         region_col
             .checked_add(geo.source_width)
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "PC-Wiener padded source row span",
             })?;
-    if row_span > source.stride {
+    if row_span > stride {
         return Err(ReconError::PcWienerInvalidBounds {
             field: "PC-Wiener padded source width",
         });
@@ -755,36 +803,39 @@ fn padded_source_region<T: ReconSample>(
     let required = region_row
         .checked_add(geo.source_height)
         .and_then(|rows| rows.checked_sub(1))
-        .and_then(|last_row| last_row.checked_mul(source.stride))
+        .and_then(|last_row| last_row.checked_mul(stride))
         .and_then(|prefix| prefix.checked_add(row_span))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener padded source length",
         })?;
-    if source.samples.len() < required {
+    if samples.len() < required {
         return Err(ReconError::BufferLengthMismatch {
             expected: required,
-            actual: source.samples.len(),
+            actual: samples.len(),
         });
     }
     let start = region_row
-        .checked_mul(source.stride)
+        .checked_mul(stride)
         .and_then(|prefix| prefix.checked_add(region_col))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener padded source start",
         })?;
-    Ok((start, required))
+    Ok(PaddedRows::Strided {
+        samples: &samples[start..required],
+        stride,
+    })
 }
 
-fn validate_padded_u16_source(
-    source: &[u16],
-    stride: usize,
+fn validate_padded_u16_source<T: ReconSample>(
+    region: PaddedRows<'_, T>,
     geo: &ClassifyGridGeometry,
     bit_depth: BitDepth,
 ) -> Result<()> {
     let max_sample = bit_depth.max_sample();
     for row in 0..geo.source_height {
-        let base = row * stride;
-        let row_samples = &source[base..base + geo.source_width];
+        let Some(row_samples) = region.row(row, geo.source_width).and_then(T::u16_slice) else {
+            continue;
+        };
         if crate::workspace::u16_samples_exceed(row_samples, max_sample)
             && let Some(col) = row_samples.iter().position(|&value| value > max_sample)
         {
@@ -800,13 +851,12 @@ fn validate_padded_u16_source(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn classify_grid_from_cache<FT, O, FM>(
+fn classify_grid_from_cache<'s, FR, FT, O, FM>(
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
     geo: &ClassifyGridGeometry,
-    source_cache: &[u16],
-    source_stride: usize,
+    source_row: FR,
     feature_grid: &mut Vec<[u16; 4]>,
     skip_row: &mut Vec<u16>,
     offsets_cache: &QvalOffsetsCache,
@@ -815,14 +865,14 @@ fn classify_grid_from_cache<FT, O, FM>(
     mut finish: FM,
 ) -> Result<()>
 where
+    FR: Fn(usize) -> Result<&'s [u16]>,
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
     FM: FnMut([i32; PC_WIENER_NUM_FEATURES], usize, BitDepth, &QvalOffsetsCache) -> Result<O>,
 {
     build_feature_grid(
         params,
         geo,
-        source_cache,
-        source_stride,
+        source_row,
         feature_grid,
         skip_row,
         &mut tx_skip,
@@ -906,16 +956,16 @@ fn pooled_row_window(
 /// row is fetched once and kept in two pooled slots: clipped grid rows never
 /// decrease down the grid, so evicting the older slot never drops a row the
 /// current pooled row reads.
-fn build_feature_grid<FT>(
+fn build_feature_grid<'s, FR, FT>(
     params: &PcWienerClassifyParams,
     geo: &ClassifyGridGeometry,
-    source_cache: &[u16],
-    source_stride: usize,
+    source_row: FR,
     feature_grid: &mut Vec<[u16; 4]>,
     skip_rows: &mut Vec<u16>,
     tx_skip: &mut FT,
 ) -> Result<()>
 where
+    FR: Fn(usize) -> Result<&'s [u16]>,
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
     let block_lo = usize_to_isize(params.block_start_x, "PC-Wiener tx-skip x bounds")?;
@@ -986,15 +1036,6 @@ where
     let (slots, pair_skip) = pooled_skips.split_at_mut(2 * slot_width);
     let mut slot_rows: [Option<usize>; 2] = [None; 2];
     let mut pair_rows = None;
-    let source_row = |row: usize| {
-        let start = row * source_stride;
-        source_cache
-            .get(start..start + geo.source_width)
-            .ok_or(ReconError::BufferLengthMismatch {
-                expected: start + geo.source_width,
-                actual: source_cache.len(),
-            })
-    };
     for (pooled_row, grid_row) in feature_grid.chunks_exact_mut(pooled_width).enumerate() {
         let mut skip_grid_rows = [0usize; 2];
         for (half, skip_grid_row) in skip_grid_rows.iter_mut().enumerate() {
@@ -1450,8 +1491,7 @@ where
 /// block-relative `(-PC_WIENER_FILTER_TAP_RADIUS, -PC_WIENER_FILTER_TAP_RADIUS)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcWienerPaddedSource<'a, T> {
-    samples: &'a [T],
-    stride: usize,
+    rows: PaddedRows<'a, T>,
     prevalidated: bool,
 }
 
@@ -1489,8 +1529,7 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
             });
         }
         Ok(Self {
-            samples,
-            stride,
+            rows: PaddedRows::Strided { samples, stride },
             prevalidated: false,
         })
     }
@@ -1511,6 +1550,59 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
             prevalidated: true,
             ..Self::new(samples, stride, width, height)?
         })
+    }
+
+    /// Wraps decoder-owned padded rows whose range reconstruction already
+    /// guarantees: padded row `i` starts at column `col` of `rows[i]`.
+    ///
+    /// # Errors
+    /// Returns a typed error when a row cannot cover the block plus the
+    /// § 7.20.4 filter tap reach.
+    #[doc(hidden)]
+    pub fn from_rows(rows: &'a [&'a [T]], col: usize, width: usize, height: usize) -> Result<Self> {
+        Self::check_table(PaddedRows::table(rows, col), width, height)
+    }
+
+    fn check_table(rows: PaddedRows<'a, T>, width: usize, height: usize) -> Result<Self> {
+        let covered = width
+            .checked_add(2 * PC_WIENER_FILTER_TAP_RADIUS)
+            .zip(height.checked_add(2 * PC_WIENER_FILTER_TAP_RADIUS))
+            .is_some_and(|(padded_width, padded_rows)| rows.covers(padded_rows, padded_width));
+        if !covered {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener padded source rows",
+            });
+        }
+        Ok(Self {
+            rows,
+            prevalidated: true,
+        })
+    }
+
+    fn validate_cover(&self, width: usize, height: usize) -> Result<()> {
+        match self.rows {
+            PaddedRows::Strided { samples, stride } => {
+                Self::new(samples, stride, width, height).map(drop)
+            }
+            rows @ PaddedRows::Table { .. } => Self::check_table(rows, width, height).map(drop),
+        }
+    }
+
+    fn sample(&self, x: isize, y: isize, width: usize) -> Result<T> {
+        const R: isize = PC_WIENER_FILTER_TAP_RADIUS as isize;
+        let index = |value: isize| {
+            usize::try_from(value + R).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "PC-Wiener padded tap offset",
+            })
+        };
+        let (row, col) = (index(y)?, index(x)?);
+        self.rows
+            .row(row, width + 2 * PC_WIENER_FILTER_TAP_RADIUS)
+            .and_then(|row| row.get(col))
+            .copied()
+            .ok_or(ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener padded source rows",
+            })
     }
 }
 
@@ -1538,10 +1630,6 @@ struct PcWienerPaddedFilterSetup {
     sample_count: usize,
     filters: &'static [[i32; 13]; PC_WIENER_FULL_CLASSES],
     filters16: &'static [[i16; 13]; PC_WIENER_FULL_CLASSES],
-    stride: usize,
-    center_offset: usize,
-    pos_offsets: [usize; PC_WIENER_CONFIG.len()],
-    neg_offsets: [usize; PC_WIENER_CONFIG.len()],
     max_sample: u16,
     source_is_valid: bool,
 }
@@ -1558,16 +1646,7 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
             field: "PC-Wiener filter set index",
         },
     )?;
-    PcWienerPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
-
-    let stride = source.stride;
-    let center_offset = padded_filter_offset(stride, 0, 0)?;
-    let mut pos_offsets = [0usize; PC_WIENER_CONFIG.len()];
-    let mut neg_offsets = [0usize; PC_WIENER_CONFIG.len()];
-    for (i, &(dy, dx)) in PC_WIENER_CONFIG.iter().enumerate() {
-        pos_offsets[i] = padded_filter_offset(stride, dy, dx)?;
-        neg_offsets[i] = padded_filter_offset(stride, -dy, -dx)?;
-    }
+    source.validate_cover(params.width, params.height)?;
 
     let max_sample = params.bit_depth.max_sample();
     let padded_width = params.width + 2 * PC_WIENER_FILTER_TAP_RADIUS;
@@ -1575,20 +1654,15 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
     let source_is_valid = source.prevalidated
         || T::MAX_VALUE <= max_sample
         || (0..padded_rows).all(|row| {
-            let start = row * stride;
-            !crate::workspace::samples_exceed(
-                &source.samples[start..start + padded_width],
-                max_sample,
-            )
+            source
+                .rows
+                .row(row, padded_width)
+                .is_some_and(|samples| !crate::workspace::samples_exceed(samples, max_sample))
         });
     Ok(PcWienerPaddedFilterSetup {
         sample_count,
         filters,
         filters16,
-        stride,
-        center_offset,
-        pos_offsets,
-        neg_offsets,
         max_sample,
         source_is_valid,
     })
@@ -1612,24 +1686,17 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     params: &PcWienerFilter<'_>,
     source: &PcWienerPaddedSource<'_, T>,
 ) -> Result<()> {
+    const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
     let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
     if !setup.source_is_valid {
-        return pc_wiener_filter_block(output, params, |x, y| {
-            let index = padded_filter_offset(setup.stride, y, x)?;
-            Ok(source.samples[index])
-        });
+        return pc_wiener_filter_block(output, params, |x, y| source.sample(x, y, params.width));
     }
 
-    if let Some(samples) = T::u16_slice(source.samples) {
-        let Some(destination) = T::u16_slice_mut(output) else {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "PC-Wiener sample storage",
-            });
-        };
-        filter_pc_wiener_padded_u16(destination, params, samples, &setup);
-        return Ok(());
+    if let Some(destination) = T::u16_slice_mut(output) {
+        return filter_pc_wiener_padded_u16(destination, params, source.rows, T::u16_slice, &setup);
     }
 
+    let padded_width = params.width + 2 * R;
     let mut filtered = Vec::with_capacity(setup.sample_count);
     let mut acc = vec![0i32; params.width];
     let max_sample = i32::from(setup.max_sample);
@@ -1638,7 +1705,7 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
         let subclass_row = row / params.subclass_block_size;
         let row_subclasses =
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
-        let row_base = row * setup.stride;
+        let window = pc_wiener_window_rows(source.rows, row, padded_width, Some)?;
         let mut c0 = 0usize;
         while c0 < params.width {
             let subclass_col = c0 / params.subclass_block_size;
@@ -1650,21 +1717,17 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
             let c1 = (subclass_end * params.subclass_block_size).min(params.width);
             let coeffs = &setup.filters[subclass];
             let len = c1 - c0;
-            let seg_base = row_base + c0;
             let seg = &mut acc[..len];
-            let center = &source.samples
-                [seg_base + setup.center_offset..seg_base + setup.center_offset + len];
-            for (a, &m) in seg.iter_mut().zip(center) {
+            let tap_row = |dy: isize, dx: isize| {
+                &window[R.wrapping_add_signed(dy)][(c0 + R).wrapping_add_signed(dx)..][..len]
+            };
+            for (a, &m) in seg.iter_mut().zip(tap_row(0, 0)) {
                 let m = i32::from(m.to_u16());
                 *a = (m << PC_WIENER_PREC_BITS) + m * coeffs[12];
             }
-            for ((&coeff, &pos), &neg) in coeffs
-                .iter()
-                .zip(&setup.pos_offsets)
-                .zip(&setup.neg_offsets)
-            {
-                let plus = &source.samples[seg_base + pos..seg_base + pos + len];
-                let minus = &source.samples[seg_base + neg..seg_base + neg + len];
+            for (&coeff, &(dy, dx)) in coeffs.iter().zip(&PC_WIENER_CONFIG) {
+                let plus = tap_row(dy, dx);
+                let minus = tap_row(-dy, -dx);
                 for ((a, &tp), &tm) in seg.iter_mut().zip(plus).zip(minus) {
                     *a += (i32::from(tp.to_u16()) + i32::from(tm.to_u16())) * coeff;
                 }
@@ -1715,17 +1778,34 @@ pub fn pc_wiener_filter_block_padded_u16_into<T: ReconSample>(
         }
         return Ok(());
     }
-    if let Some(samples) = T::u16_slice(source.samples) {
-        filter_pc_wiener_padded_u16(output, params, samples, &setup);
-        return Ok(());
+    if T::u16_slice(&[]).is_some() {
+        return filter_pc_wiener_padded_u16(output, params, source.rows, T::u16_slice, &setup);
     }
-    if let Some(samples) = T::u8_slice(source.samples) {
-        filter_pc_wiener_padded_u16(output, params, samples, &setup);
-        return Ok(());
+    if T::u8_slice(&[]).is_some() {
+        return filter_pc_wiener_padded_u16(output, params, source.rows, T::u8_slice, &setup);
     }
     Err(ReconError::PcWienerInvalidBounds {
         field: "PC-Wiener sample storage",
     })
+}
+
+/// The seven padded source rows output row `row` reads, each viewed by
+/// `cast` as the kernel's sample type.
+fn pc_wiener_window_rows<'a, S, T: 'a>(
+    source: PaddedRows<'a, S>,
+    row: usize,
+    padded_width: usize,
+    cast: impl Fn(&'a [S]) -> Option<&'a [T]>,
+) -> Result<[&'a [T]; PC_WIENER_WINDOW_ROWS]> {
+    let mut rows: [&[T]; PC_WIENER_WINDOW_ROWS] = [&[]; PC_WIENER_WINDOW_ROWS];
+    for (dy, window_row) in rows.iter_mut().enumerate() {
+        *window_row = source.row(row + dy, padded_width).and_then(&cast).ok_or(
+            ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener padded source rows",
+            },
+        )?;
+    }
+    Ok(rows)
 }
 
 trait PcWienerPaddedSample: ReconSample {
@@ -1744,12 +1824,13 @@ impl PcWienerPaddedSample for u8 {
     }
 }
 
-fn filter_pc_wiener_padded_u16<T: PcWienerPaddedSample>(
+fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + 'a>(
     destination: &mut [u16],
     params: &PcWienerFilter<'_>,
-    samples: &[T],
+    source: PaddedRows<'a, S>,
+    cast: impl Fn(&'a [S]) -> Option<&'a [T]>,
     setup: &PcWienerPaddedFilterSetup,
-) {
+) -> Result<()> {
     const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
     let padded_width = params.width + 2 * R;
     let subclass_cols = params.width.div_ceil(params.subclass_block_size);
@@ -1758,10 +1839,7 @@ fn filter_pc_wiener_padded_u16<T: PcWienerPaddedSample>(
         let row_subclasses =
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
         let output = &mut destination[row * params.output_stride..][..params.width];
-        let mut rows: [&[T]; PC_WIENER_WINDOW_ROWS] = [&[]; PC_WIENER_WINDOW_ROWS];
-        for (dy, window_row) in rows.iter_mut().enumerate() {
-            *window_row = &samples[(row + dy) * setup.stride..][..padded_width];
-        }
+        let rows = pc_wiener_window_rows(source, row, padded_width, &cast)?;
         let mut c0 = 0usize;
         while c0 < params.width {
             let subclass_col = c0 / params.subclass_block_size;
@@ -1809,6 +1887,7 @@ fn filter_pc_wiener_padded_u16<T: PcWienerPaddedSample>(
             c0 = c1;
         }
     }
+    Ok(())
 }
 
 /// Padded source rows one § 7.20.4 PC-Wiener output row reads.
@@ -1940,22 +2019,6 @@ fn write_pc_wiener_block<T: ReconSample>(
             output[row * params.output_stride + col] = filtered[row * params.width + col];
         }
     }
-}
-
-fn padded_filter_offset(stride: usize, dy: isize, dx: isize) -> Result<usize> {
-    let radius = PC_WIENER_FILTER_TAP_RADIUS as isize;
-    let row = usize::try_from(dy + radius)
-        .ok()
-        .and_then(|row| row.checked_mul(stride))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "PC-Wiener padded tap offset",
-        })?;
-    usize::try_from(dx + radius)
-        .ok()
-        .and_then(|col| row.checked_add(col))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "PC-Wiener padded tap offset",
-        })
 }
 
 const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {

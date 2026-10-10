@@ -18,6 +18,7 @@ use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
 
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
+use crate::loop_restoration::PaddedRows;
 use crate::math::round2_i32;
 use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
@@ -138,8 +139,6 @@ enum LumaSubclassLayout<'a> {
 }
 
 struct PreparedLumaFilter {
-    tap_offsets: [usize; WIENER_NS_LUMA_TAPS],
-    center_offset: usize,
     max_sample: u16,
     direct: bool,
 }
@@ -203,8 +202,7 @@ where
 /// block-relative `(-WIENER_NS_LUMA_TAP_RADIUS, -WIENER_NS_LUMA_TAP_RADIUS)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WienerNsLumaPaddedSource<'a, T> {
-    samples: &'a [T],
-    stride: usize,
+    rows: PaddedRows<'a, T>,
     prevalidated: bool,
 }
 
@@ -243,8 +241,7 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
             });
         }
         Ok(Self {
-            samples,
-            stride,
+            rows: PaddedRows::Strided { samples, stride },
             prevalidated: false,
         })
     }
@@ -265,6 +262,46 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
             prevalidated: true,
             ..Self::new(samples, stride, width, height)?
         })
+    }
+
+    /// Wraps decoder-owned padded rows whose range reconstruction already
+    /// guarantees: padded row `i` starts at column `col` of `rows[i]`.
+    ///
+    /// # Errors
+    /// Returns a typed error when a row cannot cover the block plus the
+    /// § 7.20.3 luma tap reach.
+    #[doc(hidden)]
+    pub fn from_rows(rows: &'a [&'a [T]], col: usize, width: usize, height: usize) -> Result<Self> {
+        Self::check_table(PaddedRows::table(rows, col), width, height)
+    }
+
+    fn check_table(rows: PaddedRows<'a, T>, width: usize, height: usize) -> Result<Self> {
+        let padded_width = width.checked_add(2 * WIENER_NS_LUMA_TAP_RADIUS);
+        let padded_rows = height.checked_add(2 * WIENER_NS_LUMA_TAP_RADIUS);
+        let (Some(padded_width), Some(padded_rows)) = (padded_width, padded_rows) else {
+            return Err(ReconError::ArithmeticOverflow {
+                context: "Wiener NS padded source rows",
+            });
+        };
+        if !rows.covers(padded_rows, padded_width) {
+            return Err(ReconError::WienerNsFilterOutputTooSmall {
+                expected: padded_width,
+                actual: 0,
+            });
+        }
+        Ok(Self {
+            rows,
+            prevalidated: true,
+        })
+    }
+
+    fn validate_cover(&self, width: usize, height: usize) -> Result<()> {
+        match self.rows {
+            PaddedRows::Strided { samples, stride } => {
+                Self::new(samples, stride, width, height).map(drop)
+            }
+            rows @ PaddedRows::Table { .. } => Self::check_table(rows, width, height).map(drop),
+        }
     }
 }
 
@@ -439,33 +476,6 @@ pub fn wiener_ns_filter_luma_block_padded_cells_u8_into<T: ReconSample>(
     )
 }
 
-fn padded_luma_offsets(stride: usize) -> Result<([usize; WIENER_NS_LUMA_TAPS], usize)> {
-    let center = WIENER_NS_LUMA_TAP_RADIUS
-        .checked_mul(stride)
-        .and_then(|row| row.checked_add(WIENER_NS_LUMA_TAP_RADIUS))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "Wiener NS padded source stride",
-        })?;
-    let mut taps = [0usize; WIENER_NS_LUMA_TAPS];
-    for (offset, &(dy, dx, _)) in taps.iter_mut().zip(&WIENER_NS_CONFIG_Y) {
-        let row = usize::try_from(dy + WIENER_NS_LUMA_TAP_RADIUS as isize)
-            .map_err(|_| ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded tap offset",
-            })?
-            .checked_mul(stride)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded tap offset",
-            })?;
-        *offset = usize::try_from(dx + WIENER_NS_LUMA_TAP_RADIUS as isize)
-            .ok()
-            .and_then(|col| row.checked_add(col))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded tap offset",
-            })?;
-    }
-    Ok((taps, center))
-}
-
 fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
@@ -478,8 +488,7 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
         return filter_padded_luma_rows_in_range(
             output,
             params.output_stride,
-            source.samples,
-            source.stride,
+            source.rows,
             0..params.height,
             params,
             &scratch.prepared_classes,
@@ -513,10 +522,8 @@ fn prepare_luma_padded<T: ReconSample>(
     validate_sample_type::<T>(params.bit_depth)?;
     let sample_count = validate_luma_params(output_len, params)?;
     validate_subclass_layout(params, sample_count, subclasses)?;
-    WienerNsLumaPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
+    source.validate_cover(params.width, params.height)?;
 
-    let stride = source.stride;
-    let (tap_offsets, center_offset) = padded_luma_offsets(stride)?;
     let max_sample = params.bit_depth.max_sample();
     let padded_width = params.width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
     let padded_rows = params.height + 2 * WIENER_NS_LUMA_TAP_RADIUS;
@@ -547,27 +554,18 @@ fn prepare_luma_padded<T: ReconSample>(
                     .fold(0, |mask, &coeff| (mask << 1) | u16::from(coeff != 0)),
             }
         }));
-    // Scanning the stride gaps too only ever falls back to the per-row scan.
-    let region_clean = source.prevalidated
-        || (padded_rows - 1)
-            .checked_mul(stride)
-            .and_then(|prefix| prefix.checked_add(padded_width))
-            .and_then(|span| source.samples.get(..span))
-            .is_some_and(|region| {
-                T::u16_slice(region).is_none_or(|samples| !u16_samples_exceed(samples, max_sample))
-            });
-    if region_clean {
+    if source.prevalidated {
         scratch.clean_rows.resize(padded_rows, true);
     } else {
         for row_index in 0..padded_rows {
-            let row = padded_row(source.samples, stride, row_index, padded_width)?;
+            let row = padded_row(source.rows, row_index, padded_width)?;
             scratch.clean_rows.push(
                 T::u16_slice(row).is_none_or(|samples| !u16_samples_exceed(samples, max_sample)),
             );
         }
     }
 
-    let direct = region_clean || scratch.clean_rows.iter().all(|&clean| clean);
+    let direct = scratch.clean_rows.iter().all(|&clean| clean);
     if !direct {
         scratch
             .filtered
@@ -578,12 +576,7 @@ fn prepare_luma_padded<T: ReconSample>(
             })?;
         scratch.filtered.resize(sample_count, T::default());
     }
-    Ok(PreparedLumaFilter {
-        tap_offsets,
-        center_offset,
-        max_sample,
-        direct,
-    })
+    Ok(PreparedLumaFilter { max_sample, direct })
 }
 
 fn wiener_ns_filter_luma_block_padded_layout_u16_into<T: ReconSample>(
@@ -600,17 +593,11 @@ fn wiener_ns_filter_luma_block_padded_layout_u16_into<T: ReconSample>(
     }
 
     let context = prepare_luma_padded(output.len(), params, source, subclasses, scratch)?;
-    let Some(samples) = T::u8_slice(source.samples) else {
-        return Err(ReconError::SampleTypeUnsupportedBitDepth {
-            sample_type: T::TYPE_NAME,
-            bit_depth: params.bit_depth,
-        });
-    };
     filter_padded_luma_rows_simd(
         output,
         params.output_stride,
-        samples,
-        source.stride,
+        source.rows,
+        T::u8_slice,
         0..params.height,
         params,
         &scratch.prepared_classes,
@@ -643,12 +630,12 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
         return Ok(());
     }
     macro_rules! filter_source {
-        ($samples:expr) => {
+        ($cast:expr) => {
             filter_padded_luma_rows_simd(
                 output,
                 params.output_stride,
-                $samples,
-                source.stride,
+                source.rows,
+                $cast,
                 0..params.height,
                 params,
                 &scratch.prepared_classes,
@@ -657,10 +644,10 @@ fn wiener_ns_filter_luma_block_padded_layout_u8_into<T: ReconSample>(
             )
         };
     }
-    if let Some(samples) = T::u8_slice(source.samples) {
-        filter_source!(samples)
-    } else if let Some(samples) = T::u16_slice(source.samples) {
-        filter_source!(samples)
+    if T::u8_slice(&[]).is_some() {
+        filter_source!(T::u8_slice)
+    } else if T::u16_slice(&[]).is_some() {
+        filter_source!(T::u16_slice)
     } else {
         Err(ReconError::SampleTypeUnsupportedBitDepth {
             sample_type: T::TYPE_NAME,
@@ -686,8 +673,7 @@ fn filter_luma_rows_to_scratch<T: ReconSample>(
             filter_padded_luma_rows_in_range(
                 filtered,
                 params.width,
-                source.samples,
-                source.stride,
+                source.rows,
                 r..r + 1,
                 params,
                 &scratch.prepared_classes,
@@ -697,10 +683,7 @@ fn filter_luma_rows_to_scratch<T: ReconSample>(
         } else {
             filter_padded_luma_row_validated(
                 filtered,
-                source.samples,
-                source.stride,
-                &context.tap_offsets,
-                context.center_offset,
+                source.rows,
                 r,
                 params,
                 subclasses,
@@ -711,27 +694,11 @@ fn filter_luma_rows_to_scratch<T: ReconSample>(
     Ok(())
 }
 
-fn padded_row<T>(
-    samples: &[T],
-    stride: usize,
-    row_index: usize,
-    padded_width: usize,
-) -> Result<&[T]> {
-    let start = row_index
-        .checked_mul(stride)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "Wiener NS padded row start",
-        })?;
-    let end = start
-        .checked_add(padded_width)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "Wiener NS padded row end",
-        })?;
-    samples
-        .get(start..end)
+fn padded_row<T>(rows: PaddedRows<'_, T>, row_index: usize, padded_width: usize) -> Result<&[T]> {
+    rows.row(row_index, padded_width)
         .ok_or(ReconError::BufferLengthMismatch {
-            expected: end,
-            actual: samples.len(),
+            expected: padded_width,
+            actual: 0,
         })
 }
 
@@ -742,22 +709,19 @@ fn padded_row<T>(
 fn filter_padded_luma_rows_in_range<T: ReconSample>(
     output: &mut [T],
     output_stride: usize,
-    samples: &[T],
-    stride: usize,
+    source: PaddedRows<'_, T>,
     rows: Range<usize>,
     params: &WienerNsLumaFilter<'_>,
     prepared_classes: &[PreparedLumaClass],
     subclasses: LumaSubclassLayout<'_>,
     max_sample: u16,
 ) -> Result<()> {
-    if let Some(samples) = T::u16_slice(samples)
-        && let Some(output) = T::u16_slice_mut(output)
-    {
+    if let Some(output) = T::u16_slice_mut(output) {
         return filter_padded_luma_rows_simd(
             output,
             output_stride,
-            samples,
-            stride,
+            source,
+            T::u16_slice,
             rows,
             params,
             prepared_classes,
@@ -765,14 +729,12 @@ fn filter_padded_luma_rows_in_range<T: ReconSample>(
             max_sample,
         );
     }
-    if let Some(samples) = T::u8_slice(samples)
-        && let Some(output) = T::u8_slice_mut(output)
-    {
+    if let Some(output) = T::u8_slice_mut(output) {
         return filter_padded_luma_rows_simd(
             output,
             output_stride,
-            samples,
-            stride,
+            source,
+            T::u8_slice,
             rows,
             params,
             prepared_classes,
@@ -833,12 +795,14 @@ fn for_each_luma_segment(
 
 /// Filters output `rows` like [`filter_padded_luma_rows_in_range`], finding the
 /// subclass segments once per 4x4 cell row instead of once per row.
+///
+/// `cast` views each source row as the SIMD lane source type.
 #[allow(clippy::too_many_arguments)]
-fn filter_padded_luma_rows_simd<T: LumaSimdSource, O: LumaSimdOutput>(
+fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput>(
     output: &mut [O],
     output_stride: usize,
-    samples: &[T],
-    stride: usize,
+    source_rows: PaddedRows<'a, S>,
+    cast: impl Fn(&'a [S]) -> Option<&'a [T]>,
     rows: Range<usize>,
     params: &WienerNsLumaFilter<'_>,
     prepared_classes: &[PreparedLumaClass],
@@ -858,7 +822,8 @@ fn filter_padded_luma_rows_simd<T: LumaSimdSource, O: LumaSimdOutput>(
             .take(end - first + 2 * WIENER_NS_LUMA_TAP_RADIUS)
             .enumerate()
         {
-            *row = padded_row(samples, stride, first + dy, padded_width)?;
+            *row = cast(padded_row(source_rows, first + dy, padded_width)?)
+                .ok_or_else(|| luma_segment_error(params.width))?;
         }
         for_each_luma_segment(
             first,
@@ -1079,35 +1044,32 @@ const fn luma_segment_error(width: usize) -> ReconError {
 #[allow(clippy::too_many_arguments)]
 fn filter_padded_luma_row_validated<T: ReconSample>(
     filtered: &mut [T],
-    samples: &[T],
-    stride: usize,
-    tap_offsets: &[usize; WIENER_NS_LUMA_TAPS],
-    center_offset: usize,
+    source: PaddedRows<'_, T>,
     r: usize,
     params: &WienerNsLumaFilter<'_>,
     subclasses: LumaSubclassLayout<'_>,
     max_sample: u16,
 ) -> Result<()> {
+    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let padded_width = params.width + 2 * R;
     for (c, slot) in filtered.iter_mut().enumerate().take(params.width) {
         let subclass = subclass_for_position(subclasses, params.width, r, c);
         let coeffs = &params.coeffs_by_class[subclass];
-        let base = r * stride + c;
-        let m = validated_padded_sample(
-            samples,
-            base + center_offset,
-            c as isize,
-            r as isize,
-            max_sample,
-        )?;
+        let sample = |dy: isize, dx: isize| {
+            padded_row(source, (r + R).wrapping_add_signed(dy), padded_width).and_then(|row| {
+                validated_padded_sample(
+                    row,
+                    (c + R).wrapping_add_signed(dx),
+                    c as isize + dx,
+                    r as isize + dy,
+                    max_sample,
+                )
+            })
+        };
+        let m = sample(0, 0)?;
         let mut s = i32::from(m) << WIENER_NS_PREC_BITS;
-        for (&offset, &(dy, dx, coeff_index)) in tap_offsets.iter().zip(&WIENER_NS_CONFIG_Y) {
-            let tap = validated_padded_sample(
-                samples,
-                base + offset,
-                c as isize + dx,
-                r as isize + dy,
-                max_sample,
-            )?;
+        for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y {
+            let tap = sample(dy, dx)?;
             let diff = i32::from(tap) - i32::from(m);
             s += diff * i32::from(coeffs[coeff_index]);
         }
@@ -1451,6 +1413,34 @@ mod tests {
             .unwrap();
         }
 
+        let shifted: Vec<Vec<T>> = source_samples
+            .chunks(source_stride)
+            .map(|row| {
+                [T::default(); 2]
+                    .into_iter()
+                    .chain(row.iter().copied())
+                    .collect()
+            })
+            .collect();
+        let table: Vec<&[T]> = shifted.iter().map(Vec::as_slice).collect();
+        let table_source = WienerNsLumaPaddedSource::from_rows(&table, 2, width, height).unwrap();
+        let mut from_table = vec![T::default(); width * height];
+        wiener_ns_filter_luma_block_padded_cells_into(
+            &mut from_table,
+            &packed_params,
+            &table_source,
+            &cells,
+            &mut WienerNsLumaScratch::default(),
+        )
+        .unwrap();
+        assert!(
+            from_table
+                .iter()
+                .map(|sample| sample.to_u16())
+                .eq(packed.iter().map(|sample| sample.to_u16()))
+        );
+        assert!(WienerNsLumaPaddedSource::from_rows(&table[1..], 2, width, height).is_err());
+
         let output_stride = width + 11;
         let direct_params = params(width, height, output_stride, bit_depth, &coeffs, None);
         let mut direct = vec![u16::MAX; output_stride * height];
@@ -1691,8 +1681,10 @@ mod tests {
         let valid_source =
             WienerNsLumaPaddedSource::new(&samples, source_stride, width, height).unwrap();
         let short_source = WienerNsLumaPaddedSource {
-            samples: &samples[..samples.len() - 1],
-            stride: source_stride,
+            rows: PaddedRows::Strided {
+                samples: &samples[..samples.len() - 1],
+                stride: source_stride,
+            },
             prevalidated: false,
         };
         let coeffs = [ZERO];

@@ -733,19 +733,32 @@ impl<T: ReconSample> LrSourceRow<'_, T> {
     }
 }
 
-impl<'a> LrSourceWindow<'a> {
-    /// Resolves one padded § 7.17 source window into `samples`.
-    ///
-    /// Every row is written across the whole stride, so a buffer that already
-    /// holds enough samples keeps its previous contents instead of being
-    /// cleared and refilled.
+/// The geometry every row of one padded § 7.20.2 source window shares.
+///
+/// The § 7.20.2 column clip does not depend on the row, so every row
+/// replicates its left edge sample over the first `pre` columns, copies
+/// `mid` samples from `mid_start`, and replicates its right edge sample over
+/// the rest.
+struct LrWindowGeometry {
+    resolved: LoopRestorationPlaneBounds,
+    plane_height: usize,
+    y0: isize,
+    x0: isize,
+    stride: usize,
+    rows: usize,
+    left: usize,
+    right: usize,
+    pre: usize,
+    mid: usize,
+    mid_start: usize,
+}
+
+impl LrWindowGeometry {
     #[allow(clippy::too_many_arguments)]
-    fn materialize<T: ReconSample>(
-        samples: &'a mut Vec<u16>,
+    fn new<T: ReconSample>(
         plane: PlaneId,
         curr_plane: FramePlane<'_, T>,
         cdef_plane: &StripePlane,
-        cdef_overlap: &[StripePlane],
         bounds: &LoopRestorationSourceBounds,
         block_x: isize,
         block_y: isize,
@@ -766,113 +779,294 @@ impl<'a> LrSourceWindow<'a> {
         let rows = height
             .checked_add(radius_y.checked_mul(2).ok_or(OVERFLOW_WINDOW)?)
             .ok_or(OVERFLOW_WINDOW)?;
-        let sample_count = stride.checked_mul(rows).ok_or(OVERFLOW_WINDOW)?;
-        let radius_x = isize::try_from(radius_x).map_err(|_| OVERFLOW_WINDOW)?;
-        let radius_y = isize::try_from(radius_y).map_err(|_| OVERFLOW_WINDOW)?;
-        if let Some(missing) = sample_count.checked_sub(samples.len()).filter(|n| *n > 0) {
-            samples.try_reserve_exact(missing).map_err(|_| {
-                ReconError::WorkspaceAllocationFailed {
-                    plane,
-                    context: "LR source window",
-                }
-            })?;
-            samples.resize(sample_count, 0);
-        }
+        let offset = |value: isize, radius: usize| value.checked_sub(isize::try_from(radius).ok()?);
+        let x0 = offset(block_x, radius_x).ok_or(OVERFLOW_WINDOW)?;
         let resolved = LoopRestorationPlaneBounds::new(plane, bounds)?;
-        for row_index in 0..rows {
-            let y = block_y
-                .checked_sub(radius_y)
-                .and_then(|top| top.checked_add(isize::try_from(row_index).ok()?))
-                .ok_or(OVERFLOW_WINDOW)?;
-            let left = resolved.sample(isize::MIN, y);
-            let right = resolved.sample(isize::MAX, y);
-            if right.x >= plane_width || left.y >= plane_height {
-                return Err(ReconError::PcWienerInvalidBounds {
-                    field: "LR source frame bounds",
-                });
+        let left = resolved.sample(isize::MIN, 0).x;
+        let right = resolved.sample(isize::MAX, 0).x;
+        if right >= plane_width {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LR source frame bounds",
+            });
+        }
+        let min_x = isize::try_from(left).map_err(|_| OVERFLOW_WINDOW)?;
+        let max_x = isize::try_from(right).map_err(|_| OVERFLOW_WINDOW)?;
+        let stride_i = isize::try_from(stride).map_err(|_| OVERFLOW_WINDOW)?;
+        let pre = min_x
+            .checked_sub(x0)
+            .ok_or(OVERFLOW_WINDOW)?
+            .clamp(0, stride_i) as usize;
+        let post = x0
+            .checked_add(stride_i)
+            .and_then(|end| end.checked_sub(1))
+            .and_then(|last| last.checked_sub(max_x))
+            .ok_or(OVERFLOW_WINDOW)?
+            .clamp(
+                0,
+                stride_i.checked_sub(pre as isize).ok_or(OVERFLOW_WINDOW)?,
+            ) as usize;
+        Ok(Self {
+            resolved,
+            plane_height,
+            y0: offset(block_y, radius_y).ok_or(OVERFLOW_WINDOW)?,
+            x0,
+            stride,
+            rows,
+            left,
+            right,
+            pre,
+            mid: stride - pre - post,
+            mid_start: (x0 + pre as isize) as usize,
+        })
+    }
+
+    /// Resolves window row `row_index` to its § 7.20.2 source row.
+    fn row<'a, T: ReconSample>(
+        &self,
+        row_index: usize,
+        curr_plane: FramePlane<'a, T>,
+        cdef_plane: &'a StripePlane,
+        cdef_overlap: &'a [StripePlane],
+    ) -> ReconResult<LrSourceRow<'a, T>> {
+        let y = isize::try_from(row_index)
+            .ok()
+            .and_then(|row| self.y0.checked_add(row))
+            .ok_or(OVERFLOW_WINDOW)?;
+        let sample = self.resolved.sample(0, y);
+        if sample.y >= self.plane_height {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LR source frame bounds",
+            });
+        }
+        Ok(match sample.source {
+            LoopRestorationSource::CurrFrame => {
+                LrSourceRow::Curr(curr_plane.row(sample.y).ok_or_else(|| {
+                    ReconError::BufferLengthMismatch {
+                        expected: sample.y.saturating_add(1),
+                        actual: curr_plane.frame_height(),
+                    }
+                })?)
             }
-            let source_row = match left.source {
-                LoopRestorationSource::CurrFrame => {
-                    LrSourceRow::Curr(curr_plane.row(left.y).ok_or(
-                        ReconError::BufferLengthMismatch {
-                            expected: left.y.saturating_add(1),
-                            actual: curr_plane.frame_height(),
-                        },
-                    )?)
-                }
-                LoopRestorationSource::CdefFrame => LrSourceRow::Cdef(
-                    cdef_plane
-                        .row(left.y)
-                        .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(left.y)))
-                        .ok_or(ReconError::BufferLengthMismatch {
-                            expected: left.y.saturating_add(1),
-                            actual: cdef_plane.end_y().unwrap_or(cdef_plane.origin_y()),
-                        })?,
-                ),
+            LoopRestorationSource::CdefFrame => LrSourceRow::Cdef(
+                cdef_plane
+                    .row(sample.y)
+                    .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(sample.y)))
+                    .ok_or_else(|| ReconError::BufferLengthMismatch {
+                        expected: sample.y.saturating_add(1),
+                        actual: cdef_plane.end_y().unwrap_or(cdef_plane.origin_y()),
+                    })?,
+            ),
+        })
+    }
+
+    /// The source samples of `row` themselves when no window column is
+    /// clipped and the row already holds `u16` samples.
+    fn borrowed<'a, T: ReconSample>(&self, row: &LrSourceRow<'a, T>) -> Option<&'a [u16]> {
+        if self.mid != self.stride {
+            return None;
+        }
+        let columns = self.mid_start..self.mid_start.checked_add(self.stride)?;
+        match *row {
+            LrSourceRow::Curr(row) => T::u16_slice(row.get(columns)?),
+            LrSourceRow::Cdef(row) => row.get(columns),
+        }
+    }
+
+    fn write<T: ReconSample>(
+        &self,
+        source_row: &LrSourceRow<'_, T>,
+        output: &mut [u16],
+    ) -> ReconResult<()> {
+        let edge = |x: usize| {
+            source_row.get(x).ok_or(ReconError::BufferLengthMismatch {
+                expected: x.saturating_add(1),
+                actual: source_row.len(),
+            })
+        };
+        let (pre, mid) = (self.pre, self.mid);
+        output[..pre].fill(edge(self.left)?);
+        if mid > 0 {
+            let mid_end = self.mid_start.saturating_add(mid);
+            let missing = ReconError::BufferLengthMismatch {
+                expected: mid_end,
+                actual: source_row.len(),
             };
-            let min_x = isize::try_from(left.x).map_err(|_| OVERFLOW_WINDOW)?;
-            let max_x = isize::try_from(right.x).map_err(|_| OVERFLOW_WINDOW)?;
-            let x0 = block_x.checked_sub(radius_x).ok_or(OVERFLOW_WINDOW)?;
-            let stride_i = isize::try_from(stride).map_err(|_| OVERFLOW_WINDOW)?;
-            let pre = min_x
-                .checked_sub(x0)
-                .ok_or(OVERFLOW_WINDOW)?
-                .clamp(0, stride_i) as usize;
-            let post = x0
-                .checked_add(stride_i)
-                .and_then(|end| end.checked_sub(1))
-                .and_then(|last| last.checked_sub(max_x))
-                .ok_or(OVERFLOW_WINDOW)?
-                .clamp(
-                    0,
-                    stride_i.checked_sub(pre as isize).ok_or(OVERFLOW_WINDOW)?,
-                ) as usize;
-            let mid = stride - pre - post;
-            let left_value = source_row
-                .get(left.x)
-                .ok_or(ReconError::BufferLengthMismatch {
-                    expected: left.x.saturating_add(1),
-                    actual: source_row.len(),
-                })?;
-            let row_start = row_index * stride;
-            samples[row_start..row_start + pre].fill(left_value);
-            if mid > 0 {
-                let mid_start = (x0 + pre as isize) as usize;
-                let mid_end = mid_start.saturating_add(mid);
-                let missing = ReconError::BufferLengthMismatch {
-                    expected: mid_end,
-                    actual: source_row.len(),
-                };
-                let output = &mut samples[row_start + pre..row_start + pre + mid];
-                match &source_row {
-                    LrSourceRow::Curr(row) => {
-                        let source = row.get(mid_start..mid_end).ok_or(missing)?;
-                        if let Some(source) = T::u16_slice(source) {
-                            output.copy_from_slice(source);
-                        } else {
-                            for (output, &value) in output.iter_mut().zip(source) {
-                                *output = value.to_u16();
-                            }
+            let output = &mut output[pre..pre + mid];
+            match source_row {
+                LrSourceRow::Curr(row) => {
+                    let source = row.get(self.mid_start..mid_end).ok_or(missing)?;
+                    if let Some(source) = T::u16_slice(source) {
+                        output.copy_from_slice(source);
+                    } else {
+                        for (output, &value) in output.iter_mut().zip(source) {
+                            *output = value.to_u16();
                         }
                     }
-                    LrSourceRow::Cdef(row) => {
-                        output.copy_from_slice(row.get(mid_start..mid_end).ok_or(missing)?);
-                    }
+                }
+                LrSourceRow::Cdef(row) => {
+                    output.copy_from_slice(row.get(self.mid_start..mid_end).ok_or(missing)?);
                 }
             }
-            let right_value = source_row
-                .get(right.x)
-                .ok_or(ReconError::BufferLengthMismatch {
-                    expected: right.x.saturating_add(1),
-                    actual: source_row.len(),
-                })?;
-            samples[row_start + pre + mid..row_start + stride].fill(right_value);
+        }
+        output[pre + mid..].fill(edge(self.right)?);
+        Ok(())
+    }
+}
+
+/// A § 7.20.1 stripe is 64 luma rows and no LR block spans two, so a luma
+/// source window never holds more rows than this, and a `u128` row mask
+/// covers it.
+const MAX_LR_WINDOW_ROWS: usize = 64 + 2 * PC_WIENER_CLASSIFY_READ_RADIUS;
+const _: () = assert!(MAX_LR_WINDOW_ROWS <= 128);
+
+/// A padded § 7.20.2 luma source window as rows: an unclipped row borrows its
+/// source plane row, and only a clipped or `u8` row is resolved into the
+/// scratch.
+struct LrSourceRows<'a> {
+    rows: [&'a [u16]; MAX_LR_WINDOW_ROWS],
+    len: usize,
+    radius: usize,
+    origin_x: isize,
+    origin_y: isize,
+}
+
+impl<'a> LrSourceRows<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn resolve<T: ReconSample>(
+        scratch: &'a mut Vec<u16>,
+        curr_plane: FramePlane<'a, T>,
+        cdef_plane: &'a StripePlane,
+        cdef_overlap: &'a [StripePlane],
+        bounds: &LoopRestorationSourceBounds,
+        block_x: isize,
+        block_y: isize,
+        width: usize,
+        height: usize,
+        radius: usize,
+    ) -> ReconResult<Self> {
+        let geometry = LrWindowGeometry::new(
+            PlaneId::Y,
+            curr_plane,
+            cdef_plane,
+            bounds,
+            block_x,
+            block_y,
+            width,
+            height,
+            (radius, radius),
+        )?;
+        let (stride, len) = (geometry.stride, geometry.rows);
+        if len > MAX_LR_WINDOW_ROWS {
+            return Err(OVERFLOW_WINDOW);
+        }
+        reserve_window(
+            scratch,
+            PlaneId::Y,
+            stride.checked_mul(len).ok_or(OVERFLOW_WINDOW)?,
+        )?;
+        let cdef_origin = usize_to_isize_recon(cdef_plane.origin_y(), "LR source window rows")?;
+        let (cdef_first, cdef_last) = geometry.resolved.cdef_rows();
+        let cdef_first = cdef_first.max(cdef_origin);
+        let cdef_start = |y: isize| {
+            let row = usize::try_from(y.checked_sub(cdef_origin)?).ok()?;
+            row.checked_mul(cdef_plane.width())?
+                .checked_add(geometry.mid_start)
+        };
+        let unclipped = geometry.mid == stride;
+        let mut rows: [&'a [u16]; MAX_LR_WINDOW_ROWS] = [&[]; MAX_LR_WINDOW_ROWS];
+        let mut in_scratch = 0u128;
+        for (row_index, row) in rows.iter_mut().enumerate().take(len) {
+            let y = geometry.y0 + row_index as isize;
+            if unclipped
+                && (cdef_first..=cdef_last).contains(&y)
+                && let Some(samples) = cdef_start(y)
+                    .and_then(|start| cdef_plane.samples().get(start..start.checked_add(stride)?))
+            {
+                *row = samples;
+                continue;
+            }
+            let source = geometry.row(row_index, curr_plane, cdef_plane, cdef_overlap)?;
+            if let Some(samples) = geometry.borrowed(&source) {
+                *row = samples;
+                continue;
+            }
+            geometry.write(
+                &source,
+                &mut scratch[row_index * stride..(row_index + 1) * stride],
+            )?;
+            in_scratch |= 1 << row_index;
+        }
+        let scratch: &'a [u16] = scratch;
+        for (row_index, row) in rows.iter_mut().enumerate().take(len) {
+            if in_scratch & (1 << row_index) != 0 {
+                *row = &scratch[row_index * stride..(row_index + 1) * stride];
+            }
+        }
+        Ok(Self {
+            rows,
+            len,
+            radius,
+            origin_x: geometry.x0,
+            origin_y: geometry.y0,
+        })
+    }
+
+    /// The rows reaching `tap_radius` around the block, and the column in
+    /// each row where they start.
+    fn tail(&self, tap_radius: usize) -> Option<(&[&'a [u16]], usize)> {
+        let skip = self.radius.checked_sub(tap_radius)?;
+        Some((self.rows.get(skip..self.len - skip)?, skip))
+    }
+}
+
+fn reserve_window(samples: &mut Vec<u16>, plane: PlaneId, sample_count: usize) -> ReconResult<()> {
+    if let Some(missing) = sample_count.checked_sub(samples.len()).filter(|n| *n > 0) {
+        samples
+            .try_reserve_exact(missing)
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "LR source window",
+            })?;
+        samples.resize(sample_count, 0);
+    }
+    Ok(())
+}
+
+impl<'a> LrSourceWindow<'a> {
+    /// Resolves one padded § 7.17 source window into `samples`.
+    ///
+    /// Every row is written across the whole stride, so a buffer that already
+    /// holds enough samples keeps its previous contents instead of being
+    /// cleared and refilled.
+    #[allow(clippy::too_many_arguments)]
+    fn materialize<T: ReconSample>(
+        samples: &'a mut Vec<u16>,
+        plane: PlaneId,
+        curr_plane: FramePlane<'_, T>,
+        cdef_plane: &StripePlane,
+        cdef_overlap: &[StripePlane],
+        bounds: &LoopRestorationSourceBounds,
+        block_x: isize,
+        block_y: isize,
+        width: usize,
+        height: usize,
+        radius: (usize, usize),
+    ) -> ReconResult<Self> {
+        let geometry = LrWindowGeometry::new(
+            plane, curr_plane, cdef_plane, bounds, block_x, block_y, width, height, radius,
+        )?;
+        let stride = geometry.stride;
+        let sample_count = stride.checked_mul(geometry.rows).ok_or(OVERFLOW_WINDOW)?;
+        reserve_window(samples, plane, sample_count)?;
+        for (row_index, output) in samples[..sample_count].chunks_exact_mut(stride).enumerate() {
+            let row = geometry.row(row_index, curr_plane, cdef_plane, cdef_overlap)?;
+            geometry.write(&row, output)?;
         }
         Ok(Self {
             samples: samples.get(..sample_count).ok_or(OVERFLOW_WINDOW)?,
             stride,
-            origin_x: block_x.checked_sub(radius_x).ok_or(OVERFLOW_WINDOW)?,
-            origin_y: block_y.checked_sub(radius_y).ok_or(OVERFLOW_WINDOW)?,
+            origin_x: geometry.x0,
+            origin_y: geometry.y0,
         })
     }
 
@@ -1167,9 +1361,8 @@ impl StripeChain<'_> {
                 cell_subclasses,
                 ..
             } = scratch;
-            let window = LrSourceWindow::materialize(
+            let window = LrSourceRows::resolve(
                 primary,
-                PlaneId::Y,
                 curr_luma,
                 cdef_luma,
                 cdef_luma_overlap,
@@ -1178,10 +1371,7 @@ impl StripeChain<'_> {
                 block_y,
                 block.width,
                 block.height,
-                {
-                    let radius = PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS);
-                    (radius, radius)
-                },
+                PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS),
             )
             .map_err(lr_window_error)?;
             let subclass_map = self.luma_lr_cell_subclasses(
@@ -1201,21 +1391,12 @@ impl StripeChain<'_> {
                 subclass_block_size: MI_SIZE,
                 subclasses: subclass_map,
             };
-            let tap_radius = isize::try_from(PC_WIENER_FILTER_TAP_RADIUS)
-                .map_err(|_| super::lr_pipeline_state_error())?;
-            let (padded, padded_stride) = window
-                .tail_from(
-                    block_x.saturating_sub(tap_radius),
-                    block_y.saturating_sub(tap_radius),
-                )
+            let (rows, col) = window
+                .tail(PC_WIENER_FILTER_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
-            let padded_source = PcWienerPaddedSource::new_prevalidated(
-                padded,
-                padded_stride,
-                block.width,
-                block.height,
-            )
-            .map_err(lr_window_error)?;
+            let padded_source =
+                PcWienerPaddedSource::from_rows(rows, col, block.width, block.height)
+                    .map_err(lr_window_error)?;
             pc_wiener_filter_block_padded(output, &params, &padded_source)
                 .map_err(lr_window_error)?;
             self.preserve_lossless_lr_samples(
@@ -1430,9 +1611,8 @@ impl StripeChain<'_> {
                 cell_subclasses,
                 ..
             } = scratch;
-            let window = LrSourceWindow::materialize(
+            let window = LrSourceRows::resolve(
                 primary,
-                PlaneId::Y,
                 curr_luma,
                 cdef_luma,
                 cdef_luma_overlap,
@@ -1441,10 +1621,7 @@ impl StripeChain<'_> {
                 block_y,
                 block.width,
                 block.height,
-                {
-                    let radius = WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS);
-                    (radius, radius)
-                },
+                WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
             )
             .map_err(lr_window_error)?;
             let cell_subclass_map = if num_classes > 1 {
@@ -1467,21 +1644,12 @@ impl StripeChain<'_> {
                 coeffs_by_class: coeffs,
                 subclasses: None,
             };
-            let tap_radius = isize::try_from(WIENER_NS_LUMA_TAP_RADIUS)
-                .map_err(|_| super::lr_pipeline_state_error())?;
-            let (padded, padded_stride) = window
-                .tail_from(
-                    block_x.saturating_sub(tap_radius),
-                    block_y.saturating_sub(tap_radius),
-                )
+            let (rows, col) = window
+                .tail(WIENER_NS_LUMA_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
-            let padded_source = WienerNsLumaPaddedSource::new_prevalidated(
-                padded,
-                padded_stride,
-                block.width,
-                block.height,
-            )
-            .map_err(lr_window_error)?;
+            let padded_source =
+                WienerNsLumaPaddedSource::from_rows(rows, col, block.width, block.height)
+                    .map_err(lr_window_error)?;
             with_wiener_ns_luma_scratch::<u16, _>(sample_count, |scratch| match &mut output {
                 LrDestination::U16(output) => {
                     if let Some(cell_subclasses) = cell_subclass_map {
@@ -1601,7 +1769,7 @@ impl StripeChain<'_> {
     fn luma_lr_cell_subclasses<'a>(
         &self,
         block: &WienerNsLrSourceBlock,
-        window: &LrSourceWindow<'_>,
+        window: &LrSourceRows<'_>,
         qindex: u32,
         num_classes: usize,
         filter_set_index: usize,
@@ -1635,9 +1803,9 @@ impl StripeChain<'_> {
         }
         let subclass_table =
             pc_wiener_subclass_table(num_classes, filter_set_index).map_err(lr_window_error)?;
-        let padded_source = PcWienerClassifyPaddedSource::new_prevalidated(
-            window.samples,
-            window.stride,
+        let padded_source = PcWienerClassifyPaddedSource::from_rows(
+            &window.rows[..window.len],
+            0,
             window.origin_x,
             window.origin_y,
             self.bit_depth,

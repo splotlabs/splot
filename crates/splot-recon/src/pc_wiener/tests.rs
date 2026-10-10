@@ -422,6 +422,23 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
                     actual, reference,
                     "{bit_depth:?} width {width} {filter_set_index}"
                 );
+                let table: Vec<&[u16]> = padded.chunks(stride).collect();
+                let source = PcWienerPaddedSource::from_rows(&table[1..], 1, width - 1, 1).unwrap();
+                let narrow = PcWienerFilter {
+                    width: width - 1,
+                    height: 1,
+                    ..params
+                };
+                if width > 4 {
+                    let mut from_table = vec![0u16; width - 1];
+                    pc_wiener_filter_block_padded(&mut from_table, &narrow, &source).unwrap();
+                    let mut reference = vec![0u16; width - 1];
+                    pc_wiener_filter_block(&mut reference, &narrow, |x, y| {
+                        Ok(source_at(x + 1, y + 1))
+                    })
+                    .unwrap();
+                    assert_eq!(from_table, reference, "table width {width}");
+                }
             }
         }
     }
@@ -759,6 +776,24 @@ fn padded_and_callback_classify_grids_match_bit_exactly() {
 
     assert_eq!(callback, padded);
     assert_eq!(padded, reused);
+
+    let shifted: Vec<Vec<u16>> = buffer
+        .chunks(stride)
+        .map(|row| [0, 0].into_iter().chain(row.iter().copied()).collect())
+        .collect();
+    let table: Vec<&[u16]> = shifted.iter().map(Vec::as_slice).collect();
+    let source =
+        PcWienerClassifyPaddedSource::from_rows(&table, 2, origin_x, origin_y, BitDepth::Ten)
+            .unwrap();
+    let from_table = pc_wiener_classify_grid_padded::<u16, _>(
+        &params,
+        cell_cols,
+        cell_rows,
+        &source,
+        alternating_tx_skip,
+    )
+    .unwrap();
+    assert_eq!(callback, from_table);
 }
 
 fn padded_classify_fixture(params: &PcWienerClassifyParams) -> (Vec<u16>, usize, isize, isize) {
