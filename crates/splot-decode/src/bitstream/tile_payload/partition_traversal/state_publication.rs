@@ -188,9 +188,9 @@ pub(super) fn publish_intra_leaf_state<E>(
                     },
                 ));
             }
-            joint_modes.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
-            fsc_modes.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
-            use_dip.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
+            joint_modes.record_non_intra_block(call.r, call.c);
+            fsc_modes.record_non_intra_block(call.r, call.c);
+            use_dip.record_non_intra_block(call.r, call.c);
             if leaf_mode.is_intrabc() {
                 y_modes.record_block(
                     call.r,
