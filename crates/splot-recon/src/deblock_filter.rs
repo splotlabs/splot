@@ -1244,21 +1244,31 @@ impl<'a> EdgeKernel<'a> {
         )
     }
 
-    /// Whether § 7.17.7.1 leaves all four lines unchanged; the § 7.17.7.2
-    /// width then does not matter.
+    /// `p1 - q1 + 3 * (q0 - p0)` of the four lines, or `None` when § 7.17.7.1
+    /// leaves all four lines unchanged; the § 7.17.7.2 width then does not
+    /// matter.
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    fn is_noop(
+    fn line_deltas(
         &self,
         p1: Simd<i16, MI_LINES>,
         p0: Simd<i16, MI_LINES>,
         q0: Simd<i16, MI_LINES>,
         q1: Simd<i16, MI_LINES>,
-    ) -> bool {
-        (p1 - q1 + (q0 - p0) * Simd::splat(3))
-            .abs()
-            .simd_le(Simd::splat(self.noop_delta))
-            .all()
+    ) -> Option<Simd<i16, MI_LINES>> {
+        let deltas = p1 - q1 + (q0 - p0) * Simd::splat(3);
+        let unchanged = deltas.abs().simd_le(Simd::splat(self.noop_delta)).all();
+        (!unchanged).then_some(deltas)
+    }
+
+    /// The § 7.17.7.1 `deltaM2` of the four lines.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn delta_m2(deltas: Simd<i16, MI_LINES>, q_thr_clamp: i16) -> Simd<i32, MI_LINES> {
+        (deltas * Simd::splat(4))
+            .simd_max(Simd::splat(-q_thr_clamp))
+            .simd_min(Simd::splat(q_thr_clamp))
+            .cast::<i32>()
     }
 
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
@@ -1270,14 +1280,14 @@ impl<'a> EdgeKernel<'a> {
         let (u, v) = (line(first + stride), line(first + 2 * stride));
         let top = simd_swizzle!(s, u, [6, 7, 8, 9, 22, 23, 24, 25]);
         let bottom = simd_swizzle!(v, t, [6, 7, 8, 9, 22, 23, 24, 25]);
-        if self.is_noop(
+        let Some(deltas) = self.line_deltas(
             simd_swizzle!(top, bottom, [0, 4, 8, 12]),
             simd_swizzle!(top, bottom, [1, 5, 9, 13]),
             simd_swizzle!(top, bottom, [2, 6, 10, 14]),
             simd_swizzle!(top, bottom, [3, 7, 11, 15]),
-        ) {
+        ) else {
             return 0;
-        }
+        };
         let centre = simd_swizzle!(s, t, [6, 7, 8, 9, 22, 23, 24, 25]);
         let left = simd_swizzle!(s, t, [5, 6, 7, 8, 21, 22, 23, 24]);
         let right = simd_swizzle!(s, t, [7, 8, 9, 10, 23, 24, 25, 26]);
@@ -1291,10 +1301,12 @@ impl<'a> EdgeKernel<'a> {
             return 0;
         }
         let weights = self.weights(width);
+        let delta = Self::delta_m2(deltas, weights.2);
         if weights.0.max(weights.1) <= EDGE_REACH / 2 {
-            self.filter_rows::<E, EDGE_REACH>(samples, first + EDGE_REACH / 2, stride, weights);
+            let first = first + EDGE_REACH / 2;
+            self.filter_rows::<E, EDGE_REACH>(samples, first, stride, weights, delta);
         } else {
-            self.filter_rows::<E, { 2 * EDGE_REACH }>(samples, first, stride, weights);
+            self.filter_rows::<E, { 2 * EDGE_REACH }>(samples, first, stride, weights, delta);
         }
         width
     }
@@ -1310,7 +1322,8 @@ impl<'a> EdgeKernel<'a> {
         samples: &mut [E],
         first: usize,
         stride: usize,
-        (width_neg, width_pos, q_thr_clamp, w_neg, w_pos): (usize, usize, i16, i16, i16),
+        (width_neg, width_pos, _, w_neg, w_pos): (usize, usize, i16, i16, i16),
+        delta: Simd<i32, MI_LINES>,
     ) {
         let half = (N / 2) as i16;
         let lane = Simd::<i16, N>::from_array(core::array::from_fn(|lane| lane as i16));
@@ -1325,16 +1338,11 @@ impl<'a> EdgeKernel<'a> {
             .cast::<i32>()
             .select(Simd::splat(1023), Simd::splat(1024));
         let high = Simd::splat(self.max_sample);
-        let h = N / 2;
         for row in 0..MI_LINES {
             let start = first + row * stride;
             let line = &mut samples[start..start + N];
             let values = E::widen::<N>(line);
-            let (p1, p0, q0, q1) = (values[h - 2], values[h - 1], values[h], values[h + 1]);
-            let delta = (((p1 - q1) + 3 * (q0 - p0)) * 4)
-                .max(-q_thr_clamp)
-                .min(q_thr_clamp);
-            let diff = ((coefficient * Simd::splat(i32::from(delta)) + round) >> 11).cast::<i16>();
+            let diff = ((coefficient * Simd::splat(delta[row]) + round) >> 11).cast::<i16>();
             E::narrow((values + diff).simd_max(zero).simd_min(high), line);
         }
     }
@@ -1347,9 +1355,9 @@ impl<'a> EdgeKernel<'a> {
             E::widen::<MI_LINES>(&samples[start..start + MI_LINES])
         };
         let rows: [Simd<i16, MI_LINES>; 6] = core::array::from_fn(|k| row(samples, k as isize - 3));
-        if self.is_noop(rows[1], rows[2], rows[3], rows[4]) {
+        let Some(deltas) = self.line_deltas(rows[1], rows[2], rows[3], rows[4]) else {
             return 0;
-        }
+        };
         let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
         let (d0, d1, d2, d3) = (second(0), second(1), second(2), second(3));
         let pairs =
@@ -1364,16 +1372,7 @@ impl<'a> EdgeKernel<'a> {
             return 0;
         }
         let (width_neg, width_pos, q_thr_clamp, w_neg, w_pos) = self.weights(width);
-        let (p1, p0, q0, q1) = (
-            row(samples, -2),
-            row(samples, -1),
-            row(samples, 0),
-            row(samples, 1),
-        );
-        let delta = ((p1 - q1 + (q0 - p0) * Simd::splat(3)) * Simd::splat(4))
-            .simd_max(Simd::splat(-q_thr_clamp))
-            .simd_min(Simd::splat(q_thr_clamp))
-            .cast::<i32>();
+        let delta = Self::delta_m2(deltas, q_thr_clamp);
         let (zero, high) = (Simd::splat(0), Simd::splat(self.max_sample));
         let mut filter = |offset: isize, coefficient: i32, round: i32| {
             let start = first + (EDGE_REACH as isize + offset) as usize * stride;
