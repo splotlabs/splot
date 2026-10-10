@@ -1052,10 +1052,12 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[inline(always)]
 fn compound_optflow_subpel_params<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
-    plane: PlaneId,
+    bit_depth: splot_recon::BitDepth,
+    interp: InterpolationFilter,
+    subblock_area: Option<(usize, usize)>,
     sub_x: u32,
     sub_y: u32,
     motion: &CompoundMotionGrid,
@@ -1088,11 +1090,7 @@ fn compound_optflow_subpel_params<T: ReconSample>(
                     prediction.scalings[reference],
                 ))
             })
-        } else if let Some((area_width, area_height)) = subblock_reference_area_size(
-            plane,
-            (motion.unit_size >> sub_x).max(4),
-            (motion.unit_size >> sub_y).max(4),
-        ) {
+        } else if let Some((area_width, area_height)) = subblock_area {
             core::array::from_fn(|reference| {
                 Some(super::refinemv::reference_area_bounds(
                     (prediction.plane_x + col) as i32,
@@ -1111,7 +1109,7 @@ fn compound_optflow_subpel_params<T: ReconSample>(
     core::array::from_fn(|reference| {
         let scaling = scalings[reference];
         SubpelPredictParams {
-            interp: block.interp,
+            interp,
             w: width,
             h: height,
             start_x: scaling.start_x,
@@ -1122,7 +1120,7 @@ fn compound_optflow_subpel_params<T: ReconSample>(
             first_y: bounds[reference].map_or(scaling.first_y, |bounds| bounds.first_y),
             last_x: bounds[reference].map_or(scaling.last_x, |bounds| bounds.last_x),
             last_y: bounds[reference].map_or(scaling.last_y, |bounds| bounds.last_y),
-            bit_depth: sink.info().bit_depth(),
+            bit_depth,
         }
     })
 }
@@ -1177,9 +1175,9 @@ pub(super) fn predict_uniform_motion_compound_average_into<
         return Ok(false);
     }
     let params = compound_optflow_subpel_params(
-        sink,
-        block,
-        plane,
+        sink.info().bit_depth(),
+        block.interp,
+        subblock_reference_area_size(plane, subblock_w, subblock_h),
         sub_x,
         sub_y,
         motion,
@@ -1244,7 +1242,11 @@ pub(super) fn predict_motion_grid_compound_average_into<
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
+    let subblock_area = subblock_reference_area_size(plane, subblock_w, subblock_h);
     let bit_depth = sink.info().bit_depth();
+    let uniform_everywhere = !implicit_mask
+        || cwp_weight != CWP_EQUAL
+        || prediction.scalings.into_iter().any(PlaneScaling::is_scaled);
     let process_row = |cell_row: usize,
                        row: usize,
                        output: &mut [O],
@@ -1266,19 +1268,20 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     sub_y,
                 )
             });
-            let uniform = super::compound_average_weights_are_uniform(
-                implicit_mask,
-                cwp_weight,
-                width,
-                height,
-                prediction.scalings,
-                Some(scalings),
-                (frame_w, frame_h),
-            );
+            let uniform = uniform_everywhere
+                || super::compound_average_weights_are_uniform(
+                    implicit_mask,
+                    cwp_weight,
+                    width,
+                    height,
+                    prediction.scalings,
+                    Some(scalings),
+                    (frame_w, frame_h),
+                );
             let params = compound_optflow_subpel_params(
-                sink,
-                block,
-                plane,
+                bit_depth,
+                block.interp,
+                subblock_area,
                 sub_x,
                 sub_y,
                 motion,
@@ -1553,6 +1556,8 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     let prediction = super::compound_subpel_plane(sink, block, plane, sub_x, sub_y, offset)?;
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
+    let subblock_area = subblock_reference_area_size(plane, subblock_w, subblock_h);
+    let bit_depth = sink.info().bit_depth();
     let [mut pred0, mut pred1] =
         super::take_compound_prediction_buffers(prediction.block_w * prediction.block_h);
 
@@ -1573,9 +1578,9 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                 )
             });
             let params = compound_optflow_subpel_params(
-                sink,
-                block,
-                plane,
+                bit_depth,
+                block.interp,
+                subblock_area,
                 sub_x,
                 sub_y,
                 motion,

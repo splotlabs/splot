@@ -2031,6 +2031,7 @@ fn compound_uniform_scalings(
     }
 }
 
+#[inline]
 fn compound_average_weights_are_uniform(
     implicit_mask: bool,
     cwp_weight: i16,
