@@ -56,7 +56,7 @@ fn grid(
                 .map(|&mvs| MotionCell::from_refinemv(mvs))
                 .collect(),
         ),
-        run_pairs: core::sync::atomic::AtomicU8::new(u8::from(!merge)),
+        fullpel_runs: merge,
         refinemv_candidates: RefinemvCandidates::PerCell {
             candidates: candidates.to_vec(),
             unit_size: 8,
@@ -198,8 +198,13 @@ fn merged_runs_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
             assert_eq!(mask, expected_mask, "{bit_depth:?} {format:?} {rect:?}");
         }
     }
-    assert!(grid(6, &cells, &candidates, true).has_run_pairs());
-    assert!(!grid(2, &[subpel, shifted], &[subpel, shifted], true).has_run_pairs());
+    let cells_of = |mvs: &[[Mv; 2]]| {
+        mvs.iter()
+            .map(|&mvs| MotionCell::from_refinemv(mvs))
+            .collect::<Vec<_>>()
+    };
+    assert!(fullpel_run_pairs(&cells_of(&cells), 6));
+    assert!(!fullpel_run_pairs(&cells_of(&[subpel, shifted]), 2));
 }
 
 #[test]
@@ -207,4 +212,206 @@ fn merged_fullpel_runs_match_per_cell_prediction() {
     merged_runs_match_per_cell::<u8>(BitDepth::Eight, PixelFormat::Yuv420);
     merged_runs_match_per_cell::<u16>(BitDepth::Ten, PixelFormat::Yuv420);
     merged_runs_match_per_cell::<u8>(BitDepth::Eight, PixelFormat::Yuv444);
+}
+
+fn lcg(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    *state >> 33
+}
+
+/// Two `width`-wide references: a noisy ramp, and the ramp with up to
+/// `noise` added in the columns `noisy` selects.
+fn noisy_ramps<T: ReconSample>(
+    bit_depth: BitDepth,
+    (width, height): (usize, usize),
+    noise: u64,
+    noisy: impl Fn(usize) -> bool,
+    s: &mut u64,
+) -> [DecodedFrame<T>; 2] {
+    let max = u64::from(bit_depth.max_sample());
+    let base: Vec<u64> = (0..width * height)
+        .map(|i| ((i % width) as u64 * 5 + (i / width) as u64 * 3 + lcg(s) % 3) % (max + 1))
+        .collect();
+    let other = (0..base.len())
+        .map(|i| base[i] + u64::from(noisy(i % width)) * (lcg(s) % (noise + 1)))
+        .collect();
+    [base, other].map(|luma| {
+        let sample = |v: u64| T::try_from_u16(v.min(max) as u16).expect("sample");
+        let chroma = vec![sample(64); (width / 2) * (height / 2)];
+        frame_for(
+            bit_depth,
+            PixelFormat::Yuv420,
+            width,
+            height,
+            luma.into_iter().map(sample).collect(),
+            chroma.clone(),
+            chroma,
+        )
+    })
+}
+
+/// The TIP grid of 8x8 units over the whole frame, and its per-unit cells.
+fn tip_grid_and_cells<T: ReconSample>(
+    references: &[DecodedFrame<T>; 2],
+    mvs: &[[Mv; 2]],
+    (threshold, refine, search): (Option<u32>, bool, bool),
+    pool: Option<&splot_parallel::WorkerPool>,
+) -> (CompoundMotionGrid, Vec<MotionCell>) {
+    let info = references[0].info();
+    let (width, height) = (
+        info.coded_luma_size().width(),
+        info.coded_luma_size().height(),
+    );
+    let columns = width / 8;
+    let unit_rect = |i: usize| McBlockRect::from_luma_rect(i % columns * 8, i / columns * 8, 8, 8);
+    let block = InterBlockParams::compound_average(
+        ReferenceSamples::settled(&references[0]),
+        ReferenceSamples::settled(&references[1]),
+        unit_rect(0),
+        mvs[0][0],
+        mvs[0][1],
+        InterpolationFilter::EightTap,
+        CompoundBlend::default(),
+    )
+    .with_optflow_distances(Some([1, -1]))
+    .with_optflow_sad_threshold(threshold)
+    .with_refinemv(refine)
+    .with_refinemv_search(search)
+    .into_compound()
+    .expect("compound block");
+    let mut workspace = super::super::tests::workspace_for::<T>(
+        info.bit_depth(),
+        PixelFormat::Yuv420,
+        width,
+        height,
+    );
+    let sink = WorkspaceSink::Frame(&mut workspace);
+    let offset = ByteOffset::new(0);
+    let grid = || {
+        let unit_at = |i: usize| (unit_rect(i), mvs[i]);
+        tip_motion_grid(
+            &sink,
+            block,
+            8,
+            columns,
+            mvs.len(),
+            unit_at,
+            offset,
+            Vec::new(),
+        )
+        .expect("grid")
+    };
+    let grid = pool.map_or_else(grid, |pool| pool.install(grid));
+    let cells = (0..mvs.len())
+        .map(|i| {
+            let mut unit = block;
+            (unit.rect, unit.mv0, unit.mv1) = (unit_rect(i), mvs[i][0], mvs[i][1]);
+            unit.has_chroma = false;
+            super::super::refinemv::tip_refinemv_optflow_motion_cell(
+                &sink,
+                unit,
+                offset,
+                [false; 2],
+                &mut [[0; 256]; 2],
+            )
+            .expect("refined cell")
+            .map_or_else(|| tip_unit_motion_cell(&sink, unit, 8, offset), Ok)
+            .expect("unit cell")
+        })
+        .collect();
+    (grid, cells)
+}
+
+/// Checks a TIP grid against the per-unit cells, and its merged-run hint
+/// against its cells.
+fn check_tip_grid<T: ReconSample>(
+    references: &[DecodedFrame<T>; 2],
+    mvs: &[[Mv; 2]],
+    modes: (Option<u32>, bool, bool),
+    pool: Option<&splot_parallel::WorkerPool>,
+    label: &str,
+) {
+    let bit_depth = references[0].info().bit_depth();
+    let (grid, expected) = tip_grid_and_cells(references, mvs, modes, pool);
+    assert_eq!(grid.cells.as_slice(), expected, "{bit_depth:?} {label}");
+    let fullpel = mvs
+        .iter()
+        .any(|&mvs| super::super::refinemv::fullpel_candidates(mvs));
+    let columns = references[0].info().coded_luma_size().width() / 8;
+    assert_eq!(
+        grid.fullpel_runs,
+        fullpel && fullpel_run_pairs(grid.cells.as_slice(), columns),
+        "{bit_depth:?} {label}"
+    );
+}
+
+/// `count` units that repeat four mirrored candidates, mostly full-pel.
+fn repeated_candidates(count: usize, s: &mut u64) -> Vec<[Mv; 2]> {
+    let mut component = || (lcg(s) % 21) as i32 * 8 - 80 + i32::from(lcg(s).is_multiple_of(6)) * 3;
+    let palette: Vec<[Mv; 2]> = (0..4)
+        .map(|_| {
+            let first = mv(component(), component());
+            [first, mv(-first.row, -first.col)]
+        })
+        .collect();
+    (0..count).map(|_| palette[(lcg(s) % 4) as usize]).collect()
+}
+
+/// Grids whose units repeat a few full-pel and subpel candidates, one of
+/// 1024 units that takes the per-row parallel branch, and a still grid whose
+/// interior units the full-pel pass decides between edge units that refine
+/// on noise, so the unit after each run must not reuse the overlap of the
+/// unit before it.
+fn tip_grids_match_per_unit_cells<T: ReconSample>(bit_depth: BitDepth, mut s: u64) {
+    let unit_count = WIDTH / 8 * (HEIGHT / 8);
+    let edges =
+        |s: &mut u64, size| noisy_ramps::<T>(bit_depth, size, 9, |x| x % 64 < 8 || x % 64 >= 56, s);
+    let still = vec![[mv(0, 0); 2]; unit_count];
+    let modes = (Some(6), true, true);
+    check_tip_grid(
+        &edges(&mut s, (WIDTH, HEIGHT)),
+        &still,
+        modes,
+        None,
+        "still",
+    );
+    let pool = splot_parallel::WorkerPool::new(splot_parallel::ThreadCount::Fixed(
+        2.try_into().expect("two workers"),
+    ))
+    .expect("pool");
+    let large = edges(&mut s, (256, 256));
+    let still = vec![[mv(0, 0); 2]; 1024];
+    check_tip_grid(&large, &still, modes, Some(&pool), "parallel still");
+    let mvs = repeated_candidates(1024, &mut s);
+    check_tip_grid(
+        &large,
+        &mvs,
+        (Some(6), true, false),
+        Some(&pool),
+        "parallel",
+    );
+    for iter in 0..16 {
+        let references = noisy_ramps::<T>(
+            bit_depth,
+            (WIDTH, HEIGHT),
+            [0, 1, 3, 9][iter % 4],
+            |_| true,
+            &mut s,
+        );
+        let mvs = repeated_candidates(unit_count, &mut s);
+        let modes = (
+            [None, Some(6), Some(40)][iter % 3],
+            iter % 4 != 3,
+            iter % 2 == 0,
+        );
+        check_tip_grid(&references, &mvs, modes, None, &format!("grid {iter}"));
+    }
+}
+
+#[test]
+fn tip_motion_grids_match_per_unit_cells() {
+    tip_grids_match_per_unit_cells::<u8>(BitDepth::Eight, 5);
+    tip_grids_match_per_unit_cells::<u16>(BitDepth::Ten, 9);
 }

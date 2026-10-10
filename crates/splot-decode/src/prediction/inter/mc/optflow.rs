@@ -230,7 +230,8 @@ pub(crate) struct StoredMotionGrid {
 enum StoredCandidates {
     None,
     Uniform([Mv; 2], usize),
-    PerCell(core::ops::Range<usize>, usize),
+    /// The candidates, their unit size and [`CompoundMotionGrid::fullpel_runs`].
+    PerCell(core::ops::Range<usize>, usize, bool),
 }
 
 impl StoredMotionGrid {
@@ -239,14 +240,14 @@ impl StoredMotionGrid {
             unit_size: self.unit_size,
             columns: self.columns,
             cells: MotionCells::Shared(std::sync::Arc::clone(storage), self.cells),
-            run_pairs: core::sync::atomic::AtomicU8::new(0),
+            fullpel_runs: matches!(self.candidates, StoredCandidates::PerCell(_, _, true)),
             refinemv_candidates: match self.candidates {
                 StoredCandidates::None => RefinemvCandidates::None,
                 StoredCandidates::Uniform(candidates, unit_size) => RefinemvCandidates::Uniform {
                     candidates,
                     unit_size,
                 },
-                StoredCandidates::PerCell(range, unit_size) => RefinemvCandidates::Shared {
+                StoredCandidates::PerCell(range, unit_size, _) => RefinemvCandidates::Shared {
                     storage: std::sync::Arc::clone(storage),
                     range,
                     unit_size,
@@ -366,8 +367,9 @@ pub(crate) struct CompoundMotionGrid {
     columns: usize,
     cells: MotionCells,
     refinemv_candidates: RefinemvCandidates,
-    /// [`Self::has_run_pairs`], once known: 0 unknown, 1 no, 2 yes.
-    run_pairs: core::sync::atomic::AtomicU8,
+    /// Whether some row holds two adjacent equal full-pel cells, the
+    /// precondition of every merged run.
+    fullpel_runs: bool,
 }
 
 impl CompoundMotionGrid {
@@ -405,7 +407,11 @@ impl CompoundMotionGrid {
                 );
                 storage.candidates.append(candidates);
                 spare = core::mem::take(candidates);
-                StoredCandidates::PerCell(first..storage.candidates.len(), *unit_size)
+                StoredCandidates::PerCell(
+                    first..storage.candidates.len(),
+                    *unit_size,
+                    self.fullpel_runs,
+                )
             }
             RefinemvCandidates::Shared { .. } => {
                 return Err(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
@@ -437,7 +443,7 @@ impl CompoundMotionGrid {
             unit_size: 16,
             columns: 1,
             cells: MotionCells::Inline(cell),
-            run_pairs: core::sync::atomic::AtomicU8::new(0),
+            fullpel_runs: false,
             refinemv_candidates: RefinemvCandidates::Uniform {
                 candidates,
                 unit_size: 16,
@@ -454,7 +460,7 @@ impl CompoundMotionGrid {
             unit_size: 16,
             columns,
             cells: MotionCells::from_vec(cells),
-            run_pairs: core::sync::atomic::AtomicU8::new(0),
+            fullpel_runs: false,
             refinemv_candidates: RefinemvCandidates::Uniform {
                 candidates,
                 unit_size: 16,
@@ -502,33 +508,6 @@ impl CompoundMotionGrid {
                 *unit_size,
             ),
         }
-    }
-
-    /// Whether some row holds two adjacent equal cells whose motion is
-    /// full-pel under either subsampling, the precondition of every merged
-    /// run; the scan runs once per grid.
-    fn has_run_pairs(&self) -> bool {
-        use core::sync::atomic::Ordering::Relaxed;
-        let known = self.run_pairs.load(Relaxed);
-        if known != 0 {
-            return known == 2;
-        }
-        let found = self
-            .cells
-            .as_slice()
-            .chunks(self.columns.max(1))
-            .any(|row| {
-                row.windows(2).any(|pair| {
-                    pair[0] == pair[1]
-                        && pair[0]
-                            .mvs
-                            .as_flattened()
-                            .iter()
-                            .all(|&mv| fullpel_phase(mv, 0) == 0 || fullpel_phase(mv, 1) == 0)
-                })
-            });
-        self.run_pairs.store(1 + u8::from(found), Relaxed);
-        found
     }
 
     pub(super) fn uniform_mvs(&self) -> Option<[[i32; 2]; 2]> {
@@ -850,7 +829,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
         unit_size,
         columns,
         cells: MotionCells::from_vec(cells),
-        run_pairs: core::sync::atomic::AtomicU8::new(0),
+        fullpel_runs: false,
         refinemv_candidates: refinemv_candidates.map_or(RefinemvCandidates::None, |candidates| {
             RefinemvCandidates::Uniform {
                 candidates,
@@ -935,6 +914,21 @@ pub(super) fn tip_unit_motion_cell<T: ReconSample>(
     Ok(MotionCell::from_optflow(base_mvs, delta))
 }
 
+/// Whether some row holds two adjacent equal cells whose motion is full-pel
+/// under either subsampling.
+fn fullpel_run_pairs(cells: &[MotionCell], columns: usize) -> bool {
+    cells.chunks(columns.max(1)).any(|row| {
+        row.windows(2).any(|pair| {
+            pair[0] == pair[1]
+                && pair[0]
+                    .mvs
+                    .as_flattened()
+                    .iter()
+                    .all(|&mv| fullpel_phase(mv, 0) == 0 || fullpel_phase(mv, 1) == 0)
+        })
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tip_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
@@ -958,6 +952,12 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         }
         .into());
     }
+    let mut fullpel = false;
+    refinemv_candidates.extend((0..unit_count).map(|index| {
+        let mvs = unit_at(index).1;
+        fullpel |= super::refinemv::fullpel_candidates(mvs);
+        mvs
+    }));
     if unit_count >= 1024
         && splot_parallel::current_pool_width() > 1
         && splot_parallel::on_worker_pool()
@@ -966,13 +966,21 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             unit_count,
             MotionCell::uninitialized([block.mv0, block.mv1]),
         );
-        let fast = super::refinemv::tip_fullpel_cells(
-            sink, &block, &unit_at, unit_size, offset, &mut cells,
-        )?;
+        let candidates = &refinemv_candidates;
         cells
             .par_chunks_mut(columns)
             .enumerate()
             .try_for_each(|(row, cells)| {
+                let fast = fullpel
+                    && super::refinemv::tip_fullpel_cells(
+                        sink,
+                        &block,
+                        &unit_at,
+                        candidates,
+                        (unit_size, offset),
+                        row * columns,
+                        cells,
+                    )?;
                 let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
                 let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
                 let mut previous_refined = false;
@@ -1013,16 +1021,14 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                 }
                 Ok::<_, crate::error::DecodeError>(())
             })?;
+        let fullpel_runs = fullpel && fullpel_run_pairs(&cells, columns);
         return Ok(CompoundMotionGrid {
             unit_size,
             columns,
             cells: MotionCells::from_vec(cells),
-            run_pairs: core::sync::atomic::AtomicU8::new(0),
+            fullpel_runs,
             refinemv_candidates: RefinemvCandidates::PerCell {
-                candidates: {
-                    refinemv_candidates.extend((0..unit_count).map(|index| unit_at(index).1));
-                    refinemv_candidates
-                },
+                candidates: refinemv_candidates,
                 unit_size,
             },
         });
@@ -1031,8 +1037,16 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit_count,
         MotionCell::uninitialized([block.mv0, block.mv1]),
     );
-    let fast =
-        super::refinemv::tip_fullpel_cells(sink, &block, &unit_at, unit_size, offset, &mut cells)?;
+    let fast = fullpel
+        && super::refinemv::tip_fullpel_cells(
+            sink,
+            &block,
+            &unit_at,
+            &refinemv_candidates,
+            (unit_size, offset),
+            0,
+            &mut cells,
+        )?;
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;
@@ -1046,7 +1060,6 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                     && mvs[reference] == previous_mvs[reference]
             })
         });
-        refinemv_candidates.push(mvs);
         if fast && cells.get(index).is_some_and(MotionCell::is_initialized) {
             previous_unit = Some((rect, mvs));
             previous_refined = false;
@@ -1080,11 +1093,12 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         })?;
         *destination = cell;
     }
+    let fullpel_runs = fullpel && fullpel_run_pairs(&cells, columns);
     Ok(CompoundMotionGrid {
         unit_size,
         columns,
         cells: MotionCells::from_vec(cells),
-        run_pairs: core::sync::atomic::AtomicU8::new(0),
+        fullpel_runs,
         refinemv_candidates: RefinemvCandidates::PerCell {
             candidates: refinemv_candidates,
             unit_size,
@@ -1355,10 +1369,10 @@ pub(super) fn predict_motion_grid_compound_average_into<
         || prediction.scalings.into_iter().any(PlaneScaling::is_scaled);
     let cells = motion.cells.as_slice();
     let refine = motion.refinemv_candidate_slice();
-    let merge_runs = !prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
+    let merge_runs = motion.fullpel_runs
+        && !prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
         && refine.1 == 1
-        && refine.2 >> sub_x == subblock_w
-        && motion.has_run_pairs();
+        && refine.2 >> sub_x == subblock_w;
     let process_row = |cell_row: usize,
                        row: usize,
                        output: &mut [O],
@@ -1963,7 +1977,7 @@ mod tests {
                 unit_size: 8,
                 columns: count,
                 cells: MotionCells::Heap(vec![value; count]),
-                run_pairs: core::sync::atomic::AtomicU8::new(0),
+                fullpel_runs: false,
                 refinemv_candidates: RefinemvCandidates::PerCell {
                     candidates: vec![[Mv::ZERO; 2]; count],
                     unit_size: 8,
@@ -1997,7 +2011,7 @@ mod tests {
                 base_mvs: [Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }],
                 mvs: [[7, -7], [-7, 7]],
             }),
-            run_pairs: core::sync::atomic::AtomicU8::new(0),
+            fullpel_runs: false,
             refinemv_candidates: RefinemvCandidates::None,
         };
 
@@ -2059,7 +2073,7 @@ mod tests {
                     mvs: [[4, -4], [4, -4]],
                 },
             ]),
-            run_pairs: core::sync::atomic::AtomicU8::new(0),
+            fullpel_runs: false,
             refinemv_candidates: RefinemvCandidates::None,
         };
 
@@ -2081,7 +2095,7 @@ mod tests {
                 };
                 2
             ]),
-            run_pairs: core::sync::atomic::AtomicU8::new(0),
+            fullpel_runs: false,
             refinemv_candidates: RefinemvCandidates::None,
         };
 

@@ -3,8 +3,11 @@
 
 #![allow(clippy::expect_used)]
 
+use std::sync::Arc;
+
 use super::super::tests::{frame_for, workspace_for};
 use super::*;
+use crate::pipeline::frame_progress::FrameProgress;
 use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
 
 const WIDTH: usize = 64;
@@ -59,30 +62,24 @@ struct Case {
     fast: bool,
 }
 
-/// Compares one unit's fast cell with the full path, and checks whether the
-/// fast path decided it.
 fn check<T: ReconSample>(references: &[DecodedFrame<T>; 2], case: Case) {
+    check_at(
+        references.each_ref().map(ReferenceSamples::settled),
+        16,
+        case,
+    );
+}
+
+/// Compares the fast cell of the unit at (`case.x`, `y`) with the full path,
+/// and checks whether the fast path decided it.
+fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, case: Case) {
     let bit_depth = references[0].info().bit_depth();
     let mut workspace = workspace_for::<T>(bit_depth, PixelFormat::Yuv420, WIDTH, HEIGHT);
     let sink = WorkspaceSink::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
-    let rect = McBlockRect::from_luma_rect(case.x, 16, 8, 8);
+    let rect = McBlockRect::from_luma_rect(case.x, y, 8, 8);
     let mvs = [case.mv; 2];
-    let block = InterBlockParams::compound_average(
-        ReferenceSamples::settled(&references[0]),
-        ReferenceSamples::settled(&references[1]),
-        rect,
-        mvs[0],
-        mvs[1],
-        InterpolationFilter::EightTap,
-        CompoundBlend::default(),
-    )
-    .with_optflow_distances(Some([1, -1]))
-    .with_optflow_sad_threshold(case.threshold)
-    .with_refinemv(case.refine)
-    .with_refinemv_search(case.search)
-    .into_compound()
-    .expect("compound block");
+    let block = unit_block(references, rect, mvs, case);
     let fast = TipFullpelViews::new(&sink, &block, (rect, mvs), offset)
         .expect("views")
         .motion_cell(&sink, &block, (rect, mvs), 8)
@@ -104,6 +101,29 @@ fn check<T: ReconSample>(references: &[DecodedFrame<T>; 2], case: Case) {
     if let Some(fast) = fast {
         assert_eq!(fast, full, "{bit_depth:?} x {} {:?}", case.x, case.mv);
     }
+}
+
+fn unit_block<T: ReconSample>(
+    references: [ReferenceSamples<'_, T>; 2],
+    rect: McBlockRect,
+    mvs: [Mv; 2],
+    case: Case,
+) -> CompoundMcBlock<'_, T> {
+    InterBlockParams::compound_average(
+        references[0],
+        references[1],
+        rect,
+        mvs[0],
+        mvs[1],
+        InterpolationFilter::EightTap,
+        CompoundBlend::default(),
+    )
+    .with_optflow_distances(Some([1, -1]))
+    .with_optflow_sad_threshold(case.threshold)
+    .with_refinemv(case.refine)
+    .with_refinemv_search(case.search)
+    .into_compound()
+    .expect("compound block")
 }
 
 /// Covers both paths at plane and refine-window edges, a subpel candidate,
@@ -228,4 +248,55 @@ fn fast_cells_match_the_full_path<T: ReconSample>(bit_depth: BitDepth) {
 fn tip_fullpel_cells_match_the_full_path() {
     fast_cells_match_the_full_path::<u8>(BitDepth::Eight);
     fast_cells_match_the_full_path::<u16>(BitDepth::Ten);
+}
+
+/// The texture of [`reference`] with only its first `rows` rows published,
+/// as a frame-parallel reference still filtering below them.
+fn partly_published(rows: usize) -> Arc<FrameProgress<u8>> {
+    let texture = reference::<u8>(BitDepth::Eight, &[]);
+    let progress = Arc::new(FrameProgress::new(texture.info()).expect("progress"));
+    progress
+        .begin(&[(0, rows), (rows, HEIGHT)])
+        .expect("stripes");
+    let mut lease = progress.direct_stripe(0).expect("stripe lease");
+    let mut target = lease.take_target().expect("stripe target");
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let source = texture.plane(plane).expect("plane").samples();
+        let mut destination = target.take(plane).expect("plane target");
+        let samples = destination.u8_samples_mut().expect("8-bit stripe");
+        samples.copy_from_slice(&source[..samples.len()]);
+    }
+    assert!(lease.submit());
+    progress
+}
+
+/// Units inside a 24-row published prefix match the full path; a unit
+/// whose rows pass it falls back, through views built for an earlier unit.
+#[test]
+fn tip_fullpel_cells_read_only_the_published_prefix() {
+    let progress = partly_published(24);
+    let published = progress.read().expect("published frame");
+    let references = [ReferenceSamples::publishing(&published).expect("reference"); 2];
+    let case = |mv, search, fast| Case {
+        x: 16,
+        mv,
+        search,
+        refine: true,
+        threshold: Some(6),
+        fast,
+    };
+    check_at(references, 8, case(mv(0, 0), true, true));
+    check_at(references, 8, case(mv(0, 0), false, true));
+    let mut workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, WIDTH, HEIGHT);
+    let sink = WorkspaceSink::Frame(&mut workspace);
+    let first = McBlockRect::from_luma_rect(16, 8, 8, 8);
+    let past = McBlockRect::from_luma_rect(16, 16, 8, 8);
+    let still = [mv(0, 0); 2];
+    let block = unit_block(references, first, still, case(mv(0, 0), false, true));
+    let views =
+        TipFullpelViews::new(&sink, &block, (first, still), ByteOffset::new(0)).expect("views");
+    for mvs in [[mv(8, 0); 2], [mv(0, 0), mv(8, 0)]] {
+        let fast = views.motion_cell(&sink, &block, (past, mvs), 8);
+        assert_eq!(fast.expect("fast cell"), None, "{mvs:?}");
+    }
 }

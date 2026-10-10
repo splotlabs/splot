@@ -196,16 +196,17 @@ fn search_refinemv<T: ReconSample>(
     ])
 }
 
-/// Writes the motion cell of every full-pel TIP unit whose SADs on the
-/// references decide it, and returns whether it wrote any. The other cells
-/// keep their uninitialized value for the full path.
+/// Writes the cell of every full-pel TIP unit from unit `first` on whose
+/// SADs on the references decide it, and returns whether it wrote any. The
+/// other cells keep their uninitialized value for the full path.
 #[inline(never)]
 pub(super) fn tip_fullpel_cells<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     batch: &CompoundMcBlock<'_, T>,
     unit_at: &impl Fn(usize) -> (McBlockRect, [Mv; 2]),
-    unit_size: usize,
-    offset: ByteOffset,
+    candidates: &[[Mv; 2]],
+    (unit_size, offset): (usize, ByteOffset),
+    first: usize,
     cells: &mut [MotionCell],
 ) -> Result<bool> {
     let mut views = None;
@@ -213,11 +214,12 @@ pub(super) fn tip_fullpel_cells<T: ReconSample>(
     if batch.optflow_distances.is_none() {
         return Ok(wrote);
     }
-    for (index, cell) in cells.iter_mut().enumerate() {
-        let unit = unit_at(index);
-        if !fullpel_candidates(unit.1) {
+    let candidates = candidates.get(first..).unwrap_or_default();
+    for (index, (cell, &mvs)) in cells.iter_mut().zip(candidates).enumerate() {
+        if !fullpel_candidates(mvs) {
             continue;
         }
+        let unit = (unit_at(first + index).0, mvs);
         let Some(views) =
             views.get_or_insert_with(|| TipFullpelViews::new(sink, batch, unit, offset))
         else {
@@ -243,7 +245,7 @@ struct TipFullpelViews<'a, T: ReconSample> {
     max_sample: u16,
 }
 
-fn fullpel_candidates(mvs: [Mv; 2]) -> bool {
+pub(super) fn fullpel_candidates(mvs: [Mv; 2]) -> bool {
     mvs.iter().all(|mv| (mv.row | mv.col).trailing_zeros() >= 3)
 }
 
