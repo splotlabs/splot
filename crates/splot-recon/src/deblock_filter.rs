@@ -44,6 +44,7 @@ use std::simd::{
     cmp::{SimdOrd, SimdPartialOrd},
     num::SimdInt,
     num::SimdUint,
+    simd_swizzle,
 };
 
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift
@@ -1110,6 +1111,16 @@ pub fn deblock_edge_columns<T: ReconSample>(
     Ok(())
 }
 
+/// `secondDeriv[-2..=1]` from the absolute second differences of the first
+/// line (lanes 0..4) and the last line (lanes 4..8) at the same positions.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn combine_line_derivatives(differences: Simd<i16, 8>) -> [i32; 4] {
+    let last = simd_swizzle!(differences, [4, 5, 6, 7, 0, 1, 2, 3]);
+    let combined = ((differences + last + Simd::splat(1)) >> 1).to_array();
+    core::array::from_fn(|index| i32::from(combined[index]))
+}
+
 /// Samples the widest § 7.17.7 filter reads on either side of an edge.
 const EDGE_REACH: usize = MAX_DBL_FLT_LEN;
 
@@ -1227,11 +1238,15 @@ impl<'a> EdgeKernel<'a> {
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn rows<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) -> usize {
-        let line = |start: usize| -> [i16; 2 * EDGE_REACH] {
-            E::widen(&samples[start..start + 2 * EDGE_REACH]).to_array()
-        };
+        let line =
+            |start: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[start..start + 2 * EDGE_REACH]);
         let (s, t) = (line(first), line(first + (MI_LINES - 1) * stride));
-        let width = deblock_filter_choice_progressive(self.choice, |offset| {
+        let centre = simd_swizzle!(s, t, [6, 7, 8, 9, 22, 23, 24, 25]);
+        let left = simd_swizzle!(s, t, [5, 6, 7, 8, 21, 22, 23, 24]);
+        let right = simd_swizzle!(s, t, [7, 8, 9, 10, 23, 24, 25, 26]);
+        let derivatives = combine_line_derivatives((left - centre - centre + right).abs());
+        let (s, t) = (s.to_array(), t.to_array());
+        let width = deblock_filter_choice_cascade(self.choice, derivatives, |offset| {
             let index = (EDGE_REACH as isize + offset) as usize;
             (i32::from(s[index]), i32::from(t[index]))
         });
@@ -1294,7 +1309,14 @@ impl<'a> EdgeKernel<'a> {
             let start = first + (EDGE_REACH as isize + offset) as usize * stride;
             E::widen::<MI_LINES>(&samples[start..start + MI_LINES])
         };
-        let width = deblock_filter_choice_progressive(self.choice, |offset| {
+        let rows: [Simd<i16, MI_LINES>; 6] = core::array::from_fn(|k| row(samples, k as isize - 3));
+        let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
+        let (d0, d1, d2, d3) = (second(0), second(1), second(2), second(3));
+        let pairs =
+            |a: Simd<i16, MI_LINES>, b: Simd<i16, MI_LINES>| simd_swizzle!(a, b, [0, 4, 3, 7]);
+        let ends = simd_swizzle!(pairs(d0, d1), pairs(d2, d3), [0, 1, 4, 5, 2, 3, 6, 7]);
+        let derivatives = combine_line_derivatives(ends);
+        let width = deblock_filter_choice_cascade(self.choice, derivatives, |offset| {
             let values = row(samples, offset);
             (i32::from(values[0]), i32::from(values[MI_LINES - 1]))
         });
@@ -1383,6 +1405,26 @@ fn deblock_filter_choice_progressive(
     params: &DeblockFilterChoice,
     mut load: impl FnMut(isize) -> (i32, i32),
 ) -> usize {
+    let (m3, m2, m1) = (load(-3), load(-2), load(-1));
+    let (zero, p1, p2) = (load(0), load(1), load(2));
+    let derivatives = [
+        choice_second_deriv(m3, m2, m1),
+        choice_second_deriv(m2, m1, zero),
+        choice_second_deriv(m1, zero, p1),
+        choice_second_deriv(zero, p1, p2),
+    ];
+    deblock_filter_choice_cascade(params, derivatives, load)
+}
+
+/// The § 7.17.7.2 threshold cascade over `secondDeriv[-2..=1]`; `load` reads
+/// the two lines' samples at an offset from the edge for the end terms.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn deblock_filter_choice_cascade(
+    params: &DeblockFilterChoice,
+    [sd_m2, sd_m1, sd_0, sd_1]: [i32; 4],
+    mut load: impl FnMut(isize) -> (i32, i32),
+) -> usize {
     let DeblockFilterChoice {
         q_thr,
         side_thr,
@@ -1391,16 +1433,6 @@ fn deblock_filter_choice_progressive(
         q_first,
         ..
     } = *params;
-    let m3 = load(-3);
-    let m2 = load(-2);
-    let m1 = load(-1);
-    let zero = load(0);
-    let p1 = load(1);
-    let p2 = load(2);
-    let sd_m2 = choice_second_deriv(m3, m2, m1);
-    let sd_m1 = choice_second_deriv(m2, m1, zero);
-    let sd_0 = choice_second_deriv(m1, zero, p1);
-    let sd_1 = choice_second_deriv(zero, p1, p2);
     let max_outer_deriv = sd_m2.max(sd_1);
     if max_outer_deriv > side_thr {
         return 0;
@@ -1417,6 +1449,7 @@ fn deblock_filter_choice_progressive(
         return 2;
     }
 
+    let (m2, m1, zero, p1) = (load(-2), load(-1), load(0), load(1));
     let end_thr = (side_thr * 3) >> 4;
     if max_width_neg > 2 && choice_directional(m1, load(-4), m2, 3) > end_thr {
         return 2;
