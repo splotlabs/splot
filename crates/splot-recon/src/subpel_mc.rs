@@ -931,10 +931,13 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
             })
     });
     if let Some(x) = direct_x {
+        let last_row = reference.readable_rows as i32 - 1;
+        let (first_y, last_y) = (
+            params.first_y.clamp(0, last_row),
+            params.last_y.min(last_row),
+        );
         let source_row = |r: usize| {
-            let row = (y0 + r as i32)
-                .clamp(params.first_y, params.last_y)
-                .clamp(0, reference.readable_rows as i32 - 1) as usize;
+            let row = (y0 + r as i32).min(last_y).max(first_y) as usize;
             &reference.samples[row * reference.stride..][..reference.width]
         };
         let max_sample = params.bit_depth.max_sample();
