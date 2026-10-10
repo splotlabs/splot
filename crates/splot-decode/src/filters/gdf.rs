@@ -28,8 +28,8 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 mod simd;
 
 use simd::{
-    EVEN_CLASS_ZERO_WEIGHTS, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, gdf_rows, mixed_class_rows,
-    uniform_gdf_class,
+    EVEN_CLASS_ZERO_WEIGHTS, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH, WINDOW_ROWS,
+    class_bias, gdf_rows, mixed_class_rows, source_rows, uniform_gdf_class, window_at,
 };
 
 const MI_SIZE: usize = 4;
@@ -515,37 +515,23 @@ impl GdfUniformParams {
         }
     }
 
-    /// Filters a row pair of `W` samples that all have this class.
-    fn rows<const W: usize>(
+    /// Filters in place a row pair of `W` samples that all have this class.
+    fn rows<const W: usize, const WIN: usize>(
         &self,
-        base_values: [[u16; W]; 2],
-        source: &GdfSource<'_>,
+        window: &[&[u16; WIN]; WINDOW_ROWS],
+        output: [&mut [u16; W]; 2],
         classes: &[GdfClass],
         block: &GdfBlock,
-        origin: (usize, usize),
-    ) -> Result<[[u16; W]; 2]> {
+    ) {
         let weights = |k| GdfTapWeights {
             alpha: Simd::splat(self.alpha[k]),
             weights: core::array::from_fn(|index| Simd::splat(self.weights[index][k])),
         };
+        let class_bias = class_bias(classes);
         if self.class & 1 == 0 {
-            gdf_rows::<W, EVEN_CLASS_ZERO_WEIGHTS>(
-                base_values,
-                source,
-                classes,
-                block,
-                origin,
-                weights,
-            )
+            gdf_rows::<W, WIN, EVEN_CLASS_ZERO_WEIGHTS>(window, output, class_bias, block, weights);
         } else {
-            gdf_rows::<W, ODD_CLASS_ZERO_WEIGHTS>(
-                base_values,
-                source,
-                classes,
-                block,
-                origin,
-                weights,
-            )
+            gdf_rows::<W, WIN, ODD_CLASS_ZERO_WEIGHTS>(window, output, class_bias, block, weights);
         }
     }
 }
@@ -565,19 +551,16 @@ fn base_row_pair<const W: usize>(
     Ok([row(start)?, row(start + frame_width)?])
 }
 
-/// Filters the `W` samples at `start` and in the next frame row in place.
-fn filter_row_pair<const W: usize>(
-    base_luma: &mut [u16],
-    start: usize,
-    frame_width: usize,
-    filter: impl FnOnce([[u16; W]; 2]) -> Result<[[u16; W]; 2]>,
-) -> Result<()> {
-    let filtered = filter(base_row_pair(base_luma, start, frame_width)?)?;
-    for (row, samples) in filtered.iter().enumerate() {
-        let row_start = start + row * frame_width;
-        base_luma[row_start..row_start + W].copy_from_slice(samples);
-    }
-    Ok(())
+/// The `W` samples from column `x` of both output rows.
+fn output_pair<'a, const W: usize>(
+    top: &'a mut [u16],
+    bottom: &'a mut [u16],
+    x: usize,
+) -> Option<[&'a mut [u16; W]; 2]> {
+    Some([
+        top.get_mut(x..)?.first_chunk_mut()?,
+        bottom.get_mut(x..)?.first_chunk_mut()?,
+    ])
 }
 
 fn compute_block<T: ReconSample>(
@@ -626,9 +609,13 @@ fn compute_block<T: ReconSample>(
                 .and_then(|y| y.checked_mul(block.frame_width))
                 .and_then(|index| index.checked_add(block.x))
                 .ok_or_else(gdf_state_error)?;
-            let base = base_row_pair(base_luma, base_start, block.frame_width)?;
+            let mut rows = base_row_pair::<MI_SIZE>(base_luma, base_start, block.frame_width)?;
             let origin = (source_origin.0, source_origin.1 + row);
-            let rows = mixed_class_rows::<MI_SIZE>(base, source, classes, &block, origin)?;
+            let window_rows = source_rows(source, origin, MI_SIZE + 2 * TAP_REACH)?;
+            let window = window_at::<{ MI_SIZE + 2 * TAP_REACH }>(&window_rows, 0)
+                .ok_or_else(gdf_state_error)?;
+            let [top, bottom] = &mut rows;
+            mixed_class_rows(&window, [top, bottom], classes, &block);
             for (row_offset, samples) in rows.into_iter().enumerate() {
                 for (col, sample) in samples.into_iter().enumerate() {
                     output[(row + row_offset) * MI_SIZE + col] =
@@ -675,6 +662,7 @@ fn compute_enabled_segment(
     let tap_offsets = gdf_tap_offsets(source.stride)?;
     let uniform_params: [GdfUniformParams; 4] =
         core::array::from_fn(|class| GdfUniformParams::new(block, class));
+    let run = cols.len();
     for row in (0..block.height).step_by(2) {
         let class_row = (row >> 1)
             .checked_mul(class_cols)
@@ -683,48 +671,59 @@ fn compute_enabled_segment(
             .checked_mul(block.frame_width)
             .and_then(|row| row.checked_add(block.x))
             .ok_or_else(geometry_error)?;
-        let mut local_x = cols.start;
-        while local_x < cols.end {
-            let output_start = output_row.checked_add(local_x).ok_or_else(geometry_error)?;
-            let class_start = class_row
-                .checked_add(local_x >> 1)
-                .ok_or_else(geometry_error)?;
-            let origin = (source_origin.0 + local_x, source_origin.1 + row);
-            let width = cols.end - local_x;
-            let uniform_16 = classes
-                .get(class_start..class_start + 8)
+        let window_rows = source_rows(
+            source,
+            (source_origin.0 + cols.start, source_origin.1 + row),
+            run + 2 * TAP_REACH,
+        )?;
+        let row_classes = classes
+            .get(class_row + (cols.start >> 1)..)
+            .ok_or_else(geometry_error)?;
+        let (top, bottom) = base_luma
+            .get_mut(output_row + cols.start..)
+            .and_then(|rows| rows.split_at_mut_checked(block.frame_width))
+            .ok_or_else(geometry_error)?;
+        let (Some(top), Some(bottom)) = (top.get_mut(..run), bottom.get_mut(..run)) else {
+            return Err(geometry_error());
+        };
+        let mut x = 0;
+        while x < run {
+            let width = run - x;
+            let uniform_16 = row_classes
+                .get(x >> 1..)
+                .and_then(<[GdfClass]>::first_chunk::<8>)
                 .filter(|_| width >= 16)
-                .and_then(|classes| <&[GdfClass; 8]>::try_from(classes).ok())
                 .and_then(|classes| uniform_gdf_class(classes).map(|index| (classes, index)));
             if let Some((classes, class_index)) = uniform_16 {
-                let params = &uniform_params[class_index as usize];
-                filter_row_pair::<16>(base_luma, output_start, block.frame_width, |base| {
-                    params.rows(base, source, classes, block, origin)
-                })?;
-                local_x += 16;
+                let window = window_at::<28>(&window_rows, x).ok_or_else(geometry_error)?;
+                let output = output_pair::<16>(top, bottom, x).ok_or_else(geometry_error)?;
+                uniform_params[class_index as usize].rows(&window, output, classes, block);
+                x += 16;
             } else if width >= 8 {
-                let classes = classes
-                    .get(class_start..class_start + 4)
-                    .and_then(|classes| <&[GdfClass; 4]>::try_from(classes).ok())
+                let classes = row_classes
+                    .get(x >> 1..)
+                    .and_then(<[GdfClass]>::first_chunk::<4>)
                     .ok_or_else(geometry_error)?;
-                filter_row_pair::<8>(base_luma, output_start, block.frame_width, |base| {
-                    if let Some(class_index) = uniform_gdf_class(classes) {
-                        let params = &uniform_params[class_index as usize];
-                        params.rows(base, source, classes, block, origin)
-                    } else {
-                        mixed_class_rows(base, source, classes, block, origin)
-                    }
-                })?;
-                local_x += 8;
+                let window = window_at::<20>(&window_rows, x).ok_or_else(geometry_error)?;
+                let output = output_pair::<8>(top, bottom, x).ok_or_else(geometry_error)?;
+                if let Some(class_index) = uniform_gdf_class(classes) {
+                    uniform_params[class_index as usize].rows(&window, output, classes, block);
+                } else {
+                    mixed_class_rows(&window, output, classes, block);
+                }
+                x += 8;
             } else if width >= MI_SIZE {
-                let classes = classes
-                    .get(class_start..class_start + 2)
+                let classes = row_classes
+                    .get(x >> 1..)
+                    .and_then(<[GdfClass]>::first_chunk::<2>)
                     .ok_or_else(geometry_error)?;
-                filter_row_pair::<MI_SIZE>(base_luma, output_start, block.frame_width, |base| {
-                    mixed_class_rows(base, source, classes, block, origin)
-                })?;
-                local_x += MI_SIZE;
+                let window = window_at::<16>(&window_rows, x).ok_or_else(geometry_error)?;
+                let output = output_pair::<MI_SIZE>(top, bottom, x).ok_or_else(geometry_error)?;
+                mixed_class_rows(&window, output, classes, block);
+                x += MI_SIZE;
             } else {
+                let local_x = cols.start + x;
+                let class_start = class_row + (local_x >> 1);
                 let last_col = source_origin.0 + cols.end + GDF_READ_RADIUS - 1;
                 let window_end = (source_origin.1 + row + GDF_READ_RADIUS) * source.stride;
                 if source_origin.0 < GDF_READ_RADIUS

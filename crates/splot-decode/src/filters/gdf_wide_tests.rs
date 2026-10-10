@@ -45,12 +45,12 @@ fn test_block(width: usize, bit_depth: BitDepth, ref_dst_idx: usize, qp_idx: usi
 const ORIGIN: (usize, usize) = (GDF_READ_RADIUS, GDF_READ_RADIUS);
 
 /// Filters two rows at `ORIGIN` with `wide` and with the scalar `gdf_sample`.
-fn filter_both_ways<const W: usize>(
+fn filter_both_ways<const W: usize, const WIN: usize>(
     samples: &[u16],
     stride: usize,
     block: &GdfBlock,
     classes: &[GdfClass],
-    wide: impl FnOnce(&GdfSource<'_>, [[u16; W]; 2]) -> Result<[[u16; W]; 2]>,
+    wide: impl FnOnce(&[&[u16; WIN]; WINDOW_ROWS], [&mut [u16; W]; 2]),
 ) -> ([[u16; W]; 2], [[u16; W]; 2]) {
     let source = GdfSource {
         samples,
@@ -64,7 +64,11 @@ fn filter_both_ways<const W: usize>(
         .map(|index| ((index * 61) % max_sample) as u16)
         .collect();
     let base = core::array::from_fn(|row| core::array::from_fn(|col| base_luma[row * W + col]));
-    let wide = wide(&source, base).expect("valid rows");
+    let rows = source_rows(&source, origin, WIN).expect("valid rows");
+    let window = window_at::<WIN>(&rows, 0).expect("valid window");
+    let mut filtered = base;
+    let [top, bottom] = &mut filtered;
+    wide(&window, [top, bottom]);
     let tap_offsets = gdf_tap_offsets(stride).expect("valid tap offsets");
     let scalar = core::array::from_fn(|row| {
         core::array::from_fn(|col| {
@@ -82,7 +86,7 @@ fn filter_both_ways<const W: usize>(
             )
         })
     });
-    (wide, scalar)
+    (filtered, scalar)
 }
 
 #[test]
@@ -98,12 +102,12 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
                         GdfClass::new(class_index, 511 - delta)
                     });
                     let params = GdfUniformParams::new(&block, usize::from(class_index));
-                    let (actual, expected) = filter_both_ways::<16>(
+                    let (actual, expected) = filter_both_ways::<16, 28>(
                         &samples,
                         stride,
                         &block,
                         &classes,
-                        |source, base| params.rows(base, source, &classes, &block, ORIGIN),
+                        |window, output| params.rows(window, output, &classes, &block),
                     );
                     assert_eq!(
                         actual, expected,
@@ -131,22 +135,22 @@ fn mixed_classes_match_scalar_samples_for_all_tables() {
             for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
                 for qp_idx in 0..alpha_by_qp.len() {
                     let block = test_block(8, bit_depth, ref_dst_idx, qp_idx);
-                    let (actual, expected) = filter_both_ways::<8>(
+                    let (actual, expected) = filter_both_ways::<8, 20>(
                         &samples_8,
                         stride_8,
                         &block,
                         &classes,
-                        |source, base| mixed_class_rows(base, source, &classes, &block, ORIGIN),
+                        |window, output| mixed_class_rows(window, output, &classes, &block),
                     );
                     assert_eq!(actual, expected, "width 8, {bit_depth:?}, case {case}");
                     let block = test_block(4, bit_depth, ref_dst_idx, qp_idx);
                     let pair = [classes[3 - case], classes[case]];
-                    let (actual, expected) = filter_both_ways::<4>(
+                    let (actual, expected) = filter_both_ways::<4, 16>(
                         &samples_4,
                         stride_4,
                         &block,
                         &pair,
-                        |source, base| mixed_class_rows(base, source, &pair, &block, ORIGIN),
+                        |window, output| mixed_class_rows(window, output, &pair, &block),
                     );
                     assert_eq!(actual, expected, "width 4, {bit_depth:?}, case {case}");
                 }

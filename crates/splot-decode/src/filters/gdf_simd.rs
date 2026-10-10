@@ -18,7 +18,61 @@ use super::{
     exact_slice, gdf_state_error,
 };
 
-const TAP_REACH: usize = GDF_READ_RADIUS - 1;
+pub(super) const TAP_REACH: usize = GDF_READ_RADIUS - 1;
+/// Source rows a row pair reads: `TAP_REACH` above the pair to `TAP_REACH` below it.
+pub(super) const WINDOW_ROWS: usize = 2 * TAP_REACH + 2;
+
+/// The source rows a row pair reads, each `len` samples from column `origin.0 - TAP_REACH`.
+/// Inlined so callers see that every row has length `len`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(super) fn source_rows<'a>(
+    source: &GdfSource<'a>,
+    origin: (usize, usize),
+    len: usize,
+) -> Result<[&'a [u16]; WINDOW_ROWS]> {
+    let first_row = origin.1.checked_sub(TAP_REACH);
+    let first_col = origin.0.checked_sub(TAP_REACH);
+    let (Some(first_row), Some(first_col)) = (first_row, first_col) else {
+        return Err(gdf_state_error());
+    };
+    let mut rows = [&source.samples[..0]; WINDOW_ROWS];
+    for (index, row) in rows.iter_mut().enumerate() {
+        let start = (first_row + index)
+            .checked_mul(source.stride)
+            .and_then(|start| start.checked_add(first_col))
+            .ok_or_else(gdf_state_error)?;
+        *row = exact_slice(source.samples, start, len).ok_or_else(gdf_state_error)?;
+    }
+    Ok(rows)
+}
+
+/// The `WIN` samples of every row in `rows` from column `x`.
+#[inline]
+pub(super) fn window_at<'a, const WIN: usize>(
+    rows: &[&'a [u16]; WINDOW_ROWS],
+    x: usize,
+) -> Option<[&'a [u16; WIN]; WINDOW_ROWS]> {
+    let end = x.checked_add(WIN)?;
+    if rows.iter().any(|row| row.len() < end) {
+        return None;
+    }
+    Some(rows.map(|row| {
+        row.get(x..)
+            .and_then(<[u16]>::first_chunk)
+            .unwrap_or(const { &[0; WIN] })
+    }))
+}
+
+/// Per-lane gradient bias of `W` lanes whose class changes every two lanes.
+#[inline]
+pub(super) fn class_bias<const W: usize>(classes: &[GdfClass]) -> Simd<i32, W> {
+    Simd::from_array(core::array::from_fn(|lane| {
+        classes
+            .get(lane >> 1)
+            .map_or(0, |class| class.gradient_bias())
+    }))
+}
 
 /// Expands `$body` once per GDF tap with `$k` bound to the tap index as a constant.
 macro_rules! for_each_gdf_tap {
@@ -80,23 +134,21 @@ pub(super) fn uniform_gdf_class<const LANES: usize>(classes: &[GdfClass; LANES])
         .then_some(first as u8)
 }
 
-/// Filters a row pair of `W` samples whose class changes every two samples.
-pub(super) fn mixed_class_rows<const W: usize>(
-    base_values: [[u16; W]; 2],
-    source: &GdfSource<'_>,
+/// Filters in place a row pair of `W` samples whose class changes every two samples.
+pub(super) fn mixed_class_rows<const W: usize, const WIN: usize>(
+    window: &[&[u16; WIN]; WINDOW_ROWS],
+    output: [&mut [u16; W]; 2],
     classes: &[GdfClass],
     block: &GdfBlock,
-    origin: (usize, usize),
-) -> Result<[[u16; W]; 2]> {
+) {
     let weights = class_tap_weights::<W>(classes, block);
-    gdf_rows::<W, { zero_weight_taps(0b1111) }>(
-        base_values,
-        source,
-        classes,
+    gdf_rows::<W, WIN, { zero_weight_taps(0b1111) }>(
+        window,
+        output,
+        class_bias(classes),
         block,
-        origin,
         weights,
-    )
+    );
 }
 
 /// Per-tap weights for `W` lanes whose class changes every two lanes.
@@ -106,9 +158,12 @@ fn class_tap_weights<const W: usize>(
 ) -> impl Fn(usize) -> GdfTapWeights<W> {
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-    let lane_bytes = Simd::<u8, 16>::from_array(core::array::from_fn(|byte| {
-        classes.get(byte >> 2).map_or(0, |class| class.index() * 2) + (byte & 1) as u8
+    let indices = Simd::<i32, 4>::from_array(core::array::from_fn(|lane| {
+        classes.get(lane).map_or(0, |class| class.0)
     }));
+    let byte_offsets = Simd::from_array(core::array::from_fn(|byte| (byte & 1) as u8));
+    let lane_bytes =
+        ((indices & Simd::splat(3)) * Simd::splat(0x0202_0202)).to_ne_bytes() + byte_offsets;
     let lane_bytes = [lane_bytes, lane_bytes + Simd::splat(8)];
     let per_class = move |table: Simd<i16, 8>, k: usize| {
         let bytes = table.to_ne_bytes().swizzle_dyn(lane_bytes[k & 1]);
@@ -120,45 +175,19 @@ fn class_tap_weights<const W: usize>(
     }
 }
 
-/// Filters two rows of `W` samples starting at `origin` in `source`; weights
-/// marked in `ZERO_WEIGHTS` are skipped.
+/// Filters in place the two rows of `W` samples in `output` whose source rows
+/// are `rows`; weights marked in `ZERO_WEIGHTS` are skipped.
 #[inline(never)]
-pub(super) fn gdf_rows<const W: usize, const ZERO_WEIGHTS: u64>(
-    base_values: [[u16; W]; 2],
-    source: &GdfSource<'_>,
-    classes: &[GdfClass],
+pub(super) fn gdf_rows<const W: usize, const WIN: usize, const ZERO_WEIGHTS: u64>(
+    rows: &[&[u16; WIN]; WINDOW_ROWS],
+    output: [&mut [u16; W]; 2],
+    class_bias: Simd<i32, W>,
     block: &GdfBlock,
-    origin: (usize, usize),
     tap_weights: impl Fn(usize) -> GdfTapWeights<W>,
-) -> Result<[[u16; W]; 2]> {
-    let first_row = origin.1.checked_sub(TAP_REACH);
-    let first_col = origin.0.checked_sub(TAP_REACH);
-    let (Some(first_row), Some(first_col)) = (first_row, first_col) else {
-        return Err(gdf_state_error());
-    };
-    if classes.len() < W / 2 {
-        return Err(gdf_state_error());
-    }
-    let mut rows = [&source.samples[..0]; 2 * TAP_REACH + 2];
-    let window = W + 2 * TAP_REACH;
-    let first = first_row
-        .checked_mul(source.stride)
-        .and_then(|start| start.checked_add(first_col))
-        .filter(|&first| {
-            (rows.len() - 1)
-                .checked_mul(source.stride)
-                .and_then(|offset| offset.checked_add(first + window))
-                .is_some_and(|end| end <= source.samples.len())
-        })
-        .ok_or_else(gdf_state_error)?;
-    for (index, row) in rows.iter_mut().enumerate() {
-        let start = first + index * source.stride;
-        *row = exact_slice(source.samples, start, window).ok_or_else(gdf_state_error)?;
-    }
+) {
+    const { assert!(WIN == W + 2 * TAP_REACH) };
     let bias = &GDF_BIAS[block.ref_dst_idx][block.qp_idx];
-    let gradient_bias = Simd::from_array(core::array::from_fn(|lane| {
-        classes[lane >> 1].gradient_bias() + bias[2]
-    }));
+    let gradient_bias = class_bias + Simd::splat(bias[2]);
     let centers: [Simd<i16, W>; 2] =
         core::array::from_fn(|row| tap_samples(rows[TAP_REACH + row], TAP_REACH));
     let mut sums = [[Simd::splat(bias[0]), Simd::splat(bias[1]), gradient_bias]; 2];
@@ -184,9 +213,8 @@ pub(super) fn gdf_rows<const W: usize, const ZERO_WEIGHTS: u64>(
             }
         }
     });
-    let mut output = [[0; W]; 2];
-    for ((output, base), sums) in output.iter_mut().zip(base_values).zip(sums) {
-        let base = Simd::from_array(base);
+    for (output, sums) in output.into_iter().zip(sums) {
+        let base = Simd::from_array(*output);
         *output = if block.ref_dst_idx == GDF_INTRA_REF_DST {
             let error = &GDF_INTRA_ERROR[block.qp_idx];
             finish_gdf_width_simd::<W, 8, 4096>(base, block, error, sums)
@@ -196,7 +224,6 @@ pub(super) fn gdf_rows<const W: usize, const ZERO_WEIGHTS: u64>(
         }
         .to_array();
     }
-    Ok(output)
 }
 
 /// Loads the class rows of taps `k` and `k ^ 1`, so the two taps share one load.
@@ -206,7 +233,7 @@ fn tap_pair<T: SimdElement>(table: &[[T; 4]], k: usize) -> Simd<T, 8> {
 }
 
 #[inline]
-fn tap_samples<const W: usize>(row: &[u16], col: usize) -> Simd<i16, W> {
+fn tap_samples<const W: usize, const WIN: usize>(row: &[u16; WIN], col: usize) -> Simd<i16, W> {
     Simd::<u16, W>::from_slice(&row[col..col + W]).cast()
 }
 
