@@ -189,7 +189,15 @@ fn fast_cells_match_the_full_path<T: ReconSample>(bit_depth: BitDepth) {
         },
         Case {
             mv: mv(24 * 8, 38 * 8),
-            ..base(true, true, Some(6), false)
+            ..base(true, true, Some(6), true)
+        },
+        Case {
+            mv: mv(-17 * 8, 0),
+            ..base(true, true, Some(6), true)
+        },
+        Case {
+            mv: mv(-40 * 8, 8),
+            ..base(true, true, None, true)
         },
         Case {
             mv: mv(0, 40 * 8),

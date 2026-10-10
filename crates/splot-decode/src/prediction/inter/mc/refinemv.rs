@@ -355,8 +355,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     }
 
     /// [`tip_refinemv_optflow_motion_cell`] when the centre SAD keeps the
-    /// candidates. Only interior units, whose SAD rows and columns no bound
-    /// clamps, take this path, so the optical flow reads the references too.
+    /// candidates. Only units whose SAD columns no bound clamps take this
+    /// path. The SAD rows `Y - 2..=Y + 8` lie inside the refine window, so the
+    /// copy clamps them to the plane alone, as in [`Self::unsearched_cell`].
     fn searched_cell(
         &self,
         sink: &WorkspaceSink<'_, '_, T>,
@@ -365,19 +366,22 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         mvs: [Mv; 2],
         distances: [i32; 2],
     ) -> Result<Option<MotionCell>> {
-        let origins = origins(rect, mvs);
-        let origin = |reference: usize| {
-            let (x, y) = origins[reference];
+        let mut xs = [0usize; 2];
+        let mut center_rows = [[0usize; 6]; 2];
+        let mut rows = [[0usize; 8]; 2];
+        for (reference, (x, y)) in origins(rect, mvs).into_iter().enumerate() {
             let (last_x, last_y) = self.last[reference];
-            (x >= 2 && y >= 2 && x + 9 <= last_x && y + 8 <= last_y)
-                .then_some((x as usize, y as usize))
-        };
-        let (Some((x0, y0)), Some((x1, y1))) = (origin(0), origin(1)) else {
-            return Ok(None);
-        };
+            if x < 2 || x + 9 > last_x {
+                return Ok(None);
+            }
+            xs[reference] = x as usize;
+            let row = |offset: i32| (y + offset).clamp(0, last_y) as usize;
+            center_rows[reference] = core::array::from_fn(|k| row(2 * k as i32 - 2));
+            rows[reference] = core::array::from_fn(|k| row(k as i32));
+        }
         let Some(center) = self.sad(
-            [x0 - 2, x1 - 2],
-            (0..6).map(|row| [y0 - 2 + 2 * row, y1 - 2 + 2 * row]),
+            xs.map(|x| x - 2),
+            (0..6).map(|k| [center_rows[0][k], center_rows[1][k]]),
             12,
         ) else {
             return Ok(None);
@@ -386,8 +390,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         if center - (center >> 3) >= 12 * 12 * 2 {
             return Ok(None);
         }
-        let rows = [y0, y1].map(|y| core::array::from_fn(|row| y + row));
-        self.optflow_cell(sink, batch, [x0, x1], rows, mvs, distances)
+        self.optflow_cell(sink, batch, xs, rows, mvs, distances)
     }
 
     /// [`super::optflow::tip_unit_motion_cell`] for an unsearched unit. Its
