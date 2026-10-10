@@ -1072,17 +1072,24 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let positions_ptr = trajectories.scratch[0].positions.as_ptr();
     let offsets_ptr = trajectories.scratch[0].projection_offsets.as_ptr();
 
-    context
-        .refresh_from_references(
-            (16, 16),
-            1,
-            config,
-            &ref_frame_idx,
-            &ref_valid,
-            &ref_order_hint,
-            &ref_motion_fields,
-        )
-        .unwrap();
+    let parked = TemporalProjectionConfig {
+        enable_trajectory: false,
+        ..config
+    };
+    for config in [parked, parked, config] {
+        context
+            .refresh_from_references(
+                (16, 16),
+                1,
+                config,
+                &ref_frame_idx,
+                &ref_valid,
+                &ref_order_hint,
+                &ref_motion_fields,
+            )
+            .unwrap();
+        assert!(context.trajectories.is_some() || context.trajectory_scratch.is_some());
+    }
 
     let trajectories = context.trajectories.as_ref().unwrap();
     assert_eq!(context.field.cells.as_ptr(), field_ptr);
@@ -1092,6 +1099,51 @@ fn refresh_reuses_projected_and_trajectory_storage() {
         trajectories.scratch[0].projection_offsets.as_ptr(),
         offsets_ptr
     );
+}
+
+#[test]
+fn trajectories_do_not_change_the_projected_motion_field() {
+    let project = |enable_trajectory| {
+        let mut source = TemporalMotionField::new(8, 8).unwrap();
+        source.set_reference_metadata(true, (32, 32), &[Some(1)]);
+        for x8 in 0..source.width8 {
+            *source.cell_mut(1, x8).unwrap() = TemporalMotionCell {
+                ref_indices: [0, INVALID_TEMPORAL_REF],
+                mvs: [
+                    compress_tmvp_mv(Mv { row: 12, col: -40 }),
+                    CompressedTemporalMv::ZERO,
+                ],
+            };
+        }
+        let mut other = TemporalMotionField::new(8, 8).unwrap();
+        other.set_reference_metadata(true, (32, 32), &[]);
+        TemporalMvContext::from_references(
+            (8, 8),
+            2,
+            TemporalProjectionConfig {
+                frame_size: (32, 32),
+                step: 1,
+                unit_size8: 8,
+                enable_tip: false,
+                enable_trajectory,
+                reduced: false,
+            },
+            &[0, 1],
+            &[true, true],
+            &[3, 1],
+            &[Some(Arc::new(source)), Some(Arc::new(other))],
+        )
+        .unwrap()
+    };
+    let traced = project(true);
+    let untraced = project(false);
+
+    assert!((0..2).any(|reference| {
+        (0..4).any(|y8| (0..4).any(|x8| traced.trajectory_cell(reference, y8, x8).is_some()))
+    }));
+    assert!(untraced.trajectories.is_none());
+    assert!(traced.field.cells.iter().any(|cell| cell.valid));
+    assert_eq!(traced.field, untraced.field);
 }
 
 #[test]

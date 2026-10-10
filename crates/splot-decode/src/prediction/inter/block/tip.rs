@@ -1293,10 +1293,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
                 .inter
                 .as_ref()
                 .is_some_and(|tools| tools.enable_tip),
-            enable_trajectory: sequence
-                .inter
-                .as_ref()
-                .is_some_and(|tools| tools.enable_mv_traj),
+            enable_trajectory: false, // only § 7.12.2 reads TrajMv/TrajValid, and a TIP_FRAME_AS_OUTPUT frame parses no blocks
             reduced: sequence
                 .inter
                 .as_ref()

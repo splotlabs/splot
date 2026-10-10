@@ -1294,7 +1294,10 @@ impl TemporalMvContext {
             };
             Some(trajectories)
         } else {
-            self.trajectory_scratch = self.trajectories.take();
+            self.trajectory_scratch = self
+                .trajectories
+                .take()
+                .or_else(|| self.trajectory_scratch.take());
             None
         };
         // An `Option` is `Default` whatever it holds, so the bounded list is
