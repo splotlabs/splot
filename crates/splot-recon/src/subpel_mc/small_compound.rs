@@ -8,10 +8,14 @@
 //! 2..=5, so a 4x4 row is one 8-sample window; an 8x8 row is one sliding
 //! 16-sample window. Every intermediate stays in registers. A zero phase
 //! skips its pass: `Round2(128 * s, 3) == s << 4` and `Round2(h << 7, 7) == h`
-//! hold exactly, so each phase class keeps the two-pass arithmetic.
+//! hold exactly, so each phase class keeps the two-pass arithmetic; with a
+//! zero horizontal phase the vertical pass is `Round2(sum, 3)`, which equals
+//! `Round2(sum << 4, 7)`. Clamped source rows use the clamped row, and a
+//! window with clamped columns gathers them with a byte shuffle; both are the
+//! spec read.
 
 use super::*;
-use std::simd::simd_swizzle;
+use std::simd::{ToBytes, simd_swizzle};
 
 type Row = Simd<i32, 4>;
 type Taps = Simd<i16, 4>;
@@ -35,12 +39,14 @@ const SMALL_TAPS: [[[i16; 4]; NUM_PHASES]; NUM_FILTER_TYPES] = {
     taps
 };
 
-/// One reference of a cell whose nonzero horizontal taps need no clamping.
+/// One reference of a 4x4 cell.
 struct Cell<'a, T> {
     samples: &'a [T],
     /// Offsets of the clamped source rows `y0 - 1 ..= y0 + 5` at the first
-    /// column the cell reads.
+    /// column the cell loads.
     rows: [usize; 7],
+    /// The [`clamped_window`] shuffle when a window column is clamped.
+    gather: Option<Simd<u8, 16>>,
     h_taps: Taps,
     v_taps: Taps,
     horizontal: bool,
@@ -59,10 +65,51 @@ fn horizontal_taps<T: ReconSample>(taps: Taps) -> Taps {
     }
 }
 
+const LANE_INDEX: [i32; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+/// Returns the first plane column of a window whose columns from `first` on
+/// are clamped to `[firstX, lastX]`, and, for each byte of the window's `u16`
+/// lanes, the byte of the samples loaded from that column that it copies.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn horizontal<T: ReconSample>(window: &[T], taps: Taps) -> Simd<i16, 4> {
-    let samples = reference_lanes::<8, T>(window, 0).cast::<i16>();
+fn clamped_window(first: i32, params: &SubpelPredictParams) -> (usize, [Simd<u8, 16>; 2]) {
+    let columns = (Simd::splat(first) + Simd::from_array(LANE_INDEX))
+        .simd_max(Simd::splat(params.first_x))
+        .simd_min(Simd::splat(params.last_x));
+    let bytes = ((columns - Simd::splat(columns[0])) * Simd::splat(2)).cast::<u8>();
+    let (low, high) = bytes.interleave(bytes + Simd::splat(1));
+    (columns[0] as usize, [low, high])
+}
+
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn gather8(lanes: Simd<u16, 8>, index: Simd<u8, 16>) -> Simd<u16, 8> {
+    Simd::from_ne_bytes(lanes.to_ne_bytes().swizzle_dyn(index))
+}
+
+/// The 16-lane [`gather8`]. A byte index past one 16-byte half selects zero
+/// from it, so the two half lookups combine with an OR.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn gather16(lanes: Simd<u16, 16>, index: [Simd<u8, 16>; 2]) -> Simd<u16, 16> {
+    let bytes = lanes.to_ne_bytes();
+    let low: Simd<u8, 16> = Simd::from_slice(&bytes.as_array()[..16]);
+    let high: Simd<u8, 16> = Simd::from_slice(&bytes.as_array()[16..]);
+    let half = |index| low.swizzle_dyn(index) | high.swizzle_dyn(index - Simd::splat(16));
+    let (first, second) = (half(index[0]), half(index[1]));
+    Simd::from_ne_bytes(Simd::from_array(core::array::from_fn(|byte| {
+        if byte < 16 {
+            first[byte]
+        } else {
+            second[byte - 16]
+        }
+    })))
+}
+
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn horizontal<T: ReconSample>(lanes: Simd<u16, 8>, taps: Taps) -> Simd<i16, 4> {
+    let samples = lanes.cast::<i16>();
     let windows = [
         simd_swizzle!(samples, [0, 1, 2, 3]),
         simd_swizzle!(samples, [1, 2, 3, 4]),
@@ -114,10 +161,16 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
         let v_phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
         let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][h_phase];
         let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-        if x0 + tap_start as i32 - 3 < params.first_x || x0 + tap_end as i32 - 1 > params.last_x {
-            return None;
-        }
-        let column = usize::try_from(x0 - i32::from(h_phase != 0)).ok()?;
+        let first = x0 - i32::from(h_phase != 0);
+        let (column, gather) = if first >= 0
+            && x0 + tap_start as i32 - 3 >= params.first_x
+            && x0 + tap_end as i32 - 1 <= params.last_x
+        {
+            (first as usize, None)
+        } else {
+            let (column, index) = clamped_window(first, params);
+            (column, Some(index[0]))
+        };
         let rows = (Simd::<i32, 8>::splat((params.start_y >> SCALE_SUBPEL_BITS) - 1)
             + Simd::from_array([0, 1, 2, 3, 4, 5, 6, 7]))
         .simd_max(Simd::splat(params.first_y))
@@ -125,6 +178,7 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
         Some(Cell {
             samples: reference.samples,
             rows: core::array::from_fn(|row| rows[row] as usize * reference.stride + column),
+            gather,
             h_taps: horizontal_taps::<T>(Simd::from_array(SMALL_TAPS[filter][h_phase])),
             v_taps: Simd::from_array(SMALL_TAPS[filter][v_phase]),
             horizontal: h_phase != 0,
@@ -137,36 +191,38 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
     fn predict(&self) -> Option<[Row; 4]> {
-        let cell = self;
-        let window = |row: usize| cell.samples.get(cell.rows[row]..cell.rows[row] + 8);
+        let lanes = |row: usize| {
+            let offset = self.rows[row];
+            let lanes = reference_lanes::<8, T>(self.samples.get(offset..offset + 8)?, 0);
+            Some(self.gather.map_or(lanes, |index| gather8(lanes, index)))
+        };
         let mut rows = [Simd::splat(0); 7];
         let mut out = [Row::splat(0); 4];
-        match (cell.horizontal, cell.vertical) {
+        match (self.horizontal, self.vertical) {
             (true, true) => {
                 for (row, value) in rows.iter_mut().enumerate() {
-                    *value = horizontal(window(row)?, cell.h_taps);
+                    *value = horizontal::<T>(lanes(row)?, self.h_taps);
                 }
                 for (i, out) in out.iter_mut().enumerate() {
-                    *out = vertical(&rows[i..], cell.v_taps, INTER_ROUND1_COMPOUND);
+                    *out = vertical(&rows[i..], self.v_taps, INTER_ROUND1_COMPOUND);
                 }
             }
             (true, false) => {
                 for (i, out) in out.iter_mut().enumerate() {
-                    *out = horizontal(window(i + 1)?, cell.h_taps).cast();
+                    *out = horizontal::<T>(lanes(i + 1)?, self.h_taps).cast();
                 }
             }
             (false, true) => {
                 for (row, value) in rows.iter_mut().enumerate() {
-                    *value = reference_lanes::<4, T>(window(row)?, 0).cast();
+                    *value = simd_swizzle!(lanes(row)?, [0, 1, 2, 3]).cast();
                 }
-                // `Round2(s << 4, 7) == Round2(s, 3)`: the zero-phase horizontal pass.
                 for (i, out) in out.iter_mut().enumerate() {
-                    *out = vertical(&rows[i..], cell.v_taps, INTER_ROUND0);
+                    *out = vertical(&rows[i..], self.v_taps, INTER_ROUND0);
                 }
             }
             (false, false) => {
                 for (i, out) in out.iter_mut().enumerate() {
-                    *out = reference_lanes::<4, T>(window(i + 1)?, 0).cast::<i32>()
+                    *out = simd_swizzle!(lanes(i + 1)?, [0, 1, 2, 3]).cast::<i32>()
                         << (FILTER_BITS - INTER_ROUND0) as i32;
                 }
             }
@@ -226,16 +282,20 @@ where
 type Row8 = Simd<i32, 8>;
 type Line8 = Simd<i16, 8>;
 
-/// One reference of an 8x8 cell whose nonzero horizontal taps need no
-/// clamping. `top` is the first source row the vertical taps read.
+/// One reference of an 8x8 cell. `top` is the first source row the vertical
+/// taps read, and `column` the first column the cell loads.
 struct Cell8<'a, T> {
     samples: &'a [T],
     stride: usize,
     column: usize,
+    /// The [`clamped_window`] shuffle when a window column is clamped.
+    gather: Option<[Simd<u8, 16>; 2]>,
     top: i32,
     first_y: i32,
     last_y: i32,
     h_taps: Simd<i16, NUM_TAPS>,
+    /// `h_taps` packed for the gathered `u16` lanes.
+    gather_taps: Simd<i16, NUM_TAPS>,
     v_taps: &'static [i32],
     horizontal: bool,
     vertical: bool,
@@ -256,9 +316,18 @@ fn window8<'a, T>(cell: &Cell8<'a, T>, row: usize, len: usize) -> Option<&'a [T]
 fn line8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>, row: usize) -> Option<Line8> {
     if HORIZONTAL {
         let window = window8(cell, row, 2 * NUM_TAPS)?;
-        return Some(Row8::slid_intermediate(window, 0, cell.h_taps));
+        let Some(index) = cell.gather else {
+            return Some(Row8::slid_intermediate(window, 0, cell.h_taps));
+        };
+        let lanes = gather16(reference_lanes::<16, T>(window, 0), index).to_array();
+        return Some(Row8::slid_intermediate(&lanes[..], 0, cell.gather_taps));
     }
-    Some(reference_lanes::<8, T>(window8(cell, row, 8)?, 0).cast())
+    let lanes = reference_lanes::<8, T>(window8(cell, row, 8)?, 0);
+    Some(
+        cell.gather
+            .map_or(lanes, |index| gather8(lanes, index[0]))
+            .cast(),
+    )
 }
 
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
@@ -298,10 +367,16 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
         let v_phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
         let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][h_phase];
         let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-        if x0 + tap_start as i32 - 3 < params.first_x || x0 + tap_end as i32 + 3 > params.last_x {
-            return None;
-        }
-        let column = usize::try_from(x0 - if h_phase != 0 { 3 } else { 0 }).ok()?;
+        let first = x0 - if h_phase != 0 { 3 } else { 0 };
+        let (column, gather) = if first >= 0
+            && x0 + tap_start as i32 - 3 >= params.first_x
+            && x0 + tap_end as i32 + 3 <= params.last_x
+        {
+            (first as usize, None)
+        } else {
+            let (column, index) = clamped_window(first, params);
+            (column, Some(index))
+        };
         let (v_start, v_end) = ACTIVE_TAP_SPANS[filter][v_phase];
         let v_count = match v_end - v_start {
             0..=2 => 2,
@@ -314,10 +389,12 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
             samples: reference.samples,
             stride: reference.stride,
             column,
+            gather,
             top: (params.start_y >> SCALE_SUBPEL_BITS) - 3 + v_start as i32,
             first_y: params.first_y,
             last_y: params.last_y,
             h_taps: slide::intermediate_taps::<T>(&SUBPEL_FILTERS[filter][h_phase]),
+            gather_taps: slide::intermediate_taps::<u16>(&SUBPEL_FILTERS[filter][h_phase]),
             v_taps: &SUBPEL_FILTERS[filter][v_phase][v_start..v_start + v_count],
             horizontal: h_phase != 0,
             vertical: v_phase != 0,
@@ -327,20 +404,19 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
     fn predict(&self) -> Option<[Row8; 8]> {
-        let cell = self;
-        match (cell.horizontal, cell.vertical, cell.v_taps.len()) {
-            (true, true, 2) => two_pass8::<T, 2, true>(cell),
-            (true, true, 4) => two_pass8::<T, 4, true>(cell),
-            (true, true, 6) => two_pass8::<T, 6, true>(cell),
-            (true, true, _) => two_pass8::<T, NUM_TAPS, true>(cell),
-            (false, true, 2) => two_pass8::<T, 2, false>(cell),
-            (false, true, 4) => two_pass8::<T, 4, false>(cell),
-            (false, true, 6) => two_pass8::<T, 6, false>(cell),
-            (false, true, _) => two_pass8::<T, NUM_TAPS, false>(cell),
+        match (self.horizontal, self.vertical, self.v_taps.len()) {
+            (true, true, 2) => two_pass8::<T, 2, true>(self),
+            (true, true, 4) => two_pass8::<T, 4, true>(self),
+            (true, true, 6) => two_pass8::<T, 6, true>(self),
+            (true, true, _) => two_pass8::<T, NUM_TAPS, true>(self),
+            (false, true, 2) => two_pass8::<T, 2, false>(self),
+            (false, true, 4) => two_pass8::<T, 4, false>(self),
+            (false, true, 6) => two_pass8::<T, 6, false>(self),
+            (false, true, _) => two_pass8::<T, NUM_TAPS, false>(self),
             (true, false, _) => {
                 let mut out = [Row8::splat(0); 8];
                 for (row, out) in out.iter_mut().enumerate() {
-                    *out = line8::<T, true>(cell, row)?.cast();
+                    *out = line8::<T, true>(self, row)?.cast();
                 }
                 Some(out)
             }
@@ -348,7 +424,7 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
                 let mut out = [Row8::splat(0); 8];
                 for (row, out) in out.iter_mut().enumerate() {
                     *out =
-                        line8::<T, false>(cell, row)?.cast() << (FILTER_BITS - INTER_ROUND0) as i32;
+                        line8::<T, false>(self, row)?.cast() << (FILTER_BITS - INTER_ROUND0) as i32;
                 }
                 Some(out)
             }
@@ -357,8 +433,8 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
 }
 
 /// Writes a blended 4x4 or 8x8 cell and returns `true`, or returns `false`
-/// without writing for other sizes or when a nonzero horizontal tap of either
-/// reference is clamped.
+/// without writing for other sizes or when a window of either reference
+/// leaves the plane storage.
 ///
 /// The parameters are plane-bounded and validated by the caller, and `output`
 /// holds the strided cell rectangle.
@@ -528,7 +604,7 @@ mod tests {
             }
         }
         assert!(
-            fused > 500 && declined > 500,
+            fused > 2500 && declined > 0,
             "fused {fused} declined {declined}"
         );
     }
