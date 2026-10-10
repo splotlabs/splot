@@ -858,6 +858,11 @@ impl NeighbourMvGrid {
     /// is not a candidate. That is what keeps the decode-order candidates (the
     /// § 7.12 bottom-left probe above all) out of the stack once the flags run
     /// ahead of resolution.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: probes read a few cell fields"
+    )]
+    #[inline(always)]
     pub(super) fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
         let leaf = self.leaf_at(r, c)?;
         if !leaf.resolved {
@@ -871,30 +876,7 @@ impl NeighbourMvGrid {
         let (model, sub_mv, sub_mv1) = if leaf.model_bits == 0 {
             (global, leaf.mv, leaf.mv1)
         } else {
-            let mut models = self.planes.models.get(leaf.models as usize..);
-            let mut take = |bit: u8| {
-                let (first, rest) = models
-                    .filter(|_| leaf.model_bits & bit != 0)?
-                    .split_first()?;
-                models = Some(rest);
-                Some(*first)
-            };
-            let splat0 = take(LeafRecord::SPLAT0);
-            let splat1 = take(LeafRecord::SPLAT1);
-            let stored = if leaf.model_bits & LeafRecord::STORED_IS_SPLAT0 != 0 {
-                splat0
-            } else {
-                take(LeafRecord::STORED_OWN)
-            };
-            let at = |params| {
-                let base = (leaf.base_r as usize, leaf.base_c as usize);
-                warp_sub_mv_at(params, base.0, base.1, r as usize, c as usize)
-            };
-            (
-                stored.map_or(global, NeighbourMotionModel::Warp),
-                splat0.map_or(leaf.mv, at),
-                splat1.map_or(leaf.mv1, at),
-            )
+            self.warp_motion(leaf, global, r, c)
         };
         Some(NeighbourCell {
             flags: leaf.flags,
@@ -911,6 +893,50 @@ impl NeighbourMvGrid {
                 bh4: leaf.bh4,
             },
         })
+    }
+
+    /// Warp-model half of [`Self::get`], out of line so the inlined
+    /// translation-only path stays small.
+    #[inline(never)]
+    fn warp_motion(
+        &self,
+        leaf: &LeafRecord,
+        global: NeighbourMotionModel,
+        r: i32,
+        c: i32,
+    ) -> (NeighbourMotionModel, Mv, Mv) {
+        let mut models = self.planes.models.get(leaf.models as usize..);
+        let mut take = |bit: u8| {
+            let (first, rest) = models
+                .filter(|_| leaf.model_bits & bit != 0)?
+                .split_first()?;
+            models = Some(rest);
+            Some(*first)
+        };
+        let splat0 = take(LeafRecord::SPLAT0);
+        let splat1 = take(LeafRecord::SPLAT1);
+        let stored = if leaf.model_bits & LeafRecord::STORED_IS_SPLAT0 != 0 {
+            splat0
+        } else {
+            take(LeafRecord::STORED_OWN)
+        };
+        let at = |params| {
+            let base = (leaf.base_r as usize, leaf.base_c as usize);
+            warp_sub_mv_at(params, base.0, base.1, r as usize, c as usize)
+        };
+        (
+            stored.map_or(global, NeighbourMotionModel::Warp),
+            splat0.map_or(leaf.mv, at),
+            splat1.map_or(leaf.mv1, at),
+        )
+    }
+
+    /// `motion.base_c` of [`Self::get`]`(r, c)` without building the cell.
+    #[inline]
+    pub(super) fn base_c_at(&self, r: i32, c: i32) -> Option<u32> {
+        self.leaf_at(r, c)
+            .filter(|leaf| leaf.resolved)
+            .map(|leaf| leaf.base_c)
     }
 
     pub(crate) fn intrabc_mv_at(&self, r: usize, c: usize) -> Option<Mv> {

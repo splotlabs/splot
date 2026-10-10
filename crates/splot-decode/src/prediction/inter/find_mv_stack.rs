@@ -1429,7 +1429,7 @@ pub(crate) fn find_mv_stack_with_temporal(
     if let Some((bank, _)) = bank {
         bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
     }
-    derived.fill(&mut entries, max_ref_mv_count, &mut prune_count);
+    derived.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
     extra_search(block, global_mv, &mut entries, &mut prune_count);
     if let Some(warp) = warp.as_mut() {
         warp_bank.fill(block.ref_frame0, warp);
@@ -1537,13 +1537,13 @@ fn scan_compound_mv_stack_col(
     {
         let mv_row = block.mi_row as i32 + delta_row;
         let mv_col = block.mi_col as i32 + delta_col;
-        let Some(cell) = grid.get(mv_row, mv_col) else {
+        let Some(cell_base_c) = grid.base_c_at(mv_row, mv_col) else {
             continue;
         };
-        let Some(left) = grid.get(mv_row, block.mi_col as i32 - 1) else {
+        let Some(left_base_c) = grid.base_c_at(mv_row, block.mi_col as i32 - 1) else {
             continue;
         };
-        if cell.motion.base_c != left.motion.base_c {
+        if cell_base_c != left_base_c {
             scan_compound_mv_stack_probe(
                 grid,
                 block,
@@ -1708,13 +1708,13 @@ fn scan_mv_stack_col(
     {
         let mv_row = block.mi_row as i32 + delta_row;
         let mv_col = block.mi_col as i32 + delta_col;
-        let Some(cell) = grid.get(mv_row, mv_col) else {
+        let Some(cell_base_c) = grid.base_c_at(mv_row, mv_col) else {
             continue;
         };
-        let Some(left) = grid.get(mv_row, block.mi_col as i32 - 1) else {
+        let Some(left_base_c) = grid.base_c_at(mv_row, block.mi_col as i32 - 1) else {
             continue;
         };
-        if cell.motion.base_c == left.motion.base_c {
+        if cell_base_c == left_base_c {
             continue;
         }
         scan_mv_stack_probe(
@@ -1762,7 +1762,7 @@ fn scan_mv_stack_probe(
             if candidate_ref == block.ref_frame0 {
                 insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
             } else {
-                derived.add_spatial(block, candidate_ref, candidate_mv, cell);
+                derived.add_spatial(block, candidate_ref, candidate_mv, &cell);
             }
         }
     }
@@ -1781,7 +1781,7 @@ fn scan_mv_stack_probe(
             };
             insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
         } else if candidate_ref >= 0 && candidate_ref != TIP_REF_FRAME {
-            derived.add_spatial(block, candidate_ref, candidate_mv, cell);
+            derived.add_spatial(block, candidate_ref, candidate_mv, &cell);
         }
     }
 }
