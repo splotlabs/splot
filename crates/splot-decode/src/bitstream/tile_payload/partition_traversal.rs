@@ -18,8 +18,8 @@ use super::intra_joint_modes::{
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{self, PartitionDecisionError, PartitionType};
 use super::partition_allowed::{
-    PartitionAllowedError, PartitionAllowedInput, PartitionFeatureFlags, PartitionTreeType,
-    partition_decision_facts,
+    PartitionAllowedError, PartitionAllowedInput, PartitionDecisionMemo, PartitionFeatureFlags,
+    PartitionTreeType,
 };
 use super::partition_size::{
     BlockSize, PartitionSizeError, h_partition_midsize, partition_subsize,

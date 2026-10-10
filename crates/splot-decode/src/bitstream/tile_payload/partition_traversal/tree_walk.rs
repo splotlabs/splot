@@ -9,13 +9,13 @@ use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state}
 use super::{
     BLOCK_8X32, BlockSize, ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart,
     DecodeLimitName, DecodeLimits, DecodeTileWorkUnit, GeneralIntraLeafMode, IsCflContext,
-    PartitionAllowedInput, PartitionContextInput, PartitionTreeType, PartitionType,
-    ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
+    PartitionAllowedInput, PartitionContextInput, PartitionDecisionMemo, PartitionTreeType,
+    PartitionType, ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
     TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState, TileMiSizeState,
     TileMiSizeStateError, TilePartitionBounds, TilePartitionCall, TilePartitionContextState,
     TilePartitionFrameFacts, TilePartitionTraversalError, TileUseDipState, TileUsesMrlsState,
     TileUvCflState, call_in_frame, checked_mul, child_calls, ensure_supported_traversal_frame,
-    h_partition_midsize, partition_decision_facts, partition_subsize, symbol_decoder_for_work_unit,
+    h_partition_midsize, partition_subsize, symbol_decoder_for_work_unit,
 };
 
 const BLOCK_64X64: usize = 12;
@@ -101,6 +101,7 @@ pub(crate) struct GeneralIntraPartitionTreeCursor<'payload> {
     limits: DecodeLimits,
     step_count: u64,
     sdp_state: SdpPartitionState,
+    partition_memo: PartitionDecisionMemo,
     stack: Vec<TilePartitionStackEntry>,
 }
 
@@ -178,6 +179,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             limits,
             step_count: 0,
             sdp_state: SdpPartitionState::default(),
+            partition_memo: PartitionDecisionMemo::default(),
             stack,
         })
     }
@@ -268,6 +270,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                         self.tile_bounds,
                         mi_size_state.context_state(),
                         &mut self.sdp_state,
+                        &mut self.partition_memo,
                         work_unit.cdf_mut().tile_cdfs_mut(),
                         &mut self.symbols,
                     )?;
@@ -388,22 +391,25 @@ pub(crate) enum GeneralIntraTreeWalkError<E> {
     Leaf(E),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_frontier_partition_step(
     call: TilePartitionCall,
     frame: TilePartitionFrameFacts,
     tile_bounds: TilePartitionBounds,
     context: TilePartitionContextState<'_>,
     sdp_state: &mut SdpPartitionState,
+    memo: &mut PartitionDecisionMemo,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<(TilePartitionCall, PartitionType, bool), TilePartitionTraversalError> {
     let forced_chroma_partition = sdp_state.forced_chroma_partition(frame, call);
-    let partition = read_frontier_partition_decision(
+    let partition = read_memoized_partition_decision(
         call,
         frame,
         tile_bounds,
         context,
         forced_chroma_partition,
+        memo,
         cdfs,
         symbols,
     )?;
@@ -413,12 +419,36 @@ fn read_frontier_partition_step(
     Ok((call, partition, using_extended_sdp))
 }
 
+#[cfg(test)]
 pub(super) fn read_frontier_partition_decision(
     call: TilePartitionCall,
     frame: TilePartitionFrameFacts,
     tile_bounds: TilePartitionBounds,
     context: TilePartitionContextState<'_>,
     forced_chroma_partition: Option<PartitionType>,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+) -> Result<PartitionType, TilePartitionTraversalError> {
+    read_memoized_partition_decision(
+        call,
+        frame,
+        tile_bounds,
+        context,
+        forced_chroma_partition,
+        &mut PartitionDecisionMemo::default(),
+        cdfs,
+        symbols,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_memoized_partition_decision(
+    call: TilePartitionCall,
+    frame: TilePartitionFrameFacts,
+    tile_bounds: TilePartitionBounds,
+    context: TilePartitionContextState<'_>,
+    forced_chroma_partition: Option<PartitionType>,
+    memo: &mut PartitionDecisionMemo,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<PartitionType, TilePartitionTraversalError> {
@@ -441,7 +471,7 @@ pub(super) fn read_frontier_partition_decision(
         frame.num_planes,
         forced_chroma_partition,
     )?;
-    let facts = partition_decision_facts(allowed)?;
+    let facts = memo.facts(allowed)?;
     let partition_plane = partition_cdf_plane(call.tree_type);
     let Some(local_r) = call.r.checked_sub(context.origin_row) else {
         return Err(TilePartitionTraversalError::CoordinateUnderflow {

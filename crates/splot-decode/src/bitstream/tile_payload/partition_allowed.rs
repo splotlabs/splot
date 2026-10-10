@@ -209,6 +209,91 @@ pub(crate) fn partition_decision_facts(
     })
 }
 
+const MEMO_SLOTS: usize = 29 * 3 * 8;
+
+/// [`partition_decision_facts`] of blocks wholly inside the frame, keyed by
+/// size, tree type and the three chroma/region flags. Inside the frame the
+/// facts do not depend on the position, so one memo is valid while the other
+/// frame-level inputs stay fixed, which holds for one tile walk. A slot
+/// packs the facts into 16 bits; 0 marks an empty slot, because at least one
+/// partition is always allowed.
+pub(crate) struct PartitionDecisionMemo {
+    slots: [u16; MEMO_SLOTS],
+}
+
+impl Default for PartitionDecisionMemo {
+    fn default() -> Self {
+        Self {
+            slots: [0; MEMO_SLOTS],
+        }
+    }
+}
+
+impl PartitionDecisionMemo {
+    pub(crate) fn facts(
+        &mut self,
+        input: PartitionAllowedInput,
+    ) -> Result<PartitionDecisionFacts, PartitionAllowedError> {
+        let Some(slot) = interior_memo_slot(input).and_then(|slot| self.slots.get_mut(slot)) else {
+            return partition_decision_facts(input);
+        };
+        if *slot != 0 {
+            return Ok(PartitionDecisionFacts::unpacked(*slot));
+        }
+        let facts = partition_decision_facts(input)?;
+        *slot = facts.packed();
+        Ok(facts)
+    }
+}
+
+impl PartitionDecisionFacts {
+    fn packed(self) -> u16 {
+        let allowed = PartitionType::ALL.into_iter().fold(0, |bits, partition| {
+            bits | u16::from(self.allowed.contains(partition)) << partition.index()
+        });
+        let implied = self
+            .implied_partition
+            .map_or(PartitionType::ALL.len(), PartitionType::index) as u16;
+        let rect = match self.rect_type {
+            None => 0,
+            Some(RectPartitionType::Horz) => 1,
+            Some(RectPartitionType::Vert) => 2,
+        };
+        allowed | implied << 10 | rect << 14
+    }
+
+    fn unpacked(bits: u16) -> Self {
+        Self {
+            implied_partition: PartitionType::ALL
+                .get(usize::from(bits >> 10 & 15))
+                .copied(),
+            allowed: AllowedPartitions::new(core::array::from_fn(|index| bits >> index & 1 != 0)),
+            rect_type: match bits >> 14 {
+                1 => Some(RectPartitionType::Horz),
+                2 => Some(RectPartitionType::Vert),
+                _ => None,
+            },
+        }
+    }
+}
+
+fn interior_memo_slot(input: PartitionAllowedInput) -> Option<usize> {
+    if input.known_chroma_luma_partition.is_some() {
+        return None;
+    }
+    let geometry = BlockGeometry::new(input.b_size).ok()?;
+    if input.r.checked_add(geometry.high_4x4)? > input.mi_rows
+        || input.c.checked_add(geometry.wide_4x4)? > input.mi_cols
+    {
+        return None;
+    }
+    let tree = input.tree_type as usize;
+    let flags = usize::from(input.has_chroma) << 2
+        | usize::from(input.chroma_offset) << 1
+        | usize::from(input.mixed_region);
+    Some((input.b_size.index() * 3 + tree) * 8 + flags)
+}
+
 pub(crate) fn get_plane_residual_size(
     sub_size: BlockSize,
     plane: usize,
@@ -588,6 +673,159 @@ const fn partition_rect_type(partition: PartitionType) -> Option<RectPartitionTy
         | PartitionType::Vert4A
         | PartitionType::Vert4B => Some(RectPartitionType::Vert),
         PartitionType::None | PartitionType::Split => None,
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    const FAR: usize = 1 << 12;
+
+    fn expand(
+        inputs: Vec<PartitionAllowedInput>,
+        count: usize,
+        vary: impl Fn(PartitionAllowedInput, usize) -> PartitionAllowedInput,
+    ) -> Vec<PartitionAllowedInput> {
+        inputs
+            .into_iter()
+            .flat_map(|input| (0..count).map(move |index| (input, index)))
+            .map(|(input, index)| vary(input, index))
+            .collect()
+    }
+
+    fn far_input() -> PartitionAllowedInput {
+        PartitionAllowedInput::new(
+            FAR,
+            FAR,
+            2 * FAR,
+            2 * FAR,
+            0,
+            PartitionTreeType::Shared,
+            false,
+            false,
+            PartitionFeatureFlags::new(false, false),
+            false,
+            false,
+            8,
+            false,
+            false,
+            1,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn frame_keys() -> Vec<PartitionAllowedInput> {
+        let keys = expand(vec![far_input()], 4, |input, i| PartitionAllowedInput {
+            subsampling_x: i & 2 != 0,
+            subsampling_y: i & 1 != 0,
+            ..input
+        });
+        let keys = expand(keys, 4, |input, i| PartitionAllowedInput {
+            features: PartitionFeatureFlags::new(i & 2 != 0, i & 1 != 0),
+            ..input
+        });
+        let keys = expand(keys, 2, |input, i| PartitionAllowedInput {
+            frame_is_intra: i != 0,
+            ..input
+        });
+        let keys = expand(keys, 3, |input, i| PartitionAllowedInput {
+            max_pb_aspect_ratio: 2 << i,
+            ..input
+        });
+        expand(keys, 2, |input, i| PartitionAllowedInput {
+            num_planes: 1 + 2 * i,
+            ..input
+        })
+    }
+
+    fn slots(frame: PartitionAllowedInput) -> Vec<PartitionAllowedInput> {
+        let slots = expand(vec![frame], 29, |input, i| PartitionAllowedInput {
+            b_size: BlockSize::new(i).unwrap(),
+            ..input
+        });
+        let trees = [
+            PartitionTreeType::Shared,
+            PartitionTreeType::LumaPart,
+            PartitionTreeType::ChromaPart,
+        ];
+        let slots = expand(slots, 3, |input, i| PartitionAllowedInput {
+            tree_type: trees[i],
+            ..input
+        });
+        expand(slots, 8, |input, i| PartitionAllowedInput {
+            has_chroma: i & 4 != 0,
+            chroma_offset: i & 2 != 0,
+            mixed_region: i & 1 != 0,
+            ..input
+        })
+    }
+
+    #[test]
+    fn memo_matches_direct_facts_for_every_slot_and_frame_key() {
+        for frame in frame_keys() {
+            let mut memo = PartitionDecisionMemo::default();
+            let mut seen = [false; MEMO_SLOTS];
+            for far in slots(frame) {
+                let slot = interior_memo_slot(far).unwrap();
+                assert!(!seen[slot], "slot {slot} is shared");
+                seen[slot] = true;
+                let geometry = BlockGeometry::new(far.b_size).unwrap();
+                let tight = PartitionAllowedInput {
+                    r: far.mi_rows - geometry.high_4x4,
+                    c: far.mi_cols - geometry.wide_4x4,
+                    ..far
+                };
+                let outside = PartitionAllowedInput {
+                    r: tight.r + 1,
+                    ..tight
+                };
+                let overflow = PartitionAllowedInput {
+                    c: usize::MAX - 1,
+                    ..far
+                };
+                for input in [far, tight, outside, overflow] {
+                    let direct = partition_decision_facts(input).ok();
+                    assert_eq!(memo.facts(input).ok(), direct, "{input:?}");
+                }
+            }
+            assert!(seen.iter().all(|seen| *seen));
+        }
+    }
+
+    #[test]
+    fn memo_takes_the_direct_path_at_the_frame_edge_and_for_forced_chroma() {
+        let interior = PartitionAllowedInput {
+            b_size: BlockSize::new(BLOCK_64X64).unwrap(),
+            ..far_input()
+        };
+        let edge = PartitionAllowedInput {
+            r: interior.mi_rows - 4,
+            ..interior
+        };
+        let mut memo = PartitionDecisionMemo::default();
+        let inside = memo.facts(interior).unwrap();
+        let at_edge = memo.facts(edge).unwrap();
+        assert_eq!(at_edge, partition_decision_facts(edge).unwrap());
+        assert_eq!(at_edge.implied_partition, Some(PartitionType::Horz));
+        assert_ne!(at_edge, inside);
+
+        let chroma = PartitionAllowedInput {
+            tree_type: PartitionTreeType::ChromaPart,
+            ..interior
+        };
+        let forced = PartitionAllowedInput {
+            known_chroma_luma_partition: Some(PartitionType::Vert),
+            ..chroma
+        };
+        assert_eq!(memo.facts(chroma).unwrap().implied_partition, None);
+        assert_eq!(
+            memo.facts(forced).unwrap().implied_partition,
+            Some(PartitionType::Vert)
+        );
     }
 }
 
