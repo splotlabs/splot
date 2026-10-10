@@ -124,7 +124,7 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
                                             .any(|bounds| bounds[class] < range),
                                     );
                                 }
-                                params.rows(window, 0, output, &classes, &block, range);
+                                params.rows(window, output, &classes, &block, range);
                             },
                         );
                         assert_eq!(

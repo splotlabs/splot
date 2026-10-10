@@ -381,7 +381,7 @@ pub(super) fn mixed_class_rows<const W: usize, const WIN: usize>(
         class_bias(classes) * Simd::splat(params.scale) + gradient,
     ];
     let filter = gdf_rows::<W, WIN, 2, MIXED_ZERO_WEIGHTS, true>;
-    filter(window, 0, output, init, odd, block, weights, None);
+    filter(window, 0, output, &init, odd, block, &weights, None);
 }
 
 /// Filters in place the `ROWS` rows of `W` samples in `output`, from row
@@ -401,24 +401,24 @@ pub(super) fn gdf_rows<
     rows: &[&[u16; WIN]; WINDOW_ROWS],
     first_row: usize,
     output: [&mut [u16; W]; ROWS],
-    init: [Simd<i32, W>; 3],
+    init: &[Simd<i32, W>; 3],
     odd: Mask<i16, W>,
     block: &GdfBlock,
-    tap_weights: impl Fn(usize) -> GdfTapWeights<W>,
-    low: Option<GdfLowRange<W>>,
+    tap_weights: &impl Fn(usize) -> GdfTapWeights<W>,
+    low: Option<&GdfLowRange<W>>,
 ) {
     const { assert!(WIN == W + 2 * TAP_REACH && ROWS <= 2) };
     let first_row = first_row.min(2 - ROWS);
     let centers: [Simd<i16, W>; ROWS] =
         core::array::from_fn(|row| tap_samples(rows[TAP_REACH + first_row + row], TAP_REACH));
-    let mut sums = [init; ROWS];
+    let mut sums = [*init; ROWS];
     if let Some(low) = low.filter(|_| W == LOW_RANGE_LANES) {
         let add = add_taps::<W, WIN, ROWS, ZERO_WEIGHTS, false>;
-        add(rows, first_row, &centers, &mut sums, &tap_weights);
-        add_low_range_clips(rows, first_row, &centers, &mut sums, &tap_weights, &low);
+        add(rows, first_row, &centers, &mut sums, tap_weights);
+        add_low_range_clips(rows, first_row, &centers, &mut sums, tap_weights, low);
     } else {
         let add = add_taps::<W, WIN, ROWS, ZERO_WEIGHTS, true>;
-        add(rows, first_row, &centers, &mut sums, &tap_weights);
+        add(rows, first_row, &centers, &mut sums, tap_weights);
     }
     let swap = SWAPPED.then_some(odd);
     for (output, sums) in output.into_iter().zip(sums) {

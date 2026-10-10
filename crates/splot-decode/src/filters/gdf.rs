@@ -535,17 +535,13 @@ impl GdfUniformParams {
         }
     }
 
-    /// Filters in place `ROWS` rows of `W` samples that all have this class,
-    /// from row `first_row` of the row pair. `range` is the row pair's
-    /// `tap_range` below this class's limit, when the caller measured it. Two
-    /// rows of 16 lanes need more vector registers than exist, so 16 lanes go
-    /// one row at a time.
-    #[allow(clippy::too_many_arguments)]
-    fn rows<const W: usize, const WIN: usize, const ROWS: usize>(
+    /// Filters in place a row pair of `W` samples that all have this class.
+    /// `range` is the row pair's `tap_range` below this class's limit, when
+    /// the caller measured it.
+    fn rows<const W: usize, const WIN: usize>(
         &self,
         window: &[&[u16; WIN]; WINDOW_ROWS],
-        first_row: usize,
-        output: [&mut [u16; W]; ROWS],
+        output: [&mut [u16; W]; 2],
         classes: &[GdfClass],
         block: &GdfBlock,
         range: Option<u16>,
@@ -566,7 +562,6 @@ impl GdfUniformParams {
             second,
             class_bias(classes) * Simd::splat(self.scale) + gradient,
         ];
-        let odd = Mask::splat(false);
         let low = range.map(|range| GdfLowRange {
             range: range as i16,
             weight_sums: self.weight_sums.map(Simd::splat),
@@ -574,12 +569,35 @@ impl GdfUniformParams {
             clip_taps: *self.clip_taps,
         });
         if self.class & 1 == 0 {
-            let filter = gdf_rows::<W, WIN, ROWS, EVEN_CLASS_ZERO_WEIGHTS, false>;
-            filter(window, first_row, output, init, odd, block, weights, low);
+            let filter = uniform_class_rows::<W, WIN, EVEN_CLASS_ZERO_WEIGHTS>;
+            filter(window, output, &init, block, &weights, low.as_ref());
         } else {
-            let filter = gdf_rows::<W, WIN, ROWS, ODD_CLASS_ZERO_WEIGHTS, false>;
-            filter(window, first_row, output, init, odd, block, weights, low);
+            let filter = uniform_class_rows::<W, WIN, ODD_CLASS_ZERO_WEIGHTS>;
+            filter(window, output, &init, block, &weights, low.as_ref());
         }
+    }
+}
+
+/// Filters in place a uniform-class row pair through `gdf_rows`. Two rows of
+/// 16 lanes need more vector registers than exist, so 16 lanes go one row at
+/// a time.
+fn uniform_class_rows<const W: usize, const WIN: usize, const ZERO_WEIGHTS: u64>(
+    window: &[&[u16; WIN]; WINDOW_ROWS],
+    output: [&mut [u16; W]; 2],
+    init: &[Simd<i32, W>; 3],
+    block: &GdfBlock,
+    weights: &impl Fn(usize) -> GdfTapWeights<W>,
+    low: Option<&GdfLowRange<W>>,
+) {
+    let odd = Mask::splat(false);
+    if W == 16 {
+        for (first_row, output) in output.into_iter().enumerate() {
+            let filter = gdf_rows::<W, WIN, 1, ZERO_WEIGHTS, false>;
+            filter(window, first_row, [output], init, odd, block, weights, low);
+        }
+    } else {
+        let filter = gdf_rows::<W, WIN, 2, ZERO_WEIGHTS, false>;
+        filter(window, 0, output, init, odd, block, weights, low);
     }
 }
 
@@ -748,9 +766,7 @@ fn compute_enabled_segment(
                 let output = output_pair::<16>(top, bottom, x).ok_or_else(geometry_error)?;
                 let params = &uniform_params[class_index as usize];
                 let range = tap_range::<16, 28>(&window, params.clip_taps.limit);
-                for (first_row, output) in output.into_iter().enumerate() {
-                    params.rows(&window, first_row, [output], classes, block, range);
-                }
+                params.rows(&window, output, classes, block, range);
                 x += 16;
             } else if width >= 8 {
                 let classes = row_classes
@@ -761,7 +777,7 @@ fn compute_enabled_segment(
                 let output = output_pair::<8>(top, bottom, x).ok_or_else(geometry_error)?;
                 if let Some(class_index) = uniform_gdf_class(classes) {
                     uniform_params[class_index as usize]
-                        .rows(&window, 0, output, classes, block, None);
+                        .rows(&window, output, classes, block, None);
                 } else {
                     mixed_class_rows(&window, output, classes, block, &mixed_params);
                 }
