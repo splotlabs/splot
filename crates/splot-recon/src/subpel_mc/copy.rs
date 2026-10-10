@@ -636,31 +636,37 @@ mod tests {
         Ok(())
     }
 
-    fn check_clipped_copies<T: ReconSample>(bit_depth: BitDepth) -> Result<()> {
+    /// Fullpel copies and the `BILINEAR` kernels of clipped blocks against the
+    /// general convolution, which clips every read on its own.
+    fn check_clipped_blocks<T: ReconSample>(bit_depth: BitDepth) -> Result<()> {
         let (width, height) = (40usize, 12usize);
         let max = u32::from(bit_depth.max_sample());
         let samples = (0..width * height)
             .map(|i| T::try_from_u16(((i as u32 * 7919 + 13) % (max + 1)) as u16))
             .collect::<Result<Vec<T>>>()?;
         let view = ReferencePlaneView::new(&samples, width, height)?;
-        for w in [8, 16, 24, 32] {
+        for w in [4, 6, 8, 12, 16, 24, 32] {
             for x0 in -3..(width as i32 - w as i32 + 3) {
-                for (first, last) in [(x0 + 1, x0 + w as i32 - 1), (x0 + 5, x0 + 6), (-9, 99)] {
-                    let mut params = full_pel_params(
-                        InterpolationFilter::EightTap,
-                        w,
-                        3,
-                        x0,
-                        2,
-                        width as i32,
-                        height as i32,
-                    );
-                    params.bit_depth = bit_depth;
-                    (params.first_x, params.last_x) = (first, last);
-                    let mut copied = vec![0; w * 3];
-                    subpel_predict_block_into(&view, &params, &mut copied)?;
-                    let expected = subpel_predict_block(&view, &params)?;
-                    assert_eq!(copied, expected, "w={w} x0={x0} first={first} last={last}");
+                for (first, last) in [(x0 + 1, x0 + w as i32 - 1), (x0 + 5, x0 + 6), (0, 99)] {
+                    for (phase_x, phase_y) in [(0, 0), (5, 0), (0, 11), (7, 9)] {
+                        let mut params = full_pel_params(
+                            InterpolationFilter::Bilinear,
+                            w,
+                            3,
+                            x0,
+                            2,
+                            width as i32,
+                            height as i32,
+                        );
+                        params.bit_depth = bit_depth;
+                        params.start_x += phase_x << 6;
+                        params.start_y += phase_y << 6;
+                        (params.first_x, params.last_x) = (first.max(0), last.max(0));
+                        let mut predicted = vec![0; w * 3];
+                        subpel_predict_block_into(&view, &params, &mut predicted)?;
+                        let expected = subpel_predict_block(&view, &params)?;
+                        assert_eq!(predicted, expected, "{params:?}");
+                    }
                 }
             }
         }
@@ -668,8 +674,8 @@ mod tests {
     }
 
     #[test]
-    fn clipped_fullpel_copies_match_the_per_sample_copy() -> Result<()> {
-        check_clipped_copies::<u16>(BitDepth::Ten)?;
-        check_clipped_copies::<u8>(BitDepth::Eight)
+    fn clipped_fullpel_and_bilinear_blocks_match_the_general_convolution() -> Result<()> {
+        check_clipped_blocks::<u16>(BitDepth::Ten)?;
+        check_clipped_blocks::<u8>(BitDepth::Eight)
     }
 }

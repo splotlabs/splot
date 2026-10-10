@@ -930,7 +930,12 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
                     && i32::try_from(last).is_ok_and(|last| last <= params.last_x)
             })
     });
-    if let Some(x) = direct_x {
+    let in_plane = || {
+        usize::try_from(x0)
+            .ok()
+            .filter(|&x| x + params.w < reference.width)
+    };
+    if let Some(x) = direct_x.or_else(in_plane) {
         let last_row = reference.readable_rows as i32 - 1;
         let (first_y, last_y) = (
             params.first_y.clamp(0, last_row),
@@ -980,6 +985,20 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
                 );
             }
         }
+        if direct_x.is_none() {
+            let [first, last, lo, hi] = unclipped_columns(reference, params);
+            for r in 0..params.h {
+                let (top, bottom) = (source_row(r), source_row(r + 1));
+                let edge = |col: usize| {
+                    let value =
+                        bilinear_sample(top[col].to_u16(), bottom[col].to_u16(), v_phase as i32);
+                    O::from_sample(value.min(max_sample))
+                };
+                let destination = &mut output[r * output_stride..][..params.w];
+                destination[..lo].fill(edge(first));
+                destination[hi..].fill(edge(last));
+            }
+        }
         return Ok(());
     }
     let mut clipped_x = [0usize; MAX_BLOCK_DIM + 1];
@@ -1027,6 +1046,24 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
         top_is_first = !top_is_first;
     }
     Ok(())
+}
+
+/// The plane-bounded `firstX` and `lastX` of an unscaled two-axis
+/// `BILINEAR` block, and the columns `[lo, hi)` whose reads at `x0 + c` and
+/// `x0 + c + 1` both lie in them. Both reads left of `lo` clip to `firstX`
+/// and both reads from `hi` on clip to `lastX`, which is the § 7.13.3.18
+/// `Clip3` followed by the plane clamp.
+fn unclipped_columns<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+) -> [usize; 4] {
+    let plane_last = reference.width as i64 - 1;
+    let first = i64::from(params.first_x).clamp(0, plane_last);
+    let last = i64::from(params.last_x).clamp(first, plane_last.max(first));
+    let x0 = i64::from(params.start_x >> SCALE_SUBPEL_BITS);
+    let lo = (first - x0).clamp(0, params.w as i64);
+    let hi = (last - x0).clamp(lo, params.w as i64);
+    [first as usize, last as usize, lo as usize, hi as usize]
 }
 
 /// One `LANES`-wide column of the unclipped two-axis `BILINEAR` kernel. Each
