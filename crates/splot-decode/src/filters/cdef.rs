@@ -814,24 +814,40 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
     if !cdef_filter_block_chroma_pair(pad, h, filter, &mut output) {
         return Err(CdefError::Workspace);
     }
+    let (u_out, u_stride) = stripe_rows_from(filtered_u, x0, y0).ok_or(CdefError::Workspace)?;
+    let (v_out, v_stride) = stripe_rows_from(filtered_v, x0, y0).ok_or(CdefError::Workspace)?;
     for (row, lanes) in output.chunks_exact(2 * CHROMA_PAIR_SIDE).enumerate() {
         let planes = simd_swizzle!(
             Simd::<u16, CHROMA_PAIR_SPAN>::from_slice(lanes),
             [0, 2, 4, 6, 1, 3, 5, 7]
         );
         let (u_lanes, v_lanes) = planes.as_array().split_at(CHROMA_PAIR_SIDE);
-        filtered_u
-            .row_mut(y0 + row)
-            .and_then(|row| row.get_mut(x0..x0 + w))
+        u_out
+            .get_mut(row * u_stride..)
+            .and_then(|row| row.get_mut(..CHROMA_PAIR_SIDE))
             .ok_or(CdefError::Workspace)?
             .copy_from_slice(u_lanes); // splot-copy-ok: publish the pair's U samples
-        filtered_v
-            .row_mut(y0 + row)
-            .and_then(|row| row.get_mut(x0..x0 + w))
+        v_out
+            .get_mut(row * v_stride..)
+            .and_then(|row| row.get_mut(..CHROMA_PAIR_SIDE))
             .ok_or(CdefError::Workspace)?
             .copy_from_slice(v_lanes); // splot-copy-ok: publish the pair's V samples
     }
     Ok(true)
+}
+
+/// `plane`'s samples from `(x, y)` on, and its row stride, provided rows
+/// keep `CHROMA_PAIR_SIDE` samples from `x` on.
+fn stripe_rows_from(plane: &mut StripePlane, x: usize, y: usize) -> Option<(&mut [u16], usize)> {
+    let stride = plane.width();
+    if x.checked_add(CHROMA_PAIR_SIDE)? > stride {
+        return None;
+    }
+    let start = y
+        .checked_sub(plane.origin_y())?
+        .checked_mul(stride)?
+        .checked_add(x)?;
+    Some((plane.samples_mut().get_mut(start..)?, stride))
 }
 
 /// Interleaves the chroma pair's tap rows, `CHROMA_PAIR_SPAN` samples of each
