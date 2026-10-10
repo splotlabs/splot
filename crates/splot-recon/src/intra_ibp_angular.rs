@@ -14,6 +14,8 @@ use crate::intra_directional_angle::{
     DR_INTRA_DERIVATIVE, ZONE_1_MAX, ZONE_3_INDEX_BASE, ZONE_3_MIN,
 };
 use crate::{ReconError, ReconSample, Result};
+use std::simd::Simd;
+use std::simd::num::SimdUint;
 use std::sync::OnceLock;
 
 const IBP_WEIGHT_SIZE_LOG2: u32 = 4;
@@ -166,6 +168,14 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     let shift = IBP_WEIGHT_SIZE_LOG2 + 1;
     let c_shift = (width as u32) >> shift;
     let r_shift = (height as u32) >> shift;
+    if let (true, Some(primary), Some(second)) = (
+        width <= 64 && height <= 64 && width.is_multiple_of(4),
+        T::u16_slice_mut(&mut primary[..needed]),
+        T::u16_slice(&second[..needed]),
+    ) {
+        blend_rows_u16(weights, zone1, (c_shift, r_shift), width, primary, second);
+        return Ok(());
+    }
     for (row, (primary_row, second_row)) in primary
         .chunks_exact_mut(width)
         .zip(second.chunks_exact(width))
@@ -195,6 +205,60 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
         }
     }
     Ok(())
+}
+
+/// The `u16` form of the blend: each row's weights expand once per weight row
+/// and the samples blend in vector lanes. Every `(row, column) >> shift` index
+/// is below `IBP_WEIGHT_SIZE` because the shifts scale a side of at most 64.
+fn blend_rows_u16(
+    weights: &IbpWeights,
+    zone1: bool,
+    (c_shift, r_shift): (u32, u32),
+    width: usize,
+    primary: &mut [u16],
+    second: &[u16],
+) {
+    let mut row_weights = [0u16; 64];
+    let mut last_row_idx = usize::MAX;
+    for (row, (primary_row, second_row)) in primary
+        .chunks_exact_mut(width)
+        .zip(second.chunks_exact(width))
+        .enumerate()
+    {
+        let row_idx = (row as u32 >> r_shift) as usize & (IBP_WEIGHT_SIZE - 1);
+        if row_idx != last_row_idx {
+            last_row_idx = row_idx;
+            for (column, slot) in row_weights.iter_mut().take(width).enumerate() {
+                let col_idx = (column as u32 >> c_shift) as usize & (IBP_WEIGHT_SIZE - 1);
+                *slot = if zone1 {
+                    weights[row_idx][col_idx]
+                } else {
+                    weights[col_idx][row_idx]
+                };
+            }
+        }
+        if width.is_multiple_of(8) {
+            blend_row_lanes::<8>(primary_row, second_row, &row_weights[..width]);
+        } else {
+            blend_row_lanes::<4>(primary_row, second_row, &row_weights[..width]);
+        }
+    }
+}
+
+fn blend_row_lanes<const LANES: usize>(primary: &mut [u16], second: &[u16], weights: &[u16]) {
+    for ((target, source), weight) in primary
+        .chunks_exact_mut(LANES)
+        .zip(second.chunks_exact(LANES))
+        .zip(weights.chunks_exact(LANES))
+    {
+        let s = Simd::<u16, LANES>::from_slice(weight).cast::<u32>();
+        let p = Simd::<u16, LANES>::from_slice(target).cast::<u32>();
+        let q = Simd::<u16, LANES>::from_slice(source).cast::<u32>();
+        let sum = p * s + q * (Simd::splat(u32::from(IBP_WEIGHT_MAX)) - s);
+        let blended =
+            (sum + Simd::splat(1 << (IBP_WEIGHT_SHIFT - 1))) >> u32::from(IBP_WEIGHT_SHIFT);
+        target.copy_from_slice(&blended.cast::<u16>().to_array()); // splot-copy-ok: publish blended lane group
+    }
 }
 
 fn weight_row(weights: &IbpWeights, outer: usize) -> Result<&[u16]> {
