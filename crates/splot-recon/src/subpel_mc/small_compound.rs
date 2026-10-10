@@ -232,7 +232,9 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
 }
 
 /// Predicts both references of a cell, then blends and stores it; returns
-/// `false` without writing when either reference declines.
+/// `false` without writing when either reference declines. With
+/// `cwp_weight` in `0..=16` a blended value is a weighted mean of predictor
+/// values over 16, so it fits `i16` before its clamp.
 #[inline(never)]
 fn fused<'a, T: ReconSample, O: ReconSample, C, const LANES: usize, const ROWS: usize>(
     references: [(&ReferencePlaneView<'a, T>, &SubpelPredictParams); 2],
@@ -255,11 +257,12 @@ where
     let bit_depth = params0.bit_depth;
     let forward = Simd::splat(i32::from(cwp_weight));
     let backward = Simd::splat(16 - i32::from(cwp_weight));
-    let max_sample = Simd::splat(i32::from(bit_depth.max_sample().min(O::MAX_VALUE)));
+    let max_sample = Simd::splat(bit_depth.max_sample().min(O::MAX_VALUE) as i16);
     let shift = 4 + compound_inter_post_round();
     let blend = |i: usize| {
         ((pred[0][i] * forward + pred[1][i] * backward + Simd::splat(1 << (shift - 1)))
             >> shift as i32)
+            .cast::<i16>()
             .simd_max(Simd::splat(0))
             .simd_min(max_sample)
     };
@@ -479,8 +482,8 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
 }
 
 /// Writes a blended 4x4 or 8x8 cell and returns `true`, or returns `false`
-/// without writing for other sizes or when a window of either reference
-/// leaves the plane storage.
+/// without writing for other sizes, for a `cwp_weight` outside `0..=16`, or
+/// when a window of either reference leaves the plane storage.
 ///
 /// The parameters are plane-bounded and validated by the caller, and `output`
 /// holds the strided cell rectangle.
@@ -496,6 +499,9 @@ pub(super) fn predict<T: ReconSample, O: ReconSample>(
     output: &mut [O],
     output_stride: usize,
 ) -> bool {
+    if !(0..=16).contains(&cwp_weight) {
+        return false;
+    }
     let references = [(reference0, params0), (reference1, params1)];
     match (params0.w, params0.h) {
         (4, 4) => fused::<T, O, Cell<'_, T>, 4, 4>(references, cwp_weight, output, output_stride),
@@ -591,7 +597,7 @@ mod tests {
             let interp = FILTERS[case % FILTERS.len()];
             let params =
                 [(); 2].map(|()| random_params(&mut rng, interp, size, (width, height), bit_depth));
-            let weight = [8, 12, 4, 10][case % 4];
+            let weight = [8, 12, 4, 10, 1000][case % 5];
             let pred = [0, 1].map(|index| {
                 subpel_predict_block_compound_intermediate(&views[index], &params[index]).unwrap()
             });
@@ -622,6 +628,7 @@ mod tests {
                 &mut direct,
                 stride,
             );
+            assert!(!accepted || weight <= 16);
             if accepted {
                 fused += 1;
             } else {
@@ -650,7 +657,7 @@ mod tests {
             }
         }
         assert!(
-            fused > 2500 && declined > 0,
+            fused > 2000 && declined > 600,
             "fused {fused} declined {declined}"
         );
     }
