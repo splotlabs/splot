@@ -1459,7 +1459,6 @@ fn deblock_filter_choice_cascade(
         side_thr,
         max_width_pos,
         max_width_neg,
-        q_first,
         ..
     } = *params;
     let max_outer_deriv = sd_m2.max(sd_1);
@@ -1489,7 +1488,28 @@ fn deblock_filter_choice_cascade(
     if max_width_pos == 3 {
         return 3;
     }
-    let transition = (sd_m1 + sd_0) << 4;
+    deblock_filter_choice_wide(params, sd_m1 + sd_0, [m2, m1, zero, p1], load)
+}
+
+/// The widths past 3 of [`deblock_filter_choice_cascade`]. Kept out of line:
+/// inlined, its per-width threshold products were hoisted into the setup of
+/// every edge run, which most runs never reach.
+#[inline(never)]
+fn deblock_filter_choice_wide(
+    params: &DeblockFilterChoice,
+    inner: i32,
+    [m2, m1, zero, p1]: [(i32, i32); 4],
+    mut load: impl FnMut(isize) -> (i32, i32),
+) -> usize {
+    let DeblockFilterChoice {
+        q_thr,
+        side_thr,
+        max_width_pos,
+        max_width_neg,
+        q_first,
+        ..
+    } = *params;
+    let transition = inner << 4;
     let mut prev_dist = 3usize;
     let mut dist = 4usize;
     while dist <= max_width_pos {
