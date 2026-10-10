@@ -28,8 +28,9 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 mod simd;
 
 use simd::{
-    EVEN_CLASS_ZERO_WEIGHTS, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH, WINDOW_ROWS,
-    class_bias, gdf_rows, mixed_class_rows, source_rows, uniform_gdf_class, window_at,
+    EVEN_CLASS_ZERO_WEIGHTS, GdfMixedParams, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH,
+    WINDOW_ROWS, class_bias, gdf_index_scale, gdf_rows, mixed_class_rows, source_rows,
+    uniform_gdf_class, window_at,
 };
 
 const MI_SIZE: usize = 4;
@@ -405,6 +406,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                     continue;
                 }
                 let class_cols = run.len() >> 1;
+                let mixed_params = GdfMixedParams::new(&run_block);
                 for local_y in (0..height).step_by(MI_SIZE) {
                     let block_y = y + local_y;
                     let block_height = MI_SIZE.min(height - local_y);
@@ -437,6 +439,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                             classes,
                             class_cols,
                             block,
+                            &mixed_params,
                         )?;
                         preserve_lossless_luma_samples(
                             lossless_grid,
@@ -498,18 +501,24 @@ struct GdfBlock {
 
 struct GdfUniformParams {
     class: usize,
-    /// Clip bound and the three weights of each tap, loaded together.
+    /// Clip bound and the three weights of each tap, loaded together; the
+    /// weights and `bias` are scaled by `gdf_index_scale`.
     taps: [[i16; 4]; GDF_COORDS.len()],
+    bias: [i32; 3],
+    scale: i32,
 }
 
 impl GdfUniformParams {
     fn new(block: &GdfBlock, class: usize) -> Self {
         let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
         let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
+        let scale = gdf_index_scale(block);
         Self {
             class,
+            bias: GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale)),
+            scale: i32::from(scale),
             taps: core::array::from_fn(|tap| {
-                let weight = |index: usize| weight_table[index][tap][class];
+                let weight = |index: usize| weight_table[index][tap][class] * scale;
                 [
                     alpha_table[tap][class] as i16,
                     weight(0),
@@ -538,13 +547,18 @@ impl GdfUniformParams {
                 weights: core::array::from_fn(|index| Simd::splat(tap[index + 1])),
             }
         };
-        let bias = class_bias(classes);
+        let [first, second, gradient] = self.bias.map(Simd::splat);
+        let init = [
+            first,
+            second,
+            class_bias(classes) * Simd::splat(self.scale) + gradient,
+        ];
         if self.class & 1 == 0 {
             let filter = gdf_rows::<W, WIN, ROWS, EVEN_CLASS_ZERO_WEIGHTS>;
-            filter(window, first_row, output, bias, block, weights);
+            filter(window, first_row, output, init, block, weights);
         } else {
             let filter = gdf_rows::<W, WIN, ROWS, ODD_CLASS_ZERO_WEIGHTS>;
-            filter(window, first_row, output, bias, block, weights);
+            filter(window, first_row, output, init, block, weights);
         }
     }
 }
@@ -582,6 +596,7 @@ fn compute_block<T: ReconSample>(
     classes: &[GdfClass],
     class_cols: usize,
     block: GdfBlock,
+    mixed_params: &GdfMixedParams,
 ) -> Result<[T; MI_SIZE * MI_SIZE]> {
     let source_origin = source
         .relative_position(block.x, block.y)
@@ -628,7 +643,7 @@ fn compute_block<T: ReconSample>(
             let window = window_at::<{ MI_SIZE + 2 * TAP_REACH }>(&window_rows, 0)
                 .ok_or_else(gdf_state_error)?;
             let [top, bottom] = &mut rows;
-            mixed_class_rows(&window, [top, bottom], classes, &block);
+            mixed_class_rows(&window, [top, bottom], classes, &block, mixed_params);
             for (row_offset, samples) in rows.into_iter().enumerate() {
                 for (col, sample) in samples.into_iter().enumerate() {
                     output[(row + row_offset) * MI_SIZE + col] =
@@ -675,6 +690,7 @@ fn compute_enabled_segment(
     let tap_offsets = gdf_tap_offsets(source.stride)?;
     let uniform_params: [GdfUniformParams; 4] =
         core::array::from_fn(|class| GdfUniformParams::new(block, class));
+    let mixed_params = GdfMixedParams::new(block);
     let run = cols.len();
     for row in (0..block.height).step_by(2) {
         let class_row = (row >> 1)
@@ -725,7 +741,7 @@ fn compute_enabled_segment(
                 if let Some(class_index) = uniform_gdf_class(classes) {
                     uniform_params[class_index as usize].rows(&window, 0, output, classes, block);
                 } else {
-                    mixed_class_rows(&window, output, classes, block);
+                    mixed_class_rows(&window, output, classes, block, &mixed_params);
                 }
                 x += 8;
             } else if width >= MI_SIZE {
@@ -735,7 +751,7 @@ fn compute_enabled_segment(
                     .ok_or_else(geometry_error)?;
                 let window = window_at::<16>(&window_rows, x).ok_or_else(geometry_error)?;
                 let output = output_pair::<MI_SIZE>(top, bottom, x).ok_or_else(geometry_error)?;
-                mixed_class_rows(&window, output, classes, block);
+                mixed_class_rows(&window, output, classes, block, &mixed_params);
                 x += MI_SIZE;
             } else {
                 let local_x = cols.start + x;
@@ -2074,7 +2090,15 @@ mod tests {
         );
         assert!(fused_result.is_ok());
         assert_eq!(fused_classes, classes);
-        let filtered = compute_block::<u16>(&source, &curr, &classes, block.width >> 1, block);
+        let mixed_params = super::GdfMixedParams::new(&block);
+        let filtered = compute_block::<u16>(
+            &source,
+            &curr,
+            &classes,
+            block.width >> 1,
+            block,
+            &mixed_params,
+        );
         let filtered = filtered.expect("valid filtered");
         assert!(filtered.iter().all(|&sample| sample <= 1023));
 
@@ -2111,6 +2135,7 @@ mod tests {
             &reused_classes,
             block.width >> 1,
             block,
+            &mixed_params,
         );
         let reused_filtered = reused_filtered.expect("valid reused filtered");
         assert_eq!(reused_filtered, filtered);

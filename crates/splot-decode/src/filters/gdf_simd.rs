@@ -124,6 +124,15 @@ pub(super) struct GdfTapWeights<const W: usize> {
     pub(super) weights: [Simd<i16, W>; 3],
 }
 
+/// Multiplier of the gradient sums before their error-table digit is taken.
+pub(super) fn gdf_index_scale(block: &GdfBlock) -> i16 {
+    if block.ref_dst_idx == GDF_INTRA_REF_DST {
+        8
+    } else {
+        5
+    }
+}
+
 #[inline]
 pub(super) fn uniform_gdf_class<const LANES: usize>(classes: &[GdfClass; LANES]) -> Option<u8> {
     let indices = Simd::<i32, LANES>::from_array(classes.map(|class| class.0)) & Simd::splat(3);
@@ -134,31 +143,41 @@ pub(super) fn uniform_gdf_class<const LANES: usize>(classes: &[GdfClass; LANES])
         .then_some(first as u8)
 }
 
+/// Per-class weights of one GDF table for the mixed-class kernel, scaled by
+/// `gdf_index_scale`.
+pub(super) struct GdfMixedParams {
+    alpha: &'static [[u16; 4]; 22],
+    weights: [[[i16; 4]; GDF_COORDS.len()]; 3],
+    bias: [i32; 3],
+    scale: i32,
+}
+
+impl GdfMixedParams {
+    pub(super) fn new(block: &GdfBlock) -> Self {
+        let table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
+        let scale = gdf_index_scale(block);
+        let bias = &GDF_BIAS[block.ref_dst_idx][block.qp_idx];
+        Self {
+            alpha: &GDF_ALPHA[block.ref_dst_idx][block.qp_idx],
+            weights: core::array::from_fn(|index| {
+                core::array::from_fn(|tap| {
+                    core::array::from_fn(|class| table[index][tap][class] * scale)
+                })
+            }),
+            bias: bias.map(|bias| bias * i32::from(scale)),
+            scale: i32::from(scale),
+        }
+    }
+}
+
 /// Filters in place a row pair of `W` samples whose class changes every two samples.
 pub(super) fn mixed_class_rows<const W: usize, const WIN: usize>(
     window: &[&[u16; WIN]; WINDOW_ROWS],
     output: [&mut [u16; W]; 2],
     classes: &[GdfClass],
     block: &GdfBlock,
+    params: &GdfMixedParams,
 ) {
-    let weights = class_tap_weights::<W>(classes, block);
-    gdf_rows::<W, WIN, 2, { zero_weight_taps(0b1111) }>(
-        window,
-        0,
-        output,
-        class_bias(classes),
-        block,
-        weights,
-    );
-}
-
-/// Per-tap weights for `W` lanes whose class changes every two lanes.
-fn class_tap_weights<const W: usize>(
-    classes: &[GdfClass],
-    block: &GdfBlock,
-) -> impl Fn(usize) -> GdfTapWeights<W> {
-    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
-    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let indices = Simd::<i32, 4>::from_array(core::array::from_fn(|lane| {
         classes.get(lane).map_or(0, |class| class.0)
     }));
@@ -170,15 +189,23 @@ fn class_tap_weights<const W: usize>(
         let bytes = table.to_ne_bytes().swizzle_dyn(lane_bytes[k & 1]);
         Simd::<i16, 8>::from_ne_bytes(bytes).resize::<W>(0)
     };
-    move |k| GdfTapWeights {
-        alpha: per_class(tap_pair(alpha_table, k).cast(), k),
-        weights: core::array::from_fn(|index| per_class(tap_pair(&weight_table[index], k), k)),
-    }
+    let weights = |k| GdfTapWeights {
+        alpha: per_class(tap_pair(params.alpha, k).cast(), k),
+        weights: core::array::from_fn(|index| per_class(tap_pair(&params.weights[index], k), k)),
+    };
+    let [first, second, gradient] = params.bias.map(Simd::splat);
+    let init = [
+        first,
+        second,
+        class_bias(classes) * Simd::splat(params.scale) + gradient,
+    ];
+    gdf_rows::<W, WIN, 2, { zero_weight_taps(0b1111) }>(window, 0, output, init, block, weights);
 }
 
 /// Filters in place the `ROWS` rows of `W` samples in `output`, from row
-/// `first_row` of the row pair whose source rows are `rows`; weights marked in
-/// `ZERO_WEIGHTS` are skipped.
+/// `first_row` of the row pair whose source rows are `rows`. The three sums
+/// start at `init`, scaled by `gdf_index_scale` like the weights; weights
+/// marked in `ZERO_WEIGHTS` are skipped.
 #[inline(never)]
 pub(super) fn gdf_rows<
     const W: usize,
@@ -189,17 +216,15 @@ pub(super) fn gdf_rows<
     rows: &[&[u16; WIN]; WINDOW_ROWS],
     first_row: usize,
     output: [&mut [u16; W]; ROWS],
-    class_bias: Simd<i32, W>,
+    init: [Simd<i32, W>; 3],
     block: &GdfBlock,
     tap_weights: impl Fn(usize) -> GdfTapWeights<W>,
 ) {
     const { assert!(WIN == W + 2 * TAP_REACH && ROWS <= 2) };
     let first_row = first_row.min(2 - ROWS);
-    let bias = &GDF_BIAS[block.ref_dst_idx][block.qp_idx];
-    let gradient_bias = class_bias + Simd::splat(bias[2]);
     let centers: [Simd<i16, W>; ROWS] =
         core::array::from_fn(|row| tap_samples(rows[TAP_REACH + first_row + row], TAP_REACH));
-    let mut sums = [[Simd::splat(bias[0]), Simd::splat(bias[1]), gradient_bias]; ROWS];
+    let mut sums = [init; ROWS];
     for_each_gdf_tap!(K => {
         let (dy, dx) = GDF_COORDS[K];
         let tap = tap_weights(K);
@@ -246,28 +271,22 @@ fn tap_samples<const W: usize, const WIN: usize>(row: &[u16; WIN], col: usize) -
     Simd::<u16, W>::from_slice(&row[col..col + W]).cast()
 }
 
-/// Maps the biased gradient sums to the filtered sample. Round2Signed(v * 8, 15)
-/// equals Round2Signed(v, 12), so the intra scale of 8 needs no multiply.
+/// Maps the biased gradient sums, already multiplied by `SCALE`, to the
+/// filtered sample.
 fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: usize>(
     base: Simd<u16, WIDTH>,
     block: &GdfBlock,
     error: &[i32; ERROR_LEN],
-    gdf_idx: [Simd<i32, WIDTH>; 3],
+    sums: [Simd<i32, WIDTH>; 3],
 ) -> Simd<u16, WIDTH> {
-    let shift = if SCALE == 8 { 12 } else { 15 };
-    let digit_offset = Simd::splat((1 << (shift - 1)) + (SCALE << shift));
-    let mut pos = Simd::<i16, WIDTH>::splat(0);
-    for value in gdf_idx {
-        let scaled = if SCALE == 8 {
-            value
-        } else {
-            value * Simd::splat(SCALE)
-        };
-        let digit = ((scaled + digit_offset + (scaled >> 31)) >> shift)
+    let digit_offset = Simd::splat((1 << 14) + (SCALE << 15));
+    let [first, second, third] = sums.map(|sum| {
+        ((sum + digit_offset + (sum >> 31)) >> 15)
             .cast::<i16>()
-            .simd_clamp(Simd::splat(0), Simd::splat(2 * SCALE as i16 - 1));
-        pos = pos * Simd::splat(2 * SCALE as i16) + digit;
-    }
+            .simd_clamp(Simd::splat(0), Simd::splat(2 * SCALE as i16 - 1))
+    });
+    let radix = Simd::splat(2 * SCALE as i16);
+    let pos = (first * radix + second) * radix + third;
     let error = Simd::gather_or_default(error, pos.cast::<usize>()).cast::<i16>();
     let scaled_error = error * Simd::splat(block.pix_scale as i16);
     let rounding = 12 - i16::from(block.bit_depth.bits());

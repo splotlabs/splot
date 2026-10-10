@@ -140,7 +140,10 @@ fn mixed_classes_match_scalar_samples_for_all_tables() {
                         stride_8,
                         &block,
                         &classes,
-                        |window, output| mixed_class_rows(window, output, &classes, &block),
+                        |window, output| {
+                            let params = GdfMixedParams::new(&block);
+                            mixed_class_rows(window, output, &classes, &block, &params);
+                        },
                     );
                     assert_eq!(actual, expected, "width 8, {bit_depth:?}, case {case}");
                     let block = test_block(4, bit_depth, ref_dst_idx, qp_idx);
@@ -150,7 +153,10 @@ fn mixed_classes_match_scalar_samples_for_all_tables() {
                         stride_4,
                         &block,
                         &pair,
-                        |window, output| mixed_class_rows(window, output, &pair, &block),
+                        |window, output| {
+                            let params = GdfMixedParams::new(&block);
+                            mixed_class_rows(window, output, &pair, &block, &params);
+                        },
                     );
                     assert_eq!(actual, expected, "width 4, {bit_depth:?}, case {case}");
                 }
