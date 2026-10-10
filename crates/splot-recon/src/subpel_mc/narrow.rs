@@ -84,6 +84,7 @@ fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
     let v_taps = &SUBPEL_FILTERS[v_filter][v_phase][v_start..v_start + v_count];
 
     let window_x = subpel_horizontal_window_x(reference, params);
+    let prefetch_x = window_x.filter(|_| prefetches(reference.samples));
     let clamped = ClampedWindow::new(reference, params);
     let mut clamped_storage = None;
     let top = (params.start_y >> SCALE_SUBPEL_BITS) - 3 + v_start as i32;
@@ -119,6 +120,14 @@ fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
         }
     } else {
         for row in 0..row_count {
+            if let Some(x) = prefetch_x {
+                prefetch_reference_row(
+                    reference,
+                    top + (row + PREFETCH_ROWS) as i32,
+                    x,
+                    width + NUM_TAPS - 1,
+                );
+            }
             let window = tap_window(
                 reference,
                 window_x,

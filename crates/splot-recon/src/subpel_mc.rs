@@ -1378,6 +1378,54 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
     )
 }
 
+/// How many rows ahead of its current row a block loop starts the cache
+/// fills of the reference rows it reads next.
+const PREFETCH_ROWS: usize = 6;
+
+/// Planes smaller than this stay cache-resident, so their rows get no hint.
+/// The fixed size stands in for the cache size of the target.
+const PREFETCH_MIN_PLANE_BYTES: usize = 1 << 19;
+
+/// Whether a block loop over the plane `samples` hints its next rows.
+#[allow(
+    clippy::inline_always,
+    reason = "per-block hint gate in the MC hot loops"
+)]
+#[inline(always)]
+fn prefetches<T>(samples: &[T]) -> bool {
+    core::mem::size_of_val(samples) >= PREFETCH_MIN_PLANE_BYTES
+}
+
+/// Starts the cache fills of the `w` samples from column `x` of reference row
+/// `y`. A prefetch never faults, so a row outside the plane only wastes the
+/// hint; offsets `0`, `w / 2` and `w - 1` reach every 128-byte line of a
+/// row of at most 128 samples.
+#[allow(clippy::inline_always, reason = "per-row hint in the MC hot loops")]
+#[inline(always)]
+fn prefetch_reference_row<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    y: i32,
+    x: usize,
+    w: usize,
+) {
+    prefetch_samples(
+        reference.samples,
+        (y as usize).wrapping_mul(reference.stride).wrapping_add(x),
+        w,
+    );
+}
+
+/// Starts the cache fills of `samples[start..start + w]`, which may lie
+/// outside `samples`.
+#[allow(clippy::inline_always, reason = "per-row hint in the MC hot loops")]
+#[inline(always)]
+fn prefetch_samples<T>(samples: &[T], start: usize, w: usize) {
+    let row = samples.as_ptr().wrapping_add(start);
+    for offset in [0, w / 2, w.saturating_sub(1)] {
+        std::hint::prefetch_read(row.wrapping_add(offset), std::hint::Locality::L2);
+    }
+}
+
 /// Blends two zero-phase unscaled predictors into 10-bit output. The
 /// parameters are plane-bounded (see [`plane_bounded`]), so every row inside
 /// `[firstY, lastY]` is a readable row.
@@ -1405,6 +1453,7 @@ fn subpel_predict_block_compound_average_fullpel_validated<T: ReconSample>(
     let forward = i32::from(cwp_weight);
     let backward = 16 - forward;
     let max_sample = i32::from(params0.bit_depth.max_sample());
+    let prefetch = prefetches(reference0.samples);
     let unclamped_top = |y: i32, params: &SubpelPredictParams| {
         (y >= params.first_y && y + params.h as i32 - 1 <= params.last_y).then_some(y as usize)
     };
@@ -1429,6 +1478,10 @@ fn subpel_predict_block_compound_average_fullpel_validated<T: ReconSample>(
         for (destination, (left, right)) in
             output.chunks_mut(output_stride).zip(rows).take(params0.h)
         {
+            if prefetch {
+                prefetch_samples(left, PREFETCH_ROWS * reference0.stride, w);
+                prefetch_samples(right, PREFETCH_ROWS * reference1.stride, w);
+            }
             let destination = &mut destination[..w];
             blend_fullpel_u16_row(
                 &left[..w],
@@ -1449,6 +1502,11 @@ fn subpel_predict_block_compound_average_fullpel_validated<T: ReconSample>(
         ];
         let destination = &mut output[row * output_stride..][..params0.w];
         if let [Some(x0), Some(x1)] = direct_x {
+            if prefetch {
+                let ahead = row as i32 + PREFETCH_ROWS as i32;
+                prefetch_reference_row(reference0, y0[0] + ahead, x0, params0.w);
+                prefetch_reference_row(reference1, y0[1] + ahead, x1, params0.w);
+            }
             let left = &reference0.row(source_row[0])[x0..x0 + params0.w];
             let right = &reference1.row(source_row[1])[x1..x1 + params0.w];
             if let (Some(left), Some(right)) = (T::u16_slice(left), T::u16_slice(right)) {

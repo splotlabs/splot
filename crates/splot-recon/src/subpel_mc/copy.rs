@@ -95,10 +95,14 @@ pub(super) fn subpel_copy_block_into<T: ReconSample, O>(
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let direct_x = subpel_direct_copy_x(reference, params);
+    let prefetch = prefetches(reference.samples);
     for r in 0..params.h {
         let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
         let output = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
+            if prefetch {
+                prefetch_reference_row(reference, y0 + (r + PREFETCH_ROWS) as i32, x, params.w);
+            }
             let row = row.min(reference.readable_rows - 1);
             let start = row * reference.stride + x;
             let source = &reference.samples[start..start + params.w];
@@ -172,8 +176,14 @@ pub(super) fn subpel_copy_block_u16_into<T: ReconSample>(
     let lanes_x = usize::try_from(x0)
         .ok()
         .filter(|&x| params.w.is_multiple_of(LANES) && x + params.w <= reference.width);
+    let prefetch_x = direct_x
+        .or(lanes_x)
+        .filter(|_| prefetches(reference.samples));
     for r in 0..params.h {
         let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
+        if let Some(x) = prefetch_x {
+            prefetch_reference_row(reference, y0 + (r + PREFETCH_ROWS) as i32, x, params.w);
+        }
         let output = &mut output[r * output_stride..][..params.w];
         if let (None, Some(x)) = (direct_x, lanes_x) {
             let source = reference.row(row.min(reference.readable_rows - 1));
@@ -382,6 +392,7 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
     let x_window_start = subpel_horizontal_window_x(reference, params);
     let clamped_window = clipped_edges::ClampedWindow::new(reference, params);
     let mut clamped_storage = None;
+    let prefetch = prefetches(reference.samples);
 
     for r in 0..params.h {
         let ref_row = ((params.start_y >> SCALE_SUBPEL_BITS) + r as i32)
@@ -389,6 +400,14 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
         let ref_row = ref_row.min(reference.readable_rows - 1);
         let row_out = &mut output[r * output_stride..][..params.w];
         let window = if let Some(window_start) = x_window_start {
+            if prefetch {
+                prefetch_reference_row(
+                    reference,
+                    (params.start_y >> SCALE_SUBPEL_BITS) + (r + PREFETCH_ROWS) as i32,
+                    window_start,
+                    params.w + NUM_TAPS - 1,
+                );
+            }
             let row_base = ref_row * reference.stride + window_start;
             let taps_end = row_base + params.w + NUM_TAPS - 1;
             reference
@@ -477,8 +496,13 @@ fn subpel_vertical_interior_into<T: ReconSample, O>(
 ) {
     let w = params.w;
     let packed = Simd::from_array(*taps).cast::<i16>();
+    let prefetch = prefetches(source);
     for r in 0..params.h {
         let base = (top + r) * stride + x;
+        if prefetch {
+            let ahead = (NUM_TAPS - 1 + PREFETCH_ROWS) * stride;
+            prefetch_samples(source, base.wrapping_add(ahead), w);
+        }
         let rows: [&[T]; NUM_TAPS] = core::array::from_fn(|t| &source[base + t * stride..][..w]);
         let row_out = &mut output[r * output_stride..][..w];
         let mut c = 0;

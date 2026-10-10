@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 #![feature(portable_simd)]
+#![feature(hint_prefetch)]
 
 //! `splot-recon` owns AV2 reconstruction primitives and frame/workspace storage.
 //!
