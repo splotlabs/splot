@@ -1274,10 +1274,11 @@ impl<'a> EdgeKernel<'a> {
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn rows<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) -> usize {
+        let samples = &mut samples[first..first + (MI_LINES - 1) * stride + 2 * EDGE_REACH];
         let line =
             |start: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[start..start + 2 * EDGE_REACH]);
-        let (s, t) = (line(first), line(first + (MI_LINES - 1) * stride));
-        let (u, v) = (line(first + stride), line(first + 2 * stride));
+        let (s, t) = (line(0), line((MI_LINES - 1) * stride));
+        let (u, v) = (line(stride), line(2 * stride));
         let top = simd_swizzle!(s, u, [6, 7, 8, 9, 22, 23, 24, 25]);
         let bottom = simd_swizzle!(v, t, [6, 7, 8, 9, 22, 23, 24, 25]);
         let Some(deltas) = self.line_deltas(
@@ -1303,10 +1304,9 @@ impl<'a> EdgeKernel<'a> {
         let weights = self.weights(width);
         let delta = Self::delta_m2(deltas, weights.2);
         if weights.0.max(weights.1) <= EDGE_REACH / 2 {
-            let first = first + EDGE_REACH / 2;
-            self.filter_rows::<E, EDGE_REACH>(samples, first, stride, weights, delta);
+            self.filter_rows::<E, EDGE_REACH>(samples, EDGE_REACH / 2, stride, weights, delta);
         } else {
-            self.filter_rows::<E, { 2 * EDGE_REACH }>(samples, first, stride, weights, delta);
+            self.filter_rows::<E, { 2 * EDGE_REACH }>(samples, 0, stride, weights, delta);
         }
         width
     }
@@ -1350,8 +1350,9 @@ impl<'a> EdgeKernel<'a> {
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn columns<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) -> usize {
+        let samples = &mut samples[first..first + (2 * EDGE_REACH - 1) * stride + MI_LINES];
         let row = |samples: &[E], offset: isize| {
-            let start = first + (EDGE_REACH as isize + offset) as usize * stride;
+            let start = (EDGE_REACH as isize + offset) as usize * stride;
             E::widen::<MI_LINES>(&samples[start..start + MI_LINES])
         };
         let rows: [Simd<i16, MI_LINES>; 6] = core::array::from_fn(|k| row(samples, k as isize - 3));
@@ -1375,7 +1376,7 @@ impl<'a> EdgeKernel<'a> {
         let delta = Self::delta_m2(deltas, q_thr_clamp);
         let (zero, high) = (Simd::splat(0), Simd::splat(self.max_sample));
         let mut filter = |offset: isize, coefficient: i32, round: i32| {
-            let start = first + (EDGE_REACH as isize + offset) as usize * stride;
+            let start = (EDGE_REACH as isize + offset) as usize * stride;
             let line = &mut samples[start..start + MI_LINES];
             let values = E::widen::<MI_LINES>(line);
             let diff =
