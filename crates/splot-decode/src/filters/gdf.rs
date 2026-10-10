@@ -498,8 +498,8 @@ struct GdfBlock {
 
 struct GdfUniformParams {
     class: usize,
-    alpha: [i16; GDF_COORDS.len()],
-    weights: [[i16; GDF_COORDS.len()]; 3],
+    /// Clip bound and the three weights of each tap, loaded together.
+    taps: [[i16; 4]; GDF_COORDS.len()],
 }
 
 impl GdfUniformParams {
@@ -508,30 +508,43 @@ impl GdfUniformParams {
         let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
         Self {
             class,
-            alpha: core::array::from_fn(|tap| alpha_table[tap][class] as i16),
-            weights: core::array::from_fn(|index| {
-                core::array::from_fn(|tap| weight_table[index][tap][class])
+            taps: core::array::from_fn(|tap| {
+                let weight = |index: usize| weight_table[index][tap][class];
+                [
+                    alpha_table[tap][class] as i16,
+                    weight(0),
+                    weight(1),
+                    weight(2),
+                ]
             }),
         }
     }
 
-    /// Filters in place a row pair of `W` samples that all have this class.
-    fn rows<const W: usize, const WIN: usize>(
+    /// Filters in place `ROWS` rows of `W` samples that all have this class,
+    /// from row `first_row` of the row pair. Two rows of 16 lanes need more
+    /// vector registers than exist, so 16 lanes go one row at a time.
+    fn rows<const W: usize, const WIN: usize, const ROWS: usize>(
         &self,
         window: &[&[u16; WIN]; WINDOW_ROWS],
-        output: [&mut [u16; W]; 2],
+        first_row: usize,
+        output: [&mut [u16; W]; ROWS],
         classes: &[GdfClass],
         block: &GdfBlock,
     ) {
-        let weights = |k| GdfTapWeights {
-            alpha: Simd::splat(self.alpha[k]),
-            weights: core::array::from_fn(|index| Simd::splat(self.weights[index][k])),
+        let weights = |k: usize| {
+            let tap = Simd::from_array(self.taps[k]);
+            GdfTapWeights {
+                alpha: Simd::splat(tap[0]),
+                weights: core::array::from_fn(|index| Simd::splat(tap[index + 1])),
+            }
         };
-        let class_bias = class_bias(classes);
+        let bias = class_bias(classes);
         if self.class & 1 == 0 {
-            gdf_rows::<W, WIN, EVEN_CLASS_ZERO_WEIGHTS>(window, output, class_bias, block, weights);
+            let filter = gdf_rows::<W, WIN, ROWS, EVEN_CLASS_ZERO_WEIGHTS>;
+            filter(window, first_row, output, bias, block, weights);
         } else {
-            gdf_rows::<W, WIN, ODD_CLASS_ZERO_WEIGHTS>(window, output, class_bias, block, weights);
+            let filter = gdf_rows::<W, WIN, ROWS, ODD_CLASS_ZERO_WEIGHTS>;
+            filter(window, first_row, output, bias, block, weights);
         }
     }
 }
@@ -697,7 +710,10 @@ fn compute_enabled_segment(
             if let Some((classes, class_index)) = uniform_16 {
                 let window = window_at::<28>(&window_rows, x).ok_or_else(geometry_error)?;
                 let output = output_pair::<16>(top, bottom, x).ok_or_else(geometry_error)?;
-                uniform_params[class_index as usize].rows(&window, output, classes, block);
+                let params = &uniform_params[class_index as usize];
+                for (first_row, output) in output.into_iter().enumerate() {
+                    params.rows(&window, first_row, [output], classes, block);
+                }
                 x += 16;
             } else if width >= 8 {
                 let classes = row_classes
@@ -707,7 +723,7 @@ fn compute_enabled_segment(
                 let window = window_at::<20>(&window_rows, x).ok_or_else(geometry_error)?;
                 let output = output_pair::<8>(top, bottom, x).ok_or_else(geometry_error)?;
                 if let Some(class_index) = uniform_gdf_class(classes) {
-                    uniform_params[class_index as usize].rows(&window, output, classes, block);
+                    uniform_params[class_index as usize].rows(&window, 0, output, classes, block);
                 } else {
                     mixed_class_rows(&window, output, classes, block);
                 }

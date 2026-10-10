@@ -142,8 +142,9 @@ pub(super) fn mixed_class_rows<const W: usize, const WIN: usize>(
     block: &GdfBlock,
 ) {
     let weights = class_tap_weights::<W>(classes, block);
-    gdf_rows::<W, WIN, { zero_weight_taps(0b1111) }>(
+    gdf_rows::<W, WIN, 2, { zero_weight_taps(0b1111) }>(
         window,
+        0,
         output,
         class_bias(classes),
         block,
@@ -175,22 +176,30 @@ fn class_tap_weights<const W: usize>(
     }
 }
 
-/// Filters in place the two rows of `W` samples in `output` whose source rows
-/// are `rows`; weights marked in `ZERO_WEIGHTS` are skipped.
+/// Filters in place the `ROWS` rows of `W` samples in `output`, from row
+/// `first_row` of the row pair whose source rows are `rows`; weights marked in
+/// `ZERO_WEIGHTS` are skipped.
 #[inline(never)]
-pub(super) fn gdf_rows<const W: usize, const WIN: usize, const ZERO_WEIGHTS: u64>(
+pub(super) fn gdf_rows<
+    const W: usize,
+    const WIN: usize,
+    const ROWS: usize,
+    const ZERO_WEIGHTS: u64,
+>(
     rows: &[&[u16; WIN]; WINDOW_ROWS],
-    output: [&mut [u16; W]; 2],
+    first_row: usize,
+    output: [&mut [u16; W]; ROWS],
     class_bias: Simd<i32, W>,
     block: &GdfBlock,
     tap_weights: impl Fn(usize) -> GdfTapWeights<W>,
 ) {
-    const { assert!(WIN == W + 2 * TAP_REACH) };
+    const { assert!(WIN == W + 2 * TAP_REACH && ROWS <= 2) };
+    let first_row = first_row.min(2 - ROWS);
     let bias = &GDF_BIAS[block.ref_dst_idx][block.qp_idx];
     let gradient_bias = class_bias + Simd::splat(bias[2]);
-    let centers: [Simd<i16, W>; 2] =
-        core::array::from_fn(|row| tap_samples(rows[TAP_REACH + row], TAP_REACH));
-    let mut sums = [[Simd::splat(bias[0]), Simd::splat(bias[1]), gradient_bias]; 2];
+    let centers: [Simd<i16, W>; ROWS] =
+        core::array::from_fn(|row| tap_samples(rows[TAP_REACH + first_row + row], TAP_REACH));
+    let mut sums = [[Simd::splat(bias[0]), Simd::splat(bias[1]), gradient_bias]; ROWS];
     for_each_gdf_tap!(K => {
         let (dy, dx) = GDF_COORDS[K];
         let tap = tap_weights(K);
@@ -198,8 +207,8 @@ pub(super) fn gdf_rows<const W: usize, const WIN: usize, const ZERO_WEIGHTS: u64
         let left = (TAP_REACH as isize - dx) as usize;
         let right = (TAP_REACH as isize + dx) as usize;
         for (row, center) in centers.iter().enumerate() {
-            let above = tap_samples(rows[TAP_REACH + row - dy as usize], left);
-            let below = tap_samples(rows[TAP_REACH + row + dy as usize], right);
+            let above = tap_samples(rows[TAP_REACH + first_row + row - dy as usize], left);
+            let below = tap_samples(rows[TAP_REACH + first_row + row + dy as usize], right);
             let above = (above - center).simd_max(low).simd_min(tap.alpha);
             let below = (below - center).simd_max(low).simd_min(tap.alpha);
             let comb = (above + below)

@@ -107,7 +107,7 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
                         stride,
                         &block,
                         &classes,
-                        |window, output| params.rows(window, output, &classes, &block),
+                        |window, output| params.rows(window, 0, output, &classes, &block),
                     );
                     assert_eq!(
                         actual, expected,
