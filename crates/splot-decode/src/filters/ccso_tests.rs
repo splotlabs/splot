@@ -634,3 +634,62 @@ fn ccso_single_tile_column_is_unchanged_by_the_tile_clamp() {
         "single tile column must match the untiled run"
     );
 }
+
+#[test]
+fn ten_bit_vector_rows_match_the_scalar_path_for_every_quant_step() {
+    let (lw, lh) = (128, 8);
+    let mut state = 0x9e37_79b9u32;
+    let luma: Vec<u16> = (0..lw * lh)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let step =
+                [0, 1, 111, 112, 113, 126, 127, 128, 129, 200, 500][(state >> 8) as usize % 11];
+            if (state >> 20) & 1 == 0 {
+                512 + step
+            } else {
+                512 - step.min(512)
+            }
+        })
+        .collect();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 32, &[], [&[], &[]])
+            .unwrap();
+    for (scale_idx, quant_idx) in [(0, 3), (0, 0), (2, 2), (3, 1), (1, 3), (3, 3)] {
+        for edge_clf in [false, true] {
+            for sub in [0, 1] {
+                let mei = if edge_clf { 2 } else { 3 };
+                let mut params = edge_plane(2, edge_clf, 2, mei * mei * 4);
+                (params.ccso_scale_idx, params.ccso_quant_idx) = (Some(scale_idx), Some(quant_idx));
+                let grid = full_grid(lw, lh);
+                let prepared =
+                    prepare_ccso_plane(sub, &params, &grid, BitDepth::Ten, (sub, sub), Vec::new())
+                        .unwrap();
+                let (pw, ph) = (lw >> sub, lh >> sub);
+                let pre: Vec<u16> = (0..pw * ph)
+                    .map(|i| ((i * 37 + 11) % 1024) as u16)
+                    .collect();
+                let run = |lossless| {
+                    let mut destination =
+                        StripePlane::from_samples(pw, ph, 0, pre.clone()).unwrap();
+                    let source = FramePlane::window(&luma, lw, lh, 0, lh).unwrap();
+                    ccso_apply(
+                        &mut destination,
+                        source,
+                        sub,
+                        &prepared,
+                        &grid,
+                        lossless,
+                        None,
+                    )
+                    .unwrap();
+                    destination.samples().to_vec()
+                };
+                assert_eq!(
+                    run(None),
+                    run(Some(&lossless)),
+                    "scale {scale_idx} quant {quant_idx} edge_clf {edge_clf} sub {sub}"
+                );
+            }
+        }
+    }
+}
