@@ -233,9 +233,7 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
     stride: usize,
     bit_depth: BitDepth,
     distances: [i32; 2],
-    scratch: &mut OptflowScratch,
 ) -> Result<[[i32; 2]; 2]> {
-    scratch.deltas.clear();
     if stride < 8 {
         return Err(ReconError::BufferLengthMismatch {
             expected: 8,
@@ -986,7 +984,6 @@ mod tests {
         let mut right = vec![0; STRIDE * 8];
         right[STRIDE] = 256;
         left[STRIDE + 1] = 257;
-        let mut scratch = OptflowScratch::default();
 
         assert!(matches!(
             derive_optflow_mv_delta_8x8_strided_into(
@@ -997,7 +994,6 @@ mod tests {
                 STRIDE,
                 BitDepth::Eight,
                 [1, -1],
-                &mut scratch,
             ),
             Err(ReconError::OptflowPredictorSampleOutOfRange {
                 predictor: 1,

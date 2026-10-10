@@ -641,24 +641,10 @@ pub(super) fn tip_optflow_motion_cell_strided(
     }) {
         return Ok(MotionCell::from_refinemv(base_mvs));
     }
-    OPTFLOW_SCRATCH.with(|slot| {
-        let mut scratch = slot.take().unwrap_or_default();
-        let result = (|| {
-            let delta = derive_optflow_mv_delta_8x8_strided_into(
-                pred0,
-                start0,
-                pred1,
-                start1,
-                stride,
-                bit_depth,
-                distances,
-                &mut scratch,
-            )?;
-            Ok(MotionCell::from_optflow(base_mvs, delta))
-        })();
-        slot.set(Some(scratch));
-        result
-    })
+    let delta = derive_optflow_mv_delta_8x8_strided_into(
+        pred0, start0, pred1, start1, stride, bit_depth, distances,
+    )?;
+    Ok(MotionCell::from_optflow(base_mvs, delta))
 }
 
 pub(super) fn compound_motion_grid<T: ReconSample>(
@@ -901,16 +887,8 @@ pub(super) fn tip_unit_motion_cell<T: ReconSample>(
     {
         return Ok(refined_cell(refinemv)?);
     }
-    let delta = derive_optflow_mv_delta_8x8_strided_into(
-        pred0,
-        0,
-        pred1,
-        0,
-        8,
-        bit_depth,
-        distances,
-        &mut OptflowScratch::default(),
-    )?;
+    let delta =
+        derive_optflow_mv_delta_8x8_strided_into(pred0, 0, pred1, 0, 8, bit_depth, distances)?;
     Ok(MotionCell::from_optflow(base_mvs, delta))
 }
 

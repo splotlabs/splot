@@ -459,7 +459,6 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             8,
             sink.info().bit_depth(),
             distances,
-            &mut splot_recon::OptflowScratch::default(),
         )?;
         Ok(Some(MotionCell::from_optflow(mvs, delta)))
     }
