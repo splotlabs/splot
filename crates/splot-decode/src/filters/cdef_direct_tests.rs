@@ -452,32 +452,48 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
     }
 }
 
-fn flat_segment_workspace(spike: Option<(usize, usize)>) -> CurrentFrameWorkspace<u16> {
-    let mut workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 144, 24);
-    for (plane, columns, rows) in [
-        (PlaneId::Y, 60..132, 4..20),
-        (PlaneId::U, 30..66, 2..10),
-        (PlaneId::V, 30..66, 2..10),
-    ] {
-        for y in rows {
-            for x in columns.clone() {
+fn flat_workspace(
+    width: usize,
+    columns: core::ops::Range<usize>,
+    spike: Option<(PlaneId, usize, usize)>,
+) -> CurrentFrameWorkspace<u16> {
+    let mut workspace = patterned_10bit_workspace(PixelFormat::Yuv420, width, 24);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let shift = usize::from(plane != PlaneId::Y);
+        for y in (4 >> shift)..(20 >> shift) {
+            for x in (columns.start >> shift)..(columns.end >> shift) {
                 workspace
                     .set_reconstructed_sample(plane, x, y, 512)
                     .unwrap();
             }
         }
     }
-    if let Some((x, y)) = spike {
+    if let Some((plane, x, y)) = spike {
         workspace
-            .set_reconstructed_sample(PlaneId::Y, x, y, 528)
+            .set_reconstructed_sample(plane, x, y, 528)
             .unwrap();
     }
     workspace
 }
 
+fn assert_flat(
+    samples: &[u16],
+    width: usize,
+    columns: core::ops::Range<usize>,
+    rows: core::ops::Range<usize>,
+) {
+    for y in rows {
+        assert!(
+            samples[y * width + columns.start..y * width + columns.end]
+                .iter()
+                .all(|&sample| sample == 512)
+        );
+    }
+}
+
 #[test]
 fn flat_segment_fills_fully_overwritten_direct_output() {
-    let workspace = flat_segment_workspace(None);
+    let workspace = flat_workspace(144, 60..132, None);
     let params = active_params();
     let grid = constant_cdef_grid(6, 36, 0).unwrap();
     let owned = owned_cdef_10bit(&workspace, &params, &grid, None, None);
@@ -492,20 +508,14 @@ fn flat_segment_fills_fully_overwritten_direct_output() {
         ),
         owned
     );
-    for (plane, width, columns, rows) in [(0, 144, 64..128, 8..16), (1, 72, 32..64, 4..8)] {
-        for y in rows {
-            assert!(
-                owned[plane][y * width + columns.start..y * width + columns.end]
-                    .iter()
-                    .all(|&sample| sample == 512)
-            );
-        }
-    }
+    assert_flat(&owned[0], 144, 64..128, 8..16);
+    assert_flat(&owned[1], 72, 32..64, 4..8);
+    assert_flat(&owned[2], 72, 32..64, 4..8);
 }
 
 #[test]
 fn flat_segment_with_one_tap_reach_spike_is_filtered() {
-    let workspace = flat_segment_workspace(Some((62, 11)));
+    let workspace = flat_workspace(144, 60..132, Some((PlaneId::Y, 62, 11)));
     let grid = constant_cdef_grid(6, 36, 0).unwrap();
     let owned = owned_cdef_10bit(&workspace, &active_params(), &grid, None, None);
     assert_eq!(owned[PlaneId::Y.index()][11 * 144 + 64], 513);
@@ -515,7 +525,7 @@ fn flat_segment_with_one_tap_reach_spike_is_filtered() {
 fn flat_window_spans_exactly_the_tap_reach() {
     let tile = ((0, 0), (144, 24));
     let window = |spike: Option<(usize, usize)>, start: (usize, usize)| {
-        let workspace = flat_segment_workspace(spike);
+        let workspace = flat_workspace(144, 60..132, spike.map(|(x, y)| (PlaneId::Y, x, y)));
         let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
         flat_window::<u16, 64, 8>(plane, (64, 8), start, tile.1)
     };
@@ -527,4 +537,42 @@ fn flat_window_spans_exactly_the_tap_reach() {
         assert_eq!(window(Some(outside), tile.0), Some(512), "{outside:?}");
     }
     assert_eq!(window(None, (63, 0)), None);
+}
+
+#[test]
+fn flat_blocks_fill_fully_overwritten_direct_output() {
+    let workspace = flat_workspace(32, 4..20, None);
+    let params = active_params();
+    let grid = constant_cdef_grid(6, 8, 0).unwrap();
+    let owned = owned_cdef_10bit(&workspace, &params, &grid, None, None);
+    assert_eq!(
+        direct_cdef_10bit(
+            &workspace,
+            &params,
+            &grid,
+            None,
+            None,
+            StripeInitialization::FullyOverwritten
+        ),
+        owned
+    );
+    assert_flat(&owned[0], 32, 8..16, 8..16);
+    assert_flat(&owned[1], 16, 4..8, 4..8);
+    assert_flat(&owned[2], 16, 4..8, 4..8);
+}
+
+#[test]
+fn chroma_pair_with_one_flat_plane_is_filtered() {
+    let workspace = flat_workspace(32, 4..20, Some((PlaneId::V, 2, 5)));
+    let grid = constant_cdef_grid(6, 8, 0).unwrap();
+    let owned = owned_cdef_10bit(&workspace, &active_params(), &grid, None, None);
+    assert_eq!(owned[PlaneId::V.index()][5 * 16 + 4], 513);
+    assert_flat(&owned[1], 16, 4..8, 4..8);
+}
+
+#[test]
+fn flat_pad_gives_direction_zero_and_variance_zero() {
+    for value in [0, 37, 512, 1023] {
+        assert_eq!(cdef_direction_padded(&[value; CDEF_PADDED_AREA], 2), (0, 0));
+    }
 }

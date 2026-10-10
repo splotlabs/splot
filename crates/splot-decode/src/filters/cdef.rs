@@ -763,6 +763,20 @@ fn fill_flat_segment<T>(
     Ok(())
 }
 
+/// Whether the first `LEN` lanes of `pad` repeat `lanes`. A flat block filters
+/// to itself (§ 7.18.3), and on a flat luma block every § 7.18.2 direction
+/// cost is equal, so the search gives direction 0 and variance 0. Callers
+/// check only high-bit-depth blocks: on 8-bit streams the check cost more
+/// than it saved.
+fn pad_repeats<const LEN: usize>(pad: &[u16; CDEF_PADDED_AREA], lanes: Simd<u16, 16>) -> bool {
+    let diff = pad[..LEN]
+        .chunks_exact(16)
+        .fold(Simd::splat(0), |diff, chunk| {
+            diff | (Simd::from_slice(chunk) ^ lanes)
+        });
+    diff == Simd::splat(0)
+}
+
 fn fill_rect(
     plane: &mut StripePlane,
     x: usize,
@@ -827,11 +841,16 @@ fn compute_cdef_block<S: ReconSample>(
         && x0 + block_w - 1 + CDEF_TAP_REACH < luma_inside_x
         && y0 + block_h - 1 + CDEF_TAP_REACH < luma_inside_y;
     let luma_pad_ready = luma_interior && !ctx.luma_lossless && (sec_str != 0 || pri_base != 0);
+    let mut luma_flat = false;
     if luma_pad_ready {
         gather_interior_pad(luma_snap, pad, x0, y0, block_w, block_h)?;
+        luma_flat = S::MAX_VALUE > u16::from(u8::MAX)
+            && ctx.coeff_shift > 0
+            && [pad[11], pad[132], pad[143]] == [pad[0]; 3]
+            && pad_repeats::<144>(pad, Simd::splat(pad[0]));
     }
 
-    let (y_dir, var) = if pri_base == 0 && uv_pri == 0 {
+    let (y_dir, var) = if (pri_base == 0 && uv_pri == 0) || luma_flat {
         (0, 0)
     } else if luma_pad_ready {
         cdef_direction_padded(pad, ctx.coeff_shift)
@@ -880,7 +899,9 @@ fn compute_cdef_block<S: ReconSample>(
     let y_zero = pri_str == 0 && sec_str == 0;
     let uv_zero = uv_pri == 0 && uv_sec == 0;
     if !(y_zero || ctx.luma_lossless) {
-        if luma_pad_ready {
+        if luma_flat {
+            fill_rect(filtered_y, x0, y0, block_w, block_h, pad[0])?;
+        } else if luma_pad_ready {
             filter_pad_into(filtered_y, pad, x0, y0, block_w, block_h, &y_filter, false)?;
         } else {
             compute_cdef_filter_plane::<S>(luma_snap, ctx, false, &y_filter, pad, filtered_y)?;
@@ -952,6 +973,21 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
         gather_chroma_pair(u, v, base, u_snap.stride(), pad)?;
     } else {
         return Ok(false);
+    }
+    if S::MAX_VALUE > u16::from(u8::MAX)
+        && filter.coeff_shift > 0
+        && [pad[126], pad[127], pad[112], pad[113]] == [pad[0], pad[1], pad[14], pad[15]]
+        && pad_repeats::<128>(
+            pad,
+            simd_swizzle!(
+                Simd::from_array([pad[0], pad[1]]),
+                [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+            ),
+        )
+    {
+        fill_rect(filtered_u, x0, y0, w, h, pad[0])?;
+        fill_rect(filtered_v, x0, y0, w, h, pad[1])?;
+        return Ok(true);
     }
     let mut output = [0u16; CDEF_PAIR_OUTPUT];
     if !cdef_filter_block_chroma_pair(pad, h, filter, &mut output) {
