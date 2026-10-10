@@ -23,6 +23,9 @@ pub(crate) const MAX_SYMBOLS: usize = 8;
 pub(crate) const MAX_LITERAL_BITS: u32 = 32;
 pub(crate) const MAX_CDF_COUNT: i32 = 32;
 const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
+/// A const copy of the static table, so per-arity reads fold to immediates
+/// in the crates that instantiate the generic decode.
+const PROB_INC_CONST: [[i32; 8]; 7] = PROB_INC;
 
 pub(crate) trait CdfStorage: Copy {
     fn to_i32(self) -> i32;
@@ -206,7 +209,9 @@ pub struct SymbolDecoder<'a> {
     buffered: i32,
     fed_bits: u64,
     symbol_range: u32,
-    symbol_max_bits: i64,
+    /// `8 * sz`; `SymbolMaxBits` is derived from it (see
+    /// [`Self::symbol_max_bits`]) instead of being updated on every read.
+    payload_bits: i64,
     frame_symbol_count: u64,
     config: SymbolDecoderConfig,
 }
@@ -246,7 +251,7 @@ impl<'a> SymbolDecoder<'a> {
         base: ByteOffset,
         config: SymbolDecoderConfig,
     ) -> Result<Self> {
-        let symbol_max_bits = symbol_max_bits_for_len(tile_payload.len(), base)?;
+        let payload_bits = symbol_max_bits_for_len(tile_payload.len(), base)? + 15;
         let dif = !be_window(tile_payload, 0) >> 1;
         Ok(Self {
             data: tile_payload,
@@ -255,7 +260,7 @@ impl<'a> SymbolDecoder<'a> {
             buffered: DIF_BUFFER_BITS,
             fed_bits: 63,
             symbol_range: SYMBOL_RANGE_INIT,
-            symbol_max_bits,
+            payload_bits,
             frame_symbol_count: 0,
             config,
         })
@@ -263,10 +268,20 @@ impl<'a> SymbolDecoder<'a> {
 
     /// Tops the buffered window back up to [`DIF_BUFFER_BITS`] future bits,
     /// reading payload bits past the end as ones (inverted zero padding).
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
     fn refill(&mut self) {
         let byte_index = usize::try_from(self.fed_bits / 8).unwrap_or(usize::MAX);
         let bit_offset = (self.fed_bits & 7) as u32;
-        let window = !(be_window(self.data, byte_index) << bit_offset);
+        let bytes = byte_index
+            .checked_add(8)
+            .and_then(|end| self.data.get(byte_index..end))
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok());
+        let raw = match bytes {
+            Some(bytes) => u64::from_be_bytes(bytes),
+            None => tail_window(self.data, byte_index),
+        };
+        let window = !(raw << bit_offset);
         let buffered = self.buffered.max(0) as u32;
         self.dif |= window >> (16 + buffered);
         self.fed_bits += u64::from(DIF_BUFFER_BITS as u32 - buffered);
@@ -282,9 +297,15 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// Returns the current signed `SymbolMaxBits` value.
+    ///
+    /// Every read shifts `dif` by exactly the bits it subtracts from
+    /// `SymbolMaxBits` (`8 * sz - 15` at init), and a refill moves bits from
+    /// `fed_bits` into `buffered` one for one, so `SymbolMaxBits` is
+    /// `8 * sz - fed_bits + buffered`.
     #[must_use]
+    #[inline]
     pub const fn symbol_max_bits(&self) -> i64 {
-        self.symbol_max_bits
+        self.payload_bits - self.fed_bits as i64 + self.buffered as i64
     }
 
     /// Returns the number of counted frame symbols so far.
@@ -300,9 +321,10 @@ impl<'a> SymbolDecoder<'a> {
     /// which reads consume nothing, so the historical bounded-reader
     /// position is exactly `8 * sz - max(SymbolMaxBits, 0)`.
     #[must_use]
+    #[inline]
     pub fn consumed_bits(&self) -> SymbolBitPosition {
         let total = total_bits(self.data.len());
-        let remaining = self.symbol_max_bits.max(0) as u64;
+        let remaining = self.symbol_max_bits().max(0) as u64;
         SymbolBitPosition::new(total.saturating_sub(remaining))
     }
 
@@ -317,7 +339,7 @@ impl<'a> SymbolDecoder<'a> {
         SymbolDecoderCheckpoint {
             consumed_bits: self.consumed_bits(),
             symbol_count: self.frame_symbol_count,
-            symbol_max_bits: self.symbol_max_bits,
+            symbol_max_bits: self.symbol_max_bits(),
             symbol_value: self.symbol_value(),
             symbol_range: self.symbol_range,
         }
@@ -470,7 +492,7 @@ impl<'a> SymbolDecoder<'a> {
         let mut symbol = 0;
         while symbol < N - 1 {
             let f = CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_i32() as u32);
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC[N - 2][symbol] as u32;
+            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_CONST[N - 2][symbol] as u32;
             let next_cur = ((range8 * pp) >> 7) << 3;
             if symbol_value >= next_cur {
                 cur = next_cur;
@@ -488,8 +510,7 @@ impl<'a> SymbolDecoder<'a> {
         self.symbol_range = new_range << bits;
         self.dif = (self.dif - (u64::from(cur) << SV_SHIFT)) << bits;
         self.buffered -= bits as i32;
-        self.symbol_max_bits -= i64::from(bits);
-        self.frame_symbol_count = self.frame_symbol_count.saturating_add(1);
+        self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
 
         if self.config.cdf_update == CdfUpdateMode::Enabled {
             update_cdf(cdf, shape, symbol);
@@ -505,25 +526,22 @@ impl<'a> SymbolDecoder<'a> {
     /// computed trailing bit is missing or not `1`, or any padding bit before
     /// `paddingEndPosition` is nonzero.
     pub fn exit_symbol(self) -> Result<SymbolDecoderSummary> {
-        if self.symbol_max_bits < -14 {
+        let symbol_max_bits = self.symbol_max_bits();
+        if symbol_max_bits < -14 {
             return Err(
-                self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall {
-                    symbol_max_bits: self.symbol_max_bits,
-                }),
+                self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall { symbol_max_bits })
             );
         }
 
         let current = self.consumed_bits().get();
-        let rewind = u64::try_from((self.symbol_max_bits + 15).min(15)).map_err(|_| {
-            self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall {
-                symbol_max_bits: self.symbol_max_bits,
-            })
+        let rewind = u64::try_from((symbol_max_bits + 15).min(15)).map_err(|_| {
+            self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall { symbol_max_bits })
         })?;
         let trailing_bit_position = current.checked_sub(rewind).ok_or_else(|| {
             self.state_error(SymbolDecoderErrorKind::TrailingBitOutOfRange { bit_position: 0 })
         })?;
-        let skip = if self.symbol_max_bits > 0 {
-            self.symbol_max_bits as u64
+        let skip = if symbol_max_bits > 0 {
+            symbol_max_bits as u64
         } else {
             0
         };
@@ -630,7 +648,6 @@ impl<'a> SymbolDecoder<'a> {
         self.dif =
             (u64::from(symbol_value) << SV_SHIFT) | ((self.dif << bits) & ((1 << SV_SHIFT) - 1));
         self.buffered -= bits as i32;
-        self.symbol_max_bits -= i64::from(bits);
     }
 
     fn bit_at(&self, bit_position: u64) -> Option<u8> {
@@ -640,39 +657,55 @@ impl<'a> SymbolDecoder<'a> {
         Some((byte >> (7 - bit_offset)) & 1)
     }
 
+    #[inline]
     fn cdf_error(&self, kind: SymbolCdfErrorKind) -> Error {
-        let (offset, bit_offset) = self.offset_for_bit(self.consumed_bits().get());
-        Error::InvalidSymbolCdf {
-            offset,
-            bit_offset,
-            kind,
-        }
+        cdf_error_at(self.base, self.consumed_bits().get(), kind)
     }
 
+    #[inline]
     fn state_error(&self, kind: SymbolDecoderErrorKind) -> Error {
-        let (offset, bit_offset) = self.offset_for_bit(self.consumed_bits().get());
-        Error::InvalidSymbolDecoderState {
-            offset,
-            bit_offset,
-            kind,
-        }
+        state_error_at(self.base, self.consumed_bits().get(), kind)
     }
 
     fn state_error_at_bit(&self, bit_position: u64, kind: SymbolDecoderErrorKind) -> Error {
-        let (offset, bit_offset) = self.offset_for_bit(bit_position);
-        Error::InvalidSymbolDecoderState {
-            offset,
-            bit_offset,
-            kind,
-        }
+        state_error_at(self.base, bit_position, kind)
     }
+}
 
-    fn offset_for_bit(&self, bit_position: u64) -> (ByteOffset, BitOffset) {
-        (
-            self.base.saturating_add(bit_position / 8),
-            BitOffset::from_bits((bit_position % 8) as u8),
-        )
+/// The payload tail, zero-padded; out of line so the refill fast path stays
+/// small where it inlines.
+#[cold]
+fn tail_window(data: &[u8], byte_index: usize) -> u64 {
+    be_window(data, byte_index)
+}
+
+/// Error constructors are cold and take the position by value, so an inlined
+/// read keeps only a call on its failure path.
+#[cold]
+fn cdf_error_at(base: ByteOffset, bit_position: u64, kind: SymbolCdfErrorKind) -> Error {
+    let (offset, bit_offset) = offset_for_bit(base, bit_position);
+    Error::InvalidSymbolCdf {
+        offset,
+        bit_offset,
+        kind,
     }
+}
+
+#[cold]
+fn state_error_at(base: ByteOffset, bit_position: u64, kind: SymbolDecoderErrorKind) -> Error {
+    let (offset, bit_offset) = offset_for_bit(base, bit_position);
+    Error::InvalidSymbolDecoderState {
+        offset,
+        bit_offset,
+        kind,
+    }
+}
+
+fn offset_for_bit(base: ByteOffset, bit_position: u64) -> (ByteOffset, BitOffset) {
+    (
+        base.saturating_add(bit_position / 8),
+        BitOffset::from_bits((bit_position % 8) as u8),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -769,6 +802,7 @@ fn symbol_max_bits_for_len(len: usize, base: ByteOffset) -> Result<i64> {
         })
 }
 
+#[inline]
 fn total_bits(len: usize) -> u64 {
     match u64::try_from(len) {
         Ok(bytes) => bytes.saturating_mul(8),
