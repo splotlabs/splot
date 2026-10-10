@@ -162,8 +162,23 @@ fn blend_compound_diff_weighted<T: ReconSample>(
             mask_row.fill(0);
             for dy in 0..scale_y {
                 let luma_row = &luma_mask[(y * scale_y + dy) * luma_w..][..luma_w];
-                for (mask, luma) in mask_row.iter_mut().zip(luma_row.chunks_exact(scale_x)) {
-                    *mask += luma.iter().map(|&value| i32::from(value)).sum::<i32>();
+                match scale_x {
+                    1 => {
+                        for (mask, &luma) in mask_row.iter_mut().zip(luma_row) {
+                            *mask += i32::from(luma);
+                        }
+                    }
+                    2 => {
+                        for (mask, pair) in mask_row.iter_mut().zip(luma_row.as_chunks::<2>().0) {
+                            *mask += i32::from(pair[0]) + i32::from(pair[1]);
+                        }
+                    }
+                    _ => {
+                        for (mask, luma) in mask_row.iter_mut().zip(luma_row.chunks_exact(scale_x))
+                        {
+                            *mask += luma.iter().map(|&value| i32::from(value)).sum::<i32>();
+                        }
+                    }
                 }
             }
             let average_shift = sub_x + sub_y;
@@ -175,13 +190,47 @@ fn blend_compound_diff_weighted<T: ReconSample>(
                 *mask = i32::from(difference_weight(left, right, diff_round, inverse));
             }
         }
-        for (slot, (&mask, (&left, &right))) in output
-            .iter_mut()
-            .zip(mask_row.iter().zip(pred0.iter().zip(pred1)))
-        {
-            let blended =
-                (mask * left + (64 - mask) * right + (1 << (blend_shift - 1))) >> blend_shift;
-            *slot = T::try_from_u16(blended.clamp(0, max_sample) as u16)?;
+        let blended =
+            mask_row
+                .iter()
+                .zip(pred0.iter().zip(pred1))
+                .map(|(&mask, (&left, &right))| {
+                    (mask * left + (64 - mask) * right + (1 << (blend_shift - 1))) >> blend_shift
+                });
+        store_clamped_samples(output, max_sample, blended)?;
+    }
+    Ok(())
+}
+
+/// Clamps each sample to `0..=max_sample` and stores it. When `max_sample`
+/// fits the storage type, the store is a plain `u8` or `u16` write, so the
+/// caller's loop vectorizes.
+#[allow(
+    clippy::inline_always,
+    reason = "the loop must fuse with the caller's iterator"
+)]
+#[inline(always)]
+fn store_clamped_samples<T: ReconSample>(
+    output: &mut [T],
+    max_sample: i32,
+    samples: impl Iterator<Item = i32>,
+) -> splot_recon::Result<()> {
+    let samples = samples.map(|sample| sample.clamp(0, max_sample));
+    if max_sample <= i32::from(u8::MAX)
+        && let Some(output) = T::u8_slice_mut(output)
+    {
+        for (slot, sample) in output.iter_mut().zip(samples) {
+            *slot = sample as u8;
+        }
+    } else if max_sample <= i32::from(u16::MAX)
+        && let Some(output) = T::u16_slice_mut(output)
+    {
+        for (slot, sample) in output.iter_mut().zip(samples) {
+            *slot = sample as u16;
+        }
+    } else {
+        for (slot, sample) in output.iter_mut().zip(samples) {
+            *slot = T::try_from_u16(sample as u16)?;
         }
     }
     Ok(())
