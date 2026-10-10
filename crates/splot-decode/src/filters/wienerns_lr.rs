@@ -376,10 +376,7 @@ fn write_wienerns_lr_tx_skip_record(
                 actual,
             });
         };
-        let unwritten = if slots
-            .iter()
-            .all(|&slot| slot == WIENERNS_LR_TX_SKIP_UNWRITTEN)
-        {
+        let unwritten = if mi_run_is(slots, WIENERNS_LR_TX_SKIP_UNWRITTEN) {
             crate::support::fill_mi_run(slots, value);
             slots.len()
         } else {
@@ -403,6 +400,20 @@ fn write_wienerns_lr_tx_skip_record(
             })?;
         Ok(())
     })
+}
+
+/// Whether every slot of `run` is `value`, read like
+/// [`crate::support::fill_mi_run`] writes: at most two overlapping windows.
+fn mi_run_is(run: &[u8], value: u8) -> bool {
+    fn ends<const N: usize>(run: &[u8], value: u8) -> bool {
+        run[..N] == [value; N] && run[run.len() - N..] == [value; N]
+    }
+    match run.len() {
+        4..=7 => ends::<4>(run, value),
+        8..=15 => ends::<8>(run, value),
+        16..=32 => ends::<16>(run, value),
+        _ => run.iter().all(|&slot| slot == value),
+    }
 }
 
 /// Visits the clipped grid index range of each `record` row.
@@ -502,4 +513,20 @@ fn pc_wiener_block_end_x(
             context: "pc wiener classified block end x",
         })?;
     Ok(tile_end_x.min(block_end_x))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mi_run_is_checks_every_slot_of_every_run_length() {
+        for len in 0..=40 {
+            let mut run = vec![7u8; len];
+            assert!(super::mi_run_is(&run, 7), "len {len}");
+            for index in 0..len {
+                run[index] = 6;
+                assert!(!super::mi_run_is(&run, 7), "len {len} index {index}");
+                run[index] = 7;
+            }
+        }
+    }
 }
