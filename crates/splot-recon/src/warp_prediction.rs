@@ -545,6 +545,64 @@ fn warp_predict_section<T: ReconSample>(
     build_output(shear, &projected, &intermediate, round1, store)
 }
 
+/// First of the two adjacent nonzero taps of a two-tap `Warped_Filters` row.
+const TWO_TAP_FIRST: usize = 3;
+
+/// Reports whether a zero-shear `phase` selects `Warped_Filters` row 192 or
+/// 256, whose only nonzero taps are 127 and 1 at [`TWO_TAP_FIRST`] and the
+/// next tap, and returns `1` when the 127 is the second of them.
+///
+/// Zero shear keeps the projected phase in `0..1 << WARPEDMODEL_PREC_BITS`,
+/// where those are the rows with `Round2(phase, WARPEDDIFF_PREC_BITS)` 0 or 64.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn two_tap_phase(phase: i32) -> Option<usize> {
+    let rounded = phase + (1 << (WARPEDDIFF_PREC_BITS - 1));
+    (rounded & ((WARPEDPIXEL_PREC_SHIFTS - 1) << WARPEDDIFF_PREC_BITS) == 0)
+        .then_some((rounded >> WARPEDMODEL_PREC_BITS) as usize)
+}
+
+/// Runs the § 7.13.3.19 horizontal pass of a two-tap phase over the eight
+/// samples whose first tap reads `source[start]`.
+///
+/// With taps `127` and `1`, `Round2(127 * a + b, InterRound0)` equals
+/// `16 * a + Round2(b - a, InterRound0)`, which keeps every 10-bit lane in
+/// `i16`; `high` selects which of the two samples carries the 127.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn two_tap_horizontal<T: ReconSample>(
+    source: &[T],
+    start: usize,
+    high: usize,
+) -> Simd<i16, WARPED_BLOCK_SIZE> {
+    let main = warp_source_lanes(source, start + high);
+    let side = warp_source_lanes(source, start + 1 - high);
+    (main << (7 - INTER_ROUND0) as i16)
+        + ((side - main + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i16)
+}
+
+/// Runs the § 7.13.3.19 vertical pass of a two-tap phase, which reads only
+/// intermediate rows [`TWO_TAP_FIRST`] through `TWO_TAP_FIRST + 8`.
+fn two_tap_output(
+    phase: i32,
+    intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    round1: u32,
+    mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
+) -> Result<()> {
+    let taps = warped_filter_row(phase);
+    let top_tap = Simd::splat(i32::from(taps[TWO_TAP_FIRST]));
+    let bottom_tap = Simd::splat(i32::from(taps[TWO_TAP_FIRST + 1]));
+    for row in 0..WARPED_BLOCK_SIZE {
+        let top = (row + TWO_TAP_FIRST) * WARPED_BLOCK_SIZE;
+        let top_samples = Simd::<i16, WARPED_BLOCK_SIZE>::from_slice(&intermediate[top..]);
+        let bottom_samples =
+            Simd::<i16, WARPED_BLOCK_SIZE>::from_slice(&intermediate[top + WARPED_BLOCK_SIZE..]);
+        let sum = top_samples.cast::<i32>() * top_tap + bottom_samples.cast::<i32>() * bottom_tap;
+        store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
+    }
+    Ok(())
+}
+
 /// Admits the unclamped interior source origin for one 8x8 warp section.
 ///
 /// The taps reach `last_col`, but [`warp_windows`] reads one whole vector past
@@ -849,6 +907,18 @@ fn build_interior_intermediate<T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
 ) {
+    if shear.alpha == 0
+        && shear.beta == 0
+        && let Some(high) = two_tap_phase(projected.sx4)
+    {
+        for row in 0..WARP_INTERMEDIATE_ROWS {
+            let source = reference.row(first_row + row);
+            two_tap_horizontal(source, first_col + TWO_TAP_FIRST, high).copy_to_slice(
+                &mut intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE],
+            );
+        }
+        return;
+    }
     for row in 0..WARP_INTERMEDIATE_ROWS {
         let i1 = row as i32 - 7;
         let windows = warp_windows(reference.row(first_row + row), first_col);
@@ -930,6 +1000,9 @@ fn build_output(
     round1: u32,
     mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
 ) -> Result<()> {
+    if shear.gamma == 0 && shear.delta == 0 && two_tap_phase(projected.sy4).is_some() {
+        return two_tap_output(projected.sy4, intermediate, round1, store);
+    }
     if shear.gamma == 0 {
         for row in 0..WARPED_BLOCK_SIZE {
             let i1 = row as i32 - 4;
@@ -1102,6 +1175,20 @@ mod tests {
         ref_h: usize,
         params: &WarpPredictBlockParams,
     ) -> Vec<u16> {
+        let max_sample = i64::from(params.bit_depth.max_sample());
+        reference_warp_rounded(samples, ref_w, ref_h, params, INTER_ROUND1_NON_COMPOUND)
+            .into_iter()
+            .map(|pred| pred.clamp(0, max_sample) as u16)
+            .collect()
+    }
+
+    fn reference_warp_rounded(
+        samples: &[u16],
+        ref_w: usize,
+        ref_h: usize,
+        params: &WarpPredictBlockParams,
+        round1: u32,
+    ) -> Vec<i64> {
         let clip = |lo: i32, hi: i32, value: i32| value.max(lo).min(hi);
         let round = |value: i64, shift: u32| {
             if shift == 0 {
@@ -1140,8 +1227,7 @@ mod tests {
             }
         }
 
-        let max_sample = i64::from(params.bit_depth.max_sample());
-        let mut out = vec![0u16; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+        let mut out = vec![0i64; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
         for i1 in -4i32..4 {
             for i2 in -4i32..4 {
                 let sy = projected.sy4 + shear.gamma * i2 + shear.delta * i1;
@@ -1154,9 +1240,8 @@ mod tests {
                     let col = (i2 + 4) as usize;
                     sum += i64::from(tap) * intermediate[row * WARPED_BLOCK_SIZE + col];
                 }
-                let pred = round2(sum, INTER_ROUND1_NON_COMPOUND);
                 out[(i1 + 4) as usize * WARPED_BLOCK_SIZE + (i2 + 4) as usize] =
-                    pred.clamp(0, max_sample) as u16;
+                    round2(sum, round1);
             }
         }
         out
@@ -1591,5 +1676,143 @@ mod tests {
                 assert_eq!(out[r * 4 + c], src, "r={r} c={c}");
             }
         }
+    }
+
+    fn noise_samples(len: usize, max: u16, seed: u32) -> Vec<u16> {
+        let mut state = seed;
+        (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                match state >> 29 {
+                    0 => max,
+                    1 => 0,
+                    _ => ((state >> 8) % (u32::from(max) + 1)) as u16,
+                }
+            })
+            .collect()
+    }
+
+    /// Translation `t0` whose plane phase `(t0 >> sub) & 0xFFFF` is `frac`, with
+    /// the bit the plane shift drops set so `t0` is odd whenever `sub` is 1.
+    fn translation(integer: i32, frac: i32, sub: u8) -> i32 {
+        (((integer << WARPEDMODEL_PREC_BITS) + frac) << sub) | i32::from(sub)
+    }
+
+    #[test]
+    fn two_tap_phase_matches_the_two_tap_filter_rows() {
+        let mut found = [0usize; 2];
+        for phase in 0..1 << WARPEDMODEL_PREC_BITS {
+            let taps = warped_filter_row(phase);
+            let nonzero = taps.iter().filter(|&&tap| tap != 0).count();
+            match two_tap_phase(phase) {
+                Some(high) => {
+                    assert_eq!(nonzero, 2, "phase {phase}");
+                    assert_eq!(taps[TWO_TAP_FIRST + high], 127, "phase {phase}");
+                    assert_eq!(taps[TWO_TAP_FIRST + 1 - high], 1, "phase {phase}");
+                    found[high] += 1;
+                }
+                None => assert!(nonzero > 2, "phase {phase}"),
+            }
+        }
+        assert_eq!(found, [512, 512]);
+    }
+
+    /// Zero-shear sections whose phases select two-tap rows take the reduced
+    /// passes; every one must still equal the § 7.13.3.19 trace, for both
+    /// `InterRound1` values, both storage types, interior and clamped windows.
+    #[test]
+    fn zero_shear_two_tap_sections_match_the_spec_trace() {
+        let (ref_w, ref_h) = (64usize, 64usize);
+        let samples = noise_samples(ref_w * ref_h, 1023, 3);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let samples8 = samples
+            .iter()
+            .map(|&sample| (sample >> 2) as u8)
+            .collect::<Vec<u8>>();
+        let view8 = ReferencePlaneView::new(&samples8, ref_w, ref_h).unwrap();
+        let wide8 = samples8.iter().map(|&s| u16::from(s)).collect::<Vec<u16>>();
+        let unit = 1 << WARPEDMODEL_PREC_BITS;
+        let models = [
+            [
+                translation(2, 0, 0),
+                translation(-1, 65_535, 0),
+                unit,
+                0,
+                0,
+                unit,
+            ],
+            [
+                translation(-3, 400, 0),
+                translation(1, 65_100, 0),
+                unit,
+                0,
+                0,
+                unit,
+            ],
+            [
+                -31 * 28 + 300,
+                translation(0, 65_300, 0),
+                unit + 31,
+                0,
+                0,
+                unit - 31,
+            ],
+            [
+                translation(1, 100, 0),
+                translation(0, 20_000, 0),
+                unit,
+                0,
+                4096,
+                unit,
+            ],
+            [
+                translation(0, 20_000, 0),
+                translation(2, 65_400, 0),
+                unit,
+                2048,
+                0,
+                unit,
+            ],
+        ];
+        let mut covered = [false; 4];
+        for warp_params in models {
+            for (block_x, block_y) in [(24, 24), (32, 16), (0, 0), (56, 56)] {
+                for bit_depth in [BitDepth::Ten, BitDepth::Eight] {
+                    let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
+                    params.warp_params = warp_params;
+                    params.bit_depth = bit_depth;
+                    let shear = setup_shear(warp_params).unwrap();
+                    let projected = project_section_center(&params).unwrap();
+                    let horizontal = shear.alpha == 0
+                        && shear.beta == 0
+                        && two_tap_phase(projected.sx4).is_some();
+                    let vertical = shear.gamma == 0
+                        && shear.delta == 0
+                        && two_tap_phase(projected.sy4).is_some();
+                    let interior = interior_warp_source_origin(&view, &params, &projected);
+                    covered[usize::from(horizontal) * 2 + usize::from(interior.is_some())] |=
+                        horizontal || vertical;
+                    let trace = if bit_depth == BitDepth::Ten {
+                        &samples
+                    } else {
+                        &wide8
+                    };
+                    for (is_compound, round1) in [
+                        (false, INTER_ROUND1_NON_COMPOUND),
+                        (true, INTER_ROUND1_COMPOUND),
+                    ] {
+                        let want = reference_warp_rounded(trace, ref_w, ref_h, &params, round1);
+                        let got = if bit_depth == BitDepth::Ten {
+                            warp_predict_block(&view, &params, is_compound).unwrap()
+                        } else {
+                            warp_predict_block(&view8, &params, is_compound).unwrap()
+                        };
+                        let got = got.into_iter().map(i64::from).collect::<Vec<_>>();
+                        assert_eq!(got, want, "{warp_params:?} at ({block_x}, {block_y})");
+                    }
+                }
+            }
+        }
+        assert_eq!(covered, [true; 4], "two-tap sections, interior and clamped");
     }
 }
