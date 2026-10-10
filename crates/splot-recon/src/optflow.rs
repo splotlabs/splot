@@ -188,6 +188,15 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         }
     }
 
+    if let (8, Ok(weighted), Ok(difference)) = (
+        unit_size,
+        <&[i16; 64]>::try_from(&*weighted),
+        <&[i16; 64]>::try_from(&*difference),
+    ) {
+        let delta = solve_sums(unit_8x8_sums(weighted, difference), distances)?;
+        scratch.deltas.push(delta);
+        return Ok(&scratch.deltas);
+    }
     gradients(weighted, width, height, gradient_x, gradient_y);
     scratch.deltas.reserve(unit_count);
     for unit_y in (0..height).step_by(unit_size) {
@@ -257,10 +266,7 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
 
     let distances = reduce_distances(distances);
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    scratch.samples.resize(8 * 8 * 4, 0);
-    let (weighted, scratch_samples) = scratch.samples.split_at_mut(8 * 8);
-    let (difference, scratch_samples) = scratch_samples.split_at_mut(8 * 8);
-    let (gradient_x, gradient_y) = scratch_samples.split_at_mut(8 * 8);
+    let (mut weighted, mut difference) = ([0i16; 64], [0i16; 64]);
     prepare_optflow_strided_rows(
         pred0,
         pred1,
@@ -268,12 +274,10 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
         bit_depth.max_sample(),
         distances,
         downshift,
-        weighted,
-        difference,
+        &mut weighted,
+        &mut difference,
     )?;
-
-    gradients(weighted, 8, 8, gradient_x, gradient_y);
-    solve_unit(gradient_x, gradient_y, difference, 8, 0, 0, 8, distances)
+    solve_sums(unit_8x8_sums(&weighted, &difference), distances)
 }
 
 #[inline(never)]
@@ -527,7 +531,7 @@ fn solve_unit(
     unit_size: usize,
     distances: [i32; 2],
 ) -> Result<[[i32; 2]; 2]> {
-    let [mut su2, mut sv2, mut suv, mut suw, mut svw] = match unit_size {
+    let sums = match unit_size {
         4 => solve_unit_sums::<4>(gradient_x, gradient_y, difference, stride, unit_x, unit_y),
         8 => solve_unit_sums::<8>(gradient_x, gradient_y, difference, stride, unit_x, unit_y),
         _ => {
@@ -538,7 +542,13 @@ fn solve_unit(
             });
         }
     };
+    solve_sums(sums, distances)
+}
 
+/// Solves the § 7.13.3.9 least-squares system from one unit's
+/// `[su2, sv2, suv, suw, svw]` sums.
+fn solve_sums(sums: [i32; 5], distances: [i32; 2]) -> Result<[[i32; 2]; 2]> {
+    let [mut su2, mut sv2, mut suv, mut suw, mut svw] = sums;
     let max_product_bits = (1 + msb(su2 as u32)) + (1 + msb(sv2 as u32));
     let max_product_bits = max_product_bits
         .max((1 + msb(sv2 as u32)) + (1 + msb(suw.unsigned_abs())))
@@ -627,6 +637,39 @@ fn solve_unit_sums<const N: usize>(
     ]
 }
 
+/// [`solve_unit_sums`] of an 8x8 predictor pair, which is one gradient unit,
+/// with both gradients computed in registers instead of stored planes.
+///
+/// `weighted` comes from validated samples, so it stays within about
+/// `±1024` and every gradient fits the `i16` the planes would hold.
+fn unit_8x8_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [i32; 5] {
+    let (rows, _) = weighted.as_chunks::<8>();
+    let lanes = |row: usize| Simd::<i16, 8>::from_array(rows[row]).cast::<i32>();
+    let mut sums = [Simd::<i32, 8>::splat(0); 5];
+    for (row, w) in difference.as_chunks::<8>().0.iter().enumerate() {
+        let u = Simd::from_array(horizontal_gradient_lanes(&rows[row])).cast::<i32>();
+        let mut value = (lanes((row + 1).min(7)) - lanes(row.saturating_sub(1))) * Simd::splat(42)
+            - (lanes((row + 2).min(7)) - lanes(row.saturating_sub(2))) * Simd::splat(5);
+        if row == 0 || row == 7 {
+            value += value;
+        }
+        let v = round2_signed_simd(value, 7);
+        let w = Simd::from_array(*w).cast::<i32>();
+        sums[0] += u * u;
+        sums[1] += v * v;
+        sums[2] += u * v;
+        sums[3] += u * w;
+        sums[4] += v * w;
+    }
+    [
+        sums[0].reduce_sum() + 64,
+        sums[1].reduce_sum() + 64,
+        sums[2].reduce_sum(),
+        sums[3].reduce_sum(),
+        sums[4].reduce_sum(),
+    ]
+}
+
 fn divide_and_round(values: [i32; 2], denominator: i32, shift: i32) -> Result<[i32; 2]> {
     let (denominator_shift, inverse) = if denominator == 1 {
         (0i32, 1i32)
@@ -667,6 +710,22 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn fused_8x8_sums_match_the_stored_gradient_planes() {
+        for seed in [1usize, 7, 9973] {
+            let plane = |scale: usize| -> [i16; 64] {
+                core::array::from_fn(|i| ((i * scale * seed + 31) % 2049) as i16 - 1024)
+            };
+            let (weighted, difference) = (plane(7919), plane(104_729));
+            let (mut gradient_x, mut gradient_y) = ([0i16; 64], [0i16; 64]);
+            gradients(&weighted, 8, 8, &mut gradient_x, &mut gradient_y);
+            assert_eq!(
+                unit_8x8_sums(&weighted, &difference),
+                solve_unit_sums::<8>(&gradient_x, &gradient_y, &difference, 8, 0, 0)
+            );
+        }
+    }
 
     #[test]
     fn lane_horizontal_gradients_match_the_clamped_scalar_taps() {
