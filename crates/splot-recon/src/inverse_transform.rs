@@ -191,6 +191,99 @@ pub(crate) fn inverse_transform_1d_columns<const LANES: usize>(
     true
 }
 
+/// One § 7.15.4.1 row pass over four consecutive rows at once.
+#[derive(Clone, Copy)]
+pub(crate) struct RowQuad {
+    /// Row length (`1 << Min(log2W, 5)`).
+    pub len: usize,
+    /// Row-pass down-shift (`rowShift`).
+    pub shift: u8,
+    /// Whether each input takes the § 7.15.4.1 `Round2(x * 2896, 12)` rescale.
+    pub rescale: bool,
+    /// Active decoded bit depth.
+    pub bit_depth: BitDepth,
+}
+
+/// Applies the AV2 § 7.15.2.1 kernel transform to four consecutive `pass.len`
+/// sample rows of `src`, one row per lane, writing the same rows of `out`.
+///
+/// Each lane repeats [`kernel_transform`] (and, when `pass.rescale`, the
+/// § 7.15.4.1 rescale before it) on its own row, so every value is unchanged;
+/// the lanes share each kernel-row broadcast instead of paying the row loop
+/// four times. Returns `false` when `pass.len` is not 4 or 8, or a slice is
+/// shorter than four rows, which leaves the rows to the caller's per-row path.
+pub(crate) fn inverse_transform_1d_row_quad(
+    src: &[i32],
+    out: &mut [i32],
+    tx_type: InverseTransform1dType,
+    pass: RowQuad,
+) -> bool {
+    match select_kernel(pass.len, tx_type) {
+        Some(Kernel1d::N4(k)) => kernel_row_quad(src, out, k, false, pass),
+        Some(Kernel1d::N8(k, rev)) => kernel_row_quad(src, out, k, rev, pass),
+        _ => false,
+    }
+}
+
+fn kernel_row_quad<const N: usize>(
+    src: &[i32],
+    out: &mut [i32],
+    kernel: &[[i32; N]; N],
+    reversed: bool,
+    pass: RowQuad,
+) -> bool {
+    let (Some(rows), Some(out_rows)) = (
+        src.as_chunks::<N>().0.first_chunk::<4>(),
+        out.as_chunks_mut::<N>().0.first_chunk_mut::<4>(),
+    ) else {
+        return false;
+    };
+    let input_bound = Simd::splat(transform_input_bound(pass.bit_depth));
+    let zero = Simd::<i32, 4>::splat(0);
+    let mut columns: [Simd<i32, 4>; N] = core::array::from_fn(|column| {
+        Simd::from_array(core::array::from_fn(|lane| rows[lane][column]))
+    });
+    if pass.rescale {
+        for coeff in &mut columns {
+            *coeff = (*coeff * Simd::splat(2896) + Simd::splat(1 << 11)) >> Simd::splat(12);
+        }
+    }
+    let mut acc = [zero; N];
+    for (&coeff, kernel_row) in columns.iter().zip(kernel) {
+        if coeff == zero {
+            continue;
+        }
+        let coeff = coeff.simd_clamp(-input_bound, input_bound - Simd::splat(1));
+        for (slot, &k) in acc.iter_mut().zip(kernel_row) {
+            *slot += Simd::splat(k) * coeff;
+        }
+    }
+    let (lo, hi) = transform_clip_bounds(false, pass.bit_depth);
+    for index in 0..N {
+        let value = acc[if reversed { N - 1 - index } else { index }];
+        let rounded = round2_lanes(value, u32::from(pass.shift));
+        let clamped = rounded
+            .simd_clamp(Simd::splat(lo), Simd::splat(hi))
+            .to_array();
+        for (row, &sample) in out_rows.iter_mut().zip(&clamped) {
+            row[index] = sample;
+        }
+    }
+    true
+}
+
+/// The scalar [`round2_i32`] of every lane.
+fn round2_lanes<const LANES: usize>(value: Simd<i32, LANES>, n: u32) -> Simd<i32, LANES> {
+    if n == 0 {
+        value
+    } else if n >= i32::BITS {
+        Simd::splat(0)
+    } else {
+        let n = n as i32;
+        (value >> Simd::splat(n)) + ((value >> Simd::splat(n - 1)) & Simd::splat(1))
+    }
+}
+
 /// One `LANES`-wide column group of [`inverse_transform_1d_columns`].
 ///
 /// Each lane repeats [`kernel_transform`] literally: the § 7.14.4 input clamp,

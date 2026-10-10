@@ -26,8 +26,8 @@
 //! dimension (whose adjusted parity differs) rescale correctly.
 
 use crate::inverse_transform::{
-    ColumnPass, InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,
-    inverse_transform_1d_columns, inverse_walsh_hadamard,
+    ColumnPass, InverseTransform1dType, RowQuad, inverse_identity_transform, inverse_transform_1d,
+    inverse_transform_1d_columns, inverse_transform_1d_row_quad, inverse_walsh_hadamard,
 };
 use crate::{BitDepth, ReconError, Result};
 
@@ -170,13 +170,36 @@ pub(super) fn inverse_transform_2d_with_scratch(
         bit_depth: params.bit_depth,
     };
     let masked = !params.lossless && matches!(params.col_type, InverseTransform2dDim::Kernel(_));
+    let quad_type = match params.row_type {
+        InverseTransform2dDim::Kernel(tx_type) if !params.lossless && w <= 8 => Some(tx_type),
+        _ => None,
+    };
+    let quad = RowQuad {
+        len: w,
+        shift: params.row_shift,
+        rescale: odd_ratio,
+        bit_depth: params.bit_depth,
+    };
+    let coded_rows = dequant.len() / w;
     let mut nonzero_rows = 0u32;
-    for (row, (dequant_row, intermediate_row)) in dequant
-        .chunks_exact(w)
-        .zip(intermediate.chunks_exact_mut(w))
-        .take(h)
-        .enumerate()
-    {
+    let mut row = 0;
+    while row < coded_rows {
+        let rows = &dequant[row * w..];
+        if let Some(tx_type) = quad_type
+            && row + 4 <= coded_rows
+            && inverse_transform_1d_row_quad(rows, &mut intermediate[row * w..], tx_type, quad)
+        {
+            for (offset, quad_row) in rows.chunks_exact(w).take(4).enumerate() {
+                if quad_row.iter().fold(0, |any, &coeff| any | coeff) != 0 {
+                    nonzero_rows |= 1u32 << (row + offset);
+                }
+            }
+            row += 4;
+            continue;
+        }
+        let dequant_row = &rows[..w];
+        let intermediate_row = &mut intermediate[row * w..(row + 1) * w];
+        row += 1;
         if dequant_row.iter().fold(0, |any, &coeff| any | coeff) == 0 {
             if !masked {
                 intermediate_row.fill(0);
@@ -191,7 +214,7 @@ pub(super) fn inverse_transform_2d_with_scratch(
         } else {
             run_1d(dequant_row, intermediate_row, row_pass)?;
         }
-        nonzero_rows |= 1u32 << row;
+        nonzero_rows |= 1u32 << (row - 1);
     }
     if !masked {
         intermediate[dequant.len()..].fill(0);
@@ -675,13 +698,14 @@ mod tests {
         }
     }
 
-    /// The column-pass lane groups must reproduce the per-column gather,
-    /// [`run_1d`], scatter reference exactly, for every adjusted shape, both
-    /// column-transform families, every kernel type, both bit depths, and a
-    /// coefficient field spanning the § 7.14.4 dequant range at the widest bit
-    /// depth, so the § 7.15.2.1 input clamp is live at 8 bits.
+    /// The row quads and the column-pass lane groups must reproduce the
+    /// per-row and per-column [`run_1d`] reference exactly, for every adjusted
+    /// shape, every row kernel type, both column-transform families, every
+    /// kernel type, both bit depths, whole zero rows, and a coefficient field
+    /// spanning the § 7.14.4 dequant range at the widest bit depth, so the
+    /// § 7.15.2.1 input clamp is live at 8 bits.
     #[test]
-    fn column_lane_groups_match_the_per_column_reference() {
+    fn lane_groups_match_the_per_row_and_column_reference() {
         use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
         let mut state = 0x1234_5678_9abc_def1u64;
         let mut next = move || {
@@ -692,14 +716,18 @@ mod tests {
         };
         for log2_w in 2..=5u32 {
             for log2_h in 2..=5u32 {
-                for col_type in [
+                let types = [
                     InverseTransform2dDim::Identity,
                     InverseTransform2dDim::Kernel(Dct),
                     InverseTransform2dDim::Kernel(Adst),
                     InverseTransform2dDim::Kernel(Fdst),
                     InverseTransform2dDim::Kernel(Ddtx),
                     InverseTransform2dDim::Kernel(Fddt),
-                ] {
+                ];
+                for (row_type, col_type) in types
+                    .into_iter()
+                    .flat_map(|row| types.map(|col| (row, col)))
+                {
                     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
                         for col_shift in [0u8, 1, 4, 12] {
                             let (w, h) = (1usize << log2_w, 1usize << log2_h);
@@ -707,6 +735,7 @@ mod tests {
                             let range = 1i32 << 17;
                             for (index, slot) in dequant.iter_mut().enumerate() {
                                 *slot = match index % 11 {
+                                    _ if (index / w) % 3 == 2 => 0,
                                     0 => 0,
                                     1 => range - 1,
                                     2 => -range,
@@ -714,7 +743,7 @@ mod tests {
                                 };
                             }
                             let mut p =
-                                params(log2_w, log2_h, false, adst(), col_type, 5, col_shift);
+                                params(log2_w, log2_h, false, row_type, col_type, 5, col_shift);
                             p.bit_depth = bit_depth;
 
                             let mut got = vec![0i32; w * h];
@@ -726,7 +755,7 @@ mod tests {
 
                             assert_eq!(
                                 got, expected,
-                                "{w}x{h} {col_type:?} {bit_depth:?} shift {col_shift}"
+                                "{w}x{h} {row_type:?} {col_type:?} {bit_depth:?} shift {col_shift}"
                             );
                         }
                     }
