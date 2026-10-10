@@ -374,6 +374,71 @@ fn metadata_constructor_matches_delayed_reference_resolution() {
     assert_eq!(immediate, delayed);
 }
 
+/// Field hints are ref_valid-gated and repeat hint 1; block hints are raw, so
+/// hints 5 and 2 name no field slot.
+#[test]
+fn carried_slots_match_delayed_resolution_for_every_reference_pair() {
+    let field_hints = [Some(1), None, Some(3), Some(1), Some(6), None, Some(9)];
+    let raw_hints = [1, 5, 3, 1, 6, 2, 9];
+    let lists = || (0..raw_hints.len()).map(Some).chain([None]);
+    let near = Mv { row: 8, col: -24 };
+    let far = Mv { row: 4096, col: 8 };
+    let mut blocks = Vec::new();
+    for ref0 in lists() {
+        for ref1 in lists() {
+            for mvs in [[near, Mv { row: -40, col: 16 }], [far, near], [near, far]] {
+                for _ in 0..2 {
+                    blocks.push((ref0.map(|r| raw_hints[r]), ref1.map(|r| raw_hints[r]), mvs));
+                }
+            }
+        }
+    }
+    let mi_cols = blocks.len() * 2;
+    let blocks: Vec<_> = blocks
+        .into_iter()
+        .enumerate()
+        .map(|(index, (hint0, hint1, mvs))| {
+            TemporalMotionBlock::new(
+                0,
+                index * 2,
+                2,
+                2,
+                2,
+                mi_cols,
+                4,
+                [hint0, hint1],
+                mvs,
+                [None; 2],
+            )
+        })
+        .collect();
+    let frame_size = (mi_cols * 4, 8);
+
+    let mut delayed = TemporalMotionField::new(2, mi_cols).unwrap();
+    for &block in &blocks {
+        delayed.record_block(block);
+    }
+    delayed.set_reference_metadata(true, frame_size, &field_hints);
+
+    let mut immediate =
+        TemporalMotionField::new_with_metadata(2, mi_cols, true, frame_size, &field_hints).unwrap();
+    immediate.record_blocks(&blocks);
+
+    assert_eq!(immediate, delayed);
+}
+
+#[test]
+fn compressed_component_matches_the_saturating_step_formula() {
+    for value in -(1i32 << 17)..=(1 << 17) {
+        let abs_value = value.unsigned_abs();
+        let msb = 31u32.saturating_sub(abs_value.leading_zeros());
+        let step_log2 = msb.saturating_sub(4);
+        let magnitude = ((abs_value >> step_log2) + (step_log2 << 4)) as i32;
+        let expected = if value < 0 { -magnitude } else { magnitude };
+        assert_eq!(compress_tmvp_component(value), expected, "{value}");
+    }
+}
+
 #[test]
 fn single_reference_motion_is_stored_in_both_slots() {
     for source_list in 0..2 {

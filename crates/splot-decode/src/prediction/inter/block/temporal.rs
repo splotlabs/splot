@@ -81,9 +81,7 @@ pub(super) fn commit_temporal_motion_blocks(
     motion_field: &mut TemporalMotionField,
     blocks: &[TemporalMotionBlock],
 ) {
-    for &block in blocks {
-        motion_field.record_block(block);
-    }
+    motion_field.record_blocks(blocks);
 }
 
 /// One frame's AV2 § 7.9 motion field while its parse units are still landing.

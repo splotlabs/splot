@@ -7,9 +7,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::{
-    MotionFieldLayout, TemporalMotionBlock, TemporalMotionCell, TemporalMotionField,
-    TemporalMotionFieldMetadata, TemporalMotionRows, resolve_block_refs, resolve_temporal_refs,
-    visit_temporal_block_cells,
+    BlockRefs, MotionFieldLayout, TemporalMotionBlock, TemporalMotionCell, TemporalMotionField,
+    TemporalMotionFieldMetadata, TemporalMotionRows, visit_temporal_block_cells,
 };
 
 /// One full-width source superblock row of temporal motion.
@@ -155,10 +154,10 @@ impl TemporalMotionBand {
             .cells
             .owned_mut()
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        let mut memo = None;
         for &block in blocks {
-            let resolved =
-                resolve_block_refs(block.ref_order_hints, &self.metadata.ref_order_hints);
-            visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
+            let refs = BlockRefs::reuse(&mut memo, &block, &self.metadata.ref_order_hints);
+            visit_temporal_block_cells(block, refs, width8, row_end8, |y8, x8, cell, _| {
                 let Some(row) = y8.checked_sub(row_base8) else {
                     return;
                 };
@@ -169,7 +168,7 @@ impl TemporalMotionBand {
                     return;
                 };
                 if let Some(target) = cells.get_mut(index) {
-                    *target = resolve_temporal_refs(cell, hints, &resolved);
+                    *target = cell;
                 }
             });
         }

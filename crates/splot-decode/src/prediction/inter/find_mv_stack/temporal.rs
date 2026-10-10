@@ -438,26 +438,30 @@ impl TemporalMotionField {
         })
     }
 
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
     pub(crate) fn record_block(&mut self, block: TemporalMotionBlock) {
-        let width8 = self.width8;
-        let height8 = self.height8;
-        let resolved = resolve_block_refs(block.ref_order_hints, &self.ref_order_hints);
-        visit_temporal_block_cells(block, width8, height8, |y8, x8, cell, hints| {
-            let cell = resolve_temporal_refs(cell, hints, &resolved);
-            let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
-                return;
-            };
-            if let Some(pending) = self.pending_ref_hints.as_mut() {
-                pending[index] = hints.map(|hint| hint.unwrap_or(u32::MAX));
-            }
-            if let TemporalMotionStorage::Contiguous(cells) = &mut self.storage
-                && let Some(target) = cells.get_mut(index)
-            {
-                *target = cell;
-            }
-        });
+        self.record_blocks(core::slice::from_ref(&block));
+    }
+
+    pub(crate) fn record_blocks(&mut self, blocks: &[TemporalMotionBlock]) {
+        let (width8, height8) = (self.width8, self.height8);
+        let mut pending = self.pending_ref_hints.as_deref_mut();
+        let cells = match &mut self.storage {
+            TemporalMotionStorage::Contiguous(cells) => cells.as_mut_slice(),
+            TemporalMotionStorage::Bands(_) => &mut [],
+        };
+        let mut refs = None;
+        for &block in blocks {
+            let resolved = BlockRefs::reuse(&mut refs, &block, &self.ref_order_hints);
+            visit_temporal_block_cells(block, resolved, width8, height8, |y8, x8, cell, hints| {
+                let index = y8 * width8 + x8;
+                if let Some(pending) = pending.as_mut().and_then(|pending| pending.get_mut(index)) {
+                    *pending = hints.map(|hint| hint.unwrap_or(u32::MAX));
+                }
+                if let Some(target) = cells.get_mut(index) {
+                    *target = cell;
+                }
+            });
+        }
     }
 
     #[cfg(test)]
@@ -479,6 +483,7 @@ impl TemporalMotionField {
 #[inline(always)]
 fn visit_temporal_block_cells(
     block: TemporalMotionBlock,
+    refs: BlockRefs,
     width8: usize,
     height8: usize,
     mut visit: impl FnMut(usize, usize, TemporalMotionCell, [Option<u32>; 2]),
@@ -498,49 +503,61 @@ fn visit_temporal_block_cells(
     let col8_start = block.mi_col >> 1;
     let row8_end = row_end.div_ceil(2).min(height8);
     let col8_end = col_end.div_ceil(2).min(width8);
-    let swap_lists = temporal_lists_swap(block);
-    let derive = |y8: usize, x8: usize| {
-        let mut hints = [None; 2];
-        let mut mvs = [CompressedTemporalMv::ZERO; 2];
-        for list in 0..2 {
-            let Some(order_hint) = block.ref_order_hints[list] else {
-                continue;
-            };
-            let mv = block
-                .motion
-                .mv_at(list, block.mi_row, block.mi_col, y8 * 2, x8 * 2);
-            if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
-                continue;
+    if matches!(block.motion, TemporalBlockMotion::Mvs(_)) {
+        let (cell, hints) = derive_temporal_cell(&block, refs, row8_start, col8_start);
+        for y8 in row8_start..row8_end {
+            for x8 in col8_start..col8_end {
+                visit(y8, x8, cell, hints);
             }
-            hints[list] = Some(order_hint);
-            mvs[list] = compress_tmvp_mv(mv);
         }
-        if hints[0].is_some() && hints[1].is_none() {
-            hints[1] = hints[0];
-            mvs[1] = mvs[0];
-        } else if hints[1].is_some() && hints[0].is_none() {
-            hints[0] = hints[1];
-            mvs[0] = mvs[1];
-        } else if swap_lists && hints[0].is_some() && hints[1].is_some() {
-            hints.swap(0, 1);
-            mvs.swap(0, 1);
-        }
-        (
-            TemporalMotionCell {
-                mvs,
-                ..TemporalMotionCell::default()
-            },
-            hints,
-        )
-    };
-    let uniform =
-        matches!(block.motion, TemporalBlockMotion::Mvs(_)).then(|| derive(row8_start, col8_start));
+        return;
+    }
     for y8 in row8_start..row8_end {
         for x8 in col8_start..col8_end {
-            let (cell, hints) = uniform.unwrap_or_else(|| derive(y8, x8));
+            let (cell, hints) = derive_temporal_cell(&block, refs, y8, x8);
             visit(y8, x8, cell, hints);
         }
     }
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn derive_temporal_cell(
+    block: &TemporalMotionBlock,
+    refs: BlockRefs,
+    y8: usize,
+    x8: usize,
+) -> (TemporalMotionCell, [Option<u32>; 2]) {
+    let mut hints = [None; 2];
+    let mut cell = TemporalMotionCell::default();
+    for list in [0, 1] {
+        let Some(order_hint) = block.ref_order_hints[list] else {
+            continue;
+        };
+        let mv = block
+            .motion
+            .mv_at(list, block.mi_row, block.mi_col, y8 * 2, x8 * 2);
+        if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
+            continue;
+        }
+        hints[list] = Some(order_hint);
+        cell.mvs[list] = compress_tmvp_mv(mv);
+        cell.ref_indices[list] = refs.slots[list];
+    }
+    if hints[0].is_some() && hints[1].is_none() {
+        hints[1] = hints[0];
+        cell.mvs[1] = cell.mvs[0];
+        cell.ref_indices[1] = cell.ref_indices[0];
+    } else if hints[1].is_some() && hints[0].is_none() {
+        hints[0] = hints[1];
+        cell.mvs[0] = cell.mvs[1];
+        cell.ref_indices[0] = cell.ref_indices[1];
+    } else if refs.swap && hints[0].is_some() && hints[1].is_some() {
+        hints.swap(0, 1);
+        cell.mvs.swap(0, 1);
+        cell.ref_indices.swap(0, 1);
+    }
+    (cell, hints)
 }
 
 /// AV2 § 7.9 list ordering for a block whose two references both survive.
@@ -562,40 +579,50 @@ fn temporal_lists_swap(block: TemporalMotionBlock) -> bool {
     }
 }
 
-fn resolve_block_refs(
-    block_hints: [Option<u32>; 2],
-    ref_order_hints: &[Option<u32>],
-) -> [(Option<u32>, u8); 2] {
-    block_hints.map(|hint| {
-        let index = hint
-            .and_then(|hint| {
-                ref_order_hints
-                    .iter()
-                    .position(|&candidate| candidate == Some(hint))
-            })
-            .and_then(|index| u8::try_from(index).ok())
-            .unwrap_or(INVALID_TEMPORAL_REF);
-        (hint, index)
-    })
+/// A block's field slot per list and its § 7.9 list order.
+#[derive(Clone, Copy)]
+struct BlockRefs {
+    slots: [u8; 2],
+    swap: bool,
 }
 
-fn resolve_temporal_refs(
-    mut cell: TemporalMotionCell,
-    hints: [Option<u32>; 2],
-    resolved: &[(Option<u32>, u8); 2],
-) -> TemporalMotionCell {
-    for (list, hint) in hints.into_iter().enumerate() {
-        if hint.is_none() {
-            continue;
+impl BlockRefs {
+    #[inline(never)]
+    fn resolve(block: &TemporalMotionBlock, ref_order_hints: &[Option<u32>]) -> Self {
+        Self {
+            slots: block.ref_order_hints.map(|hint| {
+                hint.and_then(|hint| {
+                    ref_order_hints
+                        .iter()
+                        .position(|&candidate| candidate == Some(hint))
+                })
+                .and_then(|index| u8::try_from(index).ok())
+                .unwrap_or(INVALID_TEMPORAL_REF)
+            }),
+            swap: temporal_lists_swap(*block),
         }
-        for &(candidate, ref_index) in resolved {
-            if candidate == hint {
-                cell.ref_indices[list] = ref_index;
-                break;
+    }
+
+    /// Reuses the previous block's resolution while blocks repeat its references.
+    #[inline]
+    fn reuse(
+        memo: &mut Option<([Option<u32>; 2], u32, Self)>,
+        block: &TemporalMotionBlock,
+        ref_order_hints: &[Option<u32>],
+    ) -> Self {
+        match *memo {
+            Some((hints, current, refs))
+                if hints == block.ref_order_hints && current == block.current_order_hint =>
+            {
+                refs
+            }
+            _ => {
+                let refs = Self::resolve(block, ref_order_hints);
+                *memo = Some((block.ref_order_hints, block.current_order_hint, refs));
+                refs
             }
         }
     }
-    cell
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -663,6 +690,8 @@ impl TemporalBlockMotion {
         }
     }
 
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
     fn mv_at(
         self,
         list: usize,
@@ -2312,10 +2341,10 @@ fn uncompress_tmvp_mv(mv: CompressedTemporalMv) -> Mv {
 
 fn compress_tmvp_component(value: i32) -> i32 {
     let abs_value = value.unsigned_abs();
-    let msb = 31u32.saturating_sub(abs_value.leading_zeros());
-    let step_log2 = msb.saturating_sub(4);
+    let step_log2 = 27u32.saturating_sub(abs_value.leading_zeros());
     let compressed = ((abs_value >> step_log2) + (step_log2 << 4)) as i32;
-    if value < 0 { -compressed } else { compressed }
+    let sign = value >> 31;
+    (compressed ^ sign) - sign
 }
 
 fn uncompress_tmvp_component(value: i32) -> i32 {
