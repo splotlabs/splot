@@ -379,12 +379,23 @@ fn apply_cfl_prediction<T: ReconSample>(
             context: "CfL luma AC length",
         });
     };
+    let predict = |ac: i32| (dc + round2_signed_i32(alpha_q3 * ac, CFL_ALPHA_SHIFT)).clamp(0, max);
     prediction.clear();
-    prediction.reserve(luma_ac.len());
-    for &ac in luma_ac {
-        let scaled_luma = round2_signed_i32(alpha_q3 * ac, CFL_ALPHA_SHIFT);
-        let clipped = (dc + scaled_luma).clamp(0, max) as u16;
-        prediction.push(T::try_from_u16(clipped)?);
+    prediction.resize(luma_ac.len(), T::default());
+    if let Some(out) = T::u16_slice_mut(prediction) {
+        for (slot, &ac) in out.iter_mut().zip(luma_ac) {
+            *slot = predict(ac) as u16;
+        }
+    } else if max <= i32::from(u8::MAX)
+        && let Some(out) = T::u8_slice_mut(prediction)
+    {
+        for (slot, &ac) in out.iter_mut().zip(luma_ac) {
+            *slot = predict(ac) as u8;
+        }
+    } else {
+        for (slot, &ac) in prediction.iter_mut().zip(luma_ac) {
+            *slot = T::try_from_u16(predict(ac) as u16)?;
+        }
     }
     Ok(())
 }
