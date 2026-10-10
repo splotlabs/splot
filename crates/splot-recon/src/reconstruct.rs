@@ -179,9 +179,54 @@ fn add_residual_row<T: ReconSample>(
         add_residual_u16(prediction, residual, max, out);
         return Ok(());
     }
+    if max <= i32::from(u8::MAX)
+        && let Some(prediction) = T::u8_slice(prediction)
+        && let Some(out) = T::u8_slice_mut(out)
+    {
+        for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
+            *slot = i32::from(pred).saturating_add(res).clamp(0, max) as u8;
+        }
+        return Ok(());
+    }
     for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
         let reconstructed = i32::from(pred.to_u16()).saturating_add(res).clamp(0, max);
         *slot = T::try_from_u16(reconstructed as u16)?;
+    }
+    Ok(())
+}
+
+/// Adds the § 7.14.3 residual to `samples` in place: `Clip1(sample + residual)`
+/// with saturating `i32` addition, over the samples `residual` covers.
+///
+/// `u16` storage, and `u8` storage with an 8-bit `max`, take a plain loop that
+/// vectorizes; every value it writes is the one the checked conversion of the
+/// generic loop writes.
+///
+/// # Errors
+/// Returns the [`ReconSample::try_from_u16`] error when a clipped value does not
+/// fit `T`.
+pub(crate) fn add_residual_in_place<T: ReconSample>(
+    samples: &mut [T],
+    residual: &[i32],
+    max: i32,
+) -> Result<()> {
+    if let Some(samples) = T::u16_slice_mut(samples) {
+        for (sample, &res) in samples.iter_mut().zip(residual) {
+            *sample = i32::from(*sample).saturating_add(res).clamp(0, max) as u16;
+        }
+        return Ok(());
+    }
+    if max <= i32::from(u8::MAX)
+        && let Some(samples) = T::u8_slice_mut(samples)
+    {
+        for (sample, &res) in samples.iter_mut().zip(residual) {
+            *sample = i32::from(*sample).saturating_add(res).clamp(0, max) as u8;
+        }
+        return Ok(());
+    }
+    for (sample, &res) in samples.iter_mut().zip(residual) {
+        let value = i32::from(sample.to_u16()).saturating_add(res).clamp(0, max);
+        *sample = T::try_from_u16(value as u16)?;
     }
     Ok(())
 }
@@ -226,6 +271,17 @@ fn add_residual_u16(prediction: &[u16], residual: &[i32], max: i32, out: &mut [u
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_place_residual_add_clips_both_storage_types() {
+        let residual = [i32::MIN, -300, -1, 0, 1, 300, i32::MAX, 5];
+        let mut narrow = [10u8, 10, 0, 255, 254, 10, 10, 250];
+        add_residual_in_place(&mut narrow, &residual, 255).unwrap();
+        assert_eq!(narrow, [0, 0, 0, 255, 255, 255, 255, 255]);
+        let mut wide = [10u16, 10, 0, 1023, 1022, 10, 10, 1020];
+        add_residual_in_place(&mut wide, &residual, 1023).unwrap();
+        assert_eq!(wide, [0, 0, 0, 1023, 1023, 310, 1023, 1023]);
+    }
 
     #[test]
     fn adds_residual_to_prediction() {

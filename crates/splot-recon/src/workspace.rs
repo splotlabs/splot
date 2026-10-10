@@ -423,15 +423,7 @@ impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
         let target_start = self.base + row * self.stride;
         let samples = &mut self.samples[target_start..target_start + self.rect.width()];
         debug_assert!(residual.len() >= samples.len());
-        let max = i32::from(self.max_sample);
-        for (sample, &residual) in samples.iter_mut().zip(residual) {
-            let value = i32::from(sample.to_u16())
-                .saturating_add(residual)
-                .clamp(0, max) as u16;
-            debug_assert!(value <= T::MAX_VALUE);
-            *sample = T::try_from_u16(value)?;
-        }
-        Ok(())
+        crate::reconstruct::add_residual_in_place(samples, residual, i32::from(self.max_sample))
     }
 }
 
