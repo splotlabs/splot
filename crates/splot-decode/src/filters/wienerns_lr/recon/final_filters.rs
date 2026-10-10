@@ -93,6 +93,9 @@ pub(crate) struct LrFrame<'a, T> {
     pub(crate) post_lr_y: Option<StripeOutputPlane>,
     pub(crate) post_lr_u: Option<StripeOutputPlane>,
     pub(crate) post_lr_v: Option<StripeOutputPlane>,
+    /// The luma post-LR plane already holds the CDEF output, so a flat LR
+    /// strip needs no write.
+    post_lr_y_holds_cdef: bool,
 }
 
 pub(crate) struct FilteredStripe {
@@ -144,6 +147,9 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 initializations[plane_id.index()],
             )?;
         }
+        let post_lr_y_holds_cdef = !direct_u8_planes[PlaneId::Y.index()]
+            && (target.get(PlaneId::Y).is_none()
+                || initializations[PlaneId::Y.index()] == StripeInitialization::CopyAll);
         let mut copy = |plane_id: PlaneId, plane: &mut StripePlane| {
             let end_y = plane.end_y().ok_or(StripeCopyError::Geometry)?;
             let Some(target) = target.take(plane_id) else {
@@ -205,6 +211,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
             post_lr_y,
             post_lr_u,
             post_lr_v,
+            post_lr_y_holds_cdef,
         })
     }
 
@@ -652,6 +659,24 @@ enum LrDestination<'a> {
     U8(&'a mut [u8]),
 }
 
+impl LrDestination<'_> {
+    /// The destination from column `x` of its first row.
+    fn columns_from(&mut self, x: usize) -> Result<LrDestination<'_>> {
+        Ok(match self {
+            Self::U16(output) => LrDestination::U16(
+                output
+                    .get_mut(x..)
+                    .ok_or_else(super::lr_pipeline_state_error)?,
+            ),
+            Self::U8(output) => LrDestination::U8(
+                output
+                    .get_mut(x..)
+                    .ok_or_else(super::lr_pipeline_state_error)?,
+            ),
+        })
+    }
+}
+
 fn chroma_lr_block_destination<'a>(
     plane: &'a mut StripeOutputPlane,
     block: &WienerNsLrSourceBlock,
@@ -1019,6 +1044,88 @@ impl<'a> LrSourceRows<'a> {
     }
 }
 
+/// The one value that the `width` columns from `col` of every row hold.
+fn flat_lr_window(rows: &[&[u16]], col: usize, width: usize) -> Option<u16> {
+    use std::simd::{Simd, num::SimdUint};
+    const LANES: usize = 16;
+    let value = *rows.first()?.get(col)?;
+    let splat = Simd::<u16, LANES>::splat(value);
+    rows.iter()
+        .all(|row| {
+            let Some(row) = col.checked_add(width).and_then(|end| row.get(col..end)) else {
+                return false;
+            };
+            let Some(last) = row.last_chunk::<LANES>() else {
+                return row.iter().all(|&sample| sample == value);
+            };
+            let diff = row
+                .as_chunks::<LANES>()
+                .0
+                .iter()
+                .fold(Simd::from_array(*last) ^ splat, |diff, chunk| {
+                    diff | (Simd::from_array(*chunk) ^ splat)
+                });
+            diff.reduce_or() == 0
+        })
+        .then_some(value)
+}
+
+/// Walks the `width` output columns of a luma LR block in 64-column strips
+/// and calls `run(x, end, flat)` once for each flat strip, with its value,
+/// and once for each run of uneven strips, with `None`. A strip is flat when
+/// its whole tap reach, `radius` columns and rows past it in `rows` from
+/// column `col`, holds one value `v <= max_sample`: the § 7.20.3 tap
+/// differences are then zero and the § 7.20.4 taps sum to zero, so both
+/// filters return `v`, and no other process reads the strip's classes.
+fn for_each_lr_strip(
+    rows: &[&[u16]],
+    col: usize,
+    width: usize,
+    radius: usize,
+    max_sample: u16,
+    mut run: impl FnMut(usize, usize, Option<u16>) -> Result<()>,
+) -> Result<()> {
+    const STRIP: usize = 64;
+    let flat_at = |x: usize| {
+        flat_lr_window(rows, col + x, STRIP.min(width - x) + 2 * radius)
+            .filter(|&value| value <= max_sample)
+    };
+    let (mut x, mut next) = (0, flat_at(0));
+    while x < width {
+        let flat = next.take();
+        let mut end = (x + STRIP).min(width);
+        while end < width {
+            next = flat_at(end);
+            if flat.is_some() || next.is_some() {
+                break;
+            }
+            end = (end + STRIP).min(width);
+        }
+        run(x, end, flat)?;
+        x = end;
+    }
+    Ok(())
+}
+
+fn fill_lr_rect<O: Copy>(
+    output: &mut [O],
+    stride: usize,
+    width: usize,
+    height: usize,
+    value: O,
+) -> Result<()> {
+    for row in 0..height {
+        let start = row
+            .checked_mul(stride)
+            .ok_or_else(super::lr_pipeline_state_error)?;
+        output
+            .get_mut(start..start.saturating_add(width))
+            .ok_or_else(super::lr_pipeline_state_error)?
+            .fill(value);
+    }
+    Ok(())
+}
+
 fn reserve_window(samples: &mut Vec<u16>, plane: PlaneId, sample_count: usize) -> ReconResult<()> {
     if let Some(missing) = sample_count.checked_sub(samples.len()).filter(|n| *n > 0) {
         samples
@@ -1217,6 +1324,7 @@ impl StripeChain<'_> {
                 .cdef_y
                 .end_y()
                 .ok_or_else(super::lr_pipeline_state_error)?;
+            let fill_flat = !frame.post_lr_y_holds_cdef;
             let post_lr_y = frame
                 .post_lr_y
                 .as_mut()
@@ -1238,6 +1346,7 @@ impl StripeChain<'_> {
                             qindex,
                             filter_set_index,
                             post_lr_y,
+                            fill_flat,
                         )?;
                     }
                     LrUnitRestorationType::WienerNonsep => {
@@ -1252,6 +1361,7 @@ impl StripeChain<'_> {
                                 filter_set_index,
                                 coeffs,
                                 post_lr_y,
+                                fill_flat,
                             )?;
                         } else {
                             let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, &block)?];
@@ -1265,6 +1375,7 @@ impl StripeChain<'_> {
                                 0,
                                 &coeffs,
                                 post_lr_y,
+                                fill_flat,
                             )?;
                         }
                     }
@@ -1341,6 +1452,7 @@ impl StripeChain<'_> {
         qindex: u32,
         filter_set_index: usize,
         post_lr: &mut StripePlane,
+        fill_flat: bool,
     ) -> Result<()> {
         let block = clipped_lr_source_block(
             block,
@@ -1374,31 +1486,52 @@ impl StripeChain<'_> {
                 PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS),
             )
             .map_err(lr_window_error)?;
-            let subclass_map = self.luma_lr_cell_subclasses(
-                &block,
-                &window,
-                qindex,
-                PC_WIENER_FULL_CLASSES,
-                filter_set_index,
-                cell_subclasses,
-            )?;
-            let params = PcWienerFilter {
-                width: block.width,
-                height: block.height,
-                output_stride,
-                bit_depth: self.bit_depth,
-                filter_set_index,
-                subclass_block_size: MI_SIZE,
-                subclasses: subclass_map,
-            };
             let (rows, col) = window
                 .tail(PC_WIENER_FILTER_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
-            let padded_source =
-                PcWienerPaddedSource::from_rows(rows, col, block.width, block.height)
-                    .map_err(lr_window_error)?;
-            pc_wiener_filter_block_padded(output, &params, &padded_source)
-                .map_err(lr_window_error)?;
+            for_each_lr_strip(
+                rows,
+                col,
+                block.width,
+                PC_WIENER_FILTER_TAP_RADIUS,
+                self.bit_depth.max_sample(),
+                |x, end, flat| {
+                    if flat.is_some() && !fill_flat {
+                        return Ok(());
+                    }
+                    let output = output
+                        .get_mut(x..)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    if let Some(value) = flat {
+                        return fill_lr_rect(output, output_stride, end - x, block.height, value);
+                    }
+                    let mut sub = block;
+                    sub.x += x;
+                    sub.width = end - x;
+                    let subclass_map = self.luma_lr_cell_subclasses(
+                        &sub,
+                        &window,
+                        qindex,
+                        PC_WIENER_FULL_CLASSES,
+                        filter_set_index,
+                        cell_subclasses,
+                    )?;
+                    let params = PcWienerFilter {
+                        width: sub.width,
+                        height: block.height,
+                        output_stride,
+                        bit_depth: self.bit_depth,
+                        filter_set_index,
+                        subclass_block_size: MI_SIZE,
+                        subclasses: subclass_map,
+                    };
+                    let padded_source =
+                        PcWienerPaddedSource::from_rows(rows, col + x, sub.width, block.height)
+                            .map_err(lr_window_error)?;
+                    pc_wiener_filter_block_padded(output, &params, &padded_source)
+                        .map_err(lr_window_error)
+                },
+            )?;
             self.preserve_lossless_lr_samples(
                 PlaneId::Y,
                 &block,
@@ -1587,6 +1720,7 @@ impl StripeChain<'_> {
         filter_set_index: usize,
         coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
         post_lr: &mut StripeOutputPlane,
+        fill_flat: bool,
     ) -> Result<()> {
         let block = clipped_lr_source_block(
             block,
@@ -1595,10 +1729,6 @@ impl StripeChain<'_> {
             self.luma_width,
             self.luma_height,
         )?;
-        let sample_count = block
-            .width
-            .checked_mul(block.height)
-            .ok_or_else(super::lr_pipeline_state_error)?;
         let bounds = crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, 0, 0);
         let block_x = usize_to_isize_recon(block.x, "luma LR block x")
             .map_err(|_| super::lr_pipeline_state_error())?;
@@ -1624,72 +1754,104 @@ impl StripeChain<'_> {
                 WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
             )
             .map_err(lr_window_error)?;
-            let cell_subclass_map = if num_classes > 1 {
-                Some(self.luma_lr_cell_subclasses(
-                    &block,
-                    &window,
-                    qindex,
-                    num_classes,
-                    filter_set_index,
-                    cell_subclasses,
-                )?)
-            } else {
-                None
-            };
-            let params = WienerNsLumaFilter {
-                width: block.width,
-                height: block.height,
-                output_stride,
-                bit_depth: self.bit_depth,
-                coeffs_by_class: coeffs,
-                subclasses: None,
-            };
             let (rows, col) = window
                 .tail(WIENER_NS_LUMA_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
-            let padded_source =
-                WienerNsLumaPaddedSource::from_rows(rows, col, block.width, block.height)
-                    .map_err(lr_window_error)?;
-            with_wiener_ns_luma_scratch::<u16, _>(sample_count, |scratch| match &mut output {
-                LrDestination::U16(output) => {
-                    if let Some(cell_subclasses) = cell_subclass_map {
-                        wiener_ns_filter_luma_block_padded_cells_into(
-                            output,
-                            &params,
-                            &padded_source,
-                            cell_subclasses,
-                            scratch,
-                        )
-                    } else {
-                        wiener_ns_filter_luma_block_padded_into(
-                            output,
-                            &params,
-                            &padded_source,
-                            scratch,
-                        )
+            for_each_lr_strip(
+                rows,
+                col,
+                block.width,
+                WIENER_NS_LUMA_TAP_RADIUS,
+                self.bit_depth.max_sample(),
+                |x, end, flat| {
+                    if flat.is_some() && !fill_flat {
+                        return Ok(());
                     }
-                }
-                LrDestination::U8(output) => {
-                    if let Some(cell_subclasses) = cell_subclass_map {
-                        wiener_ns_filter_luma_block_padded_cells_u8_into(
-                            output,
-                            &params,
-                            &padded_source,
-                            cell_subclasses,
-                            scratch,
-                        )
-                    } else {
-                        wiener_ns_filter_luma_block_padded_u8_into(
-                            output,
-                            &params,
-                            &padded_source,
-                            scratch,
-                        )
+                    let mut output = output.columns_from(x)?;
+                    let mut sub = block;
+                    sub.x += x;
+                    sub.width = end - x;
+                    if let Some(value) = flat {
+                        return match output {
+                            LrDestination::U16(output) => {
+                                fill_lr_rect(output, output_stride, sub.width, sub.height, value)
+                            }
+                            LrDestination::U8(output) => {
+                                let value = u8::try_from(value)
+                                    .map_err(|_| super::lr_pipeline_state_error())?;
+                                fill_lr_rect(output, output_stride, sub.width, sub.height, value)
+                            }
+                        };
                     }
-                }
-            })
-            .map_err(lr_window_error)?;
-            Ok(())
+                    let sample_count = sub
+                        .width
+                        .checked_mul(sub.height)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    let cell_subclass_map = if num_classes > 1 {
+                        Some(self.luma_lr_cell_subclasses(
+                            &sub,
+                            &window,
+                            qindex,
+                            num_classes,
+                            filter_set_index,
+                            cell_subclasses,
+                        )?)
+                    } else {
+                        None
+                    };
+                    let params = WienerNsLumaFilter {
+                        width: sub.width,
+                        height: sub.height,
+                        output_stride,
+                        bit_depth: self.bit_depth,
+                        coeffs_by_class: coeffs,
+                        subclasses: None,
+                    };
+                    let padded_source =
+                        WienerNsLumaPaddedSource::from_rows(rows, col + x, sub.width, sub.height)
+                            .map_err(lr_window_error)?;
+                    with_wiener_ns_luma_scratch::<u16, _>(sample_count, |scratch| match &mut output
+                    {
+                        LrDestination::U16(output) => {
+                            if let Some(cell_subclasses) = cell_subclass_map {
+                                wiener_ns_filter_luma_block_padded_cells_into(
+                                    output,
+                                    &params,
+                                    &padded_source,
+                                    cell_subclasses,
+                                    scratch,
+                                )
+                            } else {
+                                wiener_ns_filter_luma_block_padded_into(
+                                    output,
+                                    &params,
+                                    &padded_source,
+                                    scratch,
+                                )
+                            }
+                        }
+                        LrDestination::U8(output) => {
+                            if let Some(cell_subclasses) = cell_subclass_map {
+                                wiener_ns_filter_luma_block_padded_cells_u8_into(
+                                    output,
+                                    &params,
+                                    &padded_source,
+                                    cell_subclasses,
+                                    scratch,
+                                )
+                            } else {
+                                wiener_ns_filter_luma_block_padded_u8_into(
+                                    output,
+                                    &params,
+                                    &padded_source,
+                                    scratch,
+                                )
+                            }
+                        }
+                    })
+                    .map_err(lr_window_error)
+                },
+            )
         })?;
         match output {
             LrDestination::U16(output) => self.preserve_lossless_lr_samples(
