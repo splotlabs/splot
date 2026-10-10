@@ -124,12 +124,13 @@ pub(super) struct GdfTapWeights<const W: usize> {
     pub(super) weights: [Simd<i16, W>; 3],
 }
 
-/// Multiplier of the gradient sums before their error-table digit is taken.
+/// Multiplier of the gradient sums: twice the error-index scale, so that each
+/// error-table digit is the high half of a biased sum.
 pub(super) fn gdf_index_scale(block: &GdfBlock) -> i16 {
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
-        8
+        16
     } else {
-        5
+        10
     }
 }
 
@@ -299,7 +300,7 @@ fn tap_samples<const W: usize, const WIN: usize>(row: &[u16; WIN], col: usize) -
     Simd::<u16, W>::from_slice(&row[col..col + W]).cast()
 }
 
-/// Maps the biased gradient sums, already multiplied by `SCALE`, to the
+/// Maps the biased gradient sums, already multiplied by `2 * SCALE`, to the
 /// filtered sample; `swap` marks lanes whose first two sums are swapped.
 fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: usize>(
     base: Simd<u16, WIDTH>,
@@ -308,9 +309,9 @@ fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: 
     sums: [Simd<i32, WIDTH>; 3],
     swap: Option<Mask<i16, WIDTH>>,
 ) -> Simd<u16, WIDTH> {
-    let digit_offset = Simd::splat((1 << 14) + (SCALE << 15));
+    let digit_offset = Simd::splat((1 << 15) + (SCALE << 16));
     let [first, second, third] = sums.map(|sum| {
-        ((sum + digit_offset + (sum >> 31)) >> 15)
+        ((sum + (sum >> 31) + digit_offset) >> 16)
             .cast::<i16>()
             .simd_clamp(Simd::splat(0), Simd::splat(2 * SCALE as i16 - 1))
     });
@@ -328,6 +329,7 @@ fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: 
         (scaled_error + Simd::splat(1 << (rounding - 1)) + (scaled_error >> 15)) >> rounding
     };
     (base.cast::<i16>() + residual)
-        .simd_clamp(Simd::splat(0), Simd::splat(block.max_sample as i16))
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(block.max_sample as i16))
         .cast::<u16>()
 }
