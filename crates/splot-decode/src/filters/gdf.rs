@@ -501,8 +501,10 @@ struct GdfBlock {
 
 struct GdfUniformParams {
     class: usize,
-    /// Clip bound and the three weights of each tap, loaded together; the
-    /// weights and `bias` are scaled by `gdf_index_scale`.
+    /// Clip bound and its negation of each tap in every lane, loaded together.
+    bounds: [[Simd<i16, 8>; 2]; GDF_COORDS.len()],
+    /// The three weights of each tap, loaded together; they and `bias` are
+    /// scaled by `gdf_index_scale`.
     taps: [[i16; 4]; GDF_COORDS.len()],
     bias: [i32; 3],
     scale: i32,
@@ -517,14 +519,13 @@ impl GdfUniformParams {
             class,
             bias: GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale)),
             scale: i32::from(scale),
+            bounds: core::array::from_fn(|tap| {
+                let alpha = Simd::splat(alpha_table[tap][class] as i16);
+                [alpha, -alpha]
+            }),
             taps: core::array::from_fn(|tap| {
                 let weight = |index: usize| weight_table[index][tap][class] * scale;
-                [
-                    alpha_table[tap][class] as i16,
-                    weight(0),
-                    weight(1),
-                    weight(2),
-                ]
+                [weight(0), weight(1), weight(2), 0]
             }),
         }
     }
@@ -542,9 +543,12 @@ impl GdfUniformParams {
     ) {
         let weights = |k: usize| {
             let tap = Simd::from_array(self.taps[k]);
+            let [alpha, low] = self.bounds[k]
+                .map(|bound| Simd::from_array(core::array::from_fn(|lane| bound[lane % 8])));
             GdfTapWeights {
-                alpha: Simd::splat(tap[0]),
-                weights: core::array::from_fn(|index| Simd::splat(tap[index + 1])),
+                alpha,
+                low,
+                weights: core::array::from_fn(|index| Simd::splat(tap[index])),
             }
         };
         let [first, second, gradient] = self.bias.map(Simd::splat);

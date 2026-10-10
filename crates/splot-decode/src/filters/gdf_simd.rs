@@ -118,9 +118,10 @@ pub(super) const EVEN_CLASS_ZERO_WEIGHTS: u64 = zero_weight_taps(0b0101);
 /// Weights that are zero for classes 1 and 3.
 pub(super) const ODD_CLASS_ZERO_WEIGHTS: u64 = zero_weight_taps(0b1010);
 
-/// Clip bound and weights of one tap per lane.
+/// Clip bound, its negation and weights of one tap per lane.
 pub(super) struct GdfTapWeights<const W: usize> {
     pub(super) alpha: Simd<i16, W>,
+    pub(super) low: Simd<i16, W>,
     pub(super) weights: [Simd<i16, W>; 3],
 }
 
@@ -213,9 +214,15 @@ pub(super) fn mixed_class_rows<const W: usize, const WIN: usize>(
         let bytes = table.to_ne_bytes().swizzle_dyn(lane_bytes[k & 1]);
         Simd::<i16, 8>::from_ne_bytes(bytes).resize::<W>(0)
     };
-    let weights = |k| GdfTapWeights {
-        alpha: per_class(tap_pair(params.alpha, k).cast(), k),
-        weights: core::array::from_fn(|index| per_class(tap_pair(&params.weights[index], k), k)),
+    let weights = |k| {
+        let alpha = per_class(tap_pair(params.alpha, k).cast(), k);
+        GdfTapWeights {
+            alpha,
+            low: -alpha,
+            weights: core::array::from_fn(|index| {
+                per_class(tap_pair(&params.weights[index], k), k)
+            }),
+        }
     };
     let [first, second, gradient] = params.bias.map(Simd::splat);
     let odd_sums = odd.cast::<i32>();
@@ -256,7 +263,7 @@ pub(super) fn gdf_rows<
     for_each_gdf_tap!(K => {
         let (dy, dx) = GDF_COORDS[K];
         let tap = tap_weights(K);
-        let low = -tap.alpha;
+        let low = tap.low;
         let left = (TAP_REACH as isize - dx) as usize;
         let right = (TAP_REACH as isize + dx) as usize;
         for (row, center) in centers.iter().enumerate() {
