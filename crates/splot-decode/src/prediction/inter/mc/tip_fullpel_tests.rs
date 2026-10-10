@@ -334,7 +334,7 @@ fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitD
             let filter = InterpolationFilter::Bilinear;
             let (mut whole, mut centre) = ([0u16; 576], [u16::MAX; 576]);
             super::super::optflow::initial_luma_prediction::<_, 0>(
-                &sink, reference, rect, mv, filter, area, offset, false, &mut whole,
+                &sink, reference, rect, mv, filter, area, offset, None, &mut whole,
             )
             .expect("whole prediction");
             super::super::optflow::initial_luma_prediction::<_, 2>(
@@ -345,7 +345,7 @@ fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitD
                 filter,
                 area,
                 offset,
-                false,
+                None,
                 &mut centre,
             )
             .expect("centre prediction");

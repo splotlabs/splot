@@ -36,7 +36,7 @@ pub use fullpel_u8::{
 };
 use output::*;
 use slide::SlideLanes;
-pub use tip_overlap::subpel_predict_16x16_bilinear_horizontal_overlap_into;
+pub use tip_overlap::subpel_predict_12x12_bilinear_overlap_into;
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
 /// reference coordinates (`startX` / `startY` / `stepX` / `stepY` units).
 const SCALE_SUBPEL_BITS: u32 = 10;

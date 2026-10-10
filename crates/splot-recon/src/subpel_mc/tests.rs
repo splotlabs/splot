@@ -244,87 +244,74 @@ fn full_pel_into_clamps_vector_chunks_and_tail() {
 }
 
 #[test]
-fn bilinear_horizontal_overlap_matches_fresh_tip_predictor() {
-    let ref_w = 48usize;
-    let ref_h = 32usize;
-    let samples = (0..ref_w * ref_h)
+fn bilinear_12x12_overlap_matches_the_block_prediction() {
+    let (ref_w, ref_h) = (48usize, 40usize);
+    let wide = (0..ref_w * ref_h)
         .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
         .collect::<Vec<u16>>();
-    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-    for (h_phase, v_phase) in [(0, 0), (5, 0), (0, 7), (5, 7)] {
-        let previous = SubpelPredictParams {
-            interp: InterpolationFilter::Bilinear,
-            w: 16,
-            h: 16,
-            start_x: (4 << SCALE_SUBPEL_BITS) + (h_phase << 6),
-            start_y: (5 << SCALE_SUBPEL_BITS) + (v_phase << 6),
-            step_x: 1 << SCALE_SUBPEL_BITS,
-            step_y: 1 << SCALE_SUBPEL_BITS,
-            first_x: 5,
-            first_y: 6,
-            last_x: 19,
-            last_y: 20,
-            bit_depth: BitDepth::Ten,
-        };
-        let current = SubpelPredictParams {
-            start_x: previous.start_x + (8 << SCALE_SUBPEL_BITS),
-            first_x: previous.first_x + 8,
-            last_x: previous.last_x + 8,
-            ..previous
-        };
-        let mut reused = vec![0; previous.w * previous.h];
-        subpel_predict_block_into(&view, &previous, &mut reused).unwrap();
-        assert!(
-            subpel_predict_16x16_bilinear_horizontal_overlap_into(&view, &current, &mut reused)
-                .unwrap()
-        );
-
-        let mut expected = vec![0; current.w * current.h];
-        subpel_predict_block_into(&view, &current, &mut expected).unwrap();
-        assert_eq!(reused, expected, "phases ({h_phase}, {v_phase})");
-    }
+    let narrow = wide
+        .iter()
+        .map(|&sample| (sample >> 2) as u8)
+        .collect::<Vec<u8>>();
+    let view = ReferencePlaneView::new(&wide, ref_w, ref_h).unwrap();
+    check_bilinear_12x12(&view, BitDepth::Ten);
+    let view = ReferencePlaneView::new(&narrow, ref_w, ref_h).unwrap();
+    check_bilinear_12x12(&view, BitDepth::Eight);
 }
 
-#[test]
-fn bilinear_horizontal_overlap_clips_physical_plane_borders() {
-    let ref_w = 48usize;
-    let ref_h = 32usize;
-    let samples = (0..ref_w * ref_h)
-        .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
-        .collect::<Vec<u16>>();
-    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-
-    for (x0, y0) in [(-10, -2), (26, 18)] {
-        let previous = SubpelPredictParams {
+/// For every phase pair, predicts the 12x12 centres of TIP-like units at
+/// `(x, y)` (bounds `x - 3..=x + 11`): a unit clamped at the left plane edge
+/// goes to the generic path, and its right neighbour, a fresh unit, the
+/// fresh unit's right neighbour and a clipped unit go to the kernel.
+fn check_bilinear_12x12<T: ReconSample>(view: &ReferencePlaneView<'_, T>, bit_depth: BitDepth) {
+    let stride = 16;
+    let mut predicted = vec![0; 11 * stride + 12];
+    let kernel = |params: &SubpelPredictParams, predicted: &mut [u16], reuse| {
+        subpel_predict_12x12_bilinear_overlap_into(view, params, predicted, stride, reuse).unwrap()
+    };
+    let expect = |params: &SubpelPredictParams, predicted: &[u16]| {
+        let mut expected = vec![0; 12 * 12];
+        subpel_predict_block_into(view, params, &mut expected).unwrap();
+        for row in 0..12 {
+            let expected = &expected[row * 12..][..12];
+            assert_eq!(
+                &predicted[row * stride..][..12],
+                expected,
+                "{params:?} row {row}"
+            );
+        }
+    };
+    for (h_phase, v_phase) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
+        let unit = |x: i32, y: i32| SubpelPredictParams {
             interp: InterpolationFilter::Bilinear,
-            w: 16,
-            h: 16,
-            start_x: x0 * (1 << SCALE_SUBPEL_BITS) + (5 << 6),
-            start_y: y0 * (1 << SCALE_SUBPEL_BITS) + (7 << 6),
+            w: 12,
+            h: 12,
+            start_x: ((x - 2) << SCALE_SUBPEL_BITS) + (h_phase << 6),
+            start_y: ((y - 2) << SCALE_SUBPEL_BITS) + (v_phase << 6),
             step_x: 1 << SCALE_SUBPEL_BITS,
             step_y: 1 << SCALE_SUBPEL_BITS,
-            first_x: x0 + 1,
-            first_y: y0 + 1,
-            last_x: x0 + 15,
-            last_y: y0 + 15,
-            bit_depth: BitDepth::Ten,
+            first_x: (x - 3).max(0),
+            first_y: (y - 3).max(0),
+            last_x: x + 11,
+            last_y: y + 11,
+            bit_depth,
         };
-        let current = SubpelPredictParams {
-            start_x: previous.start_x + (8 << SCALE_SUBPEL_BITS),
-            first_x: previous.first_x + 8,
-            last_x: previous.last_x + 8,
-            ..previous
+        let edge = unit(-1, 8);
+        assert!(!kernel(&edge, &mut predicted, false));
+        subpel_predict_block_strided_into(view, &edge, &mut predicted, stride).unwrap();
+        for (params, reuse) in [
+            (unit(7, 8), true),
+            (unit(15, 9), false),
+            (unit(23, 9), true),
+        ] {
+            assert!(kernel(&params, &mut predicted, reuse));
+            expect(&params, &predicted);
+        }
+        let clipped = SubpelPredictParams {
+            last_x: 5 + 11,
+            ..unit(7, 8)
         };
-        let mut reused = vec![0; previous.w * previous.h];
-        subpel_predict_block_into(&view, &previous, &mut reused).unwrap();
-        assert!(
-            subpel_predict_16x16_bilinear_horizontal_overlap_into(&view, &current, &mut reused)
-                .unwrap()
-        );
-
-        let mut expected = vec![0; current.w * current.h];
-        subpel_predict_block_into(&view, &current, &mut expected).unwrap();
-        assert_eq!(reused, expected, "previous origin ({x0}, {y0})");
+        assert!(!kernel(&clipped, &mut predicted, false));
     }
 }
 

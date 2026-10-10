@@ -720,7 +720,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                         InterpolationFilter::Bilinear,
                         candidates.map(|mvs| (mvs[0], region_w, region_h)),
                         offset,
-                        false,
+                        None,
                         pred0,
                     )?;
                     initial_luma_prediction::<_, 0>(
@@ -731,7 +731,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                         InterpolationFilter::Bilinear,
                         candidates.map(|mvs| (mvs[1], region_w, region_h)),
                         offset,
-                        false,
+                        None,
                         pred1,
                     )?;
                     if block.optflow_sad_threshold.is_some_and(|threshold| {
@@ -876,7 +876,7 @@ pub(super) fn tip_unit_motion_cell<T: ReconSample>(
             InterpolationFilter::Bilinear,
             candidates.map(|mvs| (mvs[reference], 8, 8)),
             offset,
-            false,
+            None,
             prediction,
         )?;
     }
@@ -1084,6 +1084,9 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     })
 }
 
+/// Predicts the bilinear refine-MV or optical-flow luma area `rect`, `INSET`
+/// samples in from each edge. `tip_centre` is `Some(reuse)` for the 12x12 TIP
+/// refine-MV centre, which then takes the dedicated kernel when it applies.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
     sink: &WorkspaceSink<'_, '_, T>,
@@ -1093,7 +1096,7 @@ pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
     interp: InterpolationFilter,
     refinemv_area: Option<(Mv, usize, usize)>,
     offset: ByteOffset,
-    reuse_horizontal: bool,
+    tip_centre: Option<bool>,
     output: &mut [u16],
 ) -> Result<()> {
     let reference_size = reference.info().coded_luma_size();
@@ -1139,12 +1142,6 @@ pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
     };
     let (view, _, _) =
         reference.plane_view(PlaneId::Y, subpel_last_reference_row(&params), offset)?;
-    if reuse_horizontal {
-        let reused = subpel_predict_16x16_bilinear_horizontal_overlap_into(&view, &params, output)?;
-        if reused {
-            return Ok(());
-        }
-    }
     let (first, available) = (INSET * rect.luma_w + INSET, output.len());
     let output = output
         .get_mut(first..)
@@ -1152,6 +1149,11 @@ pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
             expected: first,
             actual: available,
         })?;
+    if let Some(reuse) = tip_centre
+        && subpel_predict_12x12_bilinear_overlap_into(&view, &params, output, rect.luma_w, reuse)?
+    {
+        return Ok(());
+    }
     subpel_predict_block_strided_into(&view, &params, output, rect.luma_w).map_err(Into::into)
 }
 

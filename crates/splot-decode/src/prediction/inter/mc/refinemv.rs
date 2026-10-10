@@ -164,7 +164,7 @@ fn search_refinemv<T: ReconSample>(
                     filter,
                     area,
                     offset,
-                    false,
+                    None,
                     prediction,
                 )?;
             } else {
@@ -176,7 +176,7 @@ fn search_refinemv<T: ReconSample>(
                     filter,
                     area,
                     offset,
-                    false,
+                    None,
                     prediction,
                 )?;
             }
@@ -510,6 +510,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     }
 }
 
+/// Refines one 8x8 TIP unit. The centre SAD and the centre optical flow read
+/// only the 12x12 centre of the 16x16 bilinear search area, so the centre is
+/// predicted first and the whole area only when the search goes on.
 pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
@@ -539,29 +542,49 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         col: candidate.col - SEARCH_PADDING,
     };
     let [pred0, pred1] = predictions;
-    super::optflow::initial_luma_prediction::<_, 0>(
-        sink,
-        block.reference0,
-        prediction_rect,
-        search_mv(candidates[0]),
-        InterpolationFilter::Bilinear,
-        Some((candidates[0], CENTER_SIZE, CENTER_SIZE)),
-        offset,
-        reuse_horizontal[0],
-        pred0,
-    )?;
-    super::optflow::initial_luma_prediction::<_, 0>(
-        sink,
-        block.reference1,
-        prediction_rect,
-        search_mv(candidates[1]),
-        InterpolationFilter::Bilinear,
-        Some((candidates[1], CENTER_SIZE, CENTER_SIZE)),
-        offset,
-        reuse_horizontal[1],
-        pred1,
-    )?;
-    let (dx, dy) = search_tip_refinemv_offset(pred0, pred1, sink.info().bit_depth());
+    let references = [block.reference0, block.reference1];
+    for ((reference, candidate), (prediction, reuse)) in references
+        .into_iter()
+        .zip(candidates)
+        .zip([&mut *pred0, &mut *pred1].into_iter().zip(reuse_horizontal))
+    {
+        super::optflow::initial_luma_prediction::<_, 2>(
+            sink,
+            reference,
+            prediction_rect,
+            search_mv(candidate),
+            InterpolationFilter::Bilinear,
+            Some((candidate, CENTER_SIZE, CENTER_SIZE)),
+            offset,
+            Some(reuse),
+            prediction,
+        )?;
+    }
+    let bit_depth = sink.info().bit_depth();
+    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth);
+    let center_sad = center - (center >> 3);
+    let (dx, dy) = if center_sad < 12 * 12 * 2 {
+        (0, 0)
+    } else {
+        for ((reference, candidate), prediction) in references
+            .into_iter()
+            .zip(candidates)
+            .zip([&mut *pred0, &mut *pred1])
+        {
+            super::optflow::initial_luma_prediction::<_, 0>(
+                sink,
+                reference,
+                prediction_rect,
+                search_mv(candidate),
+                InterpolationFilter::Bilinear,
+                Some((candidate, CENTER_SIZE, CENTER_SIZE)),
+                offset,
+                None,
+                prediction,
+            )?;
+        }
+        search_tip_refinemv_offset(pred0, pred1, center_sad, bit_depth)
+    };
     let base_mvs = [
         Mv {
             row: candidates[0].row + dy * 8,
@@ -596,17 +619,15 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
     .map(Some)
 }
 
+/// The § 7.13.3.6 neighbour search of a unit whose biased centre SAD
+/// `best_sad` did not keep the centre.
 fn search_tip_refinemv_offset(
     pred0: &[u16; TIP_PREDICTION_AREA],
     pred1: &[u16; TIP_PREDICTION_AREA],
+    mut best_sad: u32,
     bit_depth: splot_recon::BitDepth,
 ) -> (i32, i32) {
     let mut best = (0, 0);
-    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth);
-    let mut best_sad = center - (center >> 3);
-    if best_sad < 12 * 12 * 2 {
-        return best;
-    }
     for &(dy, dx) in &SEARCH_NEIGHBORS {
         let sad = tip_refinemv_sad(pred0, pred1, dx, dy, bit_depth);
         if sad < best_sad {
