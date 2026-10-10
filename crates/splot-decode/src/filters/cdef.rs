@@ -535,6 +535,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         geometry,
         (luma_start, luma_end),
     )?;
+    let mut fill_flat = initializations.map(|init| init == StripeInitialization::FullyOverwritten);
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         if target
             .as_ref()
@@ -542,6 +543,7 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             .is_some_and(|target| target.is_u16() && target.holds_deblocked())
         {
             initializations[plane.index()] = StripeInitialization::FullyOverwritten;
+            fill_flat[plane.index()] = false;
         }
     }
     StripePlane::preflight_copy_from_into(
@@ -617,6 +619,9 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         let whole_y = frame.deblocked_y;
         let whole_u = frame.deblocked_u;
         let whole_v = frame.deblocked_v;
+        let skip_grid_fits = lookup
+            .skip_grid
+            .is_none_or(|grid| (grid.rows, grid.cols) == (mi_rows, mi_cols));
         while r < r_end {
             let row_span = tile_span(lookup.tile_row_starts, r, mi_rows);
             let mut c = 0;
@@ -627,6 +632,16 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
                     continue;
                 };
                 let params = lookup.strengths.get(strength_index).copied();
+                if let Some(params) = params
+                    && skip_grid_fits
+                    && unit_end <= mi_cols
+                    && let Some(values) =
+                        flat_segment(lookup, params, (r, c), row_span, whole_y, whole_u, whole_v)
+                {
+                    fill_flat_segment(&mut frame, lookup, (r, c), values, fill_flat)?;
+                    c = unit_end;
+                    continue;
+                }
                 while c < unit_end.min(mi_cols) {
                     if let Some(ctx) = lookup.at(r, c, params, row_span)? {
                         compute_cdef_block::<T>(
@@ -647,6 +662,121 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
         }
     }
     Ok(frame)
+}
+
+/// The value each plane the unit's strengths filter holds over the 64x8 luma
+/// segment at `(r, c)` and its tap reach, or `None` unless each such plane is
+/// interior and flat. § 7.18.3 filters a flat interior block to itself, since
+/// `constrain(0)` is 0 for every strength and direction.
+#[inline(never)]
+fn flat_segment<S: ReconSample>(
+    lookup: &CdefBlockLookup<'_>,
+    params: CdefFrameParams,
+    (r, c): (usize, usize),
+    (row_start, row_end): (usize, usize),
+    y_plane: FramePlane<'_, S>,
+    u_plane: Option<FramePlane<'_, S>>,
+    v_plane: Option<FramePlane<'_, S>>,
+) -> Option<[Option<u16>; 3]> {
+    let (col_start, col_end) = tile_span(lookup.tile_col_starts, c, lookup.mi_cols);
+    let start = (col_start * MI_SIZE, row_start * MI_SIZE);
+    let end = (col_end * MI_SIZE, row_end * MI_SIZE);
+    let origin = (c * MI_SIZE, r * MI_SIZE);
+    let mut values = [None; 3];
+    if params.y_pri != 0 || params.y_sec != 0 {
+        values[0] = Some(flat_window::<S, 64, 8>(y_plane, origin, start, end)?);
+    }
+    if (params.uv_pri != 0 || params.uv_sec != 0)
+        && let (Some(u_plane), Some(v_plane)) = (u_plane, v_plane)
+    {
+        if (lookup.sub_x, lookup.sub_y) != (1, 1) {
+            return None;
+        }
+        let half = |(x, y): (usize, usize)| (x >> 1, y >> 1);
+        let (origin, start, end) = (half(origin), half(start), half(end));
+        values[1] = Some(flat_window::<S, 32, 4>(u_plane, origin, start, end)?);
+        values[2] = Some(flat_window::<S, 32, 4>(v_plane, origin, start, end)?);
+    }
+    Some(values)
+}
+
+/// The one value `plane` holds over the `W`x`H` region at `origin` and its tap
+/// reach, provided that reach lies inside the tile bounds `start..end`, the
+/// plane and its deblocked window.
+fn flat_window<S: ReconSample, const W: usize, const H: usize>(
+    plane: FramePlane<'_, S>,
+    (x, y): (usize, usize),
+    start: (usize, usize),
+    end: (usize, usize),
+) -> Option<u16> {
+    if x < start.0 + CDEF_TAP_REACH
+        || y < start.1 + CDEF_TAP_REACH
+        || x + W + CDEF_TAP_REACH > end.0.min(plane.width())
+        || y + H + CDEF_TAP_REACH > end.1.min(plane.frame_height())
+    {
+        return None;
+    }
+    let (left, top) = (x - CDEF_TAP_REACH, y - CDEF_TAP_REACH);
+    let value = plane.row(top)?.get(left)?.to_u16();
+    for row in top..top + H + 2 * CDEF_TAP_REACH {
+        let samples = plane.row(row)?.get(left..)?.get(..W + 2 * CDEF_TAP_REACH)?;
+        if samples.iter().fold(0, |acc, s| acc | (s.to_u16() ^ value)) != 0 {
+            return None;
+        }
+    }
+    Some(value)
+}
+
+/// Writes a flat segment's values into the planes `fill` marks, whose
+/// `FullyOverwritten` stripes hold no source samples yet.
+fn fill_flat_segment<T>(
+    frame: &mut CdefFrame<'_, T>,
+    lookup: &CdefBlockLookup<'_>,
+    (r, c): (usize, usize),
+    values: [Option<u16>; 3],
+    fill: [bool; 3],
+) -> Result<(), CdefError> {
+    let planes = [
+        Some(&mut frame.filtered_y),
+        frame.filtered_u.as_mut(),
+        frame.filtered_v.as_mut(),
+    ];
+    for (index, plane) in planes.into_iter().enumerate() {
+        let (Some(value), true, Some(plane)) = (values[index], fill[index], plane) else {
+            continue;
+        };
+        let (sx, sy) = if index == 0 {
+            (0, 0)
+        } else {
+            (lookup.sub_x, lookup.sub_y)
+        };
+        let width = CDEF_UNIT_MI * MI_SIZE;
+        fill_rect(
+            plane,
+            (c * MI_SIZE) >> sx,
+            (r * MI_SIZE) >> sy,
+            width >> sx,
+            8 >> sy,
+            value,
+        )?;
+    }
+    Ok(())
+}
+
+fn fill_rect(
+    plane: &mut StripePlane,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    value: u16,
+) -> Result<(), CdefError> {
+    let rect = PlaneRect::new(x, y, w, h).map_err(|_| CdefError::Geometry)?;
+    let (samples, stride) = plane.rect_mut(rect).ok_or(CdefError::Workspace)?;
+    for row in samples.chunks_mut(stride) {
+        row.get_mut(..w).ok_or(CdefError::Workspace)?.fill(value);
+    }
+    Ok(())
 }
 
 struct CdefBlockCtx {

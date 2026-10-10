@@ -451,3 +451,80 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
         );
     }
 }
+
+fn flat_segment_workspace(spike: Option<(usize, usize)>) -> CurrentFrameWorkspace<u16> {
+    let mut workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 144, 24);
+    for (plane, columns, rows) in [
+        (PlaneId::Y, 60..132, 4..20),
+        (PlaneId::U, 30..66, 2..10),
+        (PlaneId::V, 30..66, 2..10),
+    ] {
+        for y in rows {
+            for x in columns.clone() {
+                workspace
+                    .set_reconstructed_sample(plane, x, y, 512)
+                    .unwrap();
+            }
+        }
+    }
+    if let Some((x, y)) = spike {
+        workspace
+            .set_reconstructed_sample(PlaneId::Y, x, y, 528)
+            .unwrap();
+    }
+    workspace
+}
+
+#[test]
+fn flat_segment_fills_fully_overwritten_direct_output() {
+    let workspace = flat_segment_workspace(None);
+    let params = active_params();
+    let grid = constant_cdef_grid(6, 36, 0).unwrap();
+    let owned = owned_cdef_10bit(&workspace, &params, &grid, None, None);
+    assert_eq!(
+        direct_cdef_10bit(
+            &workspace,
+            &params,
+            &grid,
+            None,
+            None,
+            StripeInitialization::FullyOverwritten
+        ),
+        owned
+    );
+    for (plane, width, columns, rows) in [(0, 144, 64..128, 8..16), (1, 72, 32..64, 4..8)] {
+        for y in rows {
+            assert!(
+                owned[plane][y * width + columns.start..y * width + columns.end]
+                    .iter()
+                    .all(|&sample| sample == 512)
+            );
+        }
+    }
+}
+
+#[test]
+fn flat_segment_with_one_tap_reach_spike_is_filtered() {
+    let workspace = flat_segment_workspace(Some((62, 11)));
+    let grid = constant_cdef_grid(6, 36, 0).unwrap();
+    let owned = owned_cdef_10bit(&workspace, &active_params(), &grid, None, None);
+    assert_eq!(owned[PlaneId::Y.index()][11 * 144 + 64], 513);
+}
+
+#[test]
+fn flat_window_spans_exactly_the_tap_reach() {
+    let tile = ((0, 0), (144, 24));
+    let window = |spike: Option<(usize, usize)>, start: (usize, usize)| {
+        let workspace = flat_segment_workspace(spike);
+        let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
+        flat_window::<u16, 64, 8>(plane, (64, 8), start, tile.1)
+    };
+    assert_eq!(window(None, tile.0), Some(512));
+    for corner in [(62, 6), (129, 6), (62, 17), (129, 17)] {
+        assert_eq!(window(Some(corner), tile.0), None, "{corner:?}");
+    }
+    for outside in [(61, 11), (130, 11), (64, 5), (64, 18)] {
+        assert_eq!(window(Some(outside), tile.0), Some(512), "{outside:?}");
+    }
+    assert_eq!(window(None, (63, 0)), None);
+}
