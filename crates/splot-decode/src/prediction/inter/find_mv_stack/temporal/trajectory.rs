@@ -44,8 +44,9 @@ impl PackedTrajectoryMv {
         }
     }
 
+    /// Stored vectors are clamped to `REFMVS_LIMIT`, so only `INVALID` has this row.
     fn unpack(self) -> Option<Mv> {
-        (self != Self::INVALID).then_some(Mv {
+        (self.row != Self::INVALID.row).then_some(Mv {
             row: i32::from(self.row),
             col: i32::from(self.col),
         })
@@ -593,8 +594,8 @@ impl TrajectoryBand<'_> {
     /// The positions this band recorded at a band-relative cell; a record from
     /// an earlier band reads as none.
     fn positions_at_index(&self, reference: usize, index: usize) -> Option<TrajectoryPositions> {
-        let slots = *self.positions.get(self.position_slot(reference, index)?)?;
-        (slots.epoch == self.epoch).then_some(slots)
+        let slots = self.positions.get(self.position_slot(reference, index)?)?;
+        (slots.epoch == self.epoch && slots.mask != 0).then_some(*slots)
     }
 
     #[cfg(test)]
@@ -609,13 +610,12 @@ impl TrajectoryBand<'_> {
     /// than running off the grid, so callers carry that bound: `check_intersection`
     /// tests it outright, and `observe_projection_at` inherits it from the
     /// reference tables its `source` and `end` are resolved through.
-    fn trajectory_mv(&self, reference: usize, index: usize) -> Mv {
+    fn trajectory_mv(&self, reference: usize, index: usize) -> Option<Mv> {
         debug_assert!(reference < self.reference_count);
         self.fields
             .get(index * self.reference_count + reference)
             .copied()
             .and_then(PackedTrajectoryMv::unpack)
-            .unwrap_or(INVALID_TRAJECTORY_MV)
     }
 
     fn set_position_at(
@@ -634,10 +634,8 @@ impl TrajectoryBand<'_> {
             .and_then(|slot| self.positions.get_mut(slot))
         {
             if cell.epoch != epoch {
-                *cell = TrajectoryPositions {
-                    epoch,
-                    ..TrajectoryPositions::EMPTY
-                };
+                cell.epoch = epoch;
+                cell.mask = 0;
             }
             if let Some(slot) = cell.phases.get_mut(phase) {
                 *slot = position;
@@ -770,13 +768,12 @@ impl TrajectoryBand<'_> {
             let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
                 continue;
             };
-            if self.trajectory_mv(end, traj_index) != INVALID_TRAJECTORY_MV {
+            if self.trajectory_mv(end, traj_index).is_some() {
                 continue;
             }
-            let source_mv = self.trajectory_mv(source, traj_index);
-            if source_mv == INVALID_TRAJECTORY_MV {
+            let Some(source_mv) = self.trajectory_mv(source, traj_index) else {
                 continue;
-            }
+            };
             let bounds = self.position_bounds(trajectory);
             let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
             if let Some(position) = self
@@ -818,13 +815,12 @@ impl TrajectoryBand<'_> {
             let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
                 continue;
             };
-            if self.trajectory_mv(source, traj_index) != INVALID_TRAJECTORY_MV {
+            if self.trajectory_mv(source, traj_index).is_some() {
                 continue;
             }
-            let end_mv = self.trajectory_mv(end, traj_index);
-            if end_mv == INVALID_TRAJECTORY_MV {
+            let Some(end_mv) = self.trajectory_mv(end, traj_index) else {
                 continue;
-            }
+            };
             let source_mv = self.set_field_at(source, traj_index, subtract_mv(end_mv, mv));
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, source_mv)
@@ -1036,17 +1032,18 @@ fn fill_band_field_gaps(
     }
 }
 
+/// Operands are stored (`REFMVS_LIMIT`) or decompressed (at most 2048) vectors.
 fn add_mv(a: Mv, b: Mv) -> Mv {
     Mv {
-        row: a.row.saturating_add(b.row),
-        col: a.col.saturating_add(b.col),
+        row: a.row + b.row,
+        col: a.col + b.col,
     }
 }
 
 fn subtract_mv(a: Mv, b: Mv) -> Mv {
     Mv {
-        row: a.row.saturating_sub(b.row),
-        col: a.col.saturating_sub(b.col),
+        row: a.row - b.row,
+        col: a.col - b.col,
     }
 }
 
