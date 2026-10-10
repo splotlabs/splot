@@ -1328,7 +1328,8 @@ where
     Ok(value as u8)
 }
 
-/// `qval_given_tskip` offsets keyed by the raw 6x6 window tx-skip sum.
+/// `qval_given_tskip` offsets keyed by the raw 6x6 window tx-skip sum, folded
+/// into the rounding terms of [`rounded_lut_input`].
 type QvalOffsetsCache = [[i32; PC_WIENER_NUM_FEATURES]; PC_WIENER_WINDOW_POINTS + 1];
 
 fn prepare_qval_offsets_cache(
@@ -1336,14 +1337,29 @@ fn prepare_qval_offsets_cache(
     bit_depth: BitDepth,
     cache: &mut QvalOffsetsCache,
 ) -> Result<()> {
-    for (raw_tx_skip_sum, offsets) in cache.iter_mut().enumerate() {
+    let scale_shift = u32::from(bit_depth.bits() - 8);
+    let max_product = PC_WIENER_WINDOW_POINTS as i32
+        * 4
+        * i32::from(bit_depth.max_sample())
+        * PC_WIENER_NORMALIZER[1];
+    for (raw_tx_skip_sum, rounding) in cache.iter_mut().enumerate() {
         let normalized_tx_skip = i32::try_from(raw_tx_skip_sum)
             .ok()
             .and_then(|sum| sum.checked_mul(PC_WIENER_NORMALIZER[PC_WIENER_NUM_FEATURES]))
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "PC-Wiener tx-skip normalization",
             })?;
-        *offsets = qval_tx_skip_offsets(base_q_idx, normalized_tx_skip, bit_depth)?;
+        let offsets = qval_tx_skip_offsets(base_q_idx, normalized_tx_skip, bit_depth)?;
+        for (term, offset) in rounding.iter_mut().zip(offsets) {
+            *term = offset
+                .checked_add(1 << (PC_WIENER_PREC_FEATURE - 1))
+                .and_then(|value| value.checked_mul(1 << scale_shift))
+                .and_then(|value| value.checked_add((1 << scale_shift) >> 1))
+                .filter(|value| value.checked_add(max_product).is_some())
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener qval rounding term",
+                })?;
+        }
     }
     Ok(())
 }
@@ -1362,12 +1378,12 @@ fn finish_pc_wiener_classification(
             context: "PC-Wiener tx-skip normalization",
         })?;
     let offsets = qval_tx_skip_offsets(base_q_idx, normalized_tx_skip, bit_depth)?;
-    Ok(finish_pc_wiener_classification_with_offsets(
+    Ok(finish_pc_wiener_classification_with_lut_input(
         raw_features,
         raw_tx_skip_sum,
         normalized_tx_skip,
         bit_depth,
-        &offsets,
+        pc_wiener_lut_input(normalized_features(raw_features, bit_depth), &offsets),
     ))
 }
 
@@ -1392,12 +1408,12 @@ fn finish_pc_wiener_classification_cached(
             context: "PC-Wiener tx-skip normalization",
         })?;
     let normalized_tx_skip = raw_tx_skip_sum * PC_WIENER_NORMALIZER[PC_WIENER_NUM_FEATURES];
-    Ok(finish_pc_wiener_classification_with_offsets(
+    Ok(finish_pc_wiener_classification_with_lut_input(
         raw_features,
         raw_tx_skip_sum,
         normalized_tx_skip,
         bit_depth,
-        offsets,
+        rounded_lut_input(raw_features, offsets, bit_depth),
     ))
 }
 
@@ -1417,8 +1433,31 @@ fn finish_pc_wiener_class_cached(
             context: "PC-Wiener tx-skip cache index",
         });
     };
-    let lut_input = pc_wiener_lut_input(normalized_features(raw_features, bit_depth), offsets);
+    let lut_input = rounded_lut_input(raw_features, offsets, bit_depth);
     Ok(PC_WIENER_LUT_TO_CLASS[usize::from(lut_input)])
+}
+
+/// § 7.20.4 `lutInput` from raw box features and one [`QvalOffsetsCache`]
+/// entry.
+///
+/// For `v = nf[i] + get_qval_given_tskip(..)`, `Clip3(0, 255,
+/// Round2Signed(v, 14)) >> 5` equals `Clip3(0, 7, (v + 2^13) >> 19)`: a
+/// negative `v` yields zero either way. `nf[i]` is `(f * N + h) >> s`, and
+/// adding `(offset + 2^13) << s` before that shift is exact, so the cache
+/// holds `((offset + 2^13) << s) + h` and one `>> (19 + s)` remains.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn rounded_lut_input(
+    raw_features: [i32; PC_WIENER_NUM_FEATURES],
+    rounding: &[i32; PC_WIENER_NUM_FEATURES],
+    bit_depth: BitDepth,
+) -> u16 {
+    let shift = (PC_WIENER_PREC_FEATURE + 5) as i32 + i32::from(bit_depth.bits() - 8);
+    let [n0, n1, n2, n3, _] = PC_WIENER_NORMALIZER;
+    let products = Simd::from_array(raw_features) * Simd::from_array([n0, n1, n2, n3]);
+    let qval = ((products + Simd::from_array(*rounding)) >> Simd::splat(shift))
+        .simd_clamp(Simd::splat(0), Simd::splat(7));
+    (qval << Simd::from_array([9, 6, 3, 0])).reduce_sum() as u16
 }
 
 /// § 7.20.4 `nf[i] = Round2(f[i] * Pc_Wiener_Normalizer[i], BitDepth - 8)`.
@@ -1442,24 +1481,20 @@ fn normalized_features(
     reason = "measured PC-Wiener classification hot path"
 )]
 #[inline(always)]
-fn finish_pc_wiener_classification_with_offsets(
+fn finish_pc_wiener_classification_with_lut_input(
     raw_features: [i32; PC_WIENER_NUM_FEATURES],
     raw_tx_skip_sum: i32,
     normalized_tx_skip: i32,
     bit_depth: BitDepth,
-    offsets: &[i32; PC_WIENER_NUM_FEATURES],
+    lut_input: u16,
 ) -> PcWienerClassification {
-    let features = normalized_features(raw_features, bit_depth);
-    let lut_input = pc_wiener_lut_input(features, offsets);
-    let class = PC_WIENER_LUT_TO_CLASS[usize::from(lut_input)];
-
     PcWienerClassification {
         raw_features,
-        features,
+        features: normalized_features(raw_features, bit_depth),
         raw_tx_skip_sum,
         tx_skip: normalized_tx_skip,
         lut_input,
-        class,
+        class: PC_WIENER_LUT_TO_CLASS[usize::from(lut_input)],
     }
 }
 

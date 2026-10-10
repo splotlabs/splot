@@ -799,6 +799,42 @@ fn padded_and_callback_classify_grids_match_bit_exactly() {
 }
 
 #[test]
+fn rounded_lut_input_matches_spec_rounding_at_every_level_boundary() {
+    let [_, n1, n2, n3, _] = PC_WIENER_NORMALIZER;
+    let normalizers = [n1, n2, n3];
+    let mut cache = [[0; PC_WIENER_NUM_FEATURES]; PC_WIENER_WINDOW_POINTS + 1];
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let shift = 19 + i32::from(bit_depth.bits() - 8);
+        let max_raw = (PC_WIENER_WINDOW_POINTS * 4) as i32 * i32::from(bit_depth.max_sample());
+        for base_q_idx in 0..=255 {
+            prepare_qval_offsets_cache(base_q_idx, bit_depth, &mut cache).unwrap();
+            for (tx_skip, rounding) in cache.iter().enumerate() {
+                let offsets =
+                    qval_tx_skip_offsets(base_q_idx, 7 * tx_skip as i32, bit_depth).unwrap();
+                for level in 0..=8 {
+                    for delta in -1..=1 {
+                        let raw = |i: usize| {
+                            let target = (level << shift) - rounding[i + 1];
+                            (target / normalizers[i] + delta).clamp(0, max_raw)
+                        };
+                        let raw_features = [0, raw(0), raw(1), raw(2)];
+                        let spec = pc_wiener_lut_input(
+                            normalized_features(raw_features, bit_depth),
+                            &offsets,
+                        );
+                        assert_eq!(
+                            rounded_lut_input(raw_features, rounding, bit_depth),
+                            spec,
+                            "{bit_depth:?} q{base_q_idx} t{tx_skip} {raw_features:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
     let mut params = params(BitDepth::Ten);
     params.x = 40;
