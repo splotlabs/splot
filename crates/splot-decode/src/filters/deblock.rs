@@ -1448,7 +1448,8 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
 }
 
 struct StrengthCache {
-    values: [Cell<Option<(i32, i32)>>; max_quantizer_index(BitDepth::Ten) as usize + 1],
+    /// `(qThr + 1, side)` per qindex, zero until derived: qThr is never negative.
+    values: [Cell<(i32, i32)>; max_quantizer_index(BitDepth::Ten) as usize + 1],
     quant_delta: i32,
     df_delta_q: i32,
     bit_depth: BitDepth,
@@ -1457,7 +1458,7 @@ struct StrengthCache {
 impl StrengthCache {
     fn new(quant_delta: i32, df_delta_q: i32, bit_depth: BitDepth) -> Self {
         Self {
-            values: core::array::from_fn(|_| Cell::new(None)),
+            values: [const { Cell::new((0, 0)) }; max_quantizer_index(BitDepth::Ten) as usize + 1],
             quant_delta,
             df_delta_q,
             bit_depth,
@@ -1479,12 +1480,13 @@ impl StrengthCache {
         else {
             return calculate();
         };
-        if let Some(value) = entry.get() {
-            return value;
+        let (q_thr, side) = entry.get();
+        if q_thr != 0 {
+            return (q_thr - 1, side);
         }
-        let value = calculate();
-        entry.set(Some(value));
-        value
+        let (q_thr, side) = calculate();
+        entry.set((q_thr + 1, side));
+        (q_thr, side)
     }
 }
 
