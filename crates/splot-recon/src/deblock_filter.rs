@@ -1244,21 +1244,13 @@ impl<'a> EdgeKernel<'a> {
         )
     }
 
-    /// `p1 - q1 + 3 * (q0 - p0)` of the four lines, or `None` when § 7.17.7.1
-    /// leaves all four lines unchanged; the § 7.17.7.2 width then does not
-    /// matter.
+    /// Whether § 7.17.7.1 leaves all four lines with these
+    /// `p1 - q1 + 3 * (q0 - p0)` unchanged; the § 7.17.7.2 width then does
+    /// not matter.
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    fn line_deltas(
-        &self,
-        p1: Simd<i16, MI_LINES>,
-        p0: Simd<i16, MI_LINES>,
-        q0: Simd<i16, MI_LINES>,
-        q1: Simd<i16, MI_LINES>,
-    ) -> Option<Simd<i16, MI_LINES>> {
-        let deltas = p1 - q1 + (q0 - p0) * Simd::splat(3);
-        let unchanged = deltas.abs().simd_le(Simd::splat(self.noop_delta)).all();
-        (!unchanged).then_some(deltas)
+    fn unchanged(&self, deltas: Simd<i16, MI_LINES>) -> bool {
+        deltas.abs().simd_le(Simd::splat(self.noop_delta)).all()
     }
 
     /// The § 7.17.7.1 `deltaM2` of the four lines.
@@ -1279,16 +1271,15 @@ impl<'a> EdgeKernel<'a> {
             |start: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[start..start + 2 * EDGE_REACH]);
         let (s, t) = (line(0), line((MI_LINES - 1) * stride));
         let (u, v) = (line(stride), line(2 * stride));
-        let top = simd_swizzle!(s, u, [6, 7, 8, 9, 22, 23, 24, 25]);
-        let bottom = simd_swizzle!(v, t, [6, 7, 8, 9, 22, 23, 24, 25]);
-        let Some(deltas) = self.line_deltas(
-            simd_swizzle!(top, bottom, [0, 4, 8, 12]),
-            simd_swizzle!(top, bottom, [1, 5, 9, 13]),
-            simd_swizzle!(top, bottom, [2, 6, 10, 14]),
-            simd_swizzle!(top, bottom, [3, 7, 11, 15]),
-        ) else {
+        let taps = Simd::from_array([1, -3, 3, -1, 1, -3, 3, -1]);
+        let top = simd_swizzle!(s, u, [6, 7, 8, 9, 22, 23, 24, 25]) * taps;
+        let bottom = simd_swizzle!(v, t, [6, 7, 8, 9, 22, 23, 24, 25]) * taps;
+        let pairs = simd_swizzle!(top, bottom, [0, 2, 4, 6, 8, 10, 12, 14])
+            + simd_swizzle!(top, bottom, [1, 3, 5, 7, 9, 11, 13, 15]);
+        let deltas = simd_swizzle!(pairs, [0, 2, 4, 6]) + simd_swizzle!(pairs, [1, 3, 5, 7]);
+        if self.unchanged(deltas) {
             return 0;
-        };
+        }
         let centre = simd_swizzle!(s, t, [6, 7, 8, 9, 22, 23, 24, 25]);
         let left = simd_swizzle!(s, t, [5, 6, 7, 8, 21, 22, 23, 24]);
         let right = simd_swizzle!(s, t, [7, 8, 9, 10, 23, 24, 25, 26]);
@@ -1356,9 +1347,10 @@ impl<'a> EdgeKernel<'a> {
             E::widen::<MI_LINES>(&samples[start..start + MI_LINES])
         };
         let rows: [Simd<i16, MI_LINES>; 6] = core::array::from_fn(|k| row(samples, k as isize - 3));
-        let Some(deltas) = self.line_deltas(rows[1], rows[2], rows[3], rows[4]) else {
+        let deltas = rows[1] - rows[4] + (rows[3] - rows[2]) * Simd::splat(3);
+        if self.unchanged(deltas) {
             return 0;
-        };
+        }
         let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
         let (d0, d1, d2, d3) = (second(0), second(1), second(2), second(3));
         let pairs =
