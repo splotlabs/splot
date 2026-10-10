@@ -50,7 +50,8 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
         }
-        let translation = translational_compound_plane(sink, block, plane, sub_x, sub_y, offset)?;
+        let translation =
+            translational_compound_plane(sink.info(), block, plane, sub_x, sub_y, offset)?;
         let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
         let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
         if !compound_average_weights_are_uniform(

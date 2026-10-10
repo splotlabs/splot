@@ -847,7 +847,7 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
 }
 
 #[test]
-fn deferred_compound_prediction_reuses_poisoned_high_water_buffer() {
+fn staged_compound_prediction_leaves_a_poisoned_buffer_tail() {
     for format in [
         PixelFormat::Yuv420,
         PixelFormat::Yuv422,
@@ -859,7 +859,7 @@ fn deferred_compound_prediction_reuses_poisoned_high_water_buffer() {
                 let reference1 = flat_frame_with_format(format, 16, 16, 80, 110, 140);
                 let mut workspace = workspace_with_format(format, 16, 16);
                 let offset = ByteOffset::new(0);
-                let mut retained = None;
+                let mut samples = vec![u8::MAX; 3 * 16 * 16];
                 for size in [16, 8, 16] {
                     let rect = McBlockRect::from_luma_rect(0, 0, size, size);
                     let block = InterBlockParams::compound_average(
@@ -878,13 +878,8 @@ fn deferred_compound_prediction_reuses_poisoned_high_water_buffer() {
                     let motion = compound_block_motion_grid(&sink, block, Some(8), offset)
                         .expect("motion grid");
                     assert_eq!(motion.is_some(), use_optflow);
-                    let mut output = predict_compound_average_block(&sink, block, motion, offset)
-                        .expect("reused compound prediction");
-                    let storage = (output.samples.as_ptr(), output.samples.len());
-                    if let Some(retained) = retained {
-                        assert_eq!(storage, retained);
-                    }
-                    retained = Some(storage);
+                    predict_compound_from_grid(&sink, block, motion, offset, &mut samples)
+                        .expect("staged compound prediction");
                     let mut start = 0;
                     for ((plane, sub_x, sub_y), expected) in
                         mc_planes(format).into_iter().zip([60, 100, 130])
@@ -892,11 +887,11 @@ fn deferred_compound_prediction_reuses_poisoned_high_water_buffer() {
                         let end = start
                             + compound_plane_sample_count(rect, plane, sub_x, sub_y)
                                 .expect("plane sample count");
-                        assert!(output.samples[start..end].iter().all(|&v| v == expected));
+                        assert!(samples[start..end].iter().all(|&v| v == expected));
                         start = end;
                     }
-                    assert!(output.samples[start..].iter().all(|&v| v == u8::MAX));
-                    output.samples.fill(u8::MAX);
+                    assert!(samples[start..].iter().all(|&v| v == u8::MAX));
+                    samples.fill(u8::MAX);
                 }
             });
         }
@@ -936,20 +931,15 @@ fn deferred_compound_prediction_matches_direct_publication() {
         offset,
     )
     .expect("deferred TIP motion grid");
-    let output = predict_compound_average_block(
-        &super::WorkspaceSink::Frame(&mut deferred),
+    let deferred_mvs = predict_compound_into(
+        &mut super::WorkspaceSink::Frame(&mut deferred),
         compound,
         motion,
         offset,
     )
-    .expect("deferred TIP optical-flow prediction");
-    let deferred_mvs = output
-        .metadata
-        .stored_mvs_at_origin()
-        .expect("deferred stored motion vectors");
-    output
-        .publish(&mut super::WorkspaceSink::Frame(&mut deferred))
-        .expect("publish deferred TIP prediction");
+    .expect("deferred TIP optical-flow prediction")
+    .stored_mvs_at_origin()
+    .expect("deferred stored motion vectors");
 
     let mut short = [0u8; 95];
     let err = predict_compound_from_grid(
@@ -1474,23 +1464,28 @@ fn uniform_motion_direct_average_matches_materialized_path() {
     let run = |motion| {
         let mut workspace = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
         let mut output = vec![0; rect.luma_w * rect.luma_h];
-        predict_compound_plane_output(
-            &WorkspaceSink::Frame(&mut workspace),
+        let block = InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
-            PlaneId::Y,
             rect,
             mvs[0],
             mvs[1],
             InterpolationFilter::EightTap,
             CompoundBlend::average_with_implicit_mask(true),
-            [None; 2],
+        )
+        .into_compound()
+        .expect("compound block");
+        predict_compound_plane_output(
+            WorkspaceSink::Frame(&mut workspace).info(),
+            block,
+            PlaneId::Y,
             0,
             0,
             &mut None,
             Some(motion),
             ByteOffset::new(0),
             &mut output,
+            rect.luma_w,
         )
         .expect("compound motion prediction");
         output
@@ -1529,26 +1524,6 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
     let mut workspace = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
     let sink = WorkspaceSink::Frame(&mut workspace);
     let mut hybrid = vec![0u16; 16 * 8];
-    predict_compound_plane_output(
-        &sink,
-        ReferenceSamples::settled(&reference0),
-        ReferenceSamples::settled(&reference1),
-        PlaneId::Y,
-        rect,
-        mvs[0],
-        mvs[1],
-        InterpolationFilter::EightTap,
-        blend,
-        [None; 2],
-        0,
-        0,
-        &mut None,
-        Some(&grid),
-        ByteOffset::new(0),
-        &mut hybrid,
-    )
-    .expect("per-cell compound prediction");
-
     let block = InterBlockParams::compound_average(
         ReferenceSamples::settled(&reference0),
         ReferenceSamples::settled(&reference1),
@@ -1560,8 +1535,22 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
     )
     .into_compound()
     .expect("compound block");
+    predict_compound_plane_output(
+        sink.info(),
+        block,
+        PlaneId::Y,
+        0,
+        0,
+        &mut None,
+        Some(&grid),
+        ByteOffset::new(0),
+        &mut hybrid,
+        16,
+    )
+    .expect("per-cell compound prediction");
+
     let prediction = compound_plane_prediction_for_block(
-        &sink,
+        sink.info(),
         block,
         PlaneId::Y,
         0,
@@ -1665,12 +1654,7 @@ fn translational_compound_average_direct_output_matches_staged_publication() {
     );
 
     let mut staged = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
-    let output =
-        predict_compound_average_block(&WorkspaceSink::Frame(&mut staged), block, None, offset)
-            .expect("staged compound prediction");
-    output
-        .publish(&mut WorkspaceSink::Frame(&mut staged))
-        .expect("publish staged compound prediction");
+    publish_staged(&mut staged, block, offset);
 
     let direct = direct.freeze().expect("freeze direct workspace");
     let staged = staged.freeze().expect("freeze staged workspace");
@@ -1960,6 +1944,39 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
     assert!(y[4 * 16..].iter().all(|&sample| sample == 0));
 }
 
+#[test]
+fn packed_output_lands_in_strided_rows_and_rejects_short_storage() {
+    let packed = |stride: usize, len: usize| {
+        let mut output = vec![u8::MAX; len];
+        let result = with_packed_output(&mut output, stride, 3, 2, |block| {
+            block.copy_from_slice(&[1, 2, 3, 4, 5, 6]);
+            Ok(())
+        });
+        (result.is_ok(), output)
+    };
+    assert_eq!(packed(3, 6), (true, vec![1, 2, 3, 4, 5, 6]));
+    assert_eq!(packed(5, 8), (true, vec![1, 2, 3, 255, 255, 4, 5, 6]));
+    assert_eq!(packed(5, 7), (false, vec![u8::MAX; 7]));
+    assert_eq!(packed(2, 6), (false, vec![u8::MAX; 6]));
+}
+
+/// Predicts `block` through a packed temporary and publishes it into `workspace`.
+fn publish_staged<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: CompoundMcBlock<'_, T>,
+    offset: ByteOffset,
+) {
+    let mut sink = WorkspaceSink::Frame(workspace);
+    let len =
+        compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())
+            .expect("staged sample count");
+    let mut samples = vec![T::default(); len];
+    predict_compound_from_grid(&sink, block, None, offset, &mut samples)
+        .expect("staged compound prediction")
+        .publish(&samples, &mut sink)
+        .expect("publish staged compound prediction");
+}
+
 fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
     workspace_with_format(PixelFormat::Yuv420, width, height)
 }
@@ -2096,10 +2113,7 @@ fn assert_u8_direct_matches_staged(
     );
 
     let mut staged = workspace_for::<u8>(BitDepth::Eight, format, width, height);
-    predict_compound_average_block(&WorkspaceSink::Frame(&mut staged), block, None, offset)
-        .expect("staged compound prediction")
-        .publish(&mut WorkspaceSink::Frame(&mut staged))
-        .expect("publish staged compound prediction");
+    publish_staged(&mut staged, block, offset);
 
     let direct = direct.freeze().expect("freeze direct workspace");
     let staged = staged.freeze().expect("freeze staged workspace");

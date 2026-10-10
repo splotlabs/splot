@@ -1130,7 +1130,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<
     T: ReconSample,
     O: CompoundAverageOutput + Send,
 >(
-    sink: &WorkspaceSink<'_, '_, T>,
+    info: DecodedFrameInfo,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
@@ -1140,17 +1140,18 @@ pub(super) fn predict_uniform_motion_compound_average_into<
     cwp_weight: i16,
     offset: ByteOffset,
     output: &mut [O],
+    output_stride: usize,
 ) -> Result<bool> {
     let [cell] = motion.cells.as_slice() else {
         return Ok(false);
     };
-    let prediction = super::compound_subpel_plane(sink, block, plane, sub_x, sub_y, offset)?;
+    let prediction = super::compound_subpel_plane(info, block, plane, sub_x, sub_y, offset)?;
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
     if prediction.block_w > subblock_w || prediction.block_h > subblock_h {
         return Ok(false);
     }
-    let storage_luma_size = sink.info().storage_luma_size();
+    let storage_luma_size = info.storage_luma_size();
     let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let Some(scalings) = super::compound_uniform_scalings(
@@ -1175,7 +1176,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<
         return Ok(false);
     }
     let params = compound_optflow_subpel_params(
-        sink.info().bit_depth(),
+        info.bit_depth(),
         block.interp,
         subblock_reference_area_size(plane, subblock_w, subblock_h),
         sub_x,
@@ -1190,7 +1191,6 @@ pub(super) fn predict_uniform_motion_compound_average_into<
         prediction.block_w,
         prediction.block_h,
     );
-    let output_stride = prediction.block_w;
     let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
     let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     super::predict_compound_average_into(
@@ -1210,7 +1210,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
     T: ReconSample,
     O: CompoundAverageOutput + Send,
 >(
-    sink: &WorkspaceSink<'_, '_, T>,
+    info: DecodedFrameInfo,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
@@ -1220,30 +1220,32 @@ pub(super) fn predict_motion_grid_compound_average_into<
     cwp_weight: i16,
     offset: ByteOffset,
     output: &mut [O],
+    output_stride: usize,
 ) -> Result<bool> {
     if motion.cells.as_slice().len() == 1 {
         return Ok(false);
     }
-    let prediction = super::compound_subpel_plane(sink, block, plane, sub_x, sub_y, offset)?;
-    let sample_count = prediction.block_w.checked_mul(prediction.block_h).ok_or(
-        ReconError::ArithmeticOverflow {
+    let prediction = super::compound_subpel_plane(info, block, plane, sub_x, sub_y, offset)?;
+    let sample_count = (prediction.block_h.saturating_sub(1))
+        .checked_mul(output_stride)
+        .and_then(|rows| rows.checked_add(prediction.block_w))
+        .ok_or(ReconError::ArithmeticOverflow {
             context: "TIP batched compound output sample count",
-        },
-    )?;
-    if output.len() != sample_count {
+        })?;
+    if output_stride < prediction.block_w || output.len() < sample_count {
         return Err(ReconError::BufferLengthMismatch {
             expected: sample_count,
             actual: output.len(),
         }
         .into());
     }
-    let storage_luma_size = sink.info().storage_luma_size();
+    let storage_luma_size = info.storage_luma_size();
     let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
     let subblock_area = subblock_reference_area_size(plane, subblock_w, subblock_h);
-    let bit_depth = sink.info().bit_depth();
+    let bit_depth = info.bit_depth();
     let uniform_everywhere = !implicit_mask
         || cwp_weight != CWP_EQUAL
         || prediction.scalings.into_iter().any(PlaneScaling::is_scaled);
@@ -1316,7 +1318,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     ImplicitMaskBlend::new(bit_depth, frame_w, frame_h),
                     (sub_x, sub_y),
                     &mut output[col..],
-                    prediction.block_w,
+                    output_stride,
                 )?;
                 continue;
             }
@@ -1336,7 +1338,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 cwp_weight,
                 intermediate_scratch,
                 &mut output[col..],
-                prediction.block_w,
+                output_stride,
             )? {
                 continue;
             }
@@ -1347,7 +1349,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 Some(&mut pred_scratch[0]),
                 Some(intermediate_scratch),
                 &mut output[col..],
-                prediction.block_w,
+                output_stride,
             )?;
         }
         Ok(())
@@ -1358,7 +1360,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
         .is_some_and(|samples| samples >= 256 * 256)
         && splot_parallel::on_worker_pool();
     if parallel {
-        let row_samples = prediction.block_w * subblock_h;
+        let row_samples = output_stride * subblock_h;
         output
             .par_chunks_mut(row_samples)
             .enumerate()
@@ -1378,7 +1380,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
     let mut pred_scratch = [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
     let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
-        let output_start = row * prediction.block_w;
+        let output_start = row * output_stride;
         process_row(
             cell_row,
             row,
@@ -1545,7 +1547,7 @@ fn blend_implicit_mask_region<T: ReconSample>(
 }
 
 pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
+    info: DecodedFrameInfo,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
@@ -1553,11 +1555,11 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     motion: &CompoundMotionGrid,
     offset: ByteOffset,
 ) -> Result<CompoundPlanePrediction> {
-    let prediction = super::compound_subpel_plane(sink, block, plane, sub_x, sub_y, offset)?;
+    let prediction = super::compound_subpel_plane(info, block, plane, sub_x, sub_y, offset)?;
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
     let subblock_area = subblock_reference_area_size(plane, subblock_w, subblock_h);
-    let bit_depth = sink.info().bit_depth();
+    let bit_depth = info.bit_depth();
     let [mut pred0, mut pred1] =
         super::take_compound_prediction_buffers(prediction.block_w * prediction.block_h);
 
