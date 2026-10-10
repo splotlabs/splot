@@ -560,7 +560,8 @@ impl<'a> SymbolDecoder<'a> {
 
     /// Dispatches on the row length so each arity's search loop and
     /// adaptation are unrolled with constant bounds.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
     fn read_symbol_row<T: CdfStorage>(&mut self, cdf: &mut [T]) -> Result<Symbol> {
         match cdf.len() {
             3 => self.read_symbol_arity::<T, 2>(cdf),
