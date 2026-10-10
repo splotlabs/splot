@@ -34,7 +34,7 @@ fn overlay_mi_grid(
     mi_cols: usize,
     sub_x: usize,
     sub_y: usize,
-    storage: &mut (Vec<grid::ChromaMiCell>, Vec<u8>),
+    storage: &mut (Vec<grid::ChromaMiCell>, Vec<u64>),
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let mut order = RowOrder::default();
     order.sort(blocks.blocks.iter().map(|record| &record.block), mi_rows)?;
@@ -899,7 +899,7 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
         window: Window::default(),
         fully_covered: false,
         cells,
-        candidates: vec![0; 4 * 16],
+        candidates: vec![0; 4 * 4 * grid::flag_words(16)],
     }));
     MiGrid::new(storage, None, blocks, &EMPTY_CHROMA_RECORDS)
 }
@@ -987,6 +987,49 @@ fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
 }
 
 #[test]
+fn twin_chroma_record_lists_give_v_the_grid_of_u() {
+    let (mi_rows, mi_cols) = (16, 80);
+    let luma = deblock_blocks(mi_rows, mi_cols);
+    let mut chroma = ChromaDeblockRecords::default();
+    for (index, block) in luma.iter().enumerate() {
+        let block = DeblockBlock {
+            n4w: 4 + 2 * (index % 3) as u32,
+            chroma_transform_only: index % 4 == 1,
+            ..*block
+        };
+        if index % 3 == 0 {
+            chroma.push_both(block);
+        } else {
+            chroma.push(0, block);
+            chroma.push(1, block);
+        }
+    }
+    assert!(chroma.uv_twins());
+    let whole = build_mi_grid(&luma, mi_rows, mi_cols, &mut DeblockGridStorage::default()).unwrap();
+    let overlays = [0, 1].map(|plane| {
+        let storage = &mut DeblockGridStorage::default().chroma[0];
+        overlay_mi_grid(&whole, &chroma, plane, mi_rows, mi_cols, 1, 1, storage).unwrap()
+    });
+    assert_eq!(overlays[0].candidates, overlays[1].candidates);
+    let edges = |plane: usize| {
+        let grid = MiGrid::new(&whole, Some(&overlays[plane]), &luma, &chroma);
+        let position = |block: &DeblockBlock| {
+            let mut records = chroma.iter_plane(plane);
+            records.position(|(_, record)| core::ptr::eq(record, block))
+        };
+        (0..mi_rows * mi_cols)
+            .map(|cell| {
+                let edge = grid.get_edge(cell / mi_cols, cell % mi_cols).unwrap();
+                (position(edge.block), edge.chroma_transform.map(position))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(edges(0), edges(1));
+    chroma.push(1, luma[0]);
+    assert!(!chroma.uv_twins());
+}
+
+#[test]
 fn sliding_grid_windows_match_the_whole_frame_grid() {
     let block = |r: usize, c: usize, n4w: usize, n4h: usize, transform_only| DeblockBlock {
         r: r as u32,
@@ -1031,7 +1074,11 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
     let mut base = MiGridStorage::new(mi_cols, &mut storage);
     let mut overlays =
         [0, 1].map(|plane| ChromaMiGridStorage::new(mi_cols, (1, 1), &mut storage.chroma[plane]));
-    let covered = |flags: &[u8], index: usize| flags[index] & COVERED_CANDIDATE != 0;
+    let words = grid::flag_words(mi_cols);
+    let covered = |flags: &[u64], index: usize| {
+        let (at, col) = (index / mi_cols, index % mi_cols);
+        flags[(at * 4 + grid::COVERED_PLANE) * words + col / 64] >> (col % 64) & 1 != 0
+    };
     for window in [0..4, 2..6, 4..8, 6..9, 2..6, 4..9] {
         base.fill(&luma, &order[0], mi_rows, &window).unwrap();
         assert_eq!(base.fully_covered, window.end <= 6, "window {window:?}");

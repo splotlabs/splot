@@ -15,13 +15,7 @@ use splot_recon::{
     deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
     deblock_sample_filter_strided_4, deblock_side_threshold_index, max_quantizer_index,
 };
-use std::{
-    cell::Cell,
-    num::NonZeroUsize,
-    ops::Range,
-    simd::{Simd, cmp::SimdPartialEq},
-    sync::Arc,
-};
+use std::{cell::Cell, num::NonZeroUsize, ops::Range, sync::Arc};
 
 mod grid;
 
@@ -31,18 +25,16 @@ const HORIZONTAL_EDGE_REACH_MI: usize = 2;
 
 #[cfg(test)]
 use grid::MiCell;
-use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, RowOrder};
+use grid::{
+    COVERED_PLANE, ChromaMiGridStorage, HORIZONTAL_PLANE, MiGrid, MiGridStorage, RowOrder,
+    SUB_PU_PLANE, VERTICAL_PLANE, flag_word,
+};
 
 use crate::pipeline::frame_progress::FrontierRows;
 
 const MI_SIZE: usize = 4;
 
 const SB_SIZE: usize = 64;
-
-const VERTICAL_TX_CANDIDATE: u8 = 1;
-const HORIZONTAL_TX_CANDIDATE: u8 = 2;
-const SUB_PU_CANDIDATE: u8 = 4;
-const COVERED_CANDIDATE: u8 = 8;
 
 /// Mode-info positions and transform sizes are stored narrow: a frame holds
 /// one record per transform block, so the record size is the frame's
@@ -83,7 +75,7 @@ impl DeblockSubPuSize {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DeblockBlock {
     pub(crate) r: u32,
     pub(crate) c: u32,
@@ -162,6 +154,18 @@ impl ChromaDeblockRecords {
 
     fn get(&self, index: usize) -> Option<&DeblockBlock> {
         self.blocks.get(index).map(|record| &record.block)
+    }
+
+    /// Whether the U and V record lists match record for record. Each plane's
+    /// grid is then the same function of its list, so V can read U's grid.
+    fn uv_twins(&self) -> bool {
+        let plane = |mask: u8| {
+            self.blocks
+                .iter()
+                .filter(move |record| record.planes & mask != 0)
+                .map(|record| &record.block)
+        };
+        plane(Self::U).eq(plane(Self::V))
     }
 
     pub(crate) fn iter_plane(&self, plane: usize) -> impl Iterator<Item = (usize, &DeblockBlock)> {
@@ -686,10 +690,11 @@ impl<'a> FrameDeblock<'a> {
         Ok(())
     }
 
-    /// The mode-info grid one plane's edges read.
+    /// The mode-info grid one plane's edges read. An active V plane without a
+    /// grid of its own reads U's (see [`ChromaDeblockRecords::uv_twins`]).
     fn plane_grid(&self, plane: usize) -> MiGrid<'_> {
         let chroma = match plane.checked_sub(1) {
-            Some(chroma) => self.chroma[chroma].as_ref(),
+            Some(chroma) => self.chroma[chroma].as_ref().or(self.chroma[0].as_ref()),
             None => None,
         };
         MiGrid::new(
@@ -804,8 +809,9 @@ fn take_grids(
     let mut order = core::mem::take(&mut storage.order);
     order[0].sort(blocks.iter(), mi_rows)?;
     let mut chroma = [None, None];
+    let v_shares_u = filter.apply_deblocking_filter[2..] == [true; 2] && chroma_blocks.uv_twins();
     for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
-        if filter.apply_deblocking_filter[plane + 2] {
+        if filter.apply_deblocking_filter[plane + 2] && !(plane == 1 && v_shares_u) {
             *slot = Some(ChromaMiGridStorage::new(
                 mi_cols,
                 chroma_subsampling,
@@ -1013,7 +1019,9 @@ const VERTICAL_WALK_ROWS: usize = 16;
 /// Filters one plane pass over its candidate edges: row by row for the horizontal
 /// pass, column by column inside [`VERTICAL_WALK_ROWS`] blocks for the vertical
 /// one. § 7.17.1 lets either pass run its edges in any order, and row 0 and
-/// column 0 hold no on-screen edge of their pass.
+/// column 0 hold no on-screen edge of their pass. A visit repeats its outcome
+/// over the next `repeated` rows of its column, which all follow it and so all
+/// hold candidate bits.
 #[inline(never)]
 fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, const PASS: usize>(
     band: &mut PlaneBand<'_, T>,
@@ -1114,10 +1122,11 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
     }
     let block_rows = if PASS == 0 { VERTICAL_WALK_ROWS } else { 1 };
     let subsampling = if PLANE == 0 { (0, 0) } else { (sub_x, sub_y) };
-    let mut masks = [0u32; VERTICAL_WALK_ROWS];
-    let mut follows = [0u32; VERTICAL_WALK_ROWS];
+    let mut masks = [0u64; VERTICAL_WALK_ROWS];
+    let mut follows = [0u64; VERTICAL_WALK_ROWS];
     for block_start in (first..end).step_by(row_step * block_rows) {
         let rows = (block_start..end).step_by(row_step).take(block_rows);
+        let live_rows = (1u32 << rows.len()) - 1;
         let row_tile_edge = PASS == 1 && starts_tile(tile_starts, block_start);
         let mut carry = 0;
         for start in (0..mi_cols).step_by(CANDIDATE_CHUNK) {
@@ -1149,7 +1158,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
                 let tile_edge = row_tile_edge || PASS == 0 && starts_tile(tile_starts, col);
                 any &= any - 1;
                 if PASS == 1 {
-                    let follow = u64::from(follows[0]) >> bit;
+                    let follow = follows[0] >> bit;
                     let lanes = if step == 1 {
                         u64::MAX
                     } else {
@@ -1157,27 +1166,24 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
                     };
                     let chain = (!(follow >> step) & lanes).trailing_zeros() as usize / step;
                     let repeated = visit(block_start, col, tile_edge, follow & 1 != 0, chain)?;
-                    any &= !((((1u64 << (repeated * step)) - 1) << (bit + 1)) as u32);
+                    any &= !(((1u64 << (repeated * step)) - 1) << bit << 1);
                     continue;
                 }
-                let column = follows
-                    .iter()
-                    .zip(rows.clone())
-                    .enumerate()
-                    .fold(0u32, |column, (i, (follow, _))| {
-                        column | (follow >> bit & 1) << i
+                let (mut present, column) =
+                    (0..VERTICAL_WALK_ROWS).fold((0u32, 0u32), |(present, column), i| {
+                        (
+                            present | ((masks[i] >> bit & 1) as u32) << i,
+                            column | ((follows[i] >> bit & 1) as u32) << i,
+                        )
                     });
-                let mut repeated = 0;
-                for (i, (mask, r)) in masks.iter().zip(rows.clone()).enumerate() {
-                    if mask >> bit & 1 == 0 {
-                        continue;
-                    }
-                    if repeated > 0 {
-                        repeated -= 1;
-                        continue;
-                    }
+                present &= live_rows;
+                let column = column & live_rows;
+                while present != 0 {
+                    let i = present.trailing_zeros() as usize;
                     let chain = (!(column >> (i + 1))).trailing_zeros() as usize;
-                    repeated = visit(r, col, tile_edge, column >> i & 1 != 0, chain)?;
+                    let r = block_start + i * row_step;
+                    let repeated = visit(r, col, tile_edge, column >> i & 1 != 0, chain)?;
+                    present &= !((2u32 << (i + repeated)) - 1);
                 }
             }
         }
@@ -1186,13 +1192,10 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
 }
 
 /// Mode-info columns one candidate mask covers.
-const CANDIDATE_CHUNK: usize = 32;
+const CANDIDATE_CHUNK: usize = 64;
 
 /// The per-cell `is_candidate` test for the `CANDIDATE_CHUNK` columns of `row` from
 /// `start` on the pass's column step, as a bitmask.
-///
-/// The flag terms are OR-ed as bytes before one compare: a mask OR-ed from
-/// several compares lowers to a lane-by-lane bitmask on NEON.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn candidate_mask<const PASS: usize>(
@@ -1200,68 +1203,42 @@ fn candidate_mask<const PASS: usize>(
     row: usize,
     start: usize,
     plane_pass: &PlanePass,
-) -> Result<u32, DeblockError> {
+) -> Result<u64, DeblockError> {
     let flags = grid
         .candidate_row(row)
         .ok_or(DeblockError::UncoveredMi { row, col: start })?;
-    let values = flag_chunk(flags, start);
-    let zero = Simd::splat(0);
+    let word = start / CANDIDATE_CHUNK;
     let edge = if PASS == 0 {
-        VERTICAL_TX_CANDIDATE
+        VERTICAL_PLANE
     } else {
-        HORIZONTAL_TX_CANDIDATE
+        HORIZONTAL_PLANE
     };
-    let sub_pu = if plane_pass.allow_df_sub_pu {
-        SUB_PU_CANDIDATE
-    } else {
-        0
-    };
-    let uncovered = if grid.fully_covered {
-        0
-    } else {
-        COVERED_CANDIDATE
-    };
-    let mut eligible = (values & Simd::splat(edge | sub_pu)) | (!values & Simd::splat(uncovered));
+    let mut mask = flag_word(flags, edge, word);
+    if plane_pass.allow_df_sub_pu {
+        mask |= flag_word(flags, SUB_PU_PLANE, word);
+    }
+    if !grid.fully_covered {
+        mask |= !flag_word(flags, COVERED_PLANE, word);
+    }
     if PASS == 0 && plane_pass.plane_sub_x != 0 {
-        let left = if let Some(left) = start.checked_sub(1) {
-            flag_chunk(flags, left)
-        } else {
-            let mut shifted = [0; CANDIDATE_CHUNK];
-            let len = grid.base.mi_cols.min(CANDIDATE_CHUNK - 1);
-            shifted[1..=len].copy_from_slice(&flags[..len]);
-            Simd::from_array(shifted)
-        };
-        eligible |= left & Simd::splat(VERTICAL_TX_CANDIDATE);
+        let carried = word
+            .checked_sub(1)
+            .map_or(0, |left| flag_word(flags, VERTICAL_PLANE, left) >> 63);
+        mask |= flag_word(flags, VERTICAL_PLANE, word) << 1 | carried;
     }
     if PASS == 1 && plane_pass.plane_sub_y != 0 && row != 0 {
-        eligible |= match grid.candidate_row(row - 1) {
-            Some(above) => flag_chunk(above, start) & Simd::splat(HORIZONTAL_TX_CANDIDATE),
-            None => Simd::splat(u8::MAX),
-        };
+        mask |= grid
+            .candidate_row(row - 1)
+            .map_or(u64::MAX, |above| flag_word(above, HORIZONTAL_PLANE, word));
     }
-    let mut mask = eligible.simd_ne(zero).to_bitmask() as u32;
     let len = grid.base.mi_cols.saturating_sub(start);
     if len < CANDIDATE_CHUNK {
         mask &= (1 << len) - 1;
     }
     if plane_pass.plane_sub_x != 0 {
-        mask &= 0x5555_5555;
+        mask &= 0x5555_5555_5555_5555;
     }
     Ok(mask)
-}
-
-/// The `CANDIDATE_CHUNK` edge flags of one row from column `from`, zero past
-/// its end.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
-fn flag_chunk(flags: &[u8], from: usize) -> Simd<u8, CANDIDATE_CHUNK> {
-    if let Some(chunk) = flags.get(from..from + CANDIDATE_CHUNK) {
-        return Simd::from_slice(chunk);
-    }
-    let mut padded = [0; CANDIDATE_CHUNK];
-    let tail = flags.get(from..).unwrap_or_default();
-    padded[..tail.len()].copy_from_slice(tail);
-    Simd::from_array(padded)
 }
 
 /// The bitmask of the `CANDIDATE_CHUNK` columns of `row` from `start` whose
@@ -1274,7 +1251,8 @@ fn flag_chunk(flags: &[u8], from: usize) -> Simd<u8, CANDIDATE_CHUNK> {
 /// direction between them are covered by the same records. A chroma cell
 /// spans `1 << sub` mode-info units in each direction and a chroma record
 /// starts or ends anywhere inside one, so the flags are read over every unit
-/// of the two cells on each side of the edge.
+/// of the two cells on each side of the edge; columns `start - 2` and
+/// `start - 1` sit on bits 0 and 1 of `before`.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn same_records_mask<const PASS: usize>(
@@ -1282,38 +1260,35 @@ fn same_records_mask<const PASS: usize>(
     row: usize,
     start: usize,
     (sub_x, sub_y): (usize, usize),
-) -> u32 {
+) -> u64 {
     let (unit_x, unit_y) = (1 << sub_x, 1 << sub_y);
-    let (flag, above, left) = if PASS == 0 {
-        (HORIZONTAL_TX_CANDIDATE, unit_y - 1, unit_x)
+    let (plane, above, left) = if PASS == 0 {
+        (HORIZONTAL_PLANE, unit_y - 1, unit_x)
     } else {
-        (VERTICAL_TX_CANDIDATE, unit_y, unit_x - 1)
+        (VERTICAL_PLANE, unit_y, unit_x - 1)
     };
     let Some(first) = row.checked_sub(above) else {
         return 0;
     };
-    let (mut chunk, mut before) = (Simd::splat(0), 0u64);
+    let word = start / CANDIDATE_CHUNK;
+    let back_bits = (1u64 << left) - 1;
+    let (mut flagged, mut before) = (0u64, 0u64);
     for row in first..row + unit_y {
         let Some(flags) = grid.candidate_row(row) else {
             return 0;
         };
-        chunk |= flag_chunk(flags, start);
-        for back in 1..=left {
-            let flagged = start
-                .checked_sub(back)
-                .and_then(|col| flags.get(col))
-                .is_some_and(|flags| flags & flag != 0);
-            before |= u64::from(flagged) << (2 - back);
+        flagged |= flag_word(flags, plane, word);
+        if let Some(left_word) = word.checked_sub(1) {
+            before |= (flag_word(flags, plane, left_word) >> 62) & (back_bits << (2 - left));
         }
     }
-    let flagged = (chunk & Simd::splat(flag)).simd_ne(Simd::splat(0));
-    let near = u64::from(flagged.to_bitmask() as u32) << 2 | before;
+    let near = u128::from(flagged) << 2 | u128::from(before);
     let right = unit_x - 1;
     let mut across = 0;
     for offset in 2 - left..=2 + right {
         across |= near >> offset;
     }
-    !(across as u32) & u32::MAX >> right
+    !(across as u64) & u64::MAX >> right
 }
 
 struct PlaneRows<'samples, T> {
