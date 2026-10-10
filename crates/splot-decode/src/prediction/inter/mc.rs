@@ -690,13 +690,13 @@ fn compound_output_samples<'a, T: ReconSample>(
     let sample_count =
         compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
     let available_samples = samples.len();
-    samples.get_mut(..sample_count).ok_or(
+    samples.get_mut(..sample_count).ok_or_else(|| {
         ReconError::BufferLengthMismatch {
             expected: sample_count,
             actual: available_samples,
         }
-        .into(),
-    )
+        .into()
+    })
 }
 
 pub(super) fn predict_compound_from_grid<T: ReconSample>(
@@ -767,12 +767,12 @@ fn compound_plane_sample_count(
     sub_y: u32,
 ) -> Result<usize> {
     let (_, _, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
-    block_w.checked_mul(block_h).ok_or(
+    block_w.checked_mul(block_h).ok_or_else(|| {
         ReconError::ArithmeticOverflow {
             context: "compound output plane sample count",
         }
-        .into(),
-    )
+        .into()
+    })
 }
 
 fn compound_output_sample_count(
