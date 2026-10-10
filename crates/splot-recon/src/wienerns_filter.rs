@@ -949,8 +949,10 @@ impl LumaSimdSource for u8 {
 /// Filters output columns `c0..c0 + filtered.len()` of one row from its nine
 /// padded source `rows`.
 ///
-/// A center scale outside `i16`, reachable only with coefficients outside the
-/// § 5.20.2.1 `Wiener_Ns_Taps_Min` ranges, takes the scalar loop.
+/// Every row is first sliced to the segment's exact reach, so each lane
+/// group's reslice is proven in bounds. A center scale outside `i16`,
+/// reachable only with coefficients outside the § 5.20.2.1
+/// `Wiener_Ns_Taps_Min` ranges, takes the scalar loop.
 fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
     filtered: &mut [O],
     rows: &[&[T]; LUMA_WINDOW_ROWS],
@@ -960,6 +962,7 @@ fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
 ) {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
     let len = filtered.len();
+    let rows = &rows.map(|row| &row[c0..c0 + len + 2 * R]);
     let mut col = 0usize;
     if let Ok(center_scale) = i16::try_from(class.center_scale) {
         macro_rules! filter_lane_group {
@@ -968,7 +971,7 @@ fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
                     filter_luma_lanes::<$lanes, T, O>(
                         &mut filtered[col..],
                         rows,
-                        c0 + col,
+                        col,
                         center_scale,
                         class,
                         max_sample,
@@ -983,7 +986,7 @@ fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
         filter_lane_group!(4);
     }
     for (offset, slot) in filtered[col..].iter_mut().enumerate() {
-        let x = c0 + col + offset + R;
+        let x = col + offset + R;
         let tap = |dy: isize, dx: isize| {
             i32::from(T::scalar(
                 rows[R.wrapping_add_signed(dy)],
