@@ -1163,7 +1163,7 @@ pub(super) fn predict<T: ReconSample>(
     let parallel_output = !plan.use_optflow
         && matches!(sink, mc::WorkspaceSink::Frame(_))
         && plan.two_references
-        && splot_parallel::on_worker_pool();
+        && splot_parallel::current_pool_width() > 1;
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (plan.unit_size >> sub_x) * (plan.unit_size >> sub_y))
