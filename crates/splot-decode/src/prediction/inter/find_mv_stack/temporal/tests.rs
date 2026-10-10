@@ -1042,6 +1042,73 @@ fn unit_tip_preparation_matches_the_whole_field_passes() {
     }
 }
 
+/// Vectors mostly within `REFMVS_LIMIT`, so whole rows take the lane path,
+/// with rows at the limit and just past it.
+#[test]
+fn narrow_tip_preparation_matches_the_whole_field_passes() {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = |bound: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % bound
+    };
+    let units = [
+        (1, 8),
+        (1, 2),
+        (1, 4),
+        (1, 16),
+        (1, 12),
+        (1, 8),
+        (1, 1),
+        (2, 8),
+        (2, 16),
+        (2, 2),
+        (2, 4),
+    ];
+    for case in 0..9000 {
+        let (step, unit) = units[case % units.len()];
+        let fill_holes = case % 3 != 0;
+        let density = [0, 100, 50, 90, 97][(case / 5) % 5];
+        let (height8, width8) = (1 + next(40) as usize, 1 + next(40) as usize);
+        let mut field = ProjectedTemporalMotionField::new(height8 * 2, width8 * 2).unwrap();
+        let shape = (case / 25) % 4;
+        for cell in &mut field.cells {
+            let row = match shape {
+                0 => next(4095) as i32 - 2047,
+                1 => next(4097) as i32 - 2048,
+                2 => [2047, -2047][next(2) as usize],
+                _ => next(65_535) as i32 - 32_767,
+            };
+            let col = if shape == 2 {
+                [2047, -2047][next(2) as usize]
+            } else {
+                next(4095) as i32 - 2047
+            };
+            let offset = if (case / 7).is_multiple_of(2) {
+                next(40) as i32 - 4
+            } else {
+                [1, 31][next(2) as usize]
+            };
+            *cell = ProjectedTemporalMotionCell::new(next(100) < density, Mv { row, col }, offset);
+        }
+        let references = TipReferencePair {
+            past_ref: 0,
+            future_ref: 1,
+            past_offset: -1,
+            future_offset: 1,
+            ref_offset: [next(33) as i32 - 1, 31, -31, next(80) as i32 - 40][(case / 11) % 4],
+        };
+        let mut expected = field.clone();
+        reference_prepare_tip_field(&mut expected, references, step, unit, fill_holes);
+        prepare_tip_field(&mut field, references, step, unit, fill_holes).unwrap();
+        assert_eq!(
+            field, expected,
+            "case {case}: step {step} unit {unit} holes {fill_holes}"
+        );
+    }
+}
+
 #[test]
 fn refresh_reuses_projected_and_trajectory_storage() {
     let config = TemporalProjectionConfig {
