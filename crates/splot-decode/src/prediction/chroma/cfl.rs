@@ -441,12 +441,12 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
     for row in 0..height {
         let chroma_y = y.saturating_add(row);
         let luma_y = clamped_cfl_luma_coordinate(chroma_y, sub_y, max_luma_y);
-        let clamp_y = row == 0 || luma_y.is_multiple_of(64);
+        let luma_row = luma.row(chroma_y, row == 0 || luma_y.is_multiple_of(64), None);
         for col in 0..width {
             let chroma_x = x.saturating_add(col);
             let luma_x = clamped_cfl_luma_coordinate(chroma_x, sub_x, max_luma_x);
             let clamp_x = col == 0 || luma_x.is_multiple_of(64);
-            samples_q3.push(luma.q3(chroma_x, chroma_y, clamp_x, clamp_y, None)? - average_q3);
+            samples_q3.push(luma_row.q3(chroma_x, clamp_x)? - average_q3);
         }
     }
     Ok(())
@@ -710,11 +710,12 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     let mut sum_xx = 0i32;
     if num_above > 0 {
         let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, pixel_format);
+        let above_row = luma.row(y - 1, false, min_luma_ref_y);
         let step = width.checked_div(num_above).unwrap_or(0).max(1);
         let start = if step == 1 { 0 } else { step >> 1 };
         for col in (start..width).step_by(step) {
             let chroma_x = x.saturating_add(col);
-            let luma = luma.q3(chroma_x, y - 1, col == 0, false, min_luma_ref_y)? >> 3;
+            let luma = above_row.q3(chroma_x, col == 0)? >> 3;
             let chroma = i32::from(chroma_plane.clamped(chroma_x, y - 1)?);
             sum_x += luma;
             sum_y += chroma;
@@ -769,12 +770,10 @@ fn cfl_luma_average_q3<T: ReconSample>(
     let mut count = 0u32;
     if let Some(above_y) = neighbours.has_above().then(|| y.checked_sub(1)).flatten() {
         let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, luma.pixel_format);
+        let above_row = luma.row(above_y, false, min_luma_ref_y);
         for col in (0..width).step_by(step_w) {
             let chroma_x = x.saturating_add(col);
-            sum =
-                sum.saturating_add(
-                    luma.q3(chroma_x, above_y, col == 0, false, min_luma_ref_y)? as u32
-                );
+            sum = sum.saturating_add(above_row.q3(chroma_x, col == 0)? as u32);
             count = count.saturating_add(1);
         }
     }
@@ -890,19 +889,16 @@ fn mhccp_references<T: ReconSample>(
     chroma.clear();
     chroma.resize(sample_count, 0);
     for row in 0..reference_height {
+        let chroma_y = y + row - above;
+        let luma_row = luma_plane.row(chroma_y, row == 0, min_luma_ref_y);
         for col in 0..reference_width {
             let chroma_x = x + col - left;
-            let chroma_y = y + row - above;
             if row < above || col < left {
                 let ref_chroma_y = chroma_y.max(min_chroma_ref_y);
                 chroma[row * ref_width + col] = chroma_plane.clamped(chroma_x, ref_chroma_y)?;
             }
             if mhccp_luma_ref_available(row, col, above, left, width, height) {
-                let clamp_x = col == 0;
-                let clamp_y = row == 0;
-                luma[row * ref_width + col] =
-                    (luma_plane.q3(chroma_x, chroma_y, clamp_x, clamp_y, min_luma_ref_y)? >> 3)
-                        as u16;
+                luma[row * ref_width + col] = (luma_row.q3(chroma_x, col == 0)? >> 3) as u16;
             }
         }
     }
@@ -966,6 +962,17 @@ impl<'a, T: ReconSample> PlaneSamples<'a, T> {
             y.min(self.height.saturating_sub(1)),
         )
     }
+
+    /// Stored row `y` (the samples `get` reads), or `None` when it is not
+    /// stored.
+    fn row(&self, y: usize) -> Option<&'a [T]> {
+        let local = y.checked_sub(self.origin_y)?;
+        if y >= self.height || local >= self.stored_rows || self.width == 0 {
+            return None;
+        }
+        self.samples
+            .get(local * self.width..(local + 1) * self.width)
+    }
 }
 
 /// The luma plane and the § 7.13.5 downsampling taps of one CfL block.
@@ -1026,22 +1033,68 @@ impl<'a, T: ReconSample> CflLuma<'a, T> {
         clamp_y: bool,
         min_luma_ref_y: Option<isize>,
     ) -> splot_recon::Result<i32> {
-        let max_x = self.plane.width.saturating_sub(1) as isize;
+        self.row(chroma_y, clamp_y, min_luma_ref_y)
+            .q3(chroma_x, clamp_x)
+    }
+
+    /// Resolves the luma rows that the taps of chroma row `chroma_y` read, so
+    /// each sample of the row reads them directly.
+    fn row(
+        &self,
+        chroma_y: usize,
+        clamp_y: bool,
+        min_luma_ref_y: Option<isize>,
+    ) -> CflLumaRow<'_, 'a, T> {
         let max_y = self.plane.height.saturating_sub(1) as isize;
-        let luma_x = clamped_cfl_luma_coordinate(chroma_x, self.sub_x, max_x as usize) as isize;
         let luma_y = clamped_cfl_luma_coordinate(chroma_y, self.sub_y, max_y as usize) as isize;
-        let mut total = 0i32;
-        for &(dx, dy, weight) in &self.taps[..self.tap_count] {
-            let sx = luma_x + if clamp_x { dx.max(0) } else { dx };
+        let tap_row = |dy: isize| {
             let mut sy = luma_y + if clamp_y { dy.max(0) } else { dy };
             if let Some(min_y) = min_luma_ref_y {
                 sy = sy.max(min_y);
             }
-            total += weight
-                * i32::from(
-                    self.plane
-                        .get(sx.clamp(0, max_x) as usize, sy.clamp(0, max_y) as usize)?,
-                );
+            sy.clamp(0, max_y) as usize
+        };
+        let sub_y = self.sub_y as isize;
+        let mut rows = Some([&[][..]; 3]);
+        for dy in -sub_y..=sub_y {
+            let row = self.plane.row(tap_row(dy));
+            if let (Some(rows), Some(row)) = (rows.as_mut(), row) {
+                rows[(dy + 1) as usize] = row;
+            } else {
+                rows = None;
+            }
+        }
+        CflLumaRow {
+            luma: self,
+            rows,
+            tap_rows: [tap_row(-1), tap_row(0), tap_row(1)],
+        }
+    }
+}
+
+/// One chroma row of a [`CflLuma`]: the luma rows its taps read (each tap row
+/// index, and the stored rows when the plane stores all of them).
+struct CflLumaRow<'r, 'a, T: ReconSample> {
+    luma: &'r CflLuma<'a, T>,
+    rows: Option<[&'a [T]; 3]>,
+    tap_rows: [usize; 3],
+}
+
+impl<T: ReconSample> CflLumaRow<'_, '_, T> {
+    /// [`CflLuma::q3`] at `chroma_x` on this row.
+    fn q3(&self, chroma_x: usize, clamp_x: bool) -> splot_recon::Result<i32> {
+        let luma = self.luma;
+        let max_x = luma.plane.width.saturating_sub(1) as isize;
+        let luma_x = clamped_cfl_luma_coordinate(chroma_x, luma.sub_x, max_x as usize) as isize;
+        let mut total = 0i32;
+        for &(dx, dy, weight) in &luma.taps[..luma.tap_count] {
+            let sx = (luma_x + if clamp_x { dx.max(0) } else { dx }).clamp(0, max_x) as usize;
+            let row = (dy + 1) as usize;
+            let sample = match &self.rows {
+                Some(rows) => rows[row][sx].to_u16(),
+                None => luma.plane.get(sx, self.tap_rows[row])?,
+            };
+            total += weight * i32::from(sample);
         }
         Ok(total)
     }
