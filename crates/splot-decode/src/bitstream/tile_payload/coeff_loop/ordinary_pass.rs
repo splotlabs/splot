@@ -10,14 +10,14 @@ use super::super::coeff_state::{
     TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
 use super::base_level_pass::{
-    CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError,
+    CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError, CoeffLevelMasks,
     NonZeroCoeffBaseDerivedLevelPass, apply_nonzero_coeff_base_derived_level_pass,
 };
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{CoeffMaxLevelConfig, derive_coeff_max_level};
 use super::quant_pass::{CoeffQuantPassError, validate_coeff_quant_pass_config};
 use super::quant_state::{
-    CoeffQuantReadInput, CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState,
+    CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState,
     apply_derived_nonzero_coeff_quant_state_step,
 };
 use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuantState};
@@ -156,12 +156,14 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         use_tcq: base_config.use_tcq,
         lossless: input.lossless,
     };
+    let (block, masks) = base_level_pass.block_and_masks_mut();
     let quant_state = apply_interleaved_sign_and_quant_pass(
         cdfs,
         symbols,
         InterleavedSignQuantPassInput {
-            block: base_level_pass.block_mut(),
+            block,
             walk: &walk,
+            masks,
             sign_config: sign_derive_config,
             max_level_config: CoeffMaxLevelConfig {
                 plane: base_config.plane,
@@ -227,14 +229,16 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
 struct InterleavedSignQuantPassInput<'a> {
     block: &'a mut TransformCoeffBlockState,
     walk: &'a NonZeroCoeffScanWalk<'a>,
+    masks: &'a CoeffLevelMasks,
     sign_config: CoeffSignSourceDeriveConfig<'a>,
     max_level_config: CoeffMaxLevelConfig,
     config: CoeffQuantStateConfig,
 }
 
-/// Reads each coefficient's sign and remainder in scan order. A zero level
-/// (outside the hidden-parity DC) has no sign, no remainder and a quant of
-/// 0, which the block already holds, so it only advances the TCQ state.
+/// Reads each nonzero coefficient's sign and remainder in scan order. A
+/// zero level (outside the hidden-parity DC) has no sign, no remainder and
+/// a quant of 0, which the block already holds, so the pass skips it and
+/// takes the TCQ state of each entry it visits from the base pass.
 fn apply_interleaved_sign_and_quant_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -243,6 +247,7 @@ fn apply_interleaved_sign_and_quant_pass(
     let InterleavedSignQuantPassInput {
         block,
         walk,
+        masks,
         sign_config,
         max_level_config,
         config,
@@ -256,14 +261,16 @@ fn apply_interleaved_sign_and_quant_pass(
     });
     let mut quant_state = CoeffQuantStateAccumulator::new(config);
 
-    for (index, entry) in walk.entries().enumerate() {
+    for scan_index in masks.nonzero_scan_indices(walk.len(), config.is_hidden) {
+        let Some(index) = walk.len().checked_sub(scan_index + 1) else {
+            return Err(CoeffLoopContextError::ScanWalkEobOutOfRange {
+                eob: scan_index + 1,
+                scan_len: walk.len(),
+            }
+            .into());
+        };
+        let entry = walk.entry(index);
         let level = block.level_at(entry.row(), entry.col())?;
-        if level == 0 && !(config.is_hidden && entry.scan_index() == 0) {
-            quant_state
-                .apply_entry(index, entry, false, CoeffQuantReadInput { quant: 0 })
-                .map_err(CoeffQuantPassError::from)?;
-            continue;
-        }
         let sign_input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
         let max_level = derive_coeff_max_level(entry, max_level_config);
         let sign = read_preflighted_nonzero_coeff_sign(cdfs, symbols, sign_input)?;
@@ -285,6 +292,7 @@ fn apply_interleaved_sign_and_quant_pass(
                 },
             )
             .map_err(CoeffQuantPassError::from)?;
+        quant_state.set_tcq_q0(masks.tcq_q0(scan_index));
         apply_derived_nonzero_coeff_quant_state_step(
             block,
             &mut quant_state,

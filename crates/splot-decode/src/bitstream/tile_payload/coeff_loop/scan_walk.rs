@@ -66,7 +66,7 @@ impl NonZeroCoeffScanWalk<'_> {
         self.scan.len()
     }
 
-    fn entry(&self, index: usize) -> CoeffScanEntry {
+    pub(crate) fn entry(&self, index: usize) -> CoeffScanEntry {
         let scan_index = self.scan.len() - index - 1;
         let pos = usize::from(self.scan[scan_index]);
         CoeffScanEntry::new(scan_index, pos, pos / self.width, pos % self.width)

@@ -82,9 +82,53 @@ impl CoeffBaseFirstPassSummary {
     }
 }
 
+/// One bit per scan index, enough for the 32x32 coefficient maximum.
+const SCAN_MASK_WORDS: usize = 16;
+
+/// Per-scan-index facts the base pass hands to the sign and quant pass, so
+/// that pass visits only the nonzero levels.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CoeffLevelMasks {
+    nonzero: [u64; SCAN_MASK_WORDS],
+    /// `(tcqState >> 1) & 1` before each scan index.
+    tcq_q0: [u64; SCAN_MASK_WORDS],
+}
+
+impl CoeffLevelMasks {
+    fn record(&mut self, scan_index: usize, level: u32, tcq_state: usize) {
+        let word = (scan_index >> 6) & (SCAN_MASK_WORDS - 1);
+        let shift = scan_index & 63;
+        self.nonzero[word] |= u64::from(level != 0) << shift;
+        self.tcq_q0[word] |= (((tcq_state >> 1) & 1) as u64) << shift;
+    }
+
+    pub(crate) fn tcq_q0(&self, scan_index: usize) -> bool {
+        (self.tcq_q0[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
+    }
+
+    /// The nonzero scan indices below `eob` from high to low (the walk
+    /// order), plus scan index 0 when `with_dc`.
+    pub(crate) fn nonzero_scan_indices(
+        &self,
+        eob: usize,
+        with_dc: bool,
+    ) -> impl Iterator<Item = usize> + '_ {
+        let words = eob.div_ceil(64).min(SCAN_MASK_WORDS);
+        (0..words).rev().flat_map(move |word| {
+            let mut bits = self.nonzero[word] | u64::from(with_dc && word == 0);
+            core::iter::from_fn(move || {
+                let top = 63_u32.checked_sub(bits.leading_zeros())?;
+                bits &= !(1 << top);
+                Some(word * 64 + top as usize)
+            })
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBaseDerivedLevelPass {
     first_pass: CoeffBaseFirstPassSummary,
+    masks: CoeffLevelMasks,
     block: TransformCoeffBlockState,
 }
 
@@ -95,8 +139,10 @@ impl NonZeroCoeffBaseDerivedLevelPass {
     }
 
     #[must_use]
-    pub(crate) const fn block_mut(&mut self) -> &mut TransformCoeffBlockState {
-        &mut self.block
+    pub(crate) const fn block_and_masks_mut(
+        &mut self,
+    ) -> (&mut TransformCoeffBlockState, &CoeffLevelMasks) {
+        (&mut self.block, &self.masks)
     }
 
     #[must_use]
@@ -109,6 +155,8 @@ impl NonZeroCoeffBaseDerivedLevelPass {
 pub(crate) enum CoeffBaseDerivedLevelPassError {
     #[error("coefficient base/level scan entries {entries} do not match eob {eob}")]
     ScanEntryCountMismatch { eob: usize, entries: usize },
+    #[error("coefficient base/level scan has {entries} entries, above the 32x32 maximum")]
+    ScanTooLong { entries: usize },
     #[error(
         "coefficient base/level config geometry {config_width}x{config_height} does not match block {block_width}x{block_height}"
     )]
@@ -144,6 +192,7 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     preflight_pass(eob_read, &block, walk, config)?;
 
     let mut first_pass = CoeffBaseFirstPassSummary::default();
+    let mut masks = CoeffLevelMasks::default();
     let mut entries = walk.entries();
     if let Some(entry) = entries.next() {
         let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
@@ -157,6 +206,7 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
             level,
             &mut block,
             &mut first_pass,
+            &mut masks,
             config,
         )?;
     }
@@ -171,11 +221,16 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
             level,
             &mut block,
             &mut first_pass,
+            &mut masks,
             config,
         )?;
     }
 
-    Ok(NonZeroCoeffBaseDerivedLevelPass { first_pass, block })
+    Ok(NonZeroCoeffBaseDerivedLevelPass {
+        first_pass,
+        masks,
+        block,
+    })
 }
 
 /// Adds the base-range symbol when the base symbol saturates, then records
@@ -194,6 +249,7 @@ fn finish_level(
     mut level: u32,
     block: &mut TransformCoeffBlockState,
     first_pass: &mut CoeffBaseFirstPassSummary,
+    masks: &mut CoeffLevelMasks,
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> Result<(), CoeffBaseDerivedLevelPassError> {
     let base_levels = if is_lf {
@@ -204,6 +260,7 @@ fn finish_level(
     if level > base_levels && !(is_lf && config.plane > 0) {
         level += read_br_symbol(cdfs, symbols, entry, is_lf, block, config)?;
     }
+    masks.record(entry.scan_index(), level, first_pass.tcq_state);
     first_pass.update_after_level(entry, level, config)?;
     block.set_level(entry.row(), entry.col(), level)?;
     Ok(())
@@ -234,6 +291,11 @@ fn preflight_pass(
     }
 
     let eob = eob_read.eob();
+    if walk.len() > SCAN_MASK_WORDS * 64 {
+        return Err(CoeffBaseDerivedLevelPassError::ScanTooLong {
+            entries: walk.len(),
+        });
+    }
     if eob != walk.len() {
         return Err(CoeffBaseDerivedLevelPassError::ScanEntryCountMismatch {
             eob,
@@ -361,3 +423,7 @@ const fn tx_class_index(tx_class: CoeffTransformClass) -> usize {
         CoeffTransformClass::Vertical => 2,
     }
 }
+
+#[cfg(test)]
+#[path = "base_level_pass_tests.rs"]
+mod tests;
