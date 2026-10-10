@@ -23,6 +23,10 @@ use crate::math::round2_i32;
 use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
+#[path = "wienerns_flat.rs"]
+mod flat;
+use flat::{FlatChunks, LumaFlatGroup};
+
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
 const WIENER_NS_PREC_BITS: u32 = 7;
 
@@ -814,6 +818,7 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
     max_sample: u16,
 ) -> Result<()> {
     let padded_width = params.width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+    let mut flat = FlatChunks::new();
     let mut first = rows.start;
     while first < rows.end {
         let end = match subclasses {
@@ -828,6 +833,20 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
         {
             *row = cast(padded_row(source_rows, first + dy, padded_width)?)
                 .ok_or_else(|| luma_segment_error(params.width))?;
+        }
+        let window = &source[..end - first + 2 * WIENER_NS_LUMA_TAP_RADIUS];
+        flat.update(window, first, params.width);
+        if flat.any() {
+            let group = LumaFlatGroup {
+                window,
+                rows: (first, first - rows.start),
+                output_stride,
+                max_sample,
+                flat: &flat,
+            };
+            group.filter(output, params, prepared_classes, subclasses)?;
+            first = end;
+            continue;
         }
         for_each_luma_segment(
             first,
@@ -845,7 +864,13 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
                     ) else {
                         return Err(luma_segment_error(params.width));
                     };
-                    filter_luma_segment_simd(filtered, window, segment_start, class, max_sample);
+                    filter_luma_segment_simd::<_, _, 0>(
+                        filtered,
+                        window,
+                        segment_start,
+                        class,
+                        max_sample,
+                    );
                 }
                 Ok(())
             },
@@ -921,8 +946,9 @@ impl LumaSimdSource for u8 {
 /// Every row is first sliced to the segment's exact reach, so each lane
 /// group's reslice is proven in bounds. A center scale outside `i16`,
 /// reachable only with coefficients outside the § 5.20.2.1
-/// `Wiener_Ns_Taps_Min` ranges, takes the scalar loop.
-fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput>(
+/// `Wiener_Ns_Taps_Min` ranges, takes the scalar loop. Each `COPY` has one
+/// caller, so the flat-chunk path keeps the other caller's inlined loop.
+fn filter_luma_segment_simd<T: LumaSimdSource, O: LumaSimdOutput, const COPY: u8>(
     filtered: &mut [O],
     rows: &[&[T]; LUMA_WINDOW_ROWS],
     c0: usize,
