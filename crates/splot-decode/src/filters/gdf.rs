@@ -28,9 +28,10 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 mod simd;
 
 use simd::{
-    EVEN_CLASS_ZERO_WEIGHTS, GdfMixedParams, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH,
-    WINDOW_ROWS, class_bias, gdf_index_scale, gdf_rows, mixed_class_rows, source_rows,
-    uniform_gdf_class, window_at,
+    EVEN_CLASS_ZERO_WEIGHTS, GDF_CLIP_TAPS, GDF_WEIGHT_SUMS, GdfClipTaps, GdfLowRange,
+    GdfMixedParams, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH, WINDOW_ROWS, class_bias,
+    gdf_index_scale, gdf_rows, mixed_class_rows, source_rows, tap_range, uniform_gdf_class,
+    window_at,
 };
 
 const MI_SIZE: usize = 4;
@@ -506,6 +507,8 @@ struct GdfUniformParams {
     /// The three weights of each tap, loaded together; they and `bias` are
     /// scaled by `gdf_index_scale`.
     taps: [[i16; 4]; GDF_COORDS.len()],
+    weight_sums: &'static [i16; 3],
+    clip_taps: &'static GdfClipTaps,
     bias: [i32; 3],
     scale: i32,
 }
@@ -519,6 +522,8 @@ impl GdfUniformParams {
             class,
             bias: GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale)),
             scale: i32::from(scale),
+            weight_sums: &GDF_WEIGHT_SUMS[block.ref_dst_idx][block.qp_idx][class],
+            clip_taps: &GDF_CLIP_TAPS[block.ref_dst_idx][block.qp_idx][class],
             bounds: core::array::from_fn(|tap| {
                 let alpha = Simd::splat(alpha_table[tap][class] as i16);
                 [alpha, -alpha]
@@ -531,8 +536,11 @@ impl GdfUniformParams {
     }
 
     /// Filters in place `ROWS` rows of `W` samples that all have this class,
-    /// from row `first_row` of the row pair. Two rows of 16 lanes need more
-    /// vector registers than exist, so 16 lanes go one row at a time.
+    /// from row `first_row` of the row pair. `range` is the row pair's
+    /// `tap_range` below this class's limit, when the caller measured it. Two
+    /// rows of 16 lanes need more vector registers than exist, so 16 lanes go
+    /// one row at a time.
+    #[allow(clippy::too_many_arguments)]
     fn rows<const W: usize, const WIN: usize, const ROWS: usize>(
         &self,
         window: &[&[u16; WIN]; WINDOW_ROWS],
@@ -540,6 +548,7 @@ impl GdfUniformParams {
         output: [&mut [u16; W]; ROWS],
         classes: &[GdfClass],
         block: &GdfBlock,
+        range: Option<u16>,
     ) {
         let weights = |k: usize| {
             let tap = Simd::from_array(self.taps[k]);
@@ -558,12 +567,18 @@ impl GdfUniformParams {
             class_bias(classes) * Simd::splat(self.scale) + gradient,
         ];
         let odd = Mask::splat(false);
+        let low = range.map(|range| GdfLowRange {
+            range: range as i16,
+            weight_sums: self.weight_sums.map(Simd::splat),
+            scale: self.scale,
+            clip_taps: *self.clip_taps,
+        });
         if self.class & 1 == 0 {
             let filter = gdf_rows::<W, WIN, ROWS, EVEN_CLASS_ZERO_WEIGHTS, false>;
-            filter(window, first_row, output, init, odd, block, weights);
+            filter(window, first_row, output, init, odd, block, weights, low);
         } else {
             let filter = gdf_rows::<W, WIN, ROWS, ODD_CLASS_ZERO_WEIGHTS, false>;
-            filter(window, first_row, output, init, odd, block, weights);
+            filter(window, first_row, output, init, odd, block, weights, low);
         }
     }
 }
@@ -732,8 +747,9 @@ fn compute_enabled_segment(
                 let window = window_at::<28>(&window_rows, x).ok_or_else(geometry_error)?;
                 let output = output_pair::<16>(top, bottom, x).ok_or_else(geometry_error)?;
                 let params = &uniform_params[class_index as usize];
+                let range = tap_range::<16, 28>(&window, params.clip_taps.limit);
                 for (first_row, output) in output.into_iter().enumerate() {
-                    params.rows(&window, first_row, [output], classes, block);
+                    params.rows(&window, first_row, [output], classes, block, range);
                 }
                 x += 16;
             } else if width >= 8 {
@@ -744,7 +760,8 @@ fn compute_enabled_segment(
                 let window = window_at::<20>(&window_rows, x).ok_or_else(geometry_error)?;
                 let output = output_pair::<8>(top, bottom, x).ok_or_else(geometry_error)?;
                 if let Some(class_index) = uniform_gdf_class(classes) {
-                    uniform_params[class_index as usize].rows(&window, 0, output, classes, block);
+                    uniform_params[class_index as usize]
+                        .rows(&window, 0, output, classes, block, None);
                 } else {
                     mixed_class_rows(&window, output, classes, block, &mixed_params);
                 }

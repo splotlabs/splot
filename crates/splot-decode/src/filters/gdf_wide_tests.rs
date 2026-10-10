@@ -19,7 +19,11 @@ fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) 
                     max_sample
                 }
             }
-            _ => ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1)) as u16,
+            3 => ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1)) as u16,
+            _ => {
+                let spread = [9, 100, 256][case - 4].min(usize::from(max_sample) + 1);
+                (usize::from(max_sample) / 3 + (index * 73 + index / stride * 29) % spread) as u16
+            }
         })
         .collect();
     (samples, stride)
@@ -91,33 +95,49 @@ fn filter_both_ways<const W: usize, const WIN: usize>(
 
 #[test]
 fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
+    let (mut low_range, mut clipped) = (0, 0);
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let (samples, stride) = test_source(16, bit_depth.max_sample(), 3);
-        for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
-            for qp_idx in 0..alpha_by_qp.len() {
-                let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
-                for class_index in 0..4_u8 {
-                    let classes: [GdfClass; 8] = core::array::from_fn(|index| {
-                        let delta = i32::try_from(index).unwrap_or_default() * 37;
-                        GdfClass::new(class_index, 511 - delta)
-                    });
-                    let params = GdfUniformParams::new(&block, usize::from(class_index));
-                    let (actual, expected) = filter_both_ways::<16, 28>(
-                        &samples,
-                        stride,
-                        &block,
-                        &classes,
-                        |window, output| params.rows(window, 0, output, &classes, &block),
-                    );
-                    assert_eq!(
-                        actual, expected,
-                        "bit depth {bit_depth:?}, reference {ref_dst_idx}, qp {qp_idx}, class \
-                         {class_index}"
-                    );
+        for case in 3..7 {
+            let (samples, stride) = test_source(16, bit_depth.max_sample(), case);
+            for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
+                for (qp_idx, alpha) in alpha_by_qp.iter().enumerate() {
+                    let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
+                    for class_index in 0..4_u8 {
+                        let classes: [GdfClass; 8] = core::array::from_fn(|index| {
+                            let delta = i32::try_from(index).unwrap_or_default() * 37;
+                            GdfClass::new(class_index, 511 - delta)
+                        });
+                        let params = GdfUniformParams::new(&block, usize::from(class_index));
+                        let (actual, expected) = filter_both_ways::<16, 28>(
+                            &samples,
+                            stride,
+                            &block,
+                            &classes,
+                            |window, output| {
+                                let range = tap_range::<16, 28>(window, params.clip_taps.limit);
+                                if let Some(range) = range {
+                                    low_range += 1;
+                                    let class = usize::from(class_index);
+                                    clipped += usize::from(
+                                        alpha[..GDF_COORDS.len()]
+                                            .iter()
+                                            .any(|bounds| bounds[class] < range),
+                                    );
+                                }
+                                params.rows(window, 0, output, &classes, &block, range);
+                            },
+                        );
+                        assert_eq!(
+                            actual, expected,
+                            "bit depth {bit_depth:?}, case {case}, reference {ref_dst_idx}, qp \
+                             {qp_idx}, class {class_index}"
+                        );
+                    }
                 }
             }
         }
     }
+    assert!(low_range > 0 && clipped > 0 && clipped < low_range);
 }
 
 #[test]
