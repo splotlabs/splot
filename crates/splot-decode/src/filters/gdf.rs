@@ -4,7 +4,7 @@
 //! AV2 § 7.20.5 guided detail filter application.
 
 use std::simd::{
-    Select, Simd, ToBytes,
+    Mask, Select, Simd, ToBytes,
     cmp::{SimdOrd, SimdPartialOrd},
     num::SimdUint,
     simd_swizzle,
@@ -553,12 +553,13 @@ impl GdfUniformParams {
             second,
             class_bias(classes) * Simd::splat(self.scale) + gradient,
         ];
+        let odd = Mask::splat(false);
         if self.class & 1 == 0 {
-            let filter = gdf_rows::<W, WIN, ROWS, EVEN_CLASS_ZERO_WEIGHTS>;
-            filter(window, first_row, output, init, block, weights);
+            let filter = gdf_rows::<W, WIN, ROWS, EVEN_CLASS_ZERO_WEIGHTS, false>;
+            filter(window, first_row, output, init, odd, block, weights);
         } else {
-            let filter = gdf_rows::<W, WIN, ROWS, ODD_CLASS_ZERO_WEIGHTS>;
-            filter(window, first_row, output, init, block, weights);
+            let filter = gdf_rows::<W, WIN, ROWS, ODD_CLASS_ZERO_WEIGHTS, false>;
+            filter(window, first_row, output, init, odd, block, weights);
         }
     }
 }

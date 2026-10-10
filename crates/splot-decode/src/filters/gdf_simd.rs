@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use std::simd::{
-    Simd, SimdElement, ToBytes,
+    Mask, Select, Simd, SimdElement, ToBytes,
     cmp::{SimdOrd, SimdPartialEq},
     num::{SimdInt, SimdUint},
 };
@@ -143,8 +143,21 @@ pub(super) fn uniform_gdf_class<const LANES: usize>(classes: &[GdfClass; LANES])
         .then_some(first as u8)
 }
 
+/// Weight row `index` of a tap is zero for every table and class of one parity
+/// exactly where weight row `index ^ 1` is zero for the other parity, so the
+/// mixed-class kernel accumulates an odd class's first two sums swapped. This
+/// marks the taps whose swapped weights are zero for both parities.
+const MIXED_ZERO_WEIGHTS: u64 = {
+    let (even, odd) = (EVEN_CLASS_ZERO_WEIGHTS, ODD_CLASS_ZERO_WEIGHTS);
+    let taps = GDF_COORDS.len();
+    let mask = (1 << taps) - 1;
+    let first = even & (odd >> taps) & mask;
+    let second = (even >> taps) & odd & mask;
+    first | (second << taps) | (zero_weight_taps(0b1111) >> (2 * taps) << (2 * taps))
+};
+
 /// Per-class weights of one GDF table for the mixed-class kernel, scaled by
-/// `gdf_index_scale`.
+/// `gdf_index_scale`; an odd class has its first two weight rows swapped.
 pub(super) struct GdfMixedParams {
     alpha: &'static [[u16; 4]; 22],
     weights: [[[i16; 4]; GDF_COORDS.len()]; 3],
@@ -161,7 +174,14 @@ impl GdfMixedParams {
             alpha: &GDF_ALPHA[block.ref_dst_idx][block.qp_idx],
             weights: core::array::from_fn(|index| {
                 core::array::from_fn(|tap| {
-                    core::array::from_fn(|class| table[index][tap][class] * scale)
+                    core::array::from_fn(|class| {
+                        let row = if index < 2 {
+                            index ^ (class & 1)
+                        } else {
+                            index
+                        };
+                        table[row][tap][class] * scale
+                    })
                 })
             }),
             bias: bias.map(|bias| bias * i32::from(scale)),
@@ -184,6 +204,9 @@ pub(super) fn mixed_class_rows<const W: usize, const WIN: usize>(
     let byte_offsets = Simd::from_array(core::array::from_fn(|byte| (byte & 1) as u8));
     let lane_bytes =
         ((indices & Simd::splat(3)) * Simd::splat(0x0202_0202)).to_ne_bytes() + byte_offsets;
+    let odd = (Simd::<u16, 8>::from_ne_bytes(lane_bytes) & Simd::splat(2))
+        .simd_ne(Simd::splat(0))
+        .resize::<W>(false);
     let lane_bytes = [lane_bytes, lane_bytes + Simd::splat(8)];
     let per_class = move |table: Simd<i16, 8>, k: usize| {
         let bytes = table.to_ne_bytes().swizzle_dyn(lane_bytes[k & 1]);
@@ -194,29 +217,33 @@ pub(super) fn mixed_class_rows<const W: usize, const WIN: usize>(
         weights: core::array::from_fn(|index| per_class(tap_pair(&params.weights[index], k), k)),
     };
     let [first, second, gradient] = params.bias.map(Simd::splat);
+    let odd_sums = odd.cast::<i32>();
     let init = [
-        first,
-        second,
+        odd_sums.select(second, first),
+        odd_sums.select(first, second),
         class_bias(classes) * Simd::splat(params.scale) + gradient,
     ];
-    gdf_rows::<W, WIN, 2, { zero_weight_taps(0b1111) }>(window, 0, output, init, block, weights);
+    gdf_rows::<W, WIN, 2, MIXED_ZERO_WEIGHTS, true>(window, 0, output, init, odd, block, weights);
 }
 
 /// Filters in place the `ROWS` rows of `W` samples in `output`, from row
 /// `first_row` of the row pair whose source rows are `rows`. The three sums
 /// start at `init`, scaled by `gdf_index_scale` like the weights; weights
-/// marked in `ZERO_WEIGHTS` are skipped.
+/// marked in `ZERO_WEIGHTS` are skipped. With `SWAPPED`, the lanes in `odd`
+/// hold their first two sums swapped.
 #[inline(never)]
 pub(super) fn gdf_rows<
     const W: usize,
     const WIN: usize,
     const ROWS: usize,
     const ZERO_WEIGHTS: u64,
+    const SWAPPED: bool,
 >(
     rows: &[&[u16; WIN]; WINDOW_ROWS],
     first_row: usize,
     output: [&mut [u16; W]; ROWS],
     init: [Simd<i32, W>; 3],
+    odd: Mask<i16, W>,
     block: &GdfBlock,
     tap_weights: impl Fn(usize) -> GdfTapWeights<W>,
 ) {
@@ -247,14 +274,15 @@ pub(super) fn gdf_rows<
             }
         }
     });
+    let swap = SWAPPED.then_some(odd);
     for (output, sums) in output.into_iter().zip(sums) {
         let base = Simd::from_array(*output);
         *output = if block.ref_dst_idx == GDF_INTRA_REF_DST {
             let error = &GDF_INTRA_ERROR[block.qp_idx];
-            finish_gdf_width_simd::<W, 8, 4096>(base, block, error, sums)
+            finish_gdf_width_simd::<W, 8, 4096>(base, block, error, sums, swap)
         } else {
             let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
-            finish_gdf_width_simd::<W, 5, 1000>(base, block, error, sums)
+            finish_gdf_width_simd::<W, 5, 1000>(base, block, error, sums, swap)
         }
         .to_array();
     }
@@ -272,18 +300,22 @@ fn tap_samples<const W: usize, const WIN: usize>(row: &[u16; WIN], col: usize) -
 }
 
 /// Maps the biased gradient sums, already multiplied by `SCALE`, to the
-/// filtered sample.
+/// filtered sample; `swap` marks lanes whose first two sums are swapped.
 fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: usize>(
     base: Simd<u16, WIDTH>,
     block: &GdfBlock,
     error: &[i32; ERROR_LEN],
     sums: [Simd<i32, WIDTH>; 3],
+    swap: Option<Mask<i16, WIDTH>>,
 ) -> Simd<u16, WIDTH> {
     let digit_offset = Simd::splat((1 << 14) + (SCALE << 15));
     let [first, second, third] = sums.map(|sum| {
         ((sum + digit_offset + (sum >> 31)) >> 15)
             .cast::<i16>()
             .simd_clamp(Simd::splat(0), Simd::splat(2 * SCALE as i16 - 1))
+    });
+    let (first, second) = swap.map_or((first, second), |odd| {
+        (odd.select(second, first), odd.select(first, second))
     });
     let radix = Simd::splat(2 * SCALE as i16);
     let pos = (first * radix + second) * radix + third;
