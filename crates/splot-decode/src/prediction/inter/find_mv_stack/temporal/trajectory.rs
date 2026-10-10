@@ -597,15 +597,6 @@ impl TrajectoryBand<'_> {
         (slots.epoch == self.epoch).then_some(slots)
     }
 
-    /// Whether a band-relative cell holds a recorded position for `reference`.
-    #[allow(clippy::inline_always, reason = "measured trajectory scan guard")]
-    #[inline(always)]
-    fn has_positions(&self, reference: usize, index: usize) -> bool {
-        self.position_slot(reference, index)
-            .and_then(|slot| self.positions.get(slot))
-            .is_some_and(|slots| slots.epoch == self.epoch && slots.mask != 0)
-    }
-
     #[cfg(test)]
     fn positions_at(&self, reference: usize, at: Position) -> Option<TrajectoryPositions> {
         self.positions_at_index(reference, self.band_index(at.0, at.1)?)
@@ -735,9 +726,6 @@ impl TrajectoryBand<'_> {
 
     /// `end_position` is where `mv` lands from the scanned cell, sampled on the
     /// projection grid, or `None` when it leaves the frame.
-    ///
-    /// Most cells hold no recorded position for either reference, so this
-    /// tests both records inline and leaves each trajectory walk out of line.
     #[allow(clippy::inline_always, reason = "measured trajectory scan guard")]
     #[inline(always)]
     pub(super) fn check_intersection_at(
@@ -752,15 +740,12 @@ impl TrajectoryBand<'_> {
         if source >= self.reference_count || y8 >= self.height8 || x8 >= self.width8 {
             return None;
         }
-        if let Some(index) = self.band_index(y8, x8)
-            && self.has_positions(source, index)
-        {
+        if let Some(index) = self.band_index(y8, x8) {
             self.extend_end_trajectories(source, end, index, mv);
         }
         let end_position = end_position?;
         if self.unit_base(end_position.0) == self.unit_base(y8)
             && let Some(index) = self.band_index(end_position.0, end_position.1)
-            && self.has_positions(end, index)
         {
             self.extend_source_trajectories(source, end, (y8, x8), index, mv);
         }
@@ -768,7 +753,8 @@ impl TrajectoryBand<'_> {
     }
 
     /// Extends to `end` every trajectory recorded at the scanned cell for `source`.
-    #[inline(never)]
+    #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
+    #[inline(always)]
     fn extend_end_trajectories(&mut self, source: usize, end: usize, index: usize, mv: Mv) {
         let Some(source_slots) = self.positions_at_index(source, index) else {
             return;
@@ -804,7 +790,8 @@ impl TrajectoryBand<'_> {
 
     /// Extends back to `source` every trajectory recorded for `end` at the
     /// band-relative cell `index` that the scanned cell's vector reaches.
-    #[inline(never)]
+    #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
+    #[inline(always)]
     fn extend_source_trajectories(
         &mut self,
         source: usize,
