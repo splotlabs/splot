@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::simd::{Mask, Simd, SimdElement, cmp::SimdPartialEq, simd_swizzle};
+use std::simd::{
+    Mask, Simd, SimdElement, cmp::SimdOrd, cmp::SimdPartialEq, num::SimdUint, simd_swizzle,
+};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
@@ -917,8 +919,8 @@ fn cdef_segment<S: ReconSample>(
         }
         _ => None,
     };
-    if luma_used {
-        gather_luma_segment(
+    let luma_ranges = if luma_used {
+        Some(gather_luma_segment(
             y_samples,
             y_plane.width(),
             y_plane.stride(),
@@ -927,23 +929,28 @@ fn cdef_segment<S: ReconSample>(
                 left + CDEF_TAP_REACH,
                 top + CDEF_TAP_REACH - y_plane.origin_y(),
             ),
-        )?;
-    }
+        )?)
+    } else {
+        None
+    };
     if let Some((u, v, base, stride)) = chroma {
         gather_pair_segment(u, v, base, stride, &mut scratch.pair)?;
     }
     for block in 0..CDEF_SEGMENT_BLOCKS {
         if let Some(ctx) = lookup.at(r, c + STEP4 * block, Some(params), row_span)? {
-            compute_cdef_segment_block(&ctx, block, scratch, chroma.is_some(), frame)?;
+            let luma_range = luma_ranges.map(|ranges| ranges[block]);
+            compute_cdef_segment_block(&ctx, block, luma_range, scratch, chroma.is_some(), frame)?;
         }
     }
     Ok(true)
 }
 
-/// [`compute_cdef_block`] for block `block` of a gathered interior segment.
+/// [`compute_cdef_block`] for block `block` of a gathered interior segment,
+/// whose luma window holds samples in `luma_range` when that is known.
 fn compute_cdef_segment_block<S>(
     ctx: &CdefBlockCtx,
     block: usize,
+    luma_range: Option<[u16; 2]>,
     scratch: &CdefSegmentScratch,
     chroma: bool,
     frame: &mut CdefFrame<'_, S>,
@@ -956,10 +963,10 @@ fn compute_cdef_segment_block<S>(
     let (x0, y0) = (ctx.c * MI_SIZE, ctx.r * MI_SIZE);
     let pri_base = ctx.params.y_pri << ctx.coeff_shift;
     let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
-    let luma_flat = !ctx.luma_lossless
-        && (ctx.params.y_sec != 0 || pri_base != 0)
-        && ctx.coeff_shift > 0
-        && window_flat::<CDEF_SEGMENT_STRIDE, 12, 12, 1, CDEF_SEGMENT_BLOCK_AREA>(luma);
+    let range = luma_range.filter(|_| {
+        !ctx.luma_lossless && (ctx.params.y_sec != 0 || pri_base != 0) && ctx.coeff_shift > 0
+    });
+    let luma_flat = range.is_some_and(|[min, max]| min == max);
     let (y_dir, var) = if (pri_base == 0 && uv_pri == 0) || luma_flat {
         (0, 0)
     } else {
@@ -975,7 +982,8 @@ fn compute_cdef_segment_block<S>(
                 .filtered_y
                 .rect_mut(rect)
                 .ok_or(CdefError::Workspace)?;
-            if !cdef_filter_block_segment(luma, &y_filter, output, stride) {
+            let window_min = range.and_then(|[min, max]| (max - min <= 255).then_some(min));
+            if !cdef_filter_block_segment(luma, &y_filter, window_min, output, stride) {
                 return Err(CdefError::Workspace);
             }
         }
@@ -1036,7 +1044,8 @@ fn block_filters(ctx: &CdefBlockCtx, y_dir: usize, var: i32) -> [CdefBlockFilter
     ]
 }
 
-/// Copies the luma segment's tap rows into `pad`; out of line so that the
+/// Copies the luma segment's tap rows into `pad` and returns the least and
+/// greatest sample of each block's 12x12 window; out of line so that the
 /// segment loop keeps its values in registers.
 #[inline(never)]
 fn gather_luma_segment(
@@ -1045,10 +1054,50 @@ fn gather_luma_segment(
     stride: usize,
     pad: &mut [u16; LUMA_SEGMENT_AREA],
     (x0, y0): (usize, usize),
-) -> Result<(), CdefError> {
-    gather_interior_rows::<CDEF_SEGMENT_STRIDE, 12, CDEF_SEGMENT_STRIDE, LUMA_SEGMENT_AREA, u16>(
-        samples, width, stride, pad, x0, y0,
-    )
+) -> Result<[[u16; 2]; CDEF_SEGMENT_BLOCKS], CdefError> {
+    const STARTS: [usize; 5] = [0, 8, 16, 24, CDEF_SEGMENT_STRIDE - 8];
+    const { assert!(CDEF_SEGMENT_BLOCKS == 4 && CDEF_SEGMENT_STRIDE == 36) };
+    let left = x0.checked_sub(CDEF_TAP_REACH).ok_or(CdefError::Workspace)?;
+    if left + CDEF_SEGMENT_STRIDE > width {
+        return Err(CdefError::Workspace);
+    }
+    let mut base = y0
+        .checked_sub(CDEF_TAP_REACH)
+        .and_then(|top| top.checked_mul(stride))
+        .and_then(|row| row.checked_add(left))
+        .ok_or(CdefError::Workspace)?;
+    let mut min = [Simd::<u16, 8>::splat(u16::MAX); 5];
+    let mut max = [Simd::<u16, 8>::splat(0); 5];
+    for row in 0..12 {
+        let src = samples
+            .get(base..)
+            .and_then(<[u16]>::first_chunk::<CDEF_SEGMENT_STRIDE>)
+            .ok_or(CdefError::Workspace)?;
+        let dst = pad
+            .get_mut(row * CDEF_SEGMENT_STRIDE..)
+            .and_then(<[u16]>::first_chunk_mut::<CDEF_SEGMENT_STRIDE>)
+            .ok_or(CdefError::Workspace)?;
+        for (chunk, start) in STARTS.into_iter().enumerate() {
+            let lanes = Simd::<u16, 8>::from_slice(&src[start..start + 8]);
+            lanes.copy_to_slice(&mut dst[start..start + 8]);
+            min[chunk] = min[chunk].simd_min(lanes);
+            max[chunk] = max[chunk].simd_max(lanes);
+        }
+        base += stride;
+    }
+    let tail = |chunks: &[Simd<u16, 8>; 5], block: usize| {
+        if block + 1 < CDEF_SEGMENT_BLOCKS {
+            simd_swizzle!(chunks[block + 1], [0, 1, 2, 3, 0, 1, 2, 3])
+        } else {
+            chunks[4]
+        }
+    };
+    Ok(core::array::from_fn(|block| {
+        [
+            min[block].simd_min(tail(&min, block)).reduce_min(),
+            max[block].simd_max(tail(&max, block)).reduce_max(),
+        ]
+    }))
 }
 
 /// Interleaves the chroma segment's tap rows, half a `CDEF_PAIR_SEGMENT_STRIDE`

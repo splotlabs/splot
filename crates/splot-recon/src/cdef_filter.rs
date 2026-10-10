@@ -736,22 +736,22 @@ impl CdefConstrain8 {
     }
 }
 
-/// Whether [`cdef_filter_rows_8bit`] computes `filter` exactly: 8-bit
-/// samples, strengths below 64 so that a constrained tap pair fits in `i8`,
-/// and damping shifts below 8 so that `u8` shifts do not wrap.
-fn cdef_8bit_lanes_fit(filter: &CdefBlockFilter) -> bool {
-    filter.coeff_shift == 0
-        && [filter.pri_str, filter.sec_str]
-            .into_iter()
-            .all(|strength| {
-                (0..64).contains(&strength) && constrain_damping_adj(strength, filter.damping) < 8
-            })
+/// Whether [`cdef_filter_rows_8bit`] computes `filter` exactly on samples
+/// that fit `u8` lanes: strengths below 64 so that a constrained tap pair
+/// fits in `i8`, and damping shifts below 8 so that `u8` shifts do not wrap.
+fn cdef_u8_lanes_fit(filter: &CdefBlockFilter) -> bool {
+    [filter.pri_str, filter.sec_str]
+        .into_iter()
+        .all(|strength| {
+            (0..64).contains(&strength) && constrain_damping_adj(strength, filter.damping) < 8
+        })
 }
 
-/// [`cdef_filter_rows`] for 8-bit samples in an interior layout 8 lanes
-/// wide. Each row pair narrows to one 16-lane `u8` vector, so a tap's
-/// constrain is one vector operation per step instead of two. The weighted
-/// sum widens to `i16`, and the result is the same as the `i16` kernel's.
+/// [`cdef_filter_rows`] in an interior layout 8 lanes wide, for windows whose
+/// samples minus `base` fit `u8`. Each row pair narrows to one 16-lane `u8`
+/// vector, so a tap's constrain is one vector operation per step instead of
+/// two. § 7.18.3 reads only tap differences and clamps to tap values, so
+/// the result moved back by `base` is the same as the `i16` kernel's.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows_8bit<
@@ -769,10 +769,12 @@ fn cdef_filter_rows_8bit<
     starts: &CdefTapStarts,
     out: &mut [u16],
     out_stride: usize,
+    base: u16,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = (filter.pri_str & 1) as usize;
+    let (base_u8, base_i16) = (Simd::splat(base as u8), Simd::splat(base as i16));
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
     let pri = CdefConstrain8::new(filter.pri_str, filter.damping);
@@ -780,11 +782,13 @@ fn cdef_filter_rows_8bit<
     let row_pair = |view: &[u16; SPAN], row: usize| -> Option<Simd<u8, 16>> {
         let first = Simd::<u16, 8>::from_array(*view.get(row * STRIDE..)?.first_chunk()?);
         let second = Simd::<u16, 8>::from_array(*view.get((row + 1) * STRIDE..)?.first_chunk()?);
-        Some(simd_swizzle!(
-            first.cast::<u8>(),
-            second.cast::<u8>(),
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-        ))
+        Some(
+            simd_swizzle!(
+                first.cast::<u8>(),
+                second.cast::<u8>(),
+                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            ) - base_u8,
+        )
     };
     macro_rules! filter_row_pair {
         ($row:literal) => {{
@@ -821,7 +825,7 @@ fn cdef_filter_rows_8bit<
                 if PRI && SEC {
                     filtered = filtered.simd_max(min.cast()).simd_min(max.cast());
                 }
-                let filtered = filtered.cast::<u16>().to_array();
+                let filtered = (filtered + base_i16).cast::<u16>().to_array();
                 cdef_output_row::<8>(out, out_stride, row)?.copy_from_slice(&filtered[..8]); // splot-copy-ok: publish paired SIMD-filtered rows into output
                 if row + 1 < h {
                     cdef_output_row::<8>(out, out_stride, row + 1)?.copy_from_slice(&filtered[8..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
@@ -846,6 +850,43 @@ fn cdef_output_row<const W: usize>(
     out.get_mut(row.checked_mul(stride)?..)?.first_chunk_mut()
 }
 
+/// Runs `kernel` with its `PRI` and `SEC` parameters set to which tap
+/// families `filter` makes active, or evaluates `none` when neither is.
+macro_rules! cdef_by_families {
+    ($filter:expr, $kernel:ident::<$($generic:tt),*>($($arg:expr),*), $none:expr) => {
+        match ($filter.pri_str != 0, $filter.sec_str != 0) {
+            (true, true) => $kernel::<$($generic),*, true, true>($($arg),*),
+            (true, false) => $kernel::<$($generic),*, true, false>($($arg),*),
+            (false, true) => $kernel::<$($generic),*, false, true>($($arg),*),
+            (false, false) => $none,
+        }
+    };
+}
+
+/// Copies a block's centre samples, the output of a block with no active
+/// tap family.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_copy_centre_rows<
+    const W: usize,
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const AREA: usize,
+>(
+    pad: &[u16; AREA],
+    h: usize,
+    out: &mut [u16],
+    out_stride: usize,
+) -> Option<()> {
+    for row in 0..h.min(ROWS) {
+        let start = (2 + row) * STRIDE + CENTER;
+        let center = pad.get(start..)?.first_chunk::<W>()?;
+        cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(center); // splot-copy-ok: unfiltered block keeps its centre samples
+    }
+    Some(())
+}
+
 /// Dispatches [`cdef_filter_rows`] on which tap families are active; with
 /// neither, the block is its centre samples.
 fn cdef_filter_block_rows<
@@ -865,51 +906,27 @@ fn cdef_filter_block_rows<
     out: &mut [u16],
     out_stride: usize,
 ) -> Option<()> {
-    if W == 8 && !HAS_UNAVAILABLE && cdef_8bit_lanes_fit(filter) {
-        match (filter.pri_str != 0, filter.sec_str != 0) {
-            (true, true) => {
-                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA, true, true>(
-                    pad, h, filter, starts, out, out_stride,
-                );
-            }
-            (true, false) => {
-                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA, true, false>(
-                    pad, h, filter, starts, out, out_stride,
-                );
-            }
-            (false, true) => {
-                return cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA, false, true>(
-                    pad, h, filter, starts, out, out_stride,
-                );
-            }
-            (false, false) => {}
-        }
+    macro_rules! copy {
+        () => {
+            cdef_copy_centre_rows::<W, STRIDE, CENTER, ROWS, AREA>(pad, h, out, out_stride)
+        };
     }
-    match (filter.pri_str != 0, filter.sec_str != 0) {
-        (true, true) => {
-            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA, true, true>(
-                pad, h, filter, starts, out, out_stride,
-            )
-        }
-        (true, false) => {
-            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA, true, false>(
-                pad, h, filter, starts, out, out_stride,
-            )
-        }
-        (false, true) => {
-            cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA, false, true>(
-                pad, h, filter, starts, out, out_stride,
-            )
-        }
-        (false, false) => {
-            for row in 0..h.min(ROWS) {
-                let start = (2 + row) * STRIDE + CENTER;
-                let center = pad.get(start..)?.first_chunk::<W>()?;
-                cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(center); // splot-copy-ok: unfiltered block keeps its centre samples
-            }
-            Some(())
-        }
+    if W == 8 && !HAS_UNAVAILABLE && filter.coeff_shift == 0 && cdef_u8_lanes_fit(filter) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA>(
+                pad, h, filter, starts, out, out_stride, 0
+            ),
+            copy!()
+        );
     }
+    cdef_by_families!(
+        filter,
+        cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA>(
+            pad, h, filter, starts, out, out_stride
+        ),
+        copy!()
+    )
 }
 
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block written to a strided output.
@@ -1062,24 +1079,35 @@ pub fn cdef_filter_block_chroma_pair_segment(
 
 /// AV2 § 7.18.3 CDEF over one interior 8x8 luma block of the luma segment
 /// scratch: rows `CDEF_SEGMENT_STRIDE` lanes apart, with the block's first
-/// tap-reach lane at index 0. Returns `false` when `out` cannot hold the
-/// block at `out_stride`.
+/// tap-reach lane at index 0. `window_min` is `Some(min)` only when every
+/// sample of the block's 12x12 window lies in `min..=min + 255`; the block
+/// then runs in `u8` lanes when its filter fits them. Returns `false` when
+/// `out` cannot hold the block at `out_stride`.
 pub fn cdef_filter_block_segment(
     pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
     filter: &CdefBlockFilter,
+    window_min: Option<u16>,
     out: &mut [u16],
     out_stride: usize,
 ) -> bool {
-    cdef_filter_block_rows::<
-        8,
-        16,
-        false,
-        CDEF_SEGMENT_STRIDE,
-        2,
-        8,
-        { 7 * CDEF_SEGMENT_STRIDE + 8 },
-        CDEF_SEGMENT_BLOCK_AREA,
-    >(pad, 8, filter, &CDEF_SEGMENT_TAP_STARTS, out, out_stride)
+    const SPAN: usize = 7 * CDEF_SEGMENT_STRIDE + 8;
+    const AREA: usize = CDEF_SEGMENT_BLOCK_AREA;
+    let starts = &CDEF_SEGMENT_TAP_STARTS;
+    if let Some(base) = window_min
+        && cdef_u8_lanes_fit(filter)
+    {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_8bit::<CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
+                pad, 8, filter, starts, out, out_stride, base
+            ),
+            cdef_copy_centre_rows::<8, CDEF_SEGMENT_STRIDE, 2, 8, AREA>(pad, 8, out, out_stride)
+        )
+        .is_some();
+    }
+    cdef_filter_block_rows::<8, 16, false, CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
+        pad, 8, filter, starts, out, out_stride,
+    )
     .is_some()
 }
 
@@ -1735,7 +1763,9 @@ mod tests {
                             coeff_shift,
                         };
                         let (mut got, mut want) = ([0u16; 80], [0u16; 80]);
-                        assert!(cdef_filter_block_segment(luma_block, &filter, &mut got, 10));
+                        assert!(cdef_filter_block_segment(
+                            luma_block, &filter, None, &mut got, 10
+                        ));
                         assert!(cdef_filter_block_interior_to_valid_stride(
                             &single, 8, 8, &filter, &mut want, 10
                         ));
@@ -1752,6 +1782,45 @@ mod tests {
                             &mut want
                         ));
                         assert_eq!(got, want, "pair block={block} dir={dir} pri={pri_str}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rebased_segment_blocks_match_per_sample_filter() {
+        let mut state = 0x51ed_270bu32;
+        let mut pad = [0u16; CDEF_SEGMENT_BLOCK_AREA];
+        let mut single = [0u16; CDEF_PADDED_AREA];
+        for (base, range) in [(0u16, 256u32), (767, 256), (300, 41)] {
+            pad[..12 * CDEF_SEGMENT_STRIDE].fill_with(|| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                base + ((state >> 13) % range) as u16
+            });
+            for (row, col) in (0..12).flat_map(|row| (0..12).map(move |col| (row, col))) {
+                single[row * CDEF_PADDED_SIDE + col] = pad[row * CDEF_SEGMENT_STRIDE + col];
+            }
+            let min = pad[..12 * CDEF_SEGMENT_STRIDE].iter().copied().min();
+            for dir in 0..8 {
+                for (pri_str, sec_str) in [(1, 0), (60, 0), (0, 4), (0, 16), (15, 4), (60, 16)] {
+                    for damping in 5..=8 {
+                        let filter = CdefBlockFilter {
+                            pri_str,
+                            sec_str,
+                            damping,
+                            dir,
+                            coeff_shift: 2,
+                        };
+                        let mut got = [0u16; 80];
+                        assert!(cdef_filter_block_segment(&pad, &filter, min, &mut got, 10));
+                        for (i, j) in (0..8).flat_map(|i| (0..8).map(move |j| (i, j))) {
+                            assert_eq!(
+                                i32::from(got[i * 10 + j]),
+                                per_sample_reference(&single, i, j, &filter),
+                                "base={base} dir={dir} pri={pri_str} sec={sec_str} i={i} j={j}"
+                            );
+                        }
                     }
                 }
             }

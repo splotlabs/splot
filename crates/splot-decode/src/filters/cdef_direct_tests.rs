@@ -754,3 +754,67 @@ fn edge_segment_falls_back_to_the_per_block_path() {
     assert!(cdef_segment(&lookup, params, (2, 16), (0, 6), &mut scratch, &mut frame).unwrap());
     assert_ne!(cdef_frame_samples(&frame), before);
 }
+
+#[test]
+fn luma_segment_gather_returns_each_block_window_range() {
+    let (width, stride) = (44, 48);
+    let mut state = 0x2468_ace1u32;
+    let samples: Vec<u16> = (0..stride * 14)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 22) as u16
+        })
+        .collect();
+    let mut pad = [0u16; LUMA_SEGMENT_AREA];
+    let ranges = gather_luma_segment(&samples, width, stride, &mut pad, (4, 3)).unwrap();
+    for (block, range) in ranges.into_iter().enumerate() {
+        let window = (1..13).flat_map(|y| {
+            let start = y * stride + 2 + 8 * block;
+            samples[start..start + 12].iter().copied()
+        });
+        let (min, max) = (window.clone().min().unwrap(), window.max().unwrap());
+        assert_eq!(range, [min, max], "block {block}");
+    }
+    for row in 0..12 {
+        let start = (row + 1) * stride + 2;
+        assert_eq!(
+            &pad[row * CDEF_SEGMENT_STRIDE..(row + 1) * CDEF_SEGMENT_STRIDE],
+            &samples[start..start + CDEF_SEGMENT_STRIDE]
+        );
+    }
+}
+
+#[test]
+fn segment_path_matches_per_block_path_on_narrow_windows() {
+    let mut workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 144, 24);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = workspace.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let sample = 700 + ((x * 37 + y * 59 + plane.index() * 11) % 241) as u16;
+                workspace
+                    .set_reconstructed_sample(plane, x, y, sample)
+                    .unwrap();
+            }
+        }
+    }
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
+            .unwrap();
+    for damping in [3, 4, 5, 6] {
+        for (y_pri, y_sec) in [(4, 4), (15, 0), (0, 2), (1, 1)] {
+            let params = CdefFrameParams {
+                y_pri,
+                y_sec,
+                uv_pri: 2,
+                uv_sec: 4,
+                damping,
+            };
+            assert_eq!(
+                run_segment(&workspace, params, &lossless, 8, true),
+                run_segment(&workspace, params, &lossless, 8, false),
+                "{params:?}"
+            );
+        }
+    }
+}
