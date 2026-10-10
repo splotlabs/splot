@@ -70,6 +70,9 @@ impl CoeffReadQuantState {
         }
     }
 
+    /// Inlined for the common level below the remainder threshold, which
+    /// reads nothing; the Golomb remainder stays out of line.
+    #[inline]
     pub(crate) fn read_one(
         &mut self,
         symbols: &mut SymbolDecoder<'_>,
@@ -80,7 +83,16 @@ impl CoeffReadQuantState {
         if input.level < threshold {
             return Ok(CoeffQuantReadInput { quant: input.level });
         }
+        self.read_remainder(symbols, index, input)
+    }
 
+    #[inline(never)]
+    fn read_remainder(
+        &mut self,
+        symbols: &mut SymbolDecoder<'_>,
+        index: usize,
+        input: CoeffReadQuantInput,
+    ) -> Result<CoeffQuantReadInput, CoeffReadQuantError> {
         let lvl_shift = u32::from(input.entry.pos() == 0 && self.is_hidden);
         let pred_level = self.hr_level_avg >> lvl_shift;
         let m = get_msb(pred_level).clamp(MIN_M, MAX_M);
