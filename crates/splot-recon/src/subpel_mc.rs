@@ -19,6 +19,7 @@ mod fullpel_u8;
 mod narrow;
 mod output;
 mod slide;
+mod small_compound;
 mod tip_overlap;
 pub use copy::{
     blend_compound_average_equal, blend_compound_average_weighted,
@@ -1541,6 +1542,19 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         .all(|params| (params.start_x | params.start_y) >> 6 & SUBPEL_MASK == 0)
         && let Some(output) = O::u8_slice_mut(output)
         && fullpel_u8::blend_fullpel_u8_validated(
+            reference0,
+            params0,
+            reference1,
+            params1,
+            cwp_weight,
+            output,
+            output_stride,
+        )
+    {
+        return Ok(true);
+    }
+    if (params0.w, params0.h) == (4, 4)
+        && small_compound::predict(
             reference0,
             params0,
             reference1,
