@@ -1553,17 +1553,15 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     {
         return Ok(true);
     }
-    if (params0.w, params0.h) == (4, 4)
-        && small_compound::predict(
-            reference0,
-            params0,
-            reference1,
-            params1,
-            cwp_weight,
-            output,
-            output_stride,
-        )
-    {
+    if small_compound::predict(
+        reference0,
+        params0,
+        reference1,
+        params1,
+        cwp_weight,
+        output,
+        output_stride,
+    ) {
         return Ok(true);
     }
     let mut pred0 = [0i32; COMPOUND_PRED0_CAPACITY];

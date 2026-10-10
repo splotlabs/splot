@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Fused § 7.13.3.18 prediction of both references of a 4x4 compound cell
-//! and their § 7.13.3.16 COMPOUND_AVERAGE blend.
+//! Fused § 7.13.3.18 prediction of both references of a 4x4 or 8x8 compound
+//! cell and their § 7.13.3.16 COMPOUND_AVERAGE blend.
 //!
 //! A 4-sample axis uses a 4-tap small-block filter whose taps sit at indices
-//! 2..=5, so a row is one 8-sample window and every intermediate stays in
-//! registers. A zero phase skips its pass: `Round2(128 * s, 3) == s << 4` and
-//! `Round2(h << 7, 7) == h` hold exactly, so each phase class keeps the
-//! two-pass arithmetic.
+//! 2..=5, so a 4x4 row is one 8-sample window; an 8x8 row is one sliding
+//! 16-sample window. Every intermediate stays in registers. A zero phase
+//! skips its pass: `Round2(128 * s, 3) == s << 4` and `Round2(h << 7, 7) == h`
+//! hold exactly, so each phase class keeps the two-pass arithmetic.
 
 use super::*;
 use std::simd::simd_swizzle;
@@ -45,35 +45,6 @@ struct Cell<'a, T> {
     v_taps: Taps,
     horizontal: bool,
     vertical: bool,
-}
-
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn cell<'a, T: ReconSample>(
-    reference: &ReferencePlaneView<'a, T>,
-    params: &SubpelPredictParams,
-) -> Option<Cell<'a, T>> {
-    let filter = params.interp.pass_index(SMALL_BLOCK_DIM) as usize;
-    let h_phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
-    let v_phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
-    let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][h_phase];
-    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-    if x0 + tap_start as i32 - 3 < params.first_x || x0 + tap_end as i32 - 1 > params.last_x {
-        return None;
-    }
-    let column = usize::try_from(x0 - i32::from(h_phase != 0)).ok()?;
-    let rows = (Simd::<i32, 8>::splat((params.start_y >> SCALE_SUBPEL_BITS) - 1)
-        + Simd::from_array([0, 1, 2, 3, 4, 5, 6, 7]))
-    .simd_max(Simd::splat(params.first_y))
-    .simd_min(Simd::splat(params.last_y));
-    Some(Cell {
-        samples: reference.samples,
-        rows: core::array::from_fn(|row| rows[row] as usize * reference.stride + column),
-        h_taps: horizontal_taps::<T>(Simd::from_array(SMALL_TAPS[filter][h_phase])),
-        v_taps: Simd::from_array(SMALL_TAPS[filter][v_phase]),
-        horizontal: h_phase != 0,
-        vertical: v_phase != 0,
-    })
 }
 
 /// Halves the even taps of an 8-bit row, which keeps its sums in `i16` as in
@@ -122,54 +93,278 @@ fn vertical(rows: &[Simd<i16, 4>], taps: Taps, shift: u32) -> Row {
     sum >> shift as i32
 }
 
-/// The cell's compound predictor rows, `Round2(.., InterRound1)` of the
-/// two-pass convolution.
+/// One reference of a fused cell: `new` checks it and `predict` returns its
+/// compound predictor rows, or `None` to decline the cell.
+trait CellReference<'a, T: ReconSample>: Sized {
+    type Rows;
+
+    fn new(reference: &ReferencePlaneView<'a, T>, params: &SubpelPredictParams) -> Option<Self>;
+
+    fn predict(&self) -> Option<Self::Rows>;
+}
+
+impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
+    type Rows = [Row; 4];
+
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn new(reference: &ReferencePlaneView<'a, T>, params: &SubpelPredictParams) -> Option<Self> {
+        let filter = params.interp.pass_index(SMALL_BLOCK_DIM) as usize;
+        let h_phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
+        let v_phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
+        let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][h_phase];
+        let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+        if x0 + tap_start as i32 - 3 < params.first_x || x0 + tap_end as i32 - 1 > params.last_x {
+            return None;
+        }
+        let column = usize::try_from(x0 - i32::from(h_phase != 0)).ok()?;
+        let rows = (Simd::<i32, 8>::splat((params.start_y >> SCALE_SUBPEL_BITS) - 1)
+            + Simd::from_array([0, 1, 2, 3, 4, 5, 6, 7]))
+        .simd_max(Simd::splat(params.first_y))
+        .simd_min(Simd::splat(params.last_y));
+        Some(Cell {
+            samples: reference.samples,
+            rows: core::array::from_fn(|row| rows[row] as usize * reference.stride + column),
+            h_taps: horizontal_taps::<T>(Simd::from_array(SMALL_TAPS[filter][h_phase])),
+            v_taps: Simd::from_array(SMALL_TAPS[filter][v_phase]),
+            horizontal: h_phase != 0,
+            vertical: v_phase != 0,
+        })
+    }
+
+    /// The cell's compound predictor rows, `Round2(.., InterRound1)` of the
+    /// two-pass convolution.
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn predict(&self) -> Option<[Row; 4]> {
+        let cell = self;
+        let window = |row: usize| cell.samples.get(cell.rows[row]..cell.rows[row] + 8);
+        let mut rows = [Simd::splat(0); 7];
+        let mut out = [Row::splat(0); 4];
+        match (cell.horizontal, cell.vertical) {
+            (true, true) => {
+                for (row, value) in rows.iter_mut().enumerate() {
+                    *value = horizontal(window(row)?, cell.h_taps);
+                }
+                for (i, out) in out.iter_mut().enumerate() {
+                    *out = vertical(&rows[i..], cell.v_taps, INTER_ROUND1_COMPOUND);
+                }
+            }
+            (true, false) => {
+                for (i, out) in out.iter_mut().enumerate() {
+                    *out = horizontal(window(i + 1)?, cell.h_taps).cast();
+                }
+            }
+            (false, true) => {
+                for (row, value) in rows.iter_mut().enumerate() {
+                    *value = reference_lanes::<4, T>(window(row)?, 0).cast();
+                }
+                // `Round2(s << 4, 7) == Round2(s, 3)`: the zero-phase horizontal pass.
+                for (i, out) in out.iter_mut().enumerate() {
+                    *out = vertical(&rows[i..], cell.v_taps, INTER_ROUND0);
+                }
+            }
+            (false, false) => {
+                for (i, out) in out.iter_mut().enumerate() {
+                    *out = reference_lanes::<4, T>(window(i + 1)?, 0).cast::<i32>()
+                        << (FILTER_BITS - INTER_ROUND0) as i32;
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
+/// Predicts both references of a cell, then blends and stores it; returns
+/// `false` without writing when either reference declines.
+#[inline(never)]
+fn fused<'a, T: ReconSample, O: ReconSample, C, const LANES: usize, const ROWS: usize>(
+    references: [(&ReferencePlaneView<'a, T>, &SubpelPredictParams); 2],
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+) -> bool
+where
+    C: CellReference<'a, T, Rows = [Simd<i32, LANES>; ROWS]>,
+{
+    let [(reference0, params0), (reference1, params1)] = references;
+    let (Some(cell0), Some(cell1)) = (C::new(reference0, params0), C::new(reference1, params1))
+    else {
+        return false;
+    };
+    let (Some(pred0), Some(pred1)) = (cell0.predict(), cell1.predict()) else {
+        return false;
+    };
+    let pred = [pred0, pred1];
+    let bit_depth = params0.bit_depth;
+    let forward = Simd::splat(i32::from(cwp_weight));
+    let backward = Simd::splat(16 - i32::from(cwp_weight));
+    let max_sample = Simd::splat(i32::from(bit_depth.max_sample().min(O::MAX_VALUE)));
+    let shift = 4 + compound_inter_post_round();
+    let blend = |i: usize| {
+        ((pred[0][i] * forward + pred[1][i] * backward + Simd::splat(1 << (shift - 1)))
+            >> shift as i32)
+            .simd_max(Simd::splat(0))
+            .simd_min(max_sample)
+    };
+    if let Some(output) = O::u16_slice_mut(output) {
+        for i in 0..ROWS {
+            output[i * output_stride..][..LANES]
+                .copy_from_slice(&blend(i).cast::<u16>().to_array()); // splot-copy-ok: publish blended SIMD prediction lanes
+        }
+        return true;
+    }
+    if let Some(output) = O::u8_slice_mut(output) {
+        for i in 0..ROWS {
+            output[i * output_stride..][..LANES].copy_from_slice(&blend(i).cast::<u8>().to_array()); // splot-copy-ok: publish blended SIMD prediction lanes
+        }
+        return true;
+    }
+    false
+}
+
+type Row8 = Simd<i32, 8>;
+type Line8 = Simd<i16, 8>;
+
+/// One reference of an 8x8 cell whose nonzero horizontal taps need no
+/// clamping. `top` is the first source row the vertical taps read.
+struct Cell8<'a, T> {
+    samples: &'a [T],
+    stride: usize,
+    column: usize,
+    top: i32,
+    first_y: i32,
+    last_y: i32,
+    h_taps: Simd<i16, NUM_TAPS>,
+    v_taps: &'static [i32],
+    horizontal: bool,
+    vertical: bool,
+}
+
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn predict_reference<T: ReconSample>(cell: &Cell<'_, T>) -> Option<[Row; 4]> {
-    let window = |row: usize| cell.samples.get(cell.rows[row]..cell.rows[row] + 8);
-    let mut rows = [Simd::splat(0); 7];
-    let mut out = [Row::splat(0); 4];
-    match (cell.horizontal, cell.vertical) {
-        (true, true) => {
-            for (row, value) in rows.iter_mut().enumerate() {
-                *value = horizontal(window(row)?, cell.h_taps);
-            }
-            for (i, out) in out.iter_mut().enumerate() {
-                *out = vertical(&rows[i..], cell.v_taps, INTER_ROUND1_COMPOUND);
-            }
+fn window8<'a, T>(cell: &Cell8<'a, T>, row: usize, len: usize) -> Option<&'a [T]> {
+    let y = (cell.top + row as i32).max(cell.first_y).min(cell.last_y) as usize;
+    let offset = y * cell.stride + cell.column;
+    cell.samples.get(offset..offset + len)
+}
+
+/// Source row `row` of the cell: the horizontal-pass intermediate when
+/// `HORIZONTAL`, else the samples themselves.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn line8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>, row: usize) -> Option<Line8> {
+    if HORIZONTAL {
+        let window = window8(cell, row, 2 * NUM_TAPS)?;
+        return Some(Row8::slid_intermediate(window, 0, cell.h_taps));
+    }
+    Some(reference_lanes::<8, T>(window8(cell, row, 8)?, 0).cast())
+}
+
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn two_pass8<T: ReconSample, const TAPS: usize, const HORIZONTAL: bool>(
+    cell: &Cell8<'_, T>,
+) -> Option<[Row8; 8]> {
+    let mut lines = [Line8::splat(0); 8 + NUM_TAPS - 1];
+    for (row, line) in lines[..8 + TAPS - 1].iter_mut().enumerate() {
+        *line = line8::<T, HORIZONTAL>(cell, row)?;
+    }
+    let taps: &[i32; TAPS] = cell.v_taps.try_into().ok()?;
+    let shift = if HORIZONTAL {
+        INTER_ROUND1_COMPOUND
+    } else {
+        INTER_ROUND0
+    };
+    let mut out = [Row8::splat(0); 8];
+    for (i, out) in out.iter_mut().enumerate() {
+        let mut sum = Row8::splat(1 << (shift - 1));
+        for (&tap, &line) in taps.iter().zip(&lines[i..]) {
+            sum = tap_mac(sum, line, tap);
         }
-        (true, false) => {
-            for (i, out) in out.iter_mut().enumerate() {
-                *out = horizontal(window(i + 1)?, cell.h_taps).cast();
-            }
-        }
-        (false, true) => {
-            for (row, value) in rows.iter_mut().enumerate() {
-                *value = reference_lanes::<4, T>(window(row)?, 0).cast();
-            }
-            // `Round2(s << 4, 7) == Round2(s, 3)`: the zero-phase horizontal pass.
-            for (i, out) in out.iter_mut().enumerate() {
-                *out = vertical(&rows[i..], cell.v_taps, INTER_ROUND0);
-            }
-        }
-        (false, false) => {
-            for (i, out) in out.iter_mut().enumerate() {
-                *out = reference_lanes::<4, T>(window(i + 1)?, 0).cast::<i32>()
-                    << (FILTER_BITS - INTER_ROUND0) as i32;
-            }
-        }
+        *out = sum >> shift as i32;
     }
     Some(out)
 }
 
-/// Writes the blended 4x4 cell and returns `true`, or returns `false` without
-/// writing when a nonzero horizontal tap of either reference is clamped.
+impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
+    type Rows = [Row8; 8];
+
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn new(reference: &ReferencePlaneView<'a, T>, params: &SubpelPredictParams) -> Option<Self> {
+        let filter = params.interp.pass_index(8) as usize;
+        let h_phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
+        let v_phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
+        let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][h_phase];
+        let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+        if x0 + tap_start as i32 - 3 < params.first_x || x0 + tap_end as i32 + 3 > params.last_x {
+            return None;
+        }
+        let column = usize::try_from(x0 - if h_phase != 0 { 3 } else { 0 }).ok()?;
+        let (v_start, v_end) = ACTIVE_TAP_SPANS[filter][v_phase];
+        let v_count = match v_end - v_start {
+            0..=2 => 2,
+            3..=4 => 4,
+            5..=6 => 6,
+            _ => NUM_TAPS,
+        };
+        let v_start = v_start.min(NUM_TAPS - v_count);
+        Some(Cell8 {
+            samples: reference.samples,
+            stride: reference.stride,
+            column,
+            top: (params.start_y >> SCALE_SUBPEL_BITS) - 3 + v_start as i32,
+            first_y: params.first_y,
+            last_y: params.last_y,
+            h_taps: slide::intermediate_taps::<T>(&SUBPEL_FILTERS[filter][h_phase]),
+            v_taps: &SUBPEL_FILTERS[filter][v_phase][v_start..v_start + v_count],
+            horizontal: h_phase != 0,
+            vertical: v_phase != 0,
+        })
+    }
+
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn predict(&self) -> Option<[Row8; 8]> {
+        let cell = self;
+        match (cell.horizontal, cell.vertical, cell.v_taps.len()) {
+            (true, true, 2) => two_pass8::<T, 2, true>(cell),
+            (true, true, 4) => two_pass8::<T, 4, true>(cell),
+            (true, true, 6) => two_pass8::<T, 6, true>(cell),
+            (true, true, _) => two_pass8::<T, NUM_TAPS, true>(cell),
+            (false, true, 2) => two_pass8::<T, 2, false>(cell),
+            (false, true, 4) => two_pass8::<T, 4, false>(cell),
+            (false, true, 6) => two_pass8::<T, 6, false>(cell),
+            (false, true, _) => two_pass8::<T, NUM_TAPS, false>(cell),
+            (true, false, _) => {
+                let mut out = [Row8::splat(0); 8];
+                for (row, out) in out.iter_mut().enumerate() {
+                    *out = line8::<T, true>(cell, row)?.cast();
+                }
+                Some(out)
+            }
+            (false, false, _) => {
+                let mut out = [Row8::splat(0); 8];
+                for (row, out) in out.iter_mut().enumerate() {
+                    *out =
+                        line8::<T, false>(cell, row)?.cast() << (FILTER_BITS - INTER_ROUND0) as i32;
+                }
+                Some(out)
+            }
+        }
+    }
+}
+
+/// Writes a blended 4x4 or 8x8 cell and returns `true`, or returns `false`
+/// without writing for other sizes or when a nonzero horizontal tap of either
+/// reference is clamped.
 ///
 /// The parameters are plane-bounded and validated by the caller, and `output`
-/// holds the strided 4x4 rectangle.
+/// holds the strided cell rectangle.
 #[allow(clippy::too_many_arguments)]
-#[inline(never)]
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
 pub(super) fn predict<T: ReconSample, O: ReconSample>(
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
@@ -179,34 +374,12 @@ pub(super) fn predict<T: ReconSample, O: ReconSample>(
     output: &mut [O],
     output_stride: usize,
 ) -> bool {
-    let (Some(cell0), Some(cell1)) = (cell(reference0, params0), cell(reference1, params1)) else {
-        return false;
-    };
-    let (Some(pred0), Some(pred1)) = (predict_reference(&cell0), predict_reference(&cell1)) else {
-        return false;
-    };
-    let forward = Row::splat(i32::from(cwp_weight));
-    let backward = Row::splat(16 - i32::from(cwp_weight));
-    let max_sample = Row::splat(i32::from(params0.bit_depth.max_sample().min(O::MAX_VALUE)));
-    let shift = 4 + compound_inter_post_round();
-    let blended = core::array::from_fn::<_, 4, _>(|i| {
-        ((pred0[i] * forward + pred1[i] * backward + Row::splat(1 << (shift - 1))) >> shift as i32)
-            .simd_max(Row::splat(0))
-            .simd_min(max_sample)
-    });
-    if let Some(output) = O::u16_slice_mut(output) {
-        for (i, row) in blended.into_iter().enumerate() {
-            output[i * output_stride..][..4].copy_from_slice(&row.cast::<u16>().to_array()); // splot-copy-ok: publish four blended SIMD prediction lanes
-        }
-        return true;
+    let references = [(reference0, params0), (reference1, params1)];
+    match (params0.w, params0.h) {
+        (4, 4) => fused::<T, O, Cell<'_, T>, 4, 4>(references, cwp_weight, output, output_stride),
+        (8, 8) => fused::<T, O, Cell8<'_, T>, 8, 8>(references, cwp_weight, output, output_stride),
+        _ => false,
     }
-    if let Some(output) = O::u8_slice_mut(output) {
-        for (i, row) in blended.into_iter().enumerate() {
-            output[i * output_stride..][..4].copy_from_slice(&row.cast::<u8>().to_array()); // splot-copy-ok: publish four blended SIMD prediction lanes
-        }
-        return true;
-    }
-    false
 }
 
 #[cfg(test)]
@@ -278,7 +451,7 @@ mod tests {
     /// Compares random `size x size` compound cells of every phase class with
     /// the two-call path, through the fast dispatch and the fused kernel.
     fn check_cells<T: ReconSample>(bit_depth: BitDepth, size: usize) {
-        let (width, height) = (40usize, 36usize);
+        let (width, height) = (24 + 4 * size, 20 + 4 * size);
         let max = bit_depth.max_sample();
         let mut rng = Lcg(u64::from(max) * 31 + size as u64);
         let mut plane = || {
@@ -361,9 +534,11 @@ mod tests {
     }
 
     #[test]
-    fn fused_four_by_four_cells_match_the_two_call_path() {
-        check_cells::<u8>(BitDepth::Eight, 4);
-        check_cells::<u16>(BitDepth::Ten, 4);
-        check_cells::<u16>(BitDepth::Eight, 4);
+    fn fused_cells_match_the_two_call_path() {
+        for size in [4, 8] {
+            check_cells::<u8>(BitDepth::Eight, size);
+            check_cells::<u16>(BitDepth::Ten, size);
+            check_cells::<u16>(BitDepth::Eight, size);
+        }
     }
 }
