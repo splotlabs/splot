@@ -888,9 +888,11 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
     let cases = [
         (64, 64, [64, 127], [56, 119], [0, 1023], 16, 16),
         (68, 64, [64, 127], [56, 119], [0, 1023], 15, 3),
-        (256, 8, [256, 271], [0, 55], [0, 479], 4, 12),
+        (192, 8, [192, 271], [0, 55], [0, 479], 20, 12),
         (0, 0, [0, 63], [0, 55], [0, 1023], 16, 14),
         (128, 52, [128, 191], [56, 119], [0, 1023], 9, 20),
+        (128, 52, [128, 300], [56, 119], [0, 1023], 40, 3),
+        (0, 8, [0, 63], [0, 1023], [0, 1023], 20, 2),
         (64, 56, [64, 127], [56, 119], [64, 111], 16, 16),
         (64, 72, [64, 127], [0, 55], [64, 127], 7, 5),
         (4, 8, [0, 200], [0, 1023], [0, 1023], 20, 2),
@@ -912,16 +914,23 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
             tile_start_y: tile_y0,
             tile_end_y: tile_y1,
         };
-        let mut scalar = Vec::new();
-        for row in 0..rows {
-            for col in 0..cols {
-                let mut cell = params;
-                cell.x += 4 * col as isize;
-                cell.y += 4 * row as isize;
-                let source = |x, y| Ok(sample(x, y));
-                scalar.push(pc_wiener_classify::<u16, _, _>(&cell, source, lookup).unwrap());
+        let scalar = |split_blocks: bool| {
+            let mut cells = Vec::new();
+            for row in 0..rows {
+                for col in 0..cols {
+                    let mut cell = params;
+                    cell.x += 4 * col as isize;
+                    cell.y += 4 * row as isize;
+                    if split_blocks {
+                        cell.block_start_x = (cell.x as usize >> 6) << 6;
+                        cell.block_end_x = block_x1.min(cell.block_start_x + 63);
+                    }
+                    let source = |x, y| Ok(sample(x, y));
+                    cells.push(pc_wiener_classify::<u16, _, _>(&cell, source, lookup).unwrap());
+                }
             }
-        }
+            cells
+        };
         let case = format!("{x},{y} {cols}x{rows}");
         let grid = pc_wiener_classify_grid::<u16, _, _>(
             &params,
@@ -930,7 +939,7 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
             |x, y| Ok(sample(x, y)),
             lookup,
         );
-        assert_eq!(grid.unwrap(), scalar, "{case}");
+        assert_eq!(grid.unwrap(), scalar(false), "{case}");
         let (origin_x, origin_y) = (x - 8, y - 8);
         let stride = 4 * cols + 16;
         let padded: Vec<u16> = (0..stride * (4 * rows + 16))
@@ -950,10 +959,21 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
             &source,
             |run| Ok(&tx_skip_grid[run.row * grid_cols + run.col..(run.row + 1) * grid_cols]),
             &mut scratch,
-        )
-        .unwrap();
-        let expected: Vec<u8> = scalar.iter().map(|cell| cell.class).collect();
-        assert_eq!(classes, expected, "{case}");
+        );
+        let last_x = x + 4 * (cols as isize - 1);
+        if x < 0
+            || x & 3 != 0
+            || (x >> 6) << 6 != block_x0 as isize
+            || (last_x >> 6) << 6 > block_x1 as isize
+        {
+            assert!(
+                matches!(classes, Err(ReconError::PcWienerInvalidBounds { .. })),
+                "{case}"
+            );
+            continue;
+        }
+        let expected: Vec<u8> = scalar(true).iter().map(|cell| cell.class).collect();
+        assert_eq!(classes.unwrap(), expected, "{case}");
     }
 }
 
@@ -999,10 +1019,11 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
     .unwrap()
     .as_ptr();
     let source_ptr = scratch.source_cache.as_ptr();
-    let feature_ptr = scratch.feature_grid.as_ptr();
+    let feature_ptr = scratch.feature_rows.as_ptr();
     let capacities = (
         scratch.source_cache.capacity(),
-        scratch.feature_grid.capacity(),
+        scratch.feature_rows.capacity(),
+        scratch.skip_sums.capacity(),
         scratch.classifications.capacity(),
     );
 
@@ -1018,12 +1039,13 @@ fn padded_into_reuses_capacity_from_large_to_small_grid() {
     .as_ptr();
 
     assert_eq!(scratch.source_cache.as_ptr(), source_ptr);
-    assert_eq!(scratch.feature_grid.as_ptr(), feature_ptr);
+    assert_eq!(scratch.feature_rows.as_ptr(), feature_ptr);
     assert_eq!(small_output_ptr, large_output_ptr);
     assert_eq!(
         (
             scratch.source_cache.capacity(),
-            scratch.feature_grid.capacity(),
+            scratch.feature_rows.capacity(),
+            scratch.skip_sums.capacity(),
             scratch.classifications.capacity(),
         ),
         capacities

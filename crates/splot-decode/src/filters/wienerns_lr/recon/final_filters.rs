@@ -1811,79 +1811,45 @@ impl StripeChain<'_> {
             self.bit_depth,
         )
         .map_err(lr_window_error)?;
-        let mut group_start = 0;
-        while group_start < cell_cols {
-            let class_x = block
-                .x
-                .checked_add(group_start.saturating_mul(MI_SIZE))
-                .ok_or_else(super::lr_pipeline_state_error)?;
-            let block_start_x = (class_x >> 6) << 6;
-            let mut group_end = group_start + 1;
-            while group_end < cell_cols {
-                let next_x = block
-                    .x
-                    .checked_add(group_end.saturating_mul(MI_SIZE))
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                if ((next_x >> 6) << 6) != block_start_x {
-                    break;
-                }
-                group_end += 1;
+        let last_x = cell_cols
+            .checked_sub(1)
+            .and_then(|last| last.checked_mul(MI_SIZE))
+            .and_then(|span| block.x.checked_add(span))
+            .ok_or_else(super::lr_pipeline_state_error)?;
+        let block_end_x = super::super::pc_wiener_block_end_x(block, (last_x >> 6) << 6)
+            .map_err(|_| super::lr_pipeline_state_error())?;
+        let params = PcWienerClassifyParams {
+            x: usize_to_isize_recon(block.x, "luma LR PC-Wiener x")
+                .map_err(|_| super::lr_pipeline_state_error())?,
+            y: usize_to_isize_recon(block.y, "luma LR PC-Wiener y")
+                .map_err(|_| super::lr_pipeline_state_error())?,
+            bit_depth: self.bit_depth,
+            base_q_idx: qindex,
+            block_start_x: (block.x >> 6) << 6,
+            block_end_x,
+            luma_stripe_start_y: block.luma_stripe_start_y,
+            luma_stripe_end_y: block.luma_stripe_end_y,
+            tile_start_y,
+            tile_end_y,
+        };
+        with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
+            let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+                &params,
+                cell_cols,
+                cell_rows,
+                &padded_source,
+                |run| tx_skip_grid.run(run.row, run.col, run.len),
+                scratch,
+            )
+            .map_err(lr_window_error)?;
+            if classes.len() != cell_subclasses.len() {
+                return Err(super::lr_pipeline_state_error());
             }
-            let block_end_x = super::super::pc_wiener_block_end_x(block, block_start_x)
-                .map_err(|_| super::lr_pipeline_state_error())?;
-            let params = PcWienerClassifyParams {
-                x: usize_to_isize_recon(class_x, "luma LR PC-Wiener x")
-                    .map_err(|_| super::lr_pipeline_state_error())?,
-                y: usize_to_isize_recon(block.y, "luma LR PC-Wiener y")
-                    .map_err(|_| super::lr_pipeline_state_error())?,
-                bit_depth: self.bit_depth,
-                base_q_idx: qindex,
-                block_start_x,
-                block_end_x,
-                luma_stripe_start_y: block.luma_stripe_start_y,
-                luma_stripe_end_y: block.luma_stripe_end_y,
-                tile_start_y,
-                tile_end_y,
-            };
-            let group_cols = group_end - group_start;
-            with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
-                let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
-                    &params,
-                    group_cols,
-                    cell_rows,
-                    &padded_source,
-                    |run| tx_skip_grid.run(run.row, run.col, run.len),
-                    scratch,
-                )
-                .map_err(lr_window_error)?;
-                for cell_row in 0..cell_rows {
-                    let class_start = cell_row
-                        .checked_mul(group_cols)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    let class_end = class_start
-                        .checked_add(group_cols)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    let cell_start = cell_row
-                        .checked_mul(cell_cols)
-                        .and_then(|start| start.checked_add(group_start))
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    let cell_end = cell_start
-                        .checked_add(group_cols)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    let Some(classes) = classes.get(class_start..class_end) else {
-                        return Err(super::lr_pipeline_state_error());
-                    };
-                    let Some(cells) = cell_subclasses.get_mut(cell_start..cell_end) else {
-                        return Err(super::lr_pipeline_state_error());
-                    };
-                    for (cell, &class) in cells.iter_mut().zip(classes) {
-                        *cell = subclass_table[usize::from(class)];
-                    }
-                }
-                Ok(())
-            })?;
-            group_start = group_end;
-        }
+            for (cell, &class) in cell_subclasses.iter_mut().zip(classes) {
+                *cell = subclass_table[usize::from(class)];
+            }
+            Ok(())
+        })?;
 
         Ok(cell_subclasses)
     }

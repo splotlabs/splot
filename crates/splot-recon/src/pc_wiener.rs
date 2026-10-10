@@ -178,7 +178,8 @@ pub struct PcWienerClassification {
 #[derive(Debug)]
 pub struct PcWienerClassifyScratch {
     source_cache: Vec<u16>,
-    feature_grid: Vec<[u16; 4]>,
+    feature_rows: Vec<[u16; 4]>,
+    skip_sums: Vec<u8>,
     qval_cache_key: Option<(u32, BitDepth)>,
     qval_offsets: QvalOffsetsCache,
     classifications: Vec<PcWienerClassification>,
@@ -189,7 +190,8 @@ impl Default for PcWienerClassifyScratch {
     fn default() -> Self {
         Self {
             source_cache: Vec::new(),
-            feature_grid: Vec::new(),
+            feature_rows: Vec::new(),
+            skip_sums: Vec::new(),
             qval_cache_key: None,
             qval_offsets: [[0; PC_WIENER_NUM_FEATURES]; PC_WIENER_WINDOW_POINTS + 1],
             classifications: Vec::new(),
@@ -431,7 +433,8 @@ where
             )?);
         }
     }
-    let mut feature_grid = Vec::new();
+    let mut feature_rows = Vec::new();
+    let mut skip_sums = Vec::new();
     let mut classifications = Vec::new();
     let mut qval_offsets: QvalOffsetsCache =
         [[0; PC_WIENER_NUM_FEATURES]; PC_WIENER_WINDOW_POINTS + 1];
@@ -442,11 +445,12 @@ where
         cell_rows,
         &geo,
         |row| cache_row(&source_cache, row, geo.source_width),
-        &mut feature_grid,
+        &mut feature_rows,
+        &mut skip_sums,
         &qval_offsets,
         &mut classifications,
         tx_skip_cells(tx_skip),
-        finish_pc_wiener_classification_cached,
+        false,
     )?;
     Ok(classifications)
 }
@@ -516,11 +520,12 @@ where
         source,
         tx_skip_cells(tx_skip),
         &mut scratch.source_cache,
-        &mut scratch.feature_grid,
+        &mut scratch.feature_rows,
+        &mut scratch.skip_sums,
         &mut scratch.qval_cache_key,
         &mut scratch.qval_offsets,
         &mut scratch.classifications,
-        finish_pc_wiener_classification_cached,
+        false,
     )
 }
 
@@ -530,8 +535,15 @@ where
 /// `tx_skip(run)` answers a whole [`PcWienerTxSkipRun`] instead of one lookup
 /// at a time: it returns `LrTxSkip` row `run.row` from column `run.col`, at
 /// least `run.len` values long; values past `run.len` are ignored.
+///
+/// The cells may span several § 7.20.4 64-sample blocks: the cell at luma `x`
+/// uses `BlockStartX = (x >> 6) << 6` and `BlockEndX = Min(params.block_end_x,
+/// BlockStartX + 63)`. `params.x` must be a multiple of four and
+/// `params.block_start_x` the first cell's `BlockStartX`; then only the last
+/// block can reach its `get_features` clip, so one feature grid serves all.
 /// # Errors
-/// Returns the same errors as [`pc_wiener_classify_grid_padded_into`].
+/// Returns the same errors as [`pc_wiener_classify_grid_padded_into`], and
+/// [`ReconError::PcWienerInvalidBounds`] for a span that breaks these rules.
 #[inline]
 pub fn pc_wiener_classify_grid_padded_classes_into<'a, 'g, T, FT>(
     params: &PcWienerClassifyParams,
@@ -552,33 +564,34 @@ where
         source,
         |run, _| tx_skip(run).map(Some),
         &mut scratch.source_cache,
-        &mut scratch.feature_grid,
+        &mut scratch.feature_rows,
+        &mut scratch.skip_sums,
         &mut scratch.qval_cache_key,
         &mut scratch.qval_offsets,
         &mut scratch.classes,
-        finish_pc_wiener_class_cached,
+        true,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn classify_grid_padded_mapped_into<'a, 'g, T, FT, O, FM>(
+fn classify_grid_padded_mapped_into<'a, 'g, T, FT, O>(
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
     source: &PcWienerClassifyPaddedSource<'_, T>,
     tx_skip: FT,
     source_scratch: &mut Vec<u16>,
-    feature_grid: &mut Vec<[u16; 4]>,
+    feature_rows: &mut Vec<[u16; 4]>,
+    skip_sums: &mut Vec<u8>,
     qval_cache_key: &mut Option<(u32, BitDepth)>,
     qval_offsets: &mut QvalOffsetsCache,
     output: &'a mut Vec<O>,
-    finish: FM,
+    split_blocks: bool,
 ) -> Result<&'a [O]>
 where
     T: ReconSample,
     FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
-    O: Copy + Default,
-    FM: FnMut([i32; PC_WIENER_NUM_FEATURES], usize, BitDepth, &QvalOffsetsCache) -> Result<O>,
+    O: ClassifiedCell,
 {
     source_scratch.clear();
     output.clear();
@@ -622,11 +635,12 @@ where
                 cache_row(cache, row, geo.source_width)
             }
         },
-        feature_grid,
+        feature_rows,
+        skip_sums,
         qval_offsets,
         output,
         tx_skip,
-        finish,
+        split_blocks,
     );
     if let Err(error) = result {
         output.clear();
@@ -638,7 +652,6 @@ where
 /// Caller-resolved geometry shared by the callback and padded classify grids.
 struct ClassifyGridGeometry {
     feature_width: usize,
-    feature_height: usize,
     feature_start_x: isize,
     block_end_plus_two: isize,
     source_start_x: isize,
@@ -713,7 +726,6 @@ fn classify_grid_geometry(
     )?;
     Ok(ClassifyGridGeometry {
         feature_width,
-        feature_height,
         feature_start_x,
         block_end_plus_two,
         source_start_x,
@@ -866,26 +878,24 @@ fn validate_padded_u16_source<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn classify_grid_from_cache<'s, 'g, FR, FT, O, FM>(
+fn classify_grid_from_cache<'s, 'g, FR, FT, O>(
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
     geo: &ClassifyGridGeometry,
     source_row: FR,
-    feature_grid: &mut Vec<[u16; 4]>,
+    feature_rows: &mut Vec<[u16; 4]>,
+    skip_sums: &mut Vec<u8>,
     offsets_cache: &QvalOffsetsCache,
     output: &mut Vec<O>,
     mut tx_skip: FT,
-    mut finish: FM,
+    split_blocks: bool,
 ) -> Result<()>
 where
     FR: Fn(usize) -> Result<&'s [u16]>,
     FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
-    O: Copy + Default,
-    FM: FnMut([i32; PC_WIENER_NUM_FEATURES], usize, BitDepth, &QvalOffsetsCache) -> Result<O>,
+    O: ClassifiedCell,
 {
-    build_feature_grid(geo, source_row, feature_grid)?;
-
     let cell_count = checked_area(
         cell_cols,
         cell_rows,
@@ -898,47 +908,112 @@ where
             context: "PC-Wiener classification-grid",
         })?;
     output.resize(cell_count, O::default());
-    let pooled_width = geo.feature_width / 2;
-    for first_col in (0..cell_cols).step_by(TX_SKIP_LANES) {
-        let lanes = (cell_cols - first_col).min(TX_SKIP_LANES);
-        let mut skips = TxSkipSums::new(params, first_col, lanes)?;
+    skip_sums
+        .try_reserve_exact(cell_count.saturating_sub(skip_sums.len()))
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "PC-Wiener tx-skip sums",
+        })?;
+    skip_sums.resize(cell_count, 0);
+    let first_x = usize::try_from(params.x)
+        .ok()
+        .filter(|x| x.is_multiple_of(4));
+    if split_blocks
+        && first_x.is_none_or(|x| {
+            (x >> 6) << 6 != params.block_start_x
+                || params.block_end_x < ((x + 4 * (cell_cols - 1)) >> 6) << 6
+        })
+    {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener block span",
+        });
+    }
+    let mut first_col = 0;
+    while first_col < cell_cols {
+        let remaining = cell_cols - first_col;
+        let (lanes, bounds) = match first_x {
+            Some(x) if split_blocks => {
+                let x = x + 4 * first_col;
+                let start = (x >> 6) << 6;
+                let bounds = [start, params.block_end_x.min(start + 63)];
+                (remaining.min((start + 64 - x) / 4), bounds)
+            }
+            _ => (
+                remaining.min(TX_SKIP_LANES),
+                [params.block_start_x, params.block_end_x],
+            ),
+        };
+        let mut skips = TxSkipSums::new(params, first_col, lanes, bounds)?;
         let mut carry = skips.next(&mut tx_skip)? + skips.next(&mut tx_skip)?;
-        for (cell_row, cells) in output[first_col..]
-            .chunks_mut(cell_cols)
-            .take(cell_rows)
-            .enumerate()
-        {
+        for row_sums in skip_sums[first_col..].chunks_mut(cell_cols).take(cell_rows) {
             let near = skips.next(&mut tx_skip)? + skips.next(&mut tx_skip)?;
             let far = skips.next(&mut tx_skip)? + skips.next(&mut tx_skip)?;
-            let skip_sums = (carry + near + far).to_array();
+            let sums = (carry + near + far).to_array();
+            for (sum, lane) in row_sums[..lanes].iter_mut().zip(sums) {
+                *sum = lane;
+            }
             carry = far;
-            let mut window_rows: [&[[u16; 8]]; 3] = [&[]; 3];
-            let mut leading = Simd::<u16, 4>::splat(0);
-            for (row, groups) in window_rows.iter_mut().enumerate() {
-                let start = (2 * cell_row + row) * pooled_width + 2 * first_col;
-                let (head, tail) = pooled_row_window(feature_grid, start, lanes)?;
-                leading += Simd::from_array(head);
-                *groups = tail;
+        }
+        first_col += lanes;
+    }
+
+    let pooled_width = geo.feature_width / 2;
+    let row_count = 3 * pooled_width;
+    feature_rows
+        .try_reserve_exact(row_count.saturating_sub(feature_rows.len()))
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "PC-Wiener feature rows",
+        })?;
+    feature_rows.resize(row_count, [0; 4]);
+    let columns = pooled_feature_columns(geo)?;
+    let build_row = |feature_rows: &mut [[u16; 4]], pooled_row: usize| -> Result<()> {
+        let slot = pooled_row % 3 * pooled_width;
+        let rows = [
+            source_row(2 * pooled_row)?,
+            source_row(2 * pooled_row + 1)?,
+            source_row(2 * pooled_row + 2)?,
+            source_row(2 * pooled_row + 3)?,
+        ];
+        pooled_feature_row(rows, &mut feature_rows[slot..slot + pooled_width], columns);
+        Ok(())
+    };
+    build_row(feature_rows, 0)?;
+    for (cell_row, (cells, row_sums)) in output
+        .chunks_mut(cell_cols)
+        .zip(skip_sums.chunks(cell_cols))
+        .enumerate()
+    {
+        build_row(feature_rows, 2 * cell_row + 1)?;
+        build_row(feature_rows, 2 * cell_row + 2)?;
+        let mut window_rows: [&[[u16; 8]]; 3] = [&[]; 3];
+        let mut leading = Simd::<u16, 4>::splat(0);
+        for (row, groups) in window_rows.iter_mut().enumerate() {
+            let start = (2 * cell_row + row) % 3 * pooled_width;
+            let (head, tail) = pooled_row_window(feature_rows, start, cell_cols)?;
+            leading += Simd::from_array(head);
+            *groups = tail;
+        }
+        let mut shared = leading.cast::<i32>();
+        for ((cell_col, cell), &skip_sum) in cells.iter_mut().enumerate().zip(row_sums) {
+            let mut pair = Simd::<u16, 8>::splat(0);
+            for groups in window_rows {
+                pair += Simd::from_array(groups[cell_col]);
             }
-            let mut shared = leading.cast::<i32>();
-            for ((cell_col, cell), &skip_sum) in
-                cells[..lanes].iter_mut().enumerate().zip(&skip_sums)
-            {
-                let mut pair = Simd::<u16, 8>::splat(0);
-                for groups in window_rows {
-                    pair += Simd::from_array(groups[cell_col]);
-                }
-                let last = simd_swizzle!(pair, [4, 5, 6, 7]).cast::<i32>();
-                let sums =
-                    (shared + simd_swizzle!(pair, [0, 1, 2, 3]).cast::<i32>() + last).to_array();
-                *cell = finish(
-                    [0, sums[0], sums[1], sums[2]],
-                    usize::from(skip_sum),
-                    params.bit_depth,
-                    offsets_cache,
-                )?;
-                shared = last;
-            }
+            let last = simd_swizzle!(pair, [4, 5, 6, 7]).cast::<i32>();
+            let sums = (shared + simd_swizzle!(pair, [0, 1, 2, 3]).cast::<i32>() + last).to_array();
+            let Some(rounding) = offsets_cache.get(usize::from(skip_sum)) else {
+                return Err(ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener tx-skip cache index",
+                });
+            };
+            *cell = O::finish(
+                [0, sums[0], sums[1], sums[2]],
+                skip_sum,
+                rounding,
+                params.bit_depth,
+            );
+            shared = last;
         }
     }
     Ok(())
@@ -976,7 +1051,12 @@ struct TxSkipSums {
 }
 
 impl TxSkipSums {
-    fn new(params: &PcWienerClassifyParams, first_col: usize, lanes: usize) -> Result<Self> {
+    fn new(
+        params: &PcWienerClassifyParams,
+        first_col: usize,
+        lanes: usize,
+        [block_start_x, block_end_x]: [usize; 2],
+    ) -> Result<Self> {
         let bound = |value: usize| usize_to_isize(value, "PC-Wiener tx-skip bounds");
         let phase = (params.x & 3) as u8;
         let left = u8::from(phase == 0);
@@ -984,16 +1064,13 @@ impl TxSkipSums {
             next_y: coordinate_add(params.y, -PC_WIENER_LEAD, "PC-Wiener tx-skip y")?,
             first: coordinate_add(params.x >> 2, bound(first_col)?, "PC-Wiener tx-skip x")?,
             lanes,
-            cols: [
-                bound(params.block_start_x >> 2)?,
-                bound(params.block_end_x >> 2)?,
-            ],
+            cols: [bound(block_start_x >> 2)?, bound(block_end_x >> 2)?],
             stripe: [
                 bound(params.luma_stripe_start_y)?,
                 bound(params.luma_stripe_end_y)?,
             ],
             tile: [params.tile_start_y, params.tile_end_y],
-            block_start_x: params.block_start_x,
+            block_start_x,
             weights: [left, 5 - phase - left, phase + 1],
             lane_masks: [
                 TX_SKIP_LANE_INDEX.simd_lt(Simd::splat(lanes as u8)),
@@ -1119,25 +1196,10 @@ fn pooled_row_window(
     Ok((*head, tail.as_flattened().as_chunks::<8>().0))
 }
 
-/// Builds the 2x2-pooled feature grid: entry `(k, j)` sums the § 7.20.4
-/// `get_features` values of feature rows `2k..2k + 2` and columns
-/// `2j..2j + 2`, with a zero fourth lane.
-///
-/// Every 6x6 `get_box_features` window starts on an even feature row and
-/// column, so it is exactly 3x3 pooled entries. A pooled feature is at most
-/// `4 * 2 * 1023` under § 6 Table 6.3's 10-bit cap, so three pooled rows still
-/// fit `u16` lanes. The § 7.20.4 column clip keeps its center column inside the
-/// source cache, so a row's linear span reaches exactly `linear_cols + 2`
-/// cached samples. A row whose columns are all unclipped ends with a SIMD
-/// chunk that overlaps the previous one instead of a scalar tail.
-fn build_feature_grid<'s, FR>(
-    geo: &ClassifyGridGeometry,
-    source_row: FR,
-    feature_grid: &mut Vec<[u16; 4]>,
-) -> Result<()>
-where
-    FR: Fn(usize) -> Result<&'s [u16]>,
-{
+/// The § 7.20.4 `get_features` column clip as pooled-row build inputs: the
+/// count of feature columns whose center stays linear, and the source column
+/// every other center clips to.
+fn pooled_feature_columns(geo: &ClassifyGridGeometry) -> Result<[usize; 2]> {
     let linear_cols = if geo.feature_start_x > geo.block_end_plus_two {
         0
     } else {
@@ -1154,66 +1216,66 @@ where
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener source-grid center column",
         })?;
-    let pooled_width = geo.feature_width / 2;
-    let pooled_count = checked_area(
-        pooled_width,
-        geo.feature_height / 2,
-        "PC-Wiener feature-grid sample count",
-    )?;
-    feature_grid
-        .try_reserve_exact(pooled_count.saturating_sub(feature_grid.len()))
-        .map_err(|_| ReconError::WorkspaceAllocationFailed {
-            plane: PlaneId::Y,
-            context: "PC-Wiener feature-grid",
-        })?;
-    feature_grid.resize(pooled_count, [0; 4]);
-    for (pooled_row, grid_row) in feature_grid.chunks_exact_mut(pooled_width).enumerate() {
-        let rows = [
-            source_row(2 * pooled_row)?,
-            source_row(2 * pooled_row + 1)?,
-            source_row(2 * pooled_row + 2)?,
-            source_row(2 * pooled_row + 3)?,
-        ];
-        let mut j = 0;
-        while j < pooled_width {
-            let start = if 2 * j + 16 <= linear_cols {
-                j
-            } else if linear_cols == geo.feature_width && pooled_width >= 8 {
-                pooled_width - 8
-            } else {
-                break;
-            };
-            let chunk = 2 * start..2 * start + 18;
-            pooled_features_simd(
-                [
-                    &rows[0][chunk.clone()],
-                    &rows[1][chunk.clone()],
-                    &rows[2][chunk.clone()],
-                    &rows[3][chunk],
-                ],
-                &mut grid_row[start..start + 8],
-            );
-            j = start + 8;
-        }
-        for (j, entry) in grid_row.iter_mut().enumerate().skip(j) {
-            let mut sums = [0i32; 3];
-            for (up, cur, down) in [(rows[0], rows[1], rows[2]), (rows[1], rows[2], rows[3])] {
-                for col in [2 * j, 2 * j + 1] {
-                    let center = if col < linear_cols {
-                        col + 1
-                    } else {
-                        clamped_center
-                    };
-                    let values = second_derivative_features(up, cur, down, center);
-                    for (sum, value) in sums.iter_mut().zip(values) {
-                        *sum += value;
-                    }
+    Ok([linear_cols, clamped_center])
+}
+
+/// Builds one row of the 2x2-pooled feature grid from its four source `rows`:
+/// entry `j` sums the § 7.20.4 `get_features` values of the row's two
+/// feature rows and feature columns `2j..2j + 2`, with a zero fourth lane.
+///
+/// Every 6x6 `get_box_features` window starts on an even feature row and
+/// column, so it is exactly 3x3 pooled entries. A pooled feature is at most
+/// `4 * 2 * 1023` under § 6 Table 6.3's 10-bit cap, so three pooled rows still
+/// fit `u16` lanes. The § 7.20.4 column clip keeps its center column inside the
+/// source cache, so a row's linear span reaches exactly `linear_cols + 2`
+/// cached samples. A row whose columns are all unclipped ends with a SIMD
+/// chunk that overlaps the previous one instead of a scalar tail.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn pooled_feature_row(
+    rows: [&[u16]; 4],
+    grid_row: &mut [[u16; 4]],
+    [linear_cols, clamped_center]: [usize; 2],
+) {
+    let pooled_width = grid_row.len();
+    let mut j = 0;
+    while j < pooled_width {
+        let start = if 2 * j + 16 <= linear_cols {
+            j
+        } else if linear_cols == 2 * pooled_width && pooled_width >= 8 {
+            pooled_width - 8
+        } else {
+            break;
+        };
+        let chunk = 2 * start..2 * start + 18;
+        pooled_features_simd(
+            [
+                &rows[0][chunk.clone()],
+                &rows[1][chunk.clone()],
+                &rows[2][chunk.clone()],
+                &rows[3][chunk],
+            ],
+            &mut grid_row[start..start + 8],
+        );
+        j = start + 8;
+    }
+    for (j, entry) in grid_row.iter_mut().enumerate().skip(j) {
+        let mut sums = [0i32; 3];
+        for (up, cur, down) in [(rows[0], rows[1], rows[2]), (rows[1], rows[2], rows[3])] {
+            for col in [2 * j, 2 * j + 1] {
+                let center = if col < linear_cols {
+                    col + 1
+                } else {
+                    clamped_center
+                };
+                let values = second_derivative_features(up, cur, down, center);
+                for (sum, value) in sums.iter_mut().zip(values) {
+                    *sum += value;
                 }
             }
-            *entry = [sums[0] as u16, sums[1] as u16, sums[2] as u16, 0];
         }
+        *entry = [sums[0] as u16, sums[1] as u16, sums[2] as u16, 0];
     }
-    Ok(())
 }
 
 /// Pools sixteen feature columns of two feature rows into eight entries.
@@ -1387,54 +1449,54 @@ fn finish_pc_wiener_classification(
     ))
 }
 
-#[allow(
-    clippy::inline_always,
-    reason = "measured PC-Wiener classification hot path"
-)]
-#[inline(always)]
-fn finish_pc_wiener_classification_cached(
-    raw_features: [i32; PC_WIENER_NUM_FEATURES],
-    raw_tx_skip_sum: usize,
-    bit_depth: BitDepth,
-    offsets_cache: &QvalOffsetsCache,
-) -> Result<PcWienerClassification> {
-    let Some(offsets) = offsets_cache.get(raw_tx_skip_sum) else {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "PC-Wiener tx-skip cache index",
-        });
-    };
-    let raw_tx_skip_sum =
-        i32::try_from(raw_tx_skip_sum).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener tx-skip normalization",
-        })?;
-    let normalized_tx_skip = raw_tx_skip_sum * PC_WIENER_NORMALIZER[PC_WIENER_NUM_FEATURES];
-    Ok(finish_pc_wiener_classification_with_lut_input(
-        raw_features,
-        raw_tx_skip_sum,
-        normalized_tx_skip,
-        bit_depth,
-        rounded_lut_input(raw_features, offsets, bit_depth),
-    ))
+/// One cell of a grid classification, finished from its raw 6x6 window sums
+/// and the [`QvalOffsetsCache`] entry of its tx-skip sum.
+trait ClassifiedCell: Copy + Default {
+    fn finish(
+        raw_features: [i32; PC_WIENER_NUM_FEATURES],
+        raw_tx_skip_sum: u8,
+        rounding: &[i32; PC_WIENER_NUM_FEATURES],
+        bit_depth: BitDepth,
+    ) -> Self;
 }
 
-#[allow(
-    clippy::inline_always,
-    reason = "measured PC-Wiener classification hot path"
-)]
-#[inline(always)]
-fn finish_pc_wiener_class_cached(
-    raw_features: [i32; PC_WIENER_NUM_FEATURES],
-    raw_tx_skip_sum: usize,
-    bit_depth: BitDepth,
-    offsets_cache: &QvalOffsetsCache,
-) -> Result<u8> {
-    let Some(offsets) = offsets_cache.get(raw_tx_skip_sum) else {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "PC-Wiener tx-skip cache index",
-        });
-    };
-    let lut_input = rounded_lut_input(raw_features, offsets, bit_depth);
-    Ok(PC_WIENER_LUT_TO_CLASS[usize::from(lut_input)])
+impl ClassifiedCell for PcWienerClassification {
+    #[allow(
+        clippy::inline_always,
+        reason = "measured PC-Wiener classification hot path"
+    )]
+    #[inline(always)]
+    fn finish(
+        raw_features: [i32; PC_WIENER_NUM_FEATURES],
+        raw_tx_skip_sum: u8,
+        rounding: &[i32; PC_WIENER_NUM_FEATURES],
+        bit_depth: BitDepth,
+    ) -> Self {
+        let raw_tx_skip_sum = i32::from(raw_tx_skip_sum);
+        finish_pc_wiener_classification_with_lut_input(
+            raw_features,
+            raw_tx_skip_sum,
+            raw_tx_skip_sum * PC_WIENER_NORMALIZER[PC_WIENER_NUM_FEATURES],
+            bit_depth,
+            rounded_lut_input(raw_features, rounding, bit_depth),
+        )
+    }
+}
+
+impl ClassifiedCell for u8 {
+    #[allow(
+        clippy::inline_always,
+        reason = "measured PC-Wiener classification hot path"
+    )]
+    #[inline(always)]
+    fn finish(
+        raw_features: [i32; PC_WIENER_NUM_FEATURES],
+        _: u8,
+        rounding: &[i32; PC_WIENER_NUM_FEATURES],
+        bit_depth: BitDepth,
+    ) -> Self {
+        PC_WIENER_LUT_TO_CLASS[usize::from(rounded_lut_input(raw_features, rounding, bit_depth))]
+    }
 }
 
 /// § 7.20.4 `lutInput` from raw box features and one [`QvalOffsetsCache`]
