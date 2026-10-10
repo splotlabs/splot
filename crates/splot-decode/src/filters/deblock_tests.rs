@@ -1210,29 +1210,134 @@ fn memoized_candidate_walk_matches_every_edge_in_spec_order() {
     )
     .unwrap();
     let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
-    let workspace = || {
-        let mut workspace = yuv420_workspace(64, 64, 0);
-        for y in 0..64 {
-            for x in 0..64 {
+    assert_walk_matches_every_edge(&grid, 0, (64, 64), (mi_rows, mi_cols));
+}
+
+#[test]
+fn repeated_edges_match_every_edge_across_chunks_frame_edges_and_chroma() {
+    #[allow(clippy::too_many_arguments)]
+    let block = |r: usize, c: usize, n4w, n4h, tx: u8, pu: (usize, usize), sub_pu, skip, qindex| {
+        DeblockBlock {
+            r: r as u32,
+            c: c as u32,
+            luma_prediction: prediction(pu.0, pu.1, 1),
+            chroma_prediction: prediction(pu.0, pu.1, 1),
+            chroma_base_r: r as u32,
+            chroma_base_c: c as u32,
+            n4w,
+            n4h,
+            luma_tx: tx,
+            chroma_tx: Some(tx.saturating_sub(1)),
+            sub_pu_size: sub_pu,
+            chroma_transform_only: false,
+            qindex,
+            skip,
+            lossless: false,
+        }
+    };
+    let tall = Some(DeblockSubPuSize::new(64, 8));
+    let blocks = [
+        block(0, 0, 24, 8, 2, (0, 0), None, false, 100),
+        block(0, 24, 16, 8, 2, (0, 24), None, true, 160),
+        block(0, 40, 1, 8, 0, (0, 40), None, false, 120),
+        block(0, 41, 3, 8, 0, (0, 41), None, false, 200),
+        block(8, 0, 8, 12, 1, (8, 0), tall, false, 90),
+        block(8, 8, 8, 12, 1, (8, 0), None, true, 90),
+        block(8, 16, 20, 4, 2, (8, 16), None, false, 140),
+        block(12, 16, 20, 8, 2, (12, 16), None, false, 140),
+        block(8, 36, 8, 12, 3, (8, 36), None, true, 180),
+    ];
+    let (mi_rows, mi_cols) = (20, 44);
+    let storage = build_mi_grid(
+        &blocks,
+        mi_rows,
+        mi_cols,
+        &mut DeblockGridStorage::default(),
+    )
+    .unwrap();
+    let frame = (4 * mi_cols - 2, 4 * mi_rows - 2);
+    let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
+    assert_walk_matches_every_edge(&grid, 0, frame, (mi_rows, mi_cols));
+
+    let mut chroma = ChromaDeblockRecords::default();
+    chroma.push_both(block(0, 40, 4, 8, 1, (0, 40), None, false, 60));
+    let mut transform = block(8, 16, 12, 12, 2, (8, 16), None, false, 140);
+    transform.chroma_transform_only = true;
+    chroma.push_both(transform);
+    let overlay = overlay_mi_grid(
+        &storage,
+        &chroma,
+        0,
+        mi_rows,
+        mi_cols,
+        1,
+        1,
+        &mut DeblockGridStorage::default().chroma[0],
+    )
+    .unwrap();
+    let grid = MiGrid::new(&storage, Some(&overlay), &blocks, &chroma);
+    assert_walk_matches_every_edge(&grid, 1, frame, (mi_rows, mi_cols));
+}
+
+/// A step-and-gradient pattern with a noisy quadrant, so that some edges
+/// filter wide, some narrow and some not at all.
+fn walk_test_workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
+    let mut workspace = yuv420_workspace(width, height, 0);
+    for plane in [PlaneId::Y, PlaneId::U] {
+        let (plane_width, plane_height) = coded_plane_dimensions(&workspace, plane).unwrap();
+        for y in 0..plane_height {
+            for x in 0..plane_width {
                 let step = 10 * (((x >> 4) ^ (y >> 3)) & 1);
-                let noise = if x >= 32 && y < 32 {
-                    (x * 7 + y * 5) % 5
-                } else {
-                    0
-                };
-                let value = 80 + ((x + 2 * y) >> 2) + step + noise;
+                let noisy = x >= plane_width / 2 && y < plane_height / 2;
+                let noise = if noisy { (x * 7 + y * 5) % 5 } else { 0 };
+                let value = 80 + ((x + 2 * y) >> 2) % 64 + step + noise;
                 workspace
-                    .set_reconstructed_sample(PlaneId::Y, x, y, value as u8)
+                    .set_reconstructed_sample(plane, x, y, value as u8)
                     .unwrap();
             }
         }
-        workspace
-    };
-    let mut filter = filter([true, true, false, false]);
+    }
+    workspace
+}
+
+/// Filters one edge on its own, as the § 7.17 pass loops visit it.
+fn filter_edge_alone<const PLANE: usize, const PASS: usize>(
+    ctx: &mut PlaneCtx<'_, '_, u8>,
+    grid: &MiGrid<'_>,
+    plane_pass: PlanePass,
+    row: usize,
+    col: usize,
+) {
+    if PASS == 0 && col == 0 || PASS == 1 && row == 0 {
+        return;
+    }
+    let (sub_x, sub_y) = (plane_pass.plane_sub_x, plane_pass.plane_sub_y);
+    let blocks = edge_blocks::<PLANE, PASS>(grid, row, col, sub_x, sub_y).unwrap();
+    let mut run = None;
+    let strengths = StrengthCache::new(0, 0, BitDepth::Eight);
+    let edge = plane_pass.edge_context(row, col, false);
+    deblock_filter_edge_specialized::<u8, PLANE, PASS>(
+        ctx, blocks, edge, false, &strengths, &mut None, &mut run,
+    )
+    .unwrap();
+    flush_run::<u8, PASS>(&mut run, ctx, BitDepth::Eight).unwrap();
+}
+
+/// Asserts that both pass walks over `plane` filter exactly what visiting
+/// every on-screen edge alone in pass order does, and that this filters a
+/// meaningful share of the plane.
+fn assert_walk_matches_every_edge(
+    grid: &MiGrid<'_>,
+    plane: usize,
+    (width, height): (usize, usize),
+    (mi_rows, mi_cols): (usize, usize),
+) {
+    let plane_id = plane_index_to_id(plane);
+    let mut filter = filter([true, true, true, true]);
     filter.allow_df_sub_pu = true;
     let pass = |pass| {
         PlanePass::active(
-            0,
+            plane,
             pass,
             filter,
             DeblockQuantDeltas::ZERO,
@@ -1242,55 +1347,39 @@ fn memoized_candidate_walk_matches_every_edge_in_spec_order() {
         )
         .unwrap()
     };
-    let strengths = StrengthCache::new(0, 0, BitDepth::Eight);
-
-    let mut walked = workspace();
-    with_plane_band(&mut walked, |band| {
+    let mut walked = walk_test_workspace(width, height);
+    with_plane_band(&mut walked, plane_id, |band| {
         for plane_pass in [pass(0), pass(1)] {
-            deblock_plane_pass_serial(band, &grid, plane_pass, mi_rows, mi_cols, None, false)
+            deblock_plane_pass_serial(band, grid, plane_pass, mi_rows, mi_cols, None, false)
                 .unwrap();
         }
     });
-    let mut reference = workspace();
-    with_plane_ctx(&mut reference, PlaneId::Y, |ctx| {
-        for row in 0..mi_rows {
-            for col in 0..mi_cols {
-                let edge = pass(0).edge_context(row, col, None);
-                let mut run = None;
-                deblock_filter_edge_specialized::<u8, 0, 0>(
-                    ctx, &grid, edge, false, &strengths, &mut None, &mut run,
-                )
-                .unwrap();
-                flush_run::<u8, 0>(&mut run, ctx, BitDepth::Eight).unwrap();
-            }
-        }
-        for row in 0..mi_rows {
-            for col in 0..mi_cols {
-                let edge = pass(1).edge_context(row, col, None);
-                let mut run = None;
-                deblock_filter_edge_specialized::<u8, 0, 1>(
-                    ctx, &grid, edge, false, &strengths, &mut None, &mut run,
-                )
-                .unwrap();
-                flush_run::<u8, 1>(&mut run, ctx, BitDepth::Eight).unwrap();
+    let mut reference = walk_test_workspace(width, height);
+    with_plane_ctx(&mut reference, plane_id, |ctx| {
+        for plane_pass in [pass(0), pass(1)] {
+            let edge = match (plane, plane_pass.pass) {
+                (0, 0) => filter_edge_alone::<0, 0>,
+                (0, _) => filter_edge_alone::<0, 1>,
+                (_, 0) => filter_edge_alone::<1, 0>,
+                _ => filter_edge_alone::<1, 1>,
+            };
+            for row in (0..mi_rows).step_by(1 << plane_pass.plane_sub_y) {
+                for col in (0..mi_cols).step_by(1 << plane_pass.plane_sub_x) {
+                    edge(ctx, grid, plane_pass, row, col);
+                }
             }
         }
     });
-    let original = workspace();
-    let sample = |workspace: &CurrentFrameWorkspace<u8>, x, y| {
-        workspace.reconstructed_sample(PlaneId::Y, x, y).unwrap()
+    let original = walk_test_workspace(width, height);
+    let samples = |workspace: &CurrentFrameWorkspace<u8>| {
+        workspace.plane(plane_id).unwrap().samples().to_vec()
     };
-    let mut changed = 0;
-    for y in 0..64 {
-        for x in 0..64 {
-            assert_eq!(
-                sample(&walked, x, y),
-                sample(&reference, x, y),
-                "({x}, {y})"
-            );
-            changed += usize::from(sample(&reference, x, y) != sample(&original, x, y));
-        }
-    }
+    assert_eq!(samples(&walked), samples(&reference), "plane {plane}");
+    let changed = samples(&reference)
+        .iter()
+        .zip(samples(&original))
+        .filter(|(filtered, original)| **filtered != *original)
+        .count();
     assert!(
         changed > 64,
         "the reference filters a meaningful share: {changed}"
@@ -1299,11 +1388,12 @@ fn memoized_candidate_walk_matches_every_edge_in_spec_order() {
 
 fn with_plane_band<R>(
     ws: &mut CurrentFrameWorkspace<u8>,
+    plane: PlaneId,
     f: impl FnOnce(&mut PlaneBand<'_, u8>) -> R,
 ) -> R {
-    let (width, height) = coded_plane_dimensions(ws, PlaneId::Y).unwrap();
+    let (width, height) = coded_plane_dimensions(ws, plane).unwrap();
     let mut frame = ws.as_frame_mut().unwrap();
-    let view = frame.plane_mut(PlaneId::Y).unwrap();
+    let view = frame.plane_mut(plane).unwrap();
     let stride = view.stride_samples();
     f(&mut PlaneBand::plane(
         view.samples_mut(),

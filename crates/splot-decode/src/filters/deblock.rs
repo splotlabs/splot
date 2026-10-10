@@ -1032,17 +1032,47 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
         plane_pass.df_delta_q,
         plane_pass.bit_depth,
     );
-    let (mut cache, mut run) = (None, None);
-    let mut visit = |r: usize, c: usize| {
-        deblock_filter_edge_specialized::<T, PLANE, PASS>(
+    let (mut cache, mut run): (_, EdgeRun) = (None, None);
+    let mut last: Option<(usize, usize, (EdgeBlock<'_>, EdgeBlock<'_>), Repeat)> = None;
+    let (sub_x, sub_y) = (plane_pass.plane_sub_x, plane_pass.plane_sub_y);
+    let step = if PASS == 0 {
+        plane_pass.row_step
+    } else {
+        1 << sub_x
+    };
+    let mut visit = |r: usize, c: usize, tile_edge: bool| -> Result<(), DeblockError> {
+        let (line, pos) = if PASS == 0 { (c, r) } else { (r, c) };
+        let blocks = edge_blocks::<PLANE, PASS>(grid, r, c, sub_x, sub_y)?;
+        if let Some((held_line, held_pos, held, repeat)) = last
+            && held_line == line
+            && held.0.same(blocks.0)
+            && held.1.same(blocks.1)
+        {
+            match repeat {
+                Repeat::Skip => return Ok(()),
+                Repeat::Join
+                    if held_pos + step == pos && ctx.in_span::<PASS>(r, c, sub_x, sub_y) =>
+                {
+                    if let Some((_, edges)) = run.as_mut() {
+                        *edges += 1;
+                        last = Some((line, pos, blocks, repeat));
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let repeat = deblock_filter_edge_specialized::<T, PLANE, PASS>(
             &mut ctx,
-            grid,
-            plane_pass.edge_context(r, c, tile_starts),
+            blocks,
+            plane_pass.edge_context(r, c, tile_edge),
             disable_loopfilters_across_tiles,
             &strengths,
             &mut cache,
             &mut run,
-        )
+        )?;
+        last = Some((line, pos, blocks, repeat));
+        Ok(())
     };
     let row_step = plane_pass.row_step;
     let end = plane_pass.mi_row_range.1.min(mi_rows);
@@ -1058,6 +1088,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
     let mut masks = [0u32; VERTICAL_WALK_ROWS];
     for block_start in (first..end).step_by(row_step * block_rows) {
         let rows = (block_start..end).step_by(row_step).take(block_rows);
+        let row_tile_edge = PASS == 1 && starts_tile(tile_starts, block_start);
         for start in (0..mi_cols).step_by(CANDIDATE_CHUNK) {
             let mut any = 0;
             for (mask, r) in masks.iter_mut().zip(rows.clone()) {
@@ -1069,9 +1100,11 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
             }
             while any != 0 {
                 let bit = any.trailing_zeros();
+                let col = start + bit as usize;
+                let tile_edge = row_tile_edge || PASS == 0 && starts_tile(tile_starts, col);
                 for (mask, r) in masks.iter().zip(rows.clone()) {
                     if mask >> bit & 1 != 0 {
-                        visit(r, start + bit as usize)?;
+                        visit(r, col, tile_edge)?;
                     }
                 }
                 any &= any - 1;
@@ -1244,6 +1277,22 @@ impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
         })
     }
 
+    /// Whether the edge at mode-info (`row`, `col`) ends inside the plane
+    /// along its pass's line, the one placement term a line does not fix.
+    const fn in_span<const PASS: usize>(
+        &self,
+        row: usize,
+        col: usize,
+        sub_x: usize,
+        sub_y: usize,
+    ) -> bool {
+        if PASS == 0 {
+            ((row * MI_SIZE) >> sub_y) + MI_SIZE <= self.height
+        } else {
+            ((col * MI_SIZE) >> sub_x) + MI_SIZE <= self.width
+        }
+    }
+
     fn local_coords(&self, x: usize, y: usize) -> Option<(usize, usize)> {
         let row = y
             .checked_sub(self.y_origin)
@@ -1390,11 +1439,7 @@ impl PlanePass {
 
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    fn edge_context(self, row: usize, col: usize, tile_starts: Option<&[u32]>) -> EdgeContext {
-        let coordinate = if self.pass == 0 { col } else { row };
-        let tile_edge = tile_starts.is_some_and(|starts| {
-            u32::try_from(coordinate).is_ok_and(|coordinate| starts.contains(&coordinate))
-        });
+    fn edge_context(self, row: usize, col: usize, tile_edge: bool) -> EdgeContext {
         EdgeContext {
             row,
             col,
@@ -1405,6 +1450,13 @@ impl PlanePass {
             tile_edge,
         }
     }
+}
+
+/// Whether mode-info `coordinate` is one of the interior tile `starts`.
+fn starts_tile(starts: Option<&[u32]>, coordinate: usize) -> bool {
+    starts.is_some_and(|starts| {
+        u32::try_from(coordinate).is_ok_and(|coordinate| starts.contains(&coordinate))
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1496,7 +1548,7 @@ fn deblock_filter_edge<T: ReconSample>(
     let mut run = None;
     deblock_filter_edge_specialized::<T, 0, 0>(
         plane_ctx,
-        grid,
+        edge_blocks::<0, 0>(grid, ctx.row, ctx.col, 0, 0)?,
         ctx,
         disable_loopfilters_across_tiles,
         strengths,
@@ -1520,6 +1572,21 @@ struct EdgeDecision {
 /// The last decision a pass derived, with the row (horizontal pass) or column
 /// (vertical pass) and the two records it was derived for.
 type EdgeCache<'g> = Option<(usize, EdgeBlock<'g>, EdgeBlock<'g>, Option<EdgeDecision>)>;
+
+/// What a pass walk may do with the next edge of the same two records on the
+/// same row (horizontal pass) or column (vertical pass).
+///
+/// Along one line only the span check reads the edge position once the
+/// records fix a uniform decision, so the outcome repeats.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Repeat {
+    /// Derive it afresh.
+    Derive,
+    /// Skip it: the records filter no edge of this line.
+    Skip,
+    /// Add it to the held run when it continues the run inside the plane.
+    Join,
+}
 
 /// One contiguous edge's sample-filter inputs, with `boundary` the band index
 /// of its first line's `q0`.
@@ -1592,6 +1659,34 @@ fn replace_run<T: ReconSample, const PASS: usize>(
     }
 }
 
+/// The current and previous records across the edge at mode-info
+/// (`row`, `col`); the walk visits no edge on the plane's first row or column.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn edge_blocks<'g, const PLANE: usize, const PASS: usize>(
+    grid: &'g MiGrid,
+    row: usize,
+    col: usize,
+    sub_x: usize,
+    sub_y: usize,
+) -> Result<(EdgeBlock<'g>, EdgeBlock<'g>), DeblockError> {
+    let edge = |row: usize, col: usize| {
+        let edge = if PLANE == 0 {
+            grid.get_luma_edge(row, col)
+        } else {
+            grid.get_edge(row, col)
+        };
+        edge.ok_or(DeblockError::UncoveredMi { row, col })
+    };
+    let prev = if PASS == 0 {
+        col.checked_sub(1 << sub_x).map(|col| (row, col))
+    } else {
+        row.checked_sub(1 << sub_y).map(|row| (row, col))
+    };
+    let (prev_row, prev_col) = prev.ok_or(DeblockError::UncoveredMi { row, col })?;
+    Ok((edge(row, col)?, edge(prev_row, prev_col)?))
+}
+
 impl EdgeBlock<'_> {
     fn same(self, other: Self) -> bool {
         core::ptr::eq(self.block, other.block)
@@ -1607,13 +1702,13 @@ impl EdgeBlock<'_> {
 #[inline(always)]
 fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const PASS: usize>(
     plane_ctx: &mut PlaneCtx<'_, '_, T>,
-    grid: &'g MiGrid,
+    (curr, prev): (EdgeBlock<'g>, EdgeBlock<'g>),
     ctx: EdgeContext,
     disable_loopfilters_across_tiles: bool,
     strengths: &StrengthCache,
     cache: &mut EdgeCache<'g>,
     run: &mut EdgeRun,
-) -> Result<(), DeblockError> {
+) -> Result<Repeat, DeblockError> {
     let EdgeContext {
         row,
         col,
@@ -1632,49 +1727,29 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
     let y = row * MI_SIZE;
 
     if disable_loopfilters_across_tiles && tile_edge {
-        return Ok(());
+        return Ok(Repeat::Derive);
     }
 
     let sb_edge = pass == 1 && y.is_multiple_of(SB_SIZE) || pass == 0 && tile_edge;
 
-    let on_screen = !((pass == 0 && x == 0) || (pass == 1 && y == 0));
-    if !on_screen {
-        return Ok(());
-    }
-
     let x_p = x >> plane_sub_x;
     let y_p = y >> plane_sub_y;
 
-    let prev_row = row - (dy << plane_sub_y);
-    let prev_col = col - (dx << plane_sub_x);
-
-    let edge = |row, col| {
-        if PLANE == 0 {
-            grid.get_luma_edge(row, col)
-        } else {
-            grid.get_edge(row, col)
-        }
-    };
-    let curr = edge(row, col).ok_or(DeblockError::UncoveredMi { row, col })?;
-    let prev = edge(prev_row, prev_col).ok_or(DeblockError::UncoveredMi {
-        row: prev_row,
-        col: prev_col,
-    })?;
-
     let line = if pass == 0 { col } else { row };
-    let decision = match *cache {
+    let (decision, uniform) = match *cache {
         Some((cached_line, cached_curr, cached_prev, decision))
             if cached_line == line && cached_curr.same(curr) && cached_prev.same(prev) =>
         {
-            decision
+            (decision, true)
         }
         _ => {
             let (decision, uniform) =
                 edge_decision::<PLANE, PASS>(curr, prev, x_p, y_p, ctx, strengths);
             *cache = uniform.then_some((line, curr, prev, decision));
-            decision
+            (decision, uniform)
         }
     };
+    let repeat = |repeat| if uniform { repeat } else { Repeat::Derive };
     let Some(EdgeDecision {
         mut filter_size,
         q_thr,
@@ -1683,7 +1758,7 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
         curr_lossless,
     }) = decision
     else {
-        return Ok(());
+        return Ok(repeat(Repeat::Skip));
     };
 
     let (plane_width, plane_height) = (plane_ctx.width, plane_ctx.height);
@@ -1697,7 +1772,7 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
 
     let (max_width_neg, max_width_pos) = deblock_filter_max_width(filter_size, plane != 0, sb_edge);
     if max_width_neg == 0 || max_width_pos == 0 {
-        return Ok(());
+        return Ok(Repeat::Derive);
     }
 
     let horizontal = dx == 1
@@ -1725,7 +1800,8 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
             prev_lossless,
             curr_lossless,
         };
-        return queue_edge::<T, PASS>(run, plane_ctx, edge, bit_depth);
+        queue_edge::<T, PASS>(run, plane_ctx, edge, bit_depth)?;
+        return Ok(repeat(Repeat::Join));
     }
 
     let width = choose_filter_width(
@@ -1740,7 +1816,7 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
         max_width_pos,
     )?;
     if width == 0 {
-        return Ok(());
+        return Ok(Repeat::Derive);
     }
 
     let eff_neg = width.min(max_width_neg);
@@ -1766,7 +1842,8 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
         PerpLine::new(x_p, y_p, dx, dy),
         MI_SIZE,
         sample_params,
-    )
+    )?;
+    Ok(Repeat::Derive)
 }
 
 /// Derives § 7.17.2 `applyFilter`, `filterSize`, `qThr` and `side` from the
