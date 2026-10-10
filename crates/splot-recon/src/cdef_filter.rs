@@ -821,11 +821,14 @@ fn cdef_filter_rows_8bit<
                     add_pair!(sec_views[6], sec_views[7], sec, sec_taps[1]);
                 }
                 let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
-                let mut filtered = center.cast::<i16>() + ((Simd::splat(8) + sum - negative) >> 4);
-                if PRI && SEC {
-                    filtered = filtered.simd_max(min.cast()).simd_min(max.cast());
-                }
-                let filtered = (filtered + base_i16).cast::<u16>().to_array();
+                let filtered = center.cast::<i16>() + ((Simd::splat(8) + sum - negative) >> 4);
+                let filtered = if PRI && SEC {
+                    let clipped = filtered.simd_clamp(Simd::splat(0), Simd::splat(255)).cast::<u8>();
+                    clipped.simd_max(min).simd_min(max).cast::<u16>() + Simd::splat(base)
+                } else {
+                    (filtered + base_i16).cast::<u16>()
+                };
+                let filtered = filtered.to_array();
                 cdef_output_row::<8>(out, out_stride, row)?.copy_from_slice(&filtered[..8]); // splot-copy-ok: publish paired SIMD-filtered rows into output
                 if row + 1 < h {
                     cdef_output_row::<8>(out, out_stride, row + 1)?.copy_from_slice(&filtered[8..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
