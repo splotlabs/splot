@@ -324,21 +324,22 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             return Ok(None);
         }
         if batch.search_refinemv && search_range_allowed(mvs) {
-            return Ok(self.searched_cell(batch, rect, mvs));
+            return self.searched_cell(sink, batch, rect, mvs, distances);
         }
         self.unsearched_cell(sink, batch, rect, mvs, distances)
     }
 
     /// [`tip_refinemv_optflow_motion_cell`] when the centre SAD keeps the
-    /// candidates and the optical-flow SAD skips the refinement. Only interior
-    /// units, whose SAD rows and columns no bound clamps, take this path.
+    /// candidates. Only interior units, whose SAD rows and columns no bound
+    /// clamps, take this path, so the optical flow reads the references too.
     fn searched_cell(
         &self,
+        sink: &WorkspaceSink<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         rect: McBlockRect,
         mvs: [Mv; 2],
-    ) -> Option<MotionCell> {
-        let threshold = batch.optflow_sad_threshold?;
+        distances: [i32; 2],
+    ) -> Result<Option<MotionCell>> {
         let origins = origins(rect, mvs);
         let origin = |reference: usize| {
             let (x, y) = origins[reference];
@@ -346,24 +347,28 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             (x >= 2 && y >= 2 && x + 9 <= last_x && y + 8 <= last_y)
                 .then_some((x as usize, y as usize))
         };
-        let [(x0, y0), (x1, y1)] = [origin(0)?, origin(1)?];
-        let center = self.sad(
+        let (Some((x0, y0)), Some((x1, y1))) = (origin(0), origin(1)) else {
+            return Ok(None);
+        };
+        let Some(center) = self.sad(
             [x0 - 2, x1 - 2],
             (0..6).map(|row| [y0 - 2 + 2 * row, y1 - 2 + 2 * row]),
             12,
-        )? >> self.shift;
+        ) else {
+            return Ok(None);
+        };
+        let center = center >> self.shift;
         if center - (center >> 3) >= 12 * 12 * 2 {
-            return None;
+            return Ok(None);
         }
-        let sad = self.sad([x0, x1], (0..8).map(|row| [y0 + row, y1 + row]), 8)? >> self.shift;
-        (sad < threshold).then(|| MotionCell::from_refinemv(mvs))
+        let rows = [y0, y1].map(|y| core::array::from_fn(|row| y + row));
+        self.optflow_cell(sink, batch, [x0, x1], rows, mvs, distances)
     }
 
     /// [`super::optflow::tip_unit_motion_cell`] for an unsearched unit. Its
     /// rows `Y..Y + 8` lie inside the refine window `Y - 3..=Y + 11`, so the
     /// copy clamps them to the plane alone, with or without that window.
-    /// Units whose columns would clamp take the full path; a miss predicts
-    /// from the same samples.
+    /// Units whose columns would clamp take the full path.
     fn unsearched_cell(
         &self,
         sink: &WorkspaceSink<'_, '_, T>,
@@ -383,6 +388,21 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             rows[reference] =
                 core::array::from_fn(|row| (y + row as i32).clamp(0, last_y) as usize);
         }
+        self.optflow_cell(sink, batch, xs, rows, mvs, distances)
+    }
+
+    /// The cell of a unit whose 8x8 predictions are the reference rows `rows`
+    /// from columns `xs`: the candidates when the optical-flow SAD skips the
+    /// refinement, else the § 7.13.3.9 delta derived from the same samples.
+    fn optflow_cell(
+        &self,
+        sink: &WorkspaceSink<'_, '_, T>,
+        batch: &CompoundMcBlock<'_, T>,
+        xs: [usize; 2],
+        rows: [[usize; 8]; 2],
+        mvs: [Mv; 2],
+        distances: [i32; 2],
+    ) -> Result<Option<MotionCell>> {
         let Some(sad) = self.sad(xs, (0..8).map(|row| [rows[0][row], rows[1][row]]), 8) else {
             return Ok(None);
         };

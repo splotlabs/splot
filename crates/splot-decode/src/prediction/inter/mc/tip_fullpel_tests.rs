@@ -148,7 +148,7 @@ fn fast_cells_match_the_full_path<T: ReconSample>(bit_depth: BitDepth) {
         base(true, true, Some(6), true),
         base(false, true, Some(6), true),
         base(false, false, Some(6), true),
-        base(true, true, None, false),
+        base(true, true, None, true),
         base(false, true, None, true),
         base(false, false, None, true),
         Case {
@@ -210,15 +210,18 @@ fn fast_cells_match_the_full_path<T: ReconSample>(bit_depth: BitDepth) {
     ] {
         check(&still, case);
     }
-    for (delta, fast) in [(5u16, true), (6, false)] {
+    for delta in [5u16, 6] {
         let refs = [
             reference::<T>(bit_depth, &[]),
             reference::<T>(bit_depth, &[(19, 17, delta << shift)]),
         ];
-        check(&refs, base(true, true, Some(6), fast));
+        check(&refs, base(true, true, Some(6), true));
         check(&refs, base(false, true, Some(6), true));
     }
     let refs = [ramp::<T>(bit_depth, 0), ramp::<T>(bit_depth, 1)];
+    for threshold in [Some(6), None] {
+        check(&refs, base(true, true, threshold, true));
+    }
     for (refine, threshold) in [(true, Some(6)), (false, Some(6)), (false, None)] {
         for row in [0, -19 * 8, 28 * 8] {
             check(
