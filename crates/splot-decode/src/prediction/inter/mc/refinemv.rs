@@ -118,6 +118,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
     ))
 }
 
+#[inline(never)]
 fn search_refinemv<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
@@ -143,44 +144,68 @@ fn search_refinemv<T: ReconSample>(
     let mut prediction_rect = rect;
     prediction_rect.luma_w = prediction_width;
     prediction_rect.luma_h = prediction_height;
-    let search_mv = |candidate: Mv| Mv {
-        row: candidate.row - SEARCH_PADDING,
-        col: candidate.col - SEARCH_PADDING,
+    let predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
+        let references = [block.reference0, block.reference1];
+        for ((reference, candidate), prediction) in
+            references.into_iter().zip(candidates).zip([pred0, pred1])
+        {
+            let search_mv = Mv {
+                row: candidate.row - SEARCH_PADDING,
+                col: candidate.col - SEARCH_PADDING,
+            };
+            let area = Some((candidate, rect.luma_w, rect.luma_h));
+            let filter = InterpolationFilter::Bilinear;
+            if center_only {
+                super::optflow::initial_luma_prediction::<_, 2>(
+                    sink,
+                    reference,
+                    prediction_rect,
+                    search_mv,
+                    filter,
+                    area,
+                    offset,
+                    false,
+                    prediction,
+                )?;
+            } else {
+                super::optflow::initial_luma_prediction::<_, 0>(
+                    sink,
+                    reference,
+                    prediction_rect,
+                    search_mv,
+                    filter,
+                    area,
+                    offset,
+                    false,
+                    prediction,
+                )?;
+            }
+        }
+        Ok::<_, crate::error::DecodeError>(())
     };
+    let bit_depth = sink.info().bit_depth();
+    // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
+    let allow_center = !block.refinemv_switchable;
     let (dx, dy) = super::with_initial_luma_predictions(
         prediction_width,
         prediction_height,
         |pred0, pred1| {
-            super::optflow::initial_luma_prediction(
-                sink,
-                block.reference0,
-                prediction_rect,
-                search_mv(candidates[0]),
-                InterpolationFilter::Bilinear,
-                Some((candidates[0], rect.luma_w, rect.luma_h)),
-                offset,
-                false,
-                pred0,
-            )?;
-            super::optflow::initial_luma_prediction(
-                sink,
-                block.reference1,
-                prediction_rect,
-                search_mv(candidates[1]),
-                InterpolationFilter::Bilinear,
-                Some((candidates[1], rect.luma_w, rect.luma_h)),
-                offset,
-                false,
-                pred1,
-            )?;
+            if allow_center {
+                predict(true, pred0, pred1)?;
+                let (stride, width, height) = (prediction_width, rect.luma_w, rect.luma_h);
+                if refinemv_center_sad(pred0, pred1, stride, width, height, bit_depth)?.is_none() {
+                    return Ok((0, 0));
+                }
+            }
+            predict(false, pred0, pred1)?;
             Ok(search_refinemv_offset(
                 pred0,
                 pred1,
                 prediction_width,
                 rect.luma_w,
                 rect.luma_h,
-                sink.info().bit_depth(),
-                !block.refinemv_switchable,
+                bit_depth,
+                allow_center,
             )?)
         },
     )?;
@@ -512,7 +537,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         col: candidate.col - SEARCH_PADDING,
     };
     let [pred0, pred1] = predictions;
-    super::optflow::initial_luma_prediction(
+    super::optflow::initial_luma_prediction::<_, 0>(
         sink,
         block.reference0,
         prediction_rect,
@@ -523,7 +548,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         reuse_horizontal[0],
         pred0,
     )?;
-    super::optflow::initial_luma_prediction(
+    super::optflow::initial_luma_prediction::<_, 0>(
         sink,
         block.reference1,
         prediction_rect,
@@ -631,27 +656,13 @@ fn search_refinemv_offset(
     bit_depth: splot_recon::BitDepth,
     allow_center: bool,
 ) -> splot_recon::Result<(i32, i32)> {
-    let sad_width = width.checked_add(4).ok_or(ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD width",
-    })?;
-    let sad_height = height
-        .checked_add(4)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV SAD height",
-        })?;
-    // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
+    let (sad_width, sad_height) = sad_extent(width, height)?;
     let (mut best, mut best_sad, first_unchecked_neighbor) = if allow_center {
-        let threshold = sad_width
-            .checked_mul(sad_height)
-            .and_then(|area| area.checked_mul(2))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "refine-MV SAD threshold",
-            })? as u32;
-        let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
-        let biased_center = center - (center >> 3);
-        if biased_center < threshold {
+        let Some(biased_center) =
+            refinemv_center_sad(pred0, pred1, stride, width, height, bit_depth)?
+        else {
             return Ok((0, 0));
-        }
+        };
         ((0, 0), biased_center, 0)
     } else {
         let (dy, dx) = SEARCH_NEIGHBORS[0];
@@ -670,6 +681,42 @@ fn search_refinemv_offset(
         }
     }
     Ok(best)
+}
+
+/// The `(width + 4) x (height + 4)` area each § 7.13.3.6 SAD compares.
+fn sad_extent(width: usize, height: usize) -> splot_recon::Result<(usize, usize)> {
+    let sad_width = width.checked_add(4).ok_or(ReconError::ArithmeticOverflow {
+        context: "refine-MV SAD width",
+    })?;
+    let sad_height = height
+        .checked_add(4)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "refine-MV SAD height",
+        })?;
+    Ok((sad_width, sad_height))
+}
+
+/// The biased § 7.13.3.6 centre SAD, or `None` when it keeps the
+/// candidates. It reads only the predictions' centre area, two samples in
+/// from each edge.
+fn refinemv_center_sad(
+    pred0: &[u16],
+    pred1: &[u16],
+    stride: usize,
+    width: usize,
+    height: usize,
+    bit_depth: splot_recon::BitDepth,
+) -> splot_recon::Result<Option<u32>> {
+    let (sad_width, sad_height) = sad_extent(width, height)?;
+    let threshold = sad_width
+        .checked_mul(sad_height)
+        .and_then(|area| area.checked_mul(2))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "refine-MV SAD threshold",
+        })? as u32;
+    let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
+    let biased_center = center - (center >> 3);
+    Ok((biased_center >= threshold).then_some(biased_center))
 }
 
 #[allow(clippy::too_many_arguments)]

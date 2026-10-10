@@ -303,3 +303,55 @@ fn tip_fullpel_cells_read_only_the_published_prefix() {
         assert_eq!(fast.expect("fast cell"), None, "{mvs:?}");
     }
 }
+
+/// The refine-MV search predicts only the centre of its padded predictions
+/// first; those samples must equal the centre of the whole prediction, at
+/// frame and refine-window edges and at every filter phase.
+fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitDepth) {
+    let references = [reference::<T>(bit_depth, &[]), ramp::<T>(bit_depth, 3)];
+    let mut workspace = workspace_for::<T>(bit_depth, PixelFormat::Yuv420, WIDTH, HEIGHT);
+    let sink = WorkspaceSink::Frame(&mut workspace);
+    let offset = ByteOffset::new(0);
+    for reference in &references {
+        let reference = ReferenceSamples::settled(reference);
+        for (x, y, mv) in [
+            (16, 8, mv(3, 5)),
+            (0, 0, mv(-9, -13)),
+            (40, 24, mv(7, -1)),
+            (8, 16, mv(-44, 60)),
+            (24, 16, mv(0, 0)),
+        ] {
+            let rect = McBlockRect::from_luma_rect(x, y, 24, 24);
+            let area = Some((mv, 16, 16));
+            let filter = InterpolationFilter::Bilinear;
+            let (mut whole, mut centre) = ([0u16; 576], [u16::MAX; 576]);
+            super::super::optflow::initial_luma_prediction::<_, 0>(
+                &sink, reference, rect, mv, filter, area, offset, false, &mut whole,
+            )
+            .expect("whole prediction");
+            super::super::optflow::initial_luma_prediction::<_, 2>(
+                &sink,
+                reference,
+                rect,
+                mv,
+                filter,
+                area,
+                offset,
+                false,
+                &mut centre,
+            )
+            .expect("centre prediction");
+            for (index, (&whole, &centre)) in whole.iter().zip(&centre).enumerate() {
+                let inside = [index / 24, index % 24].iter().all(|v| (2..22).contains(v));
+                let want = if inside { whole } else { u16::MAX };
+                assert_eq!(centre, want, "{bit_depth:?} {x} {y} {mv:?} {index}");
+            }
+        }
+    }
+}
+
+#[test]
+fn refinemv_centre_predictions_match_the_whole_prediction() {
+    centre_predictions_match_the_whole_prediction::<u8>(BitDepth::Eight);
+    centre_predictions_match_the_whole_prediction::<u16>(BitDepth::Ten);
+}

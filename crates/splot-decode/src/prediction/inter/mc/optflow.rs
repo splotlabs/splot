@@ -726,7 +726,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                 prediction_rect.luma_w,
                 prediction_rect.luma_h,
                 |pred0, pred1| {
-                    initial_luma_prediction(
+                    initial_luma_prediction::<_, 0>(
                         sink,
                         block.reference0,
                         prediction_rect,
@@ -737,7 +737,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                         false,
                         pred0,
                     )?;
-                    initial_luma_prediction(
+                    initial_luma_prediction::<_, 0>(
                         sink,
                         block.reference1,
                         prediction_rect,
@@ -882,7 +882,7 @@ pub(super) fn tip_unit_motion_cell<T: ReconSample>(
         .zip(&mut predictions)
         .enumerate()
     {
-        initial_luma_prediction(
+        initial_luma_prediction::<_, 0>(
             sink,
             samples,
             unit.rect,
@@ -1107,7 +1107,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn initial_luma_prediction<T: ReconSample>(
+pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
     sink: &WorkspaceSink<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     rect: McBlockRect,
@@ -1147,10 +1147,10 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
     });
     let params = SubpelPredictParams {
         interp,
-        w: rect.luma_w,
-        h: rect.luma_h,
-        start_x: scaling.start_x,
-        start_y: scaling.start_y,
+        w: rect.luma_w.saturating_sub(2 * INSET),
+        h: rect.luma_h.saturating_sub(2 * INSET),
+        start_x: scaling.start_x + INSET as i32 * scaling.step_x,
+        start_y: scaling.start_y + INSET as i32 * scaling.step_y,
         step_x: scaling.step_x,
         step_y: scaling.step_y,
         first_x: bounds.map_or(scaling.first_x, |bounds| bounds.first_x),
@@ -1167,7 +1167,14 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
             return Ok(());
         }
     }
-    subpel_predict_block_into(&view, &params, output).map_err(Into::into)
+    let (first, available) = (INSET * rect.luma_w + INSET, output.len());
+    let output = output
+        .get_mut(first..)
+        .ok_or(ReconError::BufferLengthMismatch {
+            expected: first,
+            actual: available,
+        })?;
+    subpel_predict_block_strided_into(&view, &params, output, rect.luma_w).map_err(Into::into)
 }
 
 #[allow(clippy::too_many_arguments)]
