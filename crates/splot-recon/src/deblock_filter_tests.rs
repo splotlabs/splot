@@ -259,7 +259,7 @@ where
     ];
     let thresholds = [(0, 40), (40, 0), (6, 3), (40, 60), (300, 500), (90, 2000)];
     let stride = 24;
-    let mut seen = [false; MAX_DBL_FLT_LEN + 1];
+    let (mut seen, mut pair_widths) = ([false; MAX_DBL_FLT_LEN + 1], [false; 2]);
     for case in 0..4800 {
         let (max_width_neg, max_width_pos) = widths[case % widths.len()];
         let (q_thr, side_thr) = thresholds[case / widths.len() % thresholds.len()];
@@ -274,7 +274,7 @@ where
                 T::try_from_u16(value.clamp(0, max) as u16).unwrap()
             })
             .collect();
-        for (lines_are_rows, edges) in [(true, 1), (true, 2), (false, 1), (false, 2)] {
+        for (lines_are_rows, edges) in [(true, 1), (true, 2), (false, 1), (false, 2), (false, 3)] {
             let choice = DeblockFilterChoice {
                 boundary: 0,
                 q_thr,
@@ -291,6 +291,12 @@ where
                 lossless,
                 bit_depth,
             );
+            if let (false, &[first, second, ..]) = (lines_are_rows, widths.as_slice())
+                && first != 0
+                && second != 0
+            {
+                pair_widths[usize::from(first == second)] = true;
+            }
             for width in widths {
                 seen[width] = true;
             }
@@ -303,6 +309,10 @@ where
     assert!(
         [0, 1, 2, 3, 4, 6, 8].iter().all(|&width| seen[width]),
         "every filter width is exercised: {seen:?}"
+    );
+    assert_eq!(
+        pair_widths, [true; 2],
+        "column pairs with split and shared widths"
     );
 }
 

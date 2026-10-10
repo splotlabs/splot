@@ -1101,13 +1101,9 @@ pub fn deblock_edge_columns<T: ReconSample>(
         })
         .ok_or_else(|| edge.too_short(len))?;
     if let Some(samples) = T::u16_slice_mut(samples) {
-        for index in 0..edges {
-            edge.columns(samples, first + index * MI_LINES, stride);
-        }
+        edge.column_run(samples, first, stride, edges);
     } else if let Some(samples) = T::u8_slice_mut(samples) {
-        for index in 0..edges {
-            edge.columns(samples, first + index * MI_LINES, stride);
-        }
+        edge.column_run(samples, first, stride, edges);
     } else {
         return Err(edge.too_short(len));
     }
@@ -1253,7 +1249,7 @@ impl<'a> EdgeKernel<'a> {
     /// The § 7.17.7.1 `deltaM2` of the four lines.
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    fn delta_m2(deltas: Simd<i16, MI_LINES>, q_thr_clamp: i16) -> Simd<i32, MI_LINES> {
+    fn delta_m2<const N: usize>(deltas: Simd<i16, N>, q_thr_clamp: i16) -> Simd<i32, N> {
         (deltas * Simd::splat(4))
             .simd_max(Simd::splat(-q_thr_clamp))
             .simd_min(Simd::splat(q_thr_clamp))
@@ -1335,39 +1331,137 @@ impl<'a> EdgeKernel<'a> {
         }
     }
 
+    /// Filters `edges` column edges two at a time, then any last one.
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    fn columns<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) -> usize {
-        let samples = &mut samples[first..first + (2 * EDGE_REACH - 1) * stride + MI_LINES];
-        let row = |samples: &[E], offset: isize| {
-            let start = (EDGE_REACH as isize + offset) as usize * stride;
-            E::widen::<MI_LINES>(&samples[start..start + MI_LINES])
-        };
-        let rows: [Simd<i16, MI_LINES>; 6] = core::array::from_fn(|k| row(samples, k as isize - 3));
-        let deltas = rows[1] - rows[4] + (rows[3] - rows[2]) * Simd::splat(3);
-        if self.unchanged(deltas) {
-            return 0;
+    fn column_run<E: EdgeSample>(
+        &self,
+        samples: &mut [E],
+        first: usize,
+        stride: usize,
+        edges: usize,
+    ) {
+        for pair in 0..edges / 2 {
+            self.column_pair(samples, first + 2 * pair * MI_LINES, stride);
         }
+        if !edges.is_multiple_of(2) {
+            self.columns(samples, first + (edges - 1) * MI_LINES, stride);
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn columns<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) {
+        let samples = &mut samples[first..first + (2 * EDGE_REACH - 1) * stride + MI_LINES];
+        let inner: [Simd<i16, MI_LINES>; 4] =
+            core::array::from_fn(|k| column_row(samples, stride, k as isize - 2));
+        let deltas = inner[0] - inner[3] + (inner[2] - inner[1]) * Simd::splat(3);
+        if self.unchanged(deltas) {
+            return;
+        }
+        let (above, below) = (
+            column_row(samples, stride, -3),
+            column_row(samples, stride, 2),
+        );
+        let rows = [above, inner[0], inner[1], inner[2], inner[3], below];
         let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
         let (d0, d1, d2, d3) = (second(0), second(1), second(2), second(3));
         let pairs =
             |a: Simd<i16, MI_LINES>, b: Simd<i16, MI_LINES>| simd_swizzle!(a, b, [0, 4, 3, 7]);
         let ends = simd_swizzle!(pairs(d0, d1), pairs(d2, d3), [0, 1, 4, 5, 2, 3, 6, 7]);
-        let derivatives = combine_line_derivatives(ends);
-        let width = deblock_filter_choice_cascade(self.choice, derivatives, |offset| {
-            let values = row(samples, offset);
-            (i32::from(values[0]), i32::from(values[MI_LINES - 1]))
-        });
-        if width == 0 {
-            return 0;
+        let width = self.column_width(samples, stride, combine_line_derivatives(ends));
+        if width != 0 {
+            self.filter_columns(samples, stride, width, deltas);
         }
+    }
+
+    /// [`Self::columns`] for two edges side by side: one eight-lane unchanged
+    /// test and, when both edges choose one width, one eight-lane filter. An
+    /// edge's choice reads only its own columns, which the other's filter
+    /// does not write.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn column_pair<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) {
+        let samples = &mut samples[first..first + (2 * EDGE_REACH - 1) * stride + 2 * MI_LINES];
+        let inner: [Simd<i16, 8>; 4] =
+            core::array::from_fn(|k| column_row(samples, stride, k as isize - 2));
+        let deltas = inner[0] - inner[3] + (inner[2] - inner[1]) * Simd::splat(3);
+        let size = deltas.abs();
+        if size.reduce_max() <= self.noop_delta {
+            return;
+        }
+        let (above, below) = (
+            column_row(samples, stride, -3),
+            column_row(samples, stride, 2),
+        );
+        let rows = [above, inner[0], inner[1], inner[2], inner[3], below];
+        let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
+        let (d0, d1, d2, d3) = (second(0), second(1), second(2), second(3));
+        let p01 = simd_swizzle!(d0, d1, [0, 8, 3, 11, 4, 12, 7, 15]);
+        let p23 = simd_swizzle!(d2, d3, [0, 8, 3, 11, 4, 12, 7, 15]);
+        let firsts = simd_swizzle!(p01, p23, [0, 1, 8, 9, 4, 5, 12, 13]);
+        let lasts = simd_swizzle!(p01, p23, [2, 3, 10, 11, 6, 7, 14, 15]);
+        let combined = ((firsts + lasts + Simd::splat(1)) >> 1).to_array();
+        let halves = |v: Simd<i16, 8>| {
+            [
+                simd_swizzle!(v, [0, 1, 2, 3]),
+                simd_swizzle!(v, [4, 5, 6, 7]),
+            ]
+        };
+        let sizes = halves(size);
+        let widths: [usize; 2] = core::array::from_fn(|half| {
+            if sizes[half].reduce_max() <= self.noop_delta {
+                return 0;
+            }
+            let derivatives = core::array::from_fn(|k| i32::from(combined[half * MI_LINES + k]));
+            self.column_width(&samples[half * MI_LINES..], stride, derivatives)
+        });
+        if widths[0] == widths[1] {
+            if widths[0] != 0 {
+                self.filter_columns(samples, stride, widths[0], deltas);
+            }
+            return;
+        }
+        for (half, width) in widths.into_iter().enumerate() {
+            if width != 0 {
+                let samples = &mut samples[half * MI_LINES..];
+                self.filter_columns(samples, stride, width, halves(deltas)[half]);
+            }
+        }
+    }
+
+    /// The § 7.17.7.2 width of the column edge whose first line is column 0.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn column_width<E: EdgeSample>(
+        &self,
+        samples: &[E],
+        stride: usize,
+        derivatives: [i32; 4],
+    ) -> usize {
+        deblock_filter_choice_cascade(self.choice, derivatives, |offset| {
+            let values = column_row::<E, MI_LINES>(samples, stride, offset);
+            (i32::from(values[0]), i32::from(values[MI_LINES - 1]))
+        })
+    }
+
+    /// Applies § 7.17.7.1 to `N` columns at `width` across the edge.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn filter_columns<E: EdgeSample, const N: usize>(
+        &self,
+        samples: &mut [E],
+        stride: usize,
+        width: usize,
+        deltas: Simd<i16, N>,
+    ) {
         let (width_neg, width_pos, q_thr_clamp, w_neg, w_pos) = self.weights(width);
         let delta = Self::delta_m2(deltas, q_thr_clamp);
         let (zero, high) = (Simd::splat(0), Simd::splat(self.max_sample));
         let mut filter = |offset: isize, coefficient: i32, round: i32| {
             let start = (EDGE_REACH as isize + offset) as usize * stride;
-            let line = &mut samples[start..start + MI_LINES];
-            let values = E::widen::<MI_LINES>(line);
+            let line = &mut samples[start..start + N];
+            let values = E::widen::<N>(line);
             let diff =
                 ((delta * Simd::splat(coefficient) + Simd::splat(round)) >> 11).cast::<i16>();
             E::narrow((values + diff).simd_max(zero).simd_min(high), line);
@@ -1386,8 +1480,20 @@ impl<'a> EdgeKernel<'a> {
                 );
             }
         }
-        width
     }
+}
+
+/// Reads `N` samples of the line `offset` rows from the edge of a column
+/// edge window.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn column_row<E: EdgeSample, const N: usize>(
+    samples: &[E],
+    stride: usize,
+    offset: isize,
+) -> Simd<i16, N> {
+    let start = (EDGE_REACH as isize + offset) as usize * stride;
+    E::widen::<N>(&samples[start..start + N])
 }
 
 #[allow(clippy::too_many_arguments)]
