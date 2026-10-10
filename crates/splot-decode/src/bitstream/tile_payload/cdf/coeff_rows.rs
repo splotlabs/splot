@@ -16,6 +16,7 @@ use splot_core::tables::cdf::{
     DEFAULT_IDTX_SIGN_CDF,
 };
 
+use super::coeff_context::CoeffBaseSelection;
 use super::util::checked_context;
 use super::{
     CoeffCdfQContext, TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows,
@@ -87,28 +88,36 @@ pub(crate) type CoeffBrIdtxCdfRows =
 pub(crate) type IdtxSignCdfRows =
     [[[[u16; IDTX_SIGN_ROW_LEN]; IDTX_SIGN_CONTEXTS]; FSC_TX_SIZE_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
 
+/// Decode reads the base and base-range rows through the typed
+/// [`CoeffCdfRows::base_row`] and [`CoeffCdfRows::br_row`]; their selector
+/// variants only address rows in tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffCdfSelector {
+    #[cfg(test)]
     Base {
         coeff_cdf_q_ctx: usize,
         tx_size: usize,
         ctx: usize,
         tcq_ctx: usize,
     },
+    #[cfg(test)]
     BasePh {
         coeff_cdf_q_ctx: usize,
         ctx: usize,
     },
+    #[cfg(test)]
     BaseUv {
         coeff_cdf_q_ctx: usize,
         ctx: usize,
     },
+    #[cfg(test)]
     BaseLf {
         coeff_cdf_q_ctx: usize,
         tx_size: usize,
         ctx: usize,
         tcq_ctx: usize,
     },
+    #[cfg(test)]
     BaseLfUv {
         coeff_cdf_q_ctx: usize,
         ctx: usize,
@@ -141,14 +150,17 @@ pub(crate) enum CoeffCdfSelector {
         coeff_cdf_q_ctx: usize,
         ctx: usize,
     },
+    #[cfg(test)]
     Br {
         coeff_cdf_q_ctx: usize,
         ctx: usize,
     },
+    #[cfg(test)]
     BrUv {
         coeff_cdf_q_ctx: usize,
         ctx: usize,
     },
+    #[cfg(test)]
     BrLf {
         coeff_cdf_q_ctx: usize,
         ctx: usize,
@@ -249,92 +261,128 @@ macro_rules! coeff_cdf_lifecycle_families {
     };
 }
 
+/// The CDF row of a derived non-EOB base context.
+pub(crate) enum CoeffBaseRow<'a> {
+    Base(&'a mut [u16; COEFF_BASE_ROW_LEN]),
+    Lf(&'a mut [u16; COEFF_BASE_LF_ROW_LEN]),
+}
+
 impl CoeffCdfRows {
+    /// Typed row of a derived base selection, so hot reads skip the
+    /// selector dispatch and the row-length dispatch.
+    #[inline]
+    pub(crate) fn base_row(
+        &mut self,
+        selection: CoeffBaseSelection,
+        q: usize,
+        tx_size: usize,
+        tcq_ctx: usize,
+    ) -> Result<CoeffBaseRow<'_>, TileCdfError> {
+        use TileCdfArray::{CoeffBase, CoeffBaseLf, CoeffBaseLfUv, CoeffBasePh, CoeffBaseUv};
+        Ok(match selection {
+            CoeffBaseSelection::Hf { ctx } => CoeffBaseRow::Base(row4(
+                &mut self.coeff_base,
+                CoeffBase,
+                [q, tx_size, ctx, tcq_ctx],
+            )?),
+            CoeffBaseSelection::Ph { ctx } => {
+                CoeffBaseRow::Base(row2(&mut self.coeff_base_ph, CoeffBasePh, q, ctx)?)
+            }
+            CoeffBaseSelection::Uv { ctx } => {
+                CoeffBaseRow::Base(row2(&mut self.coeff_base_uv, CoeffBaseUv, q, ctx)?)
+            }
+            CoeffBaseSelection::Lf { ctx } => CoeffBaseRow::Lf(row4(
+                &mut self.coeff_base_lf,
+                CoeffBaseLf,
+                [q, tx_size, ctx, tcq_ctx],
+            )?),
+            CoeffBaseSelection::LfUv { ctx } => {
+                CoeffBaseRow::Lf(row2(&mut self.coeff_base_lf_uv, CoeffBaseLfUv, q, ctx)?)
+            }
+        })
+    }
+
+    /// Typed base-range row for `plane` and `is_lf`.
+    #[inline]
+    pub(crate) fn br_row(
+        &mut self,
+        q: usize,
+        plane: usize,
+        is_lf: bool,
+        ctx: usize,
+    ) -> Result<&mut [u16; COEFF_BR_ROW_LEN], TileCdfError> {
+        if plane > 0 {
+            row2(&mut self.coeff_br_uv, TileCdfArray::CoeffBrUv, q, ctx)
+        } else if is_lf {
+            row2(&mut self.coeff_br_lf, TileCdfArray::CoeffBrLf, q, ctx)
+        } else {
+            row2(&mut self.coeff_br, TileCdfArray::CoeffBr, q, ctx)
+        }
+    }
+
     #[inline]
     pub(crate) fn row_mut(
         &mut self,
         selector: CoeffCdfSelector,
     ) -> Result<&mut [u16], TileCdfError> {
         match selector {
+            #[cfg(test)]
             CoeffCdfSelector::Base {
                 coeff_cdf_q_ctx,
                 tx_size,
                 ctx,
                 tcq_ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBase, coeff_cdf_q_ctx)?;
-                let tx_size = checked_tx_size(TileCdfArray::CoeffBase, tx_size)?;
-                let ctx =
-                    checked_context(TileCdfArray::CoeffBase, "ctx", ctx, COEFF_BASE_CONTEXTS)?;
-                let tcq_ctx = checked_context(
-                    TileCdfArray::CoeffBase,
-                    "tcq_ctx",
-                    tcq_ctx,
-                    COEFF_BASE_TCQ_CONTEXTS,
-                )?;
-                Ok(self.coeff_base[q][tx_size][ctx][tcq_ctx].as_mut_slice())
-            }
+            } => Ok(row4(
+                &mut self.coeff_base,
+                TileCdfArray::CoeffBase,
+                [coeff_cdf_q_ctx, tx_size, ctx, tcq_ctx],
+            )?
+            .as_mut_slice()),
+            #[cfg(test)]
             CoeffCdfSelector::BasePh {
                 coeff_cdf_q_ctx,
                 ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBasePh, coeff_cdf_q_ctx)?;
-                let ctx = checked_context(
-                    TileCdfArray::CoeffBasePh,
-                    "ctx",
-                    ctx,
-                    COEFF_BASE_PH_CONTEXTS,
-                )?;
-                Ok(self.coeff_base_ph[q][ctx].as_mut_slice())
-            }
+            } => Ok(row2(
+                &mut self.coeff_base_ph,
+                TileCdfArray::CoeffBasePh,
+                coeff_cdf_q_ctx,
+                ctx,
+            )?
+            .as_mut_slice()),
+            #[cfg(test)]
             CoeffCdfSelector::BaseUv {
                 coeff_cdf_q_ctx,
                 ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBaseUv, coeff_cdf_q_ctx)?;
-                let ctx = checked_context(
-                    TileCdfArray::CoeffBaseUv,
-                    "ctx",
-                    ctx,
-                    COEFF_BASE_UV_CONTEXTS,
-                )?;
-                Ok(self.coeff_base_uv[q][ctx].as_mut_slice())
-            }
+            } => Ok(row2(
+                &mut self.coeff_base_uv,
+                TileCdfArray::CoeffBaseUv,
+                coeff_cdf_q_ctx,
+                ctx,
+            )?
+            .as_mut_slice()),
+            #[cfg(test)]
             CoeffCdfSelector::BaseLf {
                 coeff_cdf_q_ctx,
                 tx_size,
                 ctx,
                 tcq_ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBaseLf, coeff_cdf_q_ctx)?;
-                let tx_size = checked_tx_size(TileCdfArray::CoeffBaseLf, tx_size)?;
-                let ctx = checked_context(
-                    TileCdfArray::CoeffBaseLf,
-                    "ctx",
-                    ctx,
-                    COEFF_BASE_LF_CONTEXTS,
-                )?;
-                let tcq_ctx = checked_context(
-                    TileCdfArray::CoeffBaseLf,
-                    "tcq_ctx",
-                    tcq_ctx,
-                    COEFF_BASE_TCQ_CONTEXTS,
-                )?;
-                Ok(self.coeff_base_lf[q][tx_size][ctx][tcq_ctx].as_mut_slice())
-            }
+            } => Ok(row4(
+                &mut self.coeff_base_lf,
+                TileCdfArray::CoeffBaseLf,
+                [coeff_cdf_q_ctx, tx_size, ctx, tcq_ctx],
+            )?
+            .as_mut_slice()),
+            #[cfg(test)]
             CoeffCdfSelector::BaseLfUv {
                 coeff_cdf_q_ctx,
                 ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBaseLfUv, coeff_cdf_q_ctx)?;
-                let ctx = checked_context(
-                    TileCdfArray::CoeffBaseLfUv,
-                    "ctx",
-                    ctx,
-                    COEFF_BASE_LF_UV_CONTEXTS,
-                )?;
-                Ok(self.coeff_base_lf_uv[q][ctx].as_mut_slice())
-            }
+            } => Ok(row2(
+                &mut self.coeff_base_lf_uv,
+                TileCdfArray::CoeffBaseLfUv,
+                coeff_cdf_q_ctx,
+                ctx,
+            )?
+            .as_mut_slice()),
             CoeffCdfSelector::BaseEob {
                 coeff_cdf_q_ctx,
                 tx_size,
@@ -422,32 +470,39 @@ impl CoeffCdfRows {
                 )?;
                 Ok(self.coeff_base_lf_eob_uv[q][ctx].as_mut_slice())
             }
+            #[cfg(test)]
             CoeffCdfSelector::Br {
                 coeff_cdf_q_ctx,
                 ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBr, coeff_cdf_q_ctx)?;
-                let ctx = checked_context(TileCdfArray::CoeffBr, "ctx", ctx, COEFF_BR_CONTEXTS)?;
-                Ok(self.coeff_br[q][ctx].as_mut_slice())
-            }
+            } => Ok(row2(
+                &mut self.coeff_br,
+                TileCdfArray::CoeffBr,
+                coeff_cdf_q_ctx,
+                ctx,
+            )?
+            .as_mut_slice()),
+            #[cfg(test)]
             CoeffCdfSelector::BrUv {
                 coeff_cdf_q_ctx,
                 ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBrUv, coeff_cdf_q_ctx)?;
-                let ctx =
-                    checked_context(TileCdfArray::CoeffBrUv, "ctx", ctx, COEFF_BR_UV_CONTEXTS)?;
-                Ok(self.coeff_br_uv[q][ctx].as_mut_slice())
-            }
+            } => Ok(row2(
+                &mut self.coeff_br_uv,
+                TileCdfArray::CoeffBrUv,
+                coeff_cdf_q_ctx,
+                ctx,
+            )?
+            .as_mut_slice()),
+            #[cfg(test)]
             CoeffCdfSelector::BrLf {
                 coeff_cdf_q_ctx,
                 ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBrLf, coeff_cdf_q_ctx)?;
-                let ctx =
-                    checked_context(TileCdfArray::CoeffBrLf, "ctx", ctx, COEFF_BR_LF_CONTEXTS)?;
-                Ok(self.coeff_br_lf[q][ctx].as_mut_slice())
-            }
+            } => Ok(row2(
+                &mut self.coeff_br_lf,
+                TileCdfArray::CoeffBrLf,
+                coeff_cdf_q_ctx,
+                ctx,
+            )?
+            .as_mut_slice()),
             CoeffCdfSelector::BrIdtx {
                 coeff_cdf_q_ctx,
                 tx_size_ctx,
@@ -506,6 +561,36 @@ impl CoeffCdfRows {
         }
         coeff_cdf_lifecycle_families!(scale_rows);
     }
+}
+
+/// Bounds-checked `rows[q][ctx]`.
+#[inline]
+fn row2<const L: usize, const C: usize>(
+    rows: &mut [[[u16; L]; C]; COEFF_CDF_Q_CONTEXTS],
+    array: TileCdfArray,
+    q: usize,
+    ctx: usize,
+) -> Result<&mut [u16; L], TileCdfError> {
+    let q = checked_coeff_cdf_q_context(array, q)?;
+    let ctx = checked_context(array, "ctx", ctx, C)?;
+    Ok(&mut rows[q][ctx])
+}
+
+type TcqRows<const L: usize, const C: usize> =
+    [[[[[u16; L]; COEFF_BASE_TCQ_CONTEXTS]; C]; TX_SIZE_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
+
+/// Bounds-checked `rows[q][tx_size][ctx][tcq_ctx]`.
+#[inline]
+fn row4<const L: usize, const C: usize>(
+    rows: &mut TcqRows<L, C>,
+    array: TileCdfArray,
+    [q, tx_size, ctx, tcq_ctx]: [usize; 4],
+) -> Result<&mut [u16; L], TileCdfError> {
+    let q = checked_coeff_cdf_q_context(array, q)?;
+    let tx_size = checked_tx_size(array, tx_size)?;
+    let ctx = checked_context(array, "ctx", ctx, C)?;
+    let tcq_ctx = checked_context(array, "tcq_ctx", tcq_ctx, COEFF_BASE_TCQ_CONTEXTS)?;
+    Ok(&mut rows[q][tx_size][ctx][tcq_ctx])
 }
 
 fn checked_coeff_cdf_q_context(

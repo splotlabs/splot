@@ -454,6 +454,28 @@ impl<'a> SymbolDecoder<'a> {
         self.read_symbol_row(cdf)
     }
 
+    /// Decodes one AV2 § 8.2.6 symbol from a fixed-length compact CDF row.
+    ///
+    /// The arity is a compile-time constant, so the read inlines into hot
+    /// loops without the length dispatch of [`Self::read_symbol_u16`].
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::read_symbol`].
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_symbol_u16_array<const L: usize>(&mut self, cdf: &mut [u16; L]) -> Result<Symbol> {
+        match L {
+            3 => self.read_symbol_arity::<u16, 2>(cdf),
+            4 => self.read_symbol_arity::<u16, 3>(cdf),
+            5 => self.read_symbol_arity::<u16, 4>(cdf),
+            6 => self.read_symbol_arity::<u16, 5>(cdf),
+            7 => self.read_symbol_arity::<u16, 6>(cdf),
+            8 => self.read_symbol_arity::<u16, 7>(cdf),
+            9 => self.read_symbol_arity::<u16, 8>(cdf),
+            _ => self.read_symbol_row(cdf),
+        }
+    }
+
     /// Dispatches on the row length so each arity's search loop and
     /// adaptation are unrolled with constant bounds.
     #[inline]

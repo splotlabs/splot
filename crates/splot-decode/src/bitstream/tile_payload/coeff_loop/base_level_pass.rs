@@ -7,10 +7,9 @@
 
 use splot_core::symbol::SymbolDecoder;
 
-use super::super::cdf::coeff_context::{
-    CoeffBaseContext, CoeffBaseSelection, CoeffBrContext, coeff_base_eob_ctx,
-};
-use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
+use super::super::cdf::block_read::BlockSymbolTraceReadError;
+use super::super::cdf::coeff_context::{CoeffBaseContext, CoeffBrContext, coeff_base_eob_ctx};
+use super::super::cdf::{CoeffBaseRow, CoeffCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::NonZeroCoeffEob;
 use super::base_symbol::{CoeffBaseSymbolReadError, read_coeff_symbol};
@@ -145,28 +144,69 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     preflight_pass(eob_read, &block, walk, config)?;
 
     let mut first_pass = CoeffBaseFirstPassSummary::default();
-    for (index, entry) in walk.entries().enumerate() {
+    let mut entries = walk.entries();
+    if let Some(entry) = entries.next() {
         let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
-        let (selector, bias) = if index == 0 {
-            (base_eob_selector(entry, is_lf, config), 1)
-        } else {
-            (base_selector(entry, is_lf, &block, first_pass, config), 0)
-        };
-        let mut level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + bias;
-        let base_levels = if is_lf {
-            LF_NUM_BASE_LEVELS
-        } else {
-            NUM_BASE_LEVELS
-        };
-        if level > base_levels && !(is_lf && config.plane > 0) {
-            let selector = base_range_selector(entry, is_lf, &block, config);
-            level += u32::from(read_coeff_symbol(cdfs, symbols, selector)?);
-        }
-        first_pass.update_after_level(entry, level, config)?;
-        block.set_level(entry.row(), entry.col(), level)?;
+        let selector = base_eob_selector(entry, is_lf, config);
+        let level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + 1;
+        finish_level(
+            cdfs,
+            symbols,
+            entry,
+            is_lf,
+            level,
+            &mut block,
+            &mut first_pass,
+            config,
+        )?;
+    }
+    for entry in entries {
+        let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
+        let level = read_base_symbol(cdfs, symbols, entry, is_lf, &block, first_pass, config)?;
+        finish_level(
+            cdfs,
+            symbols,
+            entry,
+            is_lf,
+            level,
+            &mut block,
+            &mut first_pass,
+            config,
+        )?;
     }
 
     Ok(NonZeroCoeffBaseDerivedLevelPass { first_pass, block })
+}
+
+/// Adds the base-range symbol when the base symbol saturates, then records
+/// the level.
+#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: keeps the typed symbol reads inside the level loop"
+)]
+#[inline(always)]
+fn finish_level(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    entry: CoeffScanEntry,
+    is_lf: bool,
+    mut level: u32,
+    block: &mut TransformCoeffBlockState,
+    first_pass: &mut CoeffBaseFirstPassSummary,
+    config: CoeffBaseDerivedLevelPassConfig,
+) -> Result<(), CoeffBaseDerivedLevelPassError> {
+    let base_levels = if is_lf {
+        LF_NUM_BASE_LEVELS
+    } else {
+        NUM_BASE_LEVELS
+    };
+    if level > base_levels && !(is_lf && config.plane > 0) {
+        level += read_br_symbol(cdfs, symbols, entry, is_lf, block, config)?;
+    }
+    first_pass.update_after_level(entry, level, config)?;
+    block.set_level(entry.row(), entry.col(), level)?;
+    Ok(())
 }
 
 fn preflight_pass(
@@ -236,13 +276,21 @@ fn base_eob_selector(
     }
 }
 
-fn base_selector(
+#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: keeps the typed symbol reads inside the level loop"
+)]
+#[inline(always)]
+fn read_base_symbol(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
     entry: CoeffScanEntry,
     is_lf: bool,
     block: &TransformCoeffBlockState,
     first_pass: CoeffBaseFirstPassSummary,
     config: CoeffBaseDerivedLevelPassConfig,
-) -> CoeffCdfSelector {
+) -> Result<u32, CoeffBaseDerivedLevelPassError> {
     let selection = CoeffBaseContext {
         row: entry.row(),
         col: entry.col(),
@@ -254,49 +302,37 @@ fn base_selector(
         tx_class: tx_class_index(config.tx_class),
     }
     .select(block.level());
-    map_base_selection(selection, first_pass, config)
-}
-
-fn map_base_selection(
-    selection: CoeffBaseSelection,
-    first_pass: CoeffBaseFirstPassSummary,
-    config: CoeffBaseDerivedLevelPassConfig,
-) -> CoeffCdfSelector {
     let tcq_ctx = (first_pass.tcq_state >> 1) & 1;
-    match selection {
-        CoeffBaseSelection::Ph { ctx } => CoeffCdfSelector::BasePh {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            ctx,
-        },
-        CoeffBaseSelection::LfUv { ctx } => CoeffCdfSelector::BaseLfUv {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            ctx,
-        },
-        CoeffBaseSelection::Uv { ctx } => CoeffCdfSelector::BaseUv {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            ctx,
-        },
-        CoeffBaseSelection::Lf { ctx } => CoeffCdfSelector::BaseLf {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            tx_size: config.tx_size_ctx,
-            ctx,
+    let row = cdfs
+        .coeff_rows_mut()
+        .base_row(
+            selection,
+            config.coeff_cdf_q_ctx,
+            config.tx_size_ctx,
             tcq_ctx,
-        },
-        CoeffBaseSelection::Hf { ctx } => CoeffCdfSelector::Base {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            tx_size: config.tx_size_ctx,
-            ctx,
-            tcq_ctx,
-        },
+        )
+        .map_err(read_error)?;
+    let symbol = match row {
+        CoeffBaseRow::Base(row) => symbols.read_symbol_u16_array(row),
+        CoeffBaseRow::Lf(row) => symbols.read_symbol_u16_array(row),
     }
+    .map_err(read_error)?;
+    Ok(u32::from(symbol.get()))
 }
 
-fn base_range_selector(
+#[allow(
+    clippy::inline_always,
+    reason = "measured: keeps the typed symbol reads inside the level loop"
+)]
+#[inline(always)]
+fn read_br_symbol(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
     entry: CoeffScanEntry,
     is_lf: bool,
     block: &TransformCoeffBlockState,
     config: CoeffBaseDerivedLevelPassConfig,
-) -> CoeffCdfSelector {
+) -> Result<u32, CoeffBaseDerivedLevelPassError> {
     let ctx = CoeffBrContext {
         row: entry.row(),
         col: entry.col(),
@@ -306,22 +342,16 @@ fn base_range_selector(
         tx_class: tx_class_index(config.tx_class),
     }
     .ctx(block.level());
-    if config.plane > 0 {
-        CoeffCdfSelector::BrUv {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            ctx,
-        }
-    } else if is_lf {
-        CoeffCdfSelector::BrLf {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            ctx,
-        }
-    } else {
-        CoeffCdfSelector::Br {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-            ctx,
-        }
-    }
+    let row = cdfs
+        .coeff_rows_mut()
+        .br_row(config.coeff_cdf_q_ctx, config.plane, is_lf, ctx)
+        .map_err(read_error)?;
+    let symbol = symbols.read_symbol_u16_array(row).map_err(read_error)?;
+    Ok(u32::from(symbol.get()))
+}
+
+fn read_error(error: impl Into<BlockSymbolTraceReadError>) -> CoeffBaseDerivedLevelPassError {
+    CoeffBaseSymbolReadError::from(error.into()).into()
 }
 
 const fn tx_class_index(tx_class: CoeffTransformClass) -> usize {

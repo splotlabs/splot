@@ -6,7 +6,7 @@
 use splot_core::Error as CoreError;
 use splot_core::symbol::{Symbol, SymbolDecoder};
 
-use super::{CoeffCdfSelector, TileCdfError, TileCdfSelector, TileCdfSubset};
+use super::{CoeffCdfRows, CoeffCdfSelector, TileCdfError, TileCdfSelector, TileCdfSubset};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum BlockSymbolTraceReadError {
@@ -36,6 +36,11 @@ impl TileCdfSubset {
     ) -> Result<u8, BlockSymbolTraceReadError> {
         let row = self.rows.block.coeff.row_mut(selector)?;
         Ok(symbol_decoder.read_symbol_u16(row)?.get())
+    }
+
+    #[inline]
+    pub(crate) fn coeff_rows_mut(&mut self) -> &mut CoeffCdfRows {
+        &mut self.rows.block.coeff
     }
 }
 
