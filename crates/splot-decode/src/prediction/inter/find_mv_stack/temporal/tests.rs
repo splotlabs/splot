@@ -1021,7 +1021,7 @@ fn unit_tip_preparation_matches_the_whole_field_passes() {
         for cell in &mut field.cells {
             let mv = Mv {
                 row: next(5000) as i32 - 2500,
-                col: next(70_000) as i32 - 35_000,
+                col: next(65_535) as i32 - 32_767,
             };
             *cell = ProjectedTemporalMotionCell::new(next(100) < density, mv, next(40) as i32 - 4);
         }
