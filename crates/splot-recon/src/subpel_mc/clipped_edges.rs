@@ -174,10 +174,45 @@ impl ClampedWindow {
         row: &[T],
         storage: &'a mut [T; WINDOW_STORAGE],
     ) -> &'a [T] {
+        let filled = match (T::u16_slice(row), T::u8_slice(row)) {
+            (Some(row), _) => T::u16_slice_mut(storage).and_then(|out| self.fill_lanes(row, out)),
+            (_, Some(row)) => T::u8_slice_mut(storage).and_then(|out| self.fill_lanes(row, out)),
+            _ => None,
+        };
+        if filled.is_some() {
+            return storage;
+        }
         storage[..self.prefix].fill(row[self.first]);
         let middle = &row[self.copy_start..self.copy_start + self.middle_end - self.prefix];
         storage[self.prefix..self.middle_end].copy_from_slice(middle); // splot-copy-ok: materialize one clamped tap window
         storage[self.middle_end..self.len].fill(row[self.last]);
         storage
+    }
+
+    /// Builds the window from whole 16-sample loads of the row at the window
+    /// start, replacing the lanes outside `[first, last]` with the edge
+    /// samples. `None` when those loads would leave the row.
+    fn fill_lanes<E>(&self, row: &[E], storage: &mut [E]) -> Option<()>
+    where
+        E: std::simd::SimdElement + From<u8>,
+        Simd<E, 16>: std::simd::cmp::SimdPartialOrd<Mask = std::simd::Mask<E::Mask, 16>>,
+    {
+        use std::simd::{Select, cmp::SimdPartialOrd};
+        const LANES: usize = 16;
+        let start = self.copy_start.checked_sub(self.prefix)?;
+        let (first, last) = (
+            Simd::splat(*row.get(self.first)?),
+            Simd::splat(*row.get(self.last)?),
+        );
+        let index = Simd::from_array(core::array::from_fn(|lane| E::from(lane as u8)));
+        let below = |n: usize| index.simd_lt(Simd::splat(E::from(n.min(LANES) as u8)));
+        for chunk in (0..self.len).step_by(LANES) {
+            let lanes =
+                Simd::<E, LANES>::from_slice(row.get(start + chunk..start + chunk + LANES)?);
+            let lanes = below(self.prefix.saturating_sub(chunk)).select(first, lanes);
+            let lanes = below(self.middle_end.saturating_sub(chunk)).select(lanes, last);
+            lanes.copy_to_slice(storage.get_mut(chunk..chunk + LANES)?);
+        }
+        Some(())
     }
 }
