@@ -1404,10 +1404,28 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Returns [`ReconError`] if the existing immutable plane/frame validators
     /// reject the workspace storage.
     pub fn freeze(self) -> Result<DecodedFrame<T>> {
+        self.freeze_with(DecodedFrame::try_new)
+    }
+
+    /// Freezes decoder-reconstructed storage whose writers clip every sample,
+    /// so release builds skip the whole-frame sample range scan.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::freeze`], except that release builds
+    /// do not check sample ranges.
+    #[doc(hidden)]
+    pub fn freeze_prevalidated(self) -> Result<DecodedFrame<T>> {
+        self.freeze_with(DecodedFrame::new_prevalidated)
+    }
+
+    fn freeze_with(
+        self,
+        build: fn(DecodedFrameInfo, FramePlanes<T>) -> Result<DecodedFrame<T>>,
+    ) -> Result<DecodedFrame<T>> {
         let y = self.y.freeze()?;
         let u = self.u.map(CurrentFramePlane::freeze).transpose()?;
         let v = self.v.map(CurrentFramePlane::freeze).transpose()?;
-        DecodedFrame::try_new(self.info, FramePlanes::new(y, u, v))
+        build(self.info, FramePlanes::new(y, u, v))
     }
 
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {

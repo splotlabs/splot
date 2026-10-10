@@ -750,7 +750,7 @@ impl<T: ReconSample> FrameProgress<T> {
         }
         let mut guard = self.workspace.write();
         let workspace = guard.take().ok_or_else(taken_workspace)?;
-        Ok(publish(workspace.into_workspace().freeze()?))
+        Ok(publish(workspace.into_workspace().freeze_prevalidated()?))
     }
 }
 
