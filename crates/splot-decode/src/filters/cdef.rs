@@ -865,8 +865,10 @@ fn stripe_rows_from(plane: &mut StripePlane, x: usize, y: usize) -> Option<(&mut
 
 /// Interleaves the chroma pair's tap rows, `CHROMA_PAIR_SPAN` samples of each
 /// plane from `base` on, into `pad` at `CDEF_PAIR_STRIDE` lanes per row.
-#[allow(clippy::inline_always, reason = "measured CDEF chroma hot path")]
-#[inline(always)]
+///
+/// Kept out of line: inlined into the stripe loop, it reloaded its plane
+/// bases, lengths and stride from the stack for every row.
+#[inline(never)]
 fn gather_chroma_pair<T: Copy>(
     u_samples: &[T],
     v_samples: &[T],
