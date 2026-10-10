@@ -911,6 +911,7 @@ fn bilinear_2d_into_matches_reference_for_direct_and_clipped_blocks() {
 
     for (base_x, base_y, w, h, phase_x, phase_y) in [
         (3, 2, 6, 5, 1, 15),
+        (1, 1, 12, 9, 5, 9),
         (-2, -1, 6, 5, 8, 8),
         (14, 11, 6, 5, 15, 1),
     ] {
@@ -2458,9 +2459,7 @@ fn vertical_only_matches_independent_reference_across_shapes() {
 
 #[test]
 fn unscaled_compound_entry_matches_two_call_path_and_declines_scaled() {
-    let samples = (0..768)
-        .map(|i| (i * 37 + 5) as u16 % 1024)
-        .collect::<Vec<_>>();
+    let samples: Vec<u16> = (0..768).map(|i| (i * 37 + 5) % 1024).collect();
     let view = ReferencePlaneView::new(&samples, 32, 24).unwrap();
     let entry = |p0: &SubpelPredictParams, p1: &SubpelPredictParams, weight, out: &mut [u16]| {
         subpel_predict_block_compound_average_unscaled_strided_into(

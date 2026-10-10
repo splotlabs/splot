@@ -930,37 +930,44 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
             })
     });
     if let Some(x) = direct_x {
-        let samples = reference.samples;
+        let source_row = |r: usize| {
+            let row = (y0 + r as i32)
+                .clamp(params.first_y, params.last_y)
+                .clamp(0, reference.readable_rows as i32 - 1) as usize;
+            &reference.samples[row * reference.stride..][..reference.width]
+        };
         let max_sample = params.bit_depth.max_sample();
-        for r in 0..params.h {
-            let top_row = (y0 + r as i32)
-                .clamp(params.first_y, params.last_y)
-                .clamp(0, reference.readable_rows as i32 - 1) as usize;
-            let bottom_row = (y0 + r as i32 + 1)
-                .clamp(params.first_y, params.last_y)
-                .clamp(0, reference.readable_rows as i32 - 1) as usize;
-            let top = &samples[top_row * reference.stride..][..reference.width];
-            let bottom = &samples[bottom_row * reference.stride..][..reference.width];
-            let destination = &mut output[r * output_stride..][..params.w];
-            let vector_width = params.w - params.w % 8;
-            for c in (0..vector_width).step_by(8) {
-                let filtered = tip_overlap::overlap_bilinear_u16x8(
-                    top,
-                    bottom,
-                    x + c,
-                    Some(x + c + 1),
-                    h_phase as i32,
-                    v_phase as i32,
-                )
-                .simd_min(Simd::splat(max_sample));
-                O::store(filtered, &mut destination[c..]);
-            }
-            for c in vector_width..params.w {
+        let vector_width = params.w - params.w % 8;
+        for c in (0..vector_width).step_by(8) {
+            bilinear_2d_column::<8, T, O>(
+                &source_row,
+                x + c,
+                [h_phase as i32, v_phase as i32],
+                max_sample,
+                params.h,
+                &mut output[c..],
+                output_stride,
+            );
+        }
+        if params.w - vector_width >= 4 {
+            bilinear_2d_column::<4, T, O>(
+                &source_row,
+                x + vector_width,
+                [h_phase as i32, v_phase as i32],
+                max_sample,
+                params.h,
+                &mut output[vector_width..],
+                output_stride,
+            );
+        }
+        for c in params.w - params.w % 4..params.w {
+            for r in 0..params.h {
+                let (top, bottom) = (source_row(r), source_row(r + 1));
                 let top_value = (16 - h_phase as i32) * i32::from(top[x + c].to_u16())
                     + h_phase as i32 * i32::from(top[x + c + 1].to_u16());
                 let bottom_value = (16 - h_phase as i32) * i32::from(bottom[x + c].to_u16())
                     + h_phase as i32 * i32::from(bottom[x + c + 1].to_u16());
-                destination[c] = O::from_sample(
+                output[r * output_stride + c] = O::from_sample(
                     (round2_i32(
                         (16 - v_phase as i32) * top_value + v_phase as i32 * bottom_value,
                         8,
@@ -1016,6 +1023,42 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
         top_is_first = !top_is_first;
     }
     Ok(())
+}
+
+/// One `LANES`-wide column of the unclipped two-axis `BILINEAR` kernel. Each
+/// source row is filtered horizontally once and serves as the bottom row of
+/// one output row and the top row of the next; the unrounded horizontal sums
+/// are those `overlap_bilinear_u16x8` forms per row.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::inline_always, reason = "measured bilinear subpel hot path")]
+#[inline(always)]
+fn bilinear_2d_column<'a, const LANES: usize, T: ReconSample + 'a, O: BilinearOutput>(
+    source_row: &impl Fn(usize) -> &'a [T],
+    x: usize,
+    [h_phase, v_phase]: [i32; 2],
+    max_sample: u16,
+    height: usize,
+    output: &mut [O],
+    output_stride: usize,
+) {
+    let horizontal = |row: &[T]| {
+        reference_lanes::<LANES, T>(row, x) * Simd::splat(16 - h_phase as u16)
+            + reference_lanes::<LANES, T>(row, x + 1) * Simd::splat(h_phase as u16)
+    };
+    let mut top = horizontal(source_row(0));
+    for r in 0..height {
+        let bottom = horizontal(source_row(r + 1));
+        let blended = tap_mac(
+            tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),
+            bottom.cast(),
+            v_phase,
+        );
+        let filtered = round2_simd(blended, 8)
+            .cast::<u16>()
+            .simd_min(Simd::splat(max_sample));
+        O::store(filtered, &mut output[r * output_stride..]);
+        top = bottom;
+    }
 }
 
 /// Runs the AV2 § 7.13.3.18 separable interpolation-filter convolution for one
