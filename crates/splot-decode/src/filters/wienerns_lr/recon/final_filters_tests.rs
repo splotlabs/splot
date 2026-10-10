@@ -1334,7 +1334,7 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     let mut pc_block = block(0, 0, 0);
     pc_block.restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
     let wiener_ns_block = block(0, 8, 0);
-    with_lr_source_scratch::<u8, _>(|scratch| {
+    with_lr_source_scratch(|scratch| {
         scratch.cell_subclasses.resize(32, usize::MAX);
     });
     let mixed_luma = apply_luma_lr(
@@ -1489,7 +1489,7 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
     let mut storage = Vec::new();
 
     assert!(
-        LrSourceWindow::<u8>::materialize(
+        LrSourceWindow::materialize(
             &mut storage,
             PlaneId::Y,
             curr,
@@ -1504,7 +1504,7 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
         )
         .is_err()
     );
-    let window = LrSourceWindow::<u8>::materialize(
+    let window = LrSourceWindow::materialize(
         &mut storage,
         PlaneId::Y,
         curr,
@@ -1548,7 +1548,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
     let short_cdef = StripePlane::copy_from(cdef_source, 0, 1).unwrap();
     let mut storage = Vec::new();
 
-    let window = LrSourceWindow::<u8>::materialize(
+    let window = LrSourceWindow::materialize(
         &mut storage,
         PlaneId::Y,
         curr,
@@ -1566,7 +1566,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
     let allocation = window.samples.as_ptr();
 
     assert!(
-        LrSourceWindow::<u8>::materialize(
+        LrSourceWindow::materialize(
             &mut storage,
             PlaneId::Y,
             curr,
@@ -1581,7 +1581,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
         )
         .is_err()
     );
-    let window = LrSourceWindow::<u8>::materialize(
+    let window = LrSourceWindow::materialize(
         &mut storage,
         PlaneId::Y,
         curr,
@@ -1602,7 +1602,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
 #[test]
 fn lr_source_scratch_does_not_retain_oversized_buffers() {
     LR_SOURCE_SCRATCH.with(|slot| slot.set(None));
-    with_lr_source_scratch::<u16, _>(|scratch| {
+    with_lr_source_scratch(|scratch| {
         scratch
             .primary
             .try_reserve_exact(MAX_RETAINED_LR_SCRATCH_ELEMENTS + 1)
@@ -1610,11 +1610,11 @@ fn lr_source_scratch_does_not_retain_oversized_buffers() {
     });
     LR_SOURCE_SCRATCH.with(|slot| assert!(slot.take().is_none()));
 
-    let allocation = with_lr_source_scratch::<u16, _>(|scratch| {
+    let allocation = with_lr_source_scratch(|scratch| {
         scratch.primary.try_reserve_exact(16).unwrap();
         scratch.primary.as_ptr()
     });
-    with_lr_source_scratch::<u16, _>(|scratch| {
+    with_lr_source_scratch(|scratch| {
         assert_eq!(scratch.primary.as_ptr(), allocation);
     });
     LR_SOURCE_SCRATCH.with(|slot| slot.set(None));
