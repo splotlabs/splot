@@ -81,12 +81,15 @@ impl PackedPosition {
 pub(super) struct TrajectoryPositions {
     phases: PhasePositions,
     mask: u8,
+    /// The scratch epoch that wrote this record; any other epoch reads empty.
+    epoch: u8,
 }
 
 impl TrajectoryPositions {
     const EMPTY: Self = Self {
         phases: [PackedPosition::INVALID; 3],
         mask: 0,
+        epoch: 0,
     };
 }
 
@@ -337,6 +340,7 @@ pub(super) struct TrajectoryBand<'a> {
     fields: &'a mut [PackedTrajectoryMv],
     reference_count: usize,
     positions: BandSlices<'a, TrajectoryPositions>,
+    epoch: u8,
     projection_offsets: &'a mut [i32],
     row_base: usize,
     step: usize,
@@ -429,6 +433,7 @@ impl<'a> TrajectoryGrids<'a> {
             fields,
             reference_count: self.reference_count,
             positions: BandSlices::from_chunks(&mut scratch.positions, cells)?,
+            epoch: scratch.epoch,
             projection_offsets: &mut scratch.projection_offsets,
             row_base,
             step: self.step,
@@ -445,6 +450,7 @@ impl<'a> TrajectoryGrids<'a> {
 pub(super) struct OwnedTrajectoryBand {
     fields: Vec<PackedTrajectoryMv>,
     positions: Vec<TrajectoryPositions>,
+    epoch: u8,
     projection_offsets: Vec<i32>,
     cells_per_reference: usize,
     reference_count: usize,
@@ -460,14 +466,23 @@ pub(super) struct OwnedTrajectoryBand {
 pub(super) struct OwnedTrajectoryScratch {
     pub(super) positions: Vec<TrajectoryPositions>,
     pub(super) projection_offsets: Vec<i32>,
+    /// Stamps this band's position records, so a new band clears them by
+    /// moving to the next epoch instead of rewriting every record.
+    pub(super) epoch: u8,
 }
 
 impl OwnedTrajectoryScratch {
     /// Clears the scratch for a band of `cells` cells per reference.
     fn reset(&mut self, cells: usize, reference_count: usize) -> Option<()> {
         let total = cells.checked_mul(reference_count)?;
-        self.positions.clear();
-        self.positions.try_reserve_exact(total).ok()?;
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.positions.fill(TrajectoryPositions::EMPTY);
+            self.epoch = 1;
+        }
+        self.positions
+            .try_reserve_exact(total.saturating_sub(self.positions.len()))
+            .ok()?;
         self.positions.resize(total, TrajectoryPositions::EMPTY);
         self.projection_offsets.clear();
         self.projection_offsets.try_reserve_exact(cells).ok()?;
@@ -545,6 +560,7 @@ impl OwnedTrajectoryBand {
         Ok(Self {
             fields,
             positions: core::mem::take(&mut scratch.positions),
+            epoch: scratch.epoch,
             projection_offsets: core::mem::take(&mut scratch.projection_offsets),
             cells_per_reference: cell_count,
             reference_count,
@@ -564,6 +580,7 @@ impl OwnedTrajectoryBand {
             fields: &mut self.fields,
             reference_count: self.reference_count,
             positions: BandSlices::from_chunks(&mut self.positions, cells_per_reference)?,
+            epoch: self.epoch,
             projection_offsets: &mut self.projection_offsets,
             row_base: self.row_base,
             step: self.step,
@@ -605,9 +622,15 @@ impl TrajectoryBand<'_> {
             .map(|row| row * self.width8 + x8)
     }
 
-    fn positions_at(&self, reference: usize, at: Position) -> Option<&TrajectoryPositions> {
+    /// The positions this band recorded at `at`; a record from an earlier
+    /// band reads as none.
+    fn positions_at(&self, reference: usize, at: Position) -> Option<TrajectoryPositions> {
         let index = self.band_index(at.0, at.1)?;
-        self.positions.get(reference)?.get(index)
+        let slots = *self.positions.get(reference)?.get(index)?;
+        if slots.epoch != self.epoch {
+            return None;
+        }
+        Some(slots)
     }
 
     /// Reads one reference's trajectory vector at a band-relative cell.
@@ -636,14 +659,22 @@ impl TrajectoryBand<'_> {
         let Some(position) = PackedPosition::new(position) else {
             return;
         };
+        let epoch = self.epoch;
         if let Some(cell) = self
             .positions
             .get_mut(reference)
             .and_then(|field| field.get_mut(index))
-            && let Some(slot) = cell.phases.get_mut(phase)
         {
-            *slot = position;
-            cell.mask |= 1 << phase;
+            if cell.epoch != epoch {
+                *cell = TrajectoryPositions {
+                    epoch,
+                    ..TrajectoryPositions::EMPTY
+                };
+            }
+            if let Some(slot) = cell.phases.get_mut(phase) {
+                *slot = position;
+                cell.mask |= 1 << phase;
+            }
         }
     }
 
@@ -728,35 +759,33 @@ impl TrajectoryBand<'_> {
         {
             return None;
         }
-        let source_slots = self
-            .positions_at(source, (y8, x8))
-            .copied()
-            .unwrap_or(TrajectoryPositions::EMPTY);
-        let mut source_mask = source_slots.mask;
-        while source_mask != 0 {
-            let phase = source_mask.trailing_zeros() as usize;
-            source_mask &= source_mask - 1;
-            let Some(&packed) = source_slots.phases.get(phase) else {
-                break;
-            };
-            let trajectory = (packed.y as usize, packed.x as usize);
-            let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
-                continue;
-            };
-            if self.trajectory_mv(end, traj_index) != INVALID_TRAJECTORY_MV {
-                continue;
-            }
-            let source_mv = self.trajectory_mv(source, traj_index);
-            if source_mv == INVALID_TRAJECTORY_MV {
-                continue;
-            }
-            let bounds = self.position_bounds(trajectory);
-            let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
-            if let Some(position) = self
-                .sampled_position(trajectory.0, trajectory.1, end_mv)
-                .filter(|&position| Self::position_allowed(position, bounds))
-            {
-                self.set_position(end, position, phase, trajectory);
+        if let Some(source_slots) = self.positions_at(source, (y8, x8)) {
+            let mut source_mask = source_slots.mask;
+            while source_mask != 0 {
+                let phase = source_mask.trailing_zeros() as usize;
+                source_mask &= source_mask - 1;
+                let Some(&packed) = source_slots.phases.get(phase) else {
+                    break;
+                };
+                let trajectory = (packed.y as usize, packed.x as usize);
+                let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
+                    continue;
+                };
+                if self.trajectory_mv(end, traj_index) != INVALID_TRAJECTORY_MV {
+                    continue;
+                }
+                let source_mv = self.trajectory_mv(source, traj_index);
+                if source_mv == INVALID_TRAJECTORY_MV {
+                    continue;
+                }
+                let bounds = self.position_bounds(trajectory);
+                let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
+                if let Some(position) = self
+                    .sampled_position(trajectory.0, trajectory.1, end_mv)
+                    .filter(|&position| Self::position_allowed(position, bounds))
+                {
+                    self.set_position(end, position, phase, trajectory);
+                }
             }
         }
 
@@ -764,10 +793,9 @@ impl TrajectoryBand<'_> {
         if self.unit_base(end_position.0) != self.unit_base(y8) {
             return Some(end_position);
         }
-        let end_slots = self
-            .positions_at(end, end_position)
-            .copied()
-            .unwrap_or(TrajectoryPositions::EMPTY);
+        let Some(end_slots) = self.positions_at(end, end_position) else {
+            return Some(end_position);
+        };
         let mut end_mask = end_slots.mask;
         while end_mask != 0 {
             let phase = end_mask.trailing_zeros() as usize;
@@ -1152,6 +1180,21 @@ mod tests {
     }
 
     #[test]
+    fn band_reset_hides_positions_from_every_earlier_band() {
+        let mut state = TrajectoryState::new((2, 2), 1, 1, 8).unwrap();
+        for round in 0..600 {
+            let (mut grids, scratch) = state.grids(1, 1).unwrap();
+            let mut band = grids.next_band(&mut scratch[0]).unwrap();
+            assert_eq!(band.positions_at(0, (0, 0)), None, "round {round}");
+            if round == 0 {
+                band.set_position(0, (0, 0), 1, (0, 0));
+                let mask = band.positions_at(0, (0, 0)).map(|slots| slots.mask);
+                assert_eq!(mask, Some(0b10));
+            }
+        }
+    }
+
+    #[test]
     fn intersection_visits_only_the_recorded_sparse_phases() {
         let mut state = TrajectoryState::new((8, 8), 2, 1, 8).unwrap();
         let source_index = temporal_grid_index(state.width8, state.height8, 1, 2).unwrap();
@@ -1163,6 +1206,7 @@ mod tests {
                 PackedPosition::new((1, 3)).unwrap(),
             ],
             mask: 0b101,
+            epoch: state.scratch[0].epoch,
         };
         state.set_trajectory_cell(0, 1, 1, Mv { row: 8, col: 16 });
         state.set_trajectory_cell(0, 1, 3, Mv { row: 24, col: 32 });
