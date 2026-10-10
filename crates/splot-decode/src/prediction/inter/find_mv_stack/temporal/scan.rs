@@ -30,6 +30,9 @@ pub(super) struct ProjectionTarget {
     /// The projection factor with the sign of `ref_offset` folded in, which
     /// projects the stored vector exactly as the factor projects its negation.
     pub(super) factor: i32,
+    /// The factor that projects the stored vector onto the § 7.9.8 trajectory
+    /// end, the vector `observe_projection_at` records for `end_ref`.
+    pub(super) end_factor: i32,
     pub(super) hint_match: bool,
     /// [`PROJECTS`] when the reference admits a projection factor, and
     /// [`INTERSECTS`] when it maps to a current-frame reference.
@@ -245,19 +248,21 @@ impl ChunkWalk<'_> {
                 ref_offset,
             ) {
                 let (row, col) = Self::pair(&self.lanes.projected, lane);
+                let end_mv = Mv {
+                    row: project_component(mv.row, target.end_factor),
+                    col: project_component(mv.col, target.end_factor),
+                };
                 trajectories.observe_projection_at(
                     prepared.source_ref,
                     target.end_ref,
                     prepared.target_ref,
                     at.0,
                     at.1,
-                    mv,
                     Mv { row, col },
+                    end_mv,
                     position,
                     trajectory_target_position,
-                    prepared.source_to_current,
                     ref_offset,
-                    prepared.side & 1 == 1,
                 );
             }
             write_projection(output, target, mv, position);
@@ -408,6 +413,12 @@ fn project(component: Lanes, factor: Lanes) -> Lanes {
     (scaled + (scaled >> 31) + Lanes::splat(1 << 13)) >> 14
 }
 
+/// [`project`] for one component.
+fn project_component(component: i32, factor: i32) -> i32 {
+    let scaled = component * factor;
+    (scaled + (scaled >> 31) + (1 << 13)) >> 14
+}
+
 /// Division by 64 that truncates toward zero, as the scalar `/` does.
 fn divide_by_64(value: Lanes) -> Lanes {
     (value + ((value >> 31) & Lanes::splat(63))) >> 6
@@ -419,9 +430,9 @@ mod tests {
 
     use super::super::{
         CompressedTemporalMv, MAX_FRAME_DISTANCE, MAX_SORTED_REFS, MotionFieldLayout,
-        RefOrderHints, TemporalMotionFieldMetadata, project_no_constraint,
-        project_tmvp_mv_with_factor, sampled_temporal_position, tmvp_projection_factor,
-        uncompress_tmvp_mv,
+        RefOrderHints, TemporalMotionFieldMetadata, clamped_tmvp_factor, project_no_constraint,
+        project_tmvp_mv, project_tmvp_mv_with_factor, sampled_temporal_position,
+        tmvp_projection_factor, uncompress_tmvp_mv,
     };
     use super::*;
     use crate::prediction::inter::get_relative_dist;
@@ -434,6 +445,9 @@ mod tests {
                 let side = usize::from(ref_offset < 0);
                 let factor = tmvp_projection_factor(numerator, ref_offset, side).unwrap();
                 let folded = if ref_offset < 0 { -factor } else { factor };
+                let observed = if side == 1 { -numerator } else { numerator };
+                let end_numerator = ref_offset.abs() - observed;
+                let end_factor = clamped_tmvp_factor(end_numerator, ref_offset.abs());
                 for chunk in saved.chunks_exact(LANES) {
                     let narrow =
                         Narrow::from_array(core::array::from_fn(|lane| chunk[lane] as i16));
@@ -445,6 +459,8 @@ mod tests {
                             row: component,
                             col: component,
                         });
+                        let end = project_tmvp_mv(mv, end_numerator, ref_offset.abs());
+                        assert_eq!(project_component(mv.row, end_factor), end.row);
                         let mv = if ref_offset < 0 {
                             Mv {
                                 row: -mv.row,
@@ -493,12 +509,13 @@ mod tests {
                 ref_order_hints,
             };
             let layout = MotionFieldLayout::new(height8 * 2, width8 * 2, 16).unwrap();
-            let (source_hint, side) = (next(64) as u32, next(2));
+            let (source_hint, current_hint, side) = (next(64) as u32, next(64) as u32, next(2));
+            let source_to_current = get_relative_dist(source_hint as i32, current_hint as i32);
             let source = TemporalProjectionSource::new(
                 &metadata,
                 layout,
                 source_hint,
-                next(64) as u32,
+                current_hint,
                 0,
                 side,
                 None,
@@ -555,7 +572,7 @@ mod tests {
                     let offset = get_relative_dist(source_hint as i32, hint as i32);
                     (
                         offset,
-                        tmvp_projection_factor(source.source_to_current, offset, side),
+                        tmvp_projection_factor(source_to_current, offset, side),
                     )
                 });
                 let target = source.targets[reference];
@@ -572,12 +589,8 @@ mod tests {
                     } else {
                         mv
                     };
-                    let projected = project_tmvp_mv_with_factor(
-                        mv,
-                        source.source_to_current,
-                        offset.abs(),
-                        factor?,
-                    );
+                    let projected =
+                        project_tmvp_mv_with_factor(mv, source_to_current, offset.abs(), factor?);
                     sampled_temporal_position(y8, x8, projected, step, unit, (width8, height8))
                         .map(|position| (projected, position))
                 });

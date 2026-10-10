@@ -3,10 +3,7 @@
 
 use splot_recon::math::round2_signed_i32;
 
-use super::{
-    Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint, project_tmvp_mv,
-    temporal_grid_index,
-};
+use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint, temporal_grid_index};
 
 type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
@@ -854,7 +851,7 @@ impl TrajectoryBand<'_> {
         } else {
             source_to_current
         };
-        let projected = project_tmvp_mv(mv, numerator, reference_offset);
+        let projected = super::project_tmvp_mv(mv, numerator, reference_offset);
         let Some(position) = self.sampled_position(y8, x8, projected) else {
             return;
         };
@@ -863,19 +860,18 @@ impl TrajectoryBand<'_> {
             return;
         }
         let target_position = self.sampled_position(y8, x8, mv);
+        let end_mv = super::project_tmvp_mv(mv, reference_offset - numerator, reference_offset);
         self.observe_projection_at(
             source,
             end,
             target,
             y8,
             x8,
-            mv,
             projected,
+            end_mv,
             position,
             target_position,
-            source_to_current,
             reference_offset,
-            backward,
         );
     }
 
@@ -913,13 +909,11 @@ impl TrajectoryBand<'_> {
         target: Option<usize>,
         y8: usize,
         x8: usize,
-        mv: Mv,
         projected: Mv,
+        end_mv: Mv,
         position: Position,
         target_position: Option<Position>,
-        source_to_current: i32,
         reference_offset: i32,
-        backward: bool,
     ) {
         if y8 >= self.height8 || x8 >= self.width8 {
             return;
@@ -949,12 +943,6 @@ impl TrajectoryBand<'_> {
         let Some(end) = end else {
             return;
         };
-        let numerator = if backward {
-            -source_to_current
-        } else {
-            source_to_current
-        };
-        let end_mv = project_tmvp_mv(mv, reference_offset - numerator, reference_offset);
         self.set_field_at(end, index, end_mv);
         let Some(target_position) = target_position else {
             return;

@@ -1964,7 +1964,6 @@ struct TemporalProjectionSource {
     source_ref: usize,
     side: usize,
     target_ref: Option<usize>,
-    source_to_current: i32,
     /// One entry per reference slot and a last, empty one that every other
     /// stored reference reads, so the table sits inline.
     targets: [ProjectionTarget; MAX_SORTED_REFS + 1],
@@ -1990,6 +1989,11 @@ impl TemporalProjectionSource {
         let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
         let target_order_hint =
             target_ref.and_then(|target| ref_order_hints.get(target).copied().flatten());
+        let numerator = if side & 1 == 1 {
+            -source_to_current
+        } else {
+            source_to_current
+        };
         let mut targets = [ProjectionTarget::default(); MAX_SORTED_REFS + 1];
         let slots = targets.iter_mut().take(MAX_SORTED_REFS);
         for (target, &hint) in slots.zip(source.ref_order_hints.iter()) {
@@ -2006,6 +2010,7 @@ impl TemporalProjectionSource {
                 end_ref,
                 ref_offset,
                 factor: factor.map_or(0, |factor| if ref_offset < 0 { -factor } else { factor }),
+                end_factor: clamped_tmvp_factor(ref_offset.abs() - numerator, ref_offset.abs()),
                 hint_match: target_order_hint == Some(hint),
                 flags: if factor.is_some() { scan::PROJECTS } else { 0 }
                     | if end_ref.is_some() {
@@ -2021,7 +2026,6 @@ impl TemporalProjectionSource {
             source_ref,
             side,
             target_ref,
-            source_to_current,
             targets,
         })
     }
@@ -2181,10 +2185,16 @@ fn project_tmvp_mv_with_factor(mv: Mv, numerator: i32, denominator: i32, factor:
 }
 
 fn project_tmvp_mv(mv: Mv, numerator: i32, denominator: i32) -> Mv {
+    let factor = clamped_tmvp_factor(numerator, denominator);
     let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE);
     let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
-    let factor = numerator * DIV_MULT[denominator as usize];
     project_tmvp_mv_with_factor(mv, numerator, denominator, factor)
+}
+
+/// The factor [`project_tmvp_mv`] projects with, after its clamps.
+fn clamped_tmvp_factor(numerator: i32, denominator: i32) -> i32 {
+    numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE)
+        * DIV_MULT[denominator.clamp(0, MAX_FRAME_DISTANCE) as usize]
 }
 
 fn derive_mv_from_trajectories(candidate: Mv, dst: Mv, candidate_trajectory: Mv) -> Mv {
