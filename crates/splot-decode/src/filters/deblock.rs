@@ -1127,7 +1127,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
                 *mask = candidate_mask::<PASS>(grid, r, start, &plane_pass)?;
                 any |= *mask;
             }
-            if (PLANE == 0 || PASS == 1) && any != 0 {
+            if any != 0 {
                 for (i, r) in rows.clone().enumerate() {
                     let back = match (PASS, i.checked_sub(1)) {
                         (0, Some(above)) => masks[above],
@@ -1275,9 +1275,7 @@ fn flag_chunk(flags: &[u8], from: usize) -> Simd<u8, CANDIDATE_CHUNK> {
 /// direction between them are covered by the same records. A chroma cell
 /// spans `1 << sub` mode-info units in each direction and a chroma record
 /// starts or ends anywhere inside one, so the flags are read over every unit
-/// of the two cells on each side of the edge. The chroma vertical pass keeps
-/// the record comparison: measured, this wider window cost it more than the
-/// repeats saved.
+/// of the two cells on each side of the edge.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn same_records_mask<const PASS: usize>(
