@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::tip_field::divide_tip_average;
+use super::tip_field::TIP_AVERAGE_WEIGHTS;
 use super::*;
 use splot_parallel::{ThreadCount, WorkerPool};
 
@@ -896,6 +896,12 @@ fn tip_averaging_never_inherits_the_previous_frame_between_sampled_cells() {
             );
         }
     }
+}
+
+/// AV2 § 7.10.4 `Round2Signed(sum * Weight_Div_Mult[count], 16)`.
+fn divide_tip_average(value: i32, count: usize) -> i32 {
+    let weight = i64::from(TIP_AVERAGE_WEIGHTS[count]);
+    splot_recon::math::round2_signed(i64::from(value) * weight, 16) as i32
 }
 
 /// The whole-field § 7.10.4 passes that the per-unit preparation replaced:
