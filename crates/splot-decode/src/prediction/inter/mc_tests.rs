@@ -2234,7 +2234,7 @@ fn frame_with_format(
     frame_for(BitDepth::Eight, pixel_format, width, height, y, u, v)
 }
 
-fn frame_for<T: ReconSample>(
+pub(super) fn frame_for<T: ReconSample>(
     bit_depth: BitDepth,
     pixel_format: PixelFormat,
     width: usize,

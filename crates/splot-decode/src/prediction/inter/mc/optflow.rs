@@ -58,6 +58,8 @@ impl CompoundAverageOutput for u16 {
         )
     }
 
+    #[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+    #[inline(always)]
     fn predict_fast<T: ReconSample>(
         reference0: &ReferencePlaneView<'_, T>,
         params0: &SubpelPredictParams,
@@ -102,6 +104,8 @@ impl CompoundAverageOutput for u8 {
         )
     }
 
+    #[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+    #[inline(always)]
     fn predict_fast<T: ReconSample>(
         reference0: &ReferencePlaneView<'_, T>,
         params0: &SubpelPredictParams,
@@ -125,7 +129,7 @@ impl CompoundAverageOutput for u8 {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct MotionCell {
     base_mvs: [Mv; 2],
     mvs: [[i32; 2]; 2],
@@ -235,6 +239,7 @@ impl StoredMotionGrid {
             unit_size: self.unit_size,
             columns: self.columns,
             cells: MotionCells::Shared(std::sync::Arc::clone(storage), self.cells),
+            run_pairs: core::sync::atomic::AtomicU8::new(0),
             refinemv_candidates: match self.candidates {
                 StoredCandidates::None => RefinemvCandidates::None,
                 StoredCandidates::Uniform(candidates, unit_size) => RefinemvCandidates::Uniform {
@@ -361,6 +366,8 @@ pub(crate) struct CompoundMotionGrid {
     columns: usize,
     cells: MotionCells,
     refinemv_candidates: RefinemvCandidates,
+    /// [`Self::has_run_pairs`], once known: 0 unknown, 1 no, 2 yes.
+    run_pairs: core::sync::atomic::AtomicU8,
 }
 
 impl CompoundMotionGrid {
@@ -430,6 +437,7 @@ impl CompoundMotionGrid {
             unit_size: 16,
             columns: 1,
             cells: MotionCells::Inline(cell),
+            run_pairs: core::sync::atomic::AtomicU8::new(0),
             refinemv_candidates: RefinemvCandidates::Uniform {
                 candidates,
                 unit_size: 16,
@@ -446,6 +454,7 @@ impl CompoundMotionGrid {
             unit_size: 16,
             columns,
             cells: MotionCells::from_vec(cells),
+            run_pairs: core::sync::atomic::AtomicU8::new(0),
             refinemv_candidates: RefinemvCandidates::Uniform {
                 candidates,
                 unit_size: 16,
@@ -493,6 +502,33 @@ impl CompoundMotionGrid {
                 *unit_size,
             ),
         }
+    }
+
+    /// Whether some row holds two adjacent equal cells whose motion is
+    /// full-pel under either subsampling, the precondition of every merged
+    /// run; the scan runs once per grid.
+    fn has_run_pairs(&self) -> bool {
+        use core::sync::atomic::Ordering::Relaxed;
+        let known = self.run_pairs.load(Relaxed);
+        if known != 0 {
+            return known == 2;
+        }
+        let found = self
+            .cells
+            .as_slice()
+            .chunks(self.columns.max(1))
+            .any(|row| {
+                row.windows(2).any(|pair| {
+                    pair[0] == pair[1]
+                        && pair[0]
+                            .mvs
+                            .as_flattened()
+                            .iter()
+                            .all(|&mv| fullpel_phase(mv, 0) == 0 || fullpel_phase(mv, 1) == 0)
+                })
+            });
+        self.run_pairs.store(1 + u8::from(found), Relaxed);
+        found
     }
 
     pub(super) fn uniform_mvs(&self) -> Option<[[i32; 2]; 2]> {
@@ -814,6 +850,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
         unit_size,
         columns,
         cells: MotionCells::from_vec(cells),
+        run_pairs: core::sync::atomic::AtomicU8::new(0),
         refinemv_candidates: refinemv_candidates.map_or(RefinemvCandidates::None, |candidates| {
             RefinemvCandidates::Uniform {
                 candidates,
@@ -972,6 +1009,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             unit_size,
             columns,
             cells: MotionCells::from_vec(cells),
+            run_pairs: core::sync::atomic::AtomicU8::new(0),
             refinemv_candidates: RefinemvCandidates::PerCell {
                 candidates: {
                     refinemv_candidates.extend((0..unit_count).map(|index| unit_at(index).1));
@@ -1031,6 +1069,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit_size,
         columns,
         cells: MotionCells::from_vec(cells),
+        run_pairs: core::sync::atomic::AtomicU8::new(0),
         refinemv_candidates: RefinemvCandidates::PerCell {
             candidates: refinemv_candidates,
             unit_size,
@@ -1301,15 +1340,46 @@ pub(super) fn predict_motion_grid_compound_average_into<
         || prediction.scalings.into_iter().any(PlaneScaling::is_scaled);
     let cells = motion.cells.as_slice();
     let refine = motion.refinemv_candidate_slice();
+    let merge_runs = !prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
+        && refine.1 == 1
+        && refine.2 >> sub_x == subblock_w
+        && motion.has_run_pairs();
     let process_row = |cell_row: usize,
                        row: usize,
                        output: &mut [O],
                        pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
                        intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE]|
      -> Result<()> {
+        let height = subblock_h.min(prediction.block_h - row);
+        let mut merged = if merge_runs {
+            predict_fullpel_runs(
+                &prediction,
+                cells,
+                refine,
+                cell_row * motion.columns,
+                [row, subblock_w, height],
+                (sub_x, sub_y),
+                (bit_depth, block.interp, subblock_area),
+                (
+                    uniform_everywhere,
+                    implicit_mask,
+                    cwp_weight,
+                    (frame_w, frame_h),
+                ),
+                intermediate_scratch,
+                output,
+                output_stride,
+            )?
+        } else {
+            0
+        };
         for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
+            let skip = merged & 1 != 0;
+            merged >>= 1;
+            if skip {
+                continue;
+            }
             let width = subblock_w.min(prediction.block_w - col);
-            let height = subblock_h.min(prediction.block_h - row);
             let cell_index = cell_row * motion.columns + cell_col;
             let cell = *cells
                 .get(cell_index)
@@ -1446,6 +1516,179 @@ pub(super) fn predict_motion_grid_compound_average_into<
         )?;
     }
     Ok(true)
+}
+
+/// The unscaled start phase `(start >> 6) & 15` of a prescaled MV component:
+/// the low four bits of `Round2Signed(mv, sub)`, which are zero exactly when
+/// they are for `|mv|`.
+#[inline]
+fn fullpel_phase(mv: i32, sub: u32) -> u32 {
+    ((mv.unsigned_abs() + ((1 << sub) >> 1)) >> sub) & 15
+}
+
+#[inline]
+fn fullpel_motion(mvs: [[i32; 2]; 2], sub_x: u32, sub_y: u32) -> bool {
+    mvs.iter()
+        .all(|mv| fullpel_phase(mv[0], sub_y) | fullpel_phase(mv[1], sub_x) == 0)
+}
+
+/// Predicts each run of full-width, full-pel cells in one grid row that share
+/// their motion and clipping-bound source as one block of at most 64 samples,
+/// and returns a mask of the cells it predicted.
+///
+/// Each cell's bounds are the run's first cell's unclamped bounds shifted by
+/// the cell's offset, so when the first cell reads inside its bounds and the
+/// whole run reads inside the plane, no cell clamps a column. Rows clamp
+/// identically.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
+    prediction: &CompoundSubpelPlane<'_, T>,
+    cells: &[MotionCell],
+    refine: (&[[Mv; 2]], usize, usize),
+    row_index: usize,
+    [row, subblock_w, height]: [usize; 3],
+    (sub_x, sub_y): (u32, u32),
+    (bit_depth, interp, subblock_area): (
+        splot_recon::BitDepth,
+        InterpolationFilter,
+        Option<(usize, usize)>,
+    ),
+    (uniform_everywhere, implicit_mask, cwp_weight, frame): (bool, bool, i16, (usize, usize)),
+    intermediate_scratch: &mut [i16],
+    output: &mut [O],
+    output_stride: usize,
+) -> Result<u64> {
+    let columns = (prediction.block_w / subblock_w).min(64);
+    let row_cells = cells
+        .get(row_index..row_index + columns)
+        .unwrap_or_default();
+    let candidate = |column: usize| refine.0.get((row_index + column) * refine.1);
+    let mut merged = 0u64;
+    let mut start = 0;
+    while start + 1 < row_cells.len() {
+        let cell = row_cells[start];
+        let mut run = 1;
+        if row_cells[start + 1] == cell && fullpel_motion(cell.mvs, sub_x, sub_y) {
+            while start + run < row_cells.len()
+                && (run + 1) * subblock_w <= 64
+                && row_cells[start + run] == cell
+                && candidate(start + run) == candidate(start)
+            {
+                run += 1;
+            }
+        }
+        if run > 1
+            && predict_fullpel_run(
+                prediction,
+                cell,
+                refine,
+                row_index + start,
+                [
+                    start * subblock_w,
+                    row,
+                    subblock_w,
+                    run * subblock_w,
+                    height,
+                ],
+                (sub_x, sub_y),
+                (bit_depth, interp, subblock_area),
+                (uniform_everywhere, implicit_mask, cwp_weight, frame),
+                intermediate_scratch,
+                &mut output[start * subblock_w..],
+                output_stride,
+            )?
+        {
+            merged |= ((1 << run) - 1) << start;
+        }
+        start += run;
+    }
+    Ok(merged)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_fullpel_run<T: ReconSample, O: CompoundAverageOutput>(
+    prediction: &CompoundSubpelPlane<'_, T>,
+    cell: MotionCell,
+    refine: (&[[Mv; 2]], usize, usize),
+    cell_index: usize,
+    [col, row, subblock_w, run_w, height]: [usize; 5],
+    (sub_x, sub_y): (u32, u32),
+    (bit_depth, interp, subblock_area): (
+        splot_recon::BitDepth,
+        InterpolationFilter,
+        Option<(usize, usize)>,
+    ),
+    (uniform_everywhere, implicit_mask, cwp_weight, frame): (bool, bool, i16, (usize, usize)),
+    intermediate_scratch: &mut [i16],
+    output: &mut [O],
+    output_stride: usize,
+) -> Result<bool> {
+    let scalings = core::array::from_fn(|reference| {
+        prediction.scalings[reference].with_prescaled_mv(
+            (prediction.plane_x + col) as i32,
+            (prediction.plane_y + row) as i32,
+            cell.mvs[reference][0],
+            cell.mvs[reference][1],
+            sub_x,
+            sub_y,
+        )
+    });
+    let mut params = compound_optflow_subpel_params(
+        bit_depth,
+        interp,
+        subblock_area,
+        sub_x,
+        sub_y,
+        refine,
+        prediction,
+        cell,
+        scalings,
+        cell_index,
+        row,
+        col,
+        subblock_w,
+        height,
+    );
+    let inside = params
+        .iter()
+        .zip(&prediction.views)
+        .zip(&prediction.scalings)
+        .all(|((params, view), scaling)| {
+            let x = params.start_x >> 10;
+            ((params.start_x | params.start_y) >> 6).trailing_zeros() >= 4
+                && x >= params.first_x
+                && x + subblock_w as i32 - 1 <= params.last_x
+                && x + run_w as i32 - 1 <= scaling.last_x.min(view.width() as i32 - 1)
+        });
+    if !inside
+        || !(uniform_everywhere
+            || super::compound_average_weights_are_uniform(
+                implicit_mask,
+                cwp_weight,
+                run_w,
+                height,
+                prediction.scalings,
+                Some(scalings),
+                frame,
+            ))
+    {
+        return Ok(false);
+    }
+    for params in &mut params {
+        params.w = run_w;
+        params.last_x = (params.start_x >> 10) + run_w as i32 - 1;
+    }
+    Ok(O::predict_fast(
+        &prediction.views[0],
+        &params[0],
+        &prediction.views[1],
+        &params[1],
+        cwp_weight,
+        intermediate_scratch,
+        output,
+        output_stride,
+    )?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1684,6 +1927,10 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
 }
 
 #[cfg(test)]
+#[path = "optflow_run_tests.rs"]
+mod run_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
@@ -1701,6 +1948,7 @@ mod tests {
                 unit_size: 8,
                 columns: count,
                 cells: MotionCells::Heap(vec![value; count]),
+                run_pairs: core::sync::atomic::AtomicU8::new(0),
                 refinemv_candidates: RefinemvCandidates::PerCell {
                     candidates: vec![[Mv::ZERO; 2]; count],
                     unit_size: 8,
@@ -1734,6 +1982,7 @@ mod tests {
                 base_mvs: [Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }],
                 mvs: [[7, -7], [-7, 7]],
             }),
+            run_pairs: core::sync::atomic::AtomicU8::new(0),
             refinemv_candidates: RefinemvCandidates::None,
         };
 
@@ -1795,6 +2044,7 @@ mod tests {
                     mvs: [[4, -4], [4, -4]],
                 },
             ]),
+            run_pairs: core::sync::atomic::AtomicU8::new(0),
             refinemv_candidates: RefinemvCandidates::None,
         };
 
@@ -1816,6 +2066,7 @@ mod tests {
                 };
                 2
             ]),
+            run_pairs: core::sync::atomic::AtomicU8::new(0),
             refinemv_candidates: RefinemvCandidates::None,
         };
 
