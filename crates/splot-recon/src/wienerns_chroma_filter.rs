@@ -15,7 +15,7 @@
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
 use crate::math::round2_i32;
-use crate::wienerns_filter::validated_source_sample;
+use crate::wienerns_filter::{LumaSimdSource, validated_source_sample};
 use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
@@ -323,7 +323,7 @@ pub fn wiener_ns_filter_chroma_block_padded_into<T: ReconSample>(
         T::u16_slice(source.chroma_samples),
         T::u16_slice_mut(output),
     ) {
-        filter_chroma_padded_u16(
+        filter_chroma_padded_simd(
             output,
             params,
             chroma,
@@ -414,7 +414,7 @@ fn filter_chroma_padded_output<O: ChromaOutputSample, T: ReconSample>(
     let max_sample = params.bit_depth.max_sample();
     let luma_stride = params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
     if let Some(chroma) = T::u16_slice(source.chroma_samples) {
-        filter_chroma_padded_u16(
+        filter_chroma_padded_simd(
             output,
             params,
             chroma,
@@ -424,7 +424,7 @@ fn filter_chroma_padded_output<O: ChromaOutputSample, T: ReconSample>(
             max_sample,
         );
     } else if let Some(chroma) = T::u8_slice(source.chroma_samples) {
-        filter_chroma_padded_u8(
+        filter_chroma_padded_simd(
             output,
             params,
             chroma,
@@ -826,8 +826,6 @@ const WIENER_NS_CONFIG_UV_PAIRS: [(isize, isize, usize); WIENER_NS_CHROMA_COEFF_
     (0, 2, 5),
 ];
 
-const WIENER_NS_CHROMA_SIMD_LANES: usize = 64;
-
 trait ChromaOutputSample: Copy {
     fn from_clamped_u16(value: u16) -> Self;
 
@@ -859,52 +857,10 @@ fn padded_tap_offset(stride: usize, dy: isize, dx: isize) -> usize {
         + (dx + WIENER_NS_CHROMA_TAP_RADIUS as isize) as usize
 }
 
-fn filter_chroma_padded_u16<O: ChromaOutputSample>(
-    output: &mut [O],
-    params: &WienerNsChromaFilter<'_>,
-    chroma: &[u16],
-    chroma_stride: usize,
-    luma_ds: &[u16],
-    luma_stride: usize,
-    max_sample: u16,
-) {
-    filter_chroma_padded_simd(
-        output,
-        params,
-        chroma,
-        chroma_stride,
-        luma_ds,
-        luma_stride,
-        max_sample,
-        |samples, start| Simd::from_slice(&samples[start..]),
-    );
-}
-
-fn filter_chroma_padded_u8<O: ChromaOutputSample>(
-    output: &mut [O],
-    params: &WienerNsChromaFilter<'_>,
-    chroma: &[u8],
-    chroma_stride: usize,
-    luma_ds: &[u16],
-    luma_stride: usize,
-    max_sample: u16,
-) {
-    filter_chroma_padded_simd(
-        output,
-        params,
-        chroma,
-        chroma_stride,
-        luma_ds,
-        luma_stride,
-        max_sample,
-        |samples, start| {
-            Simd::<u8, WIENER_NS_CHROMA_SIMD_LANES>::from_slice(&samples[start..]).cast()
-        },
-    );
-}
-
+/// Filters every output row in 64-, 32-, 16- and 8-lane groups, finishing
+/// each row's last few samples with the scalar kernel.
 #[allow(clippy::too_many_arguments)]
-fn filter_chroma_padded_simd<O: ChromaOutputSample, T: ReconSample>(
+fn filter_chroma_padded_simd<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     chroma: &[T],
@@ -912,58 +868,28 @@ fn filter_chroma_padded_simd<O: ChromaOutputSample, T: ReconSample>(
     luma_ds: &[u16],
     luma_stride: usize,
     max_sample: u16,
-    load_chroma: impl Fn(&[T], usize) -> Simd<u16, WIENER_NS_CHROMA_SIMD_LANES>,
 ) {
-    let center_offset = padded_tap_offset(chroma_stride, 0, 0);
-    let luma_center_offset = padded_tap_offset(luma_stride, 0, 0);
     for r in 0..params.height {
-        let chroma_base = r * chroma_stride;
-        let luma_base = r * luma_stride;
         let output = &mut output[r * params.output_stride..][..params.width];
-        let vector_width = params.width - params.width % WIENER_NS_CHROMA_SIMD_LANES;
-        for c in (0..vector_width).step_by(WIENER_NS_CHROMA_SIMD_LANES) {
-            let center = load_chroma(chroma, chroma_base + center_offset + c).cast::<i16>();
-            let mut sum = center.cast::<i32>() << WIENER_NS_PREC_BITS as i32;
-            let twice_center = center + center;
-            for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_UV_PAIRS {
-                let coeff = params.coeffs[coeff_index];
-                let plus = load_chroma(
-                    chroma,
-                    chroma_base + padded_tap_offset(chroma_stride, dy, dx) + c,
-                )
-                .cast::<i16>();
-                let minus = load_chroma(
-                    chroma,
-                    chroma_base + padded_tap_offset(chroma_stride, -dy, -dx) + c,
-                )
-                .cast::<i16>();
-                sum += (plus + minus - twice_center).cast::<i32>()
-                    * Simd::<i16, WIENER_NS_CHROMA_SIMD_LANES>::splat(coeff).cast::<i32>();
-            }
-            let luma_center = Simd::<u16, WIENER_NS_CHROMA_SIMD_LANES>::from_slice(
-                &luma_ds[luma_base + luma_center_offset + c..],
-            )
-            .cast::<i16>();
-            for (tap_index, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
-                let coeff = params.coeffs[tap_index + WIENER_NS_CHROMA_COEFF_SLOTS];
-                if coeff != 0 {
-                    let tap = Simd::<u16, WIENER_NS_CHROMA_SIMD_LANES>::from_slice(
-                        &luma_ds[luma_base + padded_tap_offset(luma_stride, dy, dx) + c..],
-                    )
-                    .cast::<i16>();
-                    sum += (tap - luma_center).cast::<i32>()
-                        * Simd::<i16, WIENER_NS_CHROMA_SIMD_LANES>::splat(coeff).cast::<i32>();
-                }
-            }
-            let values = ((sum + Simd::splat(1 << (WIENER_NS_PREC_BITS - 1)))
-                >> WIENER_NS_PREC_BITS as i32)
-                .simd_max(Simd::splat(0))
-                .simd_min(Simd::splat(i32::from(max_sample)))
-                .cast::<u16>()
-                .to_array();
-            O::write_lanes(&mut output[c..c + WIENER_NS_CHROMA_SIMD_LANES], values);
+        let mut c = 0;
+        macro_rules! lane_groups {
+            ($($lanes:literal)*) => {
+                $(while c + $lanes <= params.width {
+                    filter_chroma_lanes::<$lanes, O, T>(
+                        &mut output[c..c + $lanes],
+                        params,
+                        chroma,
+                        (r * chroma_stride + c, chroma_stride),
+                        luma_ds,
+                        (r * luma_stride + c, luma_stride),
+                        max_sample,
+                    );
+                    c += $lanes;
+                })*
+            };
         }
-        for (c, slot) in output[vector_width..].iter_mut().enumerate() {
+        lane_groups!(64 32 16 8);
+        for (offset, slot) in output[c..].iter_mut().enumerate() {
             *slot = O::from_clamped_u16(filter_chroma_padded_sample(
                 params,
                 chroma,
@@ -971,11 +897,62 @@ fn filter_chroma_padded_simd<O: ChromaOutputSample, T: ReconSample>(
                 luma_ds,
                 luma_stride,
                 r,
-                vector_width + c,
+                c + offset,
                 max_sample,
             ));
         }
     }
+}
+
+/// One `LANES`-wide group of [`filter_chroma_padded_simd`] whose chroma and
+/// downsampled-luma windows start at the given `(base, stride)`.
+#[allow(clippy::inline_always, clippy::too_many_arguments)]
+#[inline(always)]
+fn filter_chroma_lanes<const LANES: usize, O: ChromaOutputSample, T: LumaSimdSource>(
+    output: &mut [O],
+    params: &WienerNsChromaFilter<'_>,
+    chroma: &[T],
+    (chroma_base, chroma_stride): (usize, usize),
+    luma_ds: &[u16],
+    (luma_base, luma_stride): (usize, usize),
+    max_sample: u16,
+) {
+    let load_chroma = |dy: isize, dx: isize| {
+        T::load::<LANES>(
+            chroma,
+            chroma_base + padded_tap_offset(chroma_stride, dy, dx),
+        )
+        .cast::<i16>()
+    };
+    let center = load_chroma(0, 0);
+    let mut sum = center.cast::<i32>() << WIENER_NS_PREC_BITS as i32;
+    let twice_center = center + center;
+    for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_UV_PAIRS {
+        let coeff = params.coeffs[coeff_index];
+        sum += (load_chroma(dy, dx) + load_chroma(-dy, -dx) - twice_center).cast::<i32>()
+            * Simd::<i16, LANES>::splat(coeff).cast::<i32>();
+    }
+    let load_luma = |dy: isize, dx: isize| {
+        Simd::<u16, LANES>::from_slice(
+            &luma_ds[luma_base + padded_tap_offset(luma_stride, dy, dx)..],
+        )
+        .cast::<i16>()
+    };
+    let luma_center = load_luma(0, 0);
+    for (tap_index, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
+        let coeff = params.coeffs[tap_index + WIENER_NS_CHROMA_COEFF_SLOTS];
+        if coeff != 0 {
+            sum += (load_luma(dy, dx) - luma_center).cast::<i32>()
+                * Simd::<i16, LANES>::splat(coeff).cast::<i32>();
+        }
+    }
+    let values = ((sum + Simd::splat(1 << (WIENER_NS_PREC_BITS - 1)))
+        >> WIENER_NS_PREC_BITS as i32)
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(i32::from(max_sample)))
+        .cast::<u16>()
+        .to_array();
+    O::write_lanes(output, values);
 }
 
 #[inline(never)]
@@ -1427,7 +1404,7 @@ mod tests {
                 let params = chroma_params(width, height, width, bit_depth, &coeffs);
                 let mut lanes = vec![0u16; width * height];
                 let mut scalar = vec![0u16; width * height];
-                filter_chroma_padded_u16(
+                filter_chroma_padded_simd(
                     &mut lanes, &params, &chroma, stride, &luma_ds, stride, max,
                 );
                 filter_chroma_padded_scalar(

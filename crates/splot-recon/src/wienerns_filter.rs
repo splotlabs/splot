@@ -885,7 +885,7 @@ impl LumaSimdOutput for u8 {
     }
 }
 
-trait LumaSimdSource: Copy {
+pub(crate) trait LumaSimdSource: Copy {
     fn load<const LANES: usize>(samples: &[Self], start: usize) -> Simd<u16, LANES>;
 
     fn scalar(samples: &[Self], index: usize) -> u16;
