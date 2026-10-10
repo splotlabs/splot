@@ -1290,68 +1290,28 @@ fn predict_compound_plane_output<T: ReconSample>(
         *luma_diff_weighted_mask = Some(mask);
     }
     let mask = luma_diff_weighted_mask.as_deref().map(Vec::as_slice);
-    with_packed_output(
-        samples,
-        stride,
+    Ok(blend_compound_average::<T>(
+        pred0,
+        pred1,
+        info.bit_depth(),
         prediction.block_w,
         prediction.block_h,
-        |packed| {
-            blend_compound_average::<T>(
-                pred0,
-                pred1,
-                info.bit_depth(),
-                prediction.block_w,
-                prediction.block_h,
-                blend,
-                rect.luma_w,
-                rect.luma_h,
-                motion,
-                prediction.plane_x,
-                prediction.plane_y,
-                prediction.scaling0,
-                prediction.scaling1,
-                frame_w,
-                frame_h,
-                mask,
-                sub_x,
-                sub_y,
-                packed,
-            )
-        },
-    )
-}
-
-/// Runs `write` over contiguous `w * h` storage and leaves its rows in
-/// `output`, `stride` samples apart.
-fn with_packed_output<T: ReconSample>(
-    output: &mut [T],
-    stride: usize,
-    w: usize,
-    h: usize,
-    write: impl FnOnce(&mut [T]) -> splot_recon::Result<()>,
-) -> Result<()> {
-    let len = w.checked_mul(h).ok_or(ReconError::ArithmeticOverflow {
-        context: "compound output plane sample count",
-    })?;
-    let required = h
-        .checked_sub(1)
-        .map_or(Some(0), |rows| rows.checked_mul(stride)?.checked_add(w))
-        .filter(|&required| stride >= w && required <= output.len())
-        .ok_or(ReconError::BufferLengthMismatch {
-            expected: len,
-            actual: output.len(),
-        })?;
-    if stride == w {
-        return Ok(write(&mut output[..required])?);
-    }
-    let mut packed = RecycledMcSamples::take();
-    packed.clear();
-    packed.resize(len, T::default());
-    write(&mut packed)?;
-    for (row, source) in packed.chunks_exact(w).enumerate() {
-        output[row * stride..][..w].copy_from_slice(source); // splot-copy-ok: lay a packed blend into the frame rows
-    }
-    Ok(())
+        blend,
+        rect.luma_w,
+        rect.luma_h,
+        motion,
+        prediction.plane_x,
+        prediction.plane_y,
+        prediction.scaling0,
+        prediction.scaling1,
+        frame_w,
+        frame_h,
+        mask,
+        sub_x,
+        sub_y,
+        samples,
+        stride,
+    )?)
 }
 
 #[allow(clippy::too_many_arguments)]

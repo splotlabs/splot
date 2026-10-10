@@ -24,11 +24,15 @@ pub(super) fn blend_compound_average<T: ReconSample>(
     sub_x: u32,
     sub_y: u32,
     output: &mut [T],
+    stride: usize,
 ) -> splot_recon::Result<()> {
     let sample_count = w.checked_mul(h).ok_or(ReconError::ArithmeticOverflow {
         context: "compound blend sample count",
     })?;
-    if output.len() != sample_count {
+    let required = h
+        .checked_sub(1)
+        .map_or(Some(0), |rows| rows.checked_mul(stride)?.checked_add(w));
+    if stride < w || required != Some(output.len()) {
         return Err(ReconError::BufferLengthMismatch {
             expected: sample_count,
             actual: output.len(),
@@ -64,6 +68,7 @@ pub(super) fn blend_compound_average<T: ReconSample>(
             sub_x,
             sub_y,
             output,
+            stride,
         );
     };
     let scaling_templates = [scaling0, scaling1];
@@ -78,9 +83,9 @@ pub(super) fn blend_compound_average<T: ReconSample>(
         uniform_scalings,
         (frame_w, frame_h),
     ) {
-        return blend_compound_average_weighted_samples(
-            pred0, pred1, bit_depth, cwp_weight, output,
-        );
+        return blend_rows(pred0, pred1, w, output, stride, |pred0, pred1, output| {
+            blend_compound_average_weighted_samples(pred0, pred1, bit_depth, cwp_weight, output)
+        });
     }
 
     optflow::blend_nonuniform_implicit_mask(
@@ -98,7 +103,27 @@ pub(super) fn blend_compound_average<T: ReconSample>(
         sub_x,
         sub_y,
         output,
+        stride,
     )
+}
+
+/// Runs `blend` over each of the `w`-sample rows of the packed predictions
+/// and of `output`, whose rows are `stride` samples apart.
+fn blend_rows<T: ReconSample>(
+    pred0: &[i32],
+    pred1: &[i32],
+    w: usize,
+    output: &mut [T],
+    stride: usize,
+    mut blend: impl FnMut(&[i32], &[i32], &mut [T]) -> splot_recon::Result<()>,
+) -> splot_recon::Result<()> {
+    let preds = pred0
+        .chunks_exact(w.max(1))
+        .zip(pred1.chunks_exact(w.max(1)));
+    for (output, (pred0, pred1)) in output.chunks_mut(stride.max(1)).zip(preds) {
+        blend(pred0, pred1, &mut output[..w])?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -115,14 +140,18 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     sub_x: u32,
     sub_y: u32,
     output: &mut [T],
+    stride: usize,
 ) -> splot_recon::Result<()> {
     if let CompoundBlend::Wedge { index, sign } = blend {
         return blend_compound_wedge::<T>(
             pred0, pred1, bit_depth, w, h, luma_w, luma_h, index, sign, sub_x, sub_y, output,
+            stride,
         );
     }
     let CompoundBlend::DiffWeighted { inverse } = blend else {
-        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output);
+        return blend_rows(pred0, pred1, w, output, stride, |pred0, pred1, output| {
+            blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output)
+        });
     };
     if pred0.len() != pred1.len() {
         return Err(ReconError::CompoundBlendLengthMismatch {
@@ -133,10 +162,10 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     let sample_count = w.checked_mul(h).ok_or(ReconError::ArithmeticOverflow {
         context: "diff-weighted compound mask sample count",
     })?;
-    if pred0.len() < sample_count || output.len() > sample_count {
+    if pred0.len() < sample_count {
         return Err(ReconError::BufferLengthMismatch {
             expected: sample_count,
-            actual: pred0.len().min(output.len()),
+            actual: pred0.len(),
         });
     }
     let scales = luma_diff_weighted_mask
@@ -152,9 +181,10 @@ fn blend_compound_diff_weighted<T: ReconSample>(
             actual: MAX_MC_BLOCK_DIM,
         })?;
     let rows = output
-        .chunks_mut(w)
+        .chunks_mut(stride.max(1))
         .zip(pred0.chunks_exact(w).zip(pred1.chunks_exact(w)));
     for (y, (output, (pred0, pred1))) in rows.enumerate() {
+        let output = &mut output[..w];
         if let (Some(luma_mask), Some((scale_x, scale_y, luma_w))) =
             (luma_diff_weighted_mask, scales)
         {
@@ -275,6 +305,7 @@ fn blend_compound_wedge<T: ReconSample>(
     sub_x: u32,
     sub_y: u32,
     output: &mut [T],
+    stride: usize,
 ) -> splot_recon::Result<()> {
     let max_sample = i32::from(bit_depth.max_sample());
     let shift = 6 + compound_inter_post_round();
@@ -295,7 +326,7 @@ fn blend_compound_wedge<T: ReconSample>(
                 i32::from(mask) * pred0[idx] + i32::from(64 - mask) * pred1[idx],
                 shift,
             );
-            output[idx] = T::try_from_u16(blended.clamp(0, max_sample) as u16)?;
+            output[y * stride + x] = T::try_from_u16(blended.clamp(0, max_sample) as u16)?;
         }
     }
     Ok(())

@@ -1721,6 +1721,7 @@ pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
     sub_x: u32,
     sub_y: u32,
     output: &mut [T],
+    output_stride: usize,
 ) -> splot_recon::Result<()> {
     if output.is_empty() {
         return Ok(());
@@ -1737,19 +1738,19 @@ pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
             blend,
             (sub_x, sub_y),
             output,
-            width,
+            output_stride,
         );
     }
     let reference_starts =
         scaling_templates.map(|scaling| (scaling.start_x >> 10, scaling.start_y >> 10));
     for (row, ((output, pred0), pred1)) in output
-        .chunks_mut(width)
+        .chunks_mut(output_stride.max(1))
         .zip(pred0.chunks(width))
         .zip(pred1.chunks(width))
         .enumerate()
     {
         let starts = reference_starts.map(|(x, y)| (x, y + row as i32));
-        blend.row(pred0, pred1, starts, output)?;
+        blend.row(pred0, pred1, starts, &mut output[..width])?;
     }
     Ok(())
 }
@@ -2166,6 +2167,7 @@ mod tests {
             0,
             0,
             &mut output,
+            w,
         )
         .unwrap();
         for (index, sample) in output.iter().enumerate() {

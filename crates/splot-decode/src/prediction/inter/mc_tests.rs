@@ -1372,8 +1372,38 @@ fn multi_span_implicit_mask_blend_matches_per_pixel_reference() {
         0,
         0,
         &mut output,
+        w,
     )
     .expect("multi-span implicit-mask blend");
+    let stride = w + 3;
+    let mut strided = vec![u16::MAX; (h - 1) * stride + w];
+    blend_compound_average::<u16>(
+        &pred0,
+        &pred1,
+        BitDepth::Eight,
+        w,
+        h,
+        blend,
+        w,
+        h,
+        Some(&motion),
+        plane_x,
+        plane_y,
+        scaling,
+        scaling,
+        frame_w,
+        frame_h,
+        None,
+        0,
+        0,
+        &mut strided,
+        stride,
+    )
+    .expect("strided implicit-mask blend");
+    for (row, packed) in output.chunks_exact(w).enumerate() {
+        assert_eq!(&strided[row * stride..][..w], packed, "row {row}");
+    }
+    assert!(strided[w..stride].iter().all(|&sample| sample == u16::MAX));
     let expected = per_pixel_reference_blend(
         &pred0,
         &pred1,
@@ -1421,6 +1451,7 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
             0,
             0,
             &mut output,
+            2,
         )
         .expect("implicit-mask blend");
         output
@@ -1581,6 +1612,7 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
         0,
         0,
         &mut whole_plane,
+        16,
     )
     .expect("whole-plane implicit-mask blend");
     let equal_weights = pred0
@@ -1862,6 +1894,7 @@ fn scaled_compound_references_disable_implicit_mask_blending() {
         0,
         0,
         &mut got,
+        2,
     )
     .expect("scaled compound blend");
     let mut expected = vec![0; pred0.len()];
@@ -2007,22 +2040,6 @@ fn tip_unit_motion_cell_matches_the_motion_grid_cell() {
             assert_eq!(uniform, fast.uniform_mvs());
         }
     }
-}
-
-#[test]
-fn packed_output_lands_in_strided_rows_and_rejects_short_storage() {
-    let packed = |stride: usize, len: usize| {
-        let mut output = vec![u8::MAX; len];
-        let result = with_packed_output(&mut output, stride, 3, 2, |block| {
-            block.copy_from_slice(&[1, 2, 3, 4, 5, 6]);
-            Ok(())
-        });
-        (result.is_ok(), output)
-    };
-    assert_eq!(packed(3, 6), (true, vec![1, 2, 3, 4, 5, 6]));
-    assert_eq!(packed(5, 8), (true, vec![1, 2, 3, 255, 255, 4, 5, 6]));
-    assert_eq!(packed(5, 7), (false, vec![u8::MAX; 7]));
-    assert_eq!(packed(2, 6), (false, vec![u8::MAX; 6]));
 }
 
 /// Predicts `block` through a packed temporary and publishes it into `workspace`.
