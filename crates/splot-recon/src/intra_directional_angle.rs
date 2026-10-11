@@ -6,7 +6,9 @@
 //! Feature tracking: `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use crate::intra_dc_math::{round2_u32, validate_output_shape, validate_sample_type};
+use crate::intra_dc_math::{
+    IntraLaneSample, round2_u32, validate_output_shape, validate_sample_type,
+};
 use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
@@ -81,6 +83,12 @@ const DR_INTERP_FILTER_ROUND: u8 = 7;
 
 /// Widest predicted block side, the largest AV2 transform dimension.
 const MAX_ONE_SIDED_SIDE: usize = 64;
+/// The longest one-sided IDIF edge, `w + h + 4 + (mrlIndex << 1)` for a 64x64
+/// block at `mrlIndex == 3`.
+const MAX_ONE_SIDED_IDIF_EDGE: usize = 2 * MAX_ONE_SIDED_SIDE + 10;
+/// The longest zone-2 IDIF above edge, `w + mrlIndex + 4` for a 64-wide block
+/// at `mrlIndex == 3`.
+const MAX_MIDDLE_IDIF_ABOVE_EDGE: usize = MAX_ONE_SIDED_SIDE + 7;
 
 /// AV2 v1.0.0 §7.13.2.8 `Dr_Interp_Filter[32][4]` interpolation filter taps,
 /// used when `enableIdif == 1` (luma): `s = Σ(t=0..3) Dr_Interp_Filter[shift][t]
@@ -1264,79 +1272,131 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
+    if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
+        return write_one_sided_idif_lanes(
+            bit_depth,
+            size,
+            angle,
+            edge,
+            mrl_index,
+            output,
+            stride_samples,
+        );
+    }
+    let mut wide = [0u16; MAX_ONE_SIDED_IDIF_EDGE];
+    if let (Some(narrow), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output))
+        && let Some(wide) = wide.get_mut(..narrow.len())
+    {
+        for (slot, &sample) in wide.iter_mut().zip(narrow) {
+            *slot = u16::from(sample);
+        }
+        return write_one_sided_idif_lanes(
+            bit_depth,
+            size,
+            angle,
+            wide,
+            mrl_index,
+            output,
+            stride_samples,
+        );
+    }
+    write_one_sided_idif_samples(
+        bit_depth,
+        size,
+        angle,
+        edge,
+        mrl_index,
+        output,
+        stride_samples,
+    )
+}
+
+/// The per-sample form of [`write_one_sided_idif_prediction`], for a `u8` edge
+/// longer than the lane buffer.
+#[cold]
+#[inline(never)]
+fn write_one_sided_idif_samples<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edge: &[T],
+    mrl_index: usize,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
     let derivative = one_sided_idif_derivative(angle);
     let branch = angle.branch();
     let max_base = one_sided_max_base(size, mrl_index)?;
-    match branch {
-        DirectionalAngleBranch::Above { .. } => {
-            for row in 0..size.height() {
-                let row_start = row * stride_samples;
-                let reference = one_sided_idif_reference(branch, row, 0, derivative, mrl_index)?;
-                if let (Some(edge), Some(output_row)) = (
-                    T::u16_slice(edge),
-                    T::u16_slice_mut(&mut output[row_start..row_start + size.width()]),
-                ) {
-                    let count = output_row.len();
-                    write_one_sided_idif_line_u16::<true>(
-                        edge, reference, max_base, bit_depth, output_row, 1, count,
-                    )?;
-                    continue;
-                }
-                for column in 0..size.width() {
-                    let base = reference.base + column as i32;
-                    let value = if base <= max_base {
-                        idif_tap(edge, base, reference.shift, bit_depth)?
-                    } else {
-                        logical_idif_edge_sample(edge, max_base)?.to_u16()
-                    };
-                    output[row_start + column] = T::try_from_u16(value)?;
-                }
-            }
+    for row in 0..size.height() {
+        let row_start = row * stride_samples;
+        for column in 0..size.width() {
+            let reference = one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
+            let value = if reference.base <= max_base {
+                idif_tap(edge, reference.base, reference.shift, bit_depth)?
+            } else {
+                logical_idif_edge_sample(edge, max_base)?.to_u16()
+            };
+            output[row_start + column] = T::try_from_u16(value)?;
         }
-        DirectionalAngleBranch::Left { .. } => {
-            let mut columns = [OneSidedReference { base: 0, shift: 0 }; MAX_ONE_SIDED_SIDE];
-            for (column, slot) in columns.iter_mut().take(size.width()).enumerate() {
-                *slot = one_sided_idif_reference(branch, 0, column, derivative, mrl_index)?;
-            }
-            if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
-                if size.width().is_multiple_of(8) && size.height().is_multiple_of(8) {
-                    return write_one_sided_idif_tiles_u16(
-                        edge,
-                        &columns[..size.width()],
-                        max_base,
-                        bit_depth,
-                        output,
-                        stride_samples,
-                        size.height(),
-                    );
-                }
-                for (column, reference) in columns.iter().take(size.width()).enumerate() {
-                    write_one_sided_idif_line_u16::<false>(
-                        edge,
-                        *reference,
-                        max_base,
-                        bit_depth,
-                        &mut output[column..],
-                        stride_samples,
-                        size.height(),
-                    )?;
-                }
-                return Ok(());
-            }
-            for row in 0..size.height() {
-                let row_start = row * stride_samples;
-                let row_offset = row as i32;
-                for (column, reference) in columns.iter().take(size.width()).enumerate() {
-                    let base = reference.base + row_offset;
-                    let value = if base <= max_base {
-                        idif_tap(edge, base, reference.shift, bit_depth)?
-                    } else {
-                        logical_idif_edge_sample(edge, max_base)?.to_u16()
-                    };
-                    output[row_start + column] = T::try_from_u16(value)?;
-                }
-            }
+    }
+    Ok(())
+}
+
+/// The lane form of [`write_one_sided_idif_prediction`] over a `u16` edge:
+/// zone-1 rows, zone-3 columns, or zone-3 8x8 tiles.
+fn write_one_sided_idif_lanes<O: IntraLaneSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edge: &[u16],
+    mrl_index: usize,
+    output: &mut [O],
+    stride_samples: usize,
+) -> Result<()> {
+    let derivative = one_sided_idif_derivative(angle);
+    let branch = angle.branch();
+    let max_base = one_sided_max_base(size, mrl_index)?;
+    if let DirectionalAngleBranch::Above { .. } = branch {
+        for row in 0..size.height() {
+            let row_start = row * stride_samples;
+            let reference = one_sided_idif_reference(branch, row, 0, derivative, mrl_index)?;
+            write_one_sided_idif_line::<O, true>(
+                edge,
+                reference,
+                max_base,
+                bit_depth,
+                &mut output[row_start..row_start + size.width()],
+                1,
+                size.width(),
+            )?;
         }
+        return Ok(());
+    }
+    let mut columns = [OneSidedReference { base: 0, shift: 0 }; MAX_ONE_SIDED_SIDE];
+    for (column, slot) in columns.iter_mut().take(size.width()).enumerate() {
+        *slot = one_sided_idif_reference(branch, 0, column, derivative, mrl_index)?;
+    }
+    if size.width().is_multiple_of(8) && size.height().is_multiple_of(8) {
+        return write_one_sided_idif_tiles(
+            edge,
+            &columns[..size.width()],
+            max_base,
+            bit_depth,
+            output,
+            stride_samples,
+            size.height(),
+        );
+    }
+    for (column, reference) in columns.iter().take(size.width()).enumerate() {
+        write_one_sided_idif_line::<O, false>(
+            edge,
+            *reference,
+            max_base,
+            bit_depth,
+            &mut output[column..],
+            stride_samples,
+            size.height(),
+        )?;
     }
     Ok(())
 }
@@ -1351,12 +1411,12 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
 /// Either way the line is a contiguous 4-tap `Dr_Interp_Filter[shift]` window
 /// over the prepared edge, so the taps broadcast and the edge loads shift by one
 /// lane. `CONTIGUOUS` selects the `step == 1` row form.
-fn write_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
+fn write_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
     edge: &[u16],
     reference: OneSidedReference,
     max_base: i32,
     bit_depth: BitDepth,
-    output: &mut [u16],
+    output: &mut [O],
     step: usize,
     count: usize,
 ) -> Result<()> {
@@ -1365,13 +1425,13 @@ fn write_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
         .min(count);
     let last = logical_idif_edge_sample(edge, max_base)?.to_u16();
     if active == 0 {
-        fill_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, 0, count, last);
+        fill_one_sided_idif_line::<O, CONTIGUOUS>(output, step, 0, count, last);
         return Ok(());
     }
     if reference.shift == 0 {
         let start = logical_idif_edge_offset(reference.base, edge.len())?;
-        store_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, 0, &edge[start..start + active]);
-        fill_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, active, count, last);
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, 0, &edge[start..start + active]);
+        fill_one_sided_idif_line::<O, CONTIGUOUS>(output, step, active, count, last);
         return Ok(());
     }
     let taps = DR_INTERP_FILTER.get(usize::from(reference.shift)).ok_or(
@@ -1389,34 +1449,34 @@ fn write_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
     let mut at = 0;
     while active - at >= 8 {
         let values = idif_above_row_chunk::<8>(edge, first + at, *taps, bit_depth).to_array();
-        store_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, at, &values);
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values);
         at += 8;
     }
     while active - at >= 4 {
         let values = idif_above_row_chunk::<4>(edge, first + at, *taps, bit_depth).to_array();
-        store_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, at, &values);
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values);
         at += 4;
     }
     while at < active {
         let value = idif_tap(edge, reference.base + at as i32, reference.shift, bit_depth)?;
-        store_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, at, &[value]);
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &[value]);
         at += 1;
     }
-    fill_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, active, count, last);
+    fill_one_sided_idif_line::<O, CONTIGUOUS>(output, step, active, count, last);
     Ok(())
 }
 
 /// Writes a zone-3 prediction whose sides are multiples of 8 in 8x8 tiles.
 ///
-/// Each tile computes eight column chunks of [`write_one_sided_idif_line_u16`]
+/// Each tile computes eight column chunks of [`write_one_sided_idif_line`]
 /// and transposes them, so each output row takes one contiguous store instead
 /// of eight strided ones.
-fn write_one_sided_idif_tiles_u16(
+fn write_one_sided_idif_tiles<O: IntraLaneSample>(
     edge: &[u16],
     columns: &[OneSidedReference],
     max_base: i32,
     bit_depth: BitDepth,
-    output: &mut [u16],
+    output: &mut [O],
     stride_samples: usize,
     height: usize,
 ) -> Result<()> {
@@ -1428,17 +1488,19 @@ fn write_one_sided_idif_tiles_u16(
                 *line =
                     one_sided_idif_line_chunk8(edge, reference, max_base, last, top, bit_depth)?;
             }
-            for (row, values) in transpose_u16x8(lines).iter().enumerate() {
+            for (row, values) in transpose_u16x8(lines).into_iter().enumerate() {
                 let start = (top + row) * stride_samples + tile * 8;
-                output[start..start + 8].copy_from_slice(values.as_array()); // splot-copy-ok: publish a transposed IDIF tile row
+                O::store(values.as_array(), &mut output[start..start + 8]);
             }
         }
     }
     Ok(())
 }
 
-/// Line positions `at..at + 8` of [`write_one_sided_idif_line_u16`], with
+/// Line positions `at..at + 8` of [`write_one_sided_idif_line`], with
 /// `last` the clamped `maxBase` edge sample.
+#[allow(clippy::inline_always, reason = "measured zone-3 tile hot path")]
+#[inline(always)]
 fn one_sided_idif_line_chunk8(
     edge: &[u16],
     reference: OneSidedReference,
@@ -1502,30 +1564,31 @@ fn transpose_u16x8(mut rows: [Simd<u16, 8>; 8]) -> [Simd<u16, 8>; 8] {
 
 /// Publishes `values` to line positions `at..at + values.len()`.
 #[inline]
-fn store_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
-    output: &mut [u16],
+fn store_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
+    output: &mut [O],
     step: usize,
     at: usize,
     values: &[u16],
 ) {
     if CONTIGUOUS {
-        output[at..at + values.len()].copy_from_slice(values); // splot-copy-ok: publish contiguous IDIF row chunk
+        O::store(values, &mut output[at..at + values.len()]);
         return;
     }
     for (slot, &value) in output[at * step..].iter_mut().step_by(step).zip(values) {
-        *slot = value;
+        *slot = O::from_lane(value);
     }
 }
 
 /// Fills line positions `at..count` with the clamped `maxBase` edge sample.
 #[inline]
-fn fill_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
-    output: &mut [u16],
+fn fill_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
+    output: &mut [O],
     step: usize,
     at: usize,
     count: usize,
     value: u16,
 ) {
+    let value = O::from_lane(value);
     if CONTIGUOUS {
         output[at..count].fill(value);
         return;
@@ -1614,6 +1677,19 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
     params: MiddleIdifMrlPrediction<'_, T>,
     output: &mut [T],
 ) -> Result<()> {
+    let wide_above: [u16; MAX_MIDDLE_IDIF_ABOVE_EDGE];
+    let above = match (T::u16_slice(params.above), T::u8_slice(params.above)) {
+        (Some(above), _) => Some(above),
+        (None, Some(narrow)) if narrow.len() <= MAX_MIDDLE_IDIF_ABOVE_EDGE => {
+            let mut wide = [0u16; MAX_MIDDLE_IDIF_ABOVE_EDGE];
+            for (slot, &sample) in wide.iter_mut().zip(narrow) {
+                *slot = u16::from(sample);
+            }
+            wide_above = wide;
+            Some(&wide_above[..narrow.len()])
+        }
+        _ => None,
+    };
     let branch = params.angle.branch();
     let width = params.size.width();
     for row in 0..params.size.height() {
@@ -1637,53 +1713,75 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
             continue;
         }
         let reference = walk.next();
-        let count = width - left_run;
         let out = &mut output[row_start + left_run..row_start + width];
-        let (Some(edge), Some(out)) = (T::u16_slice(params.above), T::u16_slice_mut(out)) else {
-            for (column, slot) in out.iter_mut().enumerate() {
-                *slot = T::try_from_u16(idif_tap_with_mrl(
-                    params.above,
-                    reference.base + column as i32,
-                    reference.shift,
-                    params.bit_depth,
-                    params.mrl_index,
-                )?)?;
+        if let Some(edge) = above {
+            if let Some(out) = T::u16_slice_mut(out) {
+                write_middle_idif_above_run(edge, reference, &params, out)?;
+                continue;
             }
-            continue;
-        };
-        let first = logical_idif_edge_offset_mrl(reference.base - 1, edge.len(), params.mrl_index)?;
-        let window = edge
-            .get(first..first + count + DR_INTERP_FILTER_TAPS - 1)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "middle directional angle IDIF logical edge coverage",
-            })?;
-        if reference.shift == 0 {
-            out.copy_from_slice(&window[1..=count]); // splot-copy-ok: zero-shift IDIF run is the edge itself
-            continue;
+            if let Some(out) = T::u8_slice_mut(out) {
+                write_middle_idif_above_run(edge, reference, &params, out)?;
+                continue;
+            }
         }
-        let taps = DR_INTERP_FILTER[usize::from(reference.shift)];
-        let mut at = 0;
-        while count - at >= 8 {
-            let values = idif_above_row_chunk::<8>(window, at, taps, params.bit_depth);
-            out[at..at + 8].copy_from_slice(&values.to_array()); // splot-copy-ok: publish IDIF row chunk
-            at += 8;
-        }
-        while count - at >= 4 {
-            let values = idif_above_row_chunk::<4>(window, at, taps, params.bit_depth);
-            out[at..at + 4].copy_from_slice(&values.to_array()); // splot-copy-ok: publish IDIF row chunk
-            at += 4;
-        }
-        for (column, slot) in out.iter_mut().enumerate().skip(at) {
-            *slot = idif_tap_with_mrl(
+        for (column, slot) in out.iter_mut().enumerate() {
+            *slot = T::try_from_u16(idif_tap_with_mrl(
                 params.above,
                 reference.base + column as i32,
                 reference.shift,
                 params.bit_depth,
                 params.mrl_index,
-            )?;
+            )?)?;
         }
     }
 
+    Ok(())
+}
+
+/// Writes one zone-2 above run of `out.len()` samples from `reference` over
+/// the `u16` form of the above edge.
+fn write_middle_idif_above_run<T: ReconSample, O: IntraLaneSample>(
+    edge: &[u16],
+    reference: MiddleSampleReference,
+    params: &MiddleIdifMrlPrediction<'_, T>,
+    out: &mut [O],
+) -> Result<()> {
+    let count = out.len();
+    let first = logical_idif_edge_offset_mrl(reference.base - 1, edge.len(), params.mrl_index)?;
+    let window = edge
+        .get(first..first + count + DR_INTERP_FILTER_TAPS - 1)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF logical edge coverage",
+        })?;
+    if reference.shift == 0 {
+        O::store(&window[1..=count], out);
+        return Ok(());
+    }
+    let taps = DR_INTERP_FILTER.get(usize::from(reference.shift)).ok_or(
+        ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF shift index",
+        },
+    )?;
+    let mut at = 0;
+    while count - at >= 8 {
+        let values = idif_above_row_chunk::<8>(window, at, *taps, params.bit_depth);
+        O::store(values.as_array(), &mut out[at..at + 8]);
+        at += 8;
+    }
+    while count - at >= 4 {
+        let values = idif_above_row_chunk::<4>(window, at, *taps, params.bit_depth);
+        O::store(values.as_array(), &mut out[at..at + 4]);
+        at += 4;
+    }
+    for (column, slot) in out.iter_mut().enumerate().skip(at) {
+        *slot = O::from_lane(idif_tap_with_mrl(
+            edge,
+            reference.base + column as i32,
+            reference.shift,
+            params.bit_depth,
+            params.mrl_index,
+        )?);
+    }
     Ok(())
 }
 
@@ -1739,6 +1837,7 @@ fn idif_tap_with_mrl<T: ReconSample>(
 /// AV2 §4 `Clip1(Round2(s, 7))` for a signed IDIF sum: `Round2(x, n) =
 /// ⌊(x + 2^(n-1)) / 2^n⌋` (floor, via arithmetic shift on the signed value),
 /// then clamp to `0..=max_sample`.
+#[inline]
 fn idif_round2_clip(sum: i32, bit_depth: BitDepth) -> u16 {
     let rounded = round2_i32(sum, u32::from(DR_INTERP_FILTER_ROUND));
     rounded.clamp(0, i32::from(bit_depth.max_sample())) as u16

@@ -1042,8 +1042,9 @@ fn middle_row_walk_matches_the_per_sample_reference() {
     }
 }
 
-/// The vectorized `u16` one-sided IDIF line writer must reproduce the
-/// per-sample § 7.13.2.8 reference exactly. Zone-1 (step 1) writes along the
+/// The vectorized one-sided IDIF line writer must reproduce the per-sample
+/// § 7.13.2.8 reference exactly, and `u8` storage must write the same samples
+/// as `u16` storage at 8 bits. Zone-1 (step 1) writes along the
 /// row and zone-3 (step 3) writes down the column, so this covers the
 /// contiguous and the strided store form, the zone-3 8x8 transposed tiles,
 /// every chunk width, the `shift == 0` copy, and the `maxBase` clamp tail.
@@ -1082,6 +1083,42 @@ fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
                     )
                     .unwrap();
 
+                    let wide: Vec<u16> = edge.iter().map(|&sample| sample >> 2).collect();
+                    let narrow: Vec<u8> = wide.iter().map(|&sample| sample as u8).collect();
+                    let mut wide_output = vec![0u16; output.len()];
+                    let mut narrow_output = vec![0u8; output.len()];
+                    let (wide_edges, narrow_edges) = match angle.required_edge() {
+                        IntraDirectionalAngleEdge::Above => (
+                            IntraDirectionalAngleIdifEdges::above(&wide),
+                            IntraDirectionalAngleIdifEdges::above(&narrow),
+                        ),
+                        IntraDirectionalAngleEdge::Left => (
+                            IntraDirectionalAngleIdifEdges::left(&wide),
+                            IntraDirectionalAngleIdifEdges::left(&narrow),
+                        ),
+                    };
+                    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+                        BitDepth::Eight,
+                        size,
+                        angle,
+                        wide_edges,
+                        mrl_index,
+                        &mut wide_output,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+                        BitDepth::Eight,
+                        size,
+                        angle,
+                        narrow_edges,
+                        mrl_index,
+                        &mut narrow_output,
+                        stride,
+                    )
+                    .unwrap();
+                    assert!(narrow_output.iter().map(|&v| u16::from(v)).eq(wide_output));
+
                     let max_base = one_sided_max_base(size, mrl_index).unwrap();
                     for row in 0..size.height() {
                         for column in 0..size.width() {
@@ -1110,9 +1147,10 @@ fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
     }
 }
 
-/// The zone-2 IDIF row writer (scalar left run, `u16` lane above run) must
+/// The zone-2 IDIF row writer (scalar left run, lane above run) must
 /// reproduce the per-sample § 7.13.2.8 reference for every block shape, middle
-/// angle and MRL index, and every reference tap must lie inside its edge.
+/// angle and MRL index, and every reference tap must lie inside its edge. At 8
+/// bits `u8` storage must write the same samples as `u16` storage.
 #[test]
 fn middle_idif_u16_rows_match_the_per_sample_reference() {
     const PAD: u16 = 0xbeef;
@@ -1152,6 +1190,37 @@ fn middle_idif_u16_rows_match_the_per_sample_reference() {
                         stride,
                     )
                     .unwrap();
+                    let wide = |edge: &[u16]| edge.iter().map(|&v| v >> 2).collect::<Vec<u16>>();
+                    let (wide_left, wide_above) = (wide(&left), wide(&above));
+                    let narrow = |edge: &[u16]| edge.iter().map(|&v| v as u8).collect::<Vec<u8>>();
+                    let (narrow_left, narrow_above) = (narrow(&wide_left), narrow(&wide_above));
+                    let mut wide_output = vec![PAD; output.len()];
+                    let mut narrow_output = vec![0xa5u8; output.len()];
+                    predict_intra_middle_directional_angle_rect_idif_mrl_into(
+                        BitDepth::Eight,
+                        size,
+                        angle,
+                        IntraMiddleDirectionalAngleIdifMrlEdges::both(&wide_left, &wide_above),
+                        mrl_index,
+                        &mut wide_output,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_middle_directional_angle_rect_idif_mrl_into(
+                        BitDepth::Eight,
+                        size,
+                        angle,
+                        IntraMiddleDirectionalAngleIdifMrlEdges::both(&narrow_left, &narrow_above),
+                        mrl_index,
+                        &mut narrow_output,
+                        stride,
+                    )
+                    .unwrap();
+                    for (index, (&got, &want)) in narrow_output.iter().zip(&wide_output).enumerate()
+                    {
+                        let want = if want == PAD { 0xa5 } else { want };
+                        assert_eq!(u16::from(got), want, "u8 at {index}");
+                    }
                     if mrl_index == 0 {
                         let mut plain = vec![PAD; output.len()];
                         predict_intra_middle_directional_angle_rect_idif_into(
