@@ -418,7 +418,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
         let (lr_source_blocks, lr_plane_ends) =
-            final_filters::coalesced_lr_source_rows_all(lr_source_blocks);
+            final_filters::lr_source_blocks_by_plane(lr_source_blocks);
         let mut stripes = core::mem::take(&mut self.filter_records.stripes);
         let mut ranges = core::mem::take(&mut stripes.ranges);
         crate::filters::gdf::stripe_ranges_into(&core, self.luma_height, &mut ranges)?;

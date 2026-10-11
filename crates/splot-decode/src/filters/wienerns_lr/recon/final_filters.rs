@@ -357,40 +357,14 @@ fn lr_unit_filter_for_block<'a>(
     Ok(filter)
 }
 
-#[cfg(test)]
-fn coalesced_lr_source_rows(
-    lr_source_blocks: &[WienerNsLrSourceBlock],
-    plane_index: usize,
-) -> Vec<WienerNsLrSourceBlock> {
-    let (blocks, [y_end, u_end]) = coalesced_lr_source_rows_all(lr_source_blocks.to_vec());
-    let starts = [0, y_end, u_end];
-    let ends = [y_end, u_end, blocks.len()];
-    blocks[starts[plane_index]..ends[plane_index]].to_vec()
-}
-
-pub(crate) fn coalesced_lr_source_rows_all(
+/// Sorts LR source blocks by `(plane, y, x)` and returns the Y and U
+/// partition ends. The parse already merges each unit's rows per stripe,
+/// and blocks of other units, tiles or stripes never merge.
+pub(crate) fn lr_source_blocks_by_plane(
     mut blocks: Vec<WienerNsLrSourceBlock>,
 ) -> (Vec<WienerNsLrSourceBlock>, [usize; 2]) {
     blocks.retain(|block| block.plane < 3);
     blocks.sort_unstable_by_key(|block| (block.plane, block.y, block.x));
-    blocks.dedup_by(|next, run| {
-        let Some(width) = run.merged_width_with(next) else {
-            return false;
-        };
-        run.width = width;
-        true
-    });
-
-    blocks.sort_unstable_by_key(|block| (block.vertical_merge_key(), block.y));
-    blocks.dedup_by(|next, rectangle| {
-        let Some(height) = rectangle.merged_height_with(next) else {
-            return false;
-        };
-        rectangle.height = height;
-        true
-    });
-    blocks.sort_unstable_by_key(|block| (block.plane, block.y, block.x));
-
     let y_end = blocks.partition_point(|block| block.plane < 1);
     let u_end = blocks.partition_point(|block| block.plane < 2);
     (blocks, [y_end, u_end])

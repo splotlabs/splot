@@ -1006,68 +1006,34 @@ fn inactive_filter_planes_reuse_cdef_storage() {
     assert_eq!(filtered.y.as_u16().unwrap().samples().as_ptr(), cdef_ptr);
 }
 
+fn merges(first: WienerNsLrSourceBlock, next: WienerNsLrSourceBlock) -> [Option<usize>; 2] {
+    [
+        first.merged_width_with(&next),
+        first.merged_height_with(&next),
+    ]
+}
+
 #[test]
-fn merges_contiguous_row_blocks_and_splits_on_filter_visible_fields() {
-    let mut stripe_split = block(0, 8, 0);
+fn merges_contiguous_blocks_and_splits_on_filter_visible_fields() {
+    let mut stripe_split = block(0, 4, 0);
     stripe_split.luma_stripe_end_y = 7;
-    let mut unit_split = block(0, 12, 4);
+    let mut unit_split = block(0, 4, 0);
     unit_split.unit_col = 1;
-    let blocks = [
-        block(0, 4, 0),
-        block(1, 0, 0),
-        block(0, 0, 0),
-        stripe_split,
-        block(0, 12, 0),
-        block(0, 0, 4),
-        block(0, 4, 4),
-        block(0, 8, 4),
-        unit_split,
-    ];
-
-    let runs = coalesced_lr_source_rows(&blocks, 0);
-    let shapes: Vec<_> = runs
-        .iter()
-        .map(|run| (run.x, run.y, run.width, run.height))
-        .collect();
-    assert_eq!(
-        shapes,
-        vec![
-            (0, 0, 8, 4),
-            (8, 0, 4, 4),
-            (12, 0, 4, 4),
-            (0, 4, 12, 4),
-            (12, 4, 4, 4)
-        ],
-        "runs must merge contiguous same-row blocks and split when any \
-         filter-visible field differs"
-    );
-    assert!(runs.iter().all(|run| run.plane == 0));
-}
-
-#[test]
-fn does_not_merge_across_row_gaps() {
-    let blocks = [block(0, 0, 0), block(0, 8, 0)];
-    let runs = coalesced_lr_source_rows(&blocks, 0);
-    assert_eq!(runs.len(), 2);
-}
-
-#[test]
-fn keeps_switchable_restoration_types_in_separate_runs() {
-    let mut pc_wiener = block(0, 0, 0);
+    let mut pc_wiener = block(0, 4, 0);
     pc_wiener.restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
-    let wiener_nonsep = block(0, 4, 0);
 
-    let runs = coalesced_lr_source_rows(&[pc_wiener, wiener_nonsep], 0);
-
-    assert_eq!(runs.len(), 2);
-    assert_eq!(
-        runs[0].restoration_type,
-        crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener
-    );
-    assert_eq!(
-        runs[1].restoration_type,
-        crate::bitstream::tile_payload::LrUnitRestorationType::WienerNonsep
-    );
+    assert_eq!(merges(block(0, 0, 0), block(0, 4, 0)), [Some(8), None]);
+    assert_eq!(merges(block(0, 0, 0), block(0, 0, 4)), [None, Some(8)]);
+    for next in [
+        block(1, 4, 0),
+        block(0, 8, 0),
+        block(0, 0, 8),
+        stripe_split,
+        unit_split,
+        pc_wiener,
+    ] {
+        assert_eq!(merges(block(0, 0, 0), next), [None, None]);
+    }
 }
 
 #[test]
@@ -1644,34 +1610,7 @@ fn a_differing_sample_in_a_strip_reach_breaks_only_that_strip() {
 }
 
 #[test]
-fn merges_compatible_adjacent_rows_into_rectangles() {
-    let blocks = [
-        block(0, 0, 0),
-        block(0, 4, 0),
-        block(0, 0, 4),
-        block(0, 4, 4),
-    ];
-    let runs = coalesced_lr_source_rows(&blocks, 0);
-
-    assert_eq!(runs.len(), 1);
-    assert_eq!((runs[0].x, runs[0].y), (0, 0));
-    assert_eq!((runs[0].width, runs[0].height), (8, 8));
-}
-
-#[test]
-fn does_not_merge_rows_across_source_boundaries() {
-    let top = block(0, 0, 0);
-    let mut bottom = block(0, 0, 4);
-    bottom.luma_stripe_start_y = 4;
-    let runs = coalesced_lr_source_rows(&[top, bottom], 0);
-
-    assert_eq!(runs.len(), 2);
-    assert_eq!(runs[0].height, 4);
-    assert_eq!(runs[1].height, 4);
-}
-
-#[test]
-fn coalesces_all_planes_in_place_and_returns_ordered_partitions() {
+fn sorts_all_planes_in_place_and_returns_ordered_partitions() {
     let blocks = vec![
         block(2, 4, 0),
         block(0, 4, 4),
@@ -1684,56 +1623,53 @@ fn coalesces_all_planes_in_place_and_returns_ordered_partitions() {
     let allocation = blocks.as_ptr();
     let capacity = blocks.capacity();
 
-    let (runs, plane_ends) = coalesced_lr_source_rows_all(blocks);
+    let (runs, plane_ends) = lr_source_blocks_by_plane(blocks);
 
     assert_eq!(runs.as_ptr(), allocation);
     assert_eq!(runs.capacity(), capacity);
-    assert_eq!(plane_ends, [1, 2]);
-    assert_eq!(runs.len(), 3);
+    assert_eq!(plane_ends, [4, 5]);
     assert_eq!(
         runs.iter()
-            .map(|run| (run.plane, run.x, run.y, run.width, run.height))
+            .map(|run| (run.plane, run.x, run.y))
             .collect::<Vec<_>>(),
-        vec![(0, 0, 0, 8, 8), (1, 0, 0, 4, 4), (2, 0, 0, 8, 4)]
+        vec![
+            (0, 0, 0),
+            (0, 4, 0),
+            (0, 0, 4),
+            (0, 4, 4),
+            (1, 0, 0),
+            (2, 0, 0),
+            (2, 4, 0)
+        ]
     );
 }
 
 #[test]
 fn empty_and_out_of_range_planes_produce_empty_partitions() {
-    let (runs, plane_ends) = coalesced_lr_source_rows_all(Vec::new());
+    let (runs, plane_ends) = lr_source_blocks_by_plane(Vec::new());
     assert!(runs.is_empty());
     assert_eq!(plane_ends, [0, 0]);
 
     let (runs, plane_ends) =
-        coalesced_lr_source_rows_all(vec![block(3, 0, 0), block(usize::MAX, 4, 0)]);
+        lr_source_blocks_by_plane(vec![block(3, 0, 0), block(usize::MAX, 4, 0)]);
     assert!(runs.is_empty());
     assert_eq!(plane_ends, [0, 0]);
 }
 
 #[test]
-fn checked_extent_boundaries_do_not_merge() {
+fn checked_extent_boundaries_and_other_domains_do_not_merge() {
     let mut first = block(0, 0, 0);
     first.width = usize::MAX;
-    let second = block(0, usize::MAX, 0);
+    assert_eq!(merges(first, block(0, usize::MAX, 0)), [None, None]);
 
-    let runs = coalesced_lr_source_rows(&[first, second], 0);
-
-    assert_eq!(runs, vec![first, second]);
-}
-
-#[test]
-fn keeps_tile_unit_and_stripe_domains_separate() {
-    let first = block(0, 0, 0);
     let mut unit = block(0, 4, 0);
     unit.unit_row = 1;
     let mut tile = block(0, 4, 0);
     tile.tile_mi_col_end = 8;
-    let mut stripe = block(0, 4, 0);
-    stripe.luma_stripe_start_y = 1;
-
+    let mut stripe = block(0, 0, 4);
+    stripe.luma_stripe_start_y = 4;
     for next in [unit, tile, stripe] {
-        let runs = coalesced_lr_source_rows(&[first, next], 0);
-        assert_eq!(runs, vec![first, next]);
+        assert_eq!(merges(block(0, 0, 0), next), [None, None]);
     }
 }
 

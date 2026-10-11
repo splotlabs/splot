@@ -68,10 +68,6 @@ impl WienerNsLrSourceBlock {
         self.filter_domain_key() == next.filter_domain_key()
     }
 
-    pub(crate) fn vertical_merge_key(&self) -> ([usize; 14], usize, usize) {
-        (self.filter_domain_key(), self.x, self.width)
-    }
-
     fn filter_domain_key(&self) -> [usize; 14] {
         [
             self.restoration_type as usize,
