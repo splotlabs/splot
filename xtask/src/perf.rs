@@ -204,9 +204,15 @@ fn measure_ir(splot: &Path, fixture: &Path, out_file: &Path) -> Result<u64> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let lines: Vec<&str> = stderr.lines().collect();
+        let vex = lines
+            .iter()
+            .filter(|line| line.contains("unhandled") || line.contains("vex "))
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
         let tail = lines[lines.len().saturating_sub(40)..].join("\n");
         bail!(
-            "valgrind decode failed for {} ({}):\n{tail}",
+            "valgrind decode failed for {} ({}):\n{vex}\n{tail}",
             fixture.display(),
             output.status
         );
