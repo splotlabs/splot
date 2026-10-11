@@ -90,6 +90,13 @@ pub struct WarpPredictBlockParams {
     pub bit_depth: BitDepth,
 }
 
+impl WarpPredictBlockParams {
+    /// `[firstX, firstY, lastX, lastY]`.
+    const fn bounds(&self) -> [i32; 4] {
+        [self.first_x, self.first_y, self.last_x, self.last_y]
+    }
+}
+
 /// Validated affine-warp setup reusable across the 8x8 sections of one block.
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedWarpPrediction {
@@ -646,7 +653,13 @@ fn warp_predict_section<T: ReconSample>(
             );
         }
     } else {
-        build_intermediate(reference, params, shear, &projected, &mut intermediate);
+        build_intermediate(
+            reference,
+            params.bounds(),
+            shear,
+            &projected,
+            &mut intermediate,
+        );
     }
     if shear.gamma == 0
         && shear.delta == 0
@@ -1042,7 +1055,7 @@ fn checked_shift_left(value: i32, shift: u8, context: &'static str) -> Result<i3
 
 fn build_intermediate<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
-    params: &WarpPredictBlockParams,
+    [first_x, first_y, last_x, last_y]: [i32; 4],
     shear: &Shear,
     projected: &ProjectedCenter,
     intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
@@ -1051,8 +1064,8 @@ fn build_intermediate<T: ReconSample>(
     let first_col = projected.x4_int.saturating_sub(7);
     let last_col = projected.x4_int.saturating_add(7);
     let view_last = i32::try_from(reference.width().saturating_sub(1)).unwrap_or(i32::MAX);
-    let bounded_first = params.first_x.min(view_last);
-    let bounded_last = params.last_x.min(view_last);
+    let bounded_first = first_x.min(view_last);
+    let bounded_last = last_x.min(view_last);
     let copy_first = first_col.max(bounded_first);
     let copy_last = last_col.min(bounded_last);
     let copy_len = if copy_first <= copy_last {
@@ -1067,7 +1080,7 @@ fn build_intermediate<T: ReconSample>(
     };
     let mut window = [0u16; SOURCE_WINDOW + 1];
     for i1 in -7i32..8 {
-        let ref_row = (projected.y4_int + i1).clamp(params.first_y, params.last_y) as usize;
+        let ref_row = (projected.y4_int + i1).clamp(first_y, last_y) as usize;
         let source = reference.row(ref_row);
         if copy_len == 0 {
             let source_col = first_col.clamp(bounded_first, bounded_last) as usize;
@@ -1630,7 +1643,13 @@ mod tests {
         let shear = setup_shear(params.warp_params).unwrap();
         let projected = project_section_center(&params).unwrap();
         let mut intermediate = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-        build_intermediate(&view, &params, &shear, &projected, &mut intermediate);
+        build_intermediate(
+            &view,
+            params.bounds(),
+            &shear,
+            &projected,
+            &mut intermediate,
+        );
         let mut want = vec![0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
         for i1 in -4i32..4 {
             for i2 in -4i32..4 {
@@ -1808,13 +1827,13 @@ mod tests {
                 let mut fast = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
                 build_interior_intermediate(&view, &shear, &projected, origin, &mut fast);
                 let mut want = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-                build_intermediate(&view, &params, &shear, &projected, &mut want);
+                build_intermediate(&view, params.bounds(), &shear, &projected, &mut want);
                 assert_eq!(
                     fast, want,
                     "model {warp_params:?} at ({block_x}, {block_y})"
                 );
                 build_interior_intermediate(&view8, &shear, &projected, origin, &mut fast);
-                build_intermediate(&view8, &params, &shear, &projected, &mut want);
+                build_intermediate(&view8, params.bounds(), &shear, &projected, &mut want);
                 assert_eq!(fast, want, "8-bit model {warp_params:?}");
             }
         }
