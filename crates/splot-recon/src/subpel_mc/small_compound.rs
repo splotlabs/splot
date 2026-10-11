@@ -377,19 +377,8 @@ fn line8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>, row: usize
 
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn two_pass8<T: ReconSample, const TAPS: usize, const HORIZONTAL: bool>(
-    cell: &Cell8<'_, T>,
-) -> Option<[Row8; 8]> {
-    let mut lines = [Line8::splat(0); 8 + NUM_TAPS - 1];
-    for (row, line) in lines[..8 + TAPS - 1].iter_mut().enumerate() {
-        *line = line8::<T, HORIZONTAL>(cell, row)?;
-    }
-    let taps: &[i32; TAPS] = cell.v_taps.try_into().ok()?;
-    let shift = if HORIZONTAL {
-        INTER_ROUND1_COMPOUND
-    } else {
-        INTER_ROUND0
-    };
+fn vertical8<const TAPS: usize>(lines: &[Line8], taps: &[i32], shift: u32) -> Option<[Row8; 8]> {
+    let taps: &[i32; TAPS] = taps.try_into().ok()?;
     let mut out = [Row8::splat(0); 8];
     for (i, out) in out.iter_mut().enumerate() {
         let mut sum = Row8::splat(1 << (shift - 1));
@@ -399,6 +388,30 @@ fn two_pass8<T: ReconSample, const TAPS: usize, const HORIZONTAL: bool>(
         *out = sum >> shift as i32;
     }
     Some(out)
+}
+
+/// One source-row loop serves every vertical tap count: a loop per count let
+/// LLVM hoist the widened horizontal taps out of all of them, which turned
+/// each `smlal` pair into two widens and two `mla`.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn two_pass8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>) -> Option<[Row8; 8]> {
+    let mut lines = [Line8::splat(0); 8 + NUM_TAPS - 1];
+    let count = (8 + cell.v_taps.len() - 1).min(lines.len());
+    for (row, line) in lines[..count].iter_mut().enumerate() {
+        *line = line8::<T, HORIZONTAL>(cell, row)?;
+    }
+    let shift = if HORIZONTAL {
+        INTER_ROUND1_COMPOUND
+    } else {
+        INTER_ROUND0
+    };
+    match cell.v_taps.len() {
+        2 => vertical8::<2>(&lines, cell.v_taps, shift),
+        4 => vertical8::<4>(&lines, cell.v_taps, shift),
+        6 => vertical8::<6>(&lines, cell.v_taps, shift),
+        _ => vertical8::<NUM_TAPS>(&lines, cell.v_taps, shift),
+    }
 }
 
 impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
@@ -453,23 +466,17 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
     fn predict(&self) -> Option<[Row8; 8]> {
-        match (self.horizontal, self.vertical, self.v_taps.len()) {
-            (true, true, 2) => two_pass8::<T, 2, true>(self),
-            (true, true, 4) => two_pass8::<T, 4, true>(self),
-            (true, true, 6) => two_pass8::<T, 6, true>(self),
-            (true, true, _) => two_pass8::<T, NUM_TAPS, true>(self),
-            (false, true, 2) => two_pass8::<T, 2, false>(self),
-            (false, true, 4) => two_pass8::<T, 4, false>(self),
-            (false, true, 6) => two_pass8::<T, 6, false>(self),
-            (false, true, _) => two_pass8::<T, NUM_TAPS, false>(self),
-            (true, false, _) => {
+        match (self.horizontal, self.vertical) {
+            (true, true) => two_pass8::<T, true>(self),
+            (false, true) => two_pass8::<T, false>(self),
+            (true, false) => {
                 let mut out = [Row8::splat(0); 8];
                 for (row, out) in out.iter_mut().enumerate() {
                     *out = line8::<T, true>(self, row)?.cast();
                 }
                 Some(out)
             }
-            (false, false, _) => {
+            (false, false) => {
                 let mut out = [Row8::splat(0); 8];
                 for (row, out) in out.iter_mut().enumerate() {
                     *out =
