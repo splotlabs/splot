@@ -19,7 +19,6 @@ fn source_config(
     sum_abs1: u32,
 ) -> CoeffSignSourceDeriveConfig<'static> {
     CoeffSignSourceDeriveConfig {
-        coeff_cdf_q_ctx: 3,
         plane,
         plane_type: usize::from(plane > 0),
         tx_class,
@@ -57,7 +56,6 @@ fn derives_dc_axis_hidden_and_zero_sources() {
     assert_eq!(
         dc.source,
         CoeffSignReadSource::Cdf(CoeffDcSignSelector {
-            coeff_cdf_q_ctx: 3,
             plane_type: 0,
             group: 1,
             ctx: 2,
@@ -72,7 +70,6 @@ fn derives_dc_axis_hidden_and_zero_sources() {
     assert_eq!(
         horizontal_axis.source,
         CoeffSignReadSource::Cdf(CoeffDcSignSelector {
-            coeff_cdf_q_ctx: 3,
             plane_type: 0,
             group: 0,
             ctx: 0,
@@ -87,7 +84,6 @@ fn derives_dc_axis_hidden_and_zero_sources() {
     assert_eq!(
         vertical_axis.source,
         CoeffSignReadSource::Cdf(CoeffDcSignSelector {
-            coeff_cdf_q_ctx: 3,
             plane_type: 0,
             group: 0,
             ctx: 0,

@@ -17,7 +17,7 @@ use splot_recon::mhccp::{
     MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraDcEdges, IntraPredictionScratchBuffer,
+    BitDepth, CurrentFramePlane, CurrentFrameWorkspace, IntraDcEdges, IntraPredictionScratchBuffer,
     IntraRectBlockSize, PixelFormat, PlaneId, ReconSample, predict_intra_dc_rect_value,
     predict_intra_dc_subsampled_rect_value,
 };
@@ -319,9 +319,11 @@ fn cfl_prediction_into<T: ReconSample>(
     } else {
         predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?
     };
-    let luma_ac = luma_ac.ok_or(GeneralIntraResidualError::InvalidReconstructionState {
-        context: "CfL luma AC",
-    })?;
+    let Some(luma_ac) = luma_ac else {
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CfL luma AC",
+        });
+    };
     apply_cfl_prediction(
         workspace,
         plane_id,
@@ -372,17 +374,28 @@ fn apply_cfl_prediction<T: ReconSample>(
     )?;
     let max = i32::from(bit_depth.max_sample());
     let dc = i32::from(dc.to_u16());
-    let luma_ac = luma_ac.get(..width.saturating_mul(height)).ok_or(
-        GeneralIntraResidualError::InvalidReconstructionState {
+    let Some(luma_ac) = luma_ac.get(..width.saturating_mul(height)) else {
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "CfL luma AC length",
-        },
-    )?;
+        });
+    };
+    let predict = |ac: i32| (dc + round2_signed_i32(alpha_q3 * ac, CFL_ALPHA_SHIFT)).clamp(0, max);
     prediction.clear();
-    prediction.reserve(luma_ac.len());
-    for &ac in luma_ac {
-        let scaled_luma = round2_signed_i32(alpha_q3 * ac, CFL_ALPHA_SHIFT);
-        let clipped = (dc + scaled_luma).clamp(0, max) as u16;
-        prediction.push(T::try_from_u16(clipped)?);
+    prediction.resize(luma_ac.len(), T::default());
+    if let Some(out) = T::u16_slice_mut(prediction) {
+        for (slot, &ac) in out.iter_mut().zip(luma_ac) {
+            *slot = predict(ac) as u16;
+        }
+    } else if max <= i32::from(u8::MAX)
+        && let Some(out) = T::u8_slice_mut(prediction)
+    {
+        for (slot, &ac) in out.iter_mut().zip(luma_ac) {
+            *slot = predict(ac) as u8;
+        }
+    } else {
+        for (slot, &ac) in prediction.iter_mut().zip(luma_ac) {
+            *slot = T::try_from_u16(predict(ac) as u16)?;
+        }
     }
     Ok(())
 }
@@ -408,17 +421,9 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
     let pixel_format = workspace.info().pixel_format();
     let sub_x = usize::from(pixel_format.subsampling_x());
     let sub_y = usize::from(pixel_format.subsampling_y());
-    let average_q3 = cfl_luma_average_q3(
-        workspace,
-        x,
-        y,
-        width,
-        height,
-        cfl_ds_filter_index,
-        sb_mib,
-        neighbours,
-        bit_depth,
-    )?;
+    let luma = CflLuma::new(workspace, cfl_ds_filter_index)?;
+    let average_q3 =
+        cfl_luma_average_q3(&luma, x, y, width, height, sb_mib, neighbours, bit_depth)?;
     let luma_plane = workspace.plane(PlaneId::Y)?;
     let luma_size = luma_plane.storage_size();
     let max_luma_x = luma_size.width().saturating_sub(1);
@@ -447,21 +452,12 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
     for row in 0..height {
         let chroma_y = y.saturating_add(row);
         let luma_y = clamped_cfl_luma_coordinate(chroma_y, sub_y, max_luma_y);
-        let clamp_y = row == 0 || luma_y.is_multiple_of(64);
+        let luma_row = luma.row(chroma_y, row == 0 || luma_y.is_multiple_of(64), None);
         for col in 0..width {
             let chroma_x = x.saturating_add(col);
             let luma_x = clamped_cfl_luma_coordinate(chroma_x, sub_x, max_luma_x);
             let clamp_x = col == 0 || luma_x.is_multiple_of(64);
-            samples_q3.push(
-                cfl_luma_q3(
-                    workspace,
-                    chroma_x,
-                    chroma_y,
-                    clamp_x,
-                    clamp_y,
-                    cfl_ds_filter_index,
-                )? - average_q3,
-            );
+            samples_q3.push(luma_row.q3(chroma_x, clamp_x)? - average_q3);
         }
     }
     Ok(())
@@ -712,6 +708,11 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     };
     num_above = num_above.min(width);
     num_left = num_left.min(height);
+    if num_above == 0 && num_left == 0 {
+        return Ok(0);
+    }
+    let luma = CflLuma::new(workspace, cfl_ds_filter_index)?;
+    let chroma_plane = PlaneSamples::new(workspace, plane_id)?;
 
     let mut count = 0i32;
     let mut sum_x = 0i32;
@@ -720,21 +721,13 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     let mut sum_xx = 0i32;
     if num_above > 0 {
         let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, pixel_format);
+        let above_row = luma.row(y - 1, false, min_luma_ref_y);
         let step = width.checked_div(num_above).unwrap_or(0).max(1);
         let start = if step == 1 { 0 } else { step >> 1 };
         for col in (start..width).step_by(step) {
             let chroma_x = x.saturating_add(col);
-            let luma = cfl_luma_q3_with_min_y(
-                workspace,
-                chroma_x,
-                y - 1,
-                col == 0,
-                false,
-                min_luma_ref_y,
-                cfl_ds_filter_index,
-            )? >> 3;
-            let chroma =
-                i32::from(clamped_chroma_sample(workspace, plane_id, chroma_x, y - 1)?.to_u16());
+            let luma = above_row.q3(chroma_x, col == 0)? >> 3;
+            let chroma = i32::from(chroma_plane.clamped(chroma_x, y - 1)?);
             sum_x += luma;
             sum_y += chroma;
             sum_xy += luma * chroma;
@@ -747,16 +740,8 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
         let start = if step == 1 { 0 } else { step >> 1 };
         for row in (start..height).step_by(step) {
             let chroma_y = y.saturating_add(row);
-            let luma = cfl_luma_q3(
-                workspace,
-                x - 1,
-                chroma_y,
-                false,
-                row == 0,
-                cfl_ds_filter_index,
-            )? >> 3;
-            let chroma =
-                i32::from(clamped_chroma_sample(workspace, plane_id, x - 1, chroma_y)?.to_u16());
+            let luma = luma.q3(x - 1, chroma_y, false, row == 0, None)? >> 3;
+            let chroma = i32::from(chroma_plane.clamped(x - 1, chroma_y)?);
             sum_x += luma;
             sum_y += chroma;
             sum_xy += luma * chroma;
@@ -781,48 +766,32 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn cfl_luma_average_q3<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+    luma: &CflLuma<'_, T>,
     x: usize,
     y: usize,
     width: usize,
     height: usize,
-    cfl_ds_filter_index: u8,
     sb_mib: usize,
     neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
-    let pixel_format = workspace.info().pixel_format();
     let step_w = if width > 32 { 2 } else { 1 };
     let step_h = if height > 32 { 2 } else { 1 };
     let mut sum = 0u32;
     let mut count = 0u32;
     if let Some(above_y) = neighbours.has_above().then(|| y.checked_sub(1)).flatten() {
-        let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, pixel_format);
+        let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, luma.pixel_format);
+        let above_row = luma.row(above_y, false, min_luma_ref_y);
         for col in (0..width).step_by(step_w) {
             let chroma_x = x.saturating_add(col);
-            sum = sum.saturating_add(cfl_luma_q3_with_min_y(
-                workspace,
-                chroma_x,
-                above_y,
-                col == 0,
-                false,
-                min_luma_ref_y,
-                cfl_ds_filter_index,
-            )? as u32);
+            sum = sum.saturating_add(above_row.q3(chroma_x, col == 0)? as u32);
             count = count.saturating_add(1);
         }
     }
     if let Some(left_x) = neighbours.has_left().then(|| x.checked_sub(1)).flatten() {
         for row in (0..height).step_by(step_h) {
             let chroma_y = y.saturating_add(row);
-            sum = sum.saturating_add(cfl_luma_q3(
-                workspace,
-                left_x,
-                chroma_y,
-                false,
-                row == 0,
-                cfl_ds_filter_index,
-            )? as u32);
+            sum = sum.saturating_add(luma.q3(left_x, chroma_y, false, row == 0, None)? as u32);
             count = count.saturating_add(1);
         }
     }
@@ -831,25 +800,6 @@ fn cfl_luma_average_q3<T: ReconSample>(
     }
     let max = (8u16 << bit_depth.bits()).saturating_sub(1);
     Ok(i32::from(approx_divide(sum, count)?.min(max)))
-}
-
-fn cfl_luma_q3<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    chroma_x: usize,
-    chroma_y: usize,
-    clamp_x: bool,
-    clamp_y: bool,
-    cfl_ds_filter_index: u8,
-) -> core::result::Result<i32, GeneralIntraResidualError> {
-    cfl_luma_q3_with_min_y(
-        workspace,
-        chroma_x,
-        chroma_y,
-        clamp_x,
-        clamp_y,
-        None,
-        cfl_ds_filter_index,
-    )
 }
 
 fn cfl_above_min_luma_ref_y(
@@ -941,6 +891,8 @@ fn mhccp_references<T: ReconSample>(
     let ref_width = reference_width.max(left.saturating_add(width));
     let ref_height = reference_height.max(above.saturating_add(height));
 
+    let luma_plane = CflLuma::new(workspace, cfl_ds_filter_index)?;
+    let chroma_plane = PlaneSamples::new(workspace, plane_id)?;
     let sample_count = ref_width.saturating_mul(ref_height);
     let [luma, chroma] = reference_scratch;
     luma.clear();
@@ -948,26 +900,16 @@ fn mhccp_references<T: ReconSample>(
     chroma.clear();
     chroma.resize(sample_count, 0);
     for row in 0..reference_height {
+        let chroma_y = y + row - above;
+        let luma_row = luma_plane.row(chroma_y, row == 0, min_luma_ref_y);
         for col in 0..reference_width {
             let chroma_x = x + col - left;
-            let chroma_y = y + row - above;
             if row < above || col < left {
                 let ref_chroma_y = chroma_y.max(min_chroma_ref_y);
-                chroma[row * ref_width + col] =
-                    clamped_chroma_sample(workspace, plane_id, chroma_x, ref_chroma_y)?.to_u16();
+                chroma[row * ref_width + col] = chroma_plane.clamped(chroma_x, ref_chroma_y)?;
             }
             if mhccp_luma_ref_available(row, col, above, left, width, height) {
-                let clamp_x = col == 0;
-                let clamp_y = row == 0;
-                luma[row * ref_width + col] = (cfl_luma_q3_with_min_y(
-                    workspace,
-                    chroma_x,
-                    chroma_y,
-                    clamp_x,
-                    clamp_y,
-                    min_luma_ref_y,
-                    cfl_ds_filter_index,
-                )? >> 3) as u16;
+                luma[row * ref_width + col] = (luma_row.q3(chroma_x, col == 0)? >> 3) as u16;
             }
         }
     }
@@ -983,71 +925,190 @@ fn mhccp_references<T: ReconSample>(
     })
 }
 
-fn cfl_luma_q3_with_min_y<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    chroma_x: usize,
-    chroma_y: usize,
-    clamp_x: bool,
-    clamp_y: bool,
-    min_luma_ref_y: Option<isize>,
-    cfl_ds_filter_index: u8,
-) -> core::result::Result<i32, GeneralIntraResidualError> {
-    let Some(filter_index) = cfl_filter_index(cfl_ds_filter_index) else {
-        return Ok(0);
-    };
-    let pixel_format = workspace.info().pixel_format();
-    let sub_x = isize::from(pixel_format.subsampling_x());
-    let sub_y = isize::from(pixel_format.subsampling_y());
-    let y_plane = workspace.plane(PlaneId::Y)?;
-    let size = y_plane.storage_size();
-    let max_x = size.width().saturating_sub(1) as isize;
-    let max_y = size.height().saturating_sub(1) as isize;
-    let luma_x = clamped_cfl_luma_coordinate(chroma_x, sub_x as usize, max_x as usize) as isize;
-    let luma_y = clamped_cfl_luma_coordinate(chroma_y, sub_y as usize, max_y as usize) as isize;
-    let mut total = 0i32;
-    for dy in -sub_y..=sub_y {
-        for dx in -sub_x..=sub_x {
-            let weight = if sub_x != 0 && sub_y != 0 {
-                CFL_FILTERS_420[filter_index][(dy + sub_y) as usize][(dx + sub_x) as usize]
-            } else if sub_x != 0 {
-                CFL_FILTERS_422[filter_index][(dx + sub_x) as usize]
-            } else {
-                8
-            };
-            if weight == 0 {
-                continue;
+/// One plane of the current frame, resolved once for many sample reads.
+struct PlaneSamples<'a, T: ReconSample> {
+    plane: &'a CurrentFramePlane<T>,
+    samples: &'a [T],
+    origin_y: usize,
+    stored_rows: usize,
+    width: usize,
+    height: usize,
+}
+
+impl<'a, T: ReconSample> PlaneSamples<'a, T> {
+    fn new(
+        workspace: &'a CurrentFrameWorkspace<T>,
+        plane_id: PlaneId,
+    ) -> splot_recon::Result<Self> {
+        let plane = workspace.plane(plane_id)?;
+        let size = plane.storage_size();
+        Ok(Self {
+            plane,
+            samples: plane.samples(),
+            origin_y: plane.origin_y(),
+            stored_rows: plane.samples().len() / plane.stride_samples().max(1),
+            width: size.width(),
+            height: size.height(),
+        })
+    }
+
+    /// The sample (or error) `CurrentFramePlane::reconstructed_sample` gives,
+    /// without its per-call row lookup.
+    #[inline]
+    fn get(&self, x: usize, y: usize) -> splot_recon::Result<u16> {
+        if x < self.width
+            && y < self.height
+            && let Some(row) = y.checked_sub(self.origin_y)
+            && row < self.stored_rows
+            && let Some(sample) = self.samples.get(row * self.width + x)
+        {
+            return Ok(sample.to_u16());
+        }
+        Ok(self.plane.reconstructed_sample(x, y)?.to_u16())
+    }
+
+    fn clamped(&self, x: usize, y: usize) -> splot_recon::Result<u16> {
+        self.get(
+            x.min(self.width.saturating_sub(1)),
+            y.min(self.height.saturating_sub(1)),
+        )
+    }
+
+    /// Stored row `y` (the samples `get` reads), or `None` when it is not
+    /// stored.
+    fn row(&self, y: usize) -> Option<&'a [T]> {
+        let local = y.checked_sub(self.origin_y)?;
+        if y >= self.height || local >= self.stored_rows || self.width == 0 {
+            return None;
+        }
+        self.samples
+            .get(local * self.width..(local + 1) * self.width)
+    }
+}
+
+/// The luma plane and the § 7.13.5 downsampling taps of one CfL block.
+struct CflLuma<'a, T: ReconSample> {
+    plane: PlaneSamples<'a, T>,
+    pixel_format: PixelFormat,
+    sub_x: usize,
+    sub_y: usize,
+    taps: [(isize, isize, i32); 9],
+    tap_count: usize,
+}
+
+impl<'a, T: ReconSample> CflLuma<'a, T> {
+    /// Resolves the taps of `cfl_ds_filter_index`; an invalid index has no
+    /// taps, so every sum is 0.
+    fn new(
+        workspace: &'a CurrentFrameWorkspace<T>,
+        cfl_ds_filter_index: u8,
+    ) -> splot_recon::Result<Self> {
+        let pixel_format = workspace.info().pixel_format();
+        let sub_x = isize::from(pixel_format.subsampling_x());
+        let sub_y = isize::from(pixel_format.subsampling_y());
+        let mut taps = [(0, 0, 0); 9];
+        let mut tap_count = 0;
+        if let Some(filter_index) = cfl_filter_index(cfl_ds_filter_index) {
+            for dy in -sub_y..=sub_y {
+                for dx in -sub_x..=sub_x {
+                    let weight = if sub_x != 0 && sub_y != 0 {
+                        CFL_FILTERS_420[filter_index][(dy + sub_y) as usize][(dx + sub_x) as usize]
+                    } else if sub_x != 0 {
+                        CFL_FILTERS_422[filter_index][(dx + sub_x) as usize]
+                    } else {
+                        8
+                    };
+                    if weight != 0 {
+                        taps[tap_count] = (dx, dy, weight);
+                        tap_count += 1;
+                    }
+                }
             }
-            let sx = luma_x + if clamp_x { dx.max(0) } else { dx };
+        }
+        Ok(Self {
+            plane: PlaneSamples::new(workspace, PlaneId::Y)?,
+            pixel_format,
+            sub_x: sub_x as usize,
+            sub_y: sub_y as usize,
+            taps,
+            tap_count,
+        })
+    }
+
+    /// The § 7.13.5 downsampled luma sample at a chroma position, in Q3.
+    fn q3(
+        &self,
+        chroma_x: usize,
+        chroma_y: usize,
+        clamp_x: bool,
+        clamp_y: bool,
+        min_luma_ref_y: Option<isize>,
+    ) -> splot_recon::Result<i32> {
+        self.row(chroma_y, clamp_y, min_luma_ref_y)
+            .q3(chroma_x, clamp_x)
+    }
+
+    /// Resolves the luma rows that the taps of chroma row `chroma_y` read, so
+    /// each sample of the row reads them directly.
+    fn row(
+        &self,
+        chroma_y: usize,
+        clamp_y: bool,
+        min_luma_ref_y: Option<isize>,
+    ) -> CflLumaRow<'_, 'a, T> {
+        let max_y = self.plane.height.saturating_sub(1) as isize;
+        let luma_y = clamped_cfl_luma_coordinate(chroma_y, self.sub_y, max_y as usize) as isize;
+        let tap_row = |dy: isize| {
             let mut sy = luma_y + if clamp_y { dy.max(0) } else { dy };
             if let Some(min_y) = min_luma_ref_y {
                 sy = sy.max(min_y);
             }
-            total += weight
-                * i32::from(
-                    y_plane
-                        .reconstructed_sample(
-                            sx.clamp(0, max_x) as usize,
-                            sy.clamp(0, max_y) as usize,
-                        )?
-                        .to_u16(),
-                );
+            sy.clamp(0, max_y) as usize
+        };
+        let sub_y = self.sub_y as isize;
+        let mut rows = Some([&[][..]; 3]);
+        for dy in -sub_y..=sub_y {
+            let row = self.plane.row(tap_row(dy));
+            if let (Some(rows), Some(row)) = (rows.as_mut(), row) {
+                rows[(dy + 1) as usize] = row;
+            } else {
+                rows = None;
+            }
+        }
+        CflLumaRow {
+            luma: self,
+            rows,
+            tap_rows: [tap_row(-1), tap_row(0), tap_row(1)],
         }
     }
-    Ok(total)
 }
 
-fn clamped_chroma_sample<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    plane_id: PlaneId,
-    x: usize,
-    y: usize,
-) -> splot_recon::Result<T> {
-    let size = workspace.plane(plane_id)?.storage_size();
-    workspace.reconstructed_sample(
-        plane_id,
-        x.min(size.width().saturating_sub(1)),
-        y.min(size.height().saturating_sub(1)),
-    )
+/// One chroma row of a [`CflLuma`]: the luma rows its taps read (each tap row
+/// index, and the stored rows when the plane stores all of them).
+struct CflLumaRow<'r, 'a, T: ReconSample> {
+    luma: &'r CflLuma<'a, T>,
+    rows: Option<[&'a [T]; 3]>,
+    tap_rows: [usize; 3],
+}
+
+impl<T: ReconSample> CflLumaRow<'_, '_, T> {
+    /// [`CflLuma::q3`] at `chroma_x` on this row.
+    fn q3(&self, chroma_x: usize, clamp_x: bool) -> splot_recon::Result<i32> {
+        let luma = self.luma;
+        let max_x = luma.plane.width.saturating_sub(1) as isize;
+        let luma_x = clamped_cfl_luma_coordinate(chroma_x, luma.sub_x, max_x as usize) as isize;
+        let mut total = 0i32;
+        for &(dx, dy, weight) in &luma.taps[..luma.tap_count] {
+            let sx = (luma_x + if clamp_x { dx.max(0) } else { dx }).clamp(0, max_x) as usize;
+            let row = (dy + 1) as usize;
+            let sample = match &self.rows {
+                Some(rows) => rows[row][sx].to_u16(),
+                None => luma.plane.get(sx, self.tap_rows[row])?,
+            };
+            total += weight * i32::from(sample);
+        }
+        Ok(total)
+    }
 }
 
 fn clamped_cfl_luma_coordinate(

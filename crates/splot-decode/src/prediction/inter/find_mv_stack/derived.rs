@@ -161,12 +161,24 @@ impl CompoundDerivedMvState {
     }
 }
 
+/// Inputs of one derived candidate, kept until [`DerivedMvState::fill`]
+/// shows that the stack still has room for it.
+#[derive(Clone, Copy)]
+struct DerivedSource {
+    refs: [i8; 2],
+    mvs: [Mv; 2],
+}
+
+const PENDING_SOURCES: usize = 8;
+
 pub(super) struct DerivedMvState<'a> {
     temporal: Option<&'a TemporalMvContext>,
     order_hints: Option<OrderHintMvContext<'a>>,
     entries: FixedStack<Mv, MAX_DR_STACK_SIZE>,
     prune_count: usize,
     global_mv: Mv,
+    pending: [DerivedSource; PENDING_SOURCES],
+    pending_len: usize,
 }
 
 impl<'a> DerivedMvState<'a> {
@@ -181,52 +193,88 @@ impl<'a> DerivedMvState<'a> {
             entries: FixedStack::new(),
             prune_count: 0,
             global_mv,
+            pending: [DerivedSource {
+                refs: [0; 2],
+                mvs: [Mv::ZERO; 2],
+            }; PENDING_SOURCES],
+            pending_len: 0,
         }
     }
 
+    /// Records a candidate on another reference; [`Self::fill`] derives it
+    /// only when the stack still has room, which most blocks never reach.
+    #[inline]
     pub(super) fn add_spatial(
         &mut self,
         block: &MvBlockContext,
         candidate_ref: i8,
         candidate_mv: Mv,
-        cell: NeighbourCell,
+        cell: &NeighbourCell,
     ) {
-        if block.ref_frame0 == TIP_REF_FRAME {
-            if candidate_ref != cell.flags.ref_frame0 {
+        let source = if block.ref_frame0 == TIP_REF_FRAME {
+            let Some(ref_frame1) = cell.flags.ref_frame1 else {
+                return;
+            };
+            if candidate_ref != cell.flags.ref_frame0 || self.temporal.is_none() {
                 return;
             }
-            if let Some(ref_frame1) = cell.flags.ref_frame1
-                && let Some(candidate) = self.temporal.and_then(|temporal| {
-                    temporal.derive_tip_base_mv(
-                        [cell.flags.ref_frame0, ref_frame1],
-                        [cell.motion.sub_mv, cell.motion.sub_mv1],
-                    )
-                })
-            {
+            DerivedSource {
+                refs: [cell.flags.ref_frame0, ref_frame1],
+                mvs: [cell.motion.sub_mv, cell.motion.sub_mv1],
+            }
+        } else {
+            if self.temporal.is_none() && self.order_hints.is_none() {
+                return;
+            }
+            DerivedSource {
+                refs: [candidate_ref, 0],
+                mvs: [candidate_mv, Mv::ZERO],
+            }
+        };
+        if self.pending_len == PENDING_SOURCES {
+            self.derive_pending(block);
+        }
+        self.pending[self.pending_len] = source;
+        self.pending_len += 1;
+    }
+
+    /// Derives the recorded candidates in order, as an eager derivation
+    /// would have; a full derived stack ignores the rest.
+    fn derive_pending(&mut self, block: &MvBlockContext) {
+        let pending = core::mem::take(&mut self.pending_len).min(PENDING_SOURCES);
+        for index in 0..pending {
+            let source = self.pending[index];
+            if self.entries.len() == MAX_DR_STACK_SIZE {
+                return;
+            }
+            let candidate = if block.ref_frame0 == TIP_REF_FRAME {
+                self.temporal
+                    .and_then(|temporal| temporal.derive_tip_base_mv(source.refs, source.mvs))
+            } else {
+                self.temporal
+                    .and_then(|temporal| {
+                        temporal.derive_spatial_mv(
+                            block.ref_frame0,
+                            source.refs[0],
+                            source.mvs[0],
+                            block.mi_row >> 1,
+                            block.mi_col >> 1,
+                        )
+                    })
+                    .or_else(|| {
+                        self.order_hints.and_then(|order_hints| {
+                            order_hints.derive_spatial_mv(
+                                block.ref_frame0,
+                                source.refs[0],
+                                source.mvs[0],
+                            )
+                        })
+                    })
+            };
+            if let Some(candidate) = candidate {
                 self.push(candidate);
             }
-            return;
         }
-        let candidate = self
-            .temporal
-            .and_then(|temporal| {
-                temporal.derive_spatial_mv(
-                    block.ref_frame0,
-                    candidate_ref,
-                    candidate_mv,
-                    block.mi_row >> 1,
-                    block.mi_col >> 1,
-                )
-            })
-            .or_else(|| {
-                self.order_hints.and_then(|order_hints| {
-                    order_hints.derive_spatial_mv(block.ref_frame0, candidate_ref, candidate_mv)
-                })
-            });
-        let Some(candidate) = candidate else {
-            return;
-        };
-        self.push(candidate);
     }
 
     pub(super) const fn temporal(&self) -> Option<&'a TemporalMvContext> {
@@ -242,11 +290,16 @@ impl<'a> DerivedMvState<'a> {
     }
 
     pub(super) fn fill(
-        &self,
+        &mut self,
+        block: &MvBlockContext,
         entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
         max_ref_mv_count: usize,
         prune_count: &mut usize,
     ) {
+        if entries.len() >= max_ref_mv_count {
+            return;
+        }
+        self.derive_pending(block);
         for &candidate in self.entries.iter() {
             if entries.len() >= max_ref_mv_count {
                 return;
@@ -304,7 +357,18 @@ mod tests {
         ]);
         let mut prune_count = MAX_PR_NUM;
 
-        derived.fill(&mut entries, 4, &mut prune_count);
+        let block = MvBlockContext {
+            mi_row: 0,
+            mi_col: 0,
+            bw4: 4,
+            bh4: 4,
+            sb_h4: 16,
+            ref_frame0: 0,
+            ref_frame1: None,
+            mi_rows: 16,
+            mi_cols: 16,
+        };
+        derived.fill(&block, &mut entries, 4, &mut prune_count);
 
         assert_eq!(entries.len(), 4);
         assert_eq!(entries[3].mv, first);
@@ -334,5 +398,71 @@ mod tests {
         for (index, entry) in derived.entries.iter().enumerate() {
             assert_eq!(entry.col, index as i32);
         }
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn deferred_derivation_matches_eager_past_the_pending_capacity() {
+        use super::super::temporal::TipReferencePair;
+        use super::super::{BlockPrecisionRecord, NeighbourMvGrid};
+
+        let references = TipReferencePair {
+            past_ref: 0,
+            future_ref: 1,
+            past_offset: -1,
+            future_offset: 1,
+            ref_offset: 1,
+        };
+        let mut temporal =
+            TemporalMvContext::with_tip_sample(16, 16, references, 0, 0, Mv::ZERO).unwrap();
+        temporal
+            .set_trajectory_sample(0, 0, 0, Mv { row: 5, col: -3 })
+            .unwrap();
+        temporal
+            .set_trajectory_sample(1, 0, 0, Mv { row: -2, col: 7 })
+            .unwrap();
+        let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
+        grid.record_block(
+            0,
+            0,
+            4,
+            4,
+            true,
+            1,
+            None,
+            false,
+            Mv::ZERO,
+            false,
+            0,
+            false,
+            BlockPrecisionRecord::default(),
+        );
+        let cell = grid.get(0, 0).unwrap();
+        let block = MvBlockContext {
+            mi_row: 0,
+            mi_col: 0,
+            bw4: 4,
+            bh4: 4,
+            sb_h4: 16,
+            ref_frame0: 0,
+            ref_frame1: None,
+            mi_rows: 16,
+            mi_cols: 16,
+        };
+        let mut deferred = DerivedMvState::new(Some(&temporal), None, Mv::ZERO);
+        let mut eager = DerivedMvState::new(Some(&temporal), None, Mv::ZERO);
+        let mvs = (0..PENDING_SOURCES as i32 + 3).map(|i| Mv {
+            row: 1,
+            col: (i - 1).max(0),
+        });
+        for mv in mvs {
+            deferred.add_spatial(&block, 1, mv, &cell);
+            eager.add_spatial(&block, 1, mv, &cell);
+            eager.derive_pending(&block);
+        }
+        deferred.derive_pending(&block);
+
+        assert_eq!(eager.entries.len(), MAX_DR_STACK_SIZE);
+        assert_eq!(&deferred.entries[..], &eager.entries[..]);
     }
 }

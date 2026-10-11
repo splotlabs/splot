@@ -3,39 +3,70 @@
 
 use core::ops::Range;
 
-use super::{
-    COVERED_CANDIDATE, ChromaDeblockRecords, DeblockBlock, DeblockError, EdgeBlock,
-    HORIZONTAL_TX_CANDIDATE, SUB_PU_CANDIDATE, VERTICAL_TX_CANDIDATE,
-};
+use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, EdgeBlock};
 
-const NO_BLOCK_INDEX: u32 = u32::MAX;
+/// Edge-flag bit planes of one window row, `flag_words(mi_cols)` words each:
+/// vertical and horizontal transform edges, sub-PU edges, and coverage. Bits
+/// past `mi_cols` are padding that readers clip.
+pub(super) const VERTICAL_PLANE: usize = 0;
+pub(super) const HORIZONTAL_PLANE: usize = 1;
+pub(super) const SUB_PU_PLANE: usize = 2;
+pub(super) const COVERED_PLANE: usize = 3;
+const FLAG_PLANES: usize = 4;
 
-#[derive(Clone, Copy)]
+/// The `u64` words one flag plane spends on a row of `mi_cols` cells.
+pub(super) const fn flag_words(mi_cols: usize) -> usize {
+    mi_cols.div_ceil(64)
+}
+
+/// Word `word` of flag plane `plane` in one [`MiGrid::candidate_row`], zero
+/// past its end.
+pub(super) fn flag_word(flags: &[u64], plane: usize, word: usize) -> u64 {
+    let words = flags.len() / FLAG_PLANES;
+    flags.get(plane * words + word).copied().unwrap_or(0)
+}
+
+/// Where flag plane `plane` of window row `row` sits in a flag buffer.
+const fn flag_range(row: usize, plane: usize, words: usize) -> Range<usize> {
+    let start = (row * FLAG_PLANES + plane) * words;
+    start..start + words
+}
+
+fn set_flag(plane: &mut [u64], col: usize) {
+    if let Some(word) = plane.get_mut(col >> 6) {
+        *word |= 1 << (col & 63);
+    }
+}
+
+fn set_flags(plane: &mut [u64], start: usize, end: usize) {
+    let mut col = start;
+    while col < end {
+        let word_end = ((col | 63) + 1).min(end);
+        if let Some(word) = plane.get_mut(col >> 6) {
+            *word |= u64::MAX >> (64 - (word_end - col)) << (col & 63);
+        }
+        col = word_end;
+    }
+}
+
+/// A cell holds its record index plus one, so that an empty cell is zero and a
+/// window grows by zeroing.
+const NO_BLOCK: u32 = 0;
+
+#[derive(Clone, Copy, Default)]
 pub(super) struct MiCell {
     pub(super) base: u32,
 }
 
-impl Default for MiCell {
-    fn default() -> Self {
-        Self {
-            base: NO_BLOCK_INDEX,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct ChromaMiCell {
     pub(super) overlay: u32,
     pub(super) chroma_transform: u32,
 }
 
-impl Default for ChromaMiCell {
-    fn default() -> Self {
-        Self {
-            overlay: NO_BLOCK_INDEX,
-            chroma_transform: NO_BLOCK_INDEX,
-        }
-    }
+/// The record a cell value names; an empty cell names none.
+const fn record(cell: u32) -> usize {
+    (cell as usize).wrapping_sub(1)
 }
 
 /// The luma grid over the mode-info rows its window has built; reads outside
@@ -45,7 +76,7 @@ pub(super) struct MiGridStorage {
     pub(super) window: Window,
     pub(super) fully_covered: bool,
     pub(super) cells: Vec<MiCell>,
-    pub(super) candidates: Vec<u8>,
+    pub(super) candidates: Vec<u64>,
 }
 
 pub(super) struct ChromaMiGridStorage {
@@ -60,13 +91,13 @@ pub(super) struct ChromaMiGridStorage {
     pub(super) sub_y: usize,
     /// Edge flags stay at luma resolution: a vertical edge at luma column `c`
     /// is distinct from the one at `c - 1`, which `is_candidate` reads.
-    pub(super) candidates: Vec<u8>,
+    pub(super) candidates: Vec<u64>,
 }
 
 pub(super) struct MiGrid<'a> {
     pub(super) base: &'a MiGridStorage,
     pub(super) chroma: Option<&'a ChromaMiGridStorage>,
-    pub(super) candidates: &'a [u8],
+    pub(super) candidates: &'a [u64],
     pub(super) fully_covered: bool,
     pub(super) base_blocks: &'a [DeblockBlock],
     pub(super) overlay_blocks: &'a ChromaDeblockRecords,
@@ -105,11 +136,13 @@ impl MiGrid<'_> {
             .wrapping_sub(self.offset)
     }
 
-    /// One mode-info row's edge flags, or `None` outside the window.
-    pub(super) fn candidate_row(&self, row: usize) -> Option<&[u8]> {
-        let start = self.index(row, 0);
-        self.candidates
-            .get(start..start.wrapping_add(self.base.mi_cols))
+    /// One mode-info row's edge-flag planes, or `None` outside the window.
+    pub(super) fn candidate_row(&self, row: usize) -> Option<&[u64]> {
+        let len = FLAG_PLANES * flag_words(self.base.mi_cols);
+        let start = row
+            .wrapping_sub(self.base.window.row_base)
+            .wrapping_mul(len);
+        self.candidates.get(start..start.wrapping_add(len))
     }
 
     #[allow(clippy::inline_always, reason = "measured luma deblock hot path")]
@@ -117,7 +150,7 @@ impl MiGrid<'_> {
     pub(super) fn get_luma_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
         let cell = self.base.cells.get(self.index(row, col))?;
         Some(EdgeBlock {
-            block: self.base_blocks.get(cell.base as usize)?,
+            block: self.base_blocks.get(record(cell.base))?,
             chroma_transform: None,
         })
     }
@@ -133,14 +166,12 @@ impl MiGrid<'_> {
             )
         });
         let block = match chroma.map(|cell| cell.overlay) {
-            Some(overlay) if overlay != NO_BLOCK_INDEX => {
-                self.overlay_blocks.get(overlay as usize)?
-            }
-            _ => self.base_blocks.get(base.base as usize)?,
+            Some(overlay) if overlay != NO_BLOCK => self.overlay_blocks.get(record(overlay))?,
+            _ => self.base_blocks.get(record(base.base))?,
         };
         let chroma_transform = match chroma.map(|cell| cell.chroma_transform) {
-            Some(transform) if transform != NO_BLOCK_INDEX => {
-                Some(self.overlay_blocks.get(transform as usize)?)
+            Some(transform) if transform != NO_BLOCK => {
+                Some(self.overlay_blocks.get(record(transform))?)
             }
             _ => None,
         };
@@ -150,8 +181,7 @@ impl MiGrid<'_> {
         })
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
-    #[inline(always)]
+    #[cfg(test)]
     pub(super) fn is_candidate(
         &self,
         row: usize,
@@ -161,32 +191,33 @@ impl MiGrid<'_> {
         plane_sub_x: usize,
         plane_sub_y: usize,
     ) -> bool {
-        let candidate = if pass == 0 {
-            VERTICAL_TX_CANDIDATE
-        } else {
-            HORIZONTAL_TX_CANDIDATE
+        let words = flag_words(self.base.mi_cols);
+        let flag = |row: usize, plane: usize, col: usize| {
+            self.candidate_row(row)
+                .and_then(|flags| flags.get(plane * words + (col >> 6)))
+                .map(|word| word >> (col & 63) & 1 != 0)
         };
-        let index = self.index(row, col);
-        let Some(&current) = self.candidates.get(index) else {
+        let candidate = if pass == 0 {
+            VERTICAL_PLANE
+        } else {
+            HORIZONTAL_PLANE
+        };
+        let Some(covered) = flag(row, COVERED_PLANE, col) else {
             return true;
         };
-        if !self.fully_covered && current & COVERED_CANDIDATE == 0 {
+        if !self.fully_covered && !covered {
             return true;
         }
-        if current & candidate != 0 || allow_sub_pu && current & SUB_PU_CANDIDATE != 0 {
+        if flag(row, candidate, col) == Some(true)
+            || allow_sub_pu && flag(row, SUB_PU_PLANE, col) == Some(true)
+        {
             return true;
         }
         if pass == 0 && plane_sub_x != 0 && col != 0 {
-            return self
-                .candidates
-                .get(index - 1)
-                .is_none_or(|flags| flags & VERTICAL_TX_CANDIDATE != 0);
+            return flag(row, VERTICAL_PLANE, col - 1).is_none_or(|flag| flag);
         }
         if pass == 1 && plane_sub_y != 0 && row != 0 {
-            return index
-                .checked_sub(self.base.mi_cols)
-                .and_then(|above| self.candidates.get(above))
-                .is_none_or(|flags| flags & HORIZONTAL_TX_CANDIDATE != 0);
+            return flag(row - 1, HORIZONTAL_PLANE, col).is_none_or(|flag| flag);
         }
         false
     }
@@ -298,8 +329,8 @@ impl RowOrder {
 #[derive(Default)]
 pub(crate) struct DeblockGridStorage {
     pub(super) cells: Vec<MiCell>,
-    pub(super) candidates: Vec<u8>,
-    pub(super) chroma: [(Vec<ChromaMiCell>, Vec<u8>); 2],
+    pub(super) candidates: Vec<u64>,
+    pub(super) chroma: [(Vec<ChromaMiCell>, Vec<u64>); 2],
     pub(super) order: [RowOrder; 2],
 }
 
@@ -330,19 +361,26 @@ fn slide_cells<T: Clone + Default>(
 /// Records overwrite each other in record order, so the higher index wins
 /// whichever order a window visits them in.
 fn later(current: u32, index: u32) -> u32 {
-    if current.wrapping_add(1) <= index {
-        index
-    } else {
-        current
-    }
+    current.max(index + 1)
 }
 
-fn all_covered(candidates: &[u8]) -> bool {
-    candidates
-        .iter()
-        .fold(u8::MAX, |all, candidate| all & candidate)
-        & COVERED_CANDIDATE
-        != 0
+/// Whether every cell of the window rows in `candidates` holds a coverage flag.
+fn all_covered(candidates: &[u64], mi_cols: usize) -> bool {
+    let words = flag_words(mi_cols);
+    let Some(last) = words.checked_sub(1) else {
+        return true;
+    };
+    let tail = u64::MAX >> (64 * words - mi_cols);
+    (0..candidates.len() / (FLAG_PLANES * words)).all(|row| {
+        candidates
+            .get(flag_range(row, COVERED_PLANE, words))
+            .is_some_and(|covered| {
+                covered.iter().enumerate().all(|(word, &flags)| {
+                    let cells = if word == last { tail } else { u64::MAX };
+                    flags & cells == cells
+                })
+            })
+    })
 }
 
 impl MiGridStorage {
@@ -370,13 +408,8 @@ impl MiGridStorage {
         };
         let plane = splot_recon::PlaneId::Y;
         slide_cells(&mut self.cells, dropped, self.mi_cols, new.len(), plane)?;
-        slide_cells(
-            &mut self.candidates,
-            dropped,
-            self.mi_cols,
-            new.len(),
-            plane,
-        )?;
+        let row_flags = FLAG_PLANES * flag_words(self.mi_cols);
+        slide_cells(&mut self.candidates, dropped, row_flags, new.len(), plane)?;
         if dropped.is_none() {
             self.fully_covered = true;
         }
@@ -387,11 +420,6 @@ impl MiGridStorage {
                 if let Some(cells) = self.cells.get_mut(start..end) {
                     for cell in cells {
                         cell.base = later(cell.base, index);
-                    }
-                }
-                if let Some(candidates) = self.candidates.get_mut(start..end) {
-                    for candidate in candidates {
-                        *candidate |= COVERED_CANDIDATE;
                     }
                 }
             }
@@ -405,7 +433,29 @@ impl MiGridStorage {
             );
         }
         let built = (new.start - base) * self.mi_cols;
-        self.fully_covered &= all_covered(self.candidates.get(built..).unwrap_or_default());
+        self.fully_covered &= self
+            .cells
+            .get(built..)
+            .unwrap_or_default()
+            .iter()
+            .fold(u32::MAX, |lowest, cell| lowest.min(cell.base))
+            != NO_BLOCK;
+        if !self.fully_covered {
+            let words = flag_words(self.mi_cols);
+            for (row, cells) in self.cells.chunks(self.mi_cols.max(1)).enumerate() {
+                let Some(covered) = self
+                    .candidates
+                    .get_mut(flag_range(row, COVERED_PLANE, words))
+                else {
+                    break;
+                };
+                for (col, cell) in cells.iter().enumerate() {
+                    if cell.base != NO_BLOCK {
+                        set_flag(covered, col);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -414,7 +464,7 @@ impl ChromaMiGridStorage {
     pub(super) fn new(
         mi_cols: usize,
         (sub_x, sub_y): (usize, usize),
-        storage: &mut (Vec<ChromaMiCell>, Vec<u8>),
+        storage: &mut (Vec<ChromaMiCell>, Vec<u64>),
     ) -> Self {
         Self {
             fully_covered: true,
@@ -459,9 +509,10 @@ impl ChromaMiGridStorage {
             cell_rows.len(),
             plane_id,
         )?;
-        slide_cells(&mut self.candidates, dropped, mi_cols, 0, plane_id)?;
-        let built = (new.start - row_base) * mi_cols;
-        let luma = (new.start - base.window.row_base) * mi_cols;
+        let row_flags = FLAG_PLANES * flag_words(mi_cols);
+        slide_cells(&mut self.candidates, dropped, row_flags, 0, plane_id)?;
+        let built = (new.start - row_base) * row_flags;
+        let luma = (new.start - base.window.row_base) * row_flags;
         self.candidates
             .extend_from_slice(base.candidates.get(luma..).ok_or(DeblockError::Workspace)?);
         if dropped.is_none() {
@@ -484,23 +535,17 @@ impl ChromaMiGridStorage {
                 &cell_rows,
                 row_base >> sub_y,
             );
+            let marks = (later(NO_BLOCK, index), NO_BLOCK);
+            let (overlay, transform) = if block.chroma_transform_only {
+                (marks.1, marks.0)
+            } else {
+                marks
+            };
             for (start, end) in spans {
                 if let Some(cells) = self.cells.get_mut(start..end) {
                     for cell in cells {
-                        if block.chroma_transform_only {
-                            cell.chroma_transform = later(cell.chroma_transform, index);
-                        } else {
-                            cell.overlay = later(cell.overlay, index);
-                        }
-                    }
-                }
-            }
-            if !block.chroma_transform_only {
-                for (start, end) in block_row_spans(block, mi_rows, mi_cols, &new, row_base) {
-                    if let Some(candidates) = self.candidates.get_mut(start..end) {
-                        for candidate in candidates {
-                            *candidate |= COVERED_CANDIDATE;
-                        }
+                        cell.overlay = cell.overlay.max(overlay);
+                        cell.chroma_transform = cell.chroma_transform.max(transform);
                     }
                 }
             }
@@ -513,8 +558,68 @@ impl ChromaMiGridStorage {
                 row_base,
             );
         }
-        self.fully_covered &=
-            base.fully_covered || all_covered(self.candidates.get(built..).unwrap_or_default());
+        if !base.fully_covered {
+            self.mark_covered(base, records, order, mask, mi_rows, &(row_base..rows.end))?;
+        }
+        self.fully_covered &= base.fully_covered
+            || all_covered(self.candidates.get(built..).unwrap_or_default(), mi_cols);
+        Ok(())
+    }
+
+    /// Marks every cell of the window `rows` that the luma grid or an overlay
+    /// record covers. Only a window whose luma grid is not fully covered
+    /// reads these marks, so a covered one never writes them.
+    fn mark_covered(
+        &mut self,
+        base: &MiGridStorage,
+        records: &ChromaDeblockRecords,
+        order: &RowOrder,
+        mask: u8,
+        mi_rows: usize,
+        rows: &Range<usize>,
+    ) -> Result<(), DeblockError> {
+        let mi_cols = base.mi_cols;
+        let words = flag_words(mi_cols);
+        let luma = rows
+            .start
+            .checked_sub(base.window.row_base)
+            .ok_or(DeblockError::Workspace)?;
+        for row in 0..rows.len() {
+            let (Some(covered), Some(luma)) = (
+                self.candidates
+                    .get_mut(flag_range(row, COVERED_PLANE, words)),
+                base.candidates
+                    .get(flag_range(luma + row, COVERED_PLANE, words)),
+            ) else {
+                break;
+            };
+            for (word, luma) in covered.iter_mut().zip(luma) {
+                *word |= luma;
+            }
+        }
+        for &index in order.reaching(rows) {
+            let record = records
+                .blocks
+                .get(index as usize)
+                .ok_or(DeblockError::Workspace)?;
+            if record.planes & mask == 0 || record.block.chroma_transform_only {
+                continue;
+            }
+            let block = &record.block;
+            let row_end = (block.r as usize)
+                .saturating_add(block.n4h as usize)
+                .min(mi_rows);
+            let col_end = (block.c as usize)
+                .saturating_add(block.n4w as usize)
+                .min(mi_cols);
+            let col_start = (block.c as usize).min(col_end);
+            for row in (block.r as usize).max(rows.start)..row_end.min(rows.end) {
+                let covered = flag_range(row - rows.start, COVERED_PLANE, words);
+                if let Some(covered) = self.candidates.get_mut(covered) {
+                    set_flags(covered, col_start, col_end);
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -564,7 +669,7 @@ fn block_row_spans(
 
 fn mi_block_index(index: usize) -> Result<u32, DeblockError> {
     let index = u32::try_from(index).map_err(|_| DeblockError::Workspace)?;
-    if index == NO_BLOCK_INDEX {
+    if index == u32::MAX {
         return Err(DeblockError::Workspace);
     }
     Ok(index)
@@ -572,7 +677,7 @@ fn mi_block_index(index: usize) -> Result<u32, DeblockError> {
 
 /// Marks one block's edges in `rows`, offset from row `first`.
 fn mark_block_candidates(
-    candidates: &mut [u8],
+    candidates: &mut [u64],
     block: &DeblockBlock,
     mi_rows: usize,
     mi_cols: usize,
@@ -584,30 +689,26 @@ fn mark_block_candidates(
     let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
     let row_start = r.min(row_end);
     let col_start = c.min(col_end);
-    let mut mark = |row: usize, cols: Range<usize>, flag: u8| {
-        if rows.contains(&row) {
-            let base = (row - first) * mi_cols;
-            if let Some(flags) = candidates.get_mut(base + cols.start..base + cols.end) {
-                for candidate in flags {
-                    *candidate |= flag;
-                }
+    let words = flag_words(mi_cols);
+    for row in row_start.max(rows.start)..row_end.min(rows.end) {
+        if let Some(vertical) = candidates.get_mut(flag_range(row - first, VERTICAL_PLANE, words)) {
+            set_flag(vertical, col_start);
+            if col_end < mi_cols {
+                set_flag(vertical, col_end);
             }
         }
-    };
-    let window_rows = row_start.max(rows.start)..row_end.min(rows.end);
-    for row in window_rows.clone() {
-        for col in [col_start, col_end] {
-            if col < mi_cols {
-                mark(row, col..col + 1, VERTICAL_TX_CANDIDATE);
-            }
+        if block.sub_pu_size.is_some()
+            && let Some(sub_pu) = candidates.get_mut(flag_range(row - first, SUB_PU_PLANE, words))
+        {
+            set_flags(sub_pu, col_start, col_end);
         }
     }
     for row in [row_start, row_end] {
-        mark(row, col_start..col_end, HORIZONTAL_TX_CANDIDATE);
-    }
-    if block.sub_pu_size.is_some() {
-        for row in window_rows {
-            mark(row, col_start..col_end, SUB_PU_CANDIDATE);
+        if rows.contains(&row)
+            && let Some(horizontal) =
+                candidates.get_mut(flag_range(row - first, HORIZONTAL_PLANE, words))
+        {
+            set_flags(horizontal, col_start, col_end);
         }
     }
 }

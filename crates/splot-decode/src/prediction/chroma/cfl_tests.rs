@@ -257,9 +257,10 @@ fn cfl_luma_sample_repeats_last_downsampled_row_at_frame_edge() {
         .fill_rect(PlaneId::Y, PlaneRect::new(0, 5, 8, 1).unwrap(), 200)
         .unwrap();
 
-    let last = cfl_luma_q3(&frame, 1, 2, false, false, 1).unwrap();
+    let luma = CflLuma::new(&frame, 1).unwrap();
+    let last = luma.q3(1, 2, false, false, None).unwrap();
     assert_eq!(last, 1_200);
-    assert_eq!(cfl_luma_q3(&frame, 1, 3, false, false, 1).unwrap(), last);
+    assert_eq!(luma.q3(1, 3, false, false, None).unwrap(), last);
 }
 
 #[test]
@@ -279,26 +280,20 @@ fn cfl_above_average_uses_block_left_not_internal_64_pixel_boundaries() {
         .unwrap();
 
     let min_luma_ref_y = cfl_above_min_luma_ref_y(33, 32, PixelFormat::Yuv420);
-    assert_eq!(
-        cfl_luma_q3_with_min_y(&frame, 32, 32, true, false, min_luma_ref_y, 1).unwrap(),
-        800
-    );
-    assert_eq!(
-        cfl_luma_q3_with_min_y(&frame, 64, 32, false, false, min_luma_ref_y, 1).unwrap(),
-        833
-    );
+    let luma = CflLuma::new(&frame, 1).unwrap();
+    assert_eq!(luma.q3(32, 32, true, false, min_luma_ref_y).unwrap(), 800);
+    assert_eq!(luma.q3(64, 32, false, false, min_luma_ref_y).unwrap(), 833);
 
     let average =
-        cfl_luma_average_q3(&frame, 32, 33, 64, 32, 1, 32, interior(), BitDepth::Ten).unwrap();
+        cfl_luma_average_q3(&luma, 32, 33, 64, 32, 32, interior(), BitDepth::Ten).unwrap();
     assert_eq!(average, 801);
 
     let tile_start = cfl_luma_average_q3(
-        &frame,
+        &luma,
         32,
         33,
         64,
         32,
-        1,
         32,
         NeighbourAvailability::new(false, false, 0, 0),
         BitDepth::Ten,
@@ -306,12 +301,11 @@ fn cfl_above_average_uses_block_left_not_internal_64_pixel_boundaries() {
     .unwrap();
     assert_eq!(tile_start, i32::from(8u16 << (BitDepth::Ten.bits() - 1)));
     let left_only = cfl_luma_average_q3(
-        &frame,
+        &luma,
         32,
         33,
         64,
         32,
-        1,
         32,
         NeighbourAvailability::new(false, true, 0, 0),
         BitDepth::Ten,
@@ -379,11 +373,12 @@ fn cfl_left_average_uses_block_top_not_internal_64_pixel_boundaries() {
         .set_reconstructed_sample(PlaneId::U, 32, 32, 200)
         .unwrap();
 
-    assert_eq!(cfl_luma_q3(&frame, 32, 28, false, true, 2).unwrap(), 800);
-    assert_eq!(cfl_luma_q3(&frame, 32, 32, false, false, 2).unwrap(), 1_600);
+    let luma = CflLuma::new(&frame, 2).unwrap();
+    assert_eq!(luma.q3(32, 28, false, true, None).unwrap(), 800);
+    assert_eq!(luma.q3(32, 32, false, false, None).unwrap(), 1_600);
 
     let average =
-        cfl_luma_average_q3(&frame, 33, 28, 16, 64, 2, 32, interior(), BitDepth::Ten).unwrap();
+        cfl_luma_average_q3(&luma, 33, 28, 16, 64, 32, interior(), BitDepth::Ten).unwrap();
     assert_eq!(average, 816);
 
     let mut luma_ac = Vec::new();
@@ -451,14 +446,9 @@ fn cfl_derived_alpha_above_uses_transform_local_boundary() {
         .unwrap();
 
     let min_luma_ref_y = cfl_above_min_luma_ref_y(33, 32, PixelFormat::Yuv420);
-    assert_eq!(
-        cfl_luma_q3_with_min_y(&frame, 28, 32, true, false, min_luma_ref_y, 1).unwrap(),
-        800
-    );
-    assert_eq!(
-        cfl_luma_q3_with_min_y(&frame, 32, 32, false, false, min_luma_ref_y, 1).unwrap(),
-        900
-    );
+    let luma = CflLuma::new(&frame, 1).unwrap();
+    assert_eq!(luma.q3(28, 32, true, false, min_luma_ref_y).unwrap(), 800);
+    assert_eq!(luma.q3(32, 32, false, false, min_luma_ref_y).unwrap(), 900);
     assert_eq!(
         derive_cfl_alpha_q3(&frame, PlaneId::U, 28, 33, 64, 16, 1, 32, interior()).unwrap(),
         255
@@ -518,7 +508,10 @@ fn cfl_luma_sample_uses_422_and_444_filters() {
             .unwrap();
 
         assert_eq!(
-            cfl_luma_q3(&frame, 1, 1, false, false, 0).unwrap(),
+            CflLuma::new(&frame, 0)
+                .unwrap()
+                .q3(1, 1, false, false, None)
+                .unwrap(),
             expected
         );
     }

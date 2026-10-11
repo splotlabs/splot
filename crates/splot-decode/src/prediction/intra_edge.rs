@@ -63,8 +63,12 @@ impl TileSmoothGrid {
         Ok(())
     }
 
+    /// Records one intra block. A cell holds `false` until its last writer in
+    /// the tile records it; the only earlier writer is the `false` write of a
+    /// luma-part leaf, which comes before the chroma-part write of the same
+    /// region. So a non-smooth block only moves the window.
     pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {
-        self.grid.record_block((r, c), (n4w, n4h), smooth);
+        self.grid.record_owned_block((r, c), (n4w, n4h), smooth);
     }
 
     /// Whether an access touched a row the window had already reused.
@@ -223,12 +227,14 @@ fn assemble_unit_edge_filter<T: ReconSample>(
         (y, storage.height())
     };
     let in_block = (max_axis.saturating_sub(origin)).min(primary as usize);
-    let num_px = in_block
+    let Some(num_px) = in_block
         .checked_add(if spec.need_far { secondary as usize } else { 0 })
         .and_then(|v| v.checked_add(1))
-        .ok_or(GeneralIntraResidualError::InvalidReconstructionState {
+    else {
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "directional edge sample count",
-        })?;
+        });
+    };
     let corner_opposite = if spec.corner_applies && (w + h) >= 24 {
         let (sx, sy) = if spec.above {
             (x.saturating_sub(1), y)

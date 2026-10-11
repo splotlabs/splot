@@ -138,11 +138,21 @@ pub struct QmUserPlane {
 /// for every other coefficient (the non-quantization-matrix path), writing the
 /// `Dequant` block into `out`.
 ///
+/// `quant` may stop early, at the last coded coefficient: the missing tail is
+/// zero, and dequantizes to zero. Only the rows that `quant` reaches are written
+/// (a partial last row is completed with zeros); the returned length is that
+/// whole-row prefix of `out`, and the rest of `out` is left untouched.
+///
 /// # Errors
 /// Returns [`ReconError::InvalidDequantBlockShape`] if `tx_width` / `tx_height`
 /// are not each 4/8/16/32, and [`ReconError::DequantBlockLengthMismatch`] if
-/// `quant` or `out` is not exactly `tx_width * tx_height` long.
-pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i32]) -> Result<()> {
+/// `quant` is longer than `tx_width * tx_height` or `out` is not exactly that
+/// long.
+pub fn dequantize_block(
+    params: &DequantBlockParams,
+    quant: &[i32],
+    out: &mut [i32],
+) -> Result<usize> {
     let (tx_width, tx_height) = (params.tx_width, params.tx_height);
     if !matches!(tx_width, 4 | 8 | 16 | 32) || !matches!(tx_height, 4 | 8 | 16 | 32) {
         return Err(ReconError::InvalidDequantBlockShape {
@@ -152,47 +162,48 @@ pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i
     }
     debug_assert!(tx_width <= MAX_DEQUANT_DIM && tx_height <= MAX_DEQUANT_DIM);
     let expected = tx_width * tx_height;
-    if quant.len() != expected || out.len() != expected {
+    if quant.len() > expected || out.len() != expected {
         return Err(ReconError::DequantBlockLengthMismatch {
             expected,
             quant_len: quant.len(),
             out_len: out.len(),
         });
     }
+    let written = quant.len().next_multiple_of(tx_width);
+    let (out, tail) = out[..written].split_at_mut(quant.len());
+    tail.fill(0);
     if params.qm.is_none() && dequantize_flat_block(params, quant, out) {
-        return Ok(());
+        return Ok(written);
     }
-    for i in 0..tx_height {
-        for j in 0..tx_width {
-            let idx = i * tx_width + j;
-            let base_q = if i == 0 && j == 0 {
-                params.dc_quant
-            } else {
-                params.ac_quant
-            };
-            let q2 = match params.qm.as_ref() {
-                Some(qm) => {
-                    let m = if let Some(user) = &qm.user {
-                        user_quantization_matrix_weight(user, i, j, tx_width, tx_height)?
-                    } else {
-                        quantization_matrix_weight(&QmWeightIndex {
-                            seg_level: qm.seg_level,
-                            plane_is_chroma: qm.plane_is_chroma,
-                            qm_offset: qm.qm_offset,
-                            row: i,
-                            col: j,
-                            tx_width,
-                            tx_height,
-                        })?
-                    };
-                    qm_weighted_quantizer(base_q, m)
-                }
-                None => base_q,
-            };
-            out[idx] = dequant_coefficient(quant[idx], q2, params.dq_denom, params.bit_depth);
-        }
+    for (idx, (slot, &coeff)) in out.iter_mut().zip(quant).enumerate() {
+        let (i, j) = (idx / tx_width, idx % tx_width);
+        let base_q = if idx == 0 {
+            params.dc_quant
+        } else {
+            params.ac_quant
+        };
+        let q2 = match params.qm.as_ref() {
+            Some(qm) => {
+                let m = if let Some(user) = &qm.user {
+                    user_quantization_matrix_weight(user, i, j, tx_width, tx_height)?
+                } else {
+                    quantization_matrix_weight(&QmWeightIndex {
+                        seg_level: qm.seg_level,
+                        plane_is_chroma: qm.plane_is_chroma,
+                        qm_offset: qm.qm_offset,
+                        row: i,
+                        col: j,
+                        tx_width,
+                        tx_height,
+                    })?
+                };
+                qm_weighted_quantizer(base_q, m)
+            }
+            None => base_q,
+        };
+        *slot = dequant_coefficient(coeff, q2, params.dq_denom, params.bit_depth);
     }
-    Ok(())
+    Ok(written)
 }
 
 /// Dequantizes a whole `useQm == 0` block with the § 7.14.4 quantizer carried in
@@ -617,10 +628,10 @@ mod tests {
     fn dequantize_block_rejects_length_mismatch() {
         let mut out = [0i32; 16];
         assert!(matches!(
-            dequantize_block(&params(4, 4), &[0i32; 15], &mut out),
+            dequantize_block(&params(4, 4), &[0i32; 17], &mut out),
             Err(ReconError::DequantBlockLengthMismatch {
                 expected: 16,
-                quant_len: 15,
+                quant_len: 17,
                 out_len: 16
             })
         ));

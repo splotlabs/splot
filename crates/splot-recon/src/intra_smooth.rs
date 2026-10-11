@@ -8,7 +8,7 @@
 use std::simd::num::{SimdInt as _, SimdUint as _};
 use std::simd::{Simd, cmp::SimdPartialOrd as _};
 
-use crate::intra_dc_math::{validate_output_shape, validate_sample_type};
+use crate::intra_dc_math::{IntraLaneSample, validate_output_shape, validate_sample_type};
 use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -121,11 +121,12 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
         "smooth intra prediction output buffer length",
     )?;
 
+    let max = i32::from(bit_depth.max_sample());
     if let Some(left) = T::u16_slice(edges.left_samples())
         && let Some(above) = T::u16_slice(edges.above_samples())
         && let Some(target) = T::u16_slice_mut(output)
         && predict_smooth_rect_u16(
-            i32::from(bit_depth.max_sample()),
+            max,
             size,
             mode,
             SmoothU16Edges { left, above },
@@ -134,6 +135,27 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
         )
     {
         return Ok(());
+    }
+    if let Some(left) = T::u8_slice(edges.left_samples())
+        && let Some(above) = T::u8_slice(edges.above_samples())
+        && let Some(target) = T::u8_slice_mut(output)
+        && left.len() <= MAX_SMOOTH_SIDE + 1
+        && above.len() <= MAX_SMOOTH_SIDE + 1
+    {
+        let mut wide = [[0u16; MAX_SMOOTH_SIDE + 1]; 2];
+        for (slot, &sample) in wide[0].iter_mut().zip(left) {
+            *slot = u16::from(sample);
+        }
+        for (slot, &sample) in wide[1].iter_mut().zip(above) {
+            *slot = u16::from(sample);
+        }
+        let edges = SmoothU16Edges {
+            left: &wide[0][..left.len()],
+            above: &wide[1][..above.len()],
+        };
+        if predict_smooth_rect_u16(max, size, mode, edges, target, stride_samples) {
+            return Ok(());
+        }
     }
 
     for row in 0..size.height() {
@@ -151,7 +173,7 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
     Ok(())
 }
 
-/// Prepared `u16`-storage § 7.13.2.13 edges: `LeftCol[0..h]` and `AboveRow[0..w]`,
+/// Prepared § 7.13.2.13 edges as `u16`: `LeftCol[0..h]` and `AboveRow[0..w]`,
 /// each including its sentinel.
 #[derive(Clone, Copy)]
 struct SmoothU16Edges<'a> {
@@ -165,18 +187,21 @@ struct SmoothColumnWeights {
     s_left: [i32; MAX_SMOOTH_SIDE],
 }
 
-/// Writes the whole § 7.13.2.13 prediction over `u16` storage, hoisting the
-/// row- and block-invariant weights out of the sample loop.
+/// Writes the whole § 7.13.2.13 prediction from `u16` edges to `u16` or `u8`
+/// storage, hoisting the row- and block-invariant weights out of the sample
+/// loop.
 ///
-/// Returns `false` without writing a partial row when a predicted sample leaves
-/// `0..=max_sample`, which hands the block back to the per-sample path so it
-/// reports the § 7.13.2.13 range error with its exact position and value.
-fn predict_smooth_rect_u16(
+/// The caller validates every edge sample to `0..=max_sample`. Each
+/// § 7.13.2.13 stage is then a `Round2` interpolation between in-range values
+/// with a weight below its scale, so the lane groups write without a range
+/// check. Returns `false` when the scalar tail finds a sample outside the range,
+/// which hands the block back to the per-sample path for the exact error.
+fn predict_smooth_rect_u16<O: IntraLaneSample>(
     max: i32,
     size: IntraRectBlockSize,
     mode: IntraSmoothMode,
     edges: SmoothU16Edges<'_>,
-    output: &mut [u16],
+    output: &mut [O],
     stride_samples: usize,
 ) -> bool {
     let (width, height) = (size.width(), size.height());
@@ -242,8 +267,8 @@ struct SmoothShape {
 }
 
 /// Writes one § 7.13.2.13 row, widest lane group first.
-fn predict_smooth_row_u16(
-    target: &mut [u16],
+fn predict_smooth_row_u16<O: IntraLaneSample>(
+    target: &mut [O],
     above: &[u16],
     weights: &SmoothColumnWeights,
     row: &SmoothRowWeights,
@@ -254,16 +279,14 @@ fn predict_smooth_row_u16(
     macro_rules! smooth_lane_group {
         ($lanes:literal) => {
             while column + $lanes <= width {
-                if !smooth_lanes::<$lanes>(
+                smooth_lanes::<O, $lanes>(
                     &mut target[column..],
                     &above[column..],
                     &weights.h_factor[column..],
                     &weights.s_left[column..],
                     row,
                     shape,
-                ) {
-                    return false;
-                }
+                );
                 column += $lanes;
             }
         };
@@ -283,7 +306,7 @@ fn predict_smooth_row_u16(
         if predicted < 0 || predicted > shape.max {
             return false;
         }
-        target[column] = predicted as u16;
+        target[column] = O::from_lane(predicted as u16);
         column += 1;
     }
     true
@@ -291,20 +314,19 @@ fn predict_smooth_row_u16(
 
 /// One `LANES`-wide group of [`predict_smooth_row_u16`].
 ///
-/// Each lane repeats [`predict_smooth_sample_values`] in § 7.13.2.13 order with
-/// `Round2` expanded as `(v >> n) + ((v >> (n - 1)) & 1)`, its definition for
-/// every `i32` and every shift this kernel uses (all at least 1). Every product
-/// is bounded by a `Clip1` sample times 64, so none can overflow.
+/// Each lane repeats [`predict_smooth_sample_values`] in § 7.13.2.13 order. Every
+/// product is bounded by a `Clip1` sample times 64, so neither it nor the
+/// `Round2` rounding add can overflow.
 #[allow(clippy::inline_always, reason = "measured § 7.13.2.13 smooth hot path")]
 #[inline(always)]
-fn smooth_lanes<const LANES: usize>(
-    target: &mut [u16],
+fn smooth_lanes<O: IntraLaneSample, const LANES: usize>(
+    target: &mut [O],
     above: &[u16],
     h_factor: &[i32],
     s_left: &[i32],
     row: &SmoothRowWeights,
     shape: SmoothShape,
-) -> bool {
+) {
     let top = Simd::<u16, LANES>::from_slice(above).cast::<i32>();
     let h_factor = Simd::<i32, LANES>::from_slice(h_factor);
     let s_left = Simd::<i32, LANES>::from_slice(s_left);
@@ -322,18 +344,18 @@ fn smooth_lanes<const LANES: usize>(
         IntraSmoothMode::SmoothVertical => pred_v2,
         IntraSmoothMode::Smooth => round2_lanes(pred_v2 + pred_h2, 1),
     };
-    if (predicted.simd_lt(Simd::splat(0)) | predicted.simd_gt(Simd::splat(shape.max))).any() {
-        return false;
-    }
-    target[..LANES].copy_from_slice(&predicted.cast::<u16>().to_array()); // splot-copy-ok: publish a § 7.13.2.13 smooth lane group
-    true
+    debug_assert!(
+        !(predicted.simd_lt(Simd::splat(0)) | predicted.simd_gt(Simd::splat(shape.max))).any()
+    );
+    O::store(predicted.cast::<u16>().as_array(), &mut target[..LANES]);
 }
 
-/// `Round2(v, n)` over `LANES` lanes, for any `n` in `1..i32::BITS`.
+/// `Round2(v, n)` over `LANES` lanes, for `n` in `1..i32::BITS` and
+/// `v + 2^(n - 1)` inside `i32`.
 #[allow(clippy::inline_always, reason = "measured § 7.13.2.13 smooth hot path")]
 #[inline(always)]
 fn round2_lanes<const LANES: usize>(value: Simd<i32, LANES>, n: u32) -> Simd<i32, LANES> {
-    (value >> Simd::splat(n as i32)) + ((value >> Simd::splat(n as i32 - 1)) & Simd::splat(1))
+    (value + Simd::splat(1 << (n - 1))) >> Simd::splat(n as i32)
 }
 
 /// The scalar tail of [`predict_smooth_row_u16`], matching [`smooth_lanes`].
@@ -750,7 +772,7 @@ mod tests {
 
     /// The `u16` lane groups must reproduce the per-sample § 7.13.2.13
     /// reference exactly for every block shape, mode, and bit depth, over
-    /// randomized edges and a strided output.
+    /// randomized edges and a strided output; `u8` storage must match at 8 bits.
     #[test]
     fn u16_lane_groups_match_the_per_sample_reference() {
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
@@ -805,6 +827,26 @@ mod tests {
                                     size.height()
                                 );
                             }
+                        }
+                        if bit_depth == BitDepth::Eight {
+                            let narrow_left: Vec<u8> = left.iter().map(|&v| v as u8).collect();
+                            let narrow_above: Vec<u8> = above.iter().map(|&v| v as u8).collect();
+                            let mut narrow = vec![0u8; actual.len()];
+                            predict_intra_smooth_rect_into(
+                                bit_depth,
+                                size,
+                                mode,
+                                IntraSmoothEdges::new(&narrow_left, &narrow_above),
+                                &mut narrow,
+                                stride,
+                            )
+                            .unwrap();
+                            assert!(
+                                narrow
+                                    .iter()
+                                    .map(|&v| u16::from(v))
+                                    .eq(actual.iter().copied())
+                            );
                         }
                     }
                 }

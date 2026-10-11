@@ -14,6 +14,21 @@ use super::partition::PartitionType;
 
 const BLOCK_SIZES: usize = 29;
 const BLOCK_INVALID: i32 = 29;
+const MAX_LOG2_4X4: usize = 6;
+
+/// Block size indexed by log2 of its 4x4 width and height; every AV2 block
+/// side is a power of two. `BLOCK_SIZES` marks a shape with no block size.
+const BLOCK_SIZE_BY_LOG2_4X4: [[u8; MAX_LOG2_4X4 + 1]; MAX_LOG2_4X4 + 1] = {
+    let mut table = [[BLOCK_SIZES as u8; MAX_LOG2_4X4 + 1]; MAX_LOG2_4X4 + 1];
+    let mut index = BLOCK_SIZES;
+    while index > 0 {
+        index -= 1;
+        let wide = NUM_4X4_BLOCKS_WIDE[index] as u32;
+        let high = NUM_4X4_BLOCKS_HIGH[index] as u32;
+        table[wide.trailing_zeros() as usize][high.trailing_zeros() as usize] = index as u8;
+    }
+    table
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockSize(usize);
@@ -54,17 +69,15 @@ impl BlockSize {
         table_usize("Mi_Height_Log2", &MI_HEIGHT_LOG2, self)
     }
 
-    pub(crate) fn from_4x4_dimensions(
-        width_4x4: usize,
-        height_4x4: usize,
-    ) -> Result<Option<Self>, PartitionSizeError> {
-        for index in 0..BLOCK_SIZES {
-            let block_size = Self(index);
-            if block_size.num_4x4_wide()? == width_4x4 && block_size.num_4x4_high()? == height_4x4 {
-                return Ok(Some(block_size));
-            }
+    /// The block size with these 4x4 dimensions, if any.
+    pub(crate) fn from_4x4_dimensions(width_4x4: usize, height_4x4: usize) -> Option<Self> {
+        if !width_4x4.is_power_of_two() || !height_4x4.is_power_of_two() {
+            return None;
         }
-        Ok(None)
+        let index = *BLOCK_SIZE_BY_LOG2_4X4
+            .get(width_4x4.trailing_zeros() as usize)?
+            .get(height_4x4.trailing_zeros() as usize)?;
+        (usize::from(index) < BLOCK_SIZES).then_some(Self(usize::from(index)))
     }
 }
 

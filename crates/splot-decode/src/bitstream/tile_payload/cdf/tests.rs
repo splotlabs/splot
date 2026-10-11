@@ -40,14 +40,25 @@ use super::block_rows::*;
 
 #[test]
 fn coeff_cdf_q_context_boundaries_select_expected_contexts() {
-    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(0), 0);
-    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(90), 0);
-    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(91), 1);
-    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(140), 1);
-    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(141), 2);
-    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(190), 2);
-    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(191), 3);
-    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(u32::MAX), 3);
+    for (base_q_idx, q) in [
+        (0, 0),
+        (90, 0),
+        (91, 1),
+        (140, 1),
+        (141, 2),
+        (190, 2),
+        (191, 3),
+        (u32::MAX, 3),
+    ] {
+        assert_eq!(CoeffCdfQContext::from_base_q_idx(base_q_idx).index(), q);
+    }
+}
+
+/// One `base_q_idx` of each coefficient CDF q context.
+const Q_CONTEXT_BASE_Q_IDX: [u32; 4] = [0, 91, 141, 191];
+
+fn tile_for_q_context(q: usize) -> TileCdfSubset {
+    FrameCdfSubset::default_for_base_q(Q_CONTEXT_BASE_Q_IDX[q]).tile_copy()
 }
 
 fn coeff(selector: CoeffCdfSelector) -> TileCdfSelector {
@@ -168,15 +179,16 @@ fn frame_cdf_subset_blends_saved_rows() {
 }
 
 #[test]
-fn reference_cdf_save_replicates_active_coefficient_q_context() {
-    let mut frame = FrameCdfSubset::from_defaults();
-    let target_txb_skip = [32_571, 93, 7];
-    frame.rows.block.txb_skip[3][0][4][0] = target_txb_skip;
-
-    frame.replicate_coeff_q_context_for_base_q(191);
-
-    for q_context in &frame.rows.block.txb_skip {
-        assert_eq!(q_context[0][4][0], target_txb_skip);
+fn default_bank_holds_the_coefficient_rows_of_its_q_context() {
+    for (q, base_q_idx) in Q_CONTEXT_BASE_Q_IDX.into_iter().enumerate() {
+        let frame = FrameCdfSubset::default_for_base_q(base_q_idx);
+        let block = &frame.rows.block;
+        assert_eq!(block.txb_skip, DEFAULT_TXB_SKIP_CDF[q], "q {q}");
+        assert_eq!(block.dc_sign, DEFAULT_DC_SIGN_CDF[q], "q {q}");
+        assert_eq!(block.eob_pt_1024, DEFAULT_EOB_PT_1024_CDF[q], "q {q}");
+        assert_eq!(block.coeff.coeff_base, DEFAULT_COEFF_BASE_CDF[q], "q {q}");
+        assert_eq!(block.coeff.idtx_sign, DEFAULT_IDTX_SIGN_CDF[q], "q {q}");
+        assert_eq!(block.y_mode_set, DEFAULT_Y_MODE_SET_CDF, "q {q}");
     }
 }
 
@@ -212,7 +224,7 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows.mrl_sec_index, DEFAULT_MRL_SEC_INDEX_CDF);
     assert_eq!(frame.rows.block.y_mode_set, DEFAULT_Y_MODE_SET_CDF);
     assert_eq!(frame.rows.block.y_mode_index, DEFAULT_Y_MODE_INDEX_CDF);
-    assert_eq!(frame.rows.block.txb_skip, DEFAULT_TXB_SKIP_CDF);
+    assert_eq!(frame.rows.block.txb_skip, DEFAULT_TXB_SKIP_CDF[0]);
     assert_eq!(
         frame.rows.block.intra_tx_type_set1,
         DEFAULT_INTRA_TX_TYPE_SET1_CDF
@@ -252,8 +264,8 @@ fn frame_cdf_subset_copies_generated_defaults_without_aliasing() {
     assert_eq!(frame.rows.block.use_dip, DEFAULT_USE_DIP_CDF);
     assert_eq!(frame.rows.block.dip_mode, DEFAULT_DIP_MODE_CDF);
     assert_eq!(frame.rows.block.palette_y_mode, DEFAULT_PALETTE_Y_MODE_CDF);
-    assert_eq!(frame.rows.block.v_txb_skip, DEFAULT_V_TXB_SKIP_CDF);
-    assert_eq!(frame.rows.block.eob_extra, DEFAULT_EOB_EXTRA_CDF);
+    assert_eq!(frame.rows.block.v_txb_skip, DEFAULT_V_TXB_SKIP_CDF[0]);
+    assert_eq!(frame.rows.block.eob_extra, DEFAULT_EOB_EXTRA_CDF[0]);
     assert_eq!(frame.rows.block.comp_mode, DEFAULT_COMP_MODE_CDF);
     assert_eq!(frame.rows.block.is_joint, DEFAULT_IS_JOINT_CDF);
     assert_eq!(
@@ -962,7 +974,7 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     tile.rows.block.jmvd_scale_mode = [20_000, 21_000, 22_000, 23_000, 11, 12];
     tile.rows.block.jmvd_adaptive_scale_mode = [20_000, 21_000, 11, 12];
     tile.rows.block.use_optflow[0] = [25_000, 31, 12];
-    tile.rows.block.txb_skip[2][0][0][0] = [25_000, 13, 20];
+    tile.rows.block.txb_skip[0][0][0] = [25_000, 13, 20];
     tile.rows.block.uv_mode_cfl_not_allowed[0] = [
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 12,
     ];
@@ -975,10 +987,10 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     ];
     tile.rows.block.cfl_mhccp = [26_000, 14, 24];
     tile.rows.block.cfl_mh_dir[2] = [20_000, 21_000, 22_000, 9];
-    tile.rows.block.v_txb_skip[1][3] = [26_000, 14, 24];
-    tile.rows.block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 8];
-    tile.rows.block.coeff.coeff_base_idtx[1][2][3] = [20_000, 21_000, 22_000, 9, 8];
-    tile.rows.block.coeff.idtx_sign[1][2][3] = [20_000, 9, 8];
+    tile.rows.block.v_txb_skip[3] = [26_000, 14, 24];
+    tile.rows.block.coeff.coeff_base[2][3][1] = [20_000, 21_000, 22_000, 9, 8];
+    tile.rows.block.coeff.coeff_base_idtx[2][3] = [20_000, 21_000, 22_000, 9, 8];
+    tile.rows.block.coeff.idtx_sign[2][3] = [20_000, 9, 8];
     tile.rows.intrabc_mode = [25_500, 13, 20];
     tile.rows.intrabc_precision = [26_000, 14, 24];
     tile.rows.mrl_index[1] = [20_000, 21_000, 22_000, 23_000, 20];
@@ -1055,7 +1067,7 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
         [30_826, 31, 3]
     );
     assert_eq!(
-        saved.as_ref().unwrap().rows.block.txb_skip[2][0][0][0],
+        saved.as_ref().unwrap().rows.block.txb_skip[0][0][0],
         [30_826, 13, 5]
     );
     assert_eq!(
@@ -1089,19 +1101,19 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
         [29_576, 29_826, 22_000, 2]
     );
     assert_eq!(
-        saved.as_ref().unwrap().rows.block.v_txb_skip[1][3],
+        saved.as_ref().unwrap().rows.block.v_txb_skip[3],
         [31_076, 14, 6]
     );
     assert_eq!(
-        saved.as_ref().unwrap().rows.block.coeff.coeff_base[1][2][3][1],
+        saved.as_ref().unwrap().rows.block.coeff.coeff_base[2][3][1],
         [29_576, 29_826, 30_076, 9, 2]
     );
     assert_eq!(
-        saved.as_ref().unwrap().rows.block.coeff.coeff_base_idtx[1][2][3],
+        saved.as_ref().unwrap().rows.block.coeff.coeff_base_idtx[2][3],
         [29_576, 29_826, 30_076, 9, 2]
     );
     assert_eq!(
-        saved.as_ref().unwrap().rows.block.coeff.idtx_sign[1][2][3],
+        saved.as_ref().unwrap().rows.block.coeff.idtx_sign[2][3],
         [29_576, 9, 2]
     );
     assert_eq!(saved.as_ref().unwrap().rows.intrabc_mode, [30_951, 13, 5]);
@@ -1177,7 +1189,7 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     tile.rows.block.jmvd_scale_mode = [20_000, 21_000, 22_000, 23_000, 11, 12];
     tile.rows.block.jmvd_adaptive_scale_mode = [20_000, 21_000, 11, 12];
     tile.rows.block.use_optflow[0] = [25_000, 31, 12];
-    tile.rows.block.txb_skip[2][0][0][0] = [25_000, 13, 20];
+    tile.rows.block.txb_skip[0][0][0] = [25_000, 13, 20];
     tile.rows.block.uv_mode_cfl_not_allowed[0] = [
         20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 11, 16,
     ];
@@ -1190,11 +1202,11 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     ];
     tile.rows.block.cfl_mhccp = [26_000, 14, 24];
     tile.rows.block.cfl_mh_dir[2] = [20_000, 21_000, 22_000, 20];
-    tile.rows.block.v_txb_skip[1][3] = [26_000, 14, 24];
-    tile.rows.block.coeff.coeff_base[1][2][3][1] = [20_000, 21_000, 22_000, 9, 20];
-    tile.rows.block.coeff.coeff_base_bob[1][2][1] = [20_000, 21_000, 9, 20];
-    tile.rows.block.coeff.coeff_br_idtx[1][2][3] = [20_000, 21_000, 22_000, 9, 20];
-    tile.rows.block.coeff.idtx_sign[1][2][3] = [20_000, 9, 20];
+    tile.rows.block.v_txb_skip[3] = [26_000, 14, 24];
+    tile.rows.block.coeff.coeff_base[2][3][1] = [20_000, 21_000, 22_000, 9, 20];
+    tile.rows.block.coeff.coeff_base_bob[2][1] = [20_000, 21_000, 9, 20];
+    tile.rows.block.coeff.coeff_br_idtx[2][3] = [20_000, 21_000, 22_000, 9, 20];
+    tile.rows.block.coeff.idtx_sign[2][3] = [20_000, 9, 20];
     tile.rows.mrl_index[1] = [20_000, 21_000, 22_000, 23_000, 20];
     tile.rows.mrl_sec_index[2] = [20_000, 21_000, 20];
     tile.rows.block.cctx_type = [20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 20];
@@ -1238,7 +1250,7 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
         [20_000, 21_000, 11, 9]
     );
     assert_eq!(frame.rows.block.use_optflow[0], [25_000, 31, 9]);
-    assert_eq!(frame.rows.block.txb_skip[2][0][0][0], [25_000, 13, 15]);
+    assert_eq!(frame.rows.block.txb_skip[0][0][0], [25_000, 13, 15]);
     assert_eq!(
         frame.rows.block.uv_mode_cfl_not_allowed[0],
         [
@@ -1260,20 +1272,20 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     );
     assert_eq!(frame.rows.block.cfl_mhccp, [26_000, 14, 18]);
     assert_eq!(frame.rows.block.cfl_mh_dir[2], [20_000, 21_000, 22_000, 15]);
-    assert_eq!(frame.rows.block.v_txb_skip[1][3], [26_000, 14, 18]);
+    assert_eq!(frame.rows.block.v_txb_skip[3], [26_000, 14, 18]);
     assert_eq!(
-        frame.rows.block.coeff.coeff_base[1][2][3][1],
+        frame.rows.block.coeff.coeff_base[2][3][1],
         [20_000, 21_000, 22_000, 9, 15]
     );
     assert_eq!(
-        frame.rows.block.coeff.coeff_base_bob[1][2][1],
+        frame.rows.block.coeff.coeff_base_bob[2][1],
         [20_000, 21_000, 9, 15]
     );
     assert_eq!(
-        frame.rows.block.coeff.coeff_br_idtx[1][2][3],
+        frame.rows.block.coeff.coeff_br_idtx[2][3],
         [20_000, 21_000, 22_000, 9, 15]
     );
-    assert_eq!(frame.rows.block.coeff.idtx_sign[1][2][3], [20_000, 9, 15]);
+    assert_eq!(frame.rows.block.coeff.idtx_sign[2][3], [20_000, 9, 15]);
     assert_eq!(
         frame.rows.mrl_index[1],
         [20_000, 21_000, 22_000, 23_000, 15]
@@ -1289,12 +1301,11 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
 fn output_reset_preserves_counts_and_reuses_the_destination_box() {
     let mut initial = FrameCdfSubset::from_defaults();
     initial.rows.do_split[0][0] = [20_000, 7, 20];
-    let mut expected = initial.clone();
-    expected.replicate_coeff_q_context_for_base_q(80);
+    let expected = initial.clone();
     let mut output = FrameCdfSubset::from_defaults();
     let output_rows = std::ptr::from_ref(output.rows.as_ref());
 
-    output.reset_output_from(&initial, 80);
+    output.reset_output_from(&initial);
 
     assert_eq!(output, expected);
     assert_eq!(output.rows.do_split[0][0], [20_000, 7, 20]);
@@ -1345,52 +1356,32 @@ fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
 }
 
 #[test]
-fn eob_extra_selector_returns_rows_and_bounds_error() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
+fn eob_extra_selector_returns_the_row_of_the_bank_q_context() {
     for (q, expected) in DEFAULT_EOB_EXTRA_CDF.iter().enumerate() {
-        let row = tile
-            .with_row_mut(TileCdfSelector::EobExtra { coeff_cdf_q_ctx: q }, |row| {
-                row.to_vec()
-            })
+        let row = tile_for_q_context(q)
+            .with_row_mut(TileCdfSelector::EobExtra, |row| row.to_vec())
             .unwrap();
         assert_eq!(row, expected.as_slice(), "eob_extra q-ctx {q}");
     }
-    assert_selector_out_of_range(
-        &mut tile,
-        TileCdfSelector::EobExtra { coeff_cdf_q_ctx: 4 },
-        TileCdfArray::EobExtra,
-        "coeff_cdf_q_ctx",
-        4,
-        4,
-    );
 }
 
 #[test]
 fn eob_extra_tile_copy_does_not_alias_the_frame() {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
-    tile.rows.block.eob_extra[2] = [12_345, 0, 7];
-    assert_eq!(tile.rows.block.eob_extra[2], [12_345, 0, 7]);
-    assert_eq!(frame.rows.block.eob_extra[2], DEFAULT_EOB_EXTRA_CDF[2]);
+    tile.rows.block.eob_extra = [12_345, 0, 7];
+    assert_eq!(tile.rows.block.eob_extra, [12_345, 0, 7]);
+    assert_eq!(frame.rows.block.eob_extra, DEFAULT_EOB_EXTRA_CDF[0]);
 }
 
-fn assert_eob_pt_bank<const N: usize>(
-    tile: &mut TileCdfSubset,
-    size: EobPtSize,
-    expected: &[[[u16; N]; 3]; 4],
-) {
+fn assert_eob_pt_bank<const N: usize>(size: EobPtSize, expected: &[[[u16; N]; 3]; 4]) {
     for (q, expected_q) in expected.iter().enumerate() {
+        let mut tile = tile_for_q_context(q);
         for (c, expected_qc) in expected_q.iter().enumerate() {
             let row = tile
-                .with_row_mut(
-                    TileCdfSelector::EobPt {
-                        size,
-                        coeff_cdf_q_ctx: q,
-                        eob_ctx: c,
-                    },
-                    |row| row.to_vec(),
-                )
+                .with_row_mut(TileCdfSelector::EobPt { size, eob_ctx: c }, |row| {
+                    row.to_vec()
+                })
                 .unwrap();
             assert_eq!(row, expected_qc.as_slice(), "eob_pt {size:?} q {q} ctx {c}");
         }
@@ -1399,15 +1390,13 @@ fn assert_eob_pt_bank<const N: usize>(
 
 #[test]
 fn eob_pt_family_loads_defaults_and_selects_by_size_and_context() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    assert_eob_pt_bank(&mut tile, EobPtSize::Pt16, &DEFAULT_EOB_PT_16_CDF);
-    assert_eob_pt_bank(&mut tile, EobPtSize::Pt32, &DEFAULT_EOB_PT_32_CDF);
-    assert_eob_pt_bank(&mut tile, EobPtSize::Pt64, &DEFAULT_EOB_PT_64_CDF);
-    assert_eob_pt_bank(&mut tile, EobPtSize::Pt128, &DEFAULT_EOB_PT_128_CDF);
-    assert_eob_pt_bank(&mut tile, EobPtSize::Pt256, &DEFAULT_EOB_PT_256_CDF);
-    assert_eob_pt_bank(&mut tile, EobPtSize::Pt512, &DEFAULT_EOB_PT_512_CDF);
-    assert_eob_pt_bank(&mut tile, EobPtSize::Pt1024, &DEFAULT_EOB_PT_1024_CDF);
+    assert_eob_pt_bank(EobPtSize::Pt16, &DEFAULT_EOB_PT_16_CDF);
+    assert_eob_pt_bank(EobPtSize::Pt32, &DEFAULT_EOB_PT_32_CDF);
+    assert_eob_pt_bank(EobPtSize::Pt64, &DEFAULT_EOB_PT_64_CDF);
+    assert_eob_pt_bank(EobPtSize::Pt128, &DEFAULT_EOB_PT_128_CDF);
+    assert_eob_pt_bank(EobPtSize::Pt256, &DEFAULT_EOB_PT_256_CDF);
+    assert_eob_pt_bank(EobPtSize::Pt512, &DEFAULT_EOB_PT_512_CDF);
+    assert_eob_pt_bank(EobPtSize::Pt1024, &DEFAULT_EOB_PT_1024_CDF);
 }
 
 #[test]
@@ -1417,20 +1406,7 @@ fn eob_pt_selector_rejects_out_of_range_contexts() {
     assert_selector_out_of_range(
         &mut tile,
         TileCdfSelector::EobPt {
-            size: EobPtSize::Pt16,
-            coeff_cdf_q_ctx: 4,
-            eob_ctx: 0,
-        },
-        TileCdfArray::EobPt,
-        "coeff_cdf_q_ctx",
-        4,
-        4,
-    );
-    assert_selector_out_of_range(
-        &mut tile,
-        TileCdfSelector::EobPt {
             size: EobPtSize::Pt1024,
-            coeff_cdf_q_ctx: 0,
             eob_ctx: 3,
         },
         TileCdfArray::EobPt,
@@ -1444,26 +1420,21 @@ fn eob_pt_selector_rejects_out_of_range_contexts() {
 fn eob_pt_tile_copy_does_not_alias_the_frame() {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
-    tile.rows.block.eob_pt_16[1][2] = [10, 20, 30, 40, 50, 7];
-    assert_eq!(tile.rows.block.eob_pt_16[1][2], [10, 20, 30, 40, 50, 7]);
-    assert_eq!(
-        frame.rows.block.eob_pt_16[1][2],
-        DEFAULT_EOB_PT_16_CDF[1][2]
-    );
+    tile.rows.block.eob_pt_16[2] = [10, 20, 30, 40, 50, 7];
+    assert_eq!(tile.rows.block.eob_pt_16[2], [10, 20, 30, 40, 50, 7]);
+    assert_eq!(frame.rows.block.eob_pt_16[2], DEFAULT_EOB_PT_16_CDF[0][2]);
 }
 
 #[test]
 fn dc_sign_loads_defaults_and_selects_by_all_indices() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
     for (q, q_rows) in DEFAULT_DC_SIGN_CDF.iter().enumerate() {
+        let mut tile = tile_for_q_context(q);
         for (p, p_rows) in q_rows.iter().enumerate() {
             for (g, g_rows) in p_rows.iter().enumerate() {
                 for (c, expected) in g_rows.iter().enumerate() {
                     let row = tile
                         .with_row_mut(
                             TileCdfSelector::DcSign {
-                                coeff_cdf_q_ctx: q,
                                 plane_type: p,
                                 group: g,
                                 ctx: c,
@@ -1485,20 +1456,6 @@ fn dc_sign_selector_rejects_out_of_range_indices() {
     assert_selector_out_of_range(
         &mut tile,
         TileCdfSelector::DcSign {
-            coeff_cdf_q_ctx: 4,
-            plane_type: 0,
-            group: 0,
-            ctx: 0,
-        },
-        TileCdfArray::DcSign,
-        "coeff_cdf_q_ctx",
-        4,
-        4,
-    );
-    assert_selector_out_of_range(
-        &mut tile,
-        TileCdfSelector::DcSign {
-            coeff_cdf_q_ctx: 0,
             plane_type: 2,
             group: 0,
             ctx: 0,
@@ -1511,7 +1468,6 @@ fn dc_sign_selector_rejects_out_of_range_indices() {
     assert_selector_out_of_range(
         &mut tile,
         TileCdfSelector::DcSign {
-            coeff_cdf_q_ctx: 0,
             plane_type: 0,
             group: 2,
             ctx: 0,
@@ -1524,7 +1480,6 @@ fn dc_sign_selector_rejects_out_of_range_indices() {
     assert_selector_out_of_range(
         &mut tile,
         TileCdfSelector::DcSign {
-            coeff_cdf_q_ctx: 0,
             plane_type: 0,
             group: 0,
             ctx: 3,
@@ -1540,11 +1495,11 @@ fn dc_sign_selector_rejects_out_of_range_indices() {
 fn dc_sign_tile_copy_does_not_alias_the_frame() {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
-    tile.rows.block.dc_sign[2][1][0][1] = [111, 5, 9];
-    assert_eq!(tile.rows.block.dc_sign[2][1][0][1], [111, 5, 9]);
+    tile.rows.block.dc_sign[1][0][1] = [111, 5, 9];
+    assert_eq!(tile.rows.block.dc_sign[1][0][1], [111, 5, 9]);
     assert_eq!(
-        frame.rows.block.dc_sign[2][1][0][1],
-        DEFAULT_DC_SIGN_CDF[2][1][0][1]
+        frame.rows.block.dc_sign[1][0][1],
+        DEFAULT_DC_SIGN_CDF[0][1][0][1]
     );
 }
 
@@ -1555,7 +1510,6 @@ fn txb_skip_plane_type_error_still_names_txb_skip() {
     assert_selector_out_of_range(
         &mut tile,
         TileCdfSelector::TxbSkip {
-            coeff_cdf_q_ctx: 0,
             plane_type: 2,
             tx_size: 0,
             ctx: 0,
@@ -1829,12 +1783,10 @@ fn tx_partition_rows_load_defaults_and_report_selector_errors() {
 
 #[test]
 fn coeff_base_rows_load_defaults_and_select_by_family() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let cases: &[(TileCdfSelector, &[u16])] = &[
+    let cases: &[(usize, TileCdfSelector, &[u16])] = &[
         (
+            1,
             coeff(CoeffCdfSelector::Base {
-                coeff_cdf_q_ctx: 1,
                 tx_size: 2,
                 ctx: 3,
                 tcq_ctx: 1,
@@ -1842,22 +1794,18 @@ fn coeff_base_rows_load_defaults_and_select_by_family() {
             DEFAULT_COEFF_BASE_CDF[1][2][3][1].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BasePh {
-                coeff_cdf_q_ctx: 2,
-                ctx: 4,
-            }),
+            2,
+            coeff(CoeffCdfSelector::BasePh { ctx: 4 }),
             DEFAULT_COEFF_BASE_PH_CDF[2][4].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BaseUv {
-                coeff_cdf_q_ctx: 2,
-                ctx: 11,
-            }),
+            2,
+            coeff(CoeffCdfSelector::BaseUv { ctx: 11 }),
             DEFAULT_COEFF_BASE_UV_CDF[2][11].as_slice(),
         ),
         (
+            3,
             coeff(CoeffCdfSelector::BaseLf {
-                coeff_cdf_q_ctx: 3,
                 tx_size: 4,
                 ctx: 32,
                 tcq_ctx: 0,
@@ -1865,90 +1813,72 @@ fn coeff_base_rows_load_defaults_and_select_by_family() {
             DEFAULT_COEFF_BASE_LF_CDF[3][4][32][0].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BaseLfUv {
-                coeff_cdf_q_ctx: 0,
-                ctx: 11,
-            }),
+            0,
+            coeff(CoeffCdfSelector::BaseLfUv { ctx: 11 }),
             DEFAULT_COEFF_BASE_LF_UV_CDF[0][11].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BaseEob {
-                coeff_cdf_q_ctx: 1,
-                tx_size: 2,
-                ctx: 3,
-            }),
+            1,
+            coeff(CoeffCdfSelector::BaseEob { tx_size: 2, ctx: 3 }),
             DEFAULT_COEFF_BASE_EOB_CDF[1][2][3].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BaseEobUv {
-                coeff_cdf_q_ctx: 2,
-                ctx: 3,
-            }),
+            2,
+            coeff(CoeffCdfSelector::BaseEobUv { ctx: 3 }),
             DEFAULT_COEFF_BASE_EOB_UV_CDF[2][3].as_slice(),
         ),
         (
+            1,
             coeff(CoeffCdfSelector::BaseBob {
-                coeff_cdf_q_ctx: 1,
                 tx_size_ctx: 2,
                 ctx: 1,
             }),
             DEFAULT_COEFF_BASE_BOB_CDF[1][2][1].as_slice(),
         ),
         (
+            3,
             coeff(CoeffCdfSelector::BaseIdtx {
-                coeff_cdf_q_ctx: 3,
                 tx_size_ctx: 2,
                 ctx: 6,
             }),
             DEFAULT_COEFF_BASE_IDTX_CDF[3][2][6].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BaseLfEob {
-                coeff_cdf_q_ctx: 3,
-                tx_size: 4,
-                ctx: 3,
-            }),
+            3,
+            coeff(CoeffCdfSelector::BaseLfEob { tx_size: 4, ctx: 3 }),
             DEFAULT_COEFF_BASE_LF_EOB_CDF[3][4][3].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BaseLfEobUv {
-                coeff_cdf_q_ctx: 1,
-                ctx: 3,
-            }),
+            1,
+            coeff(CoeffCdfSelector::BaseLfEobUv { ctx: 3 }),
             DEFAULT_COEFF_BASE_LF_EOB_UV_CDF[1][3].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::Br {
-                coeff_cdf_q_ctx: 2,
-                ctx: 6,
-            }),
+            2,
+            coeff(CoeffCdfSelector::Br { ctx: 6 }),
             DEFAULT_COEFF_BR_CDF[2][6].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BrUv {
-                coeff_cdf_q_ctx: 3,
-                ctx: 3,
-            }),
+            3,
+            coeff(CoeffCdfSelector::BrUv { ctx: 3 }),
             DEFAULT_COEFF_BR_UV_CDF[3][3].as_slice(),
         ),
         (
-            coeff(CoeffCdfSelector::BrLf {
-                coeff_cdf_q_ctx: 1,
-                ctx: 13,
-            }),
+            1,
+            coeff(CoeffCdfSelector::BrLf { ctx: 13 }),
             DEFAULT_COEFF_BR_LF_CDF[1][13].as_slice(),
         ),
         (
+            2,
             coeff(CoeffCdfSelector::BrIdtx {
-                coeff_cdf_q_ctx: 2,
                 tx_size_ctx: 1,
                 ctx: 6,
             }),
             DEFAULT_COEFF_BR_IDTX_CDF[2][1][6].as_slice(),
         ),
         (
+            0,
             coeff(CoeffCdfSelector::IdtxSign {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 2,
                 ctx: 8,
             }),
@@ -1956,9 +1886,11 @@ fn coeff_base_rows_load_defaults_and_select_by_family() {
         ),
     ];
 
-    for (selector, expected) in cases {
+    for (q, selector, expected) in cases {
         assert_eq!(
-            tile.with_row_mut(*selector, |row| row.to_vec()).unwrap(),
+            tile_for_q_context(*q)
+                .with_row_mut(*selector, |row| row.to_vec())
+                .unwrap(),
             *expected,
             "{selector:?}"
         );
@@ -1972,43 +1904,14 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
 
     let error_cases = [
         (
-            coeff(CoeffCdfSelector::Base {
-                coeff_cdf_q_ctx: 4,
-                tx_size: 0,
-                ctx: 0,
-                tcq_ctx: 0,
-            }),
-            TileCdfArray::CoeffBase,
-            "coeff_cdf_q_ctx",
-            4,
-            4,
-        ),
-        (
-            coeff(CoeffCdfSelector::BaseLfEob {
-                coeff_cdf_q_ctx: 0,
-                tx_size: 5,
-                ctx: 0,
-            }),
+            coeff(CoeffCdfSelector::BaseLfEob { tx_size: 5, ctx: 0 }),
             TileCdfArray::CoeffBaseLfEob,
             "tx_size",
             5,
             5,
         ),
         (
-            coeff(CoeffCdfSelector::BasePh {
-                coeff_cdf_q_ctx: 4,
-                ctx: 0,
-            }),
-            TileCdfArray::CoeffBasePh,
-            "coeff_cdf_q_ctx",
-            4,
-            4,
-        ),
-        (
-            coeff(CoeffCdfSelector::BasePh {
-                coeff_cdf_q_ctx: 0,
-                ctx: 5,
-            }),
+            coeff(CoeffCdfSelector::BasePh { ctx: 5 }),
             TileCdfArray::CoeffBasePh,
             "ctx",
             5,
@@ -2016,7 +1919,6 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
         ),
         (
             coeff(CoeffCdfSelector::BaseBob {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 3,
                 ctx: 0,
             }),
@@ -2027,7 +1929,6 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
         ),
         (
             coeff(CoeffCdfSelector::BaseBob {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 3,
             }),
@@ -2038,7 +1939,6 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
         ),
         (
             coeff(CoeffCdfSelector::BaseIdtx {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 7,
             }),
@@ -2048,10 +1948,7 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
             7,
         ),
         (
-            coeff(CoeffCdfSelector::BaseUv {
-                coeff_cdf_q_ctx: 0,
-                ctx: 12,
-            }),
+            coeff(CoeffCdfSelector::BaseUv { ctx: 12 }),
             TileCdfArray::CoeffBaseUv,
             "ctx",
             12,
@@ -2059,7 +1956,6 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
         ),
         (
             coeff(CoeffCdfSelector::Base {
-                coeff_cdf_q_ctx: 0,
                 tx_size: 0,
                 ctx: 0,
                 tcq_ctx: 2,
@@ -2070,10 +1966,7 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
             2,
         ),
         (
-            coeff(CoeffCdfSelector::BrLf {
-                coeff_cdf_q_ctx: 0,
-                ctx: 14,
-            }),
+            coeff(CoeffCdfSelector::BrLf { ctx: 14 }),
             TileCdfArray::CoeffBrLf,
             "ctx",
             14,
@@ -2081,7 +1974,6 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
         ),
         (
             coeff(CoeffCdfSelector::BrIdtx {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 7,
             }),
@@ -2092,7 +1984,6 @@ fn coeff_base_selectors_reject_out_of_range_axes() {
         ),
         (
             coeff(CoeffCdfSelector::IdtxSign {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 9,
             }),
@@ -2119,45 +2010,45 @@ fn coeff_base_tile_copy_does_not_alias_the_frame() {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
 
-    tile.rows.block.coeff.coeff_base[1][2][3][1] = [12_000, 13_000, 14_000, 7, 9];
-    tile.rows.block.coeff.coeff_base_ph[2][4] = [12_000, 13_000, 14_000, 8, 10];
-    tile.rows.block.coeff.coeff_base_lf_uv[0][11] = [11_000, 12_000, 13_000, 14_000, 15_000, 5, 8];
-    tile.rows.block.coeff.coeff_br_lf[1][13] = [15_000, 16_000, 17_000, 6, 12];
-    tile.rows.block.coeff.coeff_base_bob[1][2][1] = [12_000, 13_000, 8, 10];
-    tile.rows.block.coeff.coeff_base_idtx[3][2][6] = [12_000, 13_000, 14_000, 8, 10];
-    tile.rows.block.coeff.coeff_br_idtx[2][1][6] = [12_000, 13_000, 14_000, 8, 10];
-    tile.rows.block.coeff.idtx_sign[0][2][8] = [12_000, 8, 10];
+    tile.rows.block.coeff.coeff_base[2][3][1] = [12_000, 13_000, 14_000, 7, 9];
+    tile.rows.block.coeff.coeff_base_ph[4] = [12_000, 13_000, 14_000, 8, 10];
+    tile.rows.block.coeff.coeff_base_lf_uv[11] = [11_000, 12_000, 13_000, 14_000, 15_000, 5, 8];
+    tile.rows.block.coeff.coeff_br_lf[13] = [15_000, 16_000, 17_000, 6, 12];
+    tile.rows.block.coeff.coeff_base_bob[2][1] = [12_000, 13_000, 8, 10];
+    tile.rows.block.coeff.coeff_base_idtx[2][6] = [12_000, 13_000, 14_000, 8, 10];
+    tile.rows.block.coeff.coeff_br_idtx[1][6] = [12_000, 13_000, 14_000, 8, 10];
+    tile.rows.block.coeff.idtx_sign[2][8] = [12_000, 8, 10];
 
     assert_eq!(
-        frame.rows.block.coeff.coeff_base[1][2][3][1],
-        DEFAULT_COEFF_BASE_CDF[1][2][3][1]
+        frame.rows.block.coeff.coeff_base[2][3][1],
+        DEFAULT_COEFF_BASE_CDF[0][2][3][1]
     );
     assert_eq!(
-        frame.rows.block.coeff.coeff_base_ph[2][4],
-        DEFAULT_COEFF_BASE_PH_CDF[2][4]
+        frame.rows.block.coeff.coeff_base_ph[4],
+        DEFAULT_COEFF_BASE_PH_CDF[0][4]
     );
     assert_eq!(
-        frame.rows.block.coeff.coeff_base_lf_uv[0][11],
+        frame.rows.block.coeff.coeff_base_lf_uv[11],
         DEFAULT_COEFF_BASE_LF_UV_CDF[0][11]
     );
     assert_eq!(
-        frame.rows.block.coeff.coeff_br_lf[1][13],
-        DEFAULT_COEFF_BR_LF_CDF[1][13]
+        frame.rows.block.coeff.coeff_br_lf[13],
+        DEFAULT_COEFF_BR_LF_CDF[0][13]
     );
     assert_eq!(
-        frame.rows.block.coeff.coeff_base_bob[1][2][1],
-        DEFAULT_COEFF_BASE_BOB_CDF[1][2][1]
+        frame.rows.block.coeff.coeff_base_bob[2][1],
+        DEFAULT_COEFF_BASE_BOB_CDF[0][2][1]
     );
     assert_eq!(
-        frame.rows.block.coeff.coeff_base_idtx[3][2][6],
-        DEFAULT_COEFF_BASE_IDTX_CDF[3][2][6]
+        frame.rows.block.coeff.coeff_base_idtx[2][6],
+        DEFAULT_COEFF_BASE_IDTX_CDF[0][2][6]
     );
     assert_eq!(
-        frame.rows.block.coeff.coeff_br_idtx[2][1][6],
-        DEFAULT_COEFF_BR_IDTX_CDF[2][1][6]
+        frame.rows.block.coeff.coeff_br_idtx[1][6],
+        DEFAULT_COEFF_BR_IDTX_CDF[0][1][6]
     );
     assert_eq!(
-        frame.rows.block.coeff.idtx_sign[0][2][8],
+        frame.rows.block.coeff.idtx_sign[2][8],
         DEFAULT_IDTX_SIGN_CDF[0][2][8]
     );
 }
@@ -2166,17 +2057,12 @@ fn coeff_base_tile_copy_does_not_alias_the_frame() {
 fn coeff_base_row_hands_off_to_symbol_decoder_update_mode() {
     let frame = FrameCdfSubset::from_defaults();
     let selectors = [
-        coeff(CoeffCdfSelector::BasePh {
-            coeff_cdf_q_ctx: 1,
-            ctx: 3,
-        }),
+        coeff(CoeffCdfSelector::BasePh { ctx: 3 }),
         coeff(CoeffCdfSelector::BaseIdtx {
-            coeff_cdf_q_ctx: 1,
             tx_size_ctx: 2,
             ctx: 3,
         }),
         coeff(CoeffCdfSelector::IdtxSign {
-            coeff_cdf_q_ctx: 1,
             tx_size_ctx: 2,
             ctx: 3,
         }),
@@ -2216,8 +2102,12 @@ fn frame_cdf_reset_preserves_rows_backing() {
     assert_eq!(std::ptr::from_ref(reused.rows.as_ref()), rows);
     assert_eq!(reused, source);
 
-    reused.reset_to_defaults();
+    reused.reset_to_defaults(0);
 
     assert_eq!(std::ptr::from_ref(reused.rows.as_ref()), rows);
     assert_eq!(reused, FrameCdfSubset::from_defaults());
+
+    reused.reset_to_defaults(255);
+
+    assert_eq!(reused, source);
 }

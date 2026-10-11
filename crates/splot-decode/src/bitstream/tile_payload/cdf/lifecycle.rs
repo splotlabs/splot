@@ -26,9 +26,8 @@ impl FrameCdfSubset {
         Self { rows }
     }
 
-    pub(crate) fn reset_output_from(&mut self, frame: &Self, base_q_idx: u32) {
+    pub(crate) fn reset_output_from(&mut self, frame: &Self) {
         self.rows.clone_from(&frame.rows);
-        self.replicate_coeff_q_context_for_base_q(base_q_idx);
     }
 
     pub(crate) fn reset_saved_from_tile(
@@ -52,12 +51,11 @@ impl FrameCdfSubset {
         }
     }
 
-    pub(crate) fn finish_saved(&mut self, frame: &Self, saved: bool, base_q_idx: u32) {
+    pub(crate) fn finish_saved(&mut self, frame: &Self, saved: bool) {
         if !saved {
             self.rows.clone_from(&frame.rows);
         }
         self.rows.scale_counts_for_frame_end_update();
-        self.replicate_coeff_q_context_for_base_q(base_q_idx);
     }
 }
 

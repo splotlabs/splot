@@ -126,6 +126,14 @@ impl CoeffQuantStateAccumulator {
         }
     }
 
+    /// Sets a TCQ state whose `(tcqState >> 1) & 1` is `q0`, for a pass
+    /// that skips zero levels and takes each entry's state from the base
+    /// pass. [`Self::apply_entry`] reads only that bit before the next call
+    /// sets it again.
+    pub(crate) fn set_tcq_q0(&mut self, q0: bool) {
+        self.tcq_state = usize::from(q0) << 1;
+    }
+
     pub(crate) fn apply_entry(
         &mut self,
         index: usize,

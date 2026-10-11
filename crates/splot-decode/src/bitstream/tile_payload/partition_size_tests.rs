@@ -134,10 +134,22 @@ fn block_geometry_helpers_use_generated_tables() {
     assert_eq!(block(BLOCK_16X32).mi_width_log2().unwrap(), 2);
     assert_eq!(block(BLOCK_16X32).mi_height_log2().unwrap(), 3);
     assert_eq!(
-        BlockSize::from_4x4_dimensions(8, 8).unwrap(),
+        BlockSize::from_4x4_dimensions(8, 8),
         Some(block(BLOCK_32X32))
     );
-    assert_eq!(BlockSize::from_4x4_dimensions(32, 8).unwrap(), None);
+    assert_eq!(BlockSize::from_4x4_dimensions(32, 8), None);
+}
+
+#[test]
+fn from_4x4_dimensions_matches_a_table_search() {
+    for width in 0..=130 {
+        for height in 0..=130 {
+            let searched = (0..29).map(block).find(|size| {
+                size.num_4x4_wide().unwrap() == width && size.num_4x4_high().unwrap() == height
+            });
+            assert_eq!(BlockSize::from_4x4_dimensions(width, height), searched);
+        }
+    }
 }
 
 #[test]

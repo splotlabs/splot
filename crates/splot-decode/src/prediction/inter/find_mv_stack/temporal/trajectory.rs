@@ -3,22 +3,20 @@
 
 use splot_recon::math::round2_signed_i32;
 
-use super::{
-    Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint, project_tmvp_mv,
-    temporal_grid_index,
-};
+use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint, temporal_grid_index};
 
 type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
 
-const INVALID_PROJECTION_OFFSET: i32 = i32::MIN;
 const MAX_TRAJECTORY_REFERENCES: usize = 7;
 pub(super) const INVALID_TRAJECTORY_MV: Mv = Mv {
     row: i32::MIN,
     col: 0,
 };
 
+/// Word-aligned, so the walk writes both components with one store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C, align(4))]
 pub(super) struct PackedTrajectoryMv {
     row: i16,
     col: i16,
@@ -44,8 +42,9 @@ impl PackedTrajectoryMv {
         }
     }
 
+    /// Stored vectors are clamped to `REFMVS_LIMIT`, so only `INVALID` has this row.
     fn unpack(self) -> Option<Mv> {
-        (self != Self::INVALID).then_some(Mv {
+        (self.row != Self::INVALID.row).then_some(Mv {
             row: i32::from(self.row),
             col: i32::from(self.col),
         })
@@ -81,12 +80,15 @@ impl PackedPosition {
 pub(super) struct TrajectoryPositions {
     phases: PhasePositions,
     mask: u8,
+    /// The scratch epoch that wrote this record; any other epoch reads empty.
+    epoch: u8,
 }
 
 impl TrajectoryPositions {
     const EMPTY: Self = Self {
         phases: [PackedPosition::INVALID; 3],
         mask: 0,
+        epoch: 0,
     };
 }
 
@@ -99,7 +101,8 @@ pub(super) struct TrajectoryMotionField {
 
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        let (width8, height8, cells) =
+            allocate_temporal_grid(mi_rows, mi_cols, PackedTrajectoryMv::INVALID)?;
         Some(Self {
             width8,
             height8,
@@ -308,7 +311,7 @@ impl TrajectoryState {
             scratch.reset(cells, reference_count)?;
         }
         let fields = grids.fields.next().unwrap_or_default();
-        grids.band(fields, scratch, 0, cells)
+        Some(grids.band(fields, scratch, 0, cells))
     }
 
     pub(super) fn fill_gaps(&mut self) {
@@ -336,8 +339,10 @@ impl TrajectoryState {
 pub(super) struct TrajectoryBand<'a> {
     fields: &'a mut [PackedTrajectoryMv],
     reference_count: usize,
-    positions: BandSlices<'a, TrajectoryPositions>,
-    projection_offsets: &'a mut [i32],
+    /// Every reference's position records, one plane of `cells` per reference.
+    positions: &'a mut [TrajectoryPositions],
+    cells: usize,
+    epoch: u8,
     row_base: usize,
     step: usize,
     step_mask: usize,
@@ -346,46 +351,6 @@ pub(super) struct TrajectoryBand<'a> {
     unit_shift: u32,
     width8: usize,
     height8: usize,
-}
-
-struct BandSlices<'a, T> {
-    slots: [Option<&'a mut [T]>; MAX_TRAJECTORY_REFERENCES],
-    len: usize,
-}
-
-impl<'a, T> BandSlices<'a, T> {
-    fn new() -> Self {
-        Self {
-            slots: core::array::from_fn(|_| None),
-            len: 0,
-        }
-    }
-
-    fn from_chunks(cells: &'a mut [T], chunk_size: usize) -> Option<Self> {
-        let mut slices = Self::new();
-        for chunk in cells.chunks_mut(chunk_size.max(1)) {
-            slices.push(chunk)?;
-        }
-        Some(slices)
-    }
-
-    fn push(&mut self, cells: &'a mut [T]) -> Option<()> {
-        *self.slots.get_mut(self.len)? = Some(cells);
-        self.len += 1;
-        Some(())
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn get(&self, index: usize) -> Option<&[T]> {
-        self.slots.get(index)?.as_deref()
-    }
-
-    fn get_mut(&mut self, index: usize) -> Option<&mut [T]> {
-        self.slots.get_mut(index)?.as_deref_mut()
-    }
 }
 
 /// The row bands of a [`TrajectoryState`]'s grid, lent out one at a time.
@@ -415,7 +380,7 @@ impl<'a> TrajectoryGrids<'a> {
         let cells = rows.checked_mul(self.width8)?;
         scratch.reset(cells, self.reference_count)?;
         let fields = self.fields.next().unwrap_or_default();
-        self.band(fields, scratch, row_base, cells)
+        Some(self.band(fields, scratch, row_base, cells))
     }
 
     fn band<'s>(
@@ -424,12 +389,13 @@ impl<'a> TrajectoryGrids<'a> {
         scratch: &'s mut OwnedTrajectoryScratch,
         row_base: usize,
         cells: usize,
-    ) -> Option<TrajectoryBand<'s>> {
-        Some(TrajectoryBand {
+    ) -> TrajectoryBand<'s> {
+        TrajectoryBand {
             fields,
             reference_count: self.reference_count,
-            positions: BandSlices::from_chunks(&mut scratch.positions, cells)?,
-            projection_offsets: &mut scratch.projection_offsets,
+            positions: &mut scratch.positions,
+            cells,
+            epoch: scratch.epoch,
             row_base,
             step: self.step,
             step_mask: self.step - 1,
@@ -438,14 +404,14 @@ impl<'a> TrajectoryGrids<'a> {
             unit_shift: self.unit_size8.trailing_zeros(),
             width8: self.width8,
             height8: self.height8,
-        })
+        }
     }
 }
 
 pub(super) struct OwnedTrajectoryBand {
     fields: Vec<PackedTrajectoryMv>,
     positions: Vec<TrajectoryPositions>,
-    projection_offsets: Vec<i32>,
+    epoch: u8,
     cells_per_reference: usize,
     reference_count: usize,
     row_base: usize,
@@ -459,20 +425,24 @@ pub(super) struct OwnedTrajectoryBand {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct OwnedTrajectoryScratch {
     pub(super) positions: Vec<TrajectoryPositions>,
-    pub(super) projection_offsets: Vec<i32>,
+    /// Stamps this band's position records, so a new band clears them by
+    /// moving to the next epoch instead of rewriting every record.
+    pub(super) epoch: u8,
 }
 
 impl OwnedTrajectoryScratch {
     /// Clears the scratch for a band of `cells` cells per reference.
     fn reset(&mut self, cells: usize, reference_count: usize) -> Option<()> {
         let total = cells.checked_mul(reference_count)?;
-        self.positions.clear();
-        self.positions.try_reserve_exact(total).ok()?;
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.positions.fill(TrajectoryPositions::EMPTY);
+            self.epoch = 1;
+        }
+        self.positions
+            .try_reserve_exact(total.saturating_sub(self.positions.len()))
+            .ok()?;
         self.positions.resize(total, TrajectoryPositions::EMPTY);
-        self.projection_offsets.clear();
-        self.projection_offsets.try_reserve_exact(cells).ok()?;
-        self.projection_offsets
-            .resize(cells, INVALID_PROJECTION_OFFSET);
         Some(())
     }
 }
@@ -545,7 +515,7 @@ impl OwnedTrajectoryBand {
         Ok(Self {
             fields,
             positions: core::mem::take(&mut scratch.positions),
-            projection_offsets: core::mem::take(&mut scratch.projection_offsets),
+            epoch: scratch.epoch,
             cells_per_reference: cell_count,
             reference_count,
             row_base,
@@ -557,14 +527,14 @@ impl OwnedTrajectoryBand {
         })
     }
 
-    pub(super) fn as_band(&mut self) -> Option<TrajectoryBand<'_>> {
+    pub(super) fn as_band(&mut self) -> TrajectoryBand<'_> {
         let unit_mask = self.unit_size8 - 1;
-        let cells_per_reference = self.cells_per_reference.max(1);
-        Some(TrajectoryBand {
+        TrajectoryBand {
             fields: &mut self.fields,
             reference_count: self.reference_count,
-            positions: BandSlices::from_chunks(&mut self.positions, cells_per_reference)?,
-            projection_offsets: &mut self.projection_offsets,
+            positions: &mut self.positions,
+            cells: self.cells_per_reference,
+            epoch: self.epoch,
             row_base: self.row_base,
             step: self.step,
             step_mask: self.step - 1,
@@ -573,7 +543,7 @@ impl OwnedTrajectoryBand {
             unit_shift: self.unit_size8.trailing_zeros(),
             width8: self.width8,
             height8: self.height8,
-        })
+        }
     }
 
     pub(super) fn finish(mut self, scratch: &mut OwnedTrajectoryScratch) -> OwnedTrajectoryFields {
@@ -591,12 +561,25 @@ impl OwnedTrajectoryBand {
             }
         }
         scratch.positions = core::mem::take(&mut self.positions);
-        scratch.projection_offsets = core::mem::take(&mut self.projection_offsets);
         OwnedTrajectoryFields {
             cells: core::mem::take(&mut self.fields),
             reference_count: self.reference_count,
         }
     }
+}
+
+/// The geometry the § 7.9.3 lane pass indexes a [`TrajectoryBand`] with.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct BandGeometry {
+    pub(super) row_base: usize,
+    pub(super) width8: usize,
+    pub(super) height8: usize,
+    /// Cells per reference.
+    pub(super) cells: usize,
+    pub(super) unit_size8: usize,
+    /// Columns a trajectory window reaches past its TMVP unit on each side.
+    pub(super) col_offset8: usize,
+    pub(super) reference_count: usize,
 }
 
 impl TrajectoryBand<'_> {
@@ -605,53 +588,93 @@ impl TrajectoryBand<'_> {
             .map(|row| row * self.width8 + x8)
     }
 
-    fn positions_at(&self, reference: usize, at: Position) -> Option<&TrajectoryPositions> {
-        let index = self.band_index(at.0, at.1)?;
-        self.positions.get(reference)?.get(index)
+    pub(super) fn geometry(&self) -> BandGeometry {
+        BandGeometry {
+            row_base: self.row_base,
+            width8: self.width8,
+            height8: self.height8,
+            cells: self.cells,
+            unit_size8: self.unit_size8,
+            col_offset8: self.col_offset8(),
+            reference_count: self.reference_count,
+        }
+    }
+
+    /// The slot of one reference's position record at a band-relative cell.
+    fn position_slot(&self, reference: usize, index: usize) -> Option<usize> {
+        (index < self.cells).then(|| self.slot(reference, index))
+    }
+
+    /// The slot of one reference's position record at a band cell the caller
+    /// keeps below `cells`. A reference past `reference_count` reaches no record.
+    pub(super) fn slot(&self, reference: usize, index: usize) -> usize {
+        reference * self.cells + index
+    }
+
+    /// The slot of `reference`'s record at `(y8, x8)`, or a slot past every
+    /// record when row `y8` is outside the band. A column `x8 + dx` below
+    /// `width8` has its record at this slot plus `dx`.
+    pub(super) fn row_slot(&self, reference: usize, y8: usize, x8: usize) -> usize {
+        match y8.checked_sub(self.row_base) {
+            Some(row) if row * self.width8 < self.cells => {
+                self.slot(reference, row * self.width8 + x8)
+            }
+            _ => usize::MAX / 2,
+        }
+    }
+
+    /// The positions this band recorded in a slot; a record from an earlier
+    /// band reads as none.
+    fn positions_at_slot(&self, slot: usize) -> Option<TrajectoryPositions> {
+        let slots = self.positions.get(slot)?;
+        (slots.epoch == self.epoch && slots.mask != 0).then_some(*slots)
+    }
+
+    #[cfg(test)]
+    fn positions_at(&self, reference: usize, at: Position) -> Option<TrajectoryPositions> {
+        self.positions_at_slot(self.position_slot(reference, self.band_index(at.0, at.1)?)?)
     }
 
     /// Reads one reference's trajectory vector at a band-relative cell.
     ///
     /// See [`TrajectoryState::cells`] for why the reference is the minor axis.
     /// A reference past `reference_count` addresses a later cell's slot rather
-    /// than running off the grid, so callers carry that bound: `check_intersection`
-    /// tests it outright, and `observe_projection_at` inherits it from the
-    /// reference tables its `source` and `end` are resolved through.
-    fn trajectory_mv(&self, reference: usize, index: usize) -> Mv {
+    /// than running off the grid, so callers carry that bound: the scan admits
+    /// only references below it, and `observe_projection_at` inherits it from
+    /// the reference tables its `source` and `end` are resolved through.
+    fn trajectory_mv(&self, reference: usize, index: usize) -> Option<Mv> {
         debug_assert!(reference < self.reference_count);
         self.fields
             .get(index * self.reference_count + reference)
             .copied()
             .and_then(PackedTrajectoryMv::unpack)
-            .unwrap_or(INVALID_TRAJECTORY_MV)
     }
 
-    fn set_position_at(
-        &mut self,
-        reference: usize,
-        index: usize,
-        phase: usize,
-        position: Position,
-    ) {
+    fn set_position_slot(&mut self, slot: usize, phase: usize, position: Position) {
         let Some(position) = PackedPosition::new(position) else {
             return;
         };
-        if let Some(cell) = self
-            .positions
-            .get_mut(reference)
-            .and_then(|field| field.get_mut(index))
-            && let Some(slot) = cell.phases.get_mut(phase)
-        {
-            *slot = position;
-            cell.mask |= 1 << phase;
+        let epoch = self.epoch;
+        if let Some(cell) = self.positions.get_mut(slot) {
+            if cell.epoch != epoch {
+                cell.epoch = epoch;
+                cell.mask = 0;
+            }
+            if let Some(slot) = cell.phases.get_mut(phase) {
+                *slot = position;
+                cell.mask |= 1 << phase;
+            }
         }
     }
 
     #[allow(clippy::inline_always, reason = "measured trajectory hot path")]
     #[inline(always)]
     fn set_position(&mut self, reference: usize, at: Position, phase: usize, position: Position) {
-        if let Some(index) = self.band_index(at.0, at.1) {
-            self.set_position_at(reference, index, phase, position);
+        if let Some(slot) = self
+            .band_index(at.0, at.1)
+            .and_then(|index| self.position_slot(reference, index))
+        {
+            self.set_position_slot(slot, phase, position);
         }
     }
 
@@ -667,14 +690,18 @@ impl TrajectoryBand<'_> {
         value & !self.step_mask
     }
 
-    fn position_bounds(&self, base: Position) -> (usize, usize, usize, usize) {
-        let base_y = self.unit_base(base.0);
-        let base_x = self.unit_base(base.1);
-        let col_offset = if self.step == 1 {
+    fn col_offset8(&self) -> usize {
+        if self.step == 1 {
             self.unit_size8 / 2
         } else {
             self.unit_size8
-        };
+        }
+    }
+
+    fn position_bounds(&self, base: Position) -> (usize, usize, usize, usize) {
+        let base_y = self.unit_base(base.0);
+        let base_x = self.unit_base(base.1);
+        let col_offset = self.col_offset8();
         (
             base_y,
             base_y + self.unit_size8,
@@ -711,6 +738,9 @@ impl TrajectoryBand<'_> {
         mv
     }
 
+    /// The § 7.9.8 intersection check of one scanned cell, with the trajectory
+    /// end sampled here and the scan's guards.
+    #[cfg(test)]
     pub(super) fn check_intersection(
         &mut self,
         source: usize,
@@ -720,85 +750,82 @@ impl TrajectoryBand<'_> {
         mv: Mv,
     ) -> Option<Position> {
         let end = end.filter(|&end| end < self.reference_count)?;
-        if source >= self.reference_count
-            || source >= self.positions.len()
-            || end >= self.positions.len()
-            || y8 >= self.height8
-            || x8 >= self.width8
-        {
+        if source >= self.reference_count || y8 >= self.height8 || x8 >= self.width8 {
             return None;
         }
-        let source_slots = self
-            .positions_at(source, (y8, x8))
-            .copied()
-            .unwrap_or(TrajectoryPositions::EMPTY);
-        let mut source_mask = source_slots.mask;
-        while source_mask != 0 {
-            let phase = source_mask.trailing_zeros() as usize;
-            source_mask &= source_mask - 1;
-            let Some(&packed) = source_slots.phases.get(phase) else {
-                break;
-            };
-            let trajectory = (packed.y as usize, packed.x as usize);
-            let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
-                continue;
-            };
-            if self.trajectory_mv(end, traj_index) != INVALID_TRAJECTORY_MV {
-                continue;
-            }
-            let source_mv = self.trajectory_mv(source, traj_index);
-            if source_mv == INVALID_TRAJECTORY_MV {
-                continue;
-            }
-            let bounds = self.position_bounds(trajectory);
-            let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
-            if let Some(position) = self
-                .sampled_position(trajectory.0, trajectory.1, end_mv)
-                .filter(|&position| Self::position_allowed(position, bounds))
-            {
-                self.set_position(end, position, phase, trajectory);
-            }
+        if let Some(slot) = self
+            .band_index(y8, x8)
+            .and_then(|index| self.position_slot(source, index))
+        {
+            self.extend_trajectories(source, end, slot, None, mv);
         }
-
         let end_position = self.sampled_position(y8, x8, mv)?;
-        if self.unit_base(end_position.0) != self.unit_base(y8) {
-            return Some(end_position);
-        }
-        let end_slots = self
-            .positions_at(end, end_position)
-            .copied()
-            .unwrap_or(TrajectoryPositions::EMPTY);
-        let mut end_mask = end_slots.mask;
-        while end_mask != 0 {
-            let phase = end_mask.trailing_zeros() as usize;
-            end_mask &= end_mask - 1;
-            let Some(&packed) = end_slots.phases.get(phase) else {
-                break;
+        if self.unit_base(end_position.0) == self.unit_base(y8)
+            && let Some(slot) = self
+                .band_index(end_position.0, end_position.1)
+                .and_then(|index| self.position_slot(end, index))
+        {
+            let back = Mv {
+                row: -mv.row,
+                col: -mv.col,
             };
-            let trajectory = (packed.y as usize, packed.x as usize);
-            let bounds = self.position_bounds(trajectory);
-            if !Self::position_allowed((y8, x8), bounds) {
-                continue;
-            }
-            let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
-                continue;
-            };
-            if self.trajectory_mv(source, traj_index) != INVALID_TRAJECTORY_MV {
-                continue;
-            }
-            let end_mv = self.trajectory_mv(end, traj_index);
-            if end_mv == INVALID_TRAJECTORY_MV {
-                continue;
-            }
-            let source_mv = self.set_field_at(source, traj_index, subtract_mv(end_mv, mv));
-            if let Some(position) = self
-                .sampled_position(trajectory.0, trajectory.1, source_mv)
-                .filter(|&position| Self::position_allowed(position, bounds))
-            {
-                self.set_position(source, position, phase, trajectory);
-            }
+            self.extend_trajectories(end, source, slot, Some(x8), back);
         }
         Some(end_position)
+    }
+
+    /// Extends to `to` every trajectory recorded for `from` in the record
+    /// `slot`, moving each by `delta`: `from` the source and `to` the end for
+    /// the scanned cell's record, and the reverse, with the negated vector, for
+    /// the end record the scanned cell's vector reaches. The caller keeps
+    /// `from` and `to` below `reference_count`.
+    ///
+    /// `column` is the scanned column for the reverse walk. Every write keeps a
+    /// record in the TMVP unit row of the trajectories it holds, and the caller
+    /// passes an end record in the scanned cell's unit row, so only the column
+    /// is tested against a trajectory's window.
+    #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
+    #[inline(always)]
+    pub(super) fn extend_trajectories(
+        &mut self,
+        from: usize,
+        to: usize,
+        slot: usize,
+        column: Option<usize>,
+        delta: Mv,
+    ) {
+        let Some(slots) = self.positions_at_slot(slot) else {
+            return;
+        };
+        let mut mask = slots.mask;
+        while mask != 0 {
+            let phase = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let Some(&packed) = slots.phases.get(phase) else {
+                break;
+            };
+            let trajectory = (packed.y as usize, packed.x as usize);
+            let bounds = self.position_bounds(trajectory);
+            if column.is_some_and(|x8| x8 < bounds.2 || x8 >= bounds.3) {
+                continue;
+            }
+            let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
+                continue;
+            };
+            if self.trajectory_mv(to, traj_index).is_some() {
+                continue;
+            }
+            let Some(from_mv) = self.trajectory_mv(from, traj_index) else {
+                continue;
+            };
+            let to_mv = self.set_field_at(to, traj_index, add_mv(from_mv, delta));
+            if let Some(position) = self
+                .sampled_position(trajectory.0, trajectory.1, to_mv)
+                .filter(|&position| Self::position_allowed(position, bounds))
+            {
+                self.set_position(to, position, phase, trajectory);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -807,7 +834,6 @@ impl TrajectoryBand<'_> {
         &mut self,
         source: usize,
         end: Option<usize>,
-        target: Option<usize>,
         y8: usize,
         x8: usize,
         mv: Mv,
@@ -816,7 +842,7 @@ impl TrajectoryBand<'_> {
         backward: bool,
     ) {
         let reference_offset = reference_offset.abs();
-        if reference_offset > super::MAX_FRAME_DISTANCE {
+        if reference_offset > super::MAX_FRAME_DISTANCE || y8 >= self.height8 || x8 >= self.width8 {
             return;
         }
         let numerator = if backward {
@@ -824,7 +850,7 @@ impl TrajectoryBand<'_> {
         } else {
             source_to_current
         };
-        let projected = project_tmvp_mv(mv, numerator, reference_offset);
+        let projected = super::project_tmvp_mv(mv, numerator, reference_offset);
         let Some(position) = self.sampled_position(y8, x8, projected) else {
             return;
         };
@@ -833,81 +859,49 @@ impl TrajectoryBand<'_> {
             return;
         }
         let target_position = self.sampled_position(y8, x8, mv);
+        let end_slot = end
+            .zip(target_position)
+            .filter(|&(_, target)| Self::position_allowed(target, bounds))
+            .and_then(|(end, target)| {
+                self.position_slot(end, self.band_index(target.0, target.1)?)
+            });
         self.observe_projection_at(
             source,
             end,
-            target,
-            y8,
-            x8,
-            mv,
+            self.row_slot(source, y8, x8),
+            self.band_index(position.0, position.1)
+                .unwrap_or(usize::MAX),
             projected,
+            || super::project_tmvp_mv(mv, reference_offset - numerator, reference_offset),
             position,
-            target_position,
-            source_to_current,
-            reference_offset,
-            backward,
+            end_slot,
         );
     }
 
-    /// Reports whether a projected position still admits a § 7.9.8 observation.
+    /// Records the § 7.9.3 trajectory observation of a projection that replaced
+    /// the motion field cell at the projected position, band cell `index`.
     ///
-    /// [`Self::observe_projection_at`] settles this from data the § 7.9.3 scan
-    /// already holds, and settles it against the caller 59% of the time, so the
-    /// scan tests it here instead: the rejected majority never marshals that
-    /// call's arguments or builds its frame. Returning `false` is exactly the
-    /// condition under which the call would return having written nothing.
-    #[allow(clippy::inline_always, reason = "measured trajectory scan guard")]
+    /// `source_slot` is the scanned cell's record for `source`, and `end_slot`
+    /// the trajectory end's record for `end` when the end lies inside the
+    /// position's window; `end_mv` is evaluated only for a recorded observation.
+    #[allow(clippy::too_many_arguments, clippy::inline_always)]
     #[inline(always)]
-    pub(super) fn admits_projection(
-        &self,
-        end: Option<usize>,
-        target: Option<usize>,
-        position: Position,
-        reference_offset: i32,
-    ) -> bool {
-        let Some(index) = self.band_index(position.0, position.1) else {
-            return false;
-        };
-        let Some(&recorded_offset) = self.projection_offsets.get(index) else {
-            return false;
-        };
-        recorded_offset == INVALID_PROJECTION_OFFSET
-            || (target.is_some() && target == end && recorded_offset != reference_offset)
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn observe_projection_at(
         &mut self,
         source: usize,
         end: Option<usize>,
-        target: Option<usize>,
-        y8: usize,
-        x8: usize,
-        mv: Mv,
+        source_slot: usize,
+        index: usize,
         projected: Mv,
+        end_mv: impl FnOnce() -> Mv,
         position: Position,
-        target_position: Option<Position>,
-        source_to_current: i32,
-        reference_offset: i32,
-        backward: bool,
+        end_slot: Option<usize>,
     ) {
-        if y8 >= self.height8 || x8 >= self.width8 {
+        if index >= self.cells {
             return;
         }
-        let Some(index) = self.band_index(position.0, position.1) else {
-            return;
-        };
-        let Some(recorded_offset) = self.projection_offsets.get_mut(index) else {
-            return;
-        };
-        let replace = *recorded_offset == INVALID_PROJECTION_OFFSET
-            || (target.is_some() && target == end && *recorded_offset != reference_offset);
-        if !replace {
-            return;
-        }
-        *recorded_offset = reference_offset;
         let phase = self.phase(position.1);
-        self.set_position(source, (y8, x8), phase, position);
+        self.set_position_slot(source_slot, phase, position);
         self.set_field_at(
             source,
             index,
@@ -919,19 +913,9 @@ impl TrajectoryBand<'_> {
         let Some(end) = end else {
             return;
         };
-        let numerator = if backward {
-            -source_to_current
-        } else {
-            source_to_current
-        };
-        let end_mv = project_tmvp_mv(mv, reference_offset - numerator, reference_offset);
-        self.set_field_at(end, index, end_mv);
-        let Some(target_position) = target_position else {
-            return;
-        };
-        let bounds = self.position_bounds(position);
-        if Self::position_allowed(target_position, bounds) {
-            self.set_position(end, target_position, phase, position);
+        self.set_field_at(end, index, end_mv());
+        if let Some(end_slot) = end_slot {
+            self.set_position_slot(end_slot, phase, position);
         }
     }
 }
@@ -1002,17 +986,11 @@ fn fill_band_field_gaps(
     }
 }
 
+/// Operands are stored (`REFMVS_LIMIT`) or decompressed (at most 2048) vectors.
 fn add_mv(a: Mv, b: Mv) -> Mv {
     Mv {
-        row: a.row.saturating_add(b.row),
-        col: a.col.saturating_add(b.col),
-    }
-}
-
-fn subtract_mv(a: Mv, b: Mv) -> Mv {
-    Mv {
-        row: a.row.saturating_sub(b.row),
-        col: a.col.saturating_sub(b.col),
+        row: a.row + b.row,
+        col: a.col + b.col,
     }
 }
 
@@ -1045,7 +1023,6 @@ mod tests {
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
         assert_eq!(std::mem::size_of::<TrajectoryPositions>(), 14);
-        assert_eq!(std::mem::size_of::<i32>(), 4);
         assert_eq!(
             PackedPosition::new((8191, 8191)).and_then(PackedPosition::unpack),
             Some((8191, 8191))
@@ -1076,7 +1053,6 @@ mod tests {
         state.whole_band().unwrap().observe_projection(
             1,
             Some(0),
-            None,
             1,
             1,
             Mv { row: 16, col: 32 },
@@ -1099,7 +1075,7 @@ mod tests {
         state
             .whole_band()
             .unwrap()
-            .observe_projection(0, None, None, 1, 1, Mv::ZERO, 2, 0, false);
+            .observe_projection(0, None, 1, 1, Mv::ZERO, 2, 0, false);
 
         assert_eq!(state.trajectory_cell(0, 1, 1), Some(Mv::ZERO));
     }
@@ -1110,7 +1086,6 @@ mod tests {
         state.whole_band().unwrap().observe_projection(
             0,
             Some(1),
-            None,
             1,
             7,
             Mv { row: 0, col: 1120 },
@@ -1135,7 +1110,6 @@ mod tests {
         state.whole_band().unwrap().observe_projection(
             0,
             Some(1),
-            None,
             1,
             1,
             Mv { row: 0, col: 64 },
@@ -1152,6 +1126,30 @@ mod tests {
     }
 
     #[test]
+    fn observation_past_the_band_records_nothing() {
+        let mut state = TrajectoryState::new((2, 2), 1, 1, 8).unwrap();
+        let mut band = state.whole_band().unwrap();
+        let cells = band.cells;
+        band.observe_projection_at(0, None, 0, cells, Mv::ZERO, || Mv::ZERO, (0, 0), None);
+        assert_eq!(band.positions_at(0, (0, 0)), None);
+    }
+
+    #[test]
+    fn band_reset_hides_positions_from_every_earlier_band() {
+        let mut state = TrajectoryState::new((2, 2), 1, 1, 8).unwrap();
+        for round in 0..600 {
+            let (mut grids, scratch) = state.grids(1, 1).unwrap();
+            let mut band = grids.next_band(&mut scratch[0]).unwrap();
+            assert_eq!(band.positions_at(0, (0, 0)), None, "round {round}");
+            if round == 0 {
+                band.set_position(0, (0, 0), 1, (0, 0));
+                let mask = band.positions_at(0, (0, 0)).map(|slots| slots.mask);
+                assert_eq!(mask, Some(0b10));
+            }
+        }
+    }
+
+    #[test]
     fn intersection_visits_only_the_recorded_sparse_phases() {
         let mut state = TrajectoryState::new((8, 8), 2, 1, 8).unwrap();
         let source_index = temporal_grid_index(state.width8, state.height8, 1, 2).unwrap();
@@ -1163,6 +1161,7 @@ mod tests {
                 PackedPosition::new((1, 3)).unwrap(),
             ],
             mask: 0b101,
+            epoch: state.scratch[0].epoch,
         };
         state.set_trajectory_cell(0, 1, 1, Mv { row: 8, col: 16 });
         state.set_trajectory_cell(0, 1, 3, Mv { row: 24, col: 32 });

@@ -12811,7 +12811,7 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_context.rs::tests::luma_txb_skip_ctx_fsc_selects_last_context",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_context.rs::tests::v_txb_skip_ctx_first_block_larger_chroma_is_three",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_context.rs::tests::v_txb_skip_ctx_adds_neighbour_chroma_and_eob_contributions",
-    "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::eob_extra_selector_returns_rows_and_bounds_error",
+    "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::eob_extra_selector_returns_the_row_of_the_bank_q_context",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::eob_extra_tile_copy_does_not_alias_the_frame",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::eob_pt_family_loads_defaults_and_selects_by_size_and_context",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::eob_pt_selector_rejects_out_of_range_contexts",
@@ -16301,7 +16301,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -16343,7 +16343,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -16384,7 +16384,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -16428,7 +16428,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_context_commit_failure_preserves_context"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_context_commit_failure_preserves_context"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
@@ -16470,7 +16470,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
@@ -16513,7 +16513,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
@@ -16555,7 +16555,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
@@ -16598,7 +16598,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
@@ -16739,7 +16739,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/cdf.rs"
 change_id = "coeff-cdf-q-context-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "coeff_cdf_q_ctx_from_base_q_idx derives the coefficient CDF q-context; decode_general_intra_plane_coeffs passes it to EOB and the selected coefficient branch."
+notes = "base_q_idx selects the default coefficient CDF bank at init (FrameCdfSubset::default_for_base_q or reset_to_defaults, § 6.17.2 init_coeff_cdfs); each bank holds the rows of that one q context, which decode_general_intra_plane_coeffs reads for EOB and the selected coefficient branch (default_bank_holds_the_coefficient_rows_of_its_q_context)."
 
 [feature.status]
 mapped = "done"
@@ -16883,7 +16883,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -16922,7 +16922,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17302,7 +17302,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17391,7 +17391,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17441,7 +17441,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs",
@@ -17487,7 +17487,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_applies_evolving_tcq_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs",
@@ -17532,7 +17532,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_context_commit_failure_preserves_context_after_reads"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_context_commit_failure_preserves_context_after_reads"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs",
@@ -17576,7 +17576,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_context_commit_failure_preserves_context_after_reads"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_context_commit_failure_preserves_context_after_reads"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs",
@@ -17621,7 +17621,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs",
@@ -17661,7 +17661,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs",
@@ -17700,7 +17700,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs",
@@ -17738,7 +17738,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
@@ -17777,7 +17777,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17818,7 +17818,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17861,7 +17861,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17903,7 +17903,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17947,7 +17947,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_selector_error_preserves_context_and_reader_state"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -19987,7 +19987,7 @@ diagnostics = []
 
 [[feature]]
 id = "PERF-REGRESSION-GATE"
-name = "Deterministic decode instruction-count (callgrind Ir) regression gate"
+name = "Decode instruction-count (DynamoRIO) regression gate"
 category = "infrastructure"
 kind = "infrastructure"
 spec_sections = []
@@ -19997,7 +19997,7 @@ module = "xtask/src/perf.rs"
 change_id = "perf-regression-gate"
 owner = "automation"
 risk = "low"
-notes = "cargo xtask perf compares single-threaded Callgrind Ir counts for committed fixtures against tests/perf/baseline.toml and fails above 0.5% regression. --bless rewrites baselines. The separate CI job installs Valgrind; the slow gate is outside cargo xtask ci. Missing Valgrind skips ordinary checks but rejects --bless. Counts depend on the binary and measurement environment; they are CPU-work evidence rather than wall-clock timing."
+notes = "cargo xtask perf compares single-threaded executed-instruction counts of the splot binary (DynamoRIO with the atomic xtask/perf-client counter, null output, smallest of 3 runs) for committed fixtures against tests/perf/baseline.toml and fails above 0.5% regression. --bless rewrites baselines. The separate CI job installs a pinned, checksummed DynamoRIO release; the slow gate is outside cargo xtask ci. Without DYNAMORIO_HOME ordinary checks skip but --bless fails. Counts depend on the binary and measurement environment; they are CPU-work evidence rather than wall-clock timing."
 replaces = []
 
 [feature.status]

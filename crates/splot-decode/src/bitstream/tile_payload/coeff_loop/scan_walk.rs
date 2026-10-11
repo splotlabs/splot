@@ -7,6 +7,7 @@
 //! `DECODE-COEFF-FSC-SCAN-WALK`, and
 //! `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER`.
 
+use super::super::coeff_state::TransformCoeffBlockState;
 use super::CoeffLoopContextError;
 use super::branch::NonZeroCoeffBlockStart;
 
@@ -52,7 +53,7 @@ impl CoeffScanEntry {
 #[derive(Debug)]
 pub(crate) struct NonZeroCoeffScanWalk<'a> {
     scan: &'a [u16],
-    width: usize,
+    width_log2: u32,
 }
 
 impl NonZeroCoeffScanWalk<'_> {
@@ -66,10 +67,11 @@ impl NonZeroCoeffScanWalk<'_> {
         self.scan.len()
     }
 
-    fn entry(&self, index: usize) -> CoeffScanEntry {
+    pub(crate) fn entry(&self, index: usize) -> CoeffScanEntry {
         let scan_index = self.scan.len() - index - 1;
         let pos = usize::from(self.scan[scan_index]);
-        CoeffScanEntry::new(scan_index, pos, pos / self.width, pos % self.width)
+        let col_mask = (1 << self.width_log2) - 1;
+        CoeffScanEntry::new(scan_index, pos, pos >> self.width_log2, pos & col_mask)
     }
 }
 
@@ -77,6 +79,7 @@ impl NonZeroCoeffScanWalk<'_> {
 pub(crate) struct FscCoeffScanWalk {
     scan: &'static [u16],
     width: usize,
+    coeff_count: usize,
     bob: usize,
     seg_eob: usize,
 }
@@ -90,6 +93,14 @@ impl FscCoeffScanWalk {
     #[must_use]
     pub(crate) const fn seg_eob(&self) -> usize {
         self.seg_eob
+    }
+
+    /// Whether `block` has the geometry the walk validated its positions
+    /// against; then every entry indexes the block's level, sign and quant
+    /// buffers in range, and its row and column give back its position.
+    #[must_use]
+    pub(crate) fn matches_block(&self, block: &TransformCoeffBlockState) -> bool {
+        self.width == block.width() && self.coeff_count == block.coeff_count()
     }
 
     #[must_use]
@@ -125,6 +136,9 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
 
     let block = start.block();
     let width = block.width();
+    if !width.is_power_of_two() {
+        return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
+    }
     let coeff_count = block.coeff_count();
     for (scan_index, scan_pos) in scan[..eob].iter().copied().enumerate().rev() {
         let pos = usize::from(scan_pos);
@@ -139,7 +153,7 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
 
     Ok(NonZeroCoeffScanWalk {
         scan: &scan[..eob],
-        width,
+        width_log2: width.trailing_zeros(),
     })
 }
 
@@ -181,6 +195,7 @@ pub(crate) fn walk_fsc_coeff_scan(
     Ok(FscCoeffScanWalk {
         scan,
         width,
+        coeff_count,
         bob,
         seg_eob,
     })

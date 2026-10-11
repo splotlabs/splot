@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! What [`super::NeighbourMvGrid`] records for one leaf's motion plane.
+//! What [`super::NeighbourMvGrid`] records for one leaf's motion.
 
 #![allow(clippy::unwrap_used)]
 
@@ -123,6 +123,38 @@ fn a_warp_leaf_still_splats_per_cell_sub_mvs() {
         grid.get(3, 3).unwrap().motion.sub_mv,
         "a splatted leaf varies its sub-MV across § 7.13.3.19 8x8 units"
     );
+}
+
+/// Motion reaches a leaf only through the leaf's own first cell and geometry:
+/// a mismatched publication leaves the leaf unresolved rather than attaching
+/// motion to it. A list-1 splat model with no list-0 model still splats list 1
+/// only, and stores no neighbour-facing model.
+#[test]
+fn motion_resolves_only_its_own_leaf_and_keeps_per_list_models() {
+    let model1 = [131_072, 65_536, 69_632, 4_096, -4_096, 69_632];
+    let mv = [Mv { row: -20, col: 36 }, Mv { row: 12, col: -8 }];
+    let values = NeighbourMotionValues {
+        mv,
+        cwp_weight: CWP_EQUAL,
+        stored_warp: None,
+        global_mv: [false, true],
+        splat_warp: [None, Some(model1)],
+    };
+    let mut grid = leaf_grid(MotionMode::Simple);
+
+    grid.record_motion(0, 0, 2, 2, values);
+    assert!(grid.flags_at(1, 1).is_some());
+    assert!(
+        grid.get(1, 1).is_none(),
+        "a mismatched leaf stays unresolved"
+    );
+
+    grid.record_motion(0, 0, 4, 4, values);
+    let cell = grid.get(3, 3).unwrap();
+    assert_eq!(cell.motion.warp_params(), None);
+    assert!(cell.motion.is_global_mv(1) && !cell.motion.is_global_mv(0));
+    assert_eq!(cell.motion.sub_mv, mv[0]);
+    assert_eq!(cell.motion.sub_mv1, warp_sub_mv_at(model1, 0, 0, 3, 3));
 }
 
 /// A tile taller than two superblock rows keeps only the current superblock

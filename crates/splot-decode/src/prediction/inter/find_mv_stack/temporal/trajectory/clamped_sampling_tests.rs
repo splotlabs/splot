@@ -30,7 +30,6 @@ fn forward_intersection_samples_the_clipped_positive_boundary() {
     state.whole_band().unwrap().observe_projection(
         0,
         None,
-        None,
         0,
         2,
         Mv { row: 0, col: 1984 },
@@ -58,7 +57,6 @@ fn reverse_intersection_samples_the_clipped_positive_boundary() {
     state.whole_band().unwrap().observe_projection(
         2,
         Some(1),
-        None,
         0,
         34,
         Mv { row: 0, col: -1088 },
@@ -85,7 +83,6 @@ fn negative_boundary_positions_differ_but_both_exceed_the_unit_bounds() {
     let mut state = TrajectoryState::new((2, 160), 2, 1, 8).unwrap();
     state.whole_band().unwrap().observe_projection(
         0,
-        None,
         None,
         0,
         34,

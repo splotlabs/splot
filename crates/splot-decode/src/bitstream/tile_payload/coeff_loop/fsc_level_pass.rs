@@ -9,7 +9,7 @@ use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::{
     coeff_base_bob_ctx, coeff_base_idtx_ctx, coeff_br_idtx_ctx,
 };
-use super::super::cdf::{CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
+use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::NonZeroCoeffEob;
 use super::branch::NonZeroCoeffBlockStart;
@@ -18,8 +18,8 @@ use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk};
 
 const TX_16X16_CONTEXT: usize = 2;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct CoeffFscLevelPassConfig {
-    pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) tx_size_ctx: usize,
     pub(crate) tx_width: usize,
     pub(crate) tx_height: usize,
@@ -65,14 +65,8 @@ pub(crate) enum CoeffFscLevelPassError {
         config_width: usize,
         config_height: usize,
     },
-    #[error(
-        "coefficient FSC level scan entry {entry:?} maps to position {expected_pos}, not {actual_pos}"
-    )]
-    ScanEntryPositionMismatch {
-        entry: CoeffScanEntry,
-        expected_pos: usize,
-        actual_pos: usize,
-    },
+    #[error("coefficient FSC level scan walk was built for another block geometry")]
+    WalkBlockMismatch,
     #[error("coefficient FSC level symbol read failed: {0}")]
     SymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient FSC level state error: {0}")]
@@ -120,34 +114,10 @@ fn preflight_pass(
             entries: walk.len(),
         });
     }
-    for entry in walk.entries() {
-        block.level_at(entry.row(), entry.col())?;
-        block.quant_at(entry.pos())?;
-        let expected_pos = expected_fsc_entry_pos(block, entry)?;
-        if expected_pos != entry.pos() {
-            return Err(CoeffFscLevelPassError::ScanEntryPositionMismatch {
-                entry,
-                expected_pos,
-                actual_pos: entry.pos(),
-            });
-        }
+    if !walk.matches_block(block) {
+        return Err(CoeffFscLevelPassError::WalkBlockMismatch);
     }
     Ok(())
-}
-
-pub(crate) fn expected_fsc_entry_pos(
-    block: &TransformCoeffBlockState,
-    entry: CoeffScanEntry,
-) -> Result<usize, TileCoeffStateError> {
-    entry
-        .row()
-        .checked_mul(block.width())
-        .and_then(|base| base.checked_add(entry.col()))
-        .ok_or(TileCoeffStateError::ArithmeticOverflow {
-            operation: "row * width + col",
-            left: entry.row(),
-            right: block.width(),
-        })
 }
 
 fn derive_fsc_level_input(
@@ -161,7 +131,6 @@ fn derive_fsc_level_input(
     let base = if index == 0 {
         CoeffFscLevelSymbolSource::BaseBob {
             selector: CoeffCdfSelector::BaseBob {
-                coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
                 tx_size_ctx,
                 ctx: coeff_base_bob_ctx(walk.bob(), walk.seg_eob()),
             },
@@ -169,7 +138,6 @@ fn derive_fsc_level_input(
     } else {
         CoeffFscLevelSymbolSource::BaseIdtx {
             selector: CoeffCdfSelector::BaseIdtx {
-                coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
                 tx_size_ctx,
                 ctx: coeff_base_idtx_ctx(
                     block.level(),
@@ -189,7 +157,6 @@ fn derive_fsc_level_input(
     CoeffFscLevelReadInput {
         base,
         base_range: CoeffCdfSelector::BrIdtx {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             tx_size_ctx,
             ctx: br_ctx,
         },
@@ -202,9 +169,7 @@ fn read_fsc_level_symbol(
     input: CoeffFscLevelReadInput,
 ) -> Result<u32, CoeffFscLevelPassError> {
     let mut read_symbol = |selector| -> Result<u8, CoeffFscLevelPassError> {
-        Ok(cdfs
-            .read_block_symbol_trace(TileCdfSelector::Coeff(selector), symbols)?
-            .get())
+        Ok(cdfs.read_coeff_symbol(selector, symbols)?)
     };
     let (selector, base_offset) = match input.base {
         CoeffFscLevelSymbolSource::BaseBob { selector } => (selector, 1),

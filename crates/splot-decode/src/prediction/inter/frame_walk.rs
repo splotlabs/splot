@@ -230,7 +230,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
             SPEC_HEADER,
         )
     })?;
-    let qindex = quantization.base_q_idx;
     let quantizer_deltas = required_inter_quantizer_deltas(sequence, quantization)?;
     let setup = FilterSinkSetup {
         luma_width: frame_width as usize,
@@ -266,7 +265,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
                 .as_ref()
                 .map_or(0, |seq_inter| seq_inter.num_same_ref_compound)
                 .min(u8::try_from(num_total_refs).unwrap_or(u8::MAX)),
-            qindex,
             luma_use_tcq: core
                 .lossless_info
                 .as_ref()

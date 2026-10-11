@@ -233,7 +233,7 @@ impl TileBlockDecodedState {
         if start_x < end_x {
             for y in base_y.saturating_add(1)..end_y {
                 let row = y * grid.width;
-                grid.cells[row + start_x..row + end_x].fill(true);
+                crate::support::fill_mi_run(&mut grid.cells[row + start_x..row + end_x], true);
             }
         }
     }

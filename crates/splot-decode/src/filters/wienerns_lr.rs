@@ -2,9 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::{
-    LoopRestorationSourceBounds, PcWienerTxSkipLookup, ReconError, Result as ReconResult,
-};
+use splot_recon::{LoopRestorationSourceBounds, ReconError, Result as ReconResult};
 
 const MI_SIZE: usize = 4;
 
@@ -150,6 +148,7 @@ pub(crate) use self::diagnostics::{
     intra_capped_seq_sb_size, selectable_missing_quantization_error, selectable_symbol_read_error,
 };
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrTxSkipLookup {
     pub(crate) row: usize,
@@ -175,6 +174,7 @@ impl WienerNsLrTxSkipGrid {
         Ok(Self { rows, cols, values })
     }
 
+    #[cfg(test)]
     pub(crate) fn lookup(&self, lookup: WienerNsLrTxSkipLookup) -> ReconResult<i32> {
         if lookup.row >= self.rows || lookup.col >= self.cols {
             return Err(ReconError::PcWienerInvalidBounds {
@@ -189,6 +189,19 @@ impl WienerNsLrTxSkipGrid {
             });
         };
         Ok(i32::from(*value))
+    }
+
+    /// Row `row` from column `col` to its end, checked to hold `len` values.
+    pub(crate) fn run(&self, row: usize, col: usize, len: usize) -> ReconResult<&[u8]> {
+        col.checked_add(len)
+            .filter(|&end| row < self.rows && end <= self.cols)
+            .and_then(|_| {
+                let start = wienerns_lr_tx_skip_grid_index(row, col, self.cols).ok()?;
+                self.values.get(start..start + (self.cols - col))
+            })
+            .ok_or(ReconError::PcWienerInvalidBounds {
+                field: "LrTxSkip grid lookup",
+            })
     }
 
     pub(crate) fn into_values(self) -> Vec<u8> {
@@ -269,26 +282,29 @@ fn write_cdef_skip_record(
     written: &mut [bool],
     populated: &mut usize,
 ) -> ReconResult<()> {
-    for_each_wienerns_lr_tx_skip_record_cell(rows, cols, record, |index| {
-        let actual = values.len().min(written.len());
-        let Some((value, was_written)) = values.get_mut(index).zip(written.get_mut(index)) else {
-            return Err(ReconError::BufferLengthMismatch {
-                expected: index.saturating_add(1),
-                actual,
-            });
-        };
-        if !*was_written {
-            *value = record.skip_flag;
-            *was_written = true;
-            *populated = populated
-                .checked_add(1)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "CDEF skip populated sample count",
-                })?;
-        } else if *value != record.skip_flag {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "LrTxSkip conflicting transform records",
-            });
+    for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
+        for index in cells {
+            let actual = values.len().min(written.len());
+            let Some((value, was_written)) = values.get_mut(index).zip(written.get_mut(index))
+            else {
+                return Err(ReconError::BufferLengthMismatch {
+                    expected: index.saturating_add(1),
+                    actual,
+                });
+            };
+            if !*was_written {
+                *value = record.skip_flag;
+                *was_written = true;
+                *populated = populated
+                    .checked_add(1)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "CDEF skip populated sample count",
+                    })?;
+            } else if *value != record.skip_flag {
+                return Err(ReconError::PcWienerInvalidBounds {
+                    field: "LrTxSkip conflicting transform records",
+                });
+            }
         }
         Ok(())
     })
@@ -352,35 +368,60 @@ fn write_wienerns_lr_tx_skip_record(
     values: &mut [u8],
     populated: &mut usize,
 ) -> ReconResult<()> {
-    for_each_wienerns_lr_tx_skip_record_cell(rows, cols, record, |index| {
+    for_each_wienerns_lr_tx_skip_record_row(rows, cols, record, |cells| {
         let actual = values.len();
-        let Some(slot) = values.get_mut(index) else {
+        let Some(slots) = values.get_mut(cells.clone()) else {
             return Err(ReconError::BufferLengthMismatch {
-                expected: index.saturating_add(1),
+                expected: cells.start.max(actual).saturating_add(1),
                 actual,
             });
         };
-        if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
-            *slot = value;
-            *populated = populated
-                .checked_add(1)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "LrTxSkip populated sample count",
-                })?;
-        } else if *slot != value {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "LrTxSkip conflicting transform records",
-            });
-        }
+        let unwritten = if mi_run_is(slots, WIENERNS_LR_TX_SKIP_UNWRITTEN) {
+            crate::support::fill_mi_run(slots, value);
+            slots.len()
+        } else {
+            let mut unwritten = 0;
+            for slot in slots {
+                if *slot == WIENERNS_LR_TX_SKIP_UNWRITTEN {
+                    *slot = value;
+                    unwritten += 1;
+                } else if *slot != value {
+                    return Err(ReconError::PcWienerInvalidBounds {
+                        field: "LrTxSkip conflicting transform records",
+                    });
+                }
+            }
+            unwritten
+        };
+        *populated = populated
+            .checked_add(unwritten)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "LrTxSkip populated sample count",
+            })?;
         Ok(())
     })
 }
 
-fn for_each_wienerns_lr_tx_skip_record_cell(
+/// Whether every slot of `run` is `value`, read like
+/// [`crate::support::fill_mi_run`] writes: at most two overlapping windows.
+fn mi_run_is(run: &[u8], value: u8) -> bool {
+    fn ends<const N: usize>(run: &[u8], value: u8) -> bool {
+        run[..N] == [value; N] && run[run.len() - N..] == [value; N]
+    }
+    match run.len() {
+        4..=7 => ends::<4>(run, value),
+        8..=15 => ends::<8>(run, value),
+        16..=32 => ends::<16>(run, value),
+        _ => run.iter().all(|&slot| slot == value),
+    }
+}
+
+/// Visits the clipped grid index range of each `record` row.
+fn for_each_wienerns_lr_tx_skip_record_row(
     rows: usize,
     cols: usize,
     record: &WienerNsLrTxSkipTransformRecord,
-    mut visit: impl FnMut(usize) -> ReconResult<()>,
+    mut visit: impl FnMut(core::ops::Range<usize>) -> ReconResult<()>,
 ) -> ReconResult<()> {
     if record.rows == 0 || record.cols == 0 {
         return Err(ReconError::PcWienerInvalidBounds {
@@ -410,10 +451,10 @@ fn for_each_wienerns_lr_tx_skip_record_cell(
     let end_col = nominal_end_col.min(cols);
 
     for row in record.row..end_row {
-        for col in record.col..end_col {
-            let index = wienerns_lr_tx_skip_grid_index(row, col, cols)?;
-            visit(index)?;
-        }
+        visit(
+            wienerns_lr_tx_skip_grid_index(row, record.col, cols)?
+                ..wienerns_lr_tx_skip_grid_index(row, end_col, cols)?,
+        )?;
     }
     Ok(())
 }
@@ -455,15 +496,6 @@ pub(crate) fn wienerns_lr_source_block_bounds(
     }
 }
 
-pub(crate) const fn wienerns_lr_tx_skip_lookup_from_pc(
-    lookup: PcWienerTxSkipLookup,
-) -> WienerNsLrTxSkipLookup {
-    WienerNsLrTxSkipLookup {
-        row: lookup.row,
-        col: lookup.col,
-    }
-}
-
 fn pc_wiener_block_end_x(
     block: &crate::bitstream::tile_payload::WienerNsLrSourceBlock,
     block_start_x: usize,
@@ -481,4 +513,20 @@ fn pc_wiener_block_end_x(
             context: "pc wiener classified block end x",
         })?;
     Ok(tile_end_x.min(block_end_x))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mi_run_is_checks_every_slot_of_every_run_length() {
+        for len in 0..=40 {
+            let mut run = vec![7u8; len];
+            assert!(super::mi_run_is(&run, 7), "len {len}");
+            for index in 0..len {
+                run[index] = 6;
+                assert!(!super::mi_run_is(&run, 7), "len {len} index {index}");
+                run[index] = 7;
+            }
+        }
+    }
 }

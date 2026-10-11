@@ -7,8 +7,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::{
-    MotionFieldLayout, TemporalMotionBlock, TemporalMotionCell, TemporalMotionField,
-    TemporalMotionFieldMetadata, TemporalMotionRows, resolve_block_refs, resolve_temporal_refs,
+    BlockRefs, MotionFieldLayout, StoredTemporalCell, TemporalMotionBlock, TemporalMotionCell,
+    TemporalMotionField, TemporalMotionFieldMetadata, TemporalMotionRows,
     visit_temporal_block_cells,
 };
 
@@ -27,13 +27,13 @@ pub(crate) struct TemporalMotionBand {
 
 #[derive(Clone)]
 pub(super) enum BandCells {
-    Owned(Vec<TemporalMotionCell>),
-    Published(Arc<Vec<TemporalMotionCell>>),
+    Owned(Vec<StoredTemporalCell>),
+    Published(Arc<Vec<StoredTemporalCell>>),
     Shared(Arc<TemporalMotionField>, Range<usize>),
 }
 
 impl BandCells {
-    pub(super) fn cells(&self) -> &[TemporalMotionCell] {
+    pub(super) fn cells(&self) -> &[StoredTemporalCell] {
         match self {
             Self::Owned(cells) => cells,
             Self::Published(cells) => cells,
@@ -44,7 +44,7 @@ impl BandCells {
         }
     }
 
-    fn owned_mut(&mut self) -> Option<&mut Vec<TemporalMotionCell>> {
+    fn owned_mut(&mut self) -> Option<&mut Vec<StoredTemporalCell>> {
         match self {
             Self::Owned(cells) => Some(cells),
             Self::Published(cells) => Arc::get_mut(cells),
@@ -97,7 +97,7 @@ impl TemporalMotionBand {
                 context: "inter reference motion band",
             }
         })?;
-        cells.resize(count, TemporalMotionCell::default());
+        cells.resize(count, TemporalMotionCell::STORED_EMPTY);
         self.layout = layout;
         self.metadata = metadata.clone();
         self.row_base8 = layout.rows8(index).start;
@@ -135,7 +135,7 @@ impl TemporalMotionBand {
         reason = "TMVP projection reads one row at a time"
     )]
     #[inline(always)]
-    pub(super) fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
+    pub(super) fn row(&self, y8: usize) -> Option<&[StoredTemporalCell]> {
         let row = y8.checked_sub(self.row_base8)?;
         let start = row.checked_mul(self.layout.width8)?;
         let end = start.checked_add(self.layout.width8)?;
@@ -155,10 +155,10 @@ impl TemporalMotionBand {
             .cells
             .owned_mut()
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        let mut memo = None;
         for &block in blocks {
-            let resolved =
-                resolve_block_refs(block.ref_order_hints, &self.metadata.ref_order_hints);
-            visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
+            let refs = BlockRefs::reuse(&mut memo, &block, &self.metadata.ref_order_hints);
+            visit_temporal_block_cells(block, refs, width8, row_end8, |y8, x8, cell, _| {
                 let Some(row) = y8.checked_sub(row_base8) else {
                     return;
                 };
@@ -169,7 +169,7 @@ impl TemporalMotionBand {
                     return;
                 };
                 if let Some(target) = cells.get_mut(index) {
-                    *target = resolve_temporal_refs(cell, hints, &resolved);
+                    *target = cell.store();
                 }
             });
         }
@@ -182,7 +182,7 @@ impl TemporalMotionRows for TemporalMotionBand {
         (self.layout.width8(), self.layout.height8())
     }
 
-    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
+    fn row(&self, y8: usize) -> Option<&[StoredTemporalCell]> {
         TemporalMotionBand::row(self, y8)
     }
 }

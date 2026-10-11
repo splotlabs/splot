@@ -352,7 +352,7 @@ fn selectable_tx_grid_reset_matches_fresh_grid_and_leaks_nothing() {
             expected: 64,
             actual: 0,
         },
-        "reset must clear every previously set cell"
+        "reset must clear every previously set record"
     );
     apply_tx_partition(&mut reused, 8, 4, TX_16X16, TX_PARTITION_HORZ).unwrap();
     assert_eq!(reused.records_for_region(8, 4, 4, 4).unwrap(), expected);
@@ -383,7 +383,6 @@ fn with_selectable_tx_grid_reuses_scratch_without_cross_block_state() {
     })
     .unwrap();
     let records = with_selectable_tx_grid(16, 16, |grid| {
-        assert!(grid.cells.iter().all(Option::is_none));
         assert!(grid.records.is_empty());
         apply_tx_partition(grid, 8, 4, TX_16X16, TX_PARTITION_HORZ).unwrap();
         grid.records_for_region(8, 4, 4, 4).unwrap()
@@ -391,8 +390,20 @@ fn with_selectable_tx_grid_reuses_scratch_without_cross_block_state() {
     .unwrap();
     assert_eq!(records, expected);
 
-    let resized = with_selectable_tx_grid(4, 4, |grid| (grid.rows, grid.cols, grid.cells.len()));
-    assert_eq!(resized.unwrap(), (4, 4, 16));
+    let resized = with_selectable_tx_grid(4, 4, |grid| (grid.rows, grid.cols));
+    assert_eq!(resized.unwrap(), (4, 4));
+}
+
+#[test]
+fn selectable_tx_grid_rejects_overlapping_records() {
+    let mut grid = SelectableLumaTxGrid::new(4, 4).unwrap();
+    grid.set_tx_size(0, 0, 2, 2, false).unwrap();
+    grid.set_tx_size(0, 2, 2, 2, false).unwrap();
+
+    assert_eq!(
+        grid.set_tx_size(1, 1, 2, 2, false).unwrap_err(),
+        SelectableTransformRecordError::Overlap { row: 1, col: 1 }
+    );
 }
 
 #[test]
@@ -701,7 +712,7 @@ fn set_tx_size_drops_bottom_edge_cells_past_frame_extent() {
         vec![(256, 0, 16, 16, TX_64X64), (256, 16, 16, 16, TX_64X64)]
     );
     assert_eq!(
-        grid.cell(270, 0).unwrap_err(),
+        grid.index(270, 0).unwrap_err(),
         SelectableTransformRecordError::OutOfBounds {
             row: 270,
             col: 0,
@@ -762,7 +773,7 @@ fn set_tx_size_drops_right_edge_cells_past_frame_extent() {
         vec![(0, 16, TX_64X64), (16, 16, TX_64X64)]
     );
     assert_eq!(
-        grid.cell(0, 30).unwrap_err(),
+        grid.index(0, 30).unwrap_err(),
         SelectableTransformRecordError::OutOfBounds {
             row: 0,
             col: 30,

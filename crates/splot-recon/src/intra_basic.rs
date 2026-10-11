@@ -5,8 +5,13 @@
 //!
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
+use std::simd::cmp::SimdPartialOrd as _;
+use std::simd::num::{SimdInt as _, SimdUint as _};
+use std::simd::{Mask, Select as _, Simd};
+
 use crate::intra_dc_math::{
-    IntraEdgeError, validate_intra_edge_samples, validate_output_shape, validate_sample_type,
+    IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
+    validate_sample_type,
 };
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -116,6 +121,36 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
         stride_samples,
         "PAETH intra prediction output buffer length",
     )?;
+    if let (Some(left), Some(above), Some(output)) = (
+        T::u16_slice(edges.left),
+        T::u16_slice(edges.above),
+        T::u16_slice_mut(output),
+    ) {
+        predict_paeth_lanes(
+            size,
+            left,
+            above,
+            edges.top_left.to_u16(),
+            output,
+            stride_samples,
+        );
+        return Ok(());
+    }
+    if let (Some(left), Some(above), Some(output)) = (
+        T::u8_slice(edges.left),
+        T::u8_slice(edges.above),
+        T::u8_slice_mut(output),
+    ) {
+        predict_paeth_lanes(
+            size,
+            left,
+            above,
+            edges.top_left.to_u16(),
+            output,
+            stride_samples,
+        );
+        return Ok(());
+    }
 
     for row_index in 0..size.height() {
         let row_start =
@@ -132,6 +167,61 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
     }
 
     Ok(())
+}
+
+/// Writes the § 7.13.2.2 PAETH prediction in `i16` lanes, 8 or 4 columns at a
+/// time (every block width is a multiple of 4).
+///
+/// With `base = above + left - topLeft`, `pLeft = |above - topLeft|`,
+/// `pTop = |left - topLeft|` and `pTopLeft = |above + left - 2 * topLeft|`.
+/// The validated samples are at most 10 bits, so every term fits `i16`.
+fn predict_paeth_lanes<O: IntraLaneSample>(
+    size: IntraRectBlockSize,
+    left: &[O],
+    above: &[O],
+    top_left: u16,
+    output: &mut [O],
+    stride_samples: usize,
+) {
+    let top_left = top_left as i16;
+    for (row, &left) in left.iter().take(size.height()).enumerate() {
+        let left = left.to_u16() as i16;
+        let p_top = (left - top_left).abs();
+        let target = &mut output[row * stride_samples..row * stride_samples + size.width()];
+        let above = &above[..size.width()];
+        let (target_groups, target) = target.as_chunks_mut::<8>();
+        let (above_groups, above) = above.as_chunks::<8>();
+        for (target, above) in target_groups.iter_mut().zip(above_groups) {
+            let values = paeth_lanes(O::load(above).cast(), left, p_top, top_left);
+            O::store(values.cast::<u16>().as_array(), target);
+        }
+        for (target, above) in target
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(above.as_chunks::<4>().0)
+        {
+            let values = paeth_lanes(O::load(above).cast(), left, p_top, top_left);
+            O::store(values.cast::<u16>().as_array(), target);
+        }
+    }
+}
+
+/// One lane group of [`predict_paeth_lanes`].
+#[inline]
+fn paeth_lanes<const LANES: usize>(
+    above: Simd<i16, LANES>,
+    left: i16,
+    p_top: i16,
+    top_left: i16,
+) -> Simd<i16, LANES> {
+    let (left_lanes, top_left_lanes) = (Simd::splat(left), Simd::splat(top_left));
+    let p_left = (above - top_left_lanes).abs();
+    let p_top_left = (above + left_lanes - top_left_lanes - top_left_lanes).abs();
+    let take_left: Mask<i16, LANES> =
+        p_left.simd_le(Simd::splat(p_top)) & p_left.simd_le(p_top_left);
+    let take_top = Simd::splat(p_top).simd_le(p_top_left);
+    take_left.select(left_lanes, take_top.select(above, top_left_lanes))
 }
 
 pub(crate) fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
@@ -363,5 +453,57 @@ mod tests {
                 context: "PAETH intra prediction output buffer length"
             })
         ));
+    }
+
+    /// The lane path must write `predict_paeth_sample` for every block shape,
+    /// both storage types and the sample extremes, and leave the stride gap.
+    #[test]
+    fn paeth_lanes_match_the_per_sample_choice() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let max = u64::from(bit_depth.max_sample());
+            let mut sample = || match next() % 4 {
+                0 => 0,
+                1 => max as u16,
+                _ => (next() % (max + 1)) as u16,
+            };
+            for log2_width in 2..=6u8 {
+                for log2_height in 2..=6u8 {
+                    let size = rect_size(log2_width, log2_height);
+                    let left: Vec<u16> = (0..size.height()).map(|_| sample()).collect();
+                    let above: Vec<u16> = (0..size.width()).map(|_| sample()).collect();
+                    let top_left = sample();
+                    let stride = size.width() + 3;
+                    let mut wide = vec![7u16; stride * size.height()];
+                    let edges = IntraPaethEdges::new(&left[..], &above[..], top_left);
+                    predict_intra_paeth_rect_into(bit_depth, size, edges, &mut wide, stride)
+                        .unwrap();
+                    for (index, &got) in wide.iter().enumerate() {
+                        let (row, column) = (index / stride, index % stride);
+                        let expected = if column < size.width() {
+                            predict_paeth_sample(left[row], above[column], top_left)
+                        } else {
+                            7
+                        };
+                        assert_eq!(got, expected, "{bit_depth:?} at ({row}, {column})");
+                    }
+                    if bit_depth == BitDepth::Eight {
+                        let narrow = |v: &[u16]| v.iter().map(|&s| s as u8).collect::<Vec<_>>();
+                        let mut out = vec![7u8; wide.len()];
+                        let (left, above) = (narrow(&left), narrow(&above));
+                        let edges = IntraPaethEdges::new(&left[..], &above[..], top_left as u8);
+                        predict_intra_paeth_rect_into(bit_depth, size, edges, &mut out, stride)
+                            .unwrap();
+                        assert_eq!(out, narrow(&wide));
+                    }
+                }
+            }
+        }
     }
 }

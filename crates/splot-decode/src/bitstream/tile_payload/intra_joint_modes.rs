@@ -124,28 +124,58 @@ impl<T: Copy> MiGrid<T> {
     }
 
     pub(crate) fn record_block(&mut self, pos: (usize, usize), extent: (usize, usize), value: T) {
-        let (r, c) = pos;
         let (n4w, n4h) = extent;
-        let Some(r) = r.checked_sub(self.origin_row) else {
+        let Some((r, c)) = self.enter_block(pos) else {
             return;
         };
-        let Some(c) = c.checked_sub(self.origin_col) else {
-            return;
-        };
-        if r >= self.rows || c >= self.cols {
-            return;
-        }
-        if let Some(slide) = self.window.enter(r) {
-            slide.apply(&mut self.cells, self.cols, self.default);
-        }
         let row_end = r.saturating_add(n4h).min(self.rows);
         let col_end = c.saturating_add(n4w).min(self.cols);
         for row in r..row_end {
             if let Some(plane_row) = self.window.plane_row(row) {
                 let start = plane_row * self.cols;
-                self.cells[start + c..start + col_end].fill(value);
+                crate::support::fill_mi_run(&mut self.cells[start + c..start + col_end], value);
             }
         }
+    }
+
+    /// [`MiGrid::record_block`] for a block that records the default value.
+    ///
+    /// Each cell belongs to one block per tile and holds the default from
+    /// `build` or the window clear until that block records it, so only the
+    /// window move remains.
+    pub(crate) fn record_default_block(&mut self, pos: (usize, usize)) {
+        self.enter_block(pos);
+    }
+
+    /// [`MiGrid::record_block`] that writes only a non-default value, for a
+    /// grid that keeps the [`MiGrid::record_default_block`] cell ownership.
+    pub(crate) fn record_owned_block(
+        &mut self,
+        pos: (usize, usize),
+        extent: (usize, usize),
+        value: T,
+    ) where
+        T: PartialEq,
+    {
+        if value == self.default {
+            self.record_default_block(pos);
+        } else {
+            self.record_block(pos, extent, value);
+        }
+    }
+
+    /// Moves the window to a block at tile position `pos` and returns it
+    /// tile-relative, or `None` outside the tile.
+    fn enter_block(&mut self, (r, c): (usize, usize)) -> Option<(usize, usize)> {
+        let r = r.checked_sub(self.origin_row)?;
+        let c = c.checked_sub(self.origin_col)?;
+        if r >= self.rows || c >= self.cols {
+            return None;
+        }
+        if let Some(slide) = self.window.enter(r) {
+            slide.apply(&mut self.cells, self.cols, self.default);
+        }
+        Some((r, c))
     }
 }
 
@@ -340,7 +370,7 @@ impl TileLumaPaletteState {
             self.palettes.push(palette);
             Some(index)
         });
-        self.grid.record_block((r, c), (n4w, n4h), palette);
+        self.grid.record_owned_block((r, c), (n4w, n4h), palette);
     }
 
     fn palette_at(&self, row: usize, col: usize) -> Option<LumaPalette> {
@@ -422,12 +452,11 @@ impl TileIntraJointModeState {
         n4h: usize,
         joint_mode: IntraJointMode,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), joint_mode);
+        self.grid.record_owned_block((r, c), (n4w, n4h), joint_mode);
     }
 
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
-        self.grid
-            .record_block((r, c), (n4w, n4h), IntraJointMode::DC);
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
+        self.grid.record_default_block((r, c));
     }
 }
 
@@ -490,7 +519,7 @@ impl TileUsesMrlsState {
         n4h: usize,
         selection: MrlSelection,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), selection);
+        self.grid.record_owned_block((r, c), (n4w, n4h), selection);
     }
 }
 
@@ -524,11 +553,11 @@ impl TileUseDipState {
 
     pub(crate) fn record_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, use_dip: u8) {
         self.grid
-            .record_block((r, c), (n4w, n4h), u8::from(use_dip != 0));
+            .record_owned_block((r, c), (n4w, n4h), u8::from(use_dip != 0));
     }
 
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
-        self.grid.record_block((r, c), (n4w, n4h), NO_DIP);
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
+        self.grid.record_default_block((r, c));
     }
 }
 
@@ -866,11 +895,11 @@ impl TileFscModeState {
         n4h: usize,
         fsc_mode: u8,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), fsc_mode);
+        self.grid.record_owned_block((r, c), (n4w, n4h), fsc_mode);
     }
 
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
-        self.grid.record_block((r, c), (n4w, n4h), NO_FSC);
+    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
+        self.grid.record_default_block((r, c));
     }
 
     fn neighbour_fsc_modes(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> [u8; 2] {
@@ -1013,7 +1042,8 @@ impl TileUvCflState {
         n4h: usize,
         is_cfl: bool,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), u8::from(is_cfl));
+        self.grid
+            .record_owned_block((r, c), (n4w, n4h), u8::from(is_cfl));
     }
 }
 

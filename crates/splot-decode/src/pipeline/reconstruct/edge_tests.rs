@@ -304,3 +304,54 @@ fn chroma_d135_top_row_filters_available_left_edge() {
 
     assert_eq!(ws.reconstructed_sample(PlaneId::U, 33, 55).unwrap(), 513);
 }
+
+/// The row and column edge gathers must return the per-sample reads of
+/// `Min(start + i, limit)`, and must fail whenever one of those reads fails:
+/// a limit past the storage edge or an absent row. A start past the limit
+/// reads the sample at the limit.
+#[test]
+fn edge_gathers_match_per_sample_reads_and_fail_closed() {
+    use super::super::one_sided::{gather_column_clamped, gather_row_clamped};
+    let (width, height) = (24, 20);
+    let mut ws =
+        new_general_intra_workspace::<u16>(width, height, BitDepth::Ten, PixelFormat::Yuv420)
+            .unwrap();
+    for row in 0..height {
+        for column in 0..width {
+            ws.set_reconstructed_sample(PlaneId::Y, column, row, (row * 40 + column) as u16)
+                .unwrap();
+        }
+    }
+    for (start, fixed, limit, len) in [
+        (2, 3, 9, 6),
+        (2, 3, 9, 12),
+        (12, 3, 9, 5),
+        (0, 0, 19, 20),
+        (16, 3, 23, 12),
+        (16, 3, 24, 12),
+        (16, 3, 40, 4),
+        (5, 20, 9, 3),
+        (5, 3, 9, 0),
+    ] {
+        let reads = |at: &dyn Fn(usize) -> (usize, usize)| {
+            (0..len)
+                .map(|i| {
+                    let (x, y) = at((start + i).min(limit));
+                    ws.reconstructed_sample(PlaneId::Y, x, y)
+                })
+                .collect::<Result<Vec<u16>, _>>()
+        };
+        let mut row = vec![0u16; len];
+        let gathered = gather_row_clamped(&ws, PlaneId::Y, (start, fixed), limit, &mut row);
+        match reads(&|x| (x, fixed)) {
+            Ok(expected) => assert_eq!((gathered.unwrap(), row), ((), expected)),
+            Err(_) => assert!(gathered.is_err(), "row {start} {fixed} {limit} {len}"),
+        }
+        let mut column = vec![0u16; len];
+        let gathered = gather_column_clamped(&ws, PlaneId::Y, (fixed, start), limit, &mut column);
+        match reads(&|y| (fixed, y)) {
+            Ok(expected) => assert_eq!((gathered.unwrap(), column), ((), expected)),
+            Err(_) => assert!(gathered.is_err(), "column {start} {fixed} {limit} {len}"),
+        }
+    }
+}

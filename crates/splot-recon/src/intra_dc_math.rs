@@ -3,6 +3,9 @@
 
 //! Shared DC intra prediction math.
 
+use std::simd::Simd;
+use std::simd::num::SimdUint as _;
+
 use crate::intra::{IntraDcEdge, IntraRectBlockSize};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
@@ -50,6 +53,58 @@ pub(crate) fn validate_sample_type<T: ReconSample>(bit_depth: BitDepth) -> Resul
             sample_type: T::TYPE_NAME,
             bit_depth,
         })
+    }
+}
+
+/// Intra prediction storage that the `u16` lane kernels write to.
+///
+/// Every value is a `Clip1` sample of the active bit depth, and
+/// [`validate_sample_type`] admits a storage type only when it holds that
+/// depth, so each conversion is exact.
+pub(crate) trait IntraLaneSample: ReconSample {
+    /// Converts one in-range sample.
+    fn from_lane(value: u16) -> Self;
+
+    /// Stores in-range `values` over `output`, which has the same length.
+    fn store(values: &[u16], output: &mut [Self]);
+
+    /// Loads `LANES` samples as `u16` lanes.
+    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES>;
+}
+
+impl IntraLaneSample for u16 {
+    #[inline]
+    fn from_lane(value: u16) -> Self {
+        value
+    }
+
+    #[inline]
+    fn store(values: &[u16], output: &mut [Self]) {
+        output.copy_from_slice(values); // splot-copy-ok: publish intra prediction lanes
+    }
+
+    #[inline]
+    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES> {
+        Simd::from_array(*samples)
+    }
+}
+
+impl IntraLaneSample for u8 {
+    #[inline]
+    fn from_lane(value: u16) -> Self {
+        value as u8
+    }
+
+    #[inline]
+    fn store(values: &[u16], output: &mut [Self]) {
+        for (slot, &value) in output.iter_mut().zip(values) {
+            *slot = value as u8;
+        }
+    }
+
+    #[inline]
+    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES> {
+        Simd::from_array(*samples).cast()
     }
 }
 
@@ -122,6 +177,14 @@ pub(crate) fn validate_dc_edge_sampled_sum<T: ReconSample>(
     }
 
     let max = bit_depth.max_sample();
+    if step == 1
+        && let Some(sum) = dense_dc_edge_sum(samples, max)
+    {
+        return Ok(Some(DcEdgeSum {
+            sum,
+            count: samples.len() as u32,
+        }));
+    }
     let mut sum = 0u32;
     let mut count = 0u32;
     for (sample_index, sample) in samples.iter().enumerate() {
@@ -146,6 +209,22 @@ pub(crate) fn validate_dc_edge_sampled_sum<T: ReconSample>(
         }
     }
     Ok(Some(DcEdgeSum { sum, count }))
+}
+
+/// The sum of every edge sample when all of them are at most `max` and the
+/// edge has at most `2^16` samples, so the `u32` sum and count cannot
+/// overflow; `None` hands the edge to the checked per-sample loop.
+fn dense_dc_edge_sum<T: ReconSample>(samples: &[T], max: u16) -> Option<u32> {
+    if samples.len() > 1 << 16 {
+        return None;
+    }
+    if let Some(wide) = T::u16_slice(samples) {
+        return (!crate::sample_range::u16_samples_exceed(wide, max))
+            .then(|| wide.iter().map(|&value| u32::from(value)).sum());
+    }
+    T::u8_slice(samples)
+        .filter(|_| max >= u16::from(u8::MAX))
+        .map(|narrow| narrow.iter().map(|&value| u32::from(value)).sum())
 }
 
 /// Validates intra prediction output buffer geometry, returning the required
@@ -333,4 +412,48 @@ pub(crate) fn clip1(value: u16, bit_depth: BitDepth) -> u16 {
 
 pub(crate) fn dc_midpoint(bit_depth: BitDepth) -> u16 {
     1u16 << (bit_depth.bits() - 1)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// The dense step-1 sum must equal the sampled sum, leave an out-of-range
+    /// sample to the per-sample error with its index, and leave a sum that
+    /// overflows `u32` to the checked overflow error.
+    #[test]
+    fn dense_dc_edge_sum_matches_the_checked_loop() {
+        let edge = IntraDcEdge::Left;
+        for len in [1usize, 4, 15, 16, 17, 64] {
+            let wide: Vec<u16> = (0..len).map(|i| (i * 131 % 1024) as u16).collect();
+            let sum = wide.iter().map(|&v| u32::from(v)).sum::<u32>();
+            let expected = Some(DcEdgeSum {
+                sum,
+                count: len as u32,
+            });
+            let got = validate_dc_edge_sampled_sum(edge, Some(&wide), len, 1, BitDepth::Ten);
+            assert_eq!(got.unwrap(), expected);
+            let narrow: Vec<u8> = wide.iter().map(|&v| (v >> 2) as u8).collect();
+            let sum = narrow.iter().map(|&v| u32::from(v)).sum::<u32>();
+            let got = validate_dc_edge_sampled_sum(edge, Some(&narrow), len, 1, BitDepth::Eight);
+            assert_eq!(got.unwrap().map(|s| s.sum), Some(sum));
+        }
+        let mut wide = vec![7u16; 20];
+        wide[17] = 1024;
+        assert!(matches!(
+            validate_dc_edge_sampled_sum(edge, Some(&wide), 20, 1, BitDepth::Ten),
+            Err(ReconError::IntraPredictionSampleOutOfRange {
+                sample_index: 17,
+                value: 1024,
+                ..
+            })
+        ));
+        let len = (u32::MAX / 1023) as usize + 1;
+        let wide = vec![1023u16; len];
+        assert!(matches!(
+            validate_dc_edge_sampled_sum(edge, Some(&wide), len, 1, BitDepth::Ten),
+            Err(ReconError::ArithmeticOverflow { .. })
+        ));
+    }
 }

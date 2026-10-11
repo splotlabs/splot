@@ -62,7 +62,6 @@ fn read_start(
                 is_inter: false,
                 tx_width_log2: 2,
                 tx_height_log2: 2,
-                coeff_cdf_q_ctx: 0,
             },
         },
     )
@@ -73,14 +72,12 @@ fn staged_input(
     start: NonZeroCoeffBlockStart,
     block: AllZeroCoeffBlockInput,
     tx_size: usize,
-    coeff_cdf_q_ctx: usize,
 ) -> CoeffFscStagedTxSizeNonZeroInput {
     CoeffFscStagedTxSizeNonZeroInput {
         block,
         start,
         tx_size,
         plane_tx_type: 0,
-        coeff_cdf_q_ctx,
     }
 }
 
@@ -101,14 +98,12 @@ fn encode_fsc_two_coefficients() -> (Vec<u8>, TileCdfSubset) {
         (
             TileCdfSelector::EobPt {
                 size: super::super::EobPtSize::Pt16,
-                coeff_cdf_q_ctx: 0,
                 eob_ctx: 0,
             },
             1,
         ),
         (
             TileCdfSelector::Coeff(CoeffCdfSelector::BaseBob {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 2,
             }),
@@ -116,7 +111,6 @@ fn encode_fsc_two_coefficients() -> (Vec<u8>, TileCdfSubset) {
         ),
         (
             TileCdfSelector::Coeff(CoeffCdfSelector::BrIdtx {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 0,
             }),
@@ -124,7 +118,6 @@ fn encode_fsc_two_coefficients() -> (Vec<u8>, TileCdfSubset) {
         ),
         (
             TileCdfSelector::Coeff(CoeffCdfSelector::BaseIdtx {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 3,
             }),
@@ -132,7 +125,6 @@ fn encode_fsc_two_coefficients() -> (Vec<u8>, TileCdfSubset) {
         ),
         (
             TileCdfSelector::Coeff(CoeffCdfSelector::BrIdtx {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 5,
             }),
@@ -140,7 +132,6 @@ fn encode_fsc_two_coefficients() -> (Vec<u8>, TileCdfSubset) {
         ),
         (
             TileCdfSelector::Coeff(CoeffCdfSelector::IdtxSign {
-                coeff_cdf_q_ctx: 0,
                 tx_size_ctx: 0,
                 ctx: 0,
             }),
@@ -156,7 +147,6 @@ fn encode_fsc_two_coefficients() -> (Vec<u8>, TileCdfSubset) {
         &mut tile,
         &mut encoder,
         TileCdfSelector::Coeff(CoeffCdfSelector::IdtxSign {
-            coeff_cdf_q_ctx: 0,
             tx_size_ctx: 0,
             ctx: 4,
         }),
@@ -175,7 +165,6 @@ fn encode_start_only() -> Vec<u8> {
         &mut encoder,
         TileCdfSelector::EobPt {
             size: super::super::EobPtSize::Pt16,
-            coeff_cdf_q_ctx: 0,
             eob_ctx: 0,
         },
         1,
@@ -197,7 +186,7 @@ fn staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits() {
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(start, luma_block(1, 1), TX_4X4, 0),
+        staged_input(start, luma_block(1, 1), TX_4X4),
     )
     .unwrap();
 
@@ -206,32 +195,26 @@ fn staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits() {
     assert_eq!(block.level_at(3, 3).unwrap(), 6);
     for selector in [
         TileCdfSelector::Coeff(CoeffCdfSelector::BaseBob {
-            coeff_cdf_q_ctx: 0,
             tx_size_ctx: 0,
             ctx: 2,
         }),
         TileCdfSelector::Coeff(CoeffCdfSelector::BrIdtx {
-            coeff_cdf_q_ctx: 0,
             tx_size_ctx: 0,
             ctx: 0,
         }),
         TileCdfSelector::Coeff(CoeffCdfSelector::BaseIdtx {
-            coeff_cdf_q_ctx: 0,
             tx_size_ctx: 0,
             ctx: 3,
         }),
         TileCdfSelector::Coeff(CoeffCdfSelector::BrIdtx {
-            coeff_cdf_q_ctx: 0,
             tx_size_ctx: 0,
             ctx: 5,
         }),
         TileCdfSelector::Coeff(CoeffCdfSelector::IdtxSign {
-            coeff_cdf_q_ctx: 0,
             tx_size_ctx: 0,
             ctx: 0,
         }),
         TileCdfSelector::Coeff(CoeffCdfSelector::IdtxSign {
-            coeff_cdf_q_ctx: 0,
             tx_size_ctx: 0,
             ctx: 4,
         }),
@@ -291,7 +274,7 @@ fn staged_fsc_preflights_selector_geometry_and_plane_without_consumption() {
             &mut state,
             &mut tile,
             &mut symbols,
-            staged_input(start, block, tx_size, 0),
+            staged_input(start, block, tx_size),
         );
 
         assert!(result.is_err());
@@ -299,31 +282,6 @@ fn staged_fsc_preflights_selector_geometry_and_plane_without_consumption() {
         assert_eq!(tile, tile_before);
         assert_eq!(symbols.checkpoint(), checkpoint);
     }
-}
-
-#[test]
-fn staged_fsc_invalid_cdf_selector_preserves_context_and_reader_state() {
-    let payload = encode_start_only();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let start = read_start(&mut tile, &mut symbols, 1, 1);
-    let tile_before = tile.clone();
-    let checkpoint = symbols.checkpoint();
-    let mut state =
-        TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
-    let state_before = state.clone();
-
-    let result = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        staged_input(start, luma_block(1, 1), TX_4X4, 4),
-    );
-
-    assert!(matches!(result, Err(CoeffFscBranchError::Level(_))));
-    assert_eq!(state, state_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.checkpoint(), checkpoint);
 }
 
 #[test]
@@ -340,7 +298,7 @@ fn staged_fsc_context_commit_failure_preserves_context() {
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(start, luma_block(2, 2), TX_4X4, 0),
+        staged_input(start, luma_block(2, 2), TX_4X4),
     );
 
     assert!(matches!(

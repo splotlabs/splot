@@ -18,8 +18,8 @@ use super::intra_joint_modes::{
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{self, PartitionDecisionError, PartitionType};
 use super::partition_allowed::{
-    PartitionAllowedError, PartitionAllowedInput, PartitionFeatureFlags, PartitionTreeType,
-    partition_decision_facts,
+    PartitionAllowedError, PartitionAllowedInput, PartitionDecisionMemo, PartitionFeatureFlags,
+    PartitionTreeType,
 };
 use super::partition_size::{
     BlockSize, PartitionSizeError, h_partition_midsize, partition_subsize,
@@ -661,17 +661,21 @@ fn plane_subsampling(frame: TilePartitionFrameFacts, plane: usize) -> (usize, us
     }
 }
 
+/// Adds tile coordinates. These hot helpers use `let ... else` rather than
+/// `ok_or`, whose eager error value runs its drop glue even on success.
 pub(crate) fn checked_add(
     coordinate: &'static str,
     base: usize,
     offset: usize,
 ) -> Result<usize, TilePartitionTraversalError> {
-    base.checked_add(offset)
-        .ok_or(TilePartitionTraversalError::CoordinateOverflow {
+    let Some(sum) = base.checked_add(offset) else {
+        return Err(TilePartitionTraversalError::CoordinateOverflow {
             coordinate,
             base,
             offset,
-        })
+        });
+    };
+    Ok(sum)
 }
 
 fn checked_sub(
@@ -679,12 +683,14 @@ fn checked_sub(
     base: usize,
     offset: usize,
 ) -> Result<usize, TilePartitionTraversalError> {
-    base.checked_sub(offset)
-        .ok_or(TilePartitionTraversalError::CoordinateUnderflow {
+    let Some(difference) = base.checked_sub(offset) else {
+        return Err(TilePartitionTraversalError::CoordinateUnderflow {
             coordinate,
             base,
             offset,
-        })
+        });
+    };
+    Ok(difference)
 }
 
 fn checked_mul(
@@ -692,12 +698,14 @@ fn checked_mul(
     left: usize,
     right: usize,
 ) -> Result<usize, TilePartitionTraversalError> {
-    left.checked_mul(right)
-        .ok_or(TilePartitionTraversalError::CoordinateOffsetOverflow {
+    let Some(product) = left.checked_mul(right) else {
+        return Err(TilePartitionTraversalError::CoordinateOffsetOverflow {
             coordinate,
             left,
             right,
-        })
+        });
+    };
+    Ok(product)
 }
 
 fn checked_shl(
@@ -711,13 +719,14 @@ fn checked_shl(
             base: value,
             offset: shift,
         })?;
-    value
-        .checked_shl(shift)
-        .ok_or(TilePartitionTraversalError::CoordinateOverflow {
+    let Some(shifted) = value.checked_shl(shift) else {
+        return Err(TilePartitionTraversalError::CoordinateOverflow {
             coordinate,
             base: value,
             offset: shift as usize,
-        })
+        });
+    };
+    Ok(shifted)
 }
 
 pub(crate) fn checked_scaled_add(

@@ -223,10 +223,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     let (frame, motion_field) = block::tip::reconstruct_output(
         scratch, planes, sequence, &core, reference, geometry, offset,
     )?;
-    let qindex = core.quantization_params.map_or(0, |q| q.base_q_idx);
-    products
-        .frame_cdfs()?
-        .reset_output_from(&frame_cdfs, qindex);
+    products.frame_cdfs()?.reset_output_from(&frame_cdfs);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = geometry.mi_dimensions();
     products.segment_ids(mi_rows, mi_cols, false)?;
@@ -279,10 +276,7 @@ fn decode_bridge_frame<T: ReconSample>(
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
     let frame = bridge::reconstruct(source.samples()?, frame_size, visible, 0, offset)?;
-    let qindex = core.quantization_params.map_or(0, |q| q.base_q_idx);
-    products
-        .frame_cdfs()?
-        .reset_output_from(&frame_cdfs, qindex);
+    products.frame_cdfs()?.reset_output_from(&frame_cdfs);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = segment_id_map_dimensions(&core)?;
     products.segment_ids(mi_rows, mi_cols, false)?;
@@ -433,10 +427,7 @@ fn resolve_initial_frame_cdfs_reusing(
     if let Some(primary) = primary.as_deref() {
         output.reset_from(primary);
     } else {
-        output.reset_to_defaults();
-        output.replicate_coeff_q_context_for_base_q(
-            core.quantization_params.map_or(0, |q| q.base_q_idx),
-        );
+        output.reset_to_defaults(core.quantization_params.map_or(0, |q| q.base_q_idx));
     }
     if let ResolvedCdfLoad::LoadSlot {
         blend: Some(blend), ..

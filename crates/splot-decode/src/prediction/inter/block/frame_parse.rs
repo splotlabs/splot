@@ -99,7 +99,6 @@ impl<'payload> InterFrameParser<'payload> {
             params,
             filter_states: _,
             initial_frame_cdfs,
-            qindex,
         } = self.setup;
         let parsed = self
             .parser
@@ -121,7 +120,6 @@ impl<'payload> InterFrameParser<'payload> {
         let frame_cdfs = finish_frame_cdfs(
             &initial_frame_cdfs,
             std::slice::from_mut(tile),
-            qindex,
             &mut products,
         )?;
         let ccso_grid = products.finish_ccso(ccso_state)?;

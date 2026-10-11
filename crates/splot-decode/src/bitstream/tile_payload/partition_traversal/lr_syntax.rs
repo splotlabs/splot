@@ -429,13 +429,13 @@ pub(super) fn read_wiener_ns_unit_filter(
     while j < n_coeffs {
         if WIENER_NS_TAPS_PRESENT[plane_index][subset][j] {
             let min = WIENER_NS_TAPS_MIN[plane_index][j];
-            let ref_symb = ref_coeffs[j].checked_sub(min).ok_or(
-                TilePartitionTraversalError::CoordinateUnderflow {
+            let Some(ref_symb) = ref_coeffs[j].checked_sub(min) else {
+                return Err(TilePartitionTraversalError::CoordinateUnderflow {
                     coordinate: "wiener_ns_ref_symb",
                     base: ref_coeffs[j] as usize,
                     offset: min.unsigned_abs() as usize,
-                },
-            )?;
+                });
+            };
             let decoded = read_wiener_ns_4part_wref(
                 WIENER_NS_TAPS_K[plane_index][j],
                 usize::try_from(ref_symb).map_err(|_| {
@@ -580,14 +580,16 @@ fn read_wiener_ns_4part_wref(
         checked_shl("wiener_ns_4part_offset", 1, part_bits[2])?,
         checked_shl("wiener_ns_4part_offset", 1, part_bits[3])?,
     ];
-    let bits =
-        *part_bits
-            .get(wiener_ns_base)
-            .ok_or(TilePartitionTraversalError::CoordinateOverflow {
-                coordinate: "wiener_ns_4part_part",
-                base: wiener_ns_base,
-                offset: 0,
-            })?;
+    let (Some(&bits), Some(&offset)) = (
+        part_bits.get(wiener_ns_base),
+        part_offsets.get(wiener_ns_base),
+    ) else {
+        return Err(TilePartitionTraversalError::CoordinateOverflow {
+            coordinate: "wiener_ns_4part_part",
+            base: wiener_ns_base,
+            offset: 0,
+        });
+    };
     let bits =
         u32::try_from(bits).map_err(|_| TilePartitionTraversalError::CoordinateOverflow {
             coordinate: "wiener_ns_4part_bits",
@@ -601,13 +603,6 @@ fn read_wiener_ns_4part_wref(
             offset: 0,
         }
     })?;
-    let offset = *part_offsets.get(wiener_ns_base).ok_or(
-        TilePartitionTraversalError::CoordinateOverflow {
-            coordinate: "wiener_ns_4part_part",
-            base: wiener_ns_base,
-            offset: 0,
-        },
-    )?;
     let symbol = checked_add("wiener_ns_4part_symbol", literal, offset)?;
     let n = checked_shl("wiener_ns_4part_range", 1, nsymb_bits)?;
     inverse_recenter_finite_nonneg(n, ref_symb, symbol)

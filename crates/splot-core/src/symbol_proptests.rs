@@ -72,6 +72,38 @@ proptest! {
         }
     }
 
+    /// The vector adaptation of compact `u16` rows must match the scalar
+    /// `i32` adaptation for every arity and every entry up to
+    /// `CDF_PROB_SCALE`, including the 0 and `CDF_PROB_SCALE` extremes.
+    #[test]
+    fn compact_rows_decode_and_adapt_like_i32_rows(
+        n in MIN_SYMBOLS..=MAX_SYMBOLS,
+        mut probs in proptest::collection::vec(0i32..=CDF_PROB_SCALE as i32, MAX_SYMBOLS - 1),
+        rate_index in 0usize..PARA_ADJUSTMENT_LIST.len(),
+        count in 0i32..=MAX_CDF_COUNT,
+        data in proptest::collection::vec(any::<u8>(), 2..16),
+    ) {
+        probs[..n - 1].sort_unstable();
+        let mut row = vec![0i32; n + 1];
+        row[..n - 1].copy_from_slice(&probs[..n - 1]);
+        row[n - 1] = rate_index as i32;
+        row[n] = count;
+        let mut compact: Vec<u16> = row.iter().map(|&value| value as u16).collect();
+        let trusted = SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
+
+        let mut wide = SymbolDecoder::with_config(&data, trusted).unwrap();
+        let wide_symbol = wide.read_symbol(&mut row);
+        let mut narrow = SymbolDecoder::with_config(&data, trusted).unwrap();
+        let narrow_symbol = narrow.read_symbol_u16(&mut compact);
+
+        prop_assert_eq!(wide_symbol.is_ok(), narrow_symbol.is_ok());
+        if let (Ok(wide_symbol), Ok(narrow_symbol)) = (wide_symbol, narrow_symbol) {
+            prop_assert_eq!(wide_symbol, narrow_symbol);
+            let widened: Vec<i32> = compact.iter().map(|&value| i32::from(value)).collect();
+            prop_assert_eq!(widened, row);
+        }
+    }
+
     /// On well-formed rows, trusted CDF validation must decode the same
     /// symbol and produce the same adapted row as full validation, for every
     /// arity.

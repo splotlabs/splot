@@ -9,6 +9,9 @@
 //! before § 8.3 syntax-element CDF selection, tile CDF bank ownership,
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
+use core::simd::cmp::SimdPartialOrd;
+use core::simd::{Select, Simd};
+
 use crate::bitio::be_window;
 use crate::error::{Error, Result, SymbolCdfErrorKind, SymbolDecoderErrorKind};
 use crate::span::{BitOffset, ByteOffset};
@@ -23,10 +26,20 @@ pub(crate) const MAX_SYMBOLS: usize = 8;
 pub(crate) const MAX_LITERAL_BITS: u32 = 32;
 pub(crate) const MAX_CDF_COUNT: i32 = 32;
 const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
+/// A const copy of the static table, so per-arity reads fold to immediates
+/// in the crates that instantiate the generic decode.
+const PROB_INC_CONST: [[i32; 8]; 7] = PROB_INC;
 
 pub(crate) trait CdfStorage: Copy {
     fn to_i32(self) -> i32;
     fn from_i32(value: i32) -> Self;
+
+    /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn adapt_probabilities(cdf: &mut [Self], n: usize, rate: u32, symbol: usize) {
+        adapt_probabilities_scalar(cdf, 0..n - 1, rate, symbol);
+    }
 }
 
 impl CdfStorage for i32 {
@@ -48,57 +61,77 @@ impl CdfStorage for u16 {
         debug_assert!((0..=i32::from(u16::MAX)).contains(&value));
         value as u16
     }
+
+    /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
+    /// read, so the arity match folds away.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn adapt_probabilities(cdf: &mut [u16], n: usize, rate: u32, symbol: usize) {
+        match n {
+            3..=5 => adapt_probability_lanes::<4>(cdf, 0, n - 1, rate, symbol),
+            6 => {
+                adapt_probabilities_scalar(cdf, 0..1, rate, symbol);
+                adapt_probability_lanes::<4>(cdf, 1, n - 1, rate, symbol);
+            }
+            7 | 8 => adapt_probability_lanes::<8>(cdf, 0, n - 1, rate, symbol),
+            _ => adapt_probabilities_scalar(cdf, 0..n.saturating_sub(1), rate, symbol),
+        }
+    }
 }
 
-macro_rules! read_symbol_from_cdf {
-    ($decoder:expr, $cdf:expr) => {{
-        let decoder = $decoder;
-        let cdf = $cdf;
-        let shape = decoder.validate_cdf(cdf)?;
-        decoder.ensure_buffered(15);
-        let symbol_value = (decoder.dif >> SV_SHIFT) as u32;
-        let mut cur = decoder.symbol_range;
-        let mut symbol = 0usize;
-
-        let (prev, cur) = loop {
-            let prev = cur;
-            let f = if symbol == shape.n - 1 {
-                0
-            } else {
-                CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_i32() as u32)
-            };
-            let prob_inc = PROB_INC[shape.n - 2][symbol] as u32;
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
-            let next_cur = (((decoder.symbol_range >> 8) * pp) >> 7) << 3;
-
-            if symbol_value >= next_cur {
-                break (prev, next_cur);
-            }
-
-            cur = next_cur;
-            symbol += 1;
-            if symbol >= shape.n {
-                return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-            }
-        };
-
-        let new_range = prev.saturating_sub(cur);
-        if new_range == 0 {
-            return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
+/// The two-sided § 8.2.6 step on `range`. The grow branch uses wrapping
+/// arithmetic: identical for in-range entries, and panic-free under overflow
+/// checks for trusted rows with hostile entries.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn adapt_probabilities_scalar<T: CdfStorage>(
+    cdf: &mut [T],
+    range: core::ops::Range<usize>,
+    rate: u32,
+    symbol: usize,
+) {
+    let start = range.start;
+    let Some(entries) = cdf.get_mut(range) else {
+        return;
+    };
+    for (offset, entry) in entries.iter_mut().enumerate() {
+        let value = entry.to_i32();
+        if start + offset < symbol {
+            *entry = T::from_i32(value - (value >> rate));
+        } else {
+            let gap = (CDF_PROB_SCALE as i32).wrapping_sub(value);
+            *entry = T::from_i32(value.wrapping_add(gap >> rate));
         }
-        let bits = 15 - floor_log2(new_range);
-        decoder.symbol_range = new_range << bits;
-        decoder.dif = (decoder.dif - (u64::from(cur) << SV_SHIFT)) << bits;
-        decoder.buffered -= bits as i32;
-        decoder.symbol_max_bits -= i64::from(bits);
-        decoder.frame_symbol_count = decoder.frame_symbol_count.saturating_add(1);
+    }
+}
 
-        if decoder.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf(cdf, shape, symbol);
-        }
-
-        Ok(Symbol::new(symbol as u8))
-    }};
+/// The § 8.2.6 step on the `L` entries from `first`, of which those below
+/// `probabilities` are probabilities. Equal to the scalar step for entries up
+/// to `CDF_PROB_SCALE`.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn adapt_probability_lanes<const L: usize>(
+    cdf: &mut [u16],
+    first: usize,
+    probabilities: usize,
+    rate: u32,
+    symbol: usize,
+) {
+    let Some(lanes) = cdf.get_mut(first..first + L) else {
+        return;
+    };
+    let index = Simd::<u16, L>::from_array(core::array::from_fn(|lane| (first + lane) as u16));
+    let value = Simd::<u16, L>::from_slice(lanes);
+    let rate = Simd::splat(rate as u16);
+    let shrunk = value - (value >> rate);
+    let grown = value + ((Simd::splat(CDF_PROB_SCALE as u16) - value) >> rate);
+    let adapted = index
+        .simd_lt(Simd::splat(symbol as u16))
+        .select(shrunk, grown);
+    index
+        .simd_lt(Simd::splat(probabilities as u16))
+        .select(adapted, value)
+        .copy_to_slice(lanes);
 }
 
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
@@ -257,7 +290,9 @@ pub struct SymbolDecoder<'a> {
     buffered: i32,
     fed_bits: u64,
     symbol_range: u32,
-    symbol_max_bits: i64,
+    /// `8 * sz`; `SymbolMaxBits` is derived from it (see
+    /// [`Self::symbol_max_bits`]) instead of being updated on every read.
+    payload_bits: i64,
     frame_symbol_count: u64,
     config: SymbolDecoderConfig,
 }
@@ -297,7 +332,7 @@ impl<'a> SymbolDecoder<'a> {
         base: ByteOffset,
         config: SymbolDecoderConfig,
     ) -> Result<Self> {
-        let symbol_max_bits = symbol_max_bits_for_len(tile_payload.len(), base)?;
+        let payload_bits = symbol_max_bits_for_len(tile_payload.len(), base)? + 15;
         let dif = !be_window(tile_payload, 0) >> 1;
         Ok(Self {
             data: tile_payload,
@@ -306,7 +341,7 @@ impl<'a> SymbolDecoder<'a> {
             buffered: DIF_BUFFER_BITS,
             fed_bits: 63,
             symbol_range: SYMBOL_RANGE_INIT,
-            symbol_max_bits,
+            payload_bits,
             frame_symbol_count: 0,
             config,
         })
@@ -314,10 +349,20 @@ impl<'a> SymbolDecoder<'a> {
 
     /// Tops the buffered window back up to [`DIF_BUFFER_BITS`] future bits,
     /// reading payload bits past the end as ones (inverted zero padding).
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
     fn refill(&mut self) {
         let byte_index = usize::try_from(self.fed_bits / 8).unwrap_or(usize::MAX);
         let bit_offset = (self.fed_bits & 7) as u32;
-        let window = !(be_window(self.data, byte_index) << bit_offset);
+        let bytes = byte_index
+            .checked_add(8)
+            .and_then(|end| self.data.get(byte_index..end))
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok());
+        let raw = match bytes {
+            Some(bytes) => u64::from_be_bytes(bytes),
+            None => tail_window(self.data, byte_index),
+        };
+        let window = !(raw << bit_offset);
         let buffered = self.buffered.max(0) as u32;
         self.dif |= window >> (16 + buffered);
         self.fed_bits += u64::from(DIF_BUFFER_BITS as u32 - buffered);
@@ -333,9 +378,15 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// Returns the current signed `SymbolMaxBits` value.
+    ///
+    /// Every read shifts `dif` by exactly the bits it subtracts from
+    /// `SymbolMaxBits` (`8 * sz - 15` at init), and a refill moves bits from
+    /// `fed_bits` into `buffered` one for one, so `SymbolMaxBits` is
+    /// `8 * sz - fed_bits + buffered`.
     #[must_use]
+    #[inline]
     pub const fn symbol_max_bits(&self) -> i64 {
-        self.symbol_max_bits
+        self.payload_bits - self.fed_bits as i64 + self.buffered as i64
     }
 
     /// Returns the number of counted frame symbols so far.
@@ -351,9 +402,10 @@ impl<'a> SymbolDecoder<'a> {
     /// which reads consume nothing, so the historical bounded-reader
     /// position is exactly `8 * sz - max(SymbolMaxBits, 0)`.
     #[must_use]
+    #[inline]
     pub fn consumed_bits(&self) -> SymbolBitPosition {
         let total = total_bits(self.data.len());
-        let remaining = self.symbol_max_bits.max(0) as u64;
+        let remaining = self.symbol_max_bits().max(0) as u64;
         SymbolBitPosition::new(total.saturating_sub(remaining))
     }
 
@@ -368,7 +420,7 @@ impl<'a> SymbolDecoder<'a> {
         SymbolDecoderCheckpoint {
             consumed_bits: self.consumed_bits(),
             symbol_count: self.frame_symbol_count,
-            symbol_max_bits: self.symbol_max_bits,
+            symbol_max_bits: self.symbol_max_bits(),
             symbol_value: self.symbol_value(),
             symbol_range: self.symbol_range,
         }
@@ -388,6 +440,7 @@ impl<'a> SymbolDecoder<'a> {
     /// # Errors
     /// Returns [`Error::InvalidSymbolDecoderState`] if `n > 32`, or propagates
     /// [`Error::UnexpectedEof`] from the bounded bit reader.
+    #[inline]
     pub fn read_literal(&mut self, n: u32) -> Result<u32> {
         if n > MAX_LITERAL_BITS {
             return Err(
@@ -469,7 +522,7 @@ impl<'a> SymbolDecoder<'a> {
     /// [`Error::UnexpectedEof`] if the bounded tile payload unexpectedly cannot
     /// supply a required coded bit.
     pub fn read_symbol(&mut self, cdf: &mut [i32]) -> Result<Symbol> {
-        read_symbol_from_cdf!(self, cdf)
+        self.read_symbol_row(cdf)
     }
 
     /// Decodes one AV2 § 8.2.6 symbol from a compact `u16` CDF row.
@@ -480,7 +533,95 @@ impl<'a> SymbolDecoder<'a> {
     /// Returns the same errors as [`Self::read_symbol`].
     #[inline]
     pub fn read_symbol_u16(&mut self, cdf: &mut [u16]) -> Result<Symbol> {
-        read_symbol_from_cdf!(self, cdf)
+        self.read_symbol_row(cdf)
+    }
+
+    /// Decodes one AV2 § 8.2.6 symbol from a fixed-length compact CDF row.
+    ///
+    /// The arity is a compile-time constant, so the read inlines into hot
+    /// loops without the length dispatch of [`Self::read_symbol_u16`].
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::read_symbol`].
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_symbol_u16_array<const L: usize>(&mut self, cdf: &mut [u16; L]) -> Result<Symbol> {
+        match L {
+            3 => self.read_symbol_arity::<u16, 2>(cdf),
+            4 => self.read_symbol_arity::<u16, 3>(cdf),
+            5 => self.read_symbol_arity::<u16, 4>(cdf),
+            6 => self.read_symbol_arity::<u16, 5>(cdf),
+            7 => self.read_symbol_arity::<u16, 6>(cdf),
+            8 => self.read_symbol_arity::<u16, 7>(cdf),
+            9 => self.read_symbol_arity::<u16, 8>(cdf),
+            _ => self.read_symbol_row(cdf),
+        }
+    }
+
+    /// Dispatches on the row length so each arity's search loop and
+    /// adaptation are unrolled with constant bounds.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_symbol_row<T: CdfStorage>(&mut self, cdf: &mut [T]) -> Result<Symbol> {
+        match cdf.len() {
+            3 => self.read_symbol_arity::<T, 2>(cdf),
+            4 => self.read_symbol_arity::<T, 3>(cdf),
+            5 => self.read_symbol_arity::<T, 4>(cdf),
+            6 => self.read_symbol_arity::<T, 5>(cdf),
+            7 => self.read_symbol_arity::<T, 6>(cdf),
+            8 => self.read_symbol_arity::<T, 7>(cdf),
+            9 => self.read_symbol_arity::<T, 8>(cdf),
+            len => Err(self.cdf_error(SymbolCdfErrorKind::UnsupportedLength { len })),
+        }
+    }
+
+    /// Decodes one symbol of a row with `N + 1` entries. The last symbol's
+    /// `next_cur` is 0 (`f = 0` and `Prob_Inc` 0), so a search that passes
+    /// every other boundary ends there. Both validation modes return
+    /// `n = N`; restating it keeps `n` constant in the adaptation step.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_symbol_arity<T: CdfStorage, const N: usize>(
+        &mut self,
+        cdf: &mut [T],
+    ) -> Result<Symbol> {
+        let shape = CdfShape {
+            n: N,
+            ..self.validate_cdf(cdf)?
+        };
+        self.ensure_buffered(15);
+        let symbol_value = (self.dif >> SV_SHIFT) as u32;
+        let range8 = self.symbol_range >> 8;
+        let mut prev = self.symbol_range;
+        let mut cur = 0;
+        let mut symbol = 0;
+        while symbol < N - 1 {
+            let f = CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_i32() as u32);
+            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_CONST[N - 2][symbol] as u32;
+            let next_cur = ((range8 * pp) >> 7) << 3;
+            if symbol_value >= next_cur {
+                cur = next_cur;
+                break;
+            }
+            prev = next_cur;
+            symbol += 1;
+        }
+
+        let new_range = prev.saturating_sub(cur);
+        if new_range == 0 {
+            return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
+        }
+        let bits = 15 - floor_log2(new_range);
+        self.symbol_range = new_range << bits;
+        self.dif = (self.dif - (u64::from(cur) << SV_SHIFT)) << bits;
+        self.buffered -= bits as i32;
+        self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
+
+        if self.config.cdf_update == CdfUpdateMode::Enabled {
+            update_cdf(cdf, shape, symbol);
+        }
+
+        Ok(Symbol::new(symbol as u8))
     }
 
     /// Validates AV2 § 8.2.4 `exit_symbol()` and returns the final decoder summary.
@@ -490,25 +631,22 @@ impl<'a> SymbolDecoder<'a> {
     /// computed trailing bit is missing or not `1`, or any padding bit before
     /// `paddingEndPosition` is nonzero.
     pub fn exit_symbol(self) -> Result<SymbolDecoderSummary> {
-        if self.symbol_max_bits < -14 {
+        let symbol_max_bits = self.symbol_max_bits();
+        if symbol_max_bits < -14 {
             return Err(
-                self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall {
-                    symbol_max_bits: self.symbol_max_bits,
-                }),
+                self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall { symbol_max_bits })
             );
         }
 
         let current = self.consumed_bits().get();
-        let rewind = u64::try_from((self.symbol_max_bits + 15).min(15)).map_err(|_| {
-            self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall {
-                symbol_max_bits: self.symbol_max_bits,
-            })
+        let rewind = u64::try_from((symbol_max_bits + 15).min(15)).map_err(|_| {
+            self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall { symbol_max_bits })
         })?;
         let trailing_bit_position = current.checked_sub(rewind).ok_or_else(|| {
             self.state_error(SymbolDecoderErrorKind::TrailingBitOutOfRange { bit_position: 0 })
         })?;
-        let skip = if self.symbol_max_bits > 0 {
-            self.symbol_max_bits as u64
+        let skip = if symbol_max_bits > 0 {
+            symbol_max_bits as u64
         } else {
             0
         };
@@ -615,7 +753,6 @@ impl<'a> SymbolDecoder<'a> {
         self.dif =
             (u64::from(symbol_value) << SV_SHIFT) | ((self.dif << bits) & ((1 << SV_SHIFT) - 1));
         self.buffered -= bits as i32;
-        self.symbol_max_bits -= i64::from(bits);
     }
 
     fn bit_at(&self, bit_position: u64) -> Option<u8> {
@@ -625,39 +762,55 @@ impl<'a> SymbolDecoder<'a> {
         Some((byte >> (7 - bit_offset)) & 1)
     }
 
+    #[inline]
     fn cdf_error(&self, kind: SymbolCdfErrorKind) -> Error {
-        let (offset, bit_offset) = self.offset_for_bit(self.consumed_bits().get());
-        Error::InvalidSymbolCdf {
-            offset,
-            bit_offset,
-            kind,
-        }
+        cdf_error_at(self.base, self.consumed_bits().get(), kind)
     }
 
+    #[inline]
     fn state_error(&self, kind: SymbolDecoderErrorKind) -> Error {
-        let (offset, bit_offset) = self.offset_for_bit(self.consumed_bits().get());
-        Error::InvalidSymbolDecoderState {
-            offset,
-            bit_offset,
-            kind,
-        }
+        state_error_at(self.base, self.consumed_bits().get(), kind)
     }
 
     fn state_error_at_bit(&self, bit_position: u64, kind: SymbolDecoderErrorKind) -> Error {
-        let (offset, bit_offset) = self.offset_for_bit(bit_position);
-        Error::InvalidSymbolDecoderState {
-            offset,
-            bit_offset,
-            kind,
-        }
+        state_error_at(self.base, bit_position, kind)
     }
+}
 
-    fn offset_for_bit(&self, bit_position: u64) -> (ByteOffset, BitOffset) {
-        (
-            self.base.saturating_add(bit_position / 8),
-            BitOffset::from_bits((bit_position % 8) as u8),
-        )
+/// The payload tail, zero-padded; out of line so the refill fast path stays
+/// small where it inlines.
+#[cold]
+fn tail_window(data: &[u8], byte_index: usize) -> u64 {
+    be_window(data, byte_index)
+}
+
+/// Error constructors are cold and take the position by value, so an inlined
+/// read keeps only a call on its failure path.
+#[cold]
+fn cdf_error_at(base: ByteOffset, bit_position: u64, kind: SymbolCdfErrorKind) -> Error {
+    let (offset, bit_offset) = offset_for_bit(base, bit_position);
+    Error::InvalidSymbolCdf {
+        offset,
+        bit_offset,
+        kind,
     }
+}
+
+#[cold]
+fn state_error_at(base: ByteOffset, bit_position: u64, kind: SymbolDecoderErrorKind) -> Error {
+    let (offset, bit_offset) = offset_for_bit(base, bit_position);
+    Error::InvalidSymbolDecoderState {
+        offset,
+        bit_offset,
+        kind,
+    }
+}
+
+fn offset_for_bit(base: ByteOffset, bit_position: u64) -> (ByteOffset, BitOffset) {
+    (
+        base.saturating_add(bit_position / 8),
+        BitOffset::from_bits((bit_position % 8) as u8),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -754,6 +907,7 @@ fn symbol_max_bits_for_len(len: usize, base: ByteOffset) -> Result<i64> {
         })
 }
 
+#[inline]
 fn total_bits(len: usize) -> u64 {
     match u64::try_from(len) {
         Ok(bytes) => bytes.saturating_mul(8),
@@ -770,9 +924,9 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
     u32::BITS - 1 - value.leading_zeros()
 }
 
-/// Applies the AV2 § 8.2.6 adaptation step. The grow branch uses wrapping
-/// arithmetic: identical for in-range entries, and panic-free under overflow
-/// checks for trusted rows with hostile entries.
+/// Applies the AV2 § 8.2.6 adaptation step.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
 pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: usize) {
     let time_interval = if shape.count > 31 {
         2usize
@@ -783,17 +937,7 @@ pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: 
         + time_interval as i32
         + floor_log2(shape.n as u32).min(2) as i32
         + PARA_ADJUSTMENT_LIST[shape.rate_index][time_interval];
-    let rate = rate as u32;
-
-    for (index, entry) in cdf.iter_mut().take(shape.n - 1).enumerate() {
-        let value = entry.to_i32();
-        if index < symbol {
-            *entry = T::from_i32(value - (value >> rate));
-        } else {
-            let gap = (CDF_PROB_SCALE as i32).wrapping_sub(value);
-            *entry = T::from_i32(value.wrapping_add(gap >> rate));
-        }
-    }
+    T::adapt_probabilities(cdf, shape.n, rate as u32, symbol);
     let count = cdf[shape.n].to_i32();
     if count < MAX_CDF_COUNT {
         cdf[shape.n] = T::from_i32(count + 1);

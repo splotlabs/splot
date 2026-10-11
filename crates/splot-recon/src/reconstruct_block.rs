@@ -31,7 +31,8 @@ use crate::{ReconSample, Result};
 /// prediction: `out = Clip1(prediction + inverse_transform(dequant(quant)))`.
 ///
 /// `quant` holds the adjusted `adjW * adjH` decoded quantized coefficients,
-/// matching `dequant_params.tx_width * dequant_params.tx_height`; `prediction`
+/// matching `dequant_params.tx_width * dequant_params.tx_height` (it may stop at
+/// the last coded coefficient; the missing tail is zero); `prediction`
 /// and `out` are the original `origW * origH` samples (the original size is
 /// `1 << log2` per side of `transform`, the adjusted size `1 << Min(log2, 5)`).
 /// `dequant_scratch` (`adjW * adjH`) and `residual_scratch` (`origW * origH`) are
@@ -95,13 +96,32 @@ pub fn reconstruct_transform_block_residual_with_secondary<T: ReconSample>(
     residual_scratch: &mut [i32],
     out: &mut [T],
 ) -> Result<()> {
-    dequantize_block(dequant_params, quant, dequant_scratch)?;
-    if let Some(params) = secondary {
-        secondary_inverse_transform(dequant_scratch, params)?;
-    }
-    inverse_transform_2d_outer(transform, dequant_scratch, residual_scratch)?;
+    let coded = dequantize_with_secondary(dequant_params, quant, secondary, dequant_scratch)?;
+    inverse_transform_2d_outer(transform, &dequant_scratch[..coded], residual_scratch)?;
     reconstruct_add_residual(prediction, residual_scratch, transform.bit_depth, out)?;
     Ok(())
+}
+
+/// Runs AV2 § 7.14.4 dequantization of `quant` into `dequant`, then the optional
+/// § 7.15.3 secondary inverse transform, and returns the length of the
+/// whole-row prefix of `dequant` that may be nonzero (the rows after it are
+/// zero, and are left unwritten).
+///
+/// # Errors
+/// Propagates the [`dequantize_block`] or [`secondary_inverse_transform`] error.
+pub fn dequantize_with_secondary(
+    params: &DequantBlockParams,
+    quant: &[i32],
+    secondary: Option<&SecondaryInverseTransform>,
+    dequant: &mut [i32],
+) -> Result<usize> {
+    let coded = dequantize_block(params, quant, dequant)?;
+    let Some(secondary) = secondary else {
+        return Ok(coded);
+    };
+    dequant[coded..].fill(0);
+    secondary_inverse_transform(dequant, secondary)?;
+    Ok(dequant.len())
 }
 
 #[cfg(test)]
@@ -275,5 +295,66 @@ mod tests {
             Err(ReconError::DequantBlockLengthMismatch { .. })
         ));
         assert_eq!(out, [7u8; 16], "output is untouched on a rejected input");
+    }
+
+    #[test]
+    fn coded_prefix_matches_dense_block() {
+        let shapes = [
+            (2, 2, false),
+            (2, 2, true),
+            (3, 4, false),
+            (5, 5, false),
+            (6, 4, false),
+        ];
+        for (log2_w, log2_h, lossless) in shapes {
+            let (adj_w, adj_h) = (1usize << log2_w.min(5), 1usize << log2_h.min(5));
+            let samples = 1usize << (log2_w + log2_h);
+            let mut params = dct_dequant_params(adj_w, adj_h, 100);
+            params.bit_depth = BitDepth::Ten;
+            let prediction = vec![512u16; samples];
+            for tx_type in [0, 9, 10, 13] {
+                let transform = InverseTransform2dOuter::resolve(
+                    tx_type,
+                    log2_w,
+                    log2_h,
+                    false,
+                    lossless,
+                    BitDepth::Ten,
+                    None,
+                )
+                .unwrap();
+                for last in [0, 1, adj_w + 1, adj_w * adj_h / 2, adj_w * adj_h - 1] {
+                    let mut dense = vec![0i32; adj_w * adj_h];
+                    for (i, slot) in dense.iter_mut().enumerate().take(last + 1).step_by(3) {
+                        *slot = 9 - (i % 19) as i32;
+                    }
+                    dense[last] = -5;
+                    let (mut dq, mut res) = (vec![0; adj_w * adj_h], vec![0; samples]);
+                    let (mut want, mut got) = (vec![0u16; samples], vec![0u16; samples]);
+                    reconstruct_transform_block_residual(
+                        &prediction,
+                        &dense,
+                        &params,
+                        &transform,
+                        &mut dq,
+                        &mut res,
+                        &mut want,
+                    )
+                    .unwrap();
+                    dq.fill(i32::MIN);
+                    reconstruct_transform_block_residual(
+                        &prediction,
+                        &dense[..=last],
+                        &params,
+                        &transform,
+                        &mut dq,
+                        &mut res,
+                        &mut got,
+                    )
+                    .unwrap();
+                    assert_eq!(got, want, "{log2_w}x{log2_h} type {tx_type} last {last}");
+                }
+            }
+        }
     }
 }

@@ -94,12 +94,12 @@ impl ResidualPlanePlan {
         let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
         let width4 = (1usize << log2_width) >> 2;
         let height4 = (1usize << log2_height) >> 2;
-        let tx = TxShape::from_luma_4x4(width4.max(1), height4.max(1)).ok_or(
-            GeneralIntraResidualError::TransformPartitionGeometry {
+        let Some(tx) = TxShape::from_luma_4x4(width4.max(1), height4.max(1)) else {
+            return Err(GeneralIntraResidualError::TransformPartitionGeometry {
                 table: "Tx_Width_Log2",
                 index: block.tx_size,
-            },
-        )?;
+            });
+        };
         let block_ctx = self.transform_unit_block_ctx(block, tx, width4.max(1), height4.max(1))?;
         Ok(ResidualPlanePlan {
             block_ctx,
@@ -142,12 +142,13 @@ impl ResidualPlanePlan {
             width4 * scale_x,
             height4 * scale_y,
         );
-        let chroma_tx = TxShape::from_luma_4x4(chroma_ref.width4(), chroma_ref.height4()).ok_or(
-            GeneralIntraResidualError::TransformPartitionGeometry {
+        let Some(chroma_tx) = TxShape::from_luma_4x4(chroma_ref.width4(), chroma_ref.height4())
+        else {
+            return Err(GeneralIntraResidualError::TransformPartitionGeometry {
                 table: "Lossless_Chroma_Tx",
                 index: block.tx_size,
-            },
-        )?;
+            });
+        };
         Ok(BlockCtx::new(
             self.block_ctx.block(),
             self.block_ctx.plane_block(PlaneId::Y).tx(),

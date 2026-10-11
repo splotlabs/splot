@@ -139,7 +139,6 @@ pub(crate) struct NonZeroCoeffEobInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobSymbolInput {
     pub(crate) size: EobPtSize,
-    pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) eob_ctx: usize,
 }
 
@@ -149,7 +148,6 @@ pub(crate) struct NonZeroCoeffEobContextInput {
     pub(crate) is_inter: bool,
     pub(crate) tx_width_log2: usize,
     pub(crate) tx_height_log2: usize,
-    pub(crate) coeff_cdf_q_ctx: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -210,6 +208,8 @@ pub(crate) enum CoeffLoopContextError {
     ScanWalkEobOutOfRange { eob: usize, scan_len: usize },
     #[error("coefficient FSC scan walk EOB {eob} exceeds segment EOB {seg_eob}")]
     FscScanWalkEobOutOfRange { eob: usize, seg_eob: usize },
+    #[error("coefficient scan walk block width {width} is not a power of two")]
+    ScanWalkWidthNotPowerOfTwo { width: usize },
     #[error(
         "coefficient scan index {scan_index} points to position {pos}, outside coefficient count {coeff_count}"
     )]
@@ -268,7 +268,6 @@ pub(crate) fn read_nonzero_coeff_eob(
         .read_block_symbol_trace(
             TileCdfSelector::EobPt {
                 size: input.size,
-                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                 eob_ctx: input.eob_ctx,
             },
             symbols,
@@ -281,12 +280,7 @@ pub(crate) fn read_nonzero_coeff_eob(
 
     let (eob_extra, eob_extra_bits) = if eob_pt >= 3 {
         let eob_extra = cdfs
-            .read_block_symbol_trace(
-                TileCdfSelector::EobExtra {
-                    coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
-                },
-                symbols,
-            )?
+            .read_block_symbol_trace(TileCdfSelector::EobExtra {}, symbols)?
             .get()
             != 0;
         let width = eob_extra_bits_width(eob_pt)? as u32;
@@ -320,7 +314,6 @@ pub(crate) fn nonzero_coeff_eob_symbol_input(
 ) -> Result<NonZeroCoeffEobSymbolInput, CoeffLoopContextError> {
     Ok(NonZeroCoeffEobSymbolInput {
         size: eob_pt_size_from_tx_log2(input.tx_width_log2, input.tx_height_log2)?,
-        coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
         eob_ctx: eob_context(input.plane, input.is_inter),
     })
 }
@@ -394,11 +387,10 @@ fn checked_resolved_eob_pt(
 }
 
 fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
-    EOB_OFFSET_BITS
-        .get(eob_pt)
-        .copied()
-        .map(|width| width.saturating_sub(1))
-        .ok_or(CoeffLoopContextError::InvalidEobPoint { eob_pt })
+    let Some(width) = EOB_OFFSET_BITS.get(eob_pt) else {
+        return Err(CoeffLoopContextError::InvalidEobPoint { eob_pt });
+    };
+    Ok(width.saturating_sub(1))
 }
 
 fn read_eob_literal(

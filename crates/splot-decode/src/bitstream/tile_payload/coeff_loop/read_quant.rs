@@ -70,6 +70,9 @@ impl CoeffReadQuantState {
         }
     }
 
+    /// Inlined for the common level below the remainder threshold, which
+    /// reads nothing; the Golomb remainder stays out of line.
+    #[inline]
     pub(crate) fn read_one(
         &mut self,
         symbols: &mut SymbolDecoder<'_>,
@@ -80,7 +83,16 @@ impl CoeffReadQuantState {
         if input.level < threshold {
             return Ok(CoeffQuantReadInput { quant: input.level });
         }
+        self.read_remainder(symbols, index, input)
+    }
 
+    #[inline(never)]
+    fn read_remainder(
+        &mut self,
+        symbols: &mut SymbolDecoder<'_>,
+        index: usize,
+        input: CoeffReadQuantInput,
+    ) -> Result<CoeffQuantReadInput, CoeffReadQuantError> {
         let lvl_shift = u32::from(input.entry.pos() == 0 && self.is_hidden);
         let pred_level = self.hr_level_avg >> lvl_shift;
         let m = get_msb(pred_level).clamp(MIN_M, MAX_M);
@@ -111,7 +123,7 @@ impl CoeffReadQuantState {
                     q_base,
                     length_base
                         .checked_sub(k_base)
-                        .ok_or(quant_overflow(index, "1 << length - 1 << k"))?,
+                        .ok_or_else(|| quant_overflow(index, "1 << length - 1 << k"))?,
                     "extended xBase",
                 )?,
             )
@@ -137,7 +149,7 @@ impl CoeffReadQuantState {
         let quant = input
             .level
             .checked_add(quant_add)
-            .ok_or(quant_overflow(index, "quant + x << allowTcq"))?;
+            .ok_or_else(|| quant_overflow(index, "quant + x << allowTcq"))?;
         self.hr_level_avg = next_hr;
 
         Ok(CoeffQuantReadInput { quant })
@@ -157,13 +169,14 @@ fn quant_threshold(
     max_level: u32,
     allow_tcq: bool,
 ) -> Result<u32, CoeffReadQuantError> {
-    max_level
-        .checked_sub(u32::from(allow_tcq))
-        .ok_or(CoeffReadQuantError::InvalidMaxLevel {
+    let Some(threshold) = max_level.checked_sub(u32::from(allow_tcq)) else {
+        return Err(CoeffReadQuantError::InvalidMaxLevel {
             index,
             max_level,
             allow_tcq,
-        })
+        });
+    };
+    Ok(threshold)
 }
 
 #[derive(Clone, Copy)]
@@ -204,7 +217,8 @@ fn checked_add(
     rhs: u32,
     operation: &'static str,
 ) -> Result<u32, CoeffReadQuantError> {
-    lhs.checked_add(rhs).ok_or(quant_overflow(index, operation))
+    lhs.checked_add(rhs)
+        .ok_or_else(|| quant_overflow(index, operation))
 }
 
 fn checked_shl(
@@ -215,7 +229,7 @@ fn checked_shl(
 ) -> Result<u32, CoeffReadQuantError> {
     value
         .checked_shl(shift)
-        .ok_or(quant_overflow(index, operation))
+        .ok_or_else(|| quant_overflow(index, operation))
 }
 
 fn quant_overflow(index: usize, operation: &'static str) -> CoeffReadQuantError {

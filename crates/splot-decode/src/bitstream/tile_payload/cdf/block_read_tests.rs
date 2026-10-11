@@ -16,7 +16,6 @@ const SUPPORTED_BLOCK_SYMBOL_SELECTORS: &[TileCdfSelector] = &[
     TileCdfSelector::YModeSet,
     TileCdfSelector::YModeIndex { ctx: 0 },
     TileCdfSelector::TxbSkip {
-        coeff_cdf_q_ctx: 2,
         plane_type: 0,
         tx_size: 0,
         ctx: 0,
@@ -45,10 +44,7 @@ const SUPPORTED_BLOCK_SYMBOL_SELECTORS: &[TileCdfSelector] = &[
     TileCdfSelector::WarpDeltaParamLow { index_type: 0 },
     TileCdfSelector::WarpDeltaParamHigh { index_type: 1 },
     TileCdfSelector::WarpDeltaParamSign,
-    TileCdfSelector::VTxbSkip {
-        coeff_cdf_q_ctx: 1,
-        ctx: 3,
-    },
+    TileCdfSelector::VTxbSkip { ctx: 3 },
     TileCdfSelector::IsLongSideDct { is_inter: 0 },
     TileCdfSelector::IntraTxTypeLong { tx_size_sqr: 2 },
     TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr: 0 },

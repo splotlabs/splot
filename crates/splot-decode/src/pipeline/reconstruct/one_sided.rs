@@ -8,14 +8,14 @@ use core::ops::Deref;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, IntraDirectionalAngle,
     IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges, IntraPredictionScratchBuffer,
-    IntraRectBlockSize, PlaneId, ReconSample, apply_intra_edge_filter, filter_intra_edge_corner,
-    predict_intra_directional_angle_rect_into,
+    IntraRectBlockSize, PlaneId, PlaneRect, ReconError, ReconSample, apply_intra_edge_filter,
+    filter_intra_edge_corner, predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_mrl_into,
 };
 
 use super::sink::{
-    IntraEdgeAvailability, build_mrl_luma_prediction, noneighbour_above, noneighbour_corner,
-    noneighbour_left, write_intra_prediction_block,
+    IntraEdgeAvailability, build_mrl_luma_prediction, invalid_directional_edge_state,
+    noneighbour_above, noneighbour_corner, noneighbour_left, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext,
@@ -352,13 +352,13 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
             let above_row = y
                 .checked_sub(1)
                 .and_then(|row| row.checked_sub(above_mrl_index))
-                .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+                .ok_or_else(invalid_directional_edge_state)?;
             let max_x = workspace
                 .plane(PlaneId::Y)?
                 .storage_size()
                 .width()
                 .checked_sub(1)
-                .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+                .ok_or_else(invalid_directional_edge_state)?;
             for column in 0..width {
                 let sample_x = x.saturating_add(column).min(max_x);
                 let sample = workspace.reconstructed_sample(PlaneId::Y, sample_x, above_row)?;
@@ -372,7 +372,7 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
                 let left_col = x
                     .checked_sub(1)
                     .and_then(|col| col.checked_sub(mrl_index))
-                    .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+                    .ok_or_else(invalid_directional_edge_state)?;
                 workspace.reconstructed_sample(PlaneId::Y, left_col, y)?
             } else {
                 noneighbour_above::<T>(bit_depth)
@@ -383,13 +383,13 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
             let left_col = x
                 .checked_sub(1)
                 .and_then(|col| col.checked_sub(mrl_index))
-                .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+                .ok_or_else(invalid_directional_edge_state)?;
             let max_y = workspace
                 .plane(PlaneId::Y)?
                 .storage_size()
                 .height()
                 .checked_sub(1)
-                .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+                .ok_or_else(invalid_directional_edge_state)?;
             for row in 0..height {
                 let sample_y = y.saturating_add(row).min(max_y);
                 let sample = workspace.reconstructed_sample(PlaneId::Y, left_col, sample_y)?;
@@ -403,7 +403,7 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
                 let above_row = y
                     .checked_sub(1)
                     .and_then(|row| row.checked_sub(above_mrl_index))
-                    .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+                    .ok_or_else(invalid_directional_edge_state)?;
                 workspace.reconstructed_sample(PlaneId::Y, x, above_row)?
             } else {
                 noneighbour_left::<T>(bit_depth)
@@ -437,12 +437,15 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
                 mrl_index,
                 edge_filter,
                 || Ok(noneighbour_corner::<T>(bit_depth)),
-                |_| Ok(noneighbour_above::<T>(bit_depth)),
+                |edge| {
+                    edge.fill(noneighbour_above::<T>(bit_depth));
+                    Ok(())
+                },
             );
         }
         let fallback_col = x
             .checked_sub(mrl_index + 1)
-            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+            .ok_or_else(invalid_directional_edge_state)?;
         let fallback = workspace.reconstructed_sample(plane_id, fallback_col, y)?;
         return build_one_sided_idif_edge(
             width,
@@ -450,19 +453,22 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
             mrl_index,
             edge_filter,
             || Ok(fallback),
-            |_| Ok(fallback),
+            |edge| {
+                edge.fill(fallback);
+                Ok(())
+            },
         );
     }
     let above_row = y
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
-        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+        .ok_or_else(invalid_directional_edge_state)?;
     let max_x = workspace
         .plane(plane_id)?
         .storage_size()
         .width()
         .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+        .ok_or_else(invalid_directional_edge_state)?;
     let above_limit = width
         .checked_add(num4_above_right.saturating_mul(4))
         .and_then(|v| v.checked_sub(1))
@@ -479,10 +485,7 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
         mrl_index,
         edge_filter,
         || workspace.reconstructed_sample(plane_id, corner_col, above_row),
-        |i| {
-            let column = x.saturating_add(i).min(above_limit);
-            workspace.reconstructed_sample(plane_id, column, above_row)
-        },
+        |edge| gather_row_clamped(workspace, plane_id, (x, above_row), above_limit, edge),
     )?;
     Ok(edge)
 }
@@ -492,20 +495,18 @@ fn build_one_sided_idif_edge<T: ReconSample>(
     height: usize,
     mrl_index: usize,
     edge_filter: OneSidedEdgeFilter,
-    corner: impl FnOnce() -> core::result::Result<T, splot_recon::ReconError>,
-    in_edge: impl Fn(usize) -> core::result::Result<T, splot_recon::ReconError>,
+    corner: impl FnOnce() -> core::result::Result<T, ReconError>,
+    in_edge: impl FnOnce(&mut [T]) -> core::result::Result<(), ReconError>,
 ) -> core::result::Result<OneSidedIdifEdge<T>, GeneralIntraResidualError> {
     let (max_base, edge_len) = width
         .checked_add(height)
         .and_then(|v| v.checked_sub(1))
         .and_then(|v| v.checked_add(mrl_index.checked_mul(2)?))
         .and_then(|max_base| Some((max_base, max_base.checked_add(5)?)))
-        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+        .ok_or_else(invalid_directional_edge_state)?;
     let mut edge = OneSidedIdifEdge::new(edge_len)?;
     edge.samples[1] = corner()?;
-    for i in 0..=max_base {
-        edge.samples[i + 2] = in_edge(i)?;
-    }
+    in_edge(&mut edge.samples[2..max_base + 3])?;
     finalize_one_sided_idif_edge(&mut edge.samples[..edge.len], max_base, edge_filter)?;
     Ok(edge)
 }
@@ -518,11 +519,11 @@ pub(super) fn finalize_one_sided_idif_edge<T: ReconSample>(
     if let Some(opposite) = filter.corner_opposite {
         let corner = edge
             .get(1)
-            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?
+            .ok_or_else(invalid_directional_edge_state)?
             .to_u16();
         let own0 = edge
             .get(2)
-            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?
+            .ok_or_else(invalid_directional_edge_state)?
             .to_u16();
         let filtered = filter_intra_edge_corner(opposite, corner, own0);
         edge[1] = T::try_from_u16(filtered)?;
@@ -765,13 +766,16 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
                 mrl_index,
                 edge_filter,
                 || Ok(noneighbour_corner::<T>(bit_depth)),
-                |_| Ok(noneighbour_left::<T>(bit_depth)),
+                |edge| {
+                    edge.fill(noneighbour_left::<T>(bit_depth));
+                    Ok(())
+                },
             );
         }
         let fallback_row = y
             .checked_sub(1)
             .and_then(|row| row.checked_sub(above_mrl_index))
-            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+            .ok_or_else(invalid_directional_edge_state)?;
         let fallback = workspace.reconstructed_sample(plane_id, x, fallback_row)?;
         return build_one_sided_idif_edge(
             width,
@@ -779,19 +783,22 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
             mrl_index,
             edge_filter,
             || Ok(fallback),
-            |_| Ok(fallback),
+            |edge| {
+                edge.fill(fallback);
+                Ok(())
+            },
         );
     }
     let left_col = x
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
-        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+        .ok_or_else(invalid_directional_edge_state)?;
     let max_y = workspace
         .plane(plane_id)?
         .storage_size()
         .height()
         .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+        .ok_or_else(invalid_directional_edge_state)?;
     let left_limit = height
         .checked_add(num4_below_left.saturating_mul(4))
         .and_then(|v| v.checked_sub(1))
@@ -799,7 +806,7 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
         .map_or(max_y, |limit| limit.min(max_y));
     let corner_row = if have_above {
         y.checked_sub(1)
-            .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?
+            .ok_or_else(invalid_directional_edge_state)?
     } else {
         y
     };
@@ -809,9 +816,57 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
         mrl_index,
         edge_filter,
         || workspace.reconstructed_sample(plane_id, left_col, corner_row),
-        |i| {
-            let row = y.saturating_add(i).min(left_limit);
-            workspace.reconstructed_sample(plane_id, left_col, row)
-        },
+        |edge| gather_column_clamped(workspace, plane_id, (left_col, y), left_limit, edge),
     )
+}
+
+/// Fills `out[i]` with the reconstructed sample at `(Min(x + i, limit), y)`,
+/// reading the row with one bounds check. It fails exactly when one of those
+/// per-sample reads would fail.
+pub(super) fn gather_row_clamped<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    (x, y): (usize, usize),
+    limit: usize,
+    out: &mut [T],
+) -> core::result::Result<(), ReconError> {
+    let Some(last) = out.len().checked_sub(1) else {
+        return Ok(());
+    };
+    let first = x.min(limit);
+    let width = x.saturating_add(last).min(limit) - first + 1;
+    for row in workspace.rect_rows(plane_id, PlaneRect::new(first, y, width, 1)?)? {
+        let (copied, filled) = out.split_at_mut(width.min(out.len()));
+        copied.copy_from_slice(&row[..copied.len()]); // splot-copy-ok: gather a bounded intra edge run
+        if let Some(&fill) = row.last() {
+            filled.fill(fill);
+        }
+    }
+    Ok(())
+}
+
+/// Fills `out[i]` with the reconstructed sample at `(x, Min(y + i, limit))`,
+/// checking the rows once. It fails exactly when one of those per-sample reads
+/// would fail.
+pub(super) fn gather_column_clamped<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    (x, y): (usize, usize),
+    limit: usize,
+    out: &mut [T],
+) -> core::result::Result<(), ReconError> {
+    let Some(last) = out.len().checked_sub(1) else {
+        return Ok(());
+    };
+    let first = y.min(limit);
+    let height = y.saturating_add(last).min(limit) - first + 1;
+    let rows = workspace.rect_rows(plane_id, PlaneRect::new(x, first, 1, height)?)?;
+    let (copied, filled) = out.split_at_mut(height.min(out.len()));
+    for (slot, row) in copied.iter_mut().zip(rows) {
+        *slot = row[0];
+    }
+    if let Some(&fill) = copied.last() {
+        filled.fill(fill);
+    }
+    Ok(())
 }
