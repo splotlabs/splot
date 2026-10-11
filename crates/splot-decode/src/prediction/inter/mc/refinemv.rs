@@ -55,7 +55,7 @@ pub(super) fn reference_area_bounds(
     candidate: Mv,
     sub_x: u32,
     sub_y: u32,
-    scaling: PlaneScaling,
+    scaling: &PlaneScaling,
 ) -> ReferenceAreaBounds {
     let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
@@ -118,6 +118,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
     ))
 }
 
+#[inline(never)]
 fn search_refinemv<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
@@ -143,44 +144,68 @@ fn search_refinemv<T: ReconSample>(
     let mut prediction_rect = rect;
     prediction_rect.luma_w = prediction_width;
     prediction_rect.luma_h = prediction_height;
-    let search_mv = |candidate: Mv| Mv {
-        row: candidate.row - SEARCH_PADDING,
-        col: candidate.col - SEARCH_PADDING,
+    let predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
+        let references = [block.reference0, block.reference1];
+        for ((reference, candidate), prediction) in
+            references.into_iter().zip(candidates).zip([pred0, pred1])
+        {
+            let search_mv = Mv {
+                row: candidate.row - SEARCH_PADDING,
+                col: candidate.col - SEARCH_PADDING,
+            };
+            let area = Some((candidate, rect.luma_w, rect.luma_h));
+            let filter = InterpolationFilter::Bilinear;
+            if center_only {
+                super::optflow::initial_luma_prediction::<_, 2>(
+                    sink,
+                    reference,
+                    prediction_rect,
+                    search_mv,
+                    filter,
+                    area,
+                    offset,
+                    None,
+                    prediction,
+                )?;
+            } else {
+                super::optflow::initial_luma_prediction::<_, 0>(
+                    sink,
+                    reference,
+                    prediction_rect,
+                    search_mv,
+                    filter,
+                    area,
+                    offset,
+                    None,
+                    prediction,
+                )?;
+            }
+        }
+        Ok::<_, crate::error::DecodeError>(())
     };
+    let bit_depth = sink.info().bit_depth();
+    // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
+    let allow_center = !block.refinemv_switchable;
     let (dx, dy) = super::with_initial_luma_predictions(
         prediction_width,
         prediction_height,
         |pred0, pred1| {
-            super::optflow::initial_luma_prediction(
-                sink,
-                block.reference0,
-                prediction_rect,
-                search_mv(candidates[0]),
-                InterpolationFilter::Bilinear,
-                Some((candidates[0], rect.luma_w, rect.luma_h)),
-                offset,
-                false,
-                pred0,
-            )?;
-            super::optflow::initial_luma_prediction(
-                sink,
-                block.reference1,
-                prediction_rect,
-                search_mv(candidates[1]),
-                InterpolationFilter::Bilinear,
-                Some((candidates[1], rect.luma_w, rect.luma_h)),
-                offset,
-                false,
-                pred1,
-            )?;
+            if allow_center {
+                predict(true, pred0, pred1)?;
+                let (stride, width, height) = (prediction_width, rect.luma_w, rect.luma_h);
+                if refinemv_center_sad(pred0, pred1, stride, width, height, bit_depth)?.is_none() {
+                    return Ok((0, 0));
+                }
+            }
+            predict(false, pred0, pred1)?;
             Ok(search_refinemv_offset(
                 pred0,
                 pred1,
                 prediction_width,
                 rect.luma_w,
                 rect.luma_h,
-                sink.info().bit_depth(),
-                !block.refinemv_switchable,
+                bit_depth,
+                allow_center,
             )?)
         },
     )?;
@@ -196,6 +221,296 @@ fn search_refinemv<T: ReconSample>(
     ])
 }
 
+/// Writes the cell of every full-pel TIP unit from unit `first` on whose
+/// SADs on the references decide it, and returns whether it wrote any. The
+/// other cells keep their uninitialized value for the full path.
+#[inline(never)]
+pub(super) fn tip_fullpel_cells<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    batch: &CompoundMcBlock<'_, T>,
+    unit_at: &impl Fn(usize) -> (McBlockRect, [Mv; 2]),
+    candidates: &[[Mv; 2]],
+    (unit_size, offset): (usize, ByteOffset),
+    first: usize,
+    cells: &mut [MotionCell],
+) -> Result<bool> {
+    let mut views = None;
+    let mut wrote = false;
+    if batch.optflow_distances.is_none() {
+        return Ok(wrote);
+    }
+    let candidates = candidates.get(first..).unwrap_or_default();
+    for (index, (cell, &mvs)) in cells.iter_mut().zip(candidates).enumerate() {
+        if !fullpel_candidates(mvs) {
+            continue;
+        }
+        let unit = (unit_at(first + index).0, mvs);
+        let Some(views) =
+            views.get_or_insert_with(|| TipFullpelViews::new(sink, batch, unit, offset))
+        else {
+            break;
+        };
+        if let Some(fast) = views.motion_cell(sink, batch, unit, unit_size)? {
+            *cell = fast;
+            wrote = true;
+        }
+    }
+    Ok(wrote)
+}
+
+/// Both luma reference views of one TIP batch, for units whose candidates
+/// are full-pel: their bilinear initial predictions are the clamped
+/// reference samples, so the § 7.13.3.6 and optical-flow SADs read the
+/// references in place.
+struct TipFullpelViews<'a, T: ReconSample> {
+    views: [ReferencePlaneView<'a, T>; 2],
+    /// The last column and storage row each reference's bounds clamp to.
+    last: [(i32, i32); 2],
+    shift: u32,
+    max_sample: u16,
+}
+
+pub(super) fn fullpel_candidates(mvs: [Mv; 2]) -> bool {
+    mvs.iter().all(|mv| (mv.row | mv.col).trailing_zeros() >= 3)
+}
+
+/// The reference sample each full-pel candidate moves `rect`'s origin to.
+fn origins(rect: McBlockRect, mvs: [Mv; 2]) -> [(i32, i32); 2] {
+    mvs.map(|mv| {
+        (
+            rect.luma_x as i32 + (mv.col >> 3),
+            rect.luma_y as i32 + (mv.row >> 3),
+        )
+    })
+}
+
+impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
+    /// The views of an optical-flow batch with unscaled references, built at
+    /// its first full-pel unit (`rect`, `mvs`), or `None`. Each view is
+    /// published down to the last row that unit's fast path reads; every
+    /// later read is bounded by the published rows.
+    fn new(
+        sink: &WorkspaceSink<'_, '_, T>,
+        batch: &CompoundMcBlock<'a, T>,
+        (rect, mvs): (McBlockRect, [Mv; 2]),
+        offset: ByteOffset,
+    ) -> Option<Self> {
+        let frame_size = sink.info().coded_luma_size();
+        let references = [batch.reference0, batch.reference1];
+        if batch.optflow_distances.is_none()
+            || references
+                .iter()
+                .any(|reference| reference.info().coded_luma_size() != frame_size)
+        {
+            return None;
+        }
+        let reach = if batch.search_refinemv && search_range_allowed(mvs) {
+            8
+        } else {
+            7
+        };
+        let view = |reference: usize| {
+            let last_row = rect.luma_y as i32 + (mvs[reference].row >> 3) + reach;
+            let (view, _, _) = references[reference]
+                .plane_view(PlaneId::Y, last_row, offset)
+                .ok()?;
+            Some(view)
+        };
+        let views = [view(0)?, view(1)?];
+        let last = core::array::from_fn(|reference| {
+            let storage = references[reference].info().storage_luma_size();
+            (
+                storage.width().min(views[reference].width()) as i32 - 1,
+                storage.height() as i32 - 1,
+            )
+        });
+        let bit_depth = sink.info().bit_depth();
+        Some(Self {
+            views,
+            last,
+            shift: u32::from(bit_depth.bits().saturating_sub(8)),
+            max_sample: bit_depth.max_sample(),
+        })
+    }
+
+    /// The motion cell of an 8x8 full-pel unit when the SADs on the
+    /// references decide it, or `None` to build the initial predictions.
+    fn motion_cell(
+        &self,
+        sink: &WorkspaceSink<'_, '_, T>,
+        batch: &CompoundMcBlock<'_, T>,
+        (rect, mvs): (McBlockRect, [Mv; 2]),
+        unit_size: usize,
+    ) -> Result<Option<MotionCell>> {
+        let Some(distances) = batch.optflow_distances else {
+            return Ok(None);
+        };
+        if (unit_size, rect.luma_w, rect.luma_h) != (8, 8, 8) || !fullpel_candidates(mvs) {
+            return Ok(None);
+        }
+        if batch.search_refinemv && search_range_allowed(mvs) {
+            return self.searched_cell(sink, batch, rect, mvs, distances);
+        }
+        self.unsearched_cell(sink, batch, rect, mvs, distances)
+    }
+
+    /// [`tip_refinemv_optflow_motion_cell`] when the centre SAD keeps the
+    /// candidates. Only units whose SAD columns no bound clamps take this
+    /// path. The SAD rows `Y - 2..=Y + 8` lie inside the refine window, so the
+    /// copy clamps them to the plane alone, as in [`Self::unsearched_cell`].
+    fn searched_cell(
+        &self,
+        sink: &WorkspaceSink<'_, '_, T>,
+        batch: &CompoundMcBlock<'_, T>,
+        rect: McBlockRect,
+        mvs: [Mv; 2],
+        distances: [i32; 2],
+    ) -> Result<Option<MotionCell>> {
+        let mut xs = [0usize; 2];
+        let mut center_rows = [[0usize; 6]; 2];
+        let mut rows = [[0usize; 8]; 2];
+        for (reference, (x, y)) in origins(rect, mvs).into_iter().enumerate() {
+            let (last_x, last_y) = self.last[reference];
+            if x < 2 || x + 9 > last_x {
+                return Ok(None);
+            }
+            xs[reference] = x as usize;
+            let row = |offset: i32| (y + offset).clamp(0, last_y) as usize;
+            center_rows[reference] = core::array::from_fn(|k| row(2 * k as i32 - 2));
+            rows[reference] = core::array::from_fn(|k| row(k as i32));
+        }
+        let Some(center) = self
+            .spans(xs.map(|x| x - 2), center_rows, 12)
+            .and_then(|spans| self.sad(&spans))
+        else {
+            return Ok(None);
+        };
+        let center = center >> self.shift;
+        if center - (center >> 3) >= 12 * 12 * 2 {
+            return Ok(None);
+        }
+        self.optflow_cell(sink, batch, xs, rows, mvs, distances)
+    }
+
+    /// [`super::optflow::tip_unit_motion_cell`] for an unsearched unit. Its
+    /// rows `Y..Y + 8` lie inside the refine window `Y - 3..=Y + 11`, so the
+    /// copy clamps them to the plane alone, with or without that window.
+    /// Units whose columns would clamp take the full path.
+    fn unsearched_cell(
+        &self,
+        sink: &WorkspaceSink<'_, '_, T>,
+        batch: &CompoundMcBlock<'_, T>,
+        rect: McBlockRect,
+        mvs: [Mv; 2],
+        distances: [i32; 2],
+    ) -> Result<Option<MotionCell>> {
+        let mut xs = [0usize; 2];
+        let mut rows = [[0usize; 8]; 2];
+        for (reference, (x, y)) in origins(rect, mvs).into_iter().enumerate() {
+            let (last_x, last_y) = self.last[reference];
+            if x < 0 || x + 7 > last_x {
+                return Ok(None);
+            }
+            xs[reference] = x as usize;
+            rows[reference] =
+                core::array::from_fn(|row| (y + row as i32).clamp(0, last_y) as usize);
+        }
+        self.optflow_cell(sink, batch, xs, rows, mvs, distances)
+    }
+
+    /// The cell of a unit whose 8x8 predictions are the reference rows `rows`
+    /// from columns `xs`: the candidates when the optical-flow SAD skips the
+    /// refinement, else the § 7.13.3.9 delta derived from the same samples.
+    fn optflow_cell(
+        &self,
+        sink: &WorkspaceSink<'_, '_, T>,
+        batch: &CompoundMcBlock<'_, T>,
+        xs: [usize; 2],
+        rows: [[usize; 8]; 2],
+        mvs: [Mv; 2],
+        distances: [i32; 2],
+    ) -> Result<Option<MotionCell>> {
+        let Some(spans) = self.spans(xs, rows, 8) else {
+            return Ok(None);
+        };
+        let Some(sad) = self.sad(&spans) else {
+            return Ok(None);
+        };
+        if batch
+            .optflow_sad_threshold
+            .is_some_and(|threshold| sad >> self.shift < threshold)
+        {
+            return Ok(Some(MotionCell::from_refinemv(mvs)));
+        }
+        let mut predictions = [[0u16; 64]; 2];
+        for (prediction, spans) in predictions.iter_mut().zip(&spans) {
+            for (output, samples) in prediction.chunks_exact_mut(8).zip(spans) {
+                for (output, sample) in output.iter_mut().zip(*samples) {
+                    *output = sample.to_u16().min(self.max_sample);
+                }
+            }
+        }
+        let delta = splot_recon::derive_optflow_mv_delta_8x8_strided_into(
+            &predictions[0],
+            0,
+            &predictions[1],
+            0,
+            8,
+            sink.info().bit_depth(),
+            distances,
+        )?;
+        Ok(Some(MotionCell::from_optflow(mvs, delta)))
+    }
+
+    /// The `width`-sample spans from columns `xs` of each reference's `rows`,
+    /// or `None` when a row is not published.
+    fn spans<const N: usize>(
+        &self,
+        xs: [usize; 2],
+        rows: [[usize; N]; 2],
+        width: usize,
+    ) -> Option<[[&[T]; N]; 2]> {
+        let [first, second] = [0, 1].map(|reference| {
+            self.views[reference].readable_spans(rows[reference], xs[reference], width)
+        });
+        Some([first?, second?])
+    }
+
+    /// `Σ |ref0 - ref1|` over pairs of 8- or 12-sample spans.
+    fn sad<const N: usize>(&self, spans: &[[&[T]; N]; 2]) -> Option<u32> {
+        let mut sad8 = Simd::<u32, 8>::splat(0);
+        let mut sad4 = Simd::<u32, 4>::splat(0);
+        for (&left, &right) in spans[0].iter().zip(&spans[1]) {
+            sad8 += self
+                .lanes::<8>(left)?
+                .abs_diff(self.lanes::<8>(right)?)
+                .cast();
+            if left.len() > 8 {
+                sad4 += self
+                    .lanes::<4>(&left[8..])?
+                    .abs_diff(self.lanes::<4>(&right[8..])?)
+                    .cast();
+            }
+        }
+        Some(sad8.reduce_sum() + sad4.reduce_sum())
+    }
+
+    /// The first `N` samples as the copy writes them: clipped to the maximum.
+    fn lanes<const N: usize>(&self, samples: &[T]) -> Option<Simd<u16, N>> {
+        let samples = samples.get(..N)?;
+        Some(match (T::u8_slice(samples), T::u16_slice(samples)) {
+            (Some(samples), _) => Simd::<u8, N>::from_slice(samples).cast(),
+            (_, Some(samples)) => Simd::from_slice(samples).simd_min(Simd::splat(self.max_sample)),
+            _ => Simd::from_array(core::array::from_fn(|index| {
+                samples[index].to_u16().min(self.max_sample)
+            })),
+        })
+    }
+}
+
+/// Refines one 8x8 TIP unit. The centre SAD and the centre optical flow read
+/// only the 12x12 centre of the 16x16 bilinear search area, so the centre is
+/// predicted first and the whole area only when the search goes on.
 pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
@@ -225,29 +540,49 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         col: candidate.col - SEARCH_PADDING,
     };
     let [pred0, pred1] = predictions;
-    super::optflow::initial_luma_prediction(
-        sink,
-        block.reference0,
-        prediction_rect,
-        search_mv(candidates[0]),
-        InterpolationFilter::Bilinear,
-        Some((candidates[0], CENTER_SIZE, CENTER_SIZE)),
-        offset,
-        reuse_horizontal[0],
-        pred0,
-    )?;
-    super::optflow::initial_luma_prediction(
-        sink,
-        block.reference1,
-        prediction_rect,
-        search_mv(candidates[1]),
-        InterpolationFilter::Bilinear,
-        Some((candidates[1], CENTER_SIZE, CENTER_SIZE)),
-        offset,
-        reuse_horizontal[1],
-        pred1,
-    )?;
-    let (dx, dy) = search_tip_refinemv_offset(pred0, pred1, sink.info().bit_depth());
+    let references = [block.reference0, block.reference1];
+    for ((reference, candidate), (prediction, reuse)) in references
+        .into_iter()
+        .zip(candidates)
+        .zip([&mut *pred0, &mut *pred1].into_iter().zip(reuse_horizontal))
+    {
+        super::optflow::initial_luma_prediction::<_, 2>(
+            sink,
+            reference,
+            prediction_rect,
+            search_mv(candidate),
+            InterpolationFilter::Bilinear,
+            Some((candidate, CENTER_SIZE, CENTER_SIZE)),
+            offset,
+            Some(reuse),
+            prediction,
+        )?;
+    }
+    let bit_depth = sink.info().bit_depth();
+    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth);
+    let center_sad = center - (center >> 3);
+    let (dx, dy) = if center_sad < 12 * 12 * 2 {
+        (0, 0)
+    } else {
+        for ((reference, candidate), prediction) in references
+            .into_iter()
+            .zip(candidates)
+            .zip([&mut *pred0, &mut *pred1])
+        {
+            super::optflow::initial_luma_prediction::<_, 0>(
+                sink,
+                reference,
+                prediction_rect,
+                search_mv(candidate),
+                InterpolationFilter::Bilinear,
+                Some((candidate, CENTER_SIZE, CENTER_SIZE)),
+                offset,
+                None,
+                prediction,
+            )?;
+        }
+        search_tip_refinemv_offset(pred0, pred1, center_sad, bit_depth)
+    };
     let base_mvs = [
         Mv {
             row: candidates[0].row + dy * 8,
@@ -282,17 +617,15 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
     .map(Some)
 }
 
+/// The § 7.13.3.6 neighbour search of a unit whose biased centre SAD
+/// `best_sad` did not keep the centre.
 fn search_tip_refinemv_offset(
     pred0: &[u16; TIP_PREDICTION_AREA],
     pred1: &[u16; TIP_PREDICTION_AREA],
+    mut best_sad: u32,
     bit_depth: splot_recon::BitDepth,
 ) -> (i32, i32) {
     let mut best = (0, 0);
-    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth);
-    let mut best_sad = center - (center >> 3);
-    if best_sad < 12 * 12 * 2 {
-        return best;
-    }
     for &(dy, dx) in &SEARCH_NEIGHBORS {
         let sad = tip_refinemv_sad(pred0, pred1, dx, dy, bit_depth);
         if sad < best_sad {
@@ -344,27 +677,13 @@ fn search_refinemv_offset(
     bit_depth: splot_recon::BitDepth,
     allow_center: bool,
 ) -> splot_recon::Result<(i32, i32)> {
-    let sad_width = width.checked_add(4).ok_or(ReconError::ArithmeticOverflow {
-        context: "refine-MV SAD width",
-    })?;
-    let sad_height = height
-        .checked_add(4)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "refine-MV SAD height",
-        })?;
-    // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
+    let (sad_width, sad_height) = sad_extent(width, height)?;
     let (mut best, mut best_sad, first_unchecked_neighbor) = if allow_center {
-        let threshold = sad_width
-            .checked_mul(sad_height)
-            .and_then(|area| area.checked_mul(2))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "refine-MV SAD threshold",
-            })? as u32;
-        let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
-        let biased_center = center - (center >> 3);
-        if biased_center < threshold {
+        let Some(biased_center) =
+            refinemv_center_sad(pred0, pred1, stride, width, height, bit_depth)?
+        else {
             return Ok((0, 0));
-        }
+        };
         ((0, 0), biased_center, 0)
     } else {
         let (dy, dx) = SEARCH_NEIGHBORS[0];
@@ -383,6 +702,42 @@ fn search_refinemv_offset(
         }
     }
     Ok(best)
+}
+
+/// The `(width + 4) x (height + 4)` area each § 7.13.3.6 SAD compares.
+fn sad_extent(width: usize, height: usize) -> splot_recon::Result<(usize, usize)> {
+    let sad_width = width.checked_add(4).ok_or(ReconError::ArithmeticOverflow {
+        context: "refine-MV SAD width",
+    })?;
+    let sad_height = height
+        .checked_add(4)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "refine-MV SAD height",
+        })?;
+    Ok((sad_width, sad_height))
+}
+
+/// The biased § 7.13.3.6 centre SAD, or `None` when it keeps the
+/// candidates. It reads only the predictions' centre area, two samples in
+/// from each edge.
+fn refinemv_center_sad(
+    pred0: &[u16],
+    pred1: &[u16],
+    stride: usize,
+    width: usize,
+    height: usize,
+    bit_depth: splot_recon::BitDepth,
+) -> splot_recon::Result<Option<u32>> {
+    let (sad_width, sad_height) = sad_extent(width, height)?;
+    let threshold = sad_width
+        .checked_mul(sad_height)
+        .and_then(|area| area.checked_mul(2))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "refine-MV SAD threshold",
+        })? as u32;
+    let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
+    let biased_center = center - (center >> 3);
+    Ok((biased_center >= threshold).then_some(biased_center))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -522,7 +877,7 @@ mod tests {
             16, 16, 0, 0, 0, 0, 64, 64, 64, 64,
         );
         assert_eq!(
-            reference_area_bounds(16, 16, 16, 16, Mv::ZERO, 0, 0, scaling),
+            reference_area_bounds(16, 16, 16, 16, Mv::ZERO, 0, 0, &scaling),
             ReferenceAreaBounds {
                 first_x: 13,
                 first_y: 13,
@@ -532,3 +887,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tip_fullpel_tests.rs"]
+mod tip_fullpel_tests;

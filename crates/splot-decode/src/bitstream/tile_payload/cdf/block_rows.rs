@@ -1131,6 +1131,7 @@ impl BlockCdfRows {
                     }),
                 }
             }
+            #[cfg(test)]
             TileCdfSelector::Coeff(selector) => self.coeff.row_mut(selector),
             _ => Err(TileCdfError::UnexpectedSelector),
         }

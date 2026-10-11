@@ -180,24 +180,126 @@ pub(crate) fn inverse_transform_1d_columns<const LANES: usize>(
     tx_type: InverseTransform1dType,
     pass: ColumnPass,
 ) -> bool {
+    let dct = tx_type == InverseTransform1dType::Dct;
     match select_kernel(pass.len, tx_type) {
-        Some(Kernel1d::N4(k)) => kernel_columns::<4, LANES>(src, out, k, false, pass),
-        Some(Kernel1d::N8(k, rev)) => kernel_columns::<8, LANES>(src, out, k, rev, pass),
-        Some(Kernel1d::N16(k, rev)) => kernel_columns::<16, LANES>(src, out, k, rev, pass),
-        Some(Kernel1d::N32(k)) => kernel_columns::<32, LANES>(src, out, k, false, pass),
+        Some(Kernel1d::N4(k)) => kernel_columns::<4, LANES>(src, out, k, false, false, pass),
+        Some(Kernel1d::N8(k, rev)) => kernel_columns::<8, LANES>(src, out, k, rev, dct, pass),
+        Some(Kernel1d::N16(k, rev)) => kernel_columns::<16, LANES>(src, out, k, rev, dct, pass),
+        Some(Kernel1d::N32(k)) => kernel_columns::<32, LANES>(src, out, k, false, true, pass),
         None => return false,
     }
     true
 }
 
+/// One § 7.15.4.1 row pass over four consecutive rows at once.
+#[derive(Clone, Copy)]
+pub(crate) struct RowQuad {
+    /// Row length (`1 << Min(log2W, 5)`).
+    pub len: usize,
+    /// Row-pass down-shift (`rowShift`).
+    pub shift: u8,
+    /// Whether each input takes the § 7.15.4.1 `Round2(x * 2896, 12)` rescale.
+    pub rescale: bool,
+    /// Active decoded bit depth.
+    pub bit_depth: BitDepth,
+}
+
+/// Applies the AV2 § 7.15.2.1 kernel transform to four consecutive `pass.len`
+/// sample rows of `src`, one row per lane, writing the same rows of `out`.
+///
+/// Each lane repeats [`kernel_transform`] (and, when `pass.rescale`, the
+/// § 7.15.4.1 rescale before it) on its own row, so every value is unchanged;
+/// the lanes share each kernel-row broadcast instead of paying the row loop
+/// four times. Returns `false` when `pass.len` is not 4 or 8, or a slice is
+/// shorter than four rows, which leaves the rows to the caller's per-row path.
+pub(crate) fn inverse_transform_1d_row_quad(
+    src: &[i32],
+    out: &mut [i32],
+    tx_type: InverseTransform1dType,
+    pass: RowQuad,
+) -> bool {
+    match select_kernel(pass.len, tx_type) {
+        Some(Kernel1d::N4(k)) => kernel_row_quad(src, out, k, false, pass),
+        Some(Kernel1d::N8(k, rev)) => kernel_row_quad(src, out, k, rev, pass),
+        _ => false,
+    }
+}
+
+fn kernel_row_quad<const N: usize>(
+    src: &[i32],
+    out: &mut [i32],
+    kernel: &[[i32; N]; N],
+    reversed: bool,
+    pass: RowQuad,
+) -> bool {
+    let (Some(rows), Some(out_rows)) = (
+        src.as_chunks::<N>().0.first_chunk::<4>(),
+        out.as_chunks_mut::<N>().0.first_chunk_mut::<4>(),
+    ) else {
+        return false;
+    };
+    let input_bound = Simd::splat(transform_input_bound(pass.bit_depth));
+    let zero = Simd::<i32, 4>::splat(0);
+    let mut columns: [Simd<i32, 4>; N] = core::array::from_fn(|column| {
+        Simd::from_array(core::array::from_fn(|lane| rows[lane][column]))
+    });
+    if pass.rescale {
+        for coeff in &mut columns {
+            *coeff = (*coeff * Simd::splat(2896) + Simd::splat(1 << 11)) >> Simd::splat(12);
+        }
+    }
+    let mut acc = [zero; N];
+    for (&coeff, kernel_row) in columns.iter().zip(kernel) {
+        if coeff == zero {
+            continue;
+        }
+        let coeff = coeff.simd_clamp(-input_bound, input_bound - Simd::splat(1));
+        for (slot, &k) in acc.iter_mut().zip(kernel_row) {
+            *slot += Simd::splat(k) * coeff;
+        }
+    }
+    let (lo, hi) = transform_clip_bounds(false, pass.bit_depth);
+    for index in 0..N {
+        let value = acc[if reversed { N - 1 - index } else { index }];
+        let rounded = round2_lanes(value, u32::from(pass.shift));
+        let clamped = rounded
+            .simd_clamp(Simd::splat(lo), Simd::splat(hi))
+            .to_array();
+        for (row, &sample) in out_rows.iter_mut().zip(&clamped) {
+            row[index] = sample;
+        }
+    }
+    true
+}
+
+/// The scalar [`round2_i32`] of every lane.
+fn round2_lanes<const LANES: usize>(value: Simd<i32, LANES>, n: u32) -> Simd<i32, LANES> {
+    if n == 0 {
+        value
+    } else if n >= i32::BITS {
+        Simd::splat(0)
+    } else {
+        let n = n as i32;
+        (value >> Simd::splat(n)) + ((value >> Simd::splat(n - 1)) & Simd::splat(1))
+    }
+}
+
 /// One `LANES`-wide column group of [`inverse_transform_1d_columns`].
 ///
 /// Each lane repeats [`kernel_transform`] literally: the § 7.14.4 input clamp,
-/// the kernel-row-major `i32` accumulation over the rows `nonzero_rows` marks,
-/// the `FDDT` output reversal, and the § 4.8 `Round2` expanded as
+/// the `i32` accumulation over the rows `nonzero_rows` marks, the `FDDT` output
+/// reversal, and the § 4.8 `Round2` expanded as
 /// `(v >> n) + ((v >> (n - 1)) & 1)` — the same value the scalar
 /// [`round2_i32`] computes for `1 <= n < 32` — followed by the § 7.15.2.1
 /// `Clip3`.
+///
+/// `dct` marks a `DCT` kernel (the length-32 kernel always is one). Every `DCT`
+/// row is even or odd about its centre:
+/// `kernel[r][N - 1 - i] == (-1)^r * kernel[r][i]`. So that path sums the even
+/// and the odd rows over the first half of the outputs only, four outputs at a
+/// time so the sums stay in registers, and writes `even + odd` at `i` and
+/// `even - odd` at `N - 1 - i`: half the multiplies, and the same wrapping
+/// `i32` sums.
 #[allow(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 column-pass hot path"
@@ -208,27 +310,11 @@ fn kernel_columns<const N: usize, const LANES: usize>(
     out: &mut [i32],
     kernel: &[[i32; N]; N],
     reversed: bool,
+    dct: bool,
     pass: ColumnPass,
 ) {
     let input_bound = transform_input_bound(pass.bit_depth);
     let (lo, hi) = transform_clip_bounds(true, pass.bit_depth);
-    let zero = Simd::<i32, LANES>::splat(0);
-    let mut acc = [zero; N];
-    for (row, kernel_row) in kernel.iter().enumerate() {
-        if row >= u32::BITS as usize || pass.nonzero_rows & (1u32 << row) == 0 {
-            continue;
-        }
-        let start = row * pass.stride;
-        let Some(chunk) = src.get(start..start + LANES) else {
-            break;
-        };
-        let coeff = Simd::<i32, LANES>::from_slice(chunk)
-            .simd_clamp(Simd::splat(-input_bound), Simd::splat(input_bound - 1));
-        for (slot, &k) in acc.iter_mut().zip(kernel_row.iter()) {
-            *slot += Simd::splat(k) * coeff;
-        }
-    }
-
     let shift = u32::from(pass.shift);
     let (round_shift, carry_shift) = if shift == 0 || shift >= i32::BITS {
         (Simd::splat(0), Simd::splat(0))
@@ -237,8 +323,8 @@ fn kernel_columns<const N: usize, const LANES: usize>(
     };
     let carry_mask = Simd::splat(i32::from(shift != 0 && shift < i32::BITS));
     let saturate = shift >= i32::BITS;
-    for index in 0..N {
-        let value = acc[if reversed { N - 1 - index } else { index }];
+    let zero = Simd::<i32, LANES>::splat(0);
+    let mut emit = |index: usize, value: Simd<i32, LANES>| {
         let rounded = if saturate {
             zero
         } else {
@@ -249,6 +335,59 @@ fn kernel_columns<const N: usize, const LANES: usize>(
         if let Some(dst) = out.get_mut(start..start + LANES) {
             dst.copy_from_slice(&clamped.to_array()); // splot-copy-ok: a column lane group
         }
+    };
+    let coeff_at = |row: usize| {
+        let start = row * pass.stride;
+        let chunk = src.get(start..start + LANES)?;
+        Some(
+            Simd::<i32, LANES>::from_slice(chunk)
+                .simd_clamp(Simd::splat(-input_bound), Simd::splat(input_bound - 1)),
+        )
+    };
+    let mask = if N >= 32 {
+        pass.nonzero_rows
+    } else {
+        pass.nonzero_rows & ((1u32 << N) - 1)
+    };
+    if dct && !reversed && N >= 8 {
+        const OUTPUTS: usize = 4;
+        for base in (0..N / 2).step_by(OUTPUTS) {
+            let mut sums = [[zero; OUTPUTS]; 2];
+            for (parity, half) in sums.iter_mut().enumerate() {
+                let mut rows = mask & (0x5555_5555 << parity);
+                while rows != 0 {
+                    let row = rows.trailing_zeros() as usize;
+                    rows &= rows - 1;
+                    let Some(coeff) = coeff_at(row) else {
+                        break;
+                    };
+                    for (slot, &k) in half.iter_mut().zip(&kernel[row][base..]) {
+                        *slot += Simd::splat(k) * coeff;
+                    }
+                }
+            }
+            let [even, odd] = sums;
+            for offset in 0..OUTPUTS {
+                emit(base + offset, even[offset] + odd[offset]);
+                emit(N - 1 - base - offset, even[offset] - odd[offset]);
+            }
+        }
+        return;
+    }
+    let mut acc = [zero; N];
+    let mut rows = mask;
+    while rows != 0 {
+        let row = rows.trailing_zeros() as usize;
+        rows &= rows - 1;
+        let Some(coeff) = coeff_at(row) else {
+            break;
+        };
+        for (slot, &k) in acc.iter_mut().zip(kernel[row].iter()) {
+            *slot += Simd::splat(k) * coeff;
+        }
+    }
+    for index in 0..N {
+        emit(index, acc[if reversed { N - 1 - index } else { index }]);
     }
 }
 
@@ -447,6 +586,21 @@ mod tests {
             ),
             [8300, 3500, -3500, -8300]
         );
+    }
+
+    #[test]
+    fn dct_kernel_rows_are_even_or_odd_about_the_centre() {
+        fn check<const N: usize>(kernel: &[[i32; N]; N]) {
+            for (r, row) in kernel.iter().enumerate() {
+                for i in 0..N {
+                    let mirrored = if r % 2 == 0 { row[i] } else { -row[i] };
+                    assert_eq!(row[N - 1 - i], mirrored, "N {N} row {r} column {i}");
+                }
+            }
+        }
+        check(&DCT_KERNEL8);
+        check(&DCT_KERNEL16);
+        check(&DCT_KERNEL32);
     }
 
     #[test]

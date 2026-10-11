@@ -34,7 +34,8 @@
 //! Feature tracking: `RECON-CDEF-FILTER`.
 
 use std::simd::{
-    Select, Simd, cmp::SimdOrd, cmp::SimdPartialEq, num::SimdInt, num::SimdUint, simd_swizzle,
+    Select, Simd, cmp::SimdOrd, cmp::SimdPartialEq, cmp::SimdPartialOrd, num::SimdInt,
+    num::SimdUint, simd_swizzle,
 };
 
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
@@ -88,25 +89,9 @@ const fn floor_log2(x: u32) -> u32 {
 /// The `partial[][]` sums of eight 8-bit-normalized terms fit in `i16`.
 /// The squared partials times `Div_Table` use the same `i32` accumulators as AVM;
 /// the spec-bounded pre-shifted samples keep every directional cost in range.
-#[allow(clippy::needless_range_loop)]
 pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
-    let mut partial_hv = [[0i16; 8]; 2];
-    let mut partial_diag = [[0i16; 15]; 2];
-    let mut partial_alt = [[0i16; 11]; 4];
-    let mut vertical = Simd::<i16, 8>::splat(0);
-    for i in 0..8 {
-        debug_assert!(
-            block[i]
-                .iter()
-                .all(|&sample| (-128..=127).contains(&sample))
-        );
-        let row = Simd::from_array(block[i]).cast::<i16>();
-        partial_hv[0][i] = row.reduce_sum();
-        vertical += row;
-        accumulate_cdef_direction_row(i, row, &mut partial_diag, &mut partial_alt);
-    }
-    partial_hv[1] = vertical.to_array();
-    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+    debug_assert!(block.iter().flatten().all(|&x| (-128..=127).contains(&x)));
+    cdef_direction_rows(block.map(|row| Simd::from_array(row).cast::<i16>()))
 }
 
 /// AV2 § 7.18.2 CDEF direction process over the interior padded block layout.
@@ -115,215 +100,186 @@ pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
 /// `BitDepth - 8`. The result matches [`cdef_direction`] without materializing
 /// the intermediate shifted 8x8 array.
 pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) -> (usize, i32) {
-    let mut partial_hv = [[0i16; 8]; 2];
-    let mut vertical = Simd::<i16, 8>::splat(0);
-    let mut diag_low = [Simd::<i16, 8>::splat(0); 2];
-    let mut diag_high = [Simd::<i16, 8>::splat(0); 2];
-    let mut alt_low = [Simd::<i16, 8>::splat(0); 4];
-    let mut alt_high = [Simd::<i16, 8>::splat(0); 4];
-    macro_rules! accumulate_row {
-        ($row:literal, $alt2:literal, $alt3:literal) => {{
-            let start = ($row + 2) * CDEF_PADDED_SIDE + 2;
-            let samples = (Simd::<u16, 8>::from_slice(&pad[start..]) >> coeff_shift as u16)
-                .cast::<i16>()
-                - Simd::splat(128);
-            partial_hv[0][$row] = samples.reduce_sum();
-            vertical += samples;
-            accumulate_cdef_diagonal::<$row>(samples, &mut diag_low[0], &mut diag_high[0]);
-            let reversed = simd_swizzle!(samples, [7, 6, 5, 4, 3, 2, 1, 0]);
-            accumulate_cdef_diagonal::<$row>(reversed, &mut diag_low[1], &mut diag_high[1]);
-            let pairs = simd_swizzle!(samples, [0, 2, 4, 6]) + simd_swizzle!(samples, [1, 3, 5, 7]);
-            let pairs = Simd::from_array([pairs[0], pairs[1], pairs[2], pairs[3], 0, 0, 0, 0]);
-            accumulate_cdef_diagonal::<$row>(pairs, &mut alt_low[0], &mut alt_high[0]);
-            let reversed_pairs = simd_swizzle!(pairs, [3, 2, 1, 0, 4, 5, 6, 7]);
-            accumulate_cdef_diagonal::<$row>(reversed_pairs, &mut alt_low[1], &mut alt_high[1]);
-            accumulate_cdef_diagonal::<$alt2>(samples, &mut alt_low[2], &mut alt_high[2]);
-            accumulate_cdef_diagonal::<$alt3>(samples, &mut alt_low[3], &mut alt_high[3]);
-        }};
-    }
-    accumulate_row!(0, 3, 0);
-    accumulate_row!(1, 3, 0);
-    accumulate_row!(2, 2, 1);
-    accumulate_row!(3, 2, 1);
-    accumulate_row!(4, 1, 2);
-    accumulate_row!(5, 1, 2);
-    accumulate_row!(6, 0, 3);
-    accumulate_row!(7, 0, 3);
-    partial_hv[1] = vertical.to_array();
-    let partial_diag = [
-        combine_cdef_diagonal(diag_low[0], diag_high[0]),
-        combine_cdef_diagonal(diag_low[1], diag_high[1]),
-    ];
-    let partial_alt = core::array::from_fn(|i| combine_cdef_alt(alt_low[i], alt_high[i]));
-    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+    cdef_direction_strided::<CDEF_PADDED_SIDE, _>(pad, coeff_shift)
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
-#[inline(always)]
-fn accumulate_cdef_diagonal<const ROW: usize>(
-    samples: Simd<i16, 8>,
-    low: &mut Simd<i16, 8>,
-    high: &mut Simd<i16, 8>,
-) {
-    let zero = Simd::splat(0);
-    let (low_add, high_add) = match ROW {
-        0 => (samples, zero),
-        1 => (
-            simd_swizzle!(zero, samples, [0, 8, 9, 10, 11, 12, 13, 14]),
-            simd_swizzle!(zero, samples, [15, 0, 1, 2, 3, 4, 5, 6]),
-        ),
-        2 => (
-            simd_swizzle!(zero, samples, [0, 1, 8, 9, 10, 11, 12, 13]),
-            simd_swizzle!(zero, samples, [14, 15, 0, 1, 2, 3, 4, 5]),
-        ),
-        3 => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 8, 9, 10, 11, 12]),
-            simd_swizzle!(zero, samples, [13, 14, 15, 0, 1, 2, 3, 4]),
-        ),
-        4 => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 3, 8, 9, 10, 11]),
-            simd_swizzle!(zero, samples, [12, 13, 14, 15, 0, 1, 2, 3]),
-        ),
-        5 => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 3, 4, 8, 9, 10]),
-            simd_swizzle!(zero, samples, [11, 12, 13, 14, 15, 0, 1, 2]),
-        ),
-        6 => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 3, 4, 5, 8, 9]),
-            simd_swizzle!(zero, samples, [10, 11, 12, 13, 14, 15, 0, 1]),
-        ),
-        _ => (
-            simd_swizzle!(zero, samples, [0, 1, 2, 3, 4, 5, 6, 8]),
-            simd_swizzle!(zero, samples, [9, 10, 11, 12, 13, 14, 15, 0]),
-        ),
-    };
-    *low += low_add;
-    *high += high_add;
-}
-
-fn combine_cdef_diagonal(low: Simd<i16, 8>, high: Simd<i16, 8>) -> [i16; 15] {
-    let low = low.to_array();
-    let high = high.to_array();
-    [
-        low[0], low[1], low[2], low[3], low[4], low[5], low[6], low[7], high[0], high[1], high[2],
-        high[3], high[4], high[5], high[6],
-    ]
-}
-
-fn combine_cdef_alt(low: Simd<i16, 8>, high: Simd<i16, 8>) -> [i16; 11] {
-    let low = low.to_array();
-    let high = high.to_array();
-    [
-        low[0], low[1], low[2], low[3], low[4], low[5], low[6], low[7], high[0], high[1], high[2],
-    ]
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
-#[inline(always)]
-fn accumulate_cdef_direction_row(
-    row: usize,
-    samples: Simd<i16, 8>,
-    partial_diag: &mut [[i16; 15]; 2],
-    partial_alt: &mut [[i16; 11]; 4],
-) {
-    let reversed = simd_swizzle!(samples, [7, 6, 5, 4, 3, 2, 1, 0]);
-    let add8 = |target: &mut [i16], values: Simd<i16, 8>| {
-        let sum = Simd::from_slice(target) + values;
-        target[..8].copy_from_slice(&sum.to_array()); // splot-copy-ok: publish SIMD sums into direction scratch
-    };
-    add8(&mut partial_diag[0][row..], samples);
-    add8(&mut partial_diag[1][row..], reversed);
-    accumulate_cdef_alt_row(row, samples, partial_alt);
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
-#[inline(always)]
-fn accumulate_cdef_alt_row(row: usize, samples: Simd<i16, 8>, partial_alt: &mut [[i16; 11]; 4]) {
-    let pair_sums = simd_swizzle!(samples, [0, 2, 4, 6]) + simd_swizzle!(samples, [1, 3, 5, 7]);
-    let reversed_pairs = simd_swizzle!(pair_sums, [3, 2, 1, 0]);
-    let add8 = |target: &mut [i16], values: Simd<i16, 8>| {
-        let sum = Simd::from_slice(target) + values;
-        target[..8].copy_from_slice(&sum.to_array()); // splot-copy-ok: publish SIMD sums into direction scratch
-    };
-    let add4 = |target: &mut [i16], values: Simd<i16, 4>| {
-        let sum = Simd::from_slice(target) + values;
-        target[..4].copy_from_slice(&sum.to_array()); // splot-copy-ok: publish SIMD sums into direction scratch
-    };
-    add4(&mut partial_alt[0][row..], pair_sums);
-    add4(&mut partial_alt[1][row..], reversed_pairs);
-    add8(&mut partial_alt[2][3 - row / 2..], samples);
-    add8(&mut partial_alt[3][row / 2..], samples);
-}
-
-fn finish_cdef_direction(
-    partial_hv: &[[i16; 8]; 2],
-    partial_diag: &[[i16; 15]; 2],
-    partial_alt: &[[i16; 11]; 4],
+/// [`cdef_direction_padded`] for one block of the luma segment scratch that
+/// [`cdef_filter_block_segment`] reads.
+pub fn cdef_direction_segment(
+    pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
+    coeff_shift: u32,
 ) -> (usize, i32) {
-    let mut cost = [0i32; 8];
-    let horizontal = Simd::from_array(partial_hv[0]).cast::<i32>();
-    let vertical = Simd::from_array(partial_hv[1]).cast::<i32>();
-    cost[2] = (horizontal * horizontal).reduce_sum() * DIV_TABLE[8];
-    cost[6] = (vertical * vertical).reduce_sum() * DIV_TABLE[8];
-    for (dir, partial) in [(0, &partial_diag[0]), (4, &partial_diag[1])] {
-        let low = Simd::from_array([
-            partial[0], partial[1], partial[2], partial[3], partial[4], partial[5], partial[6],
-            partial[7],
-        ])
-        .cast::<i32>();
-        let high = Simd::from_array([
-            partial[14],
-            partial[13],
-            partial[12],
-            partial[11],
-            partial[10],
-            partial[9],
-            partial[8],
-            0,
-        ])
-        .cast::<i32>();
-        let weights = Simd::from_array([
-            DIV_TABLE[1],
-            DIV_TABLE[2],
-            DIV_TABLE[3],
-            DIV_TABLE[4],
-            DIV_TABLE[5],
-            DIV_TABLE[6],
-            DIV_TABLE[7],
-            DIV_TABLE[8],
-        ]);
-        cost[dir] = ((low * low + high * high) * weights).reduce_sum();
-    }
-    for (n, partial) in partial_alt.iter().enumerate() {
-        let i = n * 2 + 1;
-        let low = Simd::from_array([
-            partial[3], partial[4], partial[5], partial[6], partial[7], partial[0], partial[1],
-            partial[2],
-        ])
-        .cast::<i32>();
-        let high =
-            Simd::from_array([0, 0, 0, 0, 0, partial[10], partial[9], partial[8]]).cast::<i32>();
-        let weights = Simd::from_array([
-            DIV_TABLE[8],
-            DIV_TABLE[8],
-            DIV_TABLE[8],
-            DIV_TABLE[8],
-            DIV_TABLE[8],
-            DIV_TABLE[2],
-            DIV_TABLE[4],
-            DIV_TABLE[6],
-        ]);
-        cost[i] = ((low * low + high * high) * weights).reduce_sum();
-    }
+    cdef_direction_strided::<CDEF_SEGMENT_STRIDE, _>(pad, coeff_shift)
+}
 
-    let mut best_cost = 0i32;
-    let mut y_dir = 0usize;
-    for (dir, &c) in cost.iter().enumerate() {
-        if c > best_cost {
-            best_cost = c;
-            y_dir = dir;
-        }
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_direction_strided<const STRIDE: usize, const AREA: usize>(
+    pad: &[u16; AREA],
+    coeff_shift: u32,
+) -> (usize, i32) {
+    let rows = core::array::from_fn(|i| {
+        let start = (i + 2) * STRIDE + 2;
+        (Simd::<u16, 8>::from_slice(&pad[start..start + 8]) >> coeff_shift as u16).cast::<i16>()
+            - Simd::splat(128)
+    });
+    cdef_direction_rows(rows)
+}
+
+/// A 16-lane partial-sum accumulator held as its low and high halves.
+type CdefPartial = [Simd<i16, 8>; 2];
+
+/// Moves every lane of a partial up by one, dropping the top lane.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn shift_partial_up(partial: CdefPartial) -> CdefPartial {
+    let zero = Simd::splat(0);
+    [
+        simd_swizzle!(zero, partial[0], [7, 8, 9, 10, 11, 12, 13, 14]),
+        simd_swizzle!(partial[0], partial[1], [7, 8, 9, 10, 11, 12, 13, 14]),
+    ]
+}
+
+/// Moves every lane of a partial down by one, dropping lane 0.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn shift_partial_down(partial: CdefPartial) -> CdefPartial {
+    let zero = Simd::splat(0);
+    [
+        simd_swizzle!(partial[0], partial[1], [1, 2, 3, 4, 5, 6, 7, 8]),
+        simd_swizzle!(partial[1], zero, [1, 2, 3, 4, 5, 6, 7, 8]),
+    ]
+}
+
+/// Sums of adjacent lane pairs, `a`'s pairs then `b`'s.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn pairwise_sum(a: Simd<i16, 8>, b: Simd<i16, 8>) -> Simd<i16, 8> {
+    simd_swizzle!(a, b, [0, 2, 4, 6, 8, 10, 12, 14])
+        + simd_swizzle!(a, b, [1, 3, 5, 7, 9, 11, 13, 15])
+}
+
+/// `Σ partial² · weight` over a partial, in four `i32` lanes that sum to it.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_cost(partial: CdefPartial, weights: [[i32; 8]; 2]) -> Simd<i32, 4> {
+    let low = partial[0].cast::<i32>();
+    let high = partial[1].cast::<i32>();
+    let cost =
+        low * low * Simd::from_array(weights[0]) + high * high * Simd::from_array(weights[1]);
+    simd_swizzle!(cost, [0, 1, 2, 3]) + simd_swizzle!(cost, [4, 5, 6, 7])
+}
+
+/// [`cdef_cost`] of a line partial, every entry of which weighs `Div_Table[8]`.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_line_cost(partial: Simd<i16, 8>) -> Simd<i32, 4> {
+    let square = partial.cast::<i32>() * partial.cast::<i32>();
+    (simd_swizzle!(square, [0, 1, 2, 3]) + simd_swizzle!(square, [4, 5, 6, 7]))
+        * Simd::splat(DIV_TABLE[8])
+}
+
+/// The eight costs, each summed from its four lanes by a pairwise-add tree.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_cost_sums(lanes: [Simd<i32, 4>; 8]) -> [Simd<i32, 4>; 2] {
+    let pairs = |a: Simd<i32, 4>, b: Simd<i32, 4>| {
+        simd_swizzle!(a, b, [0, 2, 4, 6]) + simd_swizzle!(a, b, [1, 3, 5, 7])
+    };
+    [0, 4].map(|at| {
+        pairs(
+            pairs(lanes[at], lanes[at + 1]),
+            pairs(lanes[at + 2], lanes[at + 3]),
+        )
+    })
+}
+
+/// § 7.18.2 `Div_Table` weights of a `len`-entry partial (15 for the
+/// diagonals, 11 for the alternates) whose entry `n` sits in lane `n + lane`.
+const fn cdef_cost_weights(len: usize, lane: usize) -> [[i32; 8]; 2] {
+    let mut weights = [[0; 8]; 2];
+    let mut n = 0;
+    while n < len {
+        let mirror = if n < len - 1 - n { n } else { len - 1 - n };
+        weights[(n + lane) / 8][(n + lane) % 8] = if len == 15 {
+            DIV_TABLE[mirror + 1]
+        } else if mirror >= 3 {
+            DIV_TABLE[8]
+        } else {
+            DIV_TABLE[2 * mirror + 2]
+        };
+        n += 1;
     }
+    weights
+}
+
+/// § 7.18.2 partial sums and costs over eight pre-shifted rows.
+///
+/// Each partial is built by Horner steps: before row `i` is added, the
+/// accumulator moves one lane, so row `i` ends `7 - i` lanes from where it was
+/// added. Partials 1, 4 and 5 grow upward and partials 0, 3 and 7 downward,
+/// the last three ending one or five lanes up. Every cost weighs entry `n`
+/// like entry `len - 1 - n`, so the reversed order of partials 3 and 4 does
+/// not change it. Costs are never negative, so the § 7.18.2 scan, which
+/// keeps a direction only when its cost beats the best so far (from 0),
+/// ends on the first direction that holds the largest cost.
+#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn cdef_direction_rows(rows: [Simd<i16, 8>; 8]) -> (usize, i32) {
+    let zero = Simd::splat(0);
+    let mut partial0 = [zero; 2];
+    let mut partial1 = [zero; 2];
+    let mut partial3 = [zero; 2];
+    let mut partial4 = [zero; 2];
+    let mut partial5 = [zero; 2];
+    let mut partial7 = [zero; 2];
+    let mut vertical = zero;
+    let mut row_sums = [zero; 4];
+    for (k, row_sum) in row_sums.iter_mut().enumerate() {
+        let (first, second) = (rows[2 * k], rows[2 * k + 1]);
+        *row_sum = pairwise_sum(first, second);
+        let first_pairs = simd_swizzle!(*row_sum, zero, [0, 1, 2, 3, 8, 8, 8, 8]);
+        let second_pairs = simd_swizzle!(*row_sum, zero, [4, 5, 6, 7, 8, 8, 8, 8]);
+        for (row, pairs) in [(first, first_pairs), (second, second_pairs)] {
+            partial0 = shift_partial_down(partial0);
+            partial0[1] += row;
+            partial4 = shift_partial_up(partial4);
+            partial4[0] += row;
+            partial1 = shift_partial_down(partial1);
+            partial1[1] += pairs;
+            partial3 = shift_partial_up(partial3);
+            partial3[0] += pairs;
+        }
+        let both = first + second;
+        partial5 = shift_partial_up(partial5);
+        partial5[0] += both;
+        partial7 = shift_partial_down(partial7);
+        partial7[1] += both;
+        vertical += both;
+    }
+    let horizontal = pairwise_sum(
+        pairwise_sum(row_sums[0], row_sums[1]),
+        pairwise_sum(row_sums[2], row_sums[3]),
+    );
+    let [low, high] = cdef_cost_sums([
+        cdef_cost(partial0, const { cdef_cost_weights(15, 1) }),
+        cdef_cost(partial1, const { cdef_cost_weights(11, 1) }),
+        cdef_line_cost(horizontal),
+        cdef_cost(partial3, const { cdef_cost_weights(11, 0) }),
+        cdef_cost(partial4, const { cdef_cost_weights(15, 0) }),
+        cdef_cost(partial5, const { cdef_cost_weights(11, 0) }),
+        cdef_line_cost(vertical),
+        cdef_cost(partial7, const { cdef_cost_weights(11, 5) }),
+    ]);
+    let best_cost = low.simd_max(high).reduce_max();
+    let first = |cost: Simd<i32, 4>, dir: [u32; 4]| {
+        cost.simd_eq(Simd::splat(best_cost))
+            .select(Simd::from_array(dir), Simd::splat(8))
+    };
+    let y_dir = first(low, [0, 1, 2, 3])
+        .simd_min(first(high, [4, 5, 6, 7]))
+        .reduce_min() as usize;
+    let cost = simd_swizzle!(low, high, [0, 1, 2, 3, 4, 5, 6, 7]).to_array();
     let var = (best_cost - cost[(y_dir + 4) & 7]) >> 10;
     (y_dir, var)
 }
@@ -425,11 +381,35 @@ pub fn cdef_filter_sample(
 /// `Cdef_Directions` tap reach of 2 on every side.
 pub const CDEF_PADDED_SIDE: usize = 12;
 
-/// Sample count of the padded per-block scratch: `CDEF_PADDED_SIDE` squared.
-pub const CDEF_PADDED_AREA: usize = CDEF_PADDED_SIDE * CDEF_PADDED_SIDE;
+/// Sample count of the padded per-block scratch. It holds the
+/// `CDEF_PADDED_SIDE`-square layout and leaves room for a tap view of up to
+/// 96 samples from any byte-sized start, so binding a view needs no bounds
+/// check.
+pub const CDEF_PADDED_AREA: usize = u8::MAX as usize + 97;
 
 /// Padded-tap marker used by the SIMD boundary kernel for unavailable samples.
 pub const CDEF_UNAVAILABLE: u16 = i16::MAX as u16;
+
+/// Blocks in one row segment of the strip scratch that
+/// [`cdef_filter_block_segment`] and [`cdef_filter_block_chroma_pair_segment`]
+/// read: the segment is gathered once for all of its blocks.
+pub const CDEF_SEGMENT_BLOCKS: usize = 4;
+
+/// Lanes per row of the luma segment scratch: the segment's 8-sample blocks
+/// plus the tap reach of two on each side. Block `b` starts at lane `8 * b`.
+pub const CDEF_SEGMENT_STRIDE: usize = 8 * CDEF_SEGMENT_BLOCKS + 4;
+
+/// Samples of the luma segment scratch from one block's first lane on: room
+/// for a tap view from any byte start, as in [`CDEF_PADDED_AREA`].
+pub const CDEF_SEGMENT_BLOCK_AREA: usize = u8::MAX as usize + 7 * CDEF_SEGMENT_STRIDE + 8;
+
+/// Lanes per row of the interleaved chroma-pair segment scratch: four
+/// columns of both planes per block plus the tap reach. Block `b` starts at
+/// lane `8 * b`.
+pub const CDEF_PAIR_SEGMENT_STRIDE: usize = 8 * CDEF_SEGMENT_BLOCKS + 8;
+
+/// [`CDEF_SEGMENT_BLOCK_AREA`] for the chroma-pair segment scratch.
+pub const CDEF_PAIR_SEGMENT_BLOCK_AREA: usize = u8::MAX as usize + 3 * CDEF_PAIR_SEGMENT_STRIDE + 8;
 
 /// Per-block § 7.18.3 filter constants for [`cdef_filter_block_interior`].
 #[derive(Clone, Copy, Debug)]
@@ -446,18 +426,13 @@ pub struct CdefBlockFilter {
     pub coeff_shift: u32,
 }
 
-type CdefPrimaryStarts = [[usize; 2]; 2];
-type CdefSecondaryStarts = [[[usize; 2]; 2]; 2];
 type CdefPrimaryOffsets = [[isize; 2]; 2];
 type CdefSecondaryOffsets = [[[isize; 2]; 2]; 2];
-type CdefRowStarts = [(CdefPrimaryStarts, CdefSecondaryStarts); 8];
+type CdefTapOffsets = [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8];
 
-const fn cdef_relative_offset(direction: usize, tap: usize, sign: i32) -> isize {
-    let [dy, dx] = CDEF_DIRECTIONS[direction & 7][tap];
-    (sign * dy) as isize * CDEF_PADDED_SIDE as isize + (sign * dx) as isize
-}
-
-const CDEF_RELATIVE_OFFSETS: [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8] = {
+/// Tap displacements for every direction in a padded layout `stride` lanes per
+/// row whose column step is `col_step` lanes.
+const fn cdef_tap_offsets(stride: isize, col_step: isize) -> CdefTapOffsets {
     let mut offsets = [([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8];
     let mut dir = 0;
     while dir < 8 {
@@ -466,9 +441,18 @@ const CDEF_RELATIVE_OFFSETS: [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8] = {
             let mut sign_index = 0;
             while sign_index < 2 {
                 let sign = if sign_index == 0 { -1 } else { 1 };
-                offsets[dir].0[tap][sign_index] = cdef_relative_offset(dir, tap, sign);
-                offsets[dir].1[tap][sign_index][0] = cdef_relative_offset(dir + 6, tap, sign);
-                offsets[dir].1[tap][sign_index][1] = cdef_relative_offset(dir + 2, tap, sign);
+                let mut slot = 0;
+                while slot < 3 {
+                    let rotated = [dir, dir + 6, dir + 2][slot];
+                    let [dy, dx] = CDEF_DIRECTIONS[rotated & 7][tap];
+                    let offset = (sign * dy) as isize * stride + (sign * dx) as isize * col_step;
+                    if slot == 0 {
+                        offsets[dir].0[tap][sign_index] = offset;
+                    } else {
+                        offsets[dir].1[tap][sign_index][slot - 1] = offset;
+                    }
+                    slot += 1;
+                }
                 sign_index += 1;
             }
             tap += 1;
@@ -476,88 +460,387 @@ const CDEF_RELATIVE_OFFSETS: [(CdefPrimaryOffsets, CdefSecondaryOffsets); 8] = {
         dir += 1;
     }
     offsets
-};
+}
 
-const CDEF_ROW_STARTS: [CdefRowStarts; 8] = {
-    let mut starts = [[([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8]; 8];
+const CDEF_RELATIVE_OFFSETS: CdefTapOffsets = cdef_tap_offsets(CDEF_PADDED_SIDE as isize, 1);
+
+/// Scratch index of each direction's twelve taps for the block's first
+/// sample, four primary taps (`[k][sign]`) then eight secondary
+/// (`[k][sign][dirOff]`).
+type CdefTapStarts = [[u8; 12]; 8];
+
+const fn cdef_tap_starts(offsets: &CdefTapOffsets, center: usize) -> CdefTapStarts {
+    let mut starts = [[0; 12]; 8];
     let mut dir = 0;
     while dir < 8 {
-        let mut row = 0;
-        while row < 8 {
-            let center = (row + 2) * CDEF_PADDED_SIDE + 2;
-            let mut tap = 0;
-            while tap < 2 {
-                let mut sign = 0;
-                while sign < 2 {
-                    starts[dir][row].0[tap][sign] =
-                        (center as isize + CDEF_RELATIVE_OFFSETS[dir].0[tap][sign]) as usize;
-                    let mut secondary = 0;
-                    while secondary < 2 {
-                        starts[dir][row].1[tap][sign][secondary] = (center as isize
-                            + CDEF_RELATIVE_OFFSETS[dir].1[tap][sign][secondary])
-                            as usize;
-                        secondary += 1;
-                    }
-                    sign += 1;
-                }
-                tap += 1;
+        let (primary, secondary) = &offsets[dir];
+        let mut tap = 0;
+        while tap < 2 {
+            let mut sign = 0;
+            while sign < 2 {
+                let center = center as isize;
+                starts[dir][tap * 2 + sign] = tap_start(center + primary[tap][sign]);
+                starts[dir][4 + tap * 4 + sign * 2] = tap_start(center + secondary[tap][sign][0]);
+                starts[dir][5 + tap * 4 + sign * 2] = tap_start(center + secondary[tap][sign][1]);
+                sign += 1;
             }
-            row += 1;
+            tap += 1;
         }
         dir += 1;
     }
     starts
-};
+}
 
-/// [`CDEF_ROW_STARTS`] for the interleaved chroma-pair layout: rows are
-/// `CDEF_PAIR_STRIDE` lanes apart, the block starts at lane 4, and a column
-/// displacement moves two lanes because the two planes alternate.
-const CDEF_PAIR_ROW_STARTS: [CdefRowStarts; 8] = {
-    let mut starts = [[([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8]; 8];
-    let mut dir = 0;
-    while dir < 8 {
-        let mut row = 0;
-        while row < 8 {
-            let center = (row + 2) * CDEF_PAIR_STRIDE + 4;
-            let mut tap = 0;
-            while tap < 2 {
-                let mut sign = 0;
-                while sign < 2 {
-                    let signed = if sign == 0 { -1 } else { 1 };
-                    starts[dir][row].0[tap][sign] =
-                        (center as isize + cdef_pair_offset(dir, tap, signed)) as usize;
-                    let mut secondary = 0;
-                    while secondary < 2 {
-                        let rotation = if secondary == 0 { 6 } else { 2 };
-                        starts[dir][row].1[tap][sign][secondary] = (center as isize
-                            + cdef_pair_offset(dir + rotation, tap, signed))
-                            as usize;
-                        secondary += 1;
-                    }
-                    sign += 1;
-                }
-                tap += 1;
-            }
-            row += 1;
+const fn tap_start(start: isize) -> u8 {
+    assert!(0 <= start && start <= u8::MAX as isize);
+    start as u8
+}
+
+const CDEF_TAP_STARTS: CdefTapStarts =
+    cdef_tap_starts(&CDEF_RELATIVE_OFFSETS, 2 * CDEF_PADDED_SIDE + 2);
+
+const CDEF_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
+    &cdef_tap_offsets(CDEF_SEGMENT_STRIDE as isize, 1),
+    2 * CDEF_SEGMENT_STRIDE + 2,
+);
+
+/// [`CDEF_TAP_STARTS`] for the interleaved chroma-pair layout: rows are
+/// `CDEF_PAIR_STRIDE` lanes apart and a column displacement moves two lanes
+/// because the two planes alternate.
+const CDEF_PAIR_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
+    &cdef_tap_offsets(CDEF_PAIR_STRIDE as isize, 2),
+    2 * CDEF_PAIR_STRIDE + 4,
+);
+
+const CDEF_PAIR_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
+    &cdef_tap_offsets(CDEF_PAIR_SEGMENT_STRIDE as isize, 2),
+    2 * CDEF_PAIR_SEGMENT_STRIDE + 4,
+);
+
+/// Two consecutive `W`-lane rows of one tap view as one `V`-lane vector.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_row_pair<const W: usize, const V: usize, const STRIDE: usize, const SPAN: usize>(
+    view: &[u16; SPAN],
+    row: usize,
+) -> Option<Simd<i16, V>> {
+    let first = view.get(row * STRIDE..)?.first_chunk::<W>()?;
+    let second = view.get((row + 1) * STRIDE..)?.first_chunk::<W>()?;
+    Some(Simd::from_array(cdef_pair::<W, V>(first, second)).cast())
+}
+
+/// Per-block § 7.18.3 `constrain` threshold and damping shift, splatted once.
+#[derive(Clone, Copy)]
+struct CdefConstrain<const V: usize> {
+    threshold: Simd<u16, V>,
+    shift: Simd<u16, V>,
+}
+
+impl<const V: usize> CdefConstrain<V> {
+    fn new(threshold: i32, damping: i32) -> Self {
+        Self {
+            threshold: Simd::splat(threshold as u16),
+            shift: Simd::splat(constrain_damping_adj(threshold, damping) as u16),
         }
-        dir += 1;
     }
-    starts
-};
 
-const fn cdef_pair_offset(direction: usize, tap: usize, sign: i32) -> isize {
-    let [dy, dx] = CDEF_DIRECTIONS[direction & 7][tap];
-    (sign * dy) as isize * CDEF_PAIR_STRIDE as isize + (sign * dx) as isize * 2
+    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[inline(always)]
+    fn apply(self, diff: Simd<i16, V>) -> Simd<i16, V> {
+        let clip = self
+            .threshold
+            .saturating_sub(diff.abs().cast::<u16>() >> self.shift)
+            .cast::<i16>();
+        diff.simd_min(clip).simd_max(-clip)
+    }
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn cdef_padded_row<const W: usize>(
-    pad: &[u16; CDEF_PADDED_AREA],
-    start: usize,
-) -> Option<&[u16; W]> {
-    let end = start.checked_add(W)?;
-    pad.get(start..end)?.try_into().ok()
+fn cdef_pair<const W: usize, const V: usize>(first: &[u16; W], second: &[u16; W]) -> [u16; V] {
+    debug_assert_eq!(V, W * 2);
+    core::array::from_fn(|i| if i < W { first[i] } else { second[i - W] })
+}
+
+/// A block's centre view and its four primary and eight secondary tap views.
+type CdefTapViews<'a, const SPAN: usize> =
+    (&'a [u16; SPAN], [&'a [u16; SPAN]; 4], [&'a [u16; SPAN]; 8]);
+
+/// Binds the tap views of direction `dir` for [`cdef_filter_rows`]; an
+/// inactive tap family gets the centre view.
+///
+/// Each of the twelve taps is bound once per block to a `SPAN`-lane view of
+/// `pad` that starts at its displacement from the block's first sample. The
+/// scratch leaves room for a view from any byte start, so the compiler knows
+/// that the view is in bounds.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_tap_views<
+    'a,
+    const STRIDE: usize,
+    const CENTER: usize,
+    const SPAN: usize,
+    const AREA: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
+    pad: &'a [u16; AREA],
+    dir: usize,
+    starts: &CdefTapStarts,
+) -> Option<CdefTapViews<'a, SPAN>> {
+    const { assert!(u8::MAX as usize + SPAN <= AREA) };
+    let starts = &starts[dir & 7];
+    let view =
+        |tap: usize| -> Option<&[u16; SPAN]> { pad.get(usize::from(starts[tap])..)?.first_chunk() };
+    let center_view = pad.get(2 * STRIDE + CENTER..)?.first_chunk()?;
+    let pri_views = if PRI {
+        [view(0)?, view(1)?, view(2)?, view(3)?]
+    } else {
+        [center_view; 4]
+    };
+    let sec_views = if SEC {
+        [
+            view(4)?,
+            view(5)?,
+            view(6)?,
+            view(7)?,
+            view(8)?,
+            view(9)?,
+            view(10)?,
+            view(11)?,
+        ]
+    } else {
+        [center_view; 8]
+    };
+    Some((center_view, pri_views, sec_views))
+}
+
+/// § 7.18.3 over a padded block, two rows per `V`-lane vector.
+///
+/// The taps are read through [`cdef_tap_views`]. The row pairs are unrolled,
+/// so every row load is a constant offset from a view. `ROWS` is the most
+/// rows the layout holds; rows at or past `h` are computed and discarded.
+/// With `HAS_UNAVAILABLE`, taps equal to [`CDEF_UNAVAILABLE`] leave the max
+/// unchanged and constrain to zero.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_filter_rows<
+    const W: usize,
+    const V: usize,
+    const HAS_UNAVAILABLE: bool,
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const SPAN: usize,
+    const AREA: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
+    pad: &[u16; AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    starts: &CdefTapStarts,
+    out: &mut [u16],
+    out_stride: usize,
+) -> Option<()> {
+    let (center_view, pri_views, sec_views) =
+        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, V>::splat(tap as i16));
+    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, V>::splat(tap as i16));
+    let pri = CdefConstrain::<V>::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain::<V>::new(filter.sec_str, filter.damping);
+    macro_rules! filter_row_pair {
+        ($row:literal) => {{
+            let row: usize = $row;
+            if row < ROWS && row < h {
+                let center = cdef_row_pair::<W, V, STRIDE, SPAN>(center_view, row)?;
+                let mut sum = Simd::<i16, V>::splat(0);
+                let mut min = center;
+                let mut max = center;
+                macro_rules! add_pair {
+                    ($first:expr, $second:expr, $constrain:expr, $weight:expr) => {{
+                        let first = cdef_row_pair::<W, V, STRIDE, SPAN>($first, row)?;
+                        let second = cdef_row_pair::<W, V, STRIDE, SPAN>($second, row)?;
+                        if PRI && SEC {
+                            min = min.simd_min(first).simd_min(second);
+                            let unavailable = Simd::splat(CDEF_UNAVAILABLE as i16);
+                            let (first_max, second_max) = if HAS_UNAVAILABLE {
+                                (
+                                    first.simd_eq(unavailable).select(center, first),
+                                    second.simd_eq(unavailable).select(center, second),
+                                )
+                            } else {
+                                (first, second)
+                            };
+                            max = max.simd_max(first_max).simd_max(second_max);
+                        }
+                        sum += $weight
+                            * ($constrain.apply(first - center) + $constrain.apply(second - center));
+                    }};
+                }
+                if PRI {
+                    add_pair!(pri_views[0], pri_views[1], pri, pri_taps[0]);
+                    add_pair!(pri_views[2], pri_views[3], pri, pri_taps[1]);
+                }
+                if SEC {
+                    add_pair!(sec_views[0], sec_views[1], sec, sec_taps[0]);
+                    add_pair!(sec_views[2], sec_views[3], sec, sec_taps[0]);
+                    add_pair!(sec_views[4], sec_views[5], sec, sec_taps[1]);
+                    add_pair!(sec_views[6], sec_views[7], sec, sec_taps[1]);
+                }
+                let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
+                let mut filtered = center + ((Simd::splat(8) + sum - negative) >> 4);
+                if PRI && SEC {
+                    filtered = filtered.simd_max(min).simd_min(max);
+                }
+                let filtered = filtered.cast::<u16>().to_array();
+                cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(&filtered[..W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                if row + 1 < h {
+                    cdef_output_row::<W>(out, out_stride, row + 1)?.copy_from_slice(&filtered[W..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                }
+            }
+        }};
+    }
+    filter_row_pair!(0);
+    filter_row_pair!(2);
+    filter_row_pair!(4);
+    filter_row_pair!(6);
+    Some(())
+}
+
+/// Per-block § 7.18.3 `constrain` for 8-bit samples in `u8` lanes.
+#[derive(Clone, Copy)]
+struct CdefConstrain8 {
+    threshold: Simd<u8, 16>,
+    shift: Simd<u8, 16>,
+}
+
+impl CdefConstrain8 {
+    fn new(threshold: i32, damping: i32) -> Self {
+        Self {
+            threshold: Simd::splat(threshold as u8),
+            shift: Simd::splat(constrain_damping_adj(threshold, damping) as u8),
+        }
+    }
+
+    /// `constrain(tap - center)` as `sign * min(|diff|, clip)`, which is the
+    /// clamp to `[-clip, clip]` that [`CdefConstrain::apply`] computes.
+    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[inline(always)]
+    fn apply(self, tap: Simd<u8, 16>, center: Simd<u8, 16>) -> Simd<i8, 16> {
+        let diff = tap.simd_max(center) - tap.simd_min(center);
+        let clip = self.threshold.saturating_sub(diff >> self.shift);
+        let magnitude = diff.simd_min(clip).cast::<i8>();
+        tap.simd_lt(center).select(-magnitude, magnitude)
+    }
+}
+
+/// Whether [`cdef_filter_rows_8bit`] computes `filter` exactly on samples
+/// that fit `u8` lanes: strengths below 64 so that a constrained tap pair
+/// fits in `i8`, and damping shifts below 8 so that `u8` shifts do not wrap.
+fn cdef_u8_lanes_fit(filter: &CdefBlockFilter) -> bool {
+    [filter.pri_str, filter.sec_str]
+        .into_iter()
+        .all(|strength| {
+            (0..64).contains(&strength) && constrain_damping_adj(strength, filter.damping) < 8
+        })
+}
+
+/// [`cdef_filter_rows`] in an interior layout 8 lanes wide, for windows whose
+/// samples minus `base` fit `u8`. Each row pair narrows to one 16-lane `u8`
+/// vector, so a tap's constrain is one vector operation per step instead of
+/// two. § 7.18.3 reads only tap differences and clamps to tap values, so
+/// the result moved back by `base` is the same as the `i16` kernel's.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_filter_rows_8bit<
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const SPAN: usize,
+    const AREA: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
+    pad: &[u16; AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    starts: &CdefTapStarts,
+    out: &mut [u16],
+    out_stride: usize,
+    base: u16,
+) -> Option<()> {
+    let (center_view, pri_views, sec_views) =
+        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+    let (base_u8, base_i16) = (Simd::splat(base as u8), Simd::splat(base as i16));
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
+    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
+    let pri = CdefConstrain8::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain8::new(filter.sec_str, filter.damping);
+    let row_pair = |view: &[u16; SPAN], row: usize| -> Option<Simd<u8, 16>> {
+        let first = Simd::<u16, 8>::from_array(*view.get(row * STRIDE..)?.first_chunk()?);
+        let second = Simd::<u16, 8>::from_array(*view.get((row + 1) * STRIDE..)?.first_chunk()?);
+        Some(
+            simd_swizzle!(
+                first.cast::<u8>(),
+                second.cast::<u8>(),
+                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            ) - base_u8,
+        )
+    };
+    macro_rules! filter_row_pair {
+        ($row:literal) => {{
+            let row: usize = $row;
+            if row < ROWS && row < h {
+                let center = row_pair(center_view, row)?;
+                let mut sum = Simd::<i16, 16>::splat(0);
+                let mut min = center;
+                let mut max = center;
+                macro_rules! add_pair {
+                    ($first:expr, $second:expr, $constrain:expr, $weight:expr) => {{
+                        let first = row_pair($first, row)?;
+                        let second = row_pair($second, row)?;
+                        if PRI && SEC {
+                            min = min.simd_min(first).simd_min(second);
+                            max = max.simd_max(first).simd_max(second);
+                        }
+                        let pair = $constrain.apply(first, center) + $constrain.apply(second, center);
+                        sum += pair.cast::<i16>() * $weight.cast::<i16>();
+                    }};
+                }
+                if PRI {
+                    add_pair!(pri_views[0], pri_views[1], pri, pri_taps[0]);
+                    add_pair!(pri_views[2], pri_views[3], pri, pri_taps[1]);
+                }
+                if SEC {
+                    add_pair!(sec_views[0], sec_views[1], sec, sec_taps[0]);
+                    add_pair!(sec_views[2], sec_views[3], sec, sec_taps[0]);
+                    add_pair!(sec_views[4], sec_views[5], sec, sec_taps[1]);
+                    add_pair!(sec_views[6], sec_views[7], sec, sec_taps[1]);
+                }
+                let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
+                let filtered = center.cast::<i16>() + ((Simd::splat(8) + sum - negative) >> 4);
+                let filtered = if PRI && SEC {
+                    let clipped = filtered.simd_clamp(Simd::splat(0), Simd::splat(255)).cast::<u8>();
+                    clipped.simd_max(min).simd_min(max).cast::<u16>() + Simd::splat(base)
+                } else {
+                    (filtered + base_i16).cast::<u16>()
+                };
+                let filtered = filtered.to_array();
+                cdef_output_row::<8>(out, out_stride, row)?.copy_from_slice(&filtered[..8]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                if row + 1 < h {
+                    cdef_output_row::<8>(out, out_stride, row + 1)?.copy_from_slice(&filtered[8..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                }
+            }
+        }};
+    }
+    filter_row_pair!(0);
+    filter_row_pair!(2);
+    filter_row_pair!(4);
+    filter_row_pair!(6);
+    Some(())
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
@@ -570,310 +853,207 @@ fn cdef_output_row<const W: usize>(
     out.get_mut(row.checked_mul(stride)?..)?.first_chunk_mut()
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_primary_rows<'a, const W: usize>(
-    pad: &'a [u16; CDEF_PADDED_AREA],
-    starts: &CdefPrimaryStarts,
-) -> Option<[[&'a [u16; W]; 2]; 2]> {
-    Some([
-        [
-            cdef_padded_row(pad, starts[0][0])?,
-            cdef_padded_row(pad, starts[0][1])?,
-        ],
-        [
-            cdef_padded_row(pad, starts[1][0])?,
-            cdef_padded_row(pad, starts[1][1])?,
-        ],
-    ])
+/// Runs `kernel` with its `PRI` and `SEC` parameters set to which tap
+/// families `filter` makes active, or evaluates `none` when neither is.
+macro_rules! cdef_by_families {
+    ($filter:expr, $kernel:ident::<$($generic:tt),*>($($arg:expr),*), $none:expr) => {
+        match ($filter.pri_str != 0, $filter.sec_str != 0) {
+            (true, true) => $kernel::<$($generic),*, true, true>($($arg),*),
+            (true, false) => $kernel::<$($generic),*, true, false>($($arg),*),
+            (false, true) => $kernel::<$($generic),*, false, true>($($arg),*),
+            (false, false) => $none,
+        }
+    };
 }
 
+/// Copies a block's centre samples, the output of a block with no active
+/// tap family.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn cdef_secondary_rows<'a, const W: usize>(
-    pad: &'a [u16; CDEF_PADDED_AREA],
-    starts: &CdefSecondaryStarts,
-) -> Option<[[[&'a [u16; W]; 2]; 2]; 2]> {
-    Some([
-        [
-            [
-                cdef_padded_row(pad, starts[0][0][0])?,
-                cdef_padded_row(pad, starts[0][0][1])?,
-            ],
-            [
-                cdef_padded_row(pad, starts[0][1][0])?,
-                cdef_padded_row(pad, starts[0][1][1])?,
-            ],
-        ],
-        [
-            [
-                cdef_padded_row(pad, starts[1][0][0])?,
-                cdef_padded_row(pad, starts[1][0][1])?,
-            ],
-            [
-                cdef_padded_row(pad, starts[1][1][0])?,
-                cdef_padded_row(pad, starts[1][1][1])?,
-            ],
-        ],
-    ])
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_filter_primary_row_simd<const W: usize>(
-    center_row: &[u16; W],
-    pri_rows: &[[&[u16; W]; 2]; 2],
-    pri_taps: [i32; 2],
-    pri_str: i32,
-    pri_adj: i32,
-) -> [u16; W] {
-    let center = Simd::from_array(*center_row).cast::<i16>();
-    let p00 = Simd::from_array(*pri_rows[0][0]).cast::<i16>();
-    let p01 = Simd::from_array(*pri_rows[0][1]).cast::<i16>();
-    let p10 = Simd::from_array(*pri_rows[1][0]).cast::<i16>();
-    let p11 = Simd::from_array(*pri_rows[1][1]).cast::<i16>();
-    let sum = Simd::splat(pri_taps[0] as i16)
-        * (constrain_with_adj_simd(p00 - center, pri_str, pri_adj)
-            + constrain_with_adj_simd(p01 - center, pri_str, pri_adj))
-        + Simd::splat(pri_taps[1] as i16)
-            * (constrain_with_adj_simd(p10 - center, pri_str, pri_adj)
-                + constrain_with_adj_simd(p11 - center, pri_str, pri_adj));
-    let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
-    (center + ((Simd::splat(8) + sum - negative) >> 4))
-        .cast::<u16>()
-        .to_array()
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_filter_secondary_row_simd<const W: usize>(
-    center_row: &[u16; W],
-    sec_rows: &[[[&[u16; W]; 2]; 2]; 2],
-    sec_taps: [i32; 2],
-    sec_str: i32,
-    sec_adj: i32,
-) -> [u16; W] {
-    let center = Simd::from_array(*center_row).cast::<i16>();
-    let s000 = Simd::from_array(*sec_rows[0][0][0]).cast::<i16>();
-    let s001 = Simd::from_array(*sec_rows[0][0][1]).cast::<i16>();
-    let s010 = Simd::from_array(*sec_rows[0][1][0]).cast::<i16>();
-    let s011 = Simd::from_array(*sec_rows[0][1][1]).cast::<i16>();
-    let s100 = Simd::from_array(*sec_rows[1][0][0]).cast::<i16>();
-    let s101 = Simd::from_array(*sec_rows[1][0][1]).cast::<i16>();
-    let s110 = Simd::from_array(*sec_rows[1][1][0]).cast::<i16>();
-    let s111 = Simd::from_array(*sec_rows[1][1][1]).cast::<i16>();
-    let sum = Simd::splat(sec_taps[0] as i16)
-        * (constrain_with_adj_simd(s000 - center, sec_str, sec_adj)
-            + constrain_with_adj_simd(s001 - center, sec_str, sec_adj)
-            + constrain_with_adj_simd(s010 - center, sec_str, sec_adj)
-            + constrain_with_adj_simd(s011 - center, sec_str, sec_adj))
-        + Simd::splat(sec_taps[1] as i16)
-            * (constrain_with_adj_simd(s100 - center, sec_str, sec_adj)
-                + constrain_with_adj_simd(s101 - center, sec_str, sec_adj)
-                + constrain_with_adj_simd(s110 - center, sec_str, sec_adj)
-                + constrain_with_adj_simd(s111 - center, sec_str, sec_adj));
-    let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
-    (center + ((Simd::splat(8) + sum - negative) >> 4))
-        .cast::<u16>()
-        .to_array()
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn constrain_with_adj_simd<const W: usize>(
-    diff: Simd<i16, W>,
-    threshold: i32,
-    damping_adj: i32,
-) -> Simd<i16, W> {
-    let abs = diff.abs().cast::<u16>();
-    let clip = Simd::splat(threshold as u16)
-        .saturating_sub(abs >> damping_adj as u16)
-        .cast::<i16>();
-    diff.simd_min(clip).simd_max(-clip)
-}
-
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_pair<const W: usize, const V: usize>(first: &[u16; W], second: &[u16; W]) -> [u16; V] {
-    debug_assert_eq!(V, W * 2);
-    core::array::from_fn(|i| if i < W { first[i] } else { second[i - W] })
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn cdef_filter_full_rows_paired<const W: usize, const V: usize, const HAS_UNAVAILABLE: bool>(
-    center_row: &[u16; V],
-    pri_rows: &[[[&[u16; W]; 2]; 2]; 2],
-    sec_rows: &[[[[&[u16; W]; 2]; 2]; 2]; 2],
-    pri_taps: [i32; 2],
-    sec_taps: [i32; 2],
-    pri_str: i32,
-    sec_str: i32,
-    pri_adj: i32,
-    sec_adj: i32,
-) -> [u16; V] {
-    let center = Simd::from_array(*center_row).cast::<i16>();
-    let mut sum = Simd::splat(0);
-    let mut min = center;
-    let mut max = center;
-    macro_rules! add_pair {
-        ($first:expr, $second:expr, $strength:expr, $adjustment:expr, $weight:expr) => {{
-            let first = Simd::from_array(cdef_pair::<W, V>($first[0], $first[1])).cast::<i16>();
-            let second = Simd::from_array(cdef_pair::<W, V>($second[0], $second[1])).cast::<i16>();
-            min = min.simd_min(first).simd_min(second);
-            let first_available = if HAS_UNAVAILABLE {
-                first
-                    .simd_eq(Simd::splat(CDEF_UNAVAILABLE as i16))
-                    .select(center, first)
-            } else {
-                first
-            };
-            let second_available = if HAS_UNAVAILABLE {
-                second
-                    .simd_eq(Simd::splat(CDEF_UNAVAILABLE as i16))
-                    .select(center, second)
-            } else {
-                second
-            };
-            max = max.simd_max(first_available).simd_max(second_available);
-            sum += Simd::splat($weight as i16)
-                * (constrain_with_adj_simd(first - center, $strength, $adjustment)
-                    + constrain_with_adj_simd(second - center, $strength, $adjustment));
-        }};
-    }
-    add_pair!(
-        [&pri_rows[0][0][0], &pri_rows[1][0][0]],
-        [&pri_rows[0][0][1], &pri_rows[1][0][1]],
-        pri_str,
-        pri_adj,
-        pri_taps[0]
-    );
-    add_pair!(
-        [&pri_rows[0][1][0], &pri_rows[1][1][0]],
-        [&pri_rows[0][1][1], &pri_rows[1][1][1]],
-        pri_str,
-        pri_adj,
-        pri_taps[1]
-    );
-    add_pair!(
-        [&sec_rows[0][0][0][0], &sec_rows[1][0][0][0]],
-        [&sec_rows[0][0][0][1], &sec_rows[1][0][0][1]],
-        sec_str,
-        sec_adj,
-        sec_taps[0]
-    );
-    add_pair!(
-        [&sec_rows[0][0][1][0], &sec_rows[1][0][1][0]],
-        [&sec_rows[0][0][1][1], &sec_rows[1][0][1][1]],
-        sec_str,
-        sec_adj,
-        sec_taps[0]
-    );
-    add_pair!(
-        [&sec_rows[0][1][0][0], &sec_rows[1][1][0][0]],
-        [&sec_rows[0][1][0][1], &sec_rows[1][1][0][1]],
-        sec_str,
-        sec_adj,
-        sec_taps[1]
-    );
-    add_pair!(
-        [&sec_rows[0][1][1][0], &sec_rows[1][1][1][0]],
-        [&sec_rows[0][1][1][1], &sec_rows[1][1][1][1]],
-        sec_str,
-        sec_adj,
-        sec_taps[1]
-    );
-    let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
-    let rounded = center + ((Simd::splat(8) + sum - negative) >> 4);
-    rounded.simd_max(min).simd_min(max).cast::<u16>().to_array()
-}
-
-fn cdef_filter_block_interior_rows_paired<
+fn cdef_copy_centre_rows<
     const W: usize,
-    const V: usize,
-    const HAS_UNAVAILABLE: bool,
-    const PAD_STRIDE: usize,
-    const PAD_CENTER: usize,
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const AREA: usize,
 >(
-    pad: &[u16; CDEF_PADDED_AREA],
+    pad: &[u16; AREA],
     h: usize,
-    filter: &CdefBlockFilter,
-    row_starts: &CdefRowStarts,
     out: &mut [u16],
     out_stride: usize,
 ) -> Option<()> {
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
-    let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
-    let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
-    let center_start = 2 * PAD_STRIDE + PAD_CENTER;
-    for row in (0..h).step_by(2) {
-        let next_row = (row + 1).min(h - 1);
-        let center_rows = [
-            cdef_padded_row::<W>(pad, center_start + row * PAD_STRIDE)?,
-            cdef_padded_row::<W>(pad, center_start + next_row * PAD_STRIDE)?,
-        ];
-        let center = cdef_pair::<W, V>(center_rows[0], center_rows[1]);
-        let filtered = if filter.pri_str != 0 && filter.sec_str != 0 {
-            let pri_rows = [
-                cdef_primary_rows::<W>(pad, &row_starts[row].0)?,
-                cdef_primary_rows::<W>(pad, &row_starts[next_row].0)?,
-            ];
-            let sec_rows = [
-                cdef_secondary_rows::<W>(pad, &row_starts[row].1)?,
-                cdef_secondary_rows::<W>(pad, &row_starts[next_row].1)?,
-            ];
-            cdef_filter_full_rows_paired::<W, V, HAS_UNAVAILABLE>(
-                &center,
-                &pri_rows,
-                &sec_rows,
-                pri_taps,
-                sec_taps,
-                filter.pri_str,
-                filter.sec_str,
-                pri_adj,
-                sec_adj,
-            )
-        } else if filter.pri_str != 0 {
-            let pri_rows = [
-                cdef_primary_rows::<W>(pad, &row_starts[row].0)?,
-                cdef_primary_rows::<W>(pad, &row_starts[next_row].0)?,
-            ];
-            let pri_data: [[[u16; V]; 2]; 2] = core::array::from_fn(|tap| {
-                core::array::from_fn(|sign| {
-                    cdef_pair::<W, V>(pri_rows[0][tap][sign], pri_rows[1][tap][sign])
-                })
-            });
-            let pri_refs =
-                core::array::from_fn(|tap| core::array::from_fn(|sign| &pri_data[tap][sign]));
-            cdef_filter_primary_row_simd(&center, &pri_refs, pri_taps, filter.pri_str, pri_adj)
-        } else if filter.sec_str != 0 {
-            let sec_rows = [
-                cdef_secondary_rows::<W>(pad, &row_starts[row].1)?,
-                cdef_secondary_rows::<W>(pad, &row_starts[next_row].1)?,
-            ];
-            let sec_data: [[[[u16; V]; 2]; 2]; 2] = core::array::from_fn(|tap| {
-                core::array::from_fn(|sign| {
-                    core::array::from_fn(|dir| {
-                        cdef_pair::<W, V>(sec_rows[0][tap][sign][dir], sec_rows[1][tap][sign][dir])
-                    })
-                })
-            });
-            let sec_refs = core::array::from_fn(|tap| {
-                core::array::from_fn(|sign| core::array::from_fn(|dir| &sec_data[tap][sign][dir]))
-            });
-            cdef_filter_secondary_row_simd(&center, &sec_refs, sec_taps, filter.sec_str, sec_adj)
-        } else {
-            center
-        };
-        cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(&filtered[..W]); // splot-copy-ok: publish paired SIMD-filtered rows into output
-        if row + 1 < h {
-            cdef_output_row::<W>(out, out_stride, row + 1)?.copy_from_slice(&filtered[W..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
-        }
+    for row in 0..h.min(ROWS) {
+        let start = (2 + row) * STRIDE + CENTER;
+        let center = pad.get(start..)?.first_chunk::<W>()?;
+        cdef_output_row::<W>(out, out_stride, row)?.copy_from_slice(center); // splot-copy-ok: unfiltered block keeps its centre samples
     }
     Some(())
+}
+
+/// Whether [`cdef_filter_rows_diff8`] computes `filter` exactly: strengths
+/// below 64, and `strength << dampingAdj` at most 127, so that `constrain`
+/// is already zero for every difference that saturates `i8`.
+fn cdef_i8_diffs_fit(filter: &CdefBlockFilter) -> bool {
+    [filter.pri_str, filter.sec_str]
+        .into_iter()
+        .all(|strength| {
+            (0..64).contains(&strength)
+                && strength << constrain_damping_adj(strength, filter.damping) <= 127
+        })
+}
+
+impl CdefConstrain8 {
+    /// `constrain(diff)` on a tap difference in `i8` lanes; the wrapping
+    /// `abs` read as `u8` is `|diff|` also for `-128`.
+    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[inline(always)]
+    fn apply_diff(self, diff: Simd<i8, 16>) -> Simd<i8, 16> {
+        let magnitude = diff.abs().cast::<u8>();
+        let clip = self
+            .threshold
+            .saturating_sub(magnitude >> self.shift)
+            .cast::<i8>();
+        diff.simd_min(clip).simd_max(-clip)
+    }
+}
+
+/// [`cdef_filter_rows`] in an interior layout 8 lanes wide on tap
+/// differences saturated to `i8`, for filters [`cdef_i8_diffs_fit`] admits.
+/// A saturated difference constrains to zero like the true one, the
+/// rounded sum moves the centre by less than 128, and the `min`/`max` clamp
+/// reads the differences, so the result is the same as the `i16` kernel's.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_filter_rows_diff8<
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const SPAN: usize,
+    const AREA: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
+    pad: &[u16; AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    starts: &CdefTapStarts,
+    out: &mut [u16],
+    out_stride: usize,
+) -> Option<()> {
+    let (center_view, pri_views, sec_views) =
+        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
+    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
+    let pri = CdefConstrain8::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain8::new(filter.sec_str, filter.damping);
+    let (low, high) = (
+        Simd::splat(i16::from(i8::MIN)),
+        Simd::splat(i16::from(i8::MAX)),
+    );
+    macro_rules! filter_row_pair {
+        ($row:literal) => {{
+            let row: usize = $row;
+            if row < ROWS && row < h {
+                let center = cdef_row_pair::<8, 16, STRIDE, SPAN>(center_view, row)?;
+                let mut sum = Simd::<i16, 16>::splat(0);
+                let mut min = Simd::<i8, 16>::splat(0);
+                let mut max = Simd::<i8, 16>::splat(0);
+                macro_rules! add_pair {
+                    ($first:expr, $second:expr, $constrain:expr, $weight:expr) => {{
+                        let first = cdef_row_pair::<8, 16, STRIDE, SPAN>($first, row)? - center;
+                        let second = cdef_row_pair::<8, 16, STRIDE, SPAN>($second, row)? - center;
+                        let first = first.simd_clamp(low, high).cast::<i8>();
+                        let second = second.simd_clamp(low, high).cast::<i8>();
+                        if PRI && SEC {
+                            min = min.simd_min(first).simd_min(second);
+                            max = max.simd_max(first).simd_max(second);
+                        }
+                        let pair = $constrain.apply_diff(first) + $constrain.apply_diff(second);
+                        sum += pair.cast::<i16>() * $weight.cast::<i16>();
+                    }};
+                }
+                if PRI {
+                    add_pair!(pri_views[0], pri_views[1], pri, pri_taps[0]);
+                    add_pair!(pri_views[2], pri_views[3], pri, pri_taps[1]);
+                }
+                if SEC {
+                    add_pair!(sec_views[0], sec_views[1], sec, sec_taps[0]);
+                    add_pair!(sec_views[2], sec_views[3], sec, sec_taps[0]);
+                    add_pair!(sec_views[4], sec_views[5], sec, sec_taps[1]);
+                    add_pair!(sec_views[6], sec_views[7], sec, sec_taps[1]);
+                }
+                let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
+                let offset = (Simd::splat(8) + sum - negative) >> 4;
+                let filtered = if PRI && SEC {
+                    center + offset.cast::<i8>().simd_max(min).simd_min(max).cast()
+                } else {
+                    center + offset
+                };
+                let filtered = filtered.cast::<u16>().to_array();
+                cdef_output_row::<8>(out, out_stride, row)?.copy_from_slice(&filtered[..8]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                if row + 1 < h {
+                    cdef_output_row::<8>(out, out_stride, row + 1)?.copy_from_slice(&filtered[8..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+                }
+            }
+        }};
+    }
+    filter_row_pair!(0);
+    filter_row_pair!(2);
+    filter_row_pair!(4);
+    filter_row_pair!(6);
+    Some(())
+}
+
+/// Dispatches [`cdef_filter_rows`] on which tap families are active; with
+/// neither, the block is its centre samples.
+fn cdef_filter_block_rows<
+    const W: usize,
+    const V: usize,
+    const HAS_UNAVAILABLE: bool,
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const SPAN: usize,
+    const AREA: usize,
+>(
+    pad: &[u16; AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    starts: &CdefTapStarts,
+    out: &mut [u16],
+    out_stride: usize,
+) -> Option<()> {
+    macro_rules! copy {
+        () => {
+            cdef_copy_centre_rows::<W, STRIDE, CENTER, ROWS, AREA>(pad, h, out, out_stride)
+        };
+    }
+    if W == 8 && !HAS_UNAVAILABLE && filter.coeff_shift == 0 && cdef_u8_lanes_fit(filter) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_8bit::<STRIDE, CENTER, ROWS, SPAN, AREA>(
+                pad, h, filter, starts, out, out_stride, 0
+            ),
+            copy!()
+        );
+    }
+    if W == 8 && !HAS_UNAVAILABLE && filter.coeff_shift > 0 && cdef_i8_diffs_fit(filter) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_diff8::<STRIDE, CENTER, ROWS, SPAN, AREA>(
+                pad, h, filter, starts, out, out_stride
+            ),
+            copy!()
+        );
+    }
+    cdef_by_families!(
+        filter,
+        cdef_filter_rows::<W, V, HAS_UNAVAILABLE, STRIDE, CENTER, ROWS, SPAN, AREA>(
+            pad, h, filter, starts, out, out_stride
+        ),
+        copy!()
+    )
 }
 
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block written to a strided output.
@@ -932,24 +1112,29 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
     out: &mut [u16],
     out_stride: usize,
 ) -> bool {
-    let row_starts = &CDEF_ROW_STARTS[filter.dir & 7];
+    let starts = &CDEF_TAP_STARTS;
+    let h = h.min(8);
     match w.min(8) {
-        8 => cdef_filter_block_interior_rows_paired::<8, 16, HAS_UNAVAILABLE, CDEF_PADDED_SIDE, 2>(
-            pad,
-            h.min(8),
-            filter,
-            row_starts,
-            out,
-            out_stride,
-        ),
-        4 => cdef_filter_block_interior_rows_paired::<4, 8, HAS_UNAVAILABLE, CDEF_PADDED_SIDE, 2>(
-            pad,
-            h.min(8),
-            filter,
-            row_starts,
-            out,
-            out_stride,
-        ),
+        8 => cdef_filter_block_rows::<
+            8,
+            16,
+            HAS_UNAVAILABLE,
+            CDEF_PADDED_SIDE,
+            2,
+            8,
+            { 7 * CDEF_PADDED_SIDE + 8 },
+            CDEF_PADDED_AREA,
+        >(pad, h, filter, starts, out, out_stride),
+        4 => cdef_filter_block_rows::<
+            4,
+            8,
+            HAS_UNAVAILABLE,
+            CDEF_PADDED_SIDE,
+            2,
+            8,
+            { 7 * CDEF_PADDED_SIDE + 4 },
+            CDEF_PADDED_AREA,
+        >(pad, h, filter, starts, out, out_stride),
         _ => None,
     }
     .is_some()
@@ -985,13 +1170,70 @@ pub fn cdef_filter_block_chroma_pair(
     if h > 4 {
         return false;
     }
-    cdef_filter_block_interior_rows_paired::<8, 16, false, CDEF_PAIR_STRIDE, 4>(
-        pad,
-        h,
-        filter,
-        &CDEF_PAIR_ROW_STARTS[filter.dir & 7],
-        out,
+    cdef_filter_block_rows::<
         8,
+        16,
+        false,
+        CDEF_PAIR_STRIDE,
+        4,
+        4,
+        { 3 * CDEF_PAIR_STRIDE + 8 },
+        CDEF_PADDED_AREA,
+    >(pad, h, filter, &CDEF_PAIR_TAP_STARTS, out, 8)
+    .is_some()
+}
+
+/// [`cdef_filter_block_chroma_pair`] for one block of the chroma-pair segment
+/// scratch: rows `CDEF_PAIR_SEGMENT_STRIDE` lanes apart, with the block's
+/// first tap-reach lane at index 0.
+pub fn cdef_filter_block_chroma_pair_segment(
+    pad: &[u16; CDEF_PAIR_SEGMENT_BLOCK_AREA],
+    filter: &CdefBlockFilter,
+    out: &mut [u16; CDEF_PAIR_OUTPUT],
+) -> bool {
+    cdef_filter_block_rows::<
+        8,
+        16,
+        false,
+        CDEF_PAIR_SEGMENT_STRIDE,
+        4,
+        4,
+        { 3 * CDEF_PAIR_SEGMENT_STRIDE + 8 },
+        CDEF_PAIR_SEGMENT_BLOCK_AREA,
+    >(pad, 4, filter, &CDEF_PAIR_SEGMENT_TAP_STARTS, out, 8)
+    .is_some()
+}
+
+/// AV2 § 7.18.3 CDEF over one interior 8x8 luma block of the luma segment
+/// scratch: rows `CDEF_SEGMENT_STRIDE` lanes apart, with the block's first
+/// tap-reach lane at index 0. `window_min` is `Some(min)` only when every
+/// sample of the block's 12x12 window lies in `min..=min + 255`; the block
+/// then runs in `u8` lanes when its filter fits them. Returns `false` when
+/// `out` cannot hold the block at `out_stride`.
+pub fn cdef_filter_block_segment(
+    pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
+    filter: &CdefBlockFilter,
+    window_min: Option<u16>,
+    out: &mut [u16],
+    out_stride: usize,
+) -> bool {
+    const SPAN: usize = 7 * CDEF_SEGMENT_STRIDE + 8;
+    const AREA: usize = CDEF_SEGMENT_BLOCK_AREA;
+    let starts = &CDEF_SEGMENT_TAP_STARTS;
+    if let Some(base) = window_min
+        && cdef_u8_lanes_fit(filter)
+    {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_8bit::<CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
+                pad, 8, filter, starts, out, out_stride, base
+            ),
+            cdef_copy_centre_rows::<8, CDEF_SEGMENT_STRIDE, 2, 8, AREA>(pad, 8, out, out_stride)
+        )
+        .is_some();
+    }
+    cdef_filter_block_rows::<8, 16, false, CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
+        pad, 8, filter, starts, out, out_stride,
     )
     .is_some()
 }
@@ -1163,6 +1405,87 @@ mod tests {
         let (y_dir, var) = cdef_direction(&block);
         assert_eq!(y_dir, 2, "row-varying block selects direction 2");
         assert!(var > 0, "a non-flat block has positive variance: var={var}");
+    }
+
+    /// § 7.18.2 as written, one sample at a time.
+    #[allow(clippy::needless_range_loop)]
+    fn spec_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
+        let mut partial = [[0i32; 15]; 8];
+        for i in 0..8 {
+            for j in 0..8 {
+                let x = block[i][j];
+                partial[0][i + j] += x;
+                partial[1][i + j / 2] += x;
+                partial[2][i] += x;
+                partial[3][3 + i - j / 2] += x;
+                partial[4][7 + i - j] += x;
+                partial[5][3 - i / 2 + j] += x;
+                partial[6][j] += x;
+                partial[7][i / 2 + j] += x;
+            }
+        }
+        let square = |v: i32| v * v;
+        let mut cost = [0i32; 8];
+        for i in 0..8 {
+            cost[2] += square(partial[2][i]);
+            cost[6] += square(partial[6][i]);
+        }
+        cost[2] *= DIV_TABLE[8];
+        cost[6] *= DIV_TABLE[8];
+        for i in 0..7 {
+            for d in [0, 4] {
+                cost[d] += (square(partial[d][i]) + square(partial[d][14 - i])) * DIV_TABLE[i + 1];
+            }
+        }
+        cost[0] += square(partial[0][7]) * DIV_TABLE[8];
+        cost[4] += square(partial[4][7]) * DIV_TABLE[8];
+        for i in (1..8).step_by(2) {
+            for j in 0..5 {
+                cost[i] += square(partial[i][3 + j]);
+            }
+            cost[i] *= DIV_TABLE[8];
+            for j in 0..3 {
+                cost[i] +=
+                    (square(partial[i][j]) + square(partial[i][10 - j])) * DIV_TABLE[2 * j + 2];
+            }
+        }
+        let (mut best_cost, mut y_dir) = (0, 0);
+        for (i, &c) in cost.iter().enumerate() {
+            if c > best_cost {
+                best_cost = c;
+                y_dir = i;
+            }
+        }
+        (y_dir, (best_cost - cost[(y_dir + 4) & 7]) >> 10)
+    }
+
+    #[test]
+    fn direction_matches_spec_partials_and_costs() {
+        let mut state = 0x2545_f491u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state >> 8
+        };
+        let mut directions = [0usize; 8];
+        for case in 0..4000usize {
+            let mut block = [[0i32; 8]; 8];
+            let slope = (case % 9) as i32 - 4;
+            for (i, row) in block.iter_mut().enumerate() {
+                for (j, cell) in row.iter_mut().enumerate() {
+                    let ramp =
+                        slope * (i as i32 * (case % 3) as i32 + j as i32 * (case % 5) as i32);
+                    let noise = (next() % 64) as i32 - 32;
+                    *cell = (ramp * 6 + noise).clamp(-128, 127);
+                }
+            }
+            if case % 7 == 0 {
+                block = [[if case % 2 == 0 { -128 } else { 127 }; 8]; 8];
+            }
+            let expected = spec_direction(&block);
+            directions[expected.0] += 1;
+            assert_eq!(cdef_direction(&block), expected, "case {case}");
+        }
+        assert!(directions.iter().all(|&count| count > 0), "{directions:?}");
     }
 
     #[test]
@@ -1426,10 +1749,16 @@ mod tests {
 
     #[test]
     fn chroma_pair_matches_two_single_plane_blocks() {
+        for coeff_shift in [2u32, 0] {
+            chroma_pair_matches_single_planes(coeff_shift);
+        }
+    }
+
+    fn chroma_pair_matches_single_planes(coeff_shift: u32) {
         let mut state = 0x1234_5678u32;
         let mut next = || {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            ((state >> 13) & 0x3ff) as u16
+            ((state >> 13) & ((256 << coeff_shift) - 1)) as u16
         };
         for dir in 0..8 {
             for (pri_str, sec_str) in [(0, 0), (12, 0), (0, 8), (12, 8), (16, 4)] {
@@ -1449,7 +1778,7 @@ mod tests {
                     sec_str,
                     damping: 5,
                     dir,
-                    coeff_shift: 2,
+                    coeff_shift,
                 };
                 let mut paired = [0u16; CDEF_PAIR_OUTPUT];
                 assert!(cdef_filter_block_chroma_pair(
@@ -1476,6 +1805,188 @@ mod tests {
                                 "dir={dir} pri={pri_str} sec={sec_str} plane={plane} \
                                  row={row} col={col}"
                             );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tap_starts_leave_room_for_their_views() {
+        for (starts, span, window) in [
+            (
+                CDEF_TAP_STARTS,
+                7 * CDEF_PADDED_SIDE + 8,
+                12 * CDEF_PADDED_SIDE,
+            ),
+            (
+                CDEF_PAIR_TAP_STARTS,
+                3 * CDEF_PAIR_STRIDE + 8,
+                8 * CDEF_PAIR_STRIDE,
+            ),
+            (
+                CDEF_SEGMENT_TAP_STARTS,
+                7 * CDEF_SEGMENT_STRIDE + 8,
+                11 * CDEF_SEGMENT_STRIDE + 12,
+            ),
+            (
+                CDEF_PAIR_SEGMENT_TAP_STARTS,
+                3 * CDEF_PAIR_SEGMENT_STRIDE + 8,
+                7 * CDEF_PAIR_SEGMENT_STRIDE + 16,
+            ),
+        ] {
+            assert!(
+                starts
+                    .iter()
+                    .flatten()
+                    .all(|&start| usize::from(start) + span <= window)
+            );
+        }
+    }
+
+    #[test]
+    fn segment_blocks_match_single_block_kernels() {
+        for coeff_shift in [2u32, 0] {
+            let mut state = 0x9e37_79b9u32;
+            let mut next = || {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((state >> 13) & ((256 << coeff_shift) - 1)) as u16
+            };
+            let mut luma = [0u16; 8 * (CDEF_SEGMENT_BLOCKS - 1) + CDEF_SEGMENT_BLOCK_AREA];
+            let mut pair = [0u16; 8 * (CDEF_SEGMENT_BLOCKS - 1) + CDEF_PAIR_SEGMENT_BLOCK_AREA];
+            luma[..12 * CDEF_SEGMENT_STRIDE].fill_with(&mut next);
+            pair[..8 * CDEF_PAIR_SEGMENT_STRIDE].fill_with(&mut next);
+            for block in 0..CDEF_SEGMENT_BLOCKS {
+                let luma_block: &[u16; CDEF_SEGMENT_BLOCK_AREA] =
+                    &core::array::from_fn(|lane| luma[8 * block + lane]);
+                let pair_block: &[u16; CDEF_PAIR_SEGMENT_BLOCK_AREA] =
+                    &core::array::from_fn(|lane| pair[8 * block + lane]);
+                let mut single = [0u16; CDEF_PADDED_AREA];
+                let mut single_pair = [0u16; CDEF_PADDED_AREA];
+                for row in 0..12 {
+                    for col in 0..12 {
+                        single[row * CDEF_PADDED_SIDE + col] =
+                            luma_block[row * CDEF_SEGMENT_STRIDE + col];
+                    }
+                }
+                for row in 0..8 {
+                    for lane in 0..16 {
+                        single_pair[row * CDEF_PAIR_STRIDE + lane] =
+                            pair_block[row * CDEF_PAIR_SEGMENT_STRIDE + lane];
+                    }
+                }
+                assert_eq!(
+                    cdef_direction_segment(luma_block, coeff_shift),
+                    cdef_direction_padded(&single, coeff_shift)
+                );
+                for dir in 0..8 {
+                    for (pri_str, sec_str) in [(0, 0), (12, 0), (0, 8), (12, 8), (16, 4), (5, 3)] {
+                        let filter = CdefBlockFilter {
+                            pri_str: pri_str << coeff_shift,
+                            sec_str: sec_str << coeff_shift,
+                            damping: 5 + coeff_shift as i32,
+                            dir,
+                            coeff_shift,
+                        };
+                        let (mut got, mut want) = ([0u16; 80], [0u16; 80]);
+                        assert!(cdef_filter_block_segment(
+                            luma_block, &filter, None, &mut got, 10
+                        ));
+                        assert!(cdef_filter_block_interior_to_valid_stride(
+                            &single, 8, 8, &filter, &mut want, 10
+                        ));
+                        assert_eq!(got, want, "luma block={block} dir={dir} pri={pri_str}");
+                        let (mut got, mut want) =
+                            ([0u16; CDEF_PAIR_OUTPUT], [0u16; CDEF_PAIR_OUTPUT]);
+                        assert!(cdef_filter_block_chroma_pair_segment(
+                            pair_block, &filter, &mut got
+                        ));
+                        assert!(cdef_filter_block_chroma_pair(
+                            &single_pair,
+                            4,
+                            &filter,
+                            &mut want
+                        ));
+                        assert_eq!(got, want, "pair block={block} dir={dir} pri={pri_str}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rebased_segment_blocks_match_per_sample_filter() {
+        let mut state = 0x51ed_270bu32;
+        let mut pad = [0u16; CDEF_SEGMENT_BLOCK_AREA];
+        let mut single = [0u16; CDEF_PADDED_AREA];
+        for (base, range) in [(0u16, 256u32), (767, 256), (300, 41)] {
+            pad[..12 * CDEF_SEGMENT_STRIDE].fill_with(|| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                base + ((state >> 13) % range) as u16
+            });
+            for (row, col) in (0..12).flat_map(|row| (0..12).map(move |col| (row, col))) {
+                single[row * CDEF_PADDED_SIDE + col] = pad[row * CDEF_SEGMENT_STRIDE + col];
+            }
+            let min = pad[..12 * CDEF_SEGMENT_STRIDE].iter().copied().min();
+            for dir in 0..8 {
+                for (pri_str, sec_str) in [(1, 0), (60, 0), (0, 4), (0, 16), (15, 4), (60, 16)] {
+                    for damping in 5..=8 {
+                        let filter = CdefBlockFilter {
+                            pri_str,
+                            sec_str,
+                            damping,
+                            dir,
+                            coeff_shift: 2,
+                        };
+                        let mut got = [0u16; 80];
+                        assert!(cdef_filter_block_segment(&pad, &filter, min, &mut got, 10));
+                        for (i, j) in (0..8).flat_map(|i| (0..8).map(move |j| (i, j))) {
+                            assert_eq!(
+                                i32::from(got[i * 10 + j]),
+                                per_sample_reference(&single, i, j, &filter),
+                                "base={base} dir={dir} pri={pri_str} sec={sec_str} i={i} j={j}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saturated_tap_differences_match_per_sample_filter() {
+        let mut state = 0x7f4a_7c15u32;
+        let mut pad = [0u16; CDEF_PADDED_AREA];
+        for round in 0..6u32 {
+            for sample in &mut pad[..CDEF_PADDED_SIDE * CDEF_PADDED_SIDE] {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let step = [0, 126, 127, 128, 129, 260][((state >> 9) % 6) as usize];
+                let sign = if (state >> 20) & 1 == 0 { 1 } else { -1 };
+                *sample = (512 + sign * step + (round as i32 % 3) - 1) as u16;
+            }
+            for dir in 0..8 {
+                for strength in [1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 60, 63] {
+                    for damping in 4..=8 {
+                        for (pri_str, sec_str) in [(strength, 0), (0, strength), (strength, 16)] {
+                            let filter = CdefBlockFilter {
+                                pri_str,
+                                sec_str,
+                                damping,
+                                dir,
+                                coeff_shift: 2,
+                            };
+                            let mut out = [0u16; 64];
+                            assert!(cdef_filter_block_interior_to(
+                                &pad, 8, 8, &filter, &mut out, 8
+                            ));
+                            for (i, j) in (0..8).flat_map(|i| (0..8).map(move |j| (i, j))) {
+                                assert_eq!(
+                                    i32::from(out[i * 8 + j]),
+                                    per_sample_reference(&pad, i, j, &filter),
+                                    "dir={dir} pri={pri_str} sec={sec_str} damping={damping}"
+                                );
+                            }
                         }
                     }
                 }

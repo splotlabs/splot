@@ -558,14 +558,17 @@ pub fn predict_intra_middle_directional_angle_rect_idif_into<T: ReconSample>(
 ) -> Result<()> {
     let context =
         validate_middle_idif_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
-    write_middle_idif_prediction(
-        bit_depth,
-        size,
-        angle,
-        context.left,
-        context.above,
+    write_middle_idif_mrl_prediction(
+        MiddleIdifMrlPrediction {
+            bit_depth,
+            size,
+            angle,
+            left: context.left,
+            above: context.above,
+            mrl_index: 0,
+            stride_samples,
+        },
         output,
-        stride_samples,
     )
 }
 
@@ -882,8 +885,6 @@ fn validate_middle_idif_inputs<T: ReconSample>(
         bit_depth,
     )?;
 
-    validate_middle_idif_index_bounds(size, angle, left.len(), above.len())?;
-
     Ok(ValidatedMiddleIdifInputs { left, above })
 }
 
@@ -927,8 +928,6 @@ fn validate_middle_idif_mrl_inputs<T: ReconSample>(
         bit_depth,
     )?;
 
-    validate_middle_idif_mrl_index_bounds(size, angle, left.len(), above.len(), mrl_index)?;
-
     Ok(ValidatedMiddleIdifInputs { left, above })
 }
 
@@ -948,67 +947,6 @@ fn required_middle_idif_mrl_above_len(size: IntraRectBlockSize, mrl_index: usize
         .ok_or(ReconError::ArithmeticOverflow {
             context: "middle directional angle MRL IDIF above edge length",
         })
-}
-
-fn validate_middle_idif_index_bounds(
-    size: IntraRectBlockSize,
-    angle: IntraMiddleDirectionalAngle,
-    left_len: usize,
-    above_len: usize,
-) -> Result<()> {
-    let branch = angle.branch();
-    for row in 0..size.height() {
-        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
-        for _ in 0..size.width() {
-            let reference = walk.next();
-            let len = match reference.edge {
-                IntraDirectionalAngleEdge::Left => left_len,
-                IntraDirectionalAngleEdge::Above => above_len,
-            };
-            for tap in 0..DR_INTERP_FILTER_TAPS as i32 {
-                let logical =
-                    reference
-                        .base
-                        .checked_add(tap - 1)
-                        .ok_or(ReconError::ArithmeticOverflow {
-                            context: "middle directional angle IDIF tap index",
-                        })?;
-                logical_idif_edge_offset(logical, len)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_middle_idif_mrl_index_bounds(
-    size: IntraRectBlockSize,
-    angle: IntraMiddleDirectionalAngle,
-    left_len: usize,
-    above_len: usize,
-    mrl_index: usize,
-) -> Result<()> {
-    let branch = angle.branch();
-    for row in 0..size.height() {
-        let mut walk = MiddleRowWalk::new(row, size.width(), branch, mrl_index)?;
-        for _ in 0..size.width() {
-            let reference = walk.next();
-            let len = match reference.edge {
-                IntraDirectionalAngleEdge::Left => left_len,
-                IntraDirectionalAngleEdge::Above => above_len,
-            };
-            for tap in 0..DR_INTERP_FILTER_TAPS as i32 {
-                let logical =
-                    reference
-                        .base
-                        .checked_add(tap - 1)
-                        .ok_or(ReconError::ArithmeticOverflow {
-                            context: "middle directional angle MRL IDIF tap index",
-                        })?;
-                logical_idif_edge_offset_mrl(logical, len, mrl_index)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_middle_index_bounds(
@@ -1556,55 +1494,81 @@ fn write_middle_prediction<T: ReconSample>(
     Ok(())
 }
 
-fn write_middle_idif_prediction<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    angle: IntraMiddleDirectionalAngle,
-    left: &[T],
-    above: &[T],
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let branch = angle.branch();
-    for row in 0..size.height() {
-        let row_start = row * stride_samples;
-        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
-        for column in 0..size.width() {
-            let reference = walk.next();
-            let edge = match reference.edge {
-                IntraDirectionalAngleEdge::Left => left,
-                IntraDirectionalAngleEdge::Above => above,
-            };
-            let value = idif_tap(edge, reference.base, reference.shift, bit_depth)?;
-            output[row_start + column] = T::try_from_u16(value)?;
-        }
-    }
-
-    Ok(())
-}
-
+/// Writes the § 7.13.2.8 zone-2 IDIF rows. Each row reads the left edge for a
+/// leading run of columns and the above edge after it; along the above run
+/// `aboveIdx` grows by 64 per column, so `base` grows by one and `shift` is
+/// fixed, and the run is one contiguous 4-tap window.
 fn write_middle_idif_mrl_prediction<T: ReconSample>(
     params: MiddleIdifMrlPrediction<'_, T>,
     output: &mut [T],
 ) -> Result<()> {
     let branch = params.angle.branch();
+    let width = params.size.width();
     for row in 0..params.size.height() {
         let row_start = row * params.stride_samples;
-        let mut walk = MiddleRowWalk::new(row, params.size.width(), branch, params.mrl_index)?;
-        for column in 0..params.size.width() {
+        let mut walk = MiddleRowWalk::new(row, width, branch, params.mrl_index)?;
+        let left_run = usize::try_from(walk.min_base - (walk.above_idx >> 6))
+            .unwrap_or(0)
+            .min(width);
+        for column in 0..left_run {
             let reference = walk.next();
-            let edge = match reference.edge {
-                IntraDirectionalAngleEdge::Left => params.left,
-                IntraDirectionalAngleEdge::Above => params.above,
-            };
             let value = idif_tap_with_mrl(
-                edge,
+                params.left,
                 reference.base,
                 reference.shift,
                 params.bit_depth,
                 params.mrl_index,
             )?;
             output[row_start + column] = T::try_from_u16(value)?;
+        }
+        if left_run == width {
+            continue;
+        }
+        let reference = walk.next();
+        let count = width - left_run;
+        let out = &mut output[row_start + left_run..row_start + width];
+        let (Some(edge), Some(out)) = (T::u16_slice(params.above), T::u16_slice_mut(out)) else {
+            for (column, slot) in out.iter_mut().enumerate() {
+                *slot = T::try_from_u16(idif_tap_with_mrl(
+                    params.above,
+                    reference.base + column as i32,
+                    reference.shift,
+                    params.bit_depth,
+                    params.mrl_index,
+                )?)?;
+            }
+            continue;
+        };
+        let first = logical_idif_edge_offset_mrl(reference.base - 1, edge.len(), params.mrl_index)?;
+        let window = edge
+            .get(first..first + count + DR_INTERP_FILTER_TAPS - 1)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "middle directional angle IDIF logical edge coverage",
+            })?;
+        if reference.shift == 0 {
+            out.copy_from_slice(&window[1..=count]); // splot-copy-ok: zero-shift IDIF run is the edge itself
+            continue;
+        }
+        let taps = DR_INTERP_FILTER[usize::from(reference.shift)];
+        let mut at = 0;
+        while count - at >= 8 {
+            let values = idif_above_row_chunk::<8>(window, at, taps, params.bit_depth);
+            out[at..at + 8].copy_from_slice(&values.to_array()); // splot-copy-ok: publish IDIF row chunk
+            at += 8;
+        }
+        while count - at >= 4 {
+            let values = idif_above_row_chunk::<4>(window, at, taps, params.bit_depth);
+            out[at..at + 4].copy_from_slice(&values.to_array()); // splot-copy-ok: publish IDIF row chunk
+            at += 4;
+        }
+        for (column, slot) in out.iter_mut().enumerate().skip(at) {
+            *slot = idif_tap_with_mrl(
+                params.above,
+                reference.base + column as i32,
+                reference.shift,
+                params.bit_depth,
+                params.mrl_index,
+            )?;
         }
     }
 

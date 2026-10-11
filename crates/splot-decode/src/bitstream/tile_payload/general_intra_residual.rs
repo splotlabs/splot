@@ -39,7 +39,9 @@ use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
 };
-use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
+use super::coeff_state::{
+    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
+};
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 mod cctx;
@@ -475,16 +477,14 @@ impl LumaCoeffBlock {
         }
     }
 
-    /// Appends `coeffs` to `arena` and records the span they landed in.
-    fn with_coeffs(mut self, arena: &mut Vec<i32>, coeffs: &[i32]) -> Self {
+    /// Appends the block's coefficients up to the last nonzero one to
+    /// `arena` and records the span they landed in.
+    fn with_coeffs(mut self, arena: &mut Vec<i32>, block: &TransformCoeffBlockState) -> Self {
         let start = arena.len();
-        let prefix = coeffs
-            .iter()
-            .rposition(|&value| value != 0)
-            .map_or(0, |index| index + 1);
-        arena.extend_from_slice(&coeffs[..prefix]);
+        let nonzero = block.nonzero_quant();
+        arena.extend_from_slice(nonzero);
         self.quant_range = start..arena.len();
-        self.zero_tail = coeffs.len() - prefix;
+        self.zero_tail = block.quant().len() - nonzero.len();
         self
     }
 }
@@ -512,32 +512,14 @@ impl<'a> CoeffBlock<'a> {
         block: &'a LumaCoeffBlock,
         arena: &'a [i32],
     ) -> Result<Self, GeneralIntraResidualError> {
-        let quant = arena
-            .get(block.quant_range.clone())
-            .ok_or(GeneralIntraResidualError::CoeffSpanOutOfRange)?;
+        let Some(quant) = arena.get(block.quant_range.clone()) else {
+            return Err(GeneralIntraResidualError::CoeffSpanOutOfRange);
+        };
         Ok(Self { block, quant })
     }
-    fn is_dense(self) -> bool {
-        self.quant.len() == self.quant_range.len().saturating_add(self.zero_tail)
-    }
-
-    fn with_dense<R>(
-        self,
-        reconstruct: impl FnOnce(CoeffBlock<'_>) -> Result<R, GeneralIntraResidualError>,
-    ) -> Result<R, GeneralIntraResidualError> {
-        let len = self.quant_range.len().saturating_add(self.zero_tail);
-        if len > MAX_ADJUSTED_COEFFS || self.quant.len() > len {
-            return Err(GeneralIntraResidualError::QuantLength {
-                expected: MAX_ADJUSTED_COEFFS,
-                actual: len.max(self.quant.len()),
-            });
-        }
-        let mut quant = [0; MAX_ADJUSTED_COEFFS];
-        quant[..self.quant.len()].copy_from_slice(self.quant);
-        reconstruct(CoeffBlock {
-            block: self.block,
-            quant: &quant[..len],
-        })
+    /// The block's coefficient count with its zero tail restored.
+    fn dense_len(self) -> usize {
+        self.quant.len().saturating_add(self.zero_tail)
     }
 }
 
@@ -962,8 +944,11 @@ fn luma_transform_record_from_4x4(
 ) -> Result<LumaTransformPartitionRecord, GeneralIntraResidualError> {
     let width = w4 * MI_SIZE;
     let height = h4 * MI_SIZE;
-    let tx_size = tx_size_from_dimensions(width, height)
-        .ok_or(GeneralIntraResidualError::InvalidTransformPartitionDimensions { width, height })?;
+    let Some(tx_size) = tx_size_from_dimensions(width, height) else {
+        return Err(
+            GeneralIntraResidualError::InvalidTransformPartitionDimensions { width, height },
+        );
+    };
     Ok(LumaTransformPartitionRecord {
         x: col4 * MI_SIZE,
         y: row4 * MI_SIZE,
@@ -986,14 +971,12 @@ fn block_size_table_usize(
     table_name: &'static str,
     index: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
-    let value =
-        table
-            .get(index)
-            .copied()
-            .ok_or(GeneralIntraResidualError::TransformPartitionGeometry {
-                table: table_name,
-                index,
-            })?;
+    let Some(&value) = table.get(index) else {
+        return Err(GeneralIntraResidualError::TransformPartitionGeometry {
+            table: table_name,
+            index,
+        });
+    };
     usize::try_from(value).map_err(|_| GeneralIntraResidualError::TransformPartitionGeometry {
         table: table_name,
         index,
@@ -1182,7 +1165,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     let segment_id = current_frame_qm_segment_id();
     let lossless = frame_facts
         .lossless_for_segment(segment_id)
-        .ok_or(invalid_reconstruction_state_error("residual segment id"))?;
+        .ok_or_else(|| invalid_reconstruction_state_error("residual segment id"))?;
     let metadata = ensure_transform_tool_residual_handoff(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
@@ -1256,7 +1239,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         use_tcq: base_config.use_tcq,
         lossless,
     }
-    .with_coeffs(arena, block.quant()))
+    .with_coeffs(arena, &block))
 }
 
 fn staged_transform_tool_lossless_base_config(
@@ -1620,7 +1603,7 @@ fn read_active_inter_transform_type(
             TX_TYPE_INTER_INV_SET3
                 .get(inter_tx_type)
                 .copied()
-                .ok_or(invalid_inter_tx_type())
+                .ok_or_else(invalid_inter_tx_type)
         }
         _ => {
             let inter_tx_type = read_transform_symbol(
@@ -1631,7 +1614,7 @@ fn read_active_inter_transform_type(
             TX_TYPE_INTER_INV_SET4
                 .get(inter_tx_type)
                 .copied()
-                .ok_or(invalid_inter_tx_type())
+                .ok_or_else(invalid_inter_tx_type)
         }
     }
 }
@@ -1757,7 +1740,7 @@ fn read_inter_tx_type_signaling_set(
     inversion
         .get(tx_type_idx)
         .copied()
-        .ok_or(invalid_inter_tx_type())
+        .ok_or_else(invalid_inter_tx_type)
 }
 
 const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
@@ -1814,11 +1797,11 @@ fn md_idx_luma_tx_type(
     let mode_row = MD_IDX_TO_TYPE
         .get(size_info)
         .and_then(|size| size.get(intra_dir))
-        .ok_or(invalid_reconstruction_state_error("intra transform mode"))?;
+        .ok_or_else(|| invalid_reconstruction_state_error("intra transform mode"))?;
     let tx_type = mode_row
         .get(intra_tx_type)
         .copied()
-        .ok_or(invalid_reconstruction_state_error("intra transform type"))?;
+        .ok_or_else(|| invalid_reconstruction_state_error("intra transform type"))?;
     Ok(tx_type.unsigned_abs() as usize)
 }
 
@@ -1830,19 +1813,14 @@ fn luma_transform_intra_dir(
     if !luma_context.y_mode.is_directional() {
         return Ok(intra_dir);
     }
-    let mode_to_angle =
-        MODE_TO_ANGLE
-            .get(intra_dir)
-            .copied()
-            .ok_or(invalid_reconstruction_state_error(
-                "directional intra transform mode",
-            ))?;
+    let mode_to_angle = MODE_TO_ANGLE
+        .get(intra_dir)
+        .copied()
+        .ok_or_else(|| invalid_reconstruction_state_error("directional intra transform mode"))?;
     let mrl_delta = MRL_INDEX_TO_DELTA
         .get(usize::from(luma_context.mrl_index))
         .copied()
-        .ok_or(invalid_reconstruction_state_error(
-            "intra transform MRL index",
-        ))?;
+        .ok_or_else(|| invalid_reconstruction_state_error("intra transform MRL index"))?;
     let p_angle = mode_to_angle + i32::from(luma_context.angle_delta_y) * ANGLE_STEP + mrl_delta;
     let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     Ok(wide_angle_mapping(intra_dir, tx_width, tx_height, p_angle))
@@ -1952,7 +1930,7 @@ fn tx_size_table_usize(
     let value = table
         .get(tx_size)
         .copied()
-        .ok_or(invalid_reconstruction_state_error("transform size"))?;
+        .ok_or_else(|| invalid_reconstruction_state_error("transform size"))?;
     usize::try_from(value).map_err(|_| invalid_reconstruction_state_error(table_name))
 }
 
@@ -1976,7 +1954,7 @@ fn require_luma_context(
     luma_context: Option<LumaTransformTypeContext>,
     context: &'static str,
 ) -> Result<LumaTransformTypeContext, GeneralIntraResidualError> {
-    luma_context.ok_or(invalid_reconstruction_state_error(context))
+    luma_context.ok_or_else(|| invalid_reconstruction_state_error(context))
 }
 
 const fn invalid_reconstruction_state_error(context: &'static str) -> GeneralIntraResidualError {
@@ -1989,7 +1967,7 @@ fn invalid_reconstruction_state<T>(context: &'static str) -> Result<T, GeneralIn
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
-    quant: &[i32],
+    block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,
     qindex: u32,
@@ -2017,10 +1995,10 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
         dpcm,
         bit_depth,
     )?;
-    if quant.len() != setup.adjusted {
+    if block.dense_len() != setup.adjusted {
         return Err(GeneralIntraResidualError::QuantLength {
             expected: setup.adjusted,
-            actual: quant.len(),
+            actual: block.dense_len(),
         });
     }
     out.resize(setup.samples, T::default());
@@ -2029,7 +2007,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
         let residual_scratch = &mut scratch.residual[..setup.samples];
         reconstruct_transform_block_residual_with_secondary(
             prediction,
-            quant,
+            block.quant,
             &setup.params,
             &setup.transform,
             secondary,
@@ -2084,11 +2062,11 @@ fn intra_secondary_transform_mode(
     let mode_to_angle = MODE_TO_ANGLE
         .get(mode)
         .copied()
-        .ok_or(invalid_reconstruction_state_error("intra IST mode"))?;
+        .ok_or_else(|| invalid_reconstruction_state_error("intra IST mode"))?;
     let mrl_delta = MRL_INDEX_TO_DELTA
         .get(usize::from(luma_context.mrl_index))
         .copied()
-        .ok_or(invalid_reconstruction_state_error("intra IST MRL index"))?;
+        .ok_or_else(|| invalid_reconstruction_state_error("intra IST MRL index"))?;
     let p_angle = mode_to_angle + i32::from(luma_context.angle_delta_y) * ANGLE_STEP + mrl_delta;
     Ok(wide_angle_mapping(mode, tx_width, tx_height, p_angle))
 }
@@ -2112,7 +2090,7 @@ fn intra_secondary_transform_kernel(
             .get(most_probable_stx_set)
             .copied()
     }
-    .ok_or(invalid_reconstruction_state_error("intra IST set"))?;
+    .ok_or_else(|| invalid_reconstruction_state_error("intra IST set"))?;
     if plane_tx_type == ADST_ADST {
         Ok(base + 7)
     } else {

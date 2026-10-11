@@ -39,7 +39,13 @@ use crate::intra_dc_math::validate_sample_type;
 use crate::math::round2_i32;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use core::num::NonZeroUsize;
-use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
+use std::simd::{
+    Select, Simd, SimdElement,
+    cmp::{SimdOrd, SimdPartialOrd},
+    num::SimdInt,
+    num::SimdUint,
+    simd_swizzle,
+};
 
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift
 /// (`docs/spec/av2/1.0.0/03-symbols.md`, `DF_SHIFT = 8`).
@@ -965,7 +971,7 @@ pub fn deblock_filter_choice_and_sample_strided_4<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<usize> {
     let width = deblock_filter_choice_strided(samples, last_boundary, stride, choice)?;
-    apply_deblock_choice_strided_4::<T, false>(
+    apply_deblock_choice_strided_4(
         samples,
         stride.get(),
         lane_stride.get(),
@@ -979,63 +985,521 @@ pub fn deblock_filter_choice_and_sample_strided_4<T: ReconSample>(
     )
 }
 
-/// Chooses and applies a four-lane deblocking filter after the caller has
-/// validated the sample type, widths, and the first and last strided spans.
+/// Chooses and applies `edges` consecutive four-line § 7.17.7 edges whose
+/// lines are sample rows (vertical edges) and which share one edge decision:
+/// `choice.boundary` is the first row's `q0`, `stride` steps from one row to
+/// the next, and each edge starts four rows below the previous one.
 ///
-/// This is the validation-free decode hot path for frame-interior edges.
+/// Per edge, the filter choice reads its first and last rows around the edge
+/// as vectors, and the sample filter updates each row as one vector. The
+/// kernel skips an edge that the § 9.2 `W_Mult` weights do not change, so
+/// `w_mults` must be that table.
+///
+/// # Errors
+/// Returns [`ReconError::DeblockFilterInvalidWidth`] for widths outside
+/// `1..=8`, [`ReconError::DeblockFilterLineTooShort`] when a row's eight
+/// samples either side of the edge fall outside `samples`, and
+/// [`ReconError::SampleTypeUnsupportedBitDepth`] when `T` cannot hold
+/// `bit_depth`.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::inline_always, reason = "measured validated deblock hot path")]
-#[inline(always)]
-pub fn deblock_filter_choice_and_sample_strided_4_fast_validated<T: ReconSample>(
+pub fn deblock_edge_rows<T: ReconSample>(
     samples: &mut [T],
-    last_boundary: usize,
-    stride: NonZeroUsize,
-    lane_stride: NonZeroUsize,
+    stride: usize,
     choice: &DeblockFilterChoice,
+    edges: usize,
     q_thresh_mults: &[i32; MAX_DBL_FLT_LEN],
     w_mults: &[i32; MAX_DBL_FLT_LEN],
     prev_lossless: bool,
     curr_lossless: bool,
     bit_depth: BitDepth,
-) -> Result<usize> {
-    let stride = stride.get();
-    let boundary = choice.boundary;
-    let width = deblock_filter_choice_progressive(choice, |offset| {
-        let distance = offset.unsigned_abs() * stride;
-        let first_index = if offset < 0 {
-            boundary - distance
-        } else {
-            boundary + distance
-        };
-        let last_index = if offset < 0 {
-            last_boundary - distance
-        } else {
-            last_boundary + distance
-        };
-        (
-            i32::from(samples[first_index].to_u16()),
-            i32::from(samples[last_index].to_u16()),
-        )
-    });
-    apply_deblock_choice_strided_4::<T, true>(
-        samples,
-        stride,
-        lane_stride.get(),
+) -> Result<()> {
+    validate_sample_type::<T>(bit_depth)?;
+    if choice.q_thr == 0 || choice.side_thr == 0 {
+        return Ok(());
+    }
+    let edge = EdgeKernel::new(
         choice,
         q_thresh_mults,
         w_mults,
         prev_lossless,
         curr_lossless,
         bit_depth,
-        width,
-    )
+    )?;
+    let len = samples.len();
+    let first = choice
+        .boundary
+        .checked_sub(EDGE_REACH)
+        .filter(|first| {
+            edges
+                .checked_mul(MI_LINES)
+                .and_then(|lines| lines.checked_sub(1))
+                .and_then(|last| stride.checked_mul(last))
+                .and_then(|offset| first.checked_add(offset))
+                .and_then(|last| last.checked_add(2 * EDGE_REACH))
+                .is_some_and(|end| end <= len)
+        })
+        .ok_or_else(|| edge.too_short(len))?;
+    let step = MI_LINES * stride;
+    if let Some(samples) = T::u16_slice_mut(samples) {
+        for index in 0..edges {
+            edge.rows(samples, first + index * step, stride);
+        }
+    } else if let Some(samples) = T::u8_slice_mut(samples) {
+        for index in 0..edges {
+            edge.rows(samples, first + index * step, stride);
+        }
+    } else {
+        return Err(edge.too_short(len));
+    }
+    Ok(())
+}
+
+/// Chooses and applies `edges` consecutive four-line § 7.17.7 edges whose
+/// lines are sample columns (horizontal edges) and which share one edge
+/// decision: `choice.boundary` is the first column's `q0`, `stride` steps
+/// across the edge, and each edge starts four columns right of the previous.
+/// `w_mults` must be the § 9.2 `W_Mult` table, as for [`deblock_edge_rows`].
+///
+/// # Errors
+/// Returns the same errors as [`deblock_edge_rows`].
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn deblock_edge_columns<T: ReconSample>(
+    samples: &mut [T],
+    stride: usize,
+    choice: &DeblockFilterChoice,
+    edges: usize,
+    q_thresh_mults: &[i32; MAX_DBL_FLT_LEN],
+    w_mults: &[i32; MAX_DBL_FLT_LEN],
+    prev_lossless: bool,
+    curr_lossless: bool,
+    bit_depth: BitDepth,
+) -> Result<()> {
+    validate_sample_type::<T>(bit_depth)?;
+    if choice.q_thr == 0 || choice.side_thr == 0 {
+        return Ok(());
+    }
+    let edge = EdgeKernel::new(
+        choice,
+        q_thresh_mults,
+        w_mults,
+        prev_lossless,
+        curr_lossless,
+        bit_depth,
+    )?;
+    let len = samples.len();
+    let first = stride
+        .checked_mul(EDGE_REACH)
+        .and_then(|reach| choice.boundary.checked_sub(reach))
+        .filter(|first| {
+            stride
+                .checked_mul(2 * EDGE_REACH - 1)
+                .and_then(|offset| first.checked_add(offset))
+                .and_then(|last| edges.checked_mul(MI_LINES)?.checked_add(last))
+                .is_some_and(|end| end <= len)
+        })
+        .ok_or_else(|| edge.too_short(len))?;
+    if let Some(samples) = T::u16_slice_mut(samples) {
+        edge.column_run(samples, first, stride, edges);
+    } else if let Some(samples) = T::u8_slice_mut(samples) {
+        edge.column_run(samples, first, stride, edges);
+    } else {
+        return Err(edge.too_short(len));
+    }
+    Ok(())
+}
+
+/// `secondDeriv[-2..=1]` from the absolute second differences of the first
+/// line (lanes 0..4) and the last line (lanes 4..8) at the same positions.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn combine_line_derivatives(differences: Simd<i16, 8>) -> [i32; 4] {
+    let last = simd_swizzle!(differences, [4, 5, 6, 7, 0, 1, 2, 3]);
+    let combined = ((differences + last + Simd::splat(1)) >> 1).to_array();
+    core::array::from_fn(|index| i32::from(combined[index]))
+}
+
+/// Samples the widest § 7.17.7 filter reads on either side of an edge.
+const EDGE_REACH: usize = MAX_DBL_FLT_LEN;
+
+/// Lines one edge segment spans (`MI_SIZE`).
+const MI_LINES: usize = 4;
+
+/// Sample storage the edge kernels filter in place.
+trait EdgeSample: SimdElement {
+    /// Reads `N` samples as signed lanes.
+    fn widen<const N: usize>(samples: &[Self]) -> Simd<i16, N>;
+
+    /// Writes `N` lanes already clipped to the sample range.
+    fn narrow<const N: usize>(values: Simd<i16, N>, samples: &mut [Self]);
+}
+
+impl EdgeSample for u8 {
+    fn widen<const N: usize>(samples: &[Self]) -> Simd<i16, N> {
+        Simd::<u8, N>::from_slice(samples).cast()
+    }
+
+    fn narrow<const N: usize>(values: Simd<i16, N>, samples: &mut [Self]) {
+        values.cast::<u8>().copy_to_slice(samples);
+    }
+}
+
+impl EdgeSample for u16 {
+    fn widen<const N: usize>(samples: &[Self]) -> Simd<i16, N> {
+        Simd::<u16, N>::from_slice(samples).cast()
+    }
+
+    fn narrow<const N: usize>(values: Simd<i16, N>, samples: &mut [Self]) {
+        values.cast::<u16>().copy_to_slice(samples);
+    }
+}
+
+/// One edge's filter-choice inputs and sample-filter weights.
+struct EdgeKernel<'a> {
+    choice: &'a DeblockFilterChoice,
+    q_thresh_mults: &'a [i32; MAX_DBL_FLT_LEN],
+    w_mults: &'a [i32; MAX_DBL_FLT_LEN],
+    prev_lossless: bool,
+    curr_lossless: bool,
+    max_sample: i16,
+    /// Largest `|p1 - q1 + 3 * (q0 - p0)|` on every line for which § 7.17.7.1
+    /// moves no sample. A tap weight is at most `W_Mult[w - 1] * w`, which is
+    /// 85 for `w = 1` and at most 120 for any `w`, `Round2(x, 11)` is zero for
+    /// `|x| <= 1023`, and `maxWidthPos == 1` chooses `w = 1`.
+    noop_delta: i16,
+}
+
+impl<'a> EdgeKernel<'a> {
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn new(
+        choice: &'a DeblockFilterChoice,
+        q_thresh_mults: &'a [i32; MAX_DBL_FLT_LEN],
+        w_mults: &'a [i32; MAX_DBL_FLT_LEN],
+        prev_lossless: bool,
+        curr_lossless: bool,
+        bit_depth: BitDepth,
+    ) -> Result<Self> {
+        let (max_width_neg, max_width_pos) = (choice.max_width_neg, choice.max_width_pos);
+        if !(1..=MAX_DBL_FLT_LEN).contains(&max_width_neg)
+            || !(1..=MAX_DBL_FLT_LEN).contains(&max_width_pos)
+        {
+            return Err(ReconError::DeblockFilterInvalidWidth {
+                max_width_neg,
+                max_width_pos,
+            });
+        }
+        Ok(Self {
+            choice,
+            q_thresh_mults,
+            w_mults,
+            prev_lossless,
+            curr_lossless,
+            max_sample: bit_depth.max_sample() as i16,
+            noop_delta: if max_width_pos == 1 { 3 } else { 2 },
+        })
+    }
+
+    #[cold]
+    fn too_short(&self, len: usize) -> ReconError {
+        ReconError::DeblockFilterLineTooShort {
+            boundary: self.choice.boundary,
+            max_width_neg: self.choice.max_width_neg,
+            width: self.choice.max_width_neg.max(self.choice.max_width_pos),
+            len,
+        }
+    }
+
+    /// The chosen per-side widths, the `deltaM2` clamp, and the per-side
+    /// `W_Mult` weights (zero on a lossless side).
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn weights(&self, width: usize) -> (usize, usize, i16, i16, i16) {
+        let width_neg = width.min(self.choice.max_width_neg);
+        let width_pos = width.min(self.choice.max_width_pos);
+        let q_thr_clamp = (i64::from(self.choice.q_thr)
+            * i64::from(self.q_thresh_mults[width_neg.max(width_pos) - 1]))
+        .clamp(0, i64::from(i16::MAX)) as i16;
+        let weight = |lossless: bool, width: usize| {
+            if lossless {
+                0
+            } else {
+                self.w_mults[width - 1] as i16
+            }
+        };
+        (
+            width_neg,
+            width_pos,
+            q_thr_clamp,
+            weight(self.prev_lossless, width_neg),
+            weight(self.curr_lossless, width_pos),
+        )
+    }
+
+    /// Whether § 7.17.7.1 leaves all four lines with these
+    /// `p1 - q1 + 3 * (q0 - p0)` unchanged; the § 7.17.7.2 width then does
+    /// not matter.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn unchanged(&self, deltas: Simd<i16, MI_LINES>) -> bool {
+        deltas.abs().simd_le(Simd::splat(self.noop_delta)).all()
+    }
+
+    /// The § 7.17.7.1 `deltaM2` of the four lines.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn delta_m2<const N: usize>(deltas: Simd<i16, N>, q_thr_clamp: i16) -> Simd<i32, N> {
+        (deltas * Simd::splat(4))
+            .simd_max(Simd::splat(-q_thr_clamp))
+            .simd_min(Simd::splat(q_thr_clamp))
+            .cast::<i32>()
+    }
+
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn rows<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) -> usize {
+        let samples = &mut samples[first..first + (MI_LINES - 1) * stride + 2 * EDGE_REACH];
+        let line =
+            |start: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[start..start + 2 * EDGE_REACH]);
+        let (s, t) = (line(0), line((MI_LINES - 1) * stride));
+        let (u, v) = (line(stride), line(2 * stride));
+        let taps = Simd::from_array([1, -3, 3, -1, 1, -3, 3, -1]);
+        let top = simd_swizzle!(s, u, [6, 7, 8, 9, 22, 23, 24, 25]) * taps;
+        let bottom = simd_swizzle!(v, t, [6, 7, 8, 9, 22, 23, 24, 25]) * taps;
+        let pairs = simd_swizzle!(top, bottom, [0, 2, 4, 6, 8, 10, 12, 14])
+            + simd_swizzle!(top, bottom, [1, 3, 5, 7, 9, 11, 13, 15]);
+        let deltas = simd_swizzle!(pairs, [0, 2, 4, 6]) + simd_swizzle!(pairs, [1, 3, 5, 7]);
+        if self.unchanged(deltas) {
+            return 0;
+        }
+        let centre = simd_swizzle!(s, t, [6, 7, 8, 9, 22, 23, 24, 25]);
+        let left = simd_swizzle!(s, t, [5, 6, 7, 8, 21, 22, 23, 24]);
+        let right = simd_swizzle!(s, t, [7, 8, 9, 10, 23, 24, 25, 26]);
+        let derivatives = combine_line_derivatives((left - centre - centre + right).abs());
+        let (s, t) = (s.to_array(), t.to_array());
+        let width = deblock_filter_choice_cascade(self.choice, derivatives, |offset| {
+            let index = (EDGE_REACH as isize + offset) as usize;
+            (i32::from(s[index]), i32::from(t[index]))
+        });
+        if width == 0 {
+            return 0;
+        }
+        let weights = self.weights(width);
+        let delta = Self::delta_m2(deltas, weights.2);
+        if weights.0.max(weights.1) <= EDGE_REACH / 2 {
+            self.filter_rows::<E, EDGE_REACH>(samples, EDGE_REACH / 2, stride, weights, delta);
+        } else {
+            self.filter_rows::<E, { 2 * EDGE_REACH }>(samples, 0, stride, weights, delta);
+        }
+        width
+    }
+
+    /// Applies § 7.17.7.1 to four rows of `N` samples centred on the edge.
+    ///
+    /// The `Round2` of the current side is negated into the coefficient:
+    /// `-((x + 1024) >> 11) == (-x + 1023) >> 11`.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn filter_rows<E: EdgeSample, const N: usize>(
+        &self,
+        samples: &mut [E],
+        first: usize,
+        stride: usize,
+        (width_neg, width_pos, _, w_neg, w_pos): (usize, usize, i16, i16, i16),
+        delta: Simd<i32, MI_LINES>,
+    ) {
+        let half = (N / 2) as i16;
+        let lane = Simd::<i16, N>::from_array(core::array::from_fn(|lane| lane as i16));
+        let current = lane.simd_ge(Simd::splat(half));
+        let zero = Simd::splat(0);
+        let neg = (Simd::splat(width_neg as i16 + 1 - half) + lane).simd_max(zero);
+        let pos = (Simd::splat(width_pos as i16 + half) - lane).simd_max(zero);
+        let coefficient = current
+            .select(-(pos * Simd::splat(w_pos)), neg * Simd::splat(w_neg))
+            .cast::<i32>();
+        let round = current
+            .cast::<i32>()
+            .select(Simd::splat(1023), Simd::splat(1024));
+        let high = Simd::splat(self.max_sample);
+        for row in 0..MI_LINES {
+            let start = first + row * stride;
+            let line = &mut samples[start..start + N];
+            let values = E::widen::<N>(line);
+            let diff = ((coefficient * Simd::splat(delta[row]) + round) >> 11).cast::<i16>();
+            E::narrow((values + diff).simd_max(zero).simd_min(high), line);
+        }
+    }
+
+    /// Filters `edges` column edges two at a time, then any last one.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn column_run<E: EdgeSample>(
+        &self,
+        samples: &mut [E],
+        first: usize,
+        stride: usize,
+        edges: usize,
+    ) {
+        for pair in 0..edges / 2 {
+            self.column_pair(samples, first + 2 * pair * MI_LINES, stride);
+        }
+        if !edges.is_multiple_of(2) {
+            self.columns(samples, first + (edges - 1) * MI_LINES, stride);
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn columns<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) {
+        let samples = &mut samples[first..first + (2 * EDGE_REACH - 1) * stride + MI_LINES];
+        let inner: [Simd<i16, MI_LINES>; 4] =
+            core::array::from_fn(|k| column_row(samples, stride, k as isize - 2));
+        let deltas = inner[0] - inner[3] + (inner[2] - inner[1]) * Simd::splat(3);
+        if self.unchanged(deltas) {
+            return;
+        }
+        let (above, below) = (
+            column_row(samples, stride, -3),
+            column_row(samples, stride, 2),
+        );
+        let rows = [above, inner[0], inner[1], inner[2], inner[3], below];
+        let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
+        let (d0, d1, d2, d3) = (second(0), second(1), second(2), second(3));
+        let pairs =
+            |a: Simd<i16, MI_LINES>, b: Simd<i16, MI_LINES>| simd_swizzle!(a, b, [0, 4, 3, 7]);
+        let ends = simd_swizzle!(pairs(d0, d1), pairs(d2, d3), [0, 1, 4, 5, 2, 3, 6, 7]);
+        let width = self.column_width(samples, stride, combine_line_derivatives(ends));
+        if width != 0 {
+            self.filter_columns(samples, stride, width, deltas);
+        }
+    }
+
+    /// [`Self::columns`] for two edges side by side: one eight-lane unchanged
+    /// test and, when both edges choose one width, one eight-lane filter. An
+    /// edge's choice reads only its own columns, which the other's filter
+    /// does not write.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn column_pair<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) {
+        let samples = &mut samples[first..first + (2 * EDGE_REACH - 1) * stride + 2 * MI_LINES];
+        let inner: [Simd<i16, 8>; 4] =
+            core::array::from_fn(|k| column_row(samples, stride, k as isize - 2));
+        let deltas = inner[0] - inner[3] + (inner[2] - inner[1]) * Simd::splat(3);
+        let size = deltas.abs();
+        if size.reduce_max() <= self.noop_delta {
+            return;
+        }
+        let (above, below) = (
+            column_row(samples, stride, -3),
+            column_row(samples, stride, 2),
+        );
+        let rows = [above, inner[0], inner[1], inner[2], inner[3], below];
+        let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
+        let (d0, d1, d2, d3) = (second(0), second(1), second(2), second(3));
+        let p01 = simd_swizzle!(d0, d1, [0, 8, 3, 11, 4, 12, 7, 15]);
+        let p23 = simd_swizzle!(d2, d3, [0, 8, 3, 11, 4, 12, 7, 15]);
+        let firsts = simd_swizzle!(p01, p23, [0, 1, 8, 9, 4, 5, 12, 13]);
+        let lasts = simd_swizzle!(p01, p23, [2, 3, 10, 11, 6, 7, 14, 15]);
+        let combined = ((firsts + lasts + Simd::splat(1)) >> 1).to_array();
+        let halves = |v: Simd<i16, 8>| {
+            [
+                simd_swizzle!(v, [0, 1, 2, 3]),
+                simd_swizzle!(v, [4, 5, 6, 7]),
+            ]
+        };
+        let sizes = halves(size);
+        let widths: [usize; 2] = core::array::from_fn(|half| {
+            if sizes[half].reduce_max() <= self.noop_delta {
+                return 0;
+            }
+            let derivatives = core::array::from_fn(|k| i32::from(combined[half * MI_LINES + k]));
+            self.column_width(&samples[half * MI_LINES..], stride, derivatives)
+        });
+        if widths[0] == widths[1] {
+            if widths[0] != 0 {
+                self.filter_columns(samples, stride, widths[0], deltas);
+            }
+            return;
+        }
+        for (half, width) in widths.into_iter().enumerate() {
+            if width != 0 {
+                let samples = &mut samples[half * MI_LINES..];
+                self.filter_columns(samples, stride, width, halves(deltas)[half]);
+            }
+        }
+    }
+
+    /// The § 7.17.7.2 width of the column edge whose first line is column 0.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn column_width<E: EdgeSample>(
+        &self,
+        samples: &[E],
+        stride: usize,
+        derivatives: [i32; 4],
+    ) -> usize {
+        deblock_filter_choice_cascade(self.choice, derivatives, |offset| {
+            let values = column_row::<E, MI_LINES>(samples, stride, offset);
+            (i32::from(values[0]), i32::from(values[MI_LINES - 1]))
+        })
+    }
+
+    /// Applies § 7.17.7.1 to `N` columns at `width` across the edge.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn filter_columns<E: EdgeSample, const N: usize>(
+        &self,
+        samples: &mut [E],
+        stride: usize,
+        width: usize,
+        deltas: Simd<i16, N>,
+    ) {
+        let (width_neg, width_pos, q_thr_clamp, w_neg, w_pos) = self.weights(width);
+        let delta = Self::delta_m2(deltas, q_thr_clamp);
+        let (zero, high) = (Simd::splat(0), Simd::splat(self.max_sample));
+        let mut filter = |offset: isize, coefficient: i32, round: i32| {
+            let start = (EDGE_REACH as isize + offset) as usize * stride;
+            let line = &mut samples[start..start + N];
+            let values = E::widen::<N>(line);
+            let diff =
+                ((delta * Simd::splat(coefficient) + Simd::splat(round)) >> 11).cast::<i16>();
+            E::narrow((values + diff).simd_max(zero).simd_min(high), line);
+        };
+        if w_pos != 0 {
+            for i in 0..width_pos {
+                filter(i as isize, -i32::from(w_pos) * (width_pos - i) as i32, 1023);
+            }
+        }
+        if w_neg != 0 {
+            for i in 0..width_neg {
+                filter(
+                    -(i as isize) - 1,
+                    i32::from(w_neg) * (width_neg - i) as i32,
+                    1024,
+                );
+            }
+        }
+    }
+}
+
+/// Reads `N` samples of the line `offset` rows from the edge of a column
+/// edge window.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn column_row<E: EdgeSample, const N: usize>(
+    samples: &[E],
+    stride: usize,
+    offset: isize,
+) -> Simd<i16, N> {
+    let start = (EDGE_REACH as isize + offset) as usize * stride;
+    E::widen::<N>(&samples[start..start + N])
 }
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::inline_always, reason = "shared fused deblock hot path")]
 #[inline(always)]
-fn apply_deblock_choice_strided_4<T: ReconSample, const VALIDATED: bool>(
+fn apply_deblock_choice_strided_4<T: ReconSample>(
     samples: &mut [T],
     stride: usize,
     lane_stride: usize,
@@ -1065,12 +1529,8 @@ fn apply_deblock_choice_strided_4<T: ReconSample, const VALIDATED: bool>(
         curr_lossless,
         bit_depth,
     };
-    if VALIDATED {
-        deblock_sample_filter_inner_4_bounded(samples, &params, stride, lane_stride)?;
-    } else {
-        validate_sample_type::<T>(bit_depth)?;
-        deblock_sample_filter_strided_4_validated(samples, stride, lane_stride, &params)?;
-    }
+    validate_sample_type::<T>(bit_depth)?;
+    deblock_sample_filter_strided_4_validated(samples, stride, lane_stride, &params)?;
     Ok(width)
 }
 
@@ -1080,24 +1540,33 @@ fn deblock_filter_choice_progressive(
     params: &DeblockFilterChoice,
     mut load: impl FnMut(isize) -> (i32, i32),
 ) -> usize {
+    let (m3, m2, m1) = (load(-3), load(-2), load(-1));
+    let (zero, p1, p2) = (load(0), load(1), load(2));
+    let derivatives = [
+        choice_second_deriv(m3, m2, m1),
+        choice_second_deriv(m2, m1, zero),
+        choice_second_deriv(m1, zero, p1),
+        choice_second_deriv(zero, p1, p2),
+    ];
+    deblock_filter_choice_cascade(params, derivatives, load)
+}
+
+/// The § 7.17.7.2 threshold cascade over `secondDeriv[-2..=1]`; `load` reads
+/// the two lines' samples at an offset from the edge for the end terms.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn deblock_filter_choice_cascade(
+    params: &DeblockFilterChoice,
+    [sd_m2, sd_m1, sd_0, sd_1]: [i32; 4],
+    mut load: impl FnMut(isize) -> (i32, i32),
+) -> usize {
     let DeblockFilterChoice {
         q_thr,
         side_thr,
         max_width_pos,
         max_width_neg,
-        q_first,
         ..
     } = *params;
-    let m3 = load(-3);
-    let m2 = load(-2);
-    let m1 = load(-1);
-    let zero = load(0);
-    let p1 = load(1);
-    let p2 = load(2);
-    let sd_m2 = choice_second_deriv(m3, m2, m1);
-    let sd_m1 = choice_second_deriv(m2, m1, zero);
-    let sd_0 = choice_second_deriv(m1, zero, p1);
-    let sd_1 = choice_second_deriv(zero, p1, p2);
     let max_outer_deriv = sd_m2.max(sd_1);
     if max_outer_deriv > side_thr {
         return 0;
@@ -1114,6 +1583,7 @@ fn deblock_filter_choice_progressive(
         return 2;
     }
 
+    let (m2, m1, zero, p1) = (load(-2), load(-1), load(0), load(1));
     let end_thr = (side_thr * 3) >> 4;
     if max_width_neg > 2 && choice_directional(m1, load(-4), m2, 3) > end_thr {
         return 2;
@@ -1124,7 +1594,28 @@ fn deblock_filter_choice_progressive(
     if max_width_pos == 3 {
         return 3;
     }
-    let transition = (sd_m1 + sd_0) << 4;
+    deblock_filter_choice_wide(params, sd_m1 + sd_0, [m2, m1, zero, p1], load)
+}
+
+/// The widths past 3 of [`deblock_filter_choice_cascade`]. Kept out of line:
+/// inlined, its per-width threshold products were hoisted into the setup of
+/// every edge run, which most runs never reach.
+#[inline(never)]
+fn deblock_filter_choice_wide(
+    params: &DeblockFilterChoice,
+    inner: i32,
+    [m2, m1, zero, p1]: [(i32, i32); 4],
+    mut load: impl FnMut(isize) -> (i32, i32),
+) -> usize {
+    let DeblockFilterChoice {
+        q_thr,
+        side_thr,
+        max_width_pos,
+        max_width_neg,
+        q_first,
+        ..
+    } = *params;
+    let transition = inner << 4;
     let mut prev_dist = 3usize;
     let mut dist = 4usize;
     while dist <= max_width_pos {
@@ -1164,641 +1655,5 @@ fn choice_directional(i: (i32, i32), j: (i32, i32), g: (i32, i32), n: i32) -> i3
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    use crate::math::round2;
-
-    #[allow(clippy::too_many_arguments)]
-    fn params(
-        boundary: usize,
-        q_thr: i32,
-        max_width_neg: usize,
-        max_width_pos: usize,
-        q_thresh_mult: i32,
-        w_mult_neg: i32,
-        w_mult_pos: i32,
-        prev_lossless: bool,
-        curr_lossless: bool,
-    ) -> DeblockSampleFilter {
-        DeblockSampleFilter {
-            boundary,
-            q_thr,
-            max_width_neg,
-            max_width_pos,
-            q_thresh_mult,
-            w_mult_neg,
-            w_mult_pos,
-            prev_lossless,
-            curr_lossless,
-            bit_depth: BitDepth::Eight,
-        }
-    }
-
-    fn reference(line: &mut [u8], p: &DeblockSampleFilter) {
-        let width = p.max_width_neg.max(p.max_width_pos);
-        let q0 = i64::from(line[p.boundary]);
-        let q1 = i64::from(line[p.boundary + 1]);
-        let p0 = i64::from(line[p.boundary - 1]);
-        let p1 = i64::from(line[p.boundary - 2]);
-        let bound = (i64::from(p.q_thr) * i64::from(p.q_thresh_mult)).max(0);
-        let delta = ((p1 - q1 + 3 * (q0 - p0)) * 4).clamp(-bound, bound);
-        let dn = delta * i64::from(p.w_mult_neg);
-        let dp = delta * i64::from(p.w_mult_pos);
-        let max = i64::from(BitDepth::Eight.max_sample());
-        for i in 0..width {
-            let diff_pos = round2(dp * (p.max_width_pos as i64 - i as i64), 3 + DF_SHIFT);
-            if !p.curr_lossless {
-                let idx = p.boundary + i;
-                line[idx] = (i64::from(line[idx]) - diff_pos).clamp(0, max) as u8;
-            }
-            if i < p.max_width_neg && !p.prev_lossless {
-                let diff_neg = round2(dn * (p.max_width_neg as i64 - i as i64), 3 + DF_SHIFT);
-                let idx = p.boundary - 1 - i;
-                line[idx] = (i64::from(line[idx]) + diff_neg).clamp(0, max) as u8;
-            }
-        }
-    }
-
-    #[test]
-    fn matches_hand_computed_symmetric_width_2() {
-        let mut line = [10u8, 20, 60, 50];
-        deblock_sample_filter(&mut line, &params(2, 100, 2, 2, 25, 51, 51, false, false)).unwrap();
-        assert_eq!(line, [18, 36, 44, 42]);
-    }
-
-    #[test]
-    fn matches_reference_across_configs() {
-        let base = [40u8, 60, 50, 70, 55, 80, 45, 90, 35, 100];
-        let configs = [
-            params(4, 80, 3, 2, 19, 37, 51, false, false),
-            params(4, 200, 2, 3, 19, 51, 37, false, false), // maxWidthPos > maxWidthNeg
-            params(5, 20, 4, 4, 19, 28, 28, false, false),  // small q_thr clamps deltaM2
-            params(4, 80, 2, 2, 25, 51, 51, true, false),   // prev lossless: p-side skipped
-            params(4, 80, 2, 2, 25, 51, 51, false, true),   // curr lossless: q-side skipped
-        ];
-        for p in &configs {
-            let mut produced = base;
-            deblock_sample_filter(&mut produced, p).unwrap();
-            let mut expected = base;
-            reference(&mut expected, p);
-            assert_eq!(produced, expected, "config {p:?}");
-        }
-    }
-
-    #[test]
-    fn strided_sample_filter_matches_contiguous_line() {
-        let source = [
-            40u16, 60, 50, 70, 55, 80, 45, 90, 35, 100, 30, 110, 25, 120, 20, 130, 15,
-        ];
-        let params = DeblockSampleFilter {
-            boundary: 8,
-            bit_depth: BitDepth::Ten,
-            ..params(8, 80, 6, 8, 17, 20, 15, false, false)
-        };
-        let mut expected = source;
-        deblock_sample_filter(&mut expected, &params).unwrap();
-
-        let stride = 23;
-        let boundary = 8 * stride + 4;
-        let mut plane = vec![0u16; 17 * stride];
-        for (index, sample) in source.into_iter().enumerate() {
-            let position = if index < 8 {
-                boundary - (8 - index) * stride
-            } else {
-                boundary + (index - 8) * stride
-            };
-            plane[position] = sample;
-        }
-        deblock_sample_filter_strided(
-            &mut plane,
-            NonZeroUsize::new(stride).unwrap(),
-            &DeblockSampleFilter { boundary, ..params },
-        )
-        .unwrap();
-        for (index, expected) in expected.into_iter().enumerate() {
-            let position = if index < 8 {
-                boundary - (8 - index) * stride
-            } else {
-                boundary + (index - 8) * stride
-            };
-            assert_eq!(plane[position], expected);
-        }
-    }
-
-    #[test]
-    fn four_lane_strided_filter_matches_individual_lanes() {
-        let stride = 32;
-        let boundary = 8 * stride + 4;
-        let mut source = vec![0u16; 17 * stride];
-        for row in 0..17 {
-            for lane in 0..4 {
-                source[row * stride + 4 + lane] = (40 + row * 7 + lane * 3) as u16;
-            }
-        }
-        let cases = [
-            params(boundary, 80, 6, 8, 17, 20, 15, false, false),
-            params(boundary, i32::MAX, 6, 8, i32::MAX, 0, 0, false, false),
-            params(
-                boundary,
-                i32::MAX,
-                6,
-                8,
-                i32::MAX,
-                i32::MAX,
-                i32::MAX,
-                false,
-                false,
-            ),
-        ];
-        for params in cases {
-            let mut expected = source.clone();
-            for lane in 0..4 {
-                deblock_sample_filter_strided(
-                    &mut expected,
-                    NonZeroUsize::new(stride).unwrap(),
-                    &DeblockSampleFilter {
-                        boundary: boundary + lane,
-                        ..params
-                    },
-                )
-                .unwrap();
-            }
-            let mut actual = source.clone();
-            deblock_sample_filter_strided_4(
-                &mut actual,
-                NonZeroUsize::new(stride).unwrap(),
-                NonZeroUsize::new(1).unwrap(),
-                &params,
-            )
-            .unwrap();
-            assert_eq!(actual, expected);
-        }
-    }
-
-    #[test]
-    fn fused_choice_and_four_lane_filter_matches_separate_primitives() {
-        let stride = 32;
-        let boundary = 8 * stride + 4;
-        let lane_stride = NonZeroUsize::MIN;
-        let perpendicular_stride = NonZeroUsize::new(stride).unwrap();
-        let mut source = vec![0u16; 17 * stride];
-        for row in 0..17 {
-            for lane in 0..4 {
-                source[row * stride + 4 + lane] = (120 + row * 3 + lane) as u16;
-            }
-        }
-        let choice = DeblockFilterChoice {
-            boundary,
-            q_thr: 80,
-            side_thr: 40,
-            max_width_pos: 8,
-            max_width_neg: 6,
-            q_first: [4, 5, 6, 7, 8, 9, 10, 11, 12],
-        };
-        let q_thresh_mults = [17; MAX_DBL_FLT_LEN];
-        let w_mults = [20; MAX_DBL_FLT_LEN];
-        let last_boundary = boundary + 3;
-
-        let mut expected = source.clone();
-        let width =
-            deblock_filter_choice_strided(&expected, last_boundary, perpendicular_stride, &choice)
-                .unwrap();
-        if width != 0 {
-            let max_width_neg = width.min(choice.max_width_neg);
-            let max_width_pos = width.min(choice.max_width_pos);
-            deblock_sample_filter_strided_4(
-                &mut expected,
-                perpendicular_stride,
-                lane_stride,
-                &DeblockSampleFilter {
-                    boundary,
-                    q_thr: choice.q_thr,
-                    max_width_neg,
-                    max_width_pos,
-                    q_thresh_mult: q_thresh_mults[max_width_neg.max(max_width_pos) - 1],
-                    w_mult_neg: w_mults[max_width_neg - 1],
-                    w_mult_pos: w_mults[max_width_pos - 1],
-                    prev_lossless: false,
-                    curr_lossless: false,
-                    bit_depth: BitDepth::Ten,
-                },
-            )
-            .unwrap();
-        }
-
-        let mut actual = source;
-        let fused_width = deblock_filter_choice_and_sample_strided_4(
-            &mut actual,
-            last_boundary,
-            perpendicular_stride,
-            lane_stride,
-            &choice,
-            &q_thresh_mults,
-            &w_mults,
-            false,
-            false,
-            BitDepth::Ten,
-        )
-        .unwrap();
-        assert_eq!(fused_width, width);
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn four_row_contiguous_filter_matches_individual_rows() {
-        let lane_stride = 32;
-        let boundary = 8;
-        let mut source = vec![0u16; 4 * lane_stride];
-        for row in 0..4 {
-            for col in 0..16 {
-                source[row * lane_stride + col] = (40 + row * 17 + col * 7) as u16;
-            }
-        }
-        for width in [4, 8] {
-            let params = DeblockSampleFilter {
-                boundary,
-                bit_depth: BitDepth::Ten,
-                ..params(boundary, 80, width, width, 17, 20, 15, false, false)
-            };
-            let mut expected = source.clone();
-            for row in 0..4 {
-                deblock_sample_filter(
-                    &mut expected,
-                    &DeblockSampleFilter {
-                        boundary: boundary + row * lane_stride,
-                        ..params
-                    },
-                )
-                .unwrap();
-            }
-            let mut actual = source.clone();
-            deblock_sample_filter_strided_4(
-                &mut actual,
-                NonZeroUsize::new(1).unwrap(),
-                NonZeroUsize::new(lane_stride).unwrap(),
-                &params,
-            )
-            .unwrap();
-            assert_eq!(actual, expected, "width {width}");
-        }
-    }
-
-    #[test]
-    fn lossless_sides_are_untouched() {
-        let base = [40u8, 60, 50, 70, 55, 80];
-        let mut both = base;
-        deblock_sample_filter(&mut both, &params(3, 100, 2, 2, 25, 51, 51, true, true)).unwrap();
-        assert_eq!(both, base);
-    }
-
-    #[test]
-    fn clip1_clamps_to_bit_depth() {
-        let mut line = [10u8, 250, 5, 240, 0, 255];
-        deblock_sample_filter(
-            &mut line,
-            &params(3, 10_000, 2, 2, 32, 85, 85, false, false),
-        )
-        .unwrap();
-        let mut reference_line = [10u8, 250, 5, 240, 0, 255];
-        reference(
-            &mut reference_line,
-            &params(3, 10_000, 2, 2, 32, 85, 85, false, false),
-        );
-        assert_eq!(line, reference_line);
-        let mut wide = [10u16, 1000, 5, 1020, 0, 1023];
-        deblock_sample_filter(
-            &mut wide,
-            &DeblockSampleFilter {
-                bit_depth: BitDepth::Ten,
-                ..params(3, 10_000, 2, 2, 32, 85, 85, false, false)
-            },
-        )
-        .unwrap();
-        assert!(wide.iter().all(|&v| v <= 1023));
-    }
-
-    #[test]
-    fn rejects_invalid_width_and_short_line() {
-        let mut line = [0u8; 8];
-        assert!(matches!(
-            deblock_sample_filter(&mut line, &params(4, 0, 0, 2, 19, 51, 51, false, false)),
-            Err(ReconError::DeblockFilterInvalidWidth {
-                max_width_neg: 0,
-                max_width_pos: 2
-            })
-        ));
-        assert!(matches!(
-            deblock_sample_filter(&mut line, &params(4, 0, 2, 9, 19, 51, 51, false, false)),
-            Err(ReconError::DeblockFilterInvalidWidth { .. })
-        ));
-        assert!(matches!(
-            deblock_sample_filter(&mut line, &params(1, 0, 2, 2, 19, 51, 51, false, false)),
-            Err(ReconError::DeblockFilterLineTooShort { .. })
-        ));
-        let mut short = [0u8; 5];
-        assert!(matches!(
-            deblock_sample_filter(&mut short, &params(4, 0, 2, 2, 19, 51, 51, false, false)),
-            Err(ReconError::DeblockFilterLineTooShort { .. })
-        ));
-    }
-
-    #[test]
-    fn is_total_for_extreme_inputs() {
-        for &(neg, pos) in &[(1usize, 8usize), (8, 1), (8, 8)] {
-            let mut line = [0u8; 24];
-            for (i, s) in line.iter_mut().enumerate() {
-                *s = if i % 2 == 0 { 0 } else { 255 };
-            }
-            deblock_sample_filter(
-                &mut line,
-                &params(10, i32::MAX, neg, pos, 32, 85, 85, false, false),
-            )
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn max_width_covers_every_spec_branch() {
-        assert_eq!(deblock_filter_max_width(4, false, false), (1, 1));
-        assert_eq!(deblock_filter_max_width(2, true, false), (1, 1)); // <= 4
-        assert_eq!(deblock_filter_max_width(8, false, false), (3, 3));
-        assert_eq!(deblock_filter_max_width(8, true, false), (3, 3));
-        assert_eq!(deblock_filter_max_width(16, false, false), (6, 6)); // luma
-        assert_eq!(deblock_filter_max_width(16, true, false), (4, 4)); // chroma
-        assert_eq!(deblock_filter_max_width(32, false, false), (8, 8)); // luma > 16
-        assert_eq!(deblock_filter_max_width(64, true, false), (4, 4)); // chroma > 16
-
-        assert_eq!(deblock_filter_max_width(32, false, true), (6, 8)); // luma: cap 6
-        assert_eq!(deblock_filter_max_width(64, true, true), (2, 4)); // chroma: cap 2
-        assert_eq!(deblock_filter_max_width(8, true, true), (2, 3)); // chroma: cap 2 < 3
-        assert_eq!(deblock_filter_max_width(4, false, true), (1, 1)); // cap 6 but pos 1
-    }
-
-    #[test]
-    fn side_threshold_index_clips_to_table_range() {
-        assert_eq!(deblock_side_threshold_index(10, BitDepth::Eight), 10);
-        assert_eq!(deblock_side_threshold_index(0, BitDepth::Eight), 0);
-        assert_eq!(deblock_side_threshold_index(400, BitDepth::Eight), 295);
-        assert_eq!(deblock_side_threshold_index(10, BitDepth::Ten), 0); // 10 - 48 < 0
-        assert_eq!(deblock_side_threshold_index(100, BitDepth::Ten), 52); // 100 - 48
-    }
-
-    #[test]
-    fn adaptive_filter_strength_matches_spec() {
-        assert_eq!(
-            deblock_adaptive_filter_strength(40, 100, BitDepth::Eight).1,
-            3
-        ); // (100+16)>>5
-        assert_eq!(
-            deblock_adaptive_filter_strength(40, -16, BitDepth::Eight).1,
-            0
-        ); // (0)>>5
-        assert_eq!(
-            deblock_adaptive_filter_strength(40, 1678, BitDepth::Eight).1,
-            52
-        ); // (1694)>>5
-        assert_eq!(
-            deblock_adaptive_filter_strength(40, 100, BitDepth::Ten).1,
-            13
-        ); // (104)>>3
-
-        for &(lvl, bd) in &[
-            (40u32, BitDepth::Eight),
-            (128, BitDepth::Eight),
-            (200, BitDepth::Ten),
-        ] {
-            let expected = (((i64::from(quantizer_value(lvl, 0, bd)) + 4) >> 3) >> 6) as i32;
-            assert_eq!(deblock_adaptive_filter_strength(lvl, 0, bd).0, expected);
-        }
-    }
-
-    /// The § 9.2 `Q_First` array (`docs/spec/.../03-symbols.md`, DBL_REG_DECIS_LEN).
-    const Q_FIRST: [i32; DBL_REG_DECIS_LEN] = [45, 43, 40, 35, 32, 32, 32, 32, 32];
-
-    fn choice(
-        boundary: usize,
-        q_thr: i32,
-        side_thr: i32,
-        max_width_neg: usize,
-        max_width_pos: usize,
-    ) -> DeblockFilterChoice {
-        DeblockFilterChoice {
-            boundary,
-            q_thr,
-            side_thr,
-            max_width_pos,
-            max_width_neg,
-            q_first: Q_FIRST,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn reference_choice(
-        s: &[u16],
-        t: &[u16],
-        boundary: usize,
-        q_thr: i64,
-        side_thr: i64,
-        max_width_neg: usize,
-        max_width_pos: usize,
-        q_first: &[i32; DBL_REG_DECIS_LEN],
-    ) -> usize {
-        if q_thr == 0 || side_thr == 0 {
-            return 0;
-        }
-        let g = |a: &[u16], k: i64| -> i64 { i64::from(a[(boundary as i64 + k) as usize]) };
-        let mut sd = [0i64; 4]; // index dist + 2, for dist in -2..=1
-        for dist in -2i64..=1 {
-            let ds = (g(s, dist - 1) - 2 * g(s, dist) + g(s, dist + 1)).abs();
-            let dt = (g(t, dist - 1) - 2 * g(t, dist) + g(t, dist + 1)).abs();
-            sd[(dist + 2) as usize] = (ds + dt + 1) >> 1;
-        }
-        let sdv = |d: i64| sd[(d + 2) as usize];
-        if sdv(-2) > side_thr || sdv(1) > side_thr {
-            return 0;
-        }
-        if max_width_pos == 1 {
-            return 1;
-        }
-        if sdv(-2) > (side_thr >> 2) || sdv(1) > (side_thr >> 2) {
-            return 1;
-        }
-        if sdv(-1) + sdv(0) > q_thr * 4 {
-            return 1;
-        }
-        if sdv(-2) > (side_thr >> 3) || sdv(1) > (side_thr >> 3) {
-            return 2;
-        }
-        if sdv(-1) + sdv(0) > q_thr * 3 {
-            return 2;
-        }
-        let end_thr = (side_thr * 3) >> 4;
-        if max_width_neg > 2 {
-            let ds = (g(s, -1) - g(s, -4) - 3 * (g(s, -1) - g(s, -2))).abs();
-            let dt = (g(t, -1) - g(t, -4) - 3 * (g(t, -1) - g(t, -2))).abs();
-            if ((ds + dt + 1) >> 1) > end_thr {
-                return 2;
-            }
-        }
-        let ds = (g(s, 0) - g(s, 3) - 3 * (g(s, 0) - g(s, 1))).abs();
-        let dt = (g(t, 0) - g(t, 3) - 3 * (g(t, 0) - g(t, 1))).abs();
-        if ((ds + dt + 1) >> 1) > end_thr {
-            return 2;
-        }
-        if max_width_pos == 3 {
-            return 3;
-        }
-        let transition = (sdv(-1) + sdv(0)) << 4;
-        let mut prev_dist = 3usize;
-        let mut dist = 4usize;
-        while dist <= max_width_pos {
-            let q_thr4 = q_thr * i64::from(q_first[dist - 4]);
-            let end_thr4 = (side_thr * dist as i64) >> 4;
-            if transition > q_thr4 {
-                return prev_dist;
-            }
-            let dist2 = dist.min(7) as i64;
-            if max_width_neg >= dist2 as usize {
-                let ds = (g(s, -1) - g(s, -dist2 - 1) - dist2 * (g(s, -1) - g(s, -2))).abs();
-                let dt = (g(t, -1) - g(t, -dist2 - 1) - dist2 * (g(t, -1) - g(t, -2))).abs();
-                if ((ds + dt + 1) >> 1) > end_thr4 {
-                    return prev_dist;
-                }
-            }
-            let ds = (g(s, 0) - g(s, dist2) - dist2 * (g(s, 0) - g(s, 1))).abs();
-            let dt = (g(t, 0) - g(t, dist2) - dist2 * (g(t, 0) - g(t, 1))).abs();
-            if ((ds + dt + 1) >> 1) > end_thr4 {
-                return prev_dist;
-            }
-            prev_dist = dist;
-            dist += 2;
-        }
-        max_width_pos
-    }
-
-    #[test]
-    fn filter_choice_zero_threshold_returns_zero() {
-        let line = [128u16; 17];
-        assert_eq!(
-            deblock_filter_choice(&line, &line, &choice(8, 0, 500, 8, 8)).unwrap(),
-            0
-        );
-        assert_eq!(
-            deblock_filter_choice(&line, &line, &choice(8, 50, 0, 8, 8)).unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn filter_choice_flat_returns_full_width() {
-        let line = [128u16; 17];
-        for pos in [1usize, 3, 4, 6, 8] {
-            let neg = pos.min(6);
-            let got = deblock_filter_choice(&line, &line, &choice(8, 10, 2000, neg, pos)).unwrap();
-            assert_eq!(got, pos, "flat width pos={pos}");
-        }
-    }
-
-    #[test]
-    fn filter_choice_high_curvature_returns_zero() {
-        let mut line = [128u16; 17];
-        line[8 - 2] = 320; // boundary = 8 -> index 6 is s[-2]
-        assert_eq!(
-            deblock_filter_choice(&line, &line, &choice(8, 50, 100, 8, 8)).unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn filter_choice_invalid_width_and_short_line_error() {
-        let line = [128u16; 17];
-        assert!(matches!(
-            deblock_filter_choice(&line, &line, &choice(8, 50, 500, 8, 9)),
-            Err(ReconError::DeblockFilterInvalidWidth { .. })
-        ));
-        let short = [128u16; 10];
-        assert!(matches!(
-            deblock_filter_choice(&short, &short, &choice(8, 50, 500, 8, 8)),
-            Err(ReconError::DeblockFilterLineTooShort { .. })
-        ));
-    }
-
-    #[test]
-    fn filter_choice_matches_independent_reference() {
-        let mut state = 0x0123_4567_89ab_cdefu64;
-        let mut next = |bound: u32| -> u32 {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            ((state >> 33) as u32) % bound
-        };
-        let widths = [1usize, 2, 3, 4, 6, 8];
-        let thresholds = [0i32, 5, 50, 500, 5000];
-        let mut checked = 0u32;
-        for _ in 0..4000 {
-            let s: Vec<u16> = (0..17).map(|_| next(512) as u16).collect();
-            let t: Vec<u16> = (0..17).map(|_| next(512) as u16).collect();
-            let max_width_pos = widths[next(widths.len() as u32) as usize];
-            let neg_choice = widths[next(widths.len() as u32) as usize];
-            let max_width_neg = neg_choice.min(max_width_pos).max(1);
-            let q_thr = thresholds[next(thresholds.len() as u32) as usize];
-            let side_thr = thresholds[next(thresholds.len() as u32) as usize];
-            let params = choice(8, q_thr, side_thr, max_width_neg, max_width_pos);
-            let got = deblock_filter_choice(&s, &t, &params).unwrap();
-            let expected = reference_choice(
-                &s,
-                &t,
-                8,
-                i64::from(q_thr),
-                i64::from(side_thr),
-                max_width_neg,
-                max_width_pos,
-                &Q_FIRST,
-            );
-            assert_eq!(
-                got, expected,
-                "pos={max_width_pos} neg={max_width_neg} q={q_thr} side={side_thr} s={s:?} t={t:?}"
-            );
-            checked += 1;
-        }
-        assert_eq!(checked, 4000);
-    }
-
-    #[test]
-    fn strided_filter_choice_matches_contiguous_lines() {
-        let s = [
-            40u16, 60, 50, 70, 55, 80, 45, 90, 35, 100, 30, 110, 25, 120, 20, 130, 15,
-        ];
-        let t = [
-            42u16, 58, 53, 68, 57, 77, 49, 86, 39, 96, 34, 106, 29, 116, 24, 126, 19,
-        ];
-        let params = choice(8, 80, 200, 6, 8);
-        let expected = deblock_filter_choice(&s, &t, &params).unwrap();
-
-        let stride = 23;
-        let boundary = 8 * stride + 4;
-        let last_boundary = boundary + 3;
-        let mut plane = vec![0u16; 17 * stride];
-        for index in 0..s.len() {
-            let offset = if index < 8 {
-                -((8 - index) as isize)
-            } else {
-                (index - 8) as isize
-            };
-            let row = boundary
-                .checked_add_signed(offset * stride as isize)
-                .unwrap();
-            plane[row] = s[index];
-            plane[row + 3] = t[index];
-        }
-        let got = deblock_filter_choice_strided(
-            &plane,
-            last_boundary,
-            NonZeroUsize::new(stride).unwrap(),
-            &DeblockFilterChoice { boundary, ..params },
-        )
-        .unwrap();
-        assert_eq!(got, expected);
-    }
-}
+#[path = "deblock_filter_tests.rs"]
+mod tests;

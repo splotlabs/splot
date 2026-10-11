@@ -48,6 +48,19 @@ fn init_symbol_tracks_boundary_sizes() {
 }
 
 #[test]
+fn symbol_max_bits_drops_by_each_read_width_across_refills() {
+    let payload = [0xA5; 16];
+    let mut decoder = SymbolDecoder::new(&payload).unwrap();
+    let mut expected = 8 * payload.len() as i64 - 15;
+    for width in [7, 32, 1, 19, 32, 32, 32, 13] {
+        decoder.read_literal(width).unwrap();
+        expected -= i64::from(width);
+        assert_eq!(decoder.symbol_max_bits(), expected, "after {width} bits");
+    }
+    assert!(expected < 0, "the reads must run past the payload end");
+}
+
+#[test]
 fn finish_validates_trailing_one_and_padding() {
     let one = SymbolDecoder::new(&[0x80]).unwrap();
     let summary = one.finish().unwrap();
@@ -364,6 +377,13 @@ fn invalid_cdf_rows_are_rejected_before_mutation() {
         ));
         assert_eq!(cdf, before);
         assert_eq!(decoder.symbol_count(), 0);
+    }
+}
+
+#[test]
+fn last_symbol_prob_inc_is_zero_for_every_arity() {
+    for n in MIN_SYMBOLS..=MAX_SYMBOLS {
+        assert_eq!(PROB_INC[n - 2][n - 1], 0, "N={n}");
     }
 }
 

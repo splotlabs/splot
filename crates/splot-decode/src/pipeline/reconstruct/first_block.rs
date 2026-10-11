@@ -12,8 +12,8 @@ use splot_recon::{
 
 use super::middle::middle_directional_angle;
 use super::sink::{
-    IntraEdgeAvailability, noneighbour_above, noneighbour_corner, noneighbour_left,
-    write_intra_prediction_block,
+    IntraEdgeAvailability, invalid_directional_edge_state, noneighbour_above, noneighbour_corner,
+    noneighbour_left, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
@@ -187,7 +187,7 @@ fn collect_available_dip_edge<T: ReconSample>(
         DipEdge::Left => x,
     }
     .checked_sub(1)
-    .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+    .ok_or_else(invalid_directional_edge_state)?;
     let storage_size = workspace.plane(PlaneId::Y)?.storage_size();
     let storage_len = match direction {
         DipEdge::Above => storage_size.width(),
@@ -224,7 +224,7 @@ fn extend_edge_with_last<T: ReconSample>(
     let last = edge
         .last()
         .copied()
-        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
+        .ok_or_else(invalid_directional_edge_state)?;
     edge.resize(edge_len, last);
     Ok(edge)
 }
@@ -249,7 +249,7 @@ fn neighbour_origin(
     };
     resolve(availability.above, y)
         .zip(resolve(availability.left, x))
-        .ok_or(GeneralIntraResidualError::InvalidDirectionalEdgeState)
+        .ok_or_else(invalid_directional_edge_state)
 }
 
 #[allow(clippy::too_many_arguments)]

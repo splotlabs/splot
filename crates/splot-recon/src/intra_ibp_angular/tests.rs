@@ -96,3 +96,54 @@ fn ibp_blend_rejects_undersized_buffers() {
     let second = vec![0u16; 16 * 16];
     assert!(apply_ibp_dr_blend_rect(size, 45, &mut primary, &second).is_err());
 }
+
+/// The `u16` lane blend must match the § 7.13.2.9 per-sample formula and the
+/// scalar `u8` path for every enabled angle and block shape, including
+/// max-valued samples.
+#[test]
+fn ibp_u16_lane_blend_matches_the_scalar_blend() {
+    for p_angle in (0..ZONE_3_INDEX_BASE).filter(|&p| ibp_blend_fires(p)) {
+        let weights = ibp_weight_table(enabled_weight_angle(p_angle).unwrap()).unwrap();
+        assert!(weights.iter().flatten().all(|&s| s <= IBP_WEIGHT_MAX));
+        for log2_width in 2..=6u8 {
+            for log2_height in 2..=6u8 {
+                let size = rect(log2_width, log2_height);
+                let (width, height) = (size.width(), size.height());
+                let sample = |index: usize, seed: usize| match index % 5 {
+                    0 => u16::MAX,
+                    1 => 0,
+                    _ => ((index * 7919 + seed) % 65536) as u16,
+                };
+                let primary: Vec<u16> = (0..width * height).map(|i| sample(i, 3)).collect();
+                let second: Vec<u16> = (0..width * height).map(|i| sample(i + 2, 11)).collect();
+                let mut lanes = primary.clone();
+                apply_ibp_dr_blend_rect(size, p_angle, &mut lanes, &second).unwrap();
+                for (index, &got) in lanes.iter().enumerate() {
+                    let (row, column) = (index / width, index % width);
+                    let row_idx = row >> (height >> 5);
+                    let col_idx = column >> (width >> 5);
+                    let s = if p_angle < ZONE_1_MAX {
+                        weights[row_idx][col_idx]
+                    } else {
+                        weights[col_idx][row_idx]
+                    };
+                    assert_eq!(got, blend(primary[index], second[index], s));
+                }
+
+                let narrow = |samples: &[u16]| samples.iter().map(|&v| v as u8).collect::<Vec<_>>();
+                let mut scalar = narrow(&primary);
+                apply_ibp_dr_blend_rect(size, p_angle, &mut scalar, &narrow(&second)).unwrap();
+                let mut lanes = narrow(&primary)
+                    .into_iter()
+                    .map(u16::from)
+                    .collect::<Vec<_>>();
+                let second16 = narrow(&second)
+                    .into_iter()
+                    .map(u16::from)
+                    .collect::<Vec<_>>();
+                apply_ibp_dr_blend_rect(size, p_angle, &mut lanes, &second16).unwrap();
+                assert_eq!(narrow(&lanes), scalar, "p_angle {p_angle} {width}x{height}");
+            }
+        }
+    }
+}

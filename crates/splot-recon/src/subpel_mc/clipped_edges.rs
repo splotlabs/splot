@@ -23,103 +23,6 @@ fn interior(
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-pub(super) fn horizontal_only<T: ReconSample, O>(
-    reference: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    ref_row: usize,
-    taps: &[i32],
-    tap_start: usize,
-    tap_end: usize,
-    inter_round1: u32,
-    row_out: &mut [O],
-    finish: &mut impl SubpelOutput<O>,
-) -> bool {
-    let Some(source) = T::u16_slice(reference.row(ref_row)) else {
-        return false;
-    };
-    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-    let interior = interior(
-        params.w,
-        x0,
-        tap_start,
-        tap_end,
-        params.first_x,
-        params.last_x,
-        reference.width,
-    );
-    for (c, output) in row_out[..interior.start].iter_mut().enumerate() {
-        let mut sum = 0i32;
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            let t = tap_start + tap_offset;
-            let ref_col =
-                (x0 + c as i32 + t as i32 - 3).clamp(params.first_x, params.last_x) as usize;
-            sum += tap * reference.sample(ref_row, ref_col);
-        }
-        let horizontal = round2_i32(sum, INTER_ROUND0);
-        *output = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
-    }
-    let vector_end8 = interior.start + interior.len() / 8 * 8;
-    for c in (interior.start..vector_end8).step_by(8) {
-        let mut sum = Simd::<i32, 8>::splat(0);
-        let start = (x0 + c as i32 + tap_start as i32 - 3) as usize;
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum = tap_mac(
-                sum,
-                Simd::<u16, 8>::from_slice(&source[start + tap_offset..]).cast(),
-                tap,
-            );
-        }
-        let values = round2_simd(
-            round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
-            inter_round1,
-        );
-        finish.eight(values, &mut row_out[c..c + 8]);
-    }
-    let vector_end4 = interior.end - interior.end.saturating_sub(vector_end8) % 4;
-    for c in (vector_end8..vector_end4).step_by(4) {
-        let mut sum = Simd::<i32, 4>::splat(0);
-        let start = (x0 + c as i32 + tap_start as i32 - 3) as usize;
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum = tap_mac(
-                sum,
-                Simd::<u16, 4>::from_slice(&source[start + tap_offset..]).cast(),
-                tap,
-            );
-        }
-        let values = round2_simd(
-            round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
-            inter_round1,
-        );
-        finish.four(values, &mut row_out[c..c + 4]);
-    }
-    for (offset, output) in row_out[vector_end4..interior.end].iter_mut().enumerate() {
-        let c = vector_end4 + offset;
-        let mut sum = 0i32;
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            let t = tap_start + tap_offset;
-            sum += tap * i32::from(source[(x0 + c as i32 + t as i32 - 3) as usize]);
-        }
-        let horizontal = round2_i32(sum, INTER_ROUND0);
-        *output = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
-    }
-    for (offset, output) in row_out[interior.end..].iter_mut().enumerate() {
-        let c = interior.end + offset;
-        let mut sum = 0i32;
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            let t = tap_start + tap_offset;
-            let ref_col =
-                (x0 + c as i32 + t as i32 - 3).clamp(params.first_x, params.last_x) as usize;
-            sum += tap * reference.sample(ref_row, ref_col);
-        }
-        let horizontal = round2_i32(sum, INTER_ROUND0);
-        *output = finish.one(round2_i32(horizontal << FILTER_BITS, inter_round1));
-    }
-    true
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
 pub(super) fn vertical_only<T: ReconSample, O>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -130,10 +33,8 @@ pub(super) fn vertical_only<T: ReconSample, O>(
     output: &mut [O],
     output_stride: usize,
     finish: &mut impl SubpelOutput<O>,
-) -> bool {
-    let Some(source) = T::u16_slice(reference.samples) else {
-        return false;
-    };
+) {
+    let source = reference.samples;
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let interior = interior(
@@ -166,11 +67,7 @@ pub(super) fn vertical_only<T: ReconSample, O>(
                 (y0 + row as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
             let start = ref_row.min(reference.readable_rows - 1) * reference.stride
                 + (x0 + c as i32) as usize;
-            sum = tap_mac(
-                sum,
-                Simd::<u16, 8>::from_slice(&source[start..]).cast(),
-                tap,
-            );
+            sum = tap_mac(sum, reference_lanes::<8, T>(source, start).cast(), tap);
         }
         let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
         finish.eight(values, &mut row_out[c..c + 8]);
@@ -184,11 +81,7 @@ pub(super) fn vertical_only<T: ReconSample, O>(
                 (y0 + row as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
             let start = ref_row.min(reference.readable_rows - 1) * reference.stride
                 + (x0 + c as i32) as usize;
-            sum = tap_mac(
-                sum,
-                Simd::<u16, 4>::from_slice(&source[start..]).cast(),
-                tap,
-            );
+            sum = tap_mac(sum, reference_lanes::<4, T>(source, start).cast(), tap);
         }
         let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
         finish.four(values, &mut row_out[c..c + 4]);
@@ -204,7 +97,6 @@ pub(super) fn vertical_only<T: ReconSample, O>(
             inter_round1,
         ));
     }
-    true
 }
 
 fn vertical_scalar_value<T: ReconSample>(
@@ -229,91 +121,136 @@ fn vertical_scalar_value<T: ReconSample>(
     round2_i32(sum << (FILTER_BITS - INTER_ROUND0), inter_round1)
 }
 
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-pub(super) fn horizontal_intermediate<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    ref_row: usize,
-    h_filter: usize,
-    row_out: &mut [i16],
-) -> bool {
-    if params.step_x != 1 << SCALE_SUBPEL_BITS {
-        return false;
-    }
-    let Some(source) = T::u16_slice(reference.row(ref_row)) else {
-        return false;
-    };
-    let phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
-    let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter][phase];
-    let taps = &SUBPEL_FILTERS[h_filter][phase][tap_start..tap_end];
-    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-    let interior = interior(
-        params.w,
-        x0,
-        tap_start,
-        tap_end,
-        params.first_x,
-        params.last_x,
-        reference.width,
-    );
-    for (col, output) in row_out[..interior.start].iter_mut().enumerate() {
-        *output = horizontal_scalar(reference, params, ref_row, col, taps, tap_start);
-    }
-    let vector_end8 = interior.start + interior.len() / 8 * 8;
-    for c in (interior.start..vector_end8).step_by(8) {
-        let mut sum = Simd::<i32, 8>::splat(0);
-        let start = (x0 + c as i32 + tap_start as i32 - 3) as usize;
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum = tap_mac(
-                sum,
-                Simd::<u16, 8>::from_slice(&source[start + tap_offset..]).cast(),
-                tap,
-            );
-        }
-        row_out[c..c + 8].copy_from_slice(&round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array()); // splot-copy-ok: publish clipped-edge SIMD convolution lanes
-    }
-    let vector_end4 = interior.end - interior.end.saturating_sub(vector_end8) % 4;
-    for c in (vector_end8..vector_end4).step_by(4) {
-        let mut sum = Simd::<i32, 4>::splat(0);
-        let start = (x0 + c as i32 + tap_start as i32 - 3) as usize;
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum = tap_mac(
-                sum,
-                Simd::<u16, 4>::from_slice(&source[start + tap_offset..]).cast(),
-                tap,
-            );
-        }
-        row_out[c..c + 4].copy_from_slice(&round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array()); // splot-copy-ok: publish clipped-edge SIMD convolution lanes
-    }
-    for (offset, output) in row_out[vector_end4..].iter_mut().enumerate() {
-        *output = horizontal_scalar(
-            reference,
-            params,
-            ref_row,
-            vector_end4 + offset,
-            taps,
-            tap_start,
-        );
-    }
-    true
+/// Samples one clamped § 7.13.3.18 horizontal tap window holds, plus the
+/// [`SLIDE_RESERVE`] the sliding load shape may read past it.
+pub(super) const WINDOW_STORAGE: usize = MAX_BLOCK_DIM + NUM_TAPS - 1 + SLIDE_RESERVE;
+
+/// Column layout of the `w + 7`-sample unscaled tap window starting at
+/// `x0 - 3` when some taps fall outside `[firstX, lastX]` or the plane.
+///
+/// `Clip3(firstX, lastX, x)` followed by the plane clamp equals one clamp to
+/// the plane-bounded range, so the window is a run of the first column, a
+/// contiguous copy, and a run of the last column.
+#[derive(Clone, Copy)]
+pub(super) struct ClampedWindow {
+    copy_start: usize,
+    prefix: usize,
+    middle_end: usize,
+    len: usize,
+    first: usize,
+    last: usize,
 }
 
-fn horizontal_scalar<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    ref_row: usize,
-    col: usize,
-    taps: &[i32],
-    tap_start: usize,
-) -> i16 {
-    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-    let mut sum = 0i32;
-    for (tap_offset, &tap) in taps.iter().enumerate() {
-        let t = tap_start + tap_offset;
-        let ref_col =
-            (x0 + col as i32 + t as i32 - 3).clamp(params.first_x, params.last_x) as usize;
-        sum += tap * reference.sample(ref_row, ref_col);
+impl ClampedWindow {
+    pub(super) fn new<T: ReconSample>(
+        reference: &ReferencePlaneView<'_, T>,
+        params: &SubpelPredictParams,
+    ) -> Self {
+        let plane_last = reference.width as i32 - 1;
+        let first = params.first_x.clamp(0, plane_last);
+        let last = params.last_x.clamp(0, plane_last);
+        let start = (params.start_x >> SCALE_SUBPEL_BITS) - 3;
+        let len = params.w + NUM_TAPS - 1;
+        let prefix = (i64::from(first) - i64::from(start)).clamp(0, len as i64) as usize;
+        let middle_end =
+            (i64::from(last) - i64::from(start) + 1).clamp(prefix as i64, len as i64) as usize;
+        Self {
+            copy_start: if prefix < middle_end {
+                (start + prefix as i32) as usize
+            } else {
+                0
+            },
+            prefix,
+            middle_end,
+            len,
+            first: first as usize,
+            last: last as usize,
+        }
     }
-    round2_i32(sum, INTER_ROUND0) as i16
+
+    /// Writes the window of one plane row into `storage` and returns it.
+    pub(super) fn fill<'a, T: ReconSample>(
+        &self,
+        row: &[T],
+        storage: &'a mut [T; WINDOW_STORAGE],
+    ) -> &'a [T] {
+        let filled = match (T::u16_slice(row), T::u8_slice(row)) {
+            (Some(row), _) => T::u16_slice_mut(storage).and_then(|out| self.fill_lanes(row, out)),
+            (_, Some(row)) => T::u8_slice_mut(storage).and_then(|out| self.fill_lanes(row, out)),
+            _ => None,
+        };
+        if filled.is_some() {
+            return storage;
+        }
+        storage[..self.prefix].fill(row[self.first]);
+        let middle = &row[self.copy_start..self.copy_start + self.middle_end - self.prefix];
+        storage[self.prefix..self.middle_end].copy_from_slice(middle); // splot-copy-ok: materialize one clamped tap window
+        storage[self.middle_end..self.len].fill(row[self.last]);
+        storage
+    }
+
+    /// Builds the window from whole 16-sample loads of the row at the window
+    /// start, replacing the lanes outside `[first, last]` with the edge
+    /// samples. `None` when those loads would leave the row.
+    fn fill_lanes<E>(&self, row: &[E], storage: &mut [E]) -> Option<()>
+    where
+        E: std::simd::SimdElement + From<u8>,
+        Simd<E, 16>: std::simd::cmp::SimdPartialOrd<Mask = std::simd::Mask<E::Mask, 16>>,
+    {
+        use std::simd::{Select, cmp::SimdPartialOrd};
+        const LANES: usize = 16;
+        let start = self.copy_start.checked_sub(self.prefix)?;
+        let (first, last) = (
+            Simd::splat(*row.get(self.first)?),
+            Simd::splat(*row.get(self.last)?),
+        );
+        let index = Simd::from_array(core::array::from_fn(|lane| E::from(lane as u8)));
+        let below = |n: usize| index.simd_lt(Simd::splat(E::from(n.min(LANES) as u8)));
+        for chunk in (0..self.len).step_by(LANES) {
+            let lanes =
+                Simd::<E, LANES>::from_slice(row.get(start + chunk..start + chunk + LANES)?);
+            let lanes = below(self.prefix.saturating_sub(chunk)).select(first, lanes);
+            let lanes = below(self.middle_end.saturating_sub(chunk)).select(lanes, last);
+            lanes.copy_to_slice(storage.get_mut(chunk..chunk + LANES)?);
+        }
+        Some(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::subpel_mc::tests::full_pel_params;
+
+    fn assert_clamped_windows<T: ReconSample + core::fmt::Debug + PartialEq>(row: &[T]) {
+        let width = row.len() as i32;
+        let view = ReferencePlaneView::new(row, row.len(), 1).unwrap();
+        for (x0, first, last, w) in [
+            (20, 19, 30, 8),
+            (10, 5, 50, 32),
+            (5, 40, 50, 8),
+            (40, 0, 10, 8),
+            (1, 0, 63, 8),
+            (56, 0, 63, 8),
+            (30, -4, 99, 16),
+        ] {
+            let mut params = full_pel_params(InterpolationFilter::EightTap, w, 1, x0, 0, width, 1);
+            (params.first_x, params.last_x) = (first, last);
+            let window = ClampedWindow::new(&view, &params);
+            let mut storage = [T::default(); WINDOW_STORAGE];
+            let got = window.fill(view.row(0), &mut storage);
+            let (first, last) = (first.clamp(0, width - 1), last.clamp(0, width - 1));
+            let want: Vec<T> = (0..w as i32 + 7)
+                .map(|k| row[(x0 - 3 + k).clamp(first, last) as usize])
+                .collect();
+            assert_eq!(&got[..want.len()], want.as_slice(), "x0={x0} w={w}");
+        }
+    }
+
+    #[test]
+    fn clamped_window_matches_the_clipped_tap_columns_on_both_paths() {
+        assert_clamped_windows(&(0..64u16).map(|x| 1000 - 7 * x).collect::<Vec<_>>());
+        assert_clamped_windows(&(0..64u8).map(|x| 250 - 3 * x).collect::<Vec<_>>());
+    }
 }

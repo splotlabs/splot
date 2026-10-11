@@ -394,11 +394,10 @@ fn checked_resolved_eob_pt(
 }
 
 fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
-    EOB_OFFSET_BITS
-        .get(eob_pt)
-        .copied()
-        .map(|width| width.saturating_sub(1))
-        .ok_or(CoeffLoopContextError::InvalidEobPoint { eob_pt })
+    let Some(width) = EOB_OFFSET_BITS.get(eob_pt) else {
+        return Err(CoeffLoopContextError::InvalidEobPoint { eob_pt });
+    };
+    Ok(width.saturating_sub(1))
 }
 
 fn read_eob_literal(

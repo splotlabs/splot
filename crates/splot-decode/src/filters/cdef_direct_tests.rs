@@ -106,6 +106,7 @@ fn direct_cdef_10bit(
         has_chroma: true,
         coeff_shift: 2,
         max_sample: 1023,
+        fill_flat: [true; 3],
     };
     let geometry = [
         Some(CdefPlaneGeometry {
@@ -449,5 +450,440 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
                 .all(|&sample| sample == 0xdead),
             "plane {plane:?} changed before V preflight failed"
         );
+    }
+}
+
+fn flat_workspace(
+    width: usize,
+    columns: core::ops::Range<usize>,
+    spike: Option<(PlaneId, usize, usize)>,
+) -> CurrentFrameWorkspace<u16> {
+    let mut workspace = patterned_10bit_workspace(PixelFormat::Yuv420, width, 24);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let shift = usize::from(plane != PlaneId::Y);
+        for y in (4 >> shift)..(20 >> shift) {
+            for x in (columns.start >> shift)..(columns.end >> shift) {
+                workspace
+                    .set_reconstructed_sample(plane, x, y, 512)
+                    .unwrap();
+            }
+        }
+    }
+    if let Some((plane, x, y)) = spike {
+        workspace
+            .set_reconstructed_sample(plane, x, y, 528)
+            .unwrap();
+    }
+    workspace
+}
+
+fn assert_flat(
+    samples: &[u16],
+    width: usize,
+    columns: core::ops::Range<usize>,
+    rows: core::ops::Range<usize>,
+) {
+    for y in rows {
+        assert!(
+            samples[y * width + columns.start..y * width + columns.end]
+                .iter()
+                .all(|&sample| sample == 512)
+        );
+    }
+}
+
+#[test]
+fn flat_segment_fills_fully_overwritten_direct_output() {
+    let workspace = flat_workspace(144, 60..132, None);
+    let params = active_params();
+    let grid = constant_cdef_grid(6, 36, 0).unwrap();
+    let owned = owned_cdef_10bit(&workspace, &params, &grid, None, None);
+    assert_eq!(
+        direct_cdef_10bit(
+            &workspace,
+            &params,
+            &grid,
+            None,
+            None,
+            StripeInitialization::FullyOverwritten
+        ),
+        owned
+    );
+    assert_flat(&owned[0], 144, 64..128, 8..16);
+    assert_flat(&owned[1], 72, 32..64, 4..8);
+    assert_flat(&owned[2], 72, 32..64, 4..8);
+}
+
+#[test]
+fn flat_segment_with_one_tap_reach_spike_is_filtered() {
+    let workspace = flat_workspace(144, 60..132, Some((PlaneId::Y, 62, 11)));
+    let grid = constant_cdef_grid(6, 36, 0).unwrap();
+    let owned = owned_cdef_10bit(&workspace, &active_params(), &grid, None, None);
+    assert_eq!(owned[PlaneId::Y.index()][11 * 144 + 64], 513);
+}
+
+#[test]
+fn flat_window_spans_exactly_the_tap_reach() {
+    let tile = ((0, 0), (144, 24));
+    let window = |spike: Option<(usize, usize)>, start: (usize, usize)| {
+        let workspace = flat_workspace(144, 60..132, spike.map(|(x, y)| (PlaneId::Y, x, y)));
+        let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
+        flat_window::<u16, 64, 8>(plane, (64, 8), start, tile.1)
+    };
+    assert_eq!(window(None, tile.0), Some(512));
+    for corner in [(62, 6), (129, 6), (62, 17), (129, 17)] {
+        assert_eq!(window(Some(corner), tile.0), None, "{corner:?}");
+    }
+    for outside in [(61, 11), (130, 11), (64, 5), (64, 18)] {
+        assert_eq!(window(Some(outside), tile.0), Some(512), "{outside:?}");
+    }
+    assert_eq!(window(None, (63, 0)), None);
+    for (spike, expected) in [
+        (None, Some(90)),
+        (Some((129, 17)), None),
+        (Some((130, 11)), Some(90)),
+    ] {
+        let mut workspace = yuv420_workspace(144, 24, 90);
+        if let Some((x, y)) = spike {
+            workspace
+                .set_reconstructed_sample(PlaneId::Y, x, y, 91)
+                .unwrap();
+        }
+        let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
+        assert_eq!(
+            flat_window::<u8, 64, 8>(plane, (64, 8), tile.0, tile.1),
+            expected,
+            "{spike:?}"
+        );
+    }
+}
+
+#[test]
+fn flat_blocks_fill_fully_overwritten_direct_output() {
+    let workspace = flat_workspace(32, 4..20, None);
+    let params = active_params();
+    let grid = constant_cdef_grid(6, 8, 0).unwrap();
+    let owned = owned_cdef_10bit(&workspace, &params, &grid, None, None);
+    assert_eq!(
+        direct_cdef_10bit(
+            &workspace,
+            &params,
+            &grid,
+            None,
+            None,
+            StripeInitialization::FullyOverwritten
+        ),
+        owned
+    );
+    assert_flat(&owned[0], 32, 8..16, 8..16);
+    assert_flat(&owned[1], 16, 4..8, 4..8);
+    assert_flat(&owned[2], 16, 4..8, 4..8);
+}
+
+#[test]
+fn chroma_pair_with_one_flat_plane_is_filtered() {
+    let workspace = flat_workspace(32, 4..20, Some((PlaneId::V, 2, 5)));
+    let grid = constant_cdef_grid(6, 8, 0).unwrap();
+    let owned = owned_cdef_10bit(&workspace, &active_params(), &grid, None, None);
+    assert_eq!(owned[PlaneId::V.index()][5 * 16 + 4], 513);
+    assert_flat(&owned[1], 16, 4..8, 4..8);
+}
+
+/// A flat block writes nothing into a direct target that holds the deblocked
+/// rows, on the per-block path (width 32) and the segment path (width 144).
+#[test]
+fn flat_blocks_keep_a_deblocked_direct_target() {
+    const POISON: u16 = 1023;
+    let params = active_params();
+    for (width, flat, block) in [(32, 4..20, 8..16), (144, 52..68, 56..64)] {
+        let workspace = flat_workspace(width, flat.clone(), None);
+        let mi_size = (6, width / MI_SIZE);
+        let grid = constant_cdef_grid(mi_size.0, mi_size.1, 0).unwrap();
+        let filled = direct_cdef_10bit(
+            &workspace,
+            &params,
+            &grid,
+            None,
+            None,
+            StripeInitialization::FullyOverwritten,
+        );
+        let block_rows = |plane: usize| {
+            let shift = usize::from(plane != 0);
+            let xs = block.start >> shift..block.end >> shift;
+            (width >> shift, xs, 8 >> shift..16 >> shift)
+        };
+        let mut held = flat_workspace(width, flat, None);
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            let (_, xs, ys) = block_rows(plane.index());
+            let rect = PlaneRect::new(xs.start, ys.start, xs.len(), ys.len()).unwrap();
+            held.fill_rect(plane, rect, POISON).unwrap();
+        }
+        let progress = Arc::new(FrameProgress::<u16>::new(workspace.info()).unwrap());
+        progress.begin(&[(0, 24)]).unwrap();
+        let mut rows = progress.frontier_rows().unwrap();
+        rows.copy_rows_from(&held, 0..24).unwrap();
+        assert!(rows.publish_final_rows(24) && rows.release_rows(24));
+        let mut lease = progress.direct_stripe(0).unwrap();
+        let frame = cdef_stripe_into(
+            DeblockedPlanes::frame(&workspace).unwrap(),
+            Some(&params),
+            Some(&grid),
+            None,
+            None,
+            mi_size,
+            (1, 1),
+            BitDepth::Ten,
+            None,
+            0,
+            24,
+            lease.take_target(),
+        )
+        .unwrap();
+        let mut kept = cdef_frame_samples(&frame);
+        for (plane, samples) in kept.iter_mut().enumerate() {
+            let (stride, xs, ys) = block_rows(plane);
+            for y in ys {
+                let row = &mut samples[y * stride + xs.start..y * stride + xs.end];
+                assert!(
+                    row.iter().all(|&sample| sample == POISON),
+                    "{width} {plane}"
+                );
+                row.fill(512);
+            }
+        }
+        assert_eq!(kept, filled, "{width}");
+    }
+}
+
+#[test]
+fn flat_pad_gives_direction_zero_and_variance_zero() {
+    for value in [0, 37, 512, 1023] {
+        assert_eq!(cdef_direction_padded(&[value; CDEF_PADDED_AREA], 2), (0, 0));
+    }
+}
+
+/// Filters the segment at MI `(2, c)` of `workspace` through the segment path
+/// or block by block, into a copy of the deblocked planes.
+fn run_segment(
+    workspace: &CurrentFrameWorkspace<u16>,
+    params: CdefFrameParams,
+    lossless: &crate::filters::lossless::LosslessBlockGrid,
+    c: usize,
+    segment: bool,
+) -> [Vec<u16>; 3] {
+    let deblocked = DeblockedPlanes::frame(workspace).unwrap();
+    let mut frame = cdef_stripe(
+        deblocked,
+        None,
+        None,
+        None,
+        None,
+        (6, 36),
+        (1, 1),
+        BitDepth::Ten,
+        None,
+        0,
+        24,
+    )
+    .unwrap();
+    let grid = constant_cdef_grid(6, 36, 0).unwrap();
+    let lookup = CdefBlockLookup {
+        strengths: &[params],
+        grid: &grid,
+        tile_row_starts: None,
+        tile_col_starts: None,
+        skip_grid: None,
+        lossless_grid: Some(lossless),
+        mi_rows: 6,
+        mi_cols: 36,
+        sub_x: 1,
+        sub_y: 1,
+        has_chroma: true,
+        coeff_shift: 2,
+        max_sample: 1023,
+        fill_flat: [true; 3],
+    };
+    if segment {
+        let mut scratch = CdefSegmentScratch {
+            luma: [0; LUMA_SEGMENT_AREA],
+            pair: [0; PAIR_SEGMENT_AREA],
+        };
+        assert!(cdef_segment(&lookup, params, (2, c), (0, 6), &mut scratch, &mut frame).unwrap());
+    } else {
+        let mut pad = [0u16; CDEF_PADDED_AREA];
+        for block in 0..CDEF_SEGMENT_BLOCKS {
+            let Some(ctx) = lookup.at(2, c + 2 * block, Some(params), (0, 6)).unwrap() else {
+                continue;
+            };
+            compute_cdef_block::<u16>(
+                &ctx,
+                &mut pad,
+                deblocked.y,
+                deblocked.u,
+                deblocked.v,
+                &mut frame.filtered_y,
+                frame.filtered_u.as_mut(),
+                frame.filtered_v.as_mut(),
+            )
+            .unwrap();
+        }
+    }
+    cdef_frame_samples(&frame)
+}
+
+#[test]
+fn segment_path_matches_per_block_path() {
+    let workspace = flat_workspace(144, 52..68, None);
+    let input = run_segment(
+        &workspace,
+        active_params()[0],
+        &crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
+            .unwrap(),
+        8,
+        false,
+    );
+    let blocks = [deblock_block(2, 10, 2, 2, true)];
+    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+        6,
+        36,
+        &blocks,
+        [&blocks, &blocks],
+    )
+    .unwrap();
+    let mixed = |y_pri, y_sec, uv_pri, uv_sec| CdefFrameParams {
+        y_pri,
+        y_sec,
+        uv_pri,
+        uv_sec,
+        damping: 4,
+    };
+    for params in [
+        active_params()[0],
+        mixed(0, 0, 3, 0),
+        mixed(7, 0, 0, 2),
+        mixed(0, 3, 0, 0),
+    ] {
+        let segment = run_segment(&workspace, params, &lossless, 8, true);
+        assert_eq!(
+            segment,
+            run_segment(&workspace, params, &lossless, 8, false),
+            "{params:?}"
+        );
+        assert_ne!(segment, input, "{params:?}");
+    }
+}
+
+#[test]
+fn edge_segment_falls_back_to_the_per_block_path() {
+    let workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 144, 24);
+    let grid = constant_cdef_grid(6, 36, 0).unwrap();
+    let lookup = CdefBlockLookup {
+        strengths: &active_params(),
+        grid: &grid,
+        tile_row_starts: None,
+        tile_col_starts: Some(&[0, 8, 36]),
+        skip_grid: None,
+        lossless_grid: None,
+        mi_rows: 6,
+        mi_cols: 36,
+        sub_x: 1,
+        sub_y: 1,
+        has_chroma: true,
+        coeff_shift: 2,
+        max_sample: 1023,
+        fill_flat: [true; 3],
+    };
+    let mut frame = cdef_stripe(
+        DeblockedPlanes::frame(&workspace).unwrap(),
+        None,
+        None,
+        None,
+        None,
+        (6, 36),
+        (1, 1),
+        BitDepth::Ten,
+        None,
+        0,
+        24,
+    )
+    .unwrap();
+    let before = cdef_frame_samples(&frame);
+    let mut scratch = CdefSegmentScratch {
+        luma: [0; LUMA_SEGMENT_AREA],
+        pair: [0; PAIR_SEGMENT_AREA],
+    };
+    let params = active_params()[0];
+    for (r, c) in [(0, 16), (2, 0), (2, 8), (2, 32), (4, 16)] {
+        assert!(
+            !cdef_segment(&lookup, params, (r, c), (0, 6), &mut scratch, &mut frame).unwrap(),
+            "({r}, {c})"
+        );
+    }
+    assert_eq!(cdef_frame_samples(&frame), before);
+    assert!(cdef_segment(&lookup, params, (2, 16), (0, 6), &mut scratch, &mut frame).unwrap());
+    assert_ne!(cdef_frame_samples(&frame), before);
+}
+
+#[test]
+fn luma_segment_gather_returns_each_block_window_range() {
+    let (width, stride) = (44, 48);
+    let mut state = 0x2468_ace1u32;
+    let samples: Vec<u16> = (0..stride * 14)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 22) as u16
+        })
+        .collect();
+    let mut pad = [0u16; LUMA_SEGMENT_AREA];
+    let ranges = gather_luma_segment(&samples, width, stride, &mut pad, (4, 3)).unwrap();
+    for (block, range) in ranges.into_iter().enumerate() {
+        let window = (1..13).flat_map(|y| {
+            let start = y * stride + 2 + 8 * block;
+            samples[start..start + 12].iter().copied()
+        });
+        let (min, max) = (window.clone().min().unwrap(), window.max().unwrap());
+        assert_eq!(range, [min, max], "block {block}");
+    }
+    for row in 0..12 {
+        let start = (row + 1) * stride + 2;
+        assert_eq!(
+            &pad[row * CDEF_SEGMENT_STRIDE..(row + 1) * CDEF_SEGMENT_STRIDE],
+            &samples[start..start + CDEF_SEGMENT_STRIDE]
+        );
+    }
+}
+
+#[test]
+fn segment_path_matches_per_block_path_on_narrow_windows() {
+    let mut workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 144, 24);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = workspace.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let sample = 700 + ((x * 37 + y * 59 + plane.index() * 11) % 241) as u16;
+                workspace
+                    .set_reconstructed_sample(plane, x, y, sample)
+                    .unwrap();
+            }
+        }
+    }
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
+            .unwrap();
+    for damping in [3, 4, 5, 6] {
+        for (y_pri, y_sec) in [(4, 4), (15, 0), (0, 2), (1, 1)] {
+            let params = CdefFrameParams {
+                y_pri,
+                y_sec,
+                uv_pri: 2,
+                uv_sec: 4,
+                damping,
+            };
+            assert_eq!(
+                run_segment(&workspace, params, &lossless, 8, true),
+                run_segment(&workspace, params, &lossless, 8, false),
+                "{params:?}"
+            );
+        }
     }
 }

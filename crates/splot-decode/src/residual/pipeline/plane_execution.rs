@@ -535,11 +535,11 @@ impl ParsedGeneralIntraResidual {
                     continue;
                 }
                 CctxRole::PairV => {
-                    let u = pending_u.take().ok_or(
-                        GeneralIntraResidualError::InvalidReconstructionState {
+                    let Some(u) = pending_u.take() else {
+                        return Err(GeneralIntraResidualError::InvalidReconstructionState {
                             context: "CCTX pending U plane",
-                        },
-                    )?;
+                        });
+                    };
                     reconstruct_chroma_pair(
                         scratch,
                         workspace,
@@ -655,11 +655,11 @@ impl ParsedResidualPlane {
                 Ok(())
             }
             ParsedResidualPlaneKind::Lossless(units) => {
-                let units = arena.get_mut(units).ok_or(
-                    GeneralIntraResidualError::InvalidReconstructionState {
+                let Some(units) = arena.get_mut(units) else {
+                    return Err(GeneralIntraResidualError::InvalidReconstructionState {
                         context: "residual transform unit range",
-                    },
-                )?;
+                    });
+                };
                 for unit in units.iter_mut().filter_map(Option::take) {
                     let plan = self.plane.transform_unit_plan(&unit.block)?;
                     plan.reconstruct(
@@ -685,11 +685,11 @@ impl ParsedResidualPlane {
                 Ok(())
             }
             ParsedResidualPlaneKind::PartitionedLuma(units) => {
-                let units = arena.get_mut(units).ok_or(
-                    GeneralIntraResidualError::InvalidReconstructionState {
+                let Some(units) = arena.get_mut(units) else {
+                    return Err(GeneralIntraResidualError::InvalidReconstructionState {
                         context: "residual transform unit range",
-                    },
-                )?;
+                    });
+                };
                 for unit in units.iter_mut().filter_map(Option::take) {
                     let plan = self.plane.transform_unit_plan(&unit.block)?;
                     plan.reconstruct(

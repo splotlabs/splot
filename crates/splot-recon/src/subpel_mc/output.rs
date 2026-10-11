@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use super::{compound_inter_post_round, round2_i32};
+use super::{
+    INTER_ROUND1_COMPOUND, INTER_ROUND1_NON_COMPOUND, compound_inter_post_round, round2_i32,
+};
 use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
 
 /// Storage a bilinear sub-pel kernel can publish into.
@@ -44,7 +46,38 @@ impl BilinearOutput for u8 {
 }
 
 pub(super) trait SubpelOutput<O> {
+    /// `InterRound1` when the output fixes it: a clipped output is a
+    /// single-reference prediction and a compound blend takes compound
+    /// predictors.
+    const INTER_ROUND1: Option<u32> = None;
+
     fn one(&mut self, value: i32) -> O;
+
+    /// Stores `Round2(sums << prescale, InterRound1)`, which is
+    /// `Round2(sums, InterRound1 - prescale)` exactly. Kernels pass the sums of
+    /// an unscaled 8- or 10-bit § 7.13.3.18 convolution, whose non-compound
+    /// value fits `i16` (at most `-1287..=2310`).
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn rounded<const LANES: usize>(
+        &mut self,
+        sums: Simd<i32, LANES>,
+        prescale: u32,
+        inter_round1: u32,
+        output: &mut [O],
+    ) {
+        let shift = Self::INTER_ROUND1.unwrap_or(inter_round1) - prescale;
+        let values = if shift == 0 {
+            sums
+        } else {
+            super::round2_simd(sums, shift)
+        };
+        match LANES {
+            4 => self.four(Simd::from_slice(values.as_array()), output),
+            8 => self.eight(Simd::from_slice(values.as_array()), output),
+            _ => self.sixteen(Simd::from_slice(values.as_array()), output),
+        }
+    }
 
     fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [O]) {
         for (output, value) in output.iter_mut().zip(values.to_array()) {
@@ -89,10 +122,29 @@ impl ClippedU16SubpelOutput {
 }
 
 impl SubpelOutput<u16> for ClippedU16SubpelOutput {
+    const INTER_ROUND1: Option<u32> = Some(INTER_ROUND1_NON_COMPOUND);
+
     #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
     #[inline(always)]
     fn one(&mut self, value: i32) -> u16 {
         value.clamp(0, self.max_sample) as u16
+    }
+
+    #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
+    #[inline(always)]
+    fn rounded<const LANES: usize>(
+        &mut self,
+        sums: Simd<i32, LANES>,
+        prescale: u32,
+        _: u32,
+        output: &mut [u16],
+    ) {
+        let shift = INTER_ROUND1_NON_COMPOUND - prescale;
+        let values = ((sums + Simd::splat(1 << (shift - 1))) >> shift as i32)
+            .cast::<i16>()
+            .simd_max(Simd::splat(0))
+            .simd_min(Simd::splat(self.max_sample as i16));
+        output[..LANES].copy_from_slice(values.cast::<u16>().as_array()); // splot-copy-ok: publish clipped SIMD prediction lanes
     }
 
     #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
@@ -127,10 +179,28 @@ impl ClippedU8SubpelOutput {
 }
 
 impl SubpelOutput<u8> for ClippedU8SubpelOutput {
+    const INTER_ROUND1: Option<u32> = Some(INTER_ROUND1_NON_COMPOUND);
+
     #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
     #[inline(always)]
     fn one(&mut self, value: i32) -> u8 {
         value.clamp(0, i32::from(u8::MAX)) as u8
+    }
+
+    #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
+    #[inline(always)]
+    fn rounded<const LANES: usize>(
+        &mut self,
+        sums: Simd<i32, LANES>,
+        prescale: u32,
+        _: u32,
+        output: &mut [u8],
+    ) {
+        let shift = INTER_ROUND1_NON_COMPOUND - prescale;
+        let values = ((sums + Simd::splat(1 << (shift - 1))) >> shift as i32)
+            .cast::<i16>()
+            .simd_clamp(Simd::splat(0), Simd::splat(i16::from(u8::MAX)));
+        output[..LANES].copy_from_slice(values.cast::<u8>().as_array()); // splot-copy-ok: publish clipped SIMD prediction lanes
     }
 
     #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
@@ -258,6 +328,8 @@ impl CompoundAverageSubpelOutput<'_> {
 }
 
 impl SubpelOutput<u16> for CompoundAverageSubpelOutput<'_> {
+    const INTER_ROUND1: Option<u32> = Some(INTER_ROUND1_COMPOUND);
+
     #[allow(
         clippy::inline_always,
         reason = "measured compound-average subpel hot path"
@@ -365,6 +437,8 @@ impl CompoundAverageSubpelOutputU8<'_> {
 }
 
 impl SubpelOutput<u8> for CompoundAverageSubpelOutputU8<'_> {
+    const INTER_ROUND1: Option<u32> = Some(INTER_ROUND1_COMPOUND);
+
     #[allow(
         clippy::inline_always,
         reason = "measured compound-average subpel hot path"

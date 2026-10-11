@@ -7,8 +7,8 @@ use splot_recon::math::round2_i32;
 use splot_recon::{
     BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DequantBlockParams, DpcmDirection,
     IntraRectBlockSize, InverseTransform2dOuter, PlaneId, ReconSample, SecondaryInverseTransform,
-    ac_quantizer, dc_quantizer, dequant_coefficient, dequantize_block, inverse_transform_2d_outer,
-    inverse_transform_2d_outer_adjusted, secondary_inverse_transform, tx_class,
+    ac_quantizer, dc_quantizer, dequant_coefficient, dequantize_block, dequantize_with_secondary,
+    inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted, tx_class,
 };
 
 use super::super::coeff_loop::max_level::CoeffTransformClass;
@@ -54,7 +54,7 @@ pub(super) fn resolve_secondary_inverse_transform(
     let (kernel, transpose) = if let Some(luma_context) = luma_context {
         let most_probable_stx_set = ist
             .most_probable_stx_set
-            .ok_or(invalid_reconstruction_state_error("active intra IST set"))?;
+            .ok_or_else(|| invalid_reconstruction_state_error("active intra IST set"))?;
         let mode = intra_secondary_transform_mode(luma_context, tx_width, tx_height)?;
         (
             intra_secondary_transform_kernel(
@@ -102,23 +102,6 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
-    if !block.is_dense() {
-        return block.with_dense(|block| {
-            reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-                block,
-                prediction,
-                out,
-                qindex,
-                plane_id,
-                log2_width,
-                log2_height,
-                use_tcq,
-                luma_context,
-                dpcm,
-                bit_depth,
-            )
-        });
-    }
     let (plane_id, dpcm, secondary) = if let Some(luma_context) = luma_context {
         (
             PlaneId::Y,
@@ -135,7 +118,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
         (plane_id, dpcm, None)
     };
     super::reconstruct_general_intra_block_rect_with_prediction_core(
-        block.quant,
+        block,
         prediction,
         out,
         qindex,
@@ -179,24 +162,6 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<bool, GeneralIntraResidualError> {
-    if !block.is_dense() {
-        return block.with_dense(|block| {
-            reconstruct_general_intra_coeff_block_rect_into_frame(
-                workspace,
-                block,
-                prediction,
-                plane_id,
-                x,
-                y,
-                block_size,
-                qindex,
-                use_tcq,
-                luma_context,
-                dpcm,
-                bit_depth,
-            )
-        });
-    }
     if bit_depth != workspace.info().bit_depth() {
         return Ok(false);
     }
@@ -230,21 +195,14 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
         dpcm,
         bit_depth,
     )?;
-    if block.quant.len() != setup.adjusted {
-        return Err(GeneralIntraResidualError::QuantLength {
-            expected: setup.adjusted,
-            actual: block.quant.len(),
-        });
-    }
+    check_dense_len(block, &setup)?;
     let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         super::with_residual_scratch(|scratch| {
             let dequant = &mut scratch.dequant[..setup.adjusted];
-            dequantize_block(&setup.params, block.quant, dequant)?;
-            if let Some(secondary) = secondary.as_ref() {
-                secondary_inverse_transform(dequant, secondary)?;
-            }
+            let coded =
+                dequantize_with_secondary(&setup.params, block.quant, secondary.as_ref(), dequant)?;
             let residual = &mut scratch.residual[..setup.samples];
-            inverse_transform_2d_outer(&setup.transform, dequant, residual)?;
+            inverse_transform_2d_outer(&setup.transform, &dequant[..coded], residual)?;
             rows.add_block_residual(prediction, residual)
         })
         .map_err(|source| GeneralIntraResidualError::Reconstruct { source })
@@ -265,13 +223,6 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
-    if !block.is_dense() {
-        return block.with_dense(|block| {
-            reconstruct_inter_coeff_block_residual_rect_into(
-                sink, block, plane_id, x, y, block_size, qindex, use_tcq, use_ddt, bit_depth,
-            )
-        });
-    }
     let log2_width = u32::from(block_size.log2_width());
     let log2_height = u32::from(block_size.log2_height());
     let secondary =
@@ -289,38 +240,44 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         None,
         bit_depth,
     )?;
-    if block.quant.len() != setup.adjusted {
-        return Err(GeneralIntraResidualError::QuantLength {
-            expected: setup.adjusted,
-            actual: block.quant.len(),
-        });
-    }
+    check_dense_len(block, &setup)?;
     if block.eob == 1
         && block.plane_tx_type == DCT_DCT
         && !block.lossless
         && secondary.is_none()
         && setup.params.qm.is_none()
     {
-        let residual = dct_dc_residual(block.quant[0], &setup);
+        let residual = dct_dc_residual(block.quant.first().copied().unwrap_or(0), &setup);
         sink.add_constant_residual_rect_block(plane_id, x, y, block_size, residual)?;
         return Ok(());
     }
     super::with_residual_scratch(|scratch| {
         let dequant = &mut scratch.dequant[..setup.adjusted];
-        dequantize_block(&setup.params, block.quant, dequant)?;
-        if let Some(secondary) = secondary.as_ref() {
-            secondary_inverse_transform(dequant, secondary)?;
-        }
+        let coded =
+            dequantize_with_secondary(&setup.params, block.quant, secondary.as_ref(), dequant)?;
         let residual = &mut scratch.residual[..setup.adjusted];
         inverse_transform_2d_outer_adjusted(
             &setup.transform,
-            dequant,
+            &dequant[..coded],
             residual,
             &mut scratch.dequant_pair,
         )?;
         sink.add_adjusted_residual_rect_block(plane_id, x, y, block_size, residual)?;
         Ok(())
     })
+}
+
+fn check_dense_len(
+    block: CoeffBlock<'_>,
+    setup: &ReconstructBlockSetup,
+) -> Result<(), GeneralIntraResidualError> {
+    if block.dense_len() != setup.adjusted {
+        return Err(GeneralIntraResidualError::QuantLength {
+            expected: setup.adjusted,
+            actual: block.dense_len(),
+        });
+    }
+    Ok(())
 }
 
 #[inline]
@@ -426,20 +383,18 @@ pub(super) fn dequantize_coeff_block(
     params: &DequantBlockParams,
     out: &mut [i32],
 ) -> Result<(), GeneralIntraResidualError> {
-    if !block.is_dense() {
-        return block.with_dense(|block| dequantize_coeff_block(block, params, out));
-    }
     if block.eob == 0 {
         out.fill(0);
         return Ok(());
     }
-    if block.quant.len() != out.len() {
+    if block.dense_len() != out.len() {
         return Err(GeneralIntraResidualError::QuantLength {
             expected: out.len(),
-            actual: block.quant.len(),
+            actual: block.dense_len(),
         });
     }
-    dequantize_block(params, block.quant, out)?;
+    let coded = dequantize_block(params, block.quant, out)?;
+    out[coded..].fill(0);
     Ok(())
 }
 

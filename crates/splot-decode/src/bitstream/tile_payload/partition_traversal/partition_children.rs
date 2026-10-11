@@ -26,10 +26,9 @@ impl TilePartitionChildCalls {
     }
 
     fn push(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError> {
-        let slot = self
-            .calls
-            .get_mut(self.len)
-            .ok_or(TilePartitionTraversalError::TooManyChildCalls)?;
+        let Some(slot) = self.calls.get_mut(self.len) else {
+            return Err(TilePartitionTraversalError::TooManyChildCalls);
+        };
         *slot = call;
         self.len += 1;
         Ok(())
@@ -176,10 +175,13 @@ fn middle_partition_size(
     partition: PartitionType,
     b_size: BlockSize,
 ) -> Result<BlockSize, TilePartitionTraversalError> {
-    h_partition_midsize(b_size)?.ok_or(TilePartitionTraversalError::InvalidPartitionSubsize {
-        partition,
-        b_size: b_size.index(),
-    })
+    let Some(midsize) = h_partition_midsize(b_size)? else {
+        return Err(TilePartitionTraversalError::InvalidPartitionSubsize {
+            partition,
+            b_size: b_size.index(),
+        });
+    };
+    Ok(midsize)
 }
 
 fn push_two_way_children(

@@ -5,245 +5,317 @@
 
 use super::*;
 
+/// A two-row window of `width` samples with the full tap reach around it.
+fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) {
+    let stride = width + GDF_READ_RADIUS * 2;
+    let samples = (0..stride * (2 + GDF_READ_RADIUS * 2))
+        .map(|index| match case {
+            0 => 0,
+            1 => max_sample,
+            2 => {
+                if index.is_multiple_of(2) {
+                    0
+                } else {
+                    max_sample
+                }
+            }
+            3 => ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1)) as u16,
+            _ => {
+                let spread = [9, 100, 256][case - 4].min(usize::from(max_sample) + 1);
+                (usize::from(max_sample) / 3 + (index * 73 + index / stride * 29) % spread) as u16
+            }
+        })
+        .collect();
+    (samples, stride)
+}
+
+fn test_block(width: usize, bit_depth: BitDepth, ref_dst_idx: usize, qp_idx: usize) -> GdfBlock {
+    GdfBlock {
+        x: 0,
+        y: 0,
+        width,
+        height: 2,
+        frame_width: width,
+        frame_height: 2,
+        base_origin_y: 0,
+        bit_depth,
+        qp_idx,
+        ref_dst_idx,
+        pix_scale: 4,
+        max_sample: i32::from(bit_depth.max_sample()),
+    }
+}
+
+const ORIGIN: (usize, usize) = (GDF_READ_RADIUS, GDF_READ_RADIUS);
+
+/// Filters two rows at `ORIGIN` with `wide` and with the scalar `gdf_sample`.
+fn filter_both_ways<const W: usize, const WIN: usize>(
+    samples: &[u16],
+    stride: usize,
+    block: &GdfBlock,
+    classes: &[GdfClass],
+    wide: impl FnOnce(&[&[u16; WIN]; WINDOW_ROWS], [&mut [u16; W]; 2]),
+) -> ([[u16; W]; 2], [[u16; W]; 2]) {
+    let source = GdfSource {
+        samples,
+        stride,
+        origin_x: 0,
+        origin_y: 0,
+    };
+    let origin = ORIGIN;
+    let max_sample = block.max_sample as usize;
+    let base_luma: Vec<u16> = (0..W * 2)
+        .map(|index| ((index * 61) % max_sample) as u16)
+        .collect();
+    let base = core::array::from_fn(|row| core::array::from_fn(|col| base_luma[row * W + col]));
+    let rows = source_rows(&source, origin, WIN).expect("valid rows");
+    let window = window_at::<WIN>(&rows, 0).expect("valid window");
+    let mut filtered = base;
+    let [top, bottom] = &mut filtered;
+    wide(&window, [top, bottom]);
+    let tap_offsets = gdf_tap_offsets(stride).expect("valid tap offsets");
+    let scalar = core::array::from_fn(|row| {
+        core::array::from_fn(|col| {
+            let position = (origin.0 + col, origin.1 + row);
+            let class = classes[col >> 1];
+            gdf_sample(
+                &base_luma,
+                &source,
+                &tap_offsets,
+                block,
+                row,
+                col,
+                position,
+                class,
+            )
+        })
+    });
+    (filtered, scalar)
+}
+
 #[test]
 fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
-    let source_origin = (GDF_READ_RADIUS, GDF_READ_RADIUS);
-    let stride = 16 + GDF_READ_RADIUS * 2;
-    let source_len = stride * (1 + GDF_READ_RADIUS * 2);
-    let tap_offsets_result = gdf_tap_offsets(stride);
-    let tap_offsets = tap_offsets_result.expect("valid tap offsets result");
-
+    let (mut low_range, mut clipped) = (0, 0);
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let max_sample = bit_depth.max_sample();
-        let samples: Vec<u16> = (0..source_len)
-            .map(|index| {
-                ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1)) as u16
-            })
-            .collect();
-        let source = GdfSource {
-            samples: &samples,
-            stride,
-            origin_x: 0,
-            origin_y: 0,
-        };
-        let base_luma: [u16; 16] =
-            core::array::from_fn(|index| ((index * 61) % usize::from(max_sample)) as u16);
-        for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
-            for qp_idx in 0..alpha_by_qp.len() {
-                let block = GdfBlock {
-                    x: 0,
-                    y: 0,
-                    width: 16,
-                    height: 1,
-                    frame_width: 16,
-                    frame_height: 1,
-                    base_origin_y: 0,
-                    bit_depth,
-                    qp_idx,
-                    ref_dst_idx,
-                    pix_scale: 4,
-                    max_sample: i32::from(max_sample),
-                };
-                for class_index in 0..4_u8 {
-                    let classes: [GdfClass; 8] = core::array::from_fn(|index| {
-                        let delta = i32::try_from(index).unwrap_or_default() * 37;
-                        GdfClass::new(class_index, 511 - delta)
-                    });
-                    let params = GdfUniformParams::new(&block, usize::from(class_index));
-                    let wide_result = gdf_uniform_width_rows::<16, 1>(
-                        [base_luma],
-                        &source,
-                        &tap_offsets,
-                        &classes,
-                        &params,
-                        &block,
-                        source_origin,
-                    );
-                    let [actual] = wide_result.expect("valid wide result");
-                    let expected = core::array::from_fn(|col| {
-                        gdf_sample(
-                            &base_luma,
-                            &source,
-                            &tap_offsets,
-                            &block,
-                            0,
-                            col,
-                            (source_origin.0 + col, source_origin.1),
-                            classes[col >> 1],
-                        )
-                    });
-                    assert_eq!(
-                        actual, expected,
-                        "bit depth {bit_depth:?}, reference {ref_dst_idx}, qp {qp_idx}, class \
-                         {class_index}"
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn mixed_width_eight_matches_scalar_samples_for_all_tables() {
-    let source_origin = (GDF_READ_RADIUS, GDF_READ_RADIUS);
-    let stride = 8 + GDF_READ_RADIUS * 2;
-    let source_len = stride * (1 + GDF_READ_RADIUS * 2);
-    let tap_offsets_result = gdf_tap_offsets(stride);
-    let tap_offsets = tap_offsets_result.expect("valid tap offsets result");
-
-    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let max_sample = bit_depth.max_sample();
-        let samples: Vec<u16> = (0..source_len)
-            .map(|index| {
-                ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1)) as u16
-            })
-            .collect();
-        let source = GdfSource {
-            samples: &samples,
-            stride,
-            origin_x: 0,
-            origin_y: 0,
-        };
-        let base_luma: [u16; 8] =
-            core::array::from_fn(|index| ((index * 61) % usize::from(max_sample)) as u16);
-        let classes = [
-            GdfClass::new(0, 511),
-            GdfClass::new(1, 389),
-            GdfClass::new(2, 257),
-            GdfClass::new(3, 127),
-        ];
-        for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
-            for qp_idx in 0..alpha_by_qp.len() {
-                let block = GdfBlock {
-                    x: 0,
-                    y: 0,
-                    width: 8,
-                    height: 1,
-                    frame_width: 8,
-                    frame_height: 1,
-                    base_origin_y: 0,
-                    bit_depth,
-                    qp_idx,
-                    ref_dst_idx,
-                    pix_scale: 4,
-                    max_sample: i32::from(max_sample),
-                };
-                let wide_result = gdf_width8_rows(
-                    [base_luma],
-                    &source,
-                    &tap_offsets,
-                    classes,
-                    &block,
-                    source_origin,
-                );
-                let [actual] = wide_result.expect("valid wide result");
-                let expected = core::array::from_fn(|col| {
-                    gdf_sample(
-                        &base_luma,
-                        &source,
-                        &tap_offsets,
-                        &block,
-                        0,
-                        col,
-                        (source_origin.0 + col, source_origin.1),
-                        classes[col >> 1],
-                    )
-                });
-                assert_eq!(
-                    actual, expected,
-                    "bit depth {bit_depth:?}, reference {ref_dst_idx}, qp {qp_idx}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn width_four_row_matches_legacy_samples_for_all_tables_and_classes() {
-    let source_origin = (GDF_READ_RADIUS, GDF_READ_RADIUS);
-    let stride = 4 + GDF_READ_RADIUS * 2;
-    let source_len = stride * (1 + GDF_READ_RADIUS * 2);
-    let tap_offsets_result = gdf_tap_offsets(stride);
-    let tap_offsets = tap_offsets_result.expect("valid tap offsets result");
-
-    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let max_sample = bit_depth.max_sample();
-        for source_case in 0..4 {
-            let samples: Vec<u16> = (0..source_len)
-                .map(|index| match source_case {
-                    0 => 0,
-                    1 => max_sample,
-                    2 => {
-                        if index.is_multiple_of(2) {
-                            0
-                        } else {
-                            max_sample
-                        }
-                    }
-                    _ => {
-                        ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1)) as u16
-                    }
-                })
-                .collect();
-            let source = GdfSource {
-                samples: &samples,
-                stride,
-                origin_x: 0,
-                origin_y: 0,
-            };
-            let base_luma = [0, max_sample, max_sample / 2, max_sample];
+        for case in 3..7 {
+            let (samples, stride) = test_source(16, bit_depth.max_sample(), case);
             for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
-                for qp_idx in 0..alpha_by_qp.len() {
-                    let block = GdfBlock {
-                        x: 0,
-                        y: 0,
-                        width: 4,
-                        height: 1,
-                        frame_width: 4,
-                        frame_height: 1,
-                        base_origin_y: 0,
-                        bit_depth,
-                        qp_idx,
-                        ref_dst_idx,
-                        pix_scale: source_case + 1,
-                        max_sample: i32::from(max_sample),
-                    };
+                for (qp_idx, alpha) in alpha_by_qp.iter().enumerate() {
+                    let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
                     for class_index in 0..4_u8 {
-                        let class_delta = i32::from(class_index);
-                        let classes = [
-                            GdfClass::new(class_index, 511 - class_delta),
-                            GdfClass::new(3 - class_index, 256),
-                        ];
-                        let row_result = gdf_width4_rows(
-                            [base_luma],
-                            &source,
-                            &tap_offsets,
-                            classes,
-                            &block,
-                            0,
-                            source_origin,
-                        );
-                        let [actual] = row_result.expect("valid row result");
-                        let expected = core::array::from_fn(|col| {
-                            gdf_sample(
-                                &base_luma,
-                                &source,
-                                &tap_offsets,
-                                &block,
-                                0,
-                                col,
-                                (source_origin.0 + col, source_origin.1),
-                                classes[col >> 1],
-                            )
+                        let classes: [GdfClass; 8] = core::array::from_fn(|index| {
+                            let delta = i32::try_from(index).unwrap_or_default() * 37;
+                            GdfClass::new(class_index, 511 - delta)
                         });
+                        let params = GdfUniformParams::new(&block, usize::from(class_index));
+                        let (actual, expected) = filter_both_ways::<16, 28>(
+                            &samples,
+                            stride,
+                            &block,
+                            &classes,
+                            |window, output| {
+                                let range = tap_range::<16, 28>(window, params.clip_taps.limit);
+                                if let Some(range) = range {
+                                    low_range += 1;
+                                    let class = usize::from(class_index);
+                                    clipped += usize::from(
+                                        alpha[..GDF_COORDS.len()]
+                                            .iter()
+                                            .any(|bounds| bounds[class] < range),
+                                    );
+                                }
+                                params.rows(window, output, &classes, &block, range);
+                            },
+                        );
                         assert_eq!(
                             actual, expected,
-                            "bit depth {bit_depth:?}, source {source_case}, reference \
-                             {ref_dst_idx}, qp {qp_idx}, class {class_index}"
+                            "bit depth {bit_depth:?}, case {case}, reference {ref_dst_idx}, qp \
+                             {qp_idx}, class {class_index}"
                         );
                     }
                 }
             }
+        }
+    }
+    assert!(low_range > 0 && clipped > 0 && clipped < low_range);
+}
+
+/// A flat window has range 0 and skips the taps; one sample that the
+/// farthest tap of the last lane reads, one above the rest, keeps the range
+/// at 1. Both match the scalar samples for every table, class and bit depth.
+#[test]
+fn flat_uniform_windows_match_scalar_samples() {
+    let stride = 16 + GDF_READ_RADIUS * 2;
+    let far = (ORIGIN.1 + 1 + TAP_REACH) * stride + ORIGIN.0 + 15;
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        for differ in [0, 1] {
+            let mut samples = vec![bit_depth.max_sample() / 3; stride * (2 + GDF_READ_RADIUS * 2)];
+            samples[far] += differ;
+            for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
+                for qp_idx in 0..alpha_by_qp.len() {
+                    let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
+                    for class_index in 0..4_u8 {
+                        let classes: [GdfClass; 8] = core::array::from_fn(|index| {
+                            let delta = i32::try_from(index).unwrap_or_default() * 37;
+                            GdfClass::new(class_index, 511 - delta)
+                        });
+                        let params = GdfUniformParams::new(&block, usize::from(class_index));
+                        let (actual, expected) = filter_both_ways::<16, 28>(
+                            &samples,
+                            stride,
+                            &block,
+                            &classes,
+                            |window, output| {
+                                let range = tap_range::<16, 28>(window, params.clip_taps.limit);
+                                let low = differ < params.clip_taps.limit;
+                                assert_eq!(range, low.then_some(differ));
+                                params.rows(window, output, &classes, &block, range);
+                            },
+                        );
+                        assert_eq!(
+                            actual, expected,
+                            "{bit_depth:?}, differ {differ}, reference {ref_dst_idx}, qp \
+                             {qp_idx}, class {class_index}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_classes_match_scalar_samples_for_all_tables() {
+    let classes = [
+        GdfClass::new(0, 511),
+        GdfClass::new(1, 389),
+        GdfClass::new(2, 257),
+        GdfClass::new(3, 127),
+    ];
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        for case in 0..4 {
+            let (samples_8, stride_8) = test_source(8, bit_depth.max_sample(), case);
+            let (samples_4, stride_4) = test_source(4, bit_depth.max_sample(), case);
+            for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
+                for qp_idx in 0..alpha_by_qp.len() {
+                    let block = test_block(8, bit_depth, ref_dst_idx, qp_idx);
+                    let (actual, expected) = filter_both_ways::<8, 20>(
+                        &samples_8,
+                        stride_8,
+                        &block,
+                        &classes,
+                        |window, output| {
+                            let params = GdfMixedParams::new(&block);
+                            mixed_class_rows(window, output, &classes, &block, &params);
+                        },
+                    );
+                    assert_eq!(actual, expected, "width 8, {bit_depth:?}, case {case}");
+                    let block = test_block(4, bit_depth, ref_dst_idx, qp_idx);
+                    let pair = [classes[3 - case], classes[case]];
+                    let (actual, expected) = filter_both_ways::<4, 16>(
+                        &samples_4,
+                        stride_4,
+                        &block,
+                        &pair,
+                        |window, output| {
+                            let params = GdfMixedParams::new(&block);
+                            mixed_class_rows(window, output, &pair, &block, &params);
+                        },
+                    );
+                    assert_eq!(actual, expected, "width 4, {bit_depth:?}, case {case}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn segment_columns_with_two_wide_tail_match_scalar_samples() {
+    let (width, height) = (22, 2);
+    let stride = width + GDF_READ_RADIUS * 2;
+    let samples: Vec<u16> = (0..stride * (height + GDF_READ_RADIUS * 2))
+        .map(|index| ((index * 73 + index / stride * 29) % 256) as u16)
+        .collect();
+    let radius = GDF_READ_RADIUS as isize;
+    let source = GdfSource {
+        samples: &samples,
+        stride,
+        origin_x: -radius,
+        origin_y: -radius,
+    };
+    let block = GdfBlock {
+        pix_scale: 2,
+        max_sample: 255,
+        ..test_block(width, BitDepth::Eight, 0, 1)
+    };
+    let classes: Vec<GdfClass> = (0..width / 2)
+        .map(|col| GdfClass::new(if col < 8 { 1 } else { (col % 4) as u8 }, 37 * col as i32))
+        .collect();
+    let base: Vec<u16> = (0..width * height)
+        .map(|index| ((index * 61) % 255) as u16)
+        .collect();
+    let tap_offsets = gdf_tap_offsets(stride).expect("valid tap offsets");
+    let origin = (GDF_READ_RADIUS, GDF_READ_RADIUS);
+    let mut expected = base.clone();
+    for row in 0..height {
+        for col in 0..width {
+            let position = (origin.0 + col, origin.1 + row);
+            expected[row * width + col] = gdf_sample(
+                &base,
+                &source,
+                &tap_offsets,
+                &block,
+                row,
+                col,
+                position,
+                classes[col >> 1],
+            );
+        }
+    }
+    let mut actual = base;
+    let result = compute_enabled_segment(&source, &mut actual, &classes, &block, origin, 0..width);
+    assert!(result.is_ok());
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn band_classes_match_reference_over_chunks_and_tail() {
+    let (width, height) = (20, 4);
+    let stride = width + GDF_READ_RADIUS * 2;
+    let samples: Vec<u16> = (0..stride * (height + GDF_READ_RADIUS * 2))
+        .map(|index| ((index * 73 + index / stride * 29) % 1024) as u16)
+        .collect();
+    let radius = GDF_READ_RADIUS as isize;
+    let source = GdfSource {
+        samples: &samples,
+        stride,
+        origin_x: -radius,
+        origin_y: -radius,
+    };
+    let grad_cols = width + 2;
+    let mut grad = Vec::new();
+    band_gradients(&source, ORIGIN, height + 2, grad_cols, &mut grad).expect("valid gradients");
+    for ref_dst_idx in 0..GDF_ALPHA.len() {
+        for qp_idx in 0..GDF_ALPHA[0].len() {
+            let block = GdfBlock {
+                height,
+                frame_height: height,
+                ..test_block(width, BitDepth::Ten, ref_dst_idx, qp_idx)
+            };
+            let mut expected = Vec::new();
+            band_classes(&grad, grad_cols, &block, &mut expected).expect("valid reference");
+            let mut actual = Vec::new();
+            let mut pairs = [Vec::new(), Vec::new()];
+            let result = band_classes_from_source(
+                &source,
+                ORIGIN,
+                &block,
+                &mut actual,
+                &mut pairs,
+                &mut Vec::new(),
+            );
+            assert!(result.is_ok());
+            assert_eq!(actual, expected, "reference {ref_dst_idx}, qp {qp_idx}");
         }
     }
 }

@@ -6,7 +6,7 @@ use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
 
-use super::{GrainDestination, apply_film_grain, plane_from_visible};
+use super::{GrainDestination, apply_film_grain, plane_from_visible, scale_lut};
 use crate::{
     BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
     PlaneRect, PlaneSize, ReconSample,
@@ -283,4 +283,13 @@ fn visible_source_samples_are_copied_directly_in_destination_type() {
     let destination = GrainDestination::from_visible(&source);
 
     assert_eq!(destination.samples, [11, 12, 21, 22]);
+}
+
+#[test]
+fn scale_lut_maps_out_of_range_samples_to_the_last_entry() {
+    let lut: [i32; 256] = core::array::from_fn(|index| index as i32 * 3);
+    assert_eq!(scale_lut(&lut, 1023, 10), lut[255]);
+    assert_eq!(scale_lut(&lut, 4095, 10), lut[255]);
+    assert_eq!(scale_lut(&lut, u16::MAX.into(), 10), lut[255]);
+    assert_eq!(scale_lut(&lut, 6, 10), lut[1] + 2);
 }

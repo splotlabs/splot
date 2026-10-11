@@ -72,16 +72,16 @@ impl ResidualPlanePlan {
         let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
         let unit_width = 1usize << log2_width;
         let unit_height = 1usize << log2_height;
-        let local_x = block.x.checked_sub(self.x).ok_or(
-            GeneralIntraResidualError::InvalidReconstructionState {
+        let Some(local_x) = block.x.checked_sub(self.x) else {
+            return Err(GeneralIntraResidualError::InvalidReconstructionState {
                 context: "palette transform X origin",
-            },
-        )?;
-        let local_y = block.y.checked_sub(self.y).ok_or(
-            GeneralIntraResidualError::InvalidReconstructionState {
+            });
+        };
+        let Some(local_y) = block.y.checked_sub(self.y) else {
+            return Err(GeneralIntraResidualError::InvalidReconstructionState {
                 context: "palette transform Y origin",
-            },
-        )?;
+            });
+        };
         if local_x.saturating_add(unit_width) > parent_width
             || local_y.saturating_add(unit_height) > parent_height
         {
@@ -170,12 +170,12 @@ impl ResidualPlanePlan {
                         .map(splot_core::symbol::Symbol::get)
                         .map_err(|source| GeneralIntraResidualError::PaletteSymbolRead { source })?
                         as usize;
-                    *color_order.get(color_idx).ok_or(
+                    *color_order.get(color_idx).ok_or_else(|| {
                         GeneralIntraResidualError::PaletteColorIndex {
                             color_index: color_idx,
                             palette_size: palette.size(),
-                        },
-                    )?
+                        }
+                    })?
                 };
             }
             prev_identity_row_flag = usize::from(identity_row_flag);

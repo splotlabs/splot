@@ -4,11 +4,13 @@
 use splot_core::span::ByteOffset;
 use splot_recon::{
     PlaneId, PlaneRect, ReconSample, subpel_predict_block_compound_average_fullpel_strided_into_u8,
+    subpel_predict_block_compound_average_unscaled_strided_into,
 };
 
 use super::{
-    CompoundBlend, CompoundMcBlock, WorkspaceSink, compound_average_weights_are_uniform, mc_planes,
-    predict_compound_average_into, translational_compound_plane,
+    CompoundAverageOutput, CompoundBlend, CompoundMcBlock, TranslationalCompoundPlane,
+    WorkspaceSink, compound_average_weights_are_uniform, mc_planes, predict_compound_average_into,
+    translational_compound_plane,
 };
 use crate::Result;
 
@@ -48,7 +50,8 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
         }
-        let translation = translational_compound_plane(sink, block, plane, sub_x, sub_y, offset)?;
+        let translation =
+            translational_compound_plane(sink.info(), block, plane, sub_x, sub_y, offset)?;
         let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
         let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
         if !compound_average_weights_are_uniform(
@@ -90,15 +93,7 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
         match destination {
             DirectDestination::U16 => {
                 sink.with_contiguous_u16_rect_mut(plane, target, |output, stride| {
-                    predict_compound_average_into(
-                        &translation.plane,
-                        &translation.params,
-                        cwp_weight,
-                        None,
-                        None,
-                        output,
-                        stride,
-                    )
+                    predict_unscaled_or_two_call(&translation, cwp_weight, output, stride)
                 })?;
             }
             DirectDestination::U8 => {
@@ -114,18 +109,33 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
                     )? {
                         return Ok(());
                     }
-                    predict_compound_average_into(
-                        &translation.plane,
-                        &translation.params,
-                        cwp_weight,
-                        None,
-                        None,
-                        output,
-                        stride,
-                    )
+                    predict_unscaled_or_two_call(&translation, cwp_weight, output, stride)
                 })?;
             }
         }
     }
     Ok(true)
+}
+
+fn predict_unscaled_or_two_call<T: ReconSample, O: CompoundAverageOutput>(
+    translation: &TranslationalCompoundPlane<'_, T>,
+    cwp_weight: i16,
+    output: &mut [O],
+    stride: usize,
+) -> splot_recon::Result<()> {
+    let ([view0, view1], [params0, params1]) = (&translation.plane.views, &translation.params);
+    if subpel_predict_block_compound_average_unscaled_strided_into(
+        view0, params0, view1, params1, cwp_weight, output, stride,
+    )? {
+        return Ok(());
+    }
+    predict_compound_average_into(
+        &translation.plane,
+        &translation.params,
+        cwp_weight,
+        None,
+        None,
+        output,
+        stride,
+    )
 }

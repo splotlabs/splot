@@ -2094,21 +2094,22 @@ fn resolve_block_qm_none_for_flat_paths() {
 #[test]
 fn compact_coefficient_tails_restore_dense_values_and_validate_spans() {
     let mut arena = Vec::new();
-    for len in [16, 64, 256, 1024] {
+    for side in [4, 8, 16, 32] {
+        let len = side * side;
         for last in [None, Some(0), Some(len / 2), Some(len - 1)] {
             let mut dense = vec![0; len];
+            let mut state = TransformCoeffBlockState::new(side, side).unwrap();
             if let Some(last) = last {
                 dense[last] = -17;
+                state.set_quant(last, -17).unwrap();
             }
-            let block = LumaCoeffBlock::empty(DCT_DCT, false).with_coeffs(&mut arena, &dense);
+            let block = LumaCoeffBlock::empty(DCT_DCT, false).with_coeffs(&mut arena, &state);
             assert_eq!(block.quant_range.len(), last.map_or(0, |i| i + 1));
             let view = CoeffBlock::new(&block, &arena).unwrap();
-            view.with_dense(|expanded| {
-                assert!(expanded.is_dense());
-                assert_eq!(expanded.quant, dense);
-                Ok(())
-            })
-            .unwrap();
+            assert_eq!(view.dense_len(), len);
+            let (coded, tail) = dense.split_at(view.quant.len());
+            assert_eq!(view.quant, coded);
+            assert!(tail.iter().all(|&value| value == 0));
         }
     }
     let mut invalid = LumaCoeffBlock::empty(DCT_DCT, false);
@@ -2116,10 +2117,8 @@ fn compact_coefficient_tails_restore_dense_values_and_validate_spans() {
     assert!(CoeffBlock::new(&invalid, &arena).is_err());
     invalid.quant_range = 0..0;
     invalid.zero_tail = usize::MAX;
-    assert!(
-        CoeffBlock::new(&invalid, &arena)
-            .unwrap()
-            .with_dense(|_| Ok(()))
-            .is_err()
+    assert_eq!(
+        CoeffBlock::new(&invalid, &arena).unwrap().dense_len(),
+        usize::MAX
     );
 }

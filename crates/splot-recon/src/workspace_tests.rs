@@ -185,6 +185,38 @@ fn a_recycled_workspace_decodes_into_the_retired_frame_buffers() {
 }
 
 #[test]
+fn prevalidated_freeze_scans_sample_ranges_only_in_debug_builds() {
+    let info = monochrome_info(BitDepth::Ten, 4, 4);
+    let workspace = |sample: u16| {
+        let mut workspace = CurrentFrameWorkspace::<u16>::new(info, 7).unwrap();
+        workspace
+            .as_frame_mut()
+            .unwrap()
+            .plane_mut(PlaneId::Y)
+            .unwrap()
+            .samples_mut()[5] = sample;
+        workspace
+    };
+    assert_eq!(
+        workspace(1023).freeze_prevalidated().unwrap(),
+        workspace(1023).freeze().unwrap()
+    );
+    let out_of_range = Err(ReconError::SampleOutOfRange {
+        plane: PlaneId::Y,
+        sample_index: 5,
+        value: 1024,
+        max: 1023,
+    });
+    assert_eq!(workspace(1024).freeze(), out_of_range);
+    let prevalidated = workspace(1024).freeze_prevalidated();
+    if cfg!(debug_assertions) {
+        assert_eq!(prevalidated, out_of_range);
+    } else {
+        assert_eq!(prevalidated.unwrap().y().samples()[5], 1024);
+    }
+}
+
+#[test]
 fn a_filled_workspace_overwrites_a_recycled_buffer_whole() {
     let info = monochrome_info(BitDepth::Eight, 4, 4);
     let mut retired = CurrentFrameWorkspace::<u8>::new(info, 3)

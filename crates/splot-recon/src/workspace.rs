@@ -43,7 +43,7 @@ pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
 pub use workspace_rows::{CurrentFrameRectRowsMut, WorkspaceRectRows};
 
 macro_rules! contiguous_rect_writer {
-    ($name:ident, $sample:ty, $slice_mut:ident, $offset:literal, $span:literal) => {
+    ($name:ident, $sample:ty, $slice_mut:expr, $offset:literal, $span:literal) => {
         #[doc = concat!(
             "Runs a writer over contiguous `",
             stringify!($sample),
@@ -93,7 +93,7 @@ macro_rules! contiguous_rect_writer {
                     )
                 }
             };
-            let Some(samples) = T::$slice_mut(samples) else {
+            let Some(samples) = $slice_mut(samples) else {
                 return Ok(None);
             };
             let base = local_y
@@ -417,36 +417,14 @@ struct CurrentFrameResidualTarget<'surface, T: ReconSample> {
 }
 
 impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
+    /// Adds one residual row, which spans at least the clipped target width.
     #[inline]
-    fn add(self, mut residual_at: impl FnMut(usize, usize) -> i32) -> Result<()> {
-        let max = i32::from(self.max_sample);
-        for row in 0..self.rect.height() {
-            let target_start = self.base + row * self.stride;
-            add_residual_row(
-                &mut self.samples[target_start..target_start + self.rect.width()],
-                row,
-                max,
-                &mut residual_at,
-            )?;
-        }
-        Ok(())
+    fn add_row(&mut self, row: usize, residual: &[i32]) -> Result<()> {
+        let target_start = self.base + row * self.stride;
+        let samples = &mut self.samples[target_start..target_start + self.rect.width()];
+        debug_assert!(residual.len() >= samples.len());
+        crate::reconstruct::add_residual_in_place(samples, residual, i32::from(self.max_sample))
     }
-}
-
-fn add_residual_row<T: ReconSample>(
-    samples: &mut [T],
-    row: usize,
-    max: i32,
-    residual_at: &mut impl FnMut(usize, usize) -> i32,
-) -> Result<()> {
-    for (column, sample) in samples.iter_mut().enumerate() {
-        let value = i32::from(sample.to_u16())
-            .saturating_add(residual_at(row, column))
-            .clamp(0, max) as u16;
-        debug_assert!(value <= T::MAX_VALUE);
-        *sample = T::try_from_u16(value)?;
-    }
-    Ok(())
 }
 
 impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
@@ -617,16 +595,23 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     }
 
     contiguous_rect_writer!(
+        with_contiguous_rect_mut,
+        T,
+        Some,
+        "contiguous target offset",
+        "contiguous target span"
+    );
+    contiguous_rect_writer!(
         with_contiguous_u16_rect_mut,
         u16,
-        u16_slice_mut,
+        T::u16_slice_mut,
         "contiguous u16 target offset",
         "contiguous u16 target span"
     );
     contiguous_rect_writer!(
         with_contiguous_u8_rect_mut,
         u8,
-        u8_slice_mut,
+        T::u8_slice_mut,
         "contiguous u8 target offset",
         "contiguous u8 target span"
     );
@@ -669,8 +654,14 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     ) -> Result<()> {
         let rect = checked_sample_block_rect(plane, x, y, size, residual.len())?;
         let source_stride = size.width();
-        self.residual_rect_target(plane, rect, source_stride)?
-            .add(|row, column| residual[row * source_stride + column])
+        let mut target = self.residual_rect_target(plane, rect, source_stride)?;
+        let rows = residual
+            .chunks_exact(source_stride)
+            .take(target.rect.height());
+        for (row, residual) in rows.enumerate() {
+            target.add_row(row, residual)?;
+        }
+        Ok(())
     }
 
     /// Adds an adjusted-size signed residual block directly to reconstructed
@@ -713,10 +704,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         }
         let rect = block_rect(x, y, size)?;
         let source_stride = size.width();
-        self.residual_rect_target(plane, rect, source_stride)?
-            .add(|row, column| {
-                residual[(row >> height_shift) * adjusted_width + (column >> width_shift)]
-            })
+        let mut target = self.residual_rect_target(plane, rect, source_stride)?;
+        let mut duplicated = [0i32; 64];
+        for row in 0..target.rect.height() {
+            let source = &residual[(row >> height_shift) * adjusted_width..][..adjusted_width];
+            if width_shift == 0 {
+                target.add_row(row, source)?;
+                continue;
+            }
+            for (pair, &value) in duplicated.chunks_exact_mut(2).zip(source) {
+                pair.fill(value);
+            }
+            target.add_row(row, &duplicated)?;
+        }
+        Ok(())
     }
 
     /// Adds one constant signed residual directly to a rectangular block.
@@ -739,8 +740,12 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         residual: i32,
     ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
-        self.residual_rect_target(plane, rect, size.width())?
-            .add(|_, _| residual)
+        let mut target = self.residual_rect_target(plane, rect, size.width())?;
+        let constant = [residual; 64];
+        for row in 0..target.rect.height() {
+            target.add_row(row, &constant)?;
+        }
+        Ok(())
     }
 
     #[inline]
@@ -803,10 +808,11 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         }
         for row_index in 0..rect.height() {
             let target_start = target_base + row_index * target_stride;
-            for (column, sample) in target[target_start..target_start + rect.width()]
-                .iter()
-                .enumerate()
-            {
+            let row = &target[target_start..target_start + rect.width()];
+            if !samples_exceed(row, max_sample) {
+                continue;
+            }
+            for (column, sample) in row.iter().enumerate() {
                 let value = sample.to_u16();
                 if value > max_sample {
                     return Err(ReconError::ReconstructPredictionOutOfRange {
@@ -1398,10 +1404,28 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Returns [`ReconError`] if the existing immutable plane/frame validators
     /// reject the workspace storage.
     pub fn freeze(self) -> Result<DecodedFrame<T>> {
+        self.freeze_with(DecodedFrame::try_new)
+    }
+
+    /// Freezes decoder-reconstructed storage whose writers clip every sample,
+    /// so release builds skip the whole-frame sample range scan.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::freeze`], except that release builds
+    /// do not check sample ranges.
+    #[doc(hidden)]
+    pub fn freeze_prevalidated(self) -> Result<DecodedFrame<T>> {
+        self.freeze_with(DecodedFrame::new_prevalidated)
+    }
+
+    fn freeze_with(
+        self,
+        build: fn(DecodedFrameInfo, FramePlanes<T>) -> Result<DecodedFrame<T>>,
+    ) -> Result<DecodedFrame<T>> {
         let y = self.y.freeze()?;
         let u = self.u.map(CurrentFramePlane::freeze).transpose()?;
         let v = self.v.map(CurrentFramePlane::freeze).transpose()?;
-        DecodedFrame::try_new(self.info, FramePlanes::new(y, u, v))
+        build(self.info, FramePlanes::new(y, u, v))
     }
 
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {

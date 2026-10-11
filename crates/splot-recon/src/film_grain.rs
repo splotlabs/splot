@@ -802,7 +802,7 @@ fn plane_axis_lengths(length: usize, subsampling: usize) -> [usize; 3] {
 
 fn scale_lut(lut: &[i32; 256], index: i32, bit_depth: u8) -> i32 {
     let shift = bit_depth - 8;
-    let x = (index >> shift) as usize;
+    let x = (index >> shift).clamp(0, 255) as usize;
     if shift == 0 || x == 255 {
         return lut[x];
     }

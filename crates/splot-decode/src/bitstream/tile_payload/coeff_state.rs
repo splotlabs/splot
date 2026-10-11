@@ -65,6 +65,8 @@ pub(crate) struct TransformCoeffBlockState {
     level: Vec<u8>,
     quant_sign: Vec<i8>,
     quant: Vec<i32>,
+    /// One past the last nonzero entry of `quant`.
+    quant_end: usize,
 }
 
 impl TransformCoeffBlockState {
@@ -89,6 +91,7 @@ impl TransformCoeffBlockState {
             level,
             quant_sign,
             quant,
+            quant_end: 0,
         })
     }
 
@@ -145,6 +148,11 @@ impl TransformCoeffBlockState {
         &self.quant
     }
 
+    /// The quantised coefficients up to and including the last nonzero one.
+    pub(crate) fn nonzero_quant(&self) -> &[i32] {
+        &self.quant[..self.quant_end]
+    }
+
     pub(crate) fn set_level(
         &mut self,
         row: usize,
@@ -172,6 +180,9 @@ impl TransformCoeffBlockState {
     pub(crate) fn set_quant(&mut self, pos: usize, value: i32) -> Result<(), TileCoeffStateError> {
         let idx = self.quant_index(pos)?;
         self.quant[idx] = value;
+        if value != 0 {
+            self.quant_end = self.quant_end.max(idx + 1);
+        }
         Ok(())
     }
 
@@ -180,10 +191,12 @@ impl TransformCoeffBlockState {
         Ok(u32::from(self.level[self.index(row, col)?]))
     }
 
+    #[cfg(test)]
     pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i8, TileCoeffStateError> {
         Ok(self.quant_sign()[self.index(row, col)?])
     }
 
+    #[cfg(test)]
     pub(crate) fn quant_at(&self, pos: usize) -> Result<i32, TileCoeffStateError> {
         Ok(self.quant[self.quant_index(pos)?])
     }
@@ -374,14 +387,14 @@ impl TileCoeffContextState {
             above,
             input.cul_level,
             input.dc_category,
-        );
+        )?;
         fill_context_line(
             &mut self.left_level[plane],
             &mut self.left_dc[plane],
             left,
             input.cul_level,
             input.dc_category,
-        );
+        )?;
         Ok(())
     }
 
@@ -429,14 +442,14 @@ impl TileCoeffContextState {
             above,
             0,
             0,
-        );
+        )?;
         fill_context_line(
             &mut self.left_level[plane],
             &mut self.left_dc[plane],
             left,
             0,
             0,
-        );
+        )?;
         Ok(())
     }
 }
@@ -654,11 +667,19 @@ fn fill_context_line(
     range: Range<usize>,
     level_value: u8,
     dc_value: u8,
-) {
-    for idx in range {
-        level[idx] = level_value;
-        dc[idx] = dc_value;
-    }
+) -> Result<(), TileCoeffStateError> {
+    let len = level.len().min(dc.len());
+    let (Some(level), Some(dc)) = (level.get_mut(range.clone()), dc.get_mut(range.clone())) else {
+        return Err(TileCoeffStateError::ContextRangeOutOfBounds {
+            context: "context line",
+            start: range.start,
+            end: range.end,
+            len,
+        });
+    };
+    level.fill(level_value);
+    dc.fill(dc_value);
+    Ok(())
 }
 
 fn zero_plane_lines<T: Default>(

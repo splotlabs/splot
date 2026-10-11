@@ -196,7 +196,8 @@ const _RESOLVE_CONST_EVAL_CHECK: () = assert!(matches!(
 /// `dequant` is the adjusted-size `adjW * adjH` row-major dequantized block (the
 /// coefficients beyond the adjusted size are not coded), and `residual` is the
 /// original-size `w * h` row-major output, where `adjW = 1 << Min(log2_width, 5)`,
-/// `w = 1 << log2_width` (and likewise for height).
+/// `w = 1 << log2_width` (and likewise for height). `dequant` may hold only the
+/// block's leading whole rows; the rows it omits are zero.
 ///
 /// The process is: (1) if `lossless && plane_tx_type_is_idtx`, take the
 /// § 7.15.4 shortcut `Residual = Dequant >> (3 - shift)` with
@@ -215,7 +216,8 @@ const _RESOLVE_CONST_EVAL_CHECK: () = assert!(matches!(
 /// Returns [`ReconError::InvalidInverseTransform2dShape`] if `log2_width` /
 /// `log2_height` are not each in `2..=6` (or not both `2` for lossless non-IDTX),
 /// and [`ReconError::InverseTransform2dOuterBufferMismatch`] if `dequant` is not
-/// the adjusted `adjW * adjH` or `residual` is not the original `w * h`.
+/// a whole-row prefix of the adjusted `adjW * adjH` or `residual` is not the
+/// original `w * h`.
 pub fn inverse_transform_2d_outer(
     params: &InverseTransform2dOuter,
     dequant: &[i32],
@@ -224,7 +226,7 @@ pub fn inverse_transform_2d_outer(
     let (adj_w, adj_h, orig_w, orig_h) = transform_dimensions(params)?;
     let adj_pels = adj_w * adj_h;
     let orig_pels = orig_w * orig_h;
-    if dequant.len() != adj_pels || residual.len() != orig_pels {
+    if !is_row_prefix(dequant.len(), adj_w, adj_pels) || residual.len() != orig_pels {
         return Err(ReconError::InverseTransform2dOuterBufferMismatch {
             dequant_expected: adj_pels,
             residual_expected: orig_pels,
@@ -256,13 +258,15 @@ pub fn inverse_transform_2d_outer(
         adj_h,
     )?;
 
-    let w_factor = orig_w / adj_w;
-    let h_factor = orig_h / adj_h;
-    for oi in 0..orig_h {
-        let src_row = (oi / h_factor) * adj_w;
-        let dst_row = oi * orig_w;
-        for oj in 0..orig_w {
-            residual[dst_row + oj] = adj[src_row + oj / w_factor];
+    let h_shift = (orig_h / adj_h).trailing_zeros();
+    for (oi, dst) in residual.chunks_exact_mut(orig_w).enumerate() {
+        let src = &adj[(oi >> h_shift) * adj_w..][..adj_w];
+        if orig_w == adj_w {
+            dst.copy_from_slice(src); // splot-copy-ok: § 7.15.4 sample duplication row
+        } else {
+            for (pair, &value) in dst.chunks_exact_mut(2).zip(src) {
+                pair.fill(value);
+            }
         }
     }
     Ok(())
@@ -278,8 +282,8 @@ pub fn inverse_transform_2d_outer(
 ///
 /// # Errors
 /// Returns the same shape and transform errors as [`inverse_transform_2d_outer`],
-/// [`ReconError::InverseTransform2dBufferMismatch`] when `dequant` or `residual`
-/// does not match the adjusted size.
+/// [`ReconError::InverseTransform2dBufferMismatch`] when `dequant` is not a
+/// whole-row prefix of the adjusted size or `residual` does not match it.
 #[inline]
 pub fn inverse_transform_2d_outer_adjusted(
     params: &InverseTransform2dOuter,
@@ -289,7 +293,7 @@ pub fn inverse_transform_2d_outer_adjusted(
 ) -> Result<()> {
     let (adj_w, adj_h, _, _) = transform_dimensions(params)?;
     let adj_pels = adj_w * adj_h;
-    if dequant.len() != adj_pels || residual.len() != adj_pels {
+    if !is_row_prefix(dequant.len(), adj_w, adj_pels) || residual.len() != adj_pels {
         return Err(ReconError::InverseTransform2dBufferMismatch {
             expected: adj_pels,
             dequant_len: dequant.len(),
@@ -320,9 +324,11 @@ fn inverse_transform_2d_outer_adjusted_inner(
     if params.lossless && params.plane_tx_type_is_idtx {
         let shift = u32::from(adj_pels > 256) + u32::from(adj_pels > 1024);
         let down = 3 - shift; // shift is 0..=2, so down is 1..=3.
-        for (out, &coeff) in residual.iter_mut().zip(dequant.iter()) {
+        let (coded, zero) = residual.split_at_mut(dequant.len());
+        for (out, &coeff) in coded.iter_mut().zip(dequant.iter()) {
             *out = coeff >> down;
         }
+        zero.fill(0);
     } else {
         let inner = InverseTransform2d {
             log2_width: log2_w,
@@ -341,6 +347,10 @@ fn inverse_transform_2d_outer_adjusted_inner(
         apply_dpcm(residual, adj_w, adj_h, direction);
     }
     Ok(())
+}
+
+const fn is_row_prefix(len: usize, width: usize, pels: usize) -> bool {
+    len <= pels && len.is_multiple_of(width)
 }
 
 fn transform_dimensions(params: &InverseTransform2dOuter) -> Result<(usize, usize, usize, usize)> {

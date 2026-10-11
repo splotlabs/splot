@@ -138,39 +138,41 @@ pub(super) fn publish_intra_leaf_state<E>(
     }
     if tree_type != PartitionTreeType::ChromaPart {
         if let Some(joint_mode) = leaf_mode.intra_joint_mode {
-            let y_mode =
-                leaf_mode
-                    .y_mode
-                    .ok_or(TilePartitionTraversalError::MissingIntraLumaModeState {
-                        r: call.r,
-                        c: call.c,
-                    })?;
-            let angle_delta_y = leaf_mode.angle_delta_y.ok_or(
-                TilePartitionTraversalError::MissingIntraLumaModeState {
+            let Some(y_mode) = leaf_mode.y_mode else {
+                return Err(TilePartitionTraversalError::MissingIntraLumaModeState {
                     r: call.r,
                     c: call.c,
-                },
-            )?;
-            let mrl =
-                leaf_mode
-                    .mrl
-                    .ok_or(TilePartitionTraversalError::MissingIntraUsesMrlsState {
-                        r: call.r,
-                        c: call.c,
-                    })?;
-            let fsc_mode = leaf_mode.fsc_mode.ok_or(
-                TilePartitionTraversalError::MissingIntraFscModeState {
+                }
+                .into());
+            };
+            let Some(angle_delta_y) = leaf_mode.angle_delta_y else {
+                return Err(TilePartitionTraversalError::MissingIntraLumaModeState {
                     r: call.r,
                     c: call.c,
-                },
-            )?;
-            let use_dip_value =
-                leaf_mode
-                    .use_dip
-                    .ok_or(TilePartitionTraversalError::MissingIntraUseDipState {
-                        r: call.r,
-                        c: call.c,
-                    })?;
+                }
+                .into());
+            };
+            let Some(mrl) = leaf_mode.mrl else {
+                return Err(TilePartitionTraversalError::MissingIntraUsesMrlsState {
+                    r: call.r,
+                    c: call.c,
+                }
+                .into());
+            };
+            let Some(fsc_mode) = leaf_mode.fsc_mode else {
+                return Err(TilePartitionTraversalError::MissingIntraFscModeState {
+                    r: call.r,
+                    c: call.c,
+                }
+                .into());
+            };
+            let Some(use_dip_value) = leaf_mode.use_dip else {
+                return Err(TilePartitionTraversalError::MissingIntraUseDipState {
+                    r: call.r,
+                    c: call.c,
+                }
+                .into());
+            };
             joint_modes.record_block(call.r, call.c, block_n4w, block_n4h, joint_mode);
             fsc_modes.record_block(call.r, call.c, block_n4w, block_n4h, fsc_mode);
             use_dip.record_block(call.r, call.c, block_n4w, block_n4h, use_dip_value);
@@ -186,9 +188,9 @@ pub(super) fn publish_intra_leaf_state<E>(
                     },
                 ));
             }
-            joint_modes.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
-            fsc_modes.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
-            use_dip.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
+            joint_modes.record_non_intra_block(call.r, call.c);
+            fsc_modes.record_non_intra_block(call.r, call.c);
+            use_dip.record_non_intra_block(call.r, call.c);
             if leaf_mode.is_intrabc() {
                 y_modes.record_block(
                     call.r,

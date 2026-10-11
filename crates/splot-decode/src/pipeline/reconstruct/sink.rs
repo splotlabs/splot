@@ -143,12 +143,12 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
     )?;
     let fill_result = prediction.iter_mut().zip(color_map).try_for_each(
         |(output, &color_index)| -> core::result::Result<(), GeneralIntraResidualError> {
-            let sample = palette.sample(color_index).ok_or(
+            let sample = palette.sample(color_index).ok_or_else(|| {
                 GeneralIntraResidualError::PaletteColorIndex {
                     color_index: usize::from(color_index),
                     palette_size: palette.size(),
-                },
-            )?;
+                }
+            })?;
             *output = T::try_from_u16(sample)?;
             Ok(())
         },
@@ -203,6 +203,10 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     reconstruct_inter_coeff_block_residual_rect_into(
         sink, block, plane_id, x, y, block_size, qindex, use_tcq, use_ddt, bit_depth,
     )
+}
+
+pub(super) const fn invalid_directional_edge_state() -> GeneralIntraResidualError {
+    GeneralIntraResidualError::InvalidDirectionalEdgeState
 }
 
 pub(super) fn noneighbour_above<T: ReconSample>(bit_depth: BitDepth) -> T {

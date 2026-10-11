@@ -3,16 +3,16 @@
 
 //! Neighbour mode-info grid.
 //!
-//! The grid keeps two planes over a window of two superblock rows of one tile:
+//! The grid keeps one plane over a window of two superblock rows of one tile:
 //! every § 7.12 probe reads the current superblock row or the row above it,
-//! so a plane row is reused once its superblock row is two rows old. The flag
-//! plane holds the syntax facts that neighbour context derivation reads while
-//! symbols are decoded; the motion plane holds the AV2 § 7.12 motion payload
-//! that the reference MV stack and the warp derivations read. Each plane
-//! carries its own occupancy — flags for context derivation, a named leaf for
-//! motion — so the two may be published at different times, and context
-//! derivation never touches motion memory.
+//! so a plane row is reused once its superblock row is two rows old. Each
+//! cell names the leaf that covers it; the leaf table holds the syntax facts
+//! that neighbour context derivation reads while symbols are decoded, and,
+//! once § 7.12 has resolved the leaf, the motion payload that the reference
+//! MV stack and the warp derivations read. A leaf's flags are visible as soon
+//! as they are published and its motion only once it is resolved.
 
+use core::num::NonZeroU32;
 use core::ops::Range;
 
 use super::{
@@ -97,8 +97,8 @@ pub(super) const EMPTY_NEIGHBOUR_FLAGS: NeighbourFlags = NeighbourFlags {
 
 /// Motion payload read by AV2 § 7.12 stack, bank and warp-sample derivation.
 ///
-/// This is the read-side value only. The plane stores it split in two, because
-/// every field but the sub-MVs is constant over a leaf: see [`MotionCell`].
+/// This is the read-side value only: the grid stores it once per leaf, see
+/// [`LeafRecord`], and derives the per-cell sub-MVs when a cell is read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NeighbourMotion {
     pub(super) mv: Mv,
@@ -133,47 +133,44 @@ enum NeighbourMotionModel {
     Global(u8),
 }
 
-/// The motion a leaf publishes into every cell it covers alike.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct LeafMotion {
+/// One published leaf: its flags, and its motion once § 7.12 resolves it.
+///
+/// Publication writes one plane cell per mode-info position and reads perhaps
+/// ten positions per leaf, so everything constant over the leaf lives here and
+/// the plane cell is only the leaf's name.
+#[derive(Clone, Copy)]
+struct LeafRecord {
+    flags: NeighbourFlags,
     mv: Mv,
     mv1: Mv,
-    model: NeighbourMotionModel,
-    cwp_weight: i16,
     base_r: u32,
     base_c: u32,
+    /// Index of the leaf's first warp model in the grid's model table.
+    models: u32,
+    cwp_weight: i16,
     bw4: u8,
     bh4: u8,
+    global_mv_lists: u8,
+    /// Which warp models the leaf has, in model-table order.
+    model_bits: u8,
+    resolved: bool,
 }
 
-/// One motion-plane cell: the leaf that published it and the § 7.12.2.2 sub-MVs,
-/// which are the only motion that varies from cell to cell inside one leaf.
-///
-/// Publication writes one cell per mode-info position and reads perhaps ten
-/// positions per leaf, so the plane is a write surface: keeping the per-leaf
-/// constants out of it is what bounds the bytes a frame's publication touches.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct MotionCell {
-    /// Index into the grid's leaf table; out of range on an unpublished cell.
-    leaf: u32,
-    sub_mv: Mv,
-    sub_mv1: Mv,
+impl LeafRecord {
+    /// List-0 § 7.12.2.2 sub-MV splat model.
+    const SPLAT0: u8 = 1 << 0;
+    /// List-1 § 7.12.2.2 sub-MV splat model.
+    const SPLAT1: u8 = 1 << 1;
+    /// Neighbour-facing model, the same as the list-0 splat model.
+    const STORED_IS_SPLAT0: u8 = 1 << 2;
+    /// Neighbour-facing model held in its own table entry.
+    const STORED_OWN: u8 = 1 << 3;
 }
 
-/// Names no leaf, so [`NeighbourMvGrid::get`] reads the cell as unpublished.
-const UNPUBLISHED_LEAF: u32 = u32::MAX;
-
-const EMPTY_MOTION_CELL: MotionCell = MotionCell {
-    leaf: UNPUBLISHED_LEAF,
-    sub_mv: Mv::ZERO,
-    sub_mv1: Mv::ZERO,
-};
-
-/// Plane footprint guard: neighbour context derivation reads eight bytes per
-/// grid cell and § 7.12 resolution writes twenty, not the full record.
+/// Footprint guard: a plane cell is four bytes and a leaf record forty-four.
 const _: () = {
-    assert!(size_of::<Option<NeighbourFlags>>() == 8);
-    assert!(size_of::<MotionCell>() == 20);
+    assert!(size_of::<Option<NonZeroU32>>() == 4);
+    assert!(size_of::<LeafRecord>() == 44);
     assert!(size_of::<NeighbourMotion>() == 72);
 };
 
@@ -282,34 +279,32 @@ pub(crate) const ZERO_NEIGHBOUR_MOTION_VALUES: NeighbourMotionValues = Neighbour
     splat_warp: [None, None],
 };
 
-/// Backing storage of both grid planes, recycled as one unit.
+/// Backing storage of the grid plane and its tables, recycled as one unit.
 #[derive(Default)]
 pub(super) struct GridPlanes {
-    pub(super) flags: Vec<Option<NeighbourFlags>>,
-    pub(super) motion: Vec<MotionCell>,
-    pub(super) leaves: Vec<LeafMotion>,
+    /// Index+1 of the leaf covering each cell, `None` where none is published.
+    cells: Vec<Option<NonZeroU32>>,
+    leaves: Vec<LeafRecord>,
+    /// Warp models of the resolved leaves that have any.
+    models: Vec<[i32; 6]>,
 }
 
-/// Sizes one tile's grid planes.
-///
-/// The flag plane is filled; the motion plane is left empty so a grid that only
-/// publishes flags — the split path's parse pass — never pays the motion fill,
-/// and the first `record_motion` sizes it. See `NeighbourMvGrid::motion_plane`.
+/// Sizes one tile's grid plane and empties its tables.
 fn reset_grid_planes(
     planes: &mut GridPlanes,
     cells: usize,
     tile_cells: usize,
 ) -> Result<(), std::collections::TryReserveError> {
-    // A grid the split path builds per frame starts empty, so its planes come
+    // A grid the split path builds per frame starts empty, so its storage comes
     // from the spare set a retired grid left rather than up a growth ladder.
-    take_spare_plane(&mut planes.flags, cells);
-    take_spare_plane(&mut planes.motion, cells);
+    take_spare_plane(&mut planes.cells, cells);
     take_spare_plane(&mut planes.leaves, tile_cells);
-    planes.flags.clear();
-    planes.motion.clear();
+    take_spare_plane(&mut planes.models, tile_cells);
+    planes.cells.clear();
     planes.leaves.clear();
-    planes.flags.try_reserve_exact(cells)?;
-    planes.flags.resize(cells, None);
+    planes.models.clear();
+    planes.cells.try_reserve_exact(cells)?;
+    planes.cells.resize(cells, None);
     Ok(())
 }
 
@@ -319,16 +314,16 @@ fn take_spare_plane<T: Send + 'static>(plane: &mut Vec<T>, cells: usize) {
     }
 }
 
-/// Returns a retired grid's three planes to the per-thread spare set.
+/// Returns a retired grid's plane and tables to the per-thread spare set.
 ///
 /// The flag log is not among them: nothing takes a log back, so parking one
-/// would hold a spare slot against the planes that do.
+/// would hold a spare slot against the storage that is taken back.
 impl Drop for NeighbourMvGrid {
     fn drop(&mut self) {
         use crate::support::reusable_scratch::recycle_pooled_vec;
-        recycle_pooled_vec(core::mem::take(&mut self.planes.flags));
-        recycle_pooled_vec(core::mem::take(&mut self.planes.motion));
+        recycle_pooled_vec(core::mem::take(&mut self.planes.cells));
         recycle_pooled_vec(core::mem::take(&mut self.planes.leaves));
+        recycle_pooled_vec(core::mem::take(&mut self.planes.models));
     }
 }
 
@@ -448,6 +443,12 @@ impl NeighbourMvGrid {
             return;
         };
         self.enter_sb_row(rows.start);
+        let Some(slot) = u32::try_from(self.planes.leaves.len())
+            .ok()
+            .and_then(|leaf| NonZeroU32::new(leaf.wrapping_add(1)))
+        else {
+            return;
+        };
         let flags = NeighbourFlags {
             bits: NeighbourFlags::flag(syntax.is_inter, NeighbourFlags::IS_INTER)
                 | NeighbourFlags::flag(syntax.newmv[0], NeighbourFlags::NEWMV_LIST0)
@@ -463,11 +464,36 @@ impl NeighbourMvGrid {
             motion_mode: syntax.motion_mode,
             precision: syntax.precision,
         };
-        self.publish_flags(flags, rows, cols);
+        self.planes.leaves.push(LeafRecord {
+            flags,
+            mv: Mv::ZERO,
+            mv1: Mv::ZERO,
+            base_r: r as u32,
+            base_c: c as u32,
+            models: 0,
+            cwp_weight: CWP_EQUAL,
+            bw4: n4w as u8,
+            bh4: n4h as u8,
+            global_mv_lists: 0,
+            model_bits: 0,
+            resolved: false,
+        });
+        for rr in rows {
+            let Some(span) = self.row_span(rr, &cols) else {
+                continue;
+            };
+            if let Some(cells) = self.planes.cells.get_mut(span) {
+                cells.fill(Some(slot));
+            }
+        }
     }
 
-    /// Publishes the motion plane for one leaf, once § 7.12 resolution has
-    /// produced its motion vectors and warp models.
+    /// Resolves the motion of one leaf whose flags this grid already holds,
+    /// once § 7.12 resolution has produced its motion vectors and warp models.
+    ///
+    /// The leaf is found through its own first cell. A cell that names another
+    /// leaf is a publication-order defect, and the leaf then stays unresolved,
+    /// which every reader treats as unpublished.
     pub(crate) fn record_motion(
         &mut self,
         r: usize,
@@ -479,39 +505,51 @@ impl NeighbourMvGrid {
         let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
             return;
         };
-        self.motion_plane();
-        self.enter_sb_row(rows.start);
-        let leaf = u32::try_from(self.planes.leaves.len()).unwrap_or(UNPUBLISHED_LEAF);
-        if leaf == UNPUBLISHED_LEAF {
+        let Some(leaf) = self
+            .row_span(rows.start, &cols)
+            .and_then(|span| *self.planes.cells.get(span.start)?)
+            .map(|slot| slot.get() as usize - 1)
+        else {
+            return;
+        };
+        let Some(record) = self.planes.leaves.get(leaf) else {
+            return;
+        };
+        if (record.base_r, record.base_c, record.bw4, record.bh4)
+            != (r as u32, c as u32, n4w as u8, n4h as u8)
+        {
             return;
         }
-        let global_mv_lists = u8::from(values.global_mv[0]) | (u8::from(values.global_mv[1]) << 1);
-        let model = values.stored_warp.map_or_else(
-            || {
-                if global_mv_lists == 0 {
-                    NeighbourMotionModel::None
-                } else {
-                    NeighbourMotionModel::Global(global_mv_lists)
-                }
-            },
-            NeighbourMotionModel::Warp,
-        );
-        self.planes.leaves.push(LeafMotion {
-            mv: values.mv[0],
-            mv1: values.mv[1],
-            model,
-            cwp_weight: values.cwp_weight,
-            base_r: r as u32,
-            base_c: c as u32,
-            bw4: n4w as u8,
-            bh4: n4h as u8,
-        });
-        let cell = MotionCell {
-            leaf,
-            sub_mv: values.mv[0],
-            sub_mv1: values.mv[1],
+        let Ok(models) = u32::try_from(self.planes.models.len()) else {
+            return;
         };
-        self.publish_motion(cell, (r, c), rows, cols, values.splat_warp);
+        let mut model_bits = 0;
+        let [splat0, splat1] = values.splat_warp;
+        for (bit, model) in [(LeafRecord::SPLAT0, splat0), (LeafRecord::SPLAT1, splat1)] {
+            if let Some(params) = model {
+                self.planes.models.push(params);
+                model_bits |= bit;
+            }
+        }
+        match values.stored_warp {
+            Some(params) if splat0 == Some(params) => model_bits |= LeafRecord::STORED_IS_SPLAT0,
+            Some(params) => {
+                self.planes.models.push(params);
+                model_bits |= LeafRecord::STORED_OWN;
+            }
+            None => {}
+        }
+        let Some(record) = self.planes.leaves.get_mut(leaf) else {
+            return;
+        };
+        record.mv = values.mv[0];
+        record.mv1 = values.mv[1];
+        record.models = models;
+        record.model_bits = model_bits;
+        record.cwp_weight = values.cwp_weight;
+        record.global_mv_lists =
+            u8::from(values.global_mv[0]) | (u8::from(values.global_mv[1]) << 1);
+        record.resolved = true;
     }
 
     #[cfg(test)]
@@ -743,28 +781,12 @@ impl NeighbourMvGrid {
         );
     }
 
-    /// Sizes the motion plane on the first publication.
-    ///
-    /// The split path parses on one grid and resolves on another, so the parse
-    /// grid's motion plane is never published and never read. Sizing it lazily
-    /// keeps the fill on the grid that uses it while leaving the pooled
-    /// allocation intact for the next grid that does. An unsized plane reads as
-    /// unpublished everywhere, which is what [`NeighbourMvGrid::get`] owes a
-    /// plane no leaf has published into.
-    fn motion_plane(&mut self) {
-        if self.planes.motion.is_empty() {
-            let cells = self.planes.flags.len();
-            self.planes.motion.resize(cells, EMPTY_MOTION_CELL);
-        }
-    }
-
     /// Moves the window down to the superblock row holding tile row `row`.
     fn enter_sb_row(&mut self, row: usize) {
         let Some(slide) = self.window.enter(row.saturating_sub(self.origin_row)) else {
             return;
         };
-        slide.apply(&mut self.planes.flags, self.mi_cols, None);
-        slide.apply(&mut self.planes.motion, self.mi_cols, EMPTY_MOTION_CELL);
+        slide.apply(&mut self.planes.cells, self.mi_cols, None);
     }
 
     /// Plane row of tile row `row`, `None` outside the readable window.
@@ -791,48 +813,6 @@ impl NeighbourMvGrid {
         let rows = r.max(self.origin_row)..r.saturating_add(n4h).min(row_end);
         let cols = c.max(self.origin_col)..c.saturating_add(n4w).min(col_end);
         (!rows.is_empty() && !cols.is_empty()).then_some((rows, cols))
-    }
-
-    fn publish_flags(&mut self, flags: NeighbourFlags, rows: Range<usize>, cols: Range<usize>) {
-        for rr in rows {
-            let Some(span) = self.row_span(rr, &cols) else {
-                continue;
-            };
-            if let Some(slots) = self.planes.flags.get_mut(span) {
-                slots.fill(Some(flags));
-            }
-        }
-    }
-
-    fn publish_motion(
-        &mut self,
-        cell: MotionCell,
-        base: (usize, usize),
-        rows: Range<usize>,
-        cols: Range<usize>,
-        warp_params: [Option<[i32; 6]>; 2],
-    ) {
-        for rr in rows {
-            let Some(span) = self.row_span(rr, &cols) else {
-                continue;
-            };
-            let Some(slots) = self.planes.motion.get_mut(span) else {
-                continue;
-            };
-            if warp_params[0].is_none() && warp_params[1].is_none() {
-                slots.fill(cell);
-                continue;
-            }
-            for (slot, cc) in slots.iter_mut().zip(cols.clone()) {
-                *slot = cell;
-                if let Some(params) = warp_params[0] {
-                    slot.sub_mv = warp_sub_mv_at(params, base.0, base.1, rr, cc);
-                }
-                if let Some(params) = warp_params[1] {
-                    slot.sub_mv1 = warp_sub_mv_at(params, base.0, base.1, rr, cc);
-                }
-            }
-        }
     }
 
     /// Plane index range covering `cols` on grid row `rr`.
@@ -863,30 +843,49 @@ impl NeighbourMvGrid {
             && c < self.origin_col.saturating_add(self.mi_cols)
     }
 
-    /// Reads the flag half only; motion memory is not touched.
-    pub(super) fn flags_at(&self, r: i32, c: i32) -> Option<NeighbourFlags> {
-        *self.planes.flags.get(self.index(r, c)?)?
+    fn leaf_at(&self, r: i32, c: i32) -> Option<&LeafRecord> {
+        let slot = (*self.planes.cells.get(self.index(r, c)?)?)?;
+        self.planes.leaves.get(slot.get() as usize - 1)
     }
 
-    /// Reads both halves, and only where the motion half has been published:
-    /// a cell names no leaf exactly while no leaf has resolved it, so a leaf
+    /// Reads the flag half only, published or not resolved yet.
+    pub(super) fn flags_at(&self, r: i32, c: i32) -> Option<NeighbourFlags> {
+        self.leaf_at(r, c).map(|leaf| leaf.flags)
+    }
+
+    /// Reads both halves, and only where the leaf has been resolved: a leaf
     /// whose flags are already visible but whose § 7.12 resolution has not run
     /// is not a candidate. That is what keeps the decode-order candidates (the
-    /// § 7.12 bottom-left probe above all) out of the stack once the flag plane
-    /// runs ahead of resolution.
+    /// § 7.12 bottom-left probe above all) out of the stack once the flags run
+    /// ahead of resolution.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: probes read a few cell fields"
+    )]
+    #[inline(always)]
     pub(super) fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
-        let index = self.index(r, c)?;
-        let flags = (*self.planes.flags.get(index)?)?;
-        let cell = *self.planes.motion.get(index)?;
-        let leaf = self.planes.leaves.get(cell.leaf as usize)?;
+        let leaf = self.leaf_at(r, c)?;
+        if !leaf.resolved {
+            return None;
+        }
+        let global = if leaf.global_mv_lists == 0 {
+            NeighbourMotionModel::None
+        } else {
+            NeighbourMotionModel::Global(leaf.global_mv_lists)
+        };
+        let (model, sub_mv, sub_mv1) = if leaf.model_bits == 0 {
+            (global, leaf.mv, leaf.mv1)
+        } else {
+            self.warp_motion(leaf, global, r, c)
+        };
         Some(NeighbourCell {
-            flags,
+            flags: leaf.flags,
             motion: NeighbourMotion {
                 mv: leaf.mv,
                 mv1: leaf.mv1,
-                sub_mv: cell.sub_mv,
-                sub_mv1: cell.sub_mv1,
-                model: leaf.model,
+                sub_mv,
+                sub_mv1,
+                model,
                 cwp_weight: leaf.cwp_weight,
                 base_r: leaf.base_r,
                 base_c: leaf.base_c,
@@ -894,6 +893,50 @@ impl NeighbourMvGrid {
                 bh4: leaf.bh4,
             },
         })
+    }
+
+    /// Warp-model half of [`Self::get`], out of line so the inlined
+    /// translation-only path stays small.
+    #[inline(never)]
+    fn warp_motion(
+        &self,
+        leaf: &LeafRecord,
+        global: NeighbourMotionModel,
+        r: i32,
+        c: i32,
+    ) -> (NeighbourMotionModel, Mv, Mv) {
+        let mut models = self.planes.models.get(leaf.models as usize..);
+        let mut take = |bit: u8| {
+            let (first, rest) = models
+                .filter(|_| leaf.model_bits & bit != 0)?
+                .split_first()?;
+            models = Some(rest);
+            Some(*first)
+        };
+        let splat0 = take(LeafRecord::SPLAT0);
+        let splat1 = take(LeafRecord::SPLAT1);
+        let stored = if leaf.model_bits & LeafRecord::STORED_IS_SPLAT0 != 0 {
+            splat0
+        } else {
+            take(LeafRecord::STORED_OWN)
+        };
+        let at = |params| {
+            let base = (leaf.base_r as usize, leaf.base_c as usize);
+            warp_sub_mv_at(params, base.0, base.1, r as usize, c as usize)
+        };
+        (
+            stored.map_or(global, NeighbourMotionModel::Warp),
+            splat0.map_or(leaf.mv, at),
+            splat1.map_or(leaf.mv1, at),
+        )
+    }
+
+    /// `motion.base_c` of [`Self::get`]`(r, c)` without building the cell.
+    #[inline]
+    pub(super) fn base_c_at(&self, r: i32, c: i32) -> Option<u32> {
+        self.leaf_at(r, c)
+            .filter(|leaf| leaf.resolved)
+            .map(|leaf| leaf.base_c)
     }
 
     pub(crate) fn intrabc_mv_at(&self, r: usize, c: usize) -> Option<Mv> {

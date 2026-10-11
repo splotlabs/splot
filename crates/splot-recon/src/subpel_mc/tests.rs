@@ -10,7 +10,7 @@ use crate::error::ReconError;
 
 /// Default single-reference 8-bit params for a `w x h` block sampled from
 /// reference origin `(rx, ry)` in whole samples (full-pel) with the given filter.
-fn full_pel_params(
+pub(super) fn full_pel_params(
     interp: InterpolationFilter,
     w: usize,
     h: usize,
@@ -244,87 +244,81 @@ fn full_pel_into_clamps_vector_chunks_and_tail() {
 }
 
 #[test]
-fn bilinear_horizontal_overlap_matches_fresh_tip_predictor() {
-    let ref_w = 48usize;
-    let ref_h = 32usize;
-    let samples = (0..ref_w * ref_h)
+fn bilinear_12x12_overlap_matches_the_block_prediction() {
+    let (ref_w, ref_h) = (48usize, 40usize);
+    let wide = (0..ref_w * ref_h)
         .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
         .collect::<Vec<u16>>();
-    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-    for (h_phase, v_phase) in [(0, 0), (5, 0), (0, 7), (5, 7)] {
-        let previous = SubpelPredictParams {
-            interp: InterpolationFilter::Bilinear,
-            w: 16,
-            h: 16,
-            start_x: (4 << SCALE_SUBPEL_BITS) + (h_phase << 6),
-            start_y: (5 << SCALE_SUBPEL_BITS) + (v_phase << 6),
-            step_x: 1 << SCALE_SUBPEL_BITS,
-            step_y: 1 << SCALE_SUBPEL_BITS,
-            first_x: 5,
-            first_y: 6,
-            last_x: 19,
-            last_y: 20,
-            bit_depth: BitDepth::Ten,
-        };
-        let current = SubpelPredictParams {
-            start_x: previous.start_x + (8 << SCALE_SUBPEL_BITS),
-            first_x: previous.first_x + 8,
-            last_x: previous.last_x + 8,
-            ..previous
-        };
-        let mut reused = vec![0; previous.w * previous.h];
-        subpel_predict_block_into(&view, &previous, &mut reused).unwrap();
-        assert!(
-            subpel_predict_16x16_bilinear_horizontal_overlap_into(&view, &current, &mut reused)
-                .unwrap()
-        );
-
-        let mut expected = vec![0; current.w * current.h];
-        subpel_predict_block_into(&view, &current, &mut expected).unwrap();
-        assert_eq!(reused, expected, "phases ({h_phase}, {v_phase})");
-    }
+    let narrow = wide
+        .iter()
+        .map(|&sample| (sample >> 2) as u8)
+        .collect::<Vec<u8>>();
+    let view = ReferencePlaneView::from_published_strided(&wide, ref_w, 40, ref_h, 30).unwrap();
+    check_bilinear_12x12(&view, BitDepth::Ten);
+    let view = ReferencePlaneView::from_published_strided(&narrow, ref_w, 40, ref_h, 30).unwrap();
+    check_bilinear_12x12(&view, BitDepth::Eight);
 }
 
-#[test]
-fn bilinear_horizontal_overlap_clips_physical_plane_borders() {
-    let ref_w = 48usize;
-    let ref_h = 32usize;
-    let samples = (0..ref_w * ref_h)
-        .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
-        .collect::<Vec<u16>>();
-    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-
-    for (x0, y0) in [(-10, -2), (26, 18)] {
-        let previous = SubpelPredictParams {
+/// For every phase pair, predicts the 12x12 centres of TIP-like units at
+/// `(x, y)` (bounds `x - 3..=x + 11`): a unit clamped at the left plane edge
+/// goes to the generic path, and its right neighbour, a fresh unit, the
+/// fresh unit's right neighbour and a clipped unit go to the kernel. Units
+/// whose last tap is on the right plane edge or the last readable row go to
+/// the kernel, and units one sample past those limits do not.
+fn check_bilinear_12x12<T: ReconSample>(view: &ReferencePlaneView<'_, T>, bit_depth: BitDepth) {
+    let stride = 16;
+    let mut predicted = vec![0; 11 * stride + 12];
+    let kernel = |params: &SubpelPredictParams, predicted: &mut [u16], reuse| {
+        subpel_predict_12x12_bilinear_overlap_into(view, params, predicted, stride, reuse).unwrap()
+    };
+    let expect = |params: &SubpelPredictParams, predicted: &[u16]| {
+        let mut expected = vec![0; 12 * 12];
+        subpel_predict_block_into(view, params, &mut expected).unwrap();
+        for row in 0..12 {
+            let expected = &expected[row * 12..][..12];
+            assert_eq!(
+                &predicted[row * stride..][..12],
+                expected,
+                "{params:?} row {row}"
+            );
+        }
+    };
+    let (width, rows) = (view.width as i32, view.readable_rows as i32);
+    for (h_phase, v_phase) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
+        let unit = |x: i32, y: i32| SubpelPredictParams {
             interp: InterpolationFilter::Bilinear,
-            w: 16,
-            h: 16,
-            start_x: x0 * (1 << SCALE_SUBPEL_BITS) + (5 << 6),
-            start_y: y0 * (1 << SCALE_SUBPEL_BITS) + (7 << 6),
+            w: 12,
+            h: 12,
+            start_x: ((x - 2) << SCALE_SUBPEL_BITS) + (h_phase << 6),
+            start_y: ((y - 2) << SCALE_SUBPEL_BITS) + (v_phase << 6),
             step_x: 1 << SCALE_SUBPEL_BITS,
             step_y: 1 << SCALE_SUBPEL_BITS,
-            first_x: x0 + 1,
-            first_y: y0 + 1,
-            last_x: x0 + 15,
-            last_y: y0 + 15,
-            bit_depth: BitDepth::Ten,
+            first_x: (x - 3).max(0),
+            first_y: (y - 3).max(0),
+            last_x: x + 11,
+            last_y: y + 11,
+            bit_depth,
         };
-        let current = SubpelPredictParams {
-            start_x: previous.start_x + (8 << SCALE_SUBPEL_BITS),
-            first_x: previous.first_x + 8,
-            last_x: previous.last_x + 8,
-            ..previous
+        let edge = unit(-1, 8);
+        assert!(!kernel(&edge, &mut predicted, false));
+        subpel_predict_block_strided_into(view, &edge, &mut predicted, stride).unwrap();
+        for (params, reuse) in [
+            (unit(7, 8), true),
+            (unit(15, 9), false),
+            (unit(23, 9), true),
+            (unit(width - 11, 8), false),
+            (unit(7, rows - 11), false),
+        ] {
+            assert!(kernel(&params, &mut predicted, reuse));
+            expect(&params, &predicted);
+        }
+        let clipped = SubpelPredictParams {
+            last_x: 5 + 11,
+            ..unit(7, 8)
         };
-        let mut reused = vec![0; previous.w * previous.h];
-        subpel_predict_block_into(&view, &previous, &mut reused).unwrap();
-        assert!(
-            subpel_predict_16x16_bilinear_horizontal_overlap_into(&view, &current, &mut reused)
-                .unwrap()
-        );
-
-        let mut expected = vec![0; current.w * current.h];
-        subpel_predict_block_into(&view, &current, &mut expected).unwrap();
-        assert_eq!(reused, expected, "previous origin ({x0}, {y0})");
+        for rejected in [clipped, unit(width - 10, 8), unit(7, rows - 10)] {
+            assert!(!kernel(&rejected, &mut predicted, false), "{rejected:?}");
+        }
     }
 }
 
@@ -911,6 +905,7 @@ fn bilinear_2d_into_matches_reference_for_direct_and_clipped_blocks() {
 
     for (base_x, base_y, w, h, phase_x, phase_y) in [
         (3, 2, 6, 5, 1, 15),
+        (1, 1, 12, 9, 5, 9),
         (-2, -1, 6, 5, 8, 8),
         (14, 11, 6, 5, 15, 1),
     ] {
@@ -1000,6 +995,10 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
             }
         })
         .collect::<Vec<_>>();
+    let wide = samples
+        .iter()
+        .map(|&sample| u16::from(sample))
+        .collect::<Vec<_>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let filters = [
         InterpolationFilter::EightTap,
@@ -1019,10 +1018,37 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
                         + usize::from(scaled) * 256
                         + horizontal_phase as usize * 16
                         + vertical_phase as usize;
-                    let w = widths[case % widths.len()];
-                    let h = heights[(case / widths.len()) % heights.len()];
-                    let base_x = [-3, 7, ref_w as i32 - 2][case % 3];
-                    let base_y = [-2, 9, ref_h as i32 - 2][(case / 3) % 3];
+                    let fixed_window = case % 5 == 4;
+                    let (w, h) = if fixed_window {
+                        (16, 16)
+                    } else {
+                        (
+                            widths[case % widths.len()],
+                            heights[(case / widths.len()) % heights.len()],
+                        )
+                    };
+                    let (base_x, base_y) = if fixed_window {
+                        (7, 9)
+                    } else {
+                        (
+                            [-3, 7, ref_w as i32 - 2][case % 3],
+                            [-2, 9, ref_h as i32 - 2][(case / 3) % 3],
+                        )
+                    };
+                    let (first_x, last_x, first_y, last_y) = if fixed_window {
+                        (base_x + 1, base_x + 15, base_y + 1, base_y + 15)
+                    } else if case % 5 == 3 {
+                        let x = |x: i32| x.clamp(0, ref_w as i32 - 1);
+                        let y = |y: i32| y.clamp(0, ref_h as i32 - 1);
+                        (
+                            x(base_x - 1),
+                            x(base_x + w as i32 + 1),
+                            y(base_y - 1),
+                            y(base_y + h as i32 + 1),
+                        )
+                    } else {
+                        (0, ref_w as i32 - 1, 0, ref_h as i32 - 1)
+                    };
                     let params = SubpelPredictParams {
                         interp,
                         w,
@@ -1031,16 +1057,31 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
                         start_y: (base_y << SCALE_SUBPEL_BITS) + (vertical_phase << 6),
                         step_x: if scaled { 896 } else { 1 << SCALE_SUBPEL_BITS },
                         step_y: if scaled { 1152 } else { 1 << SCALE_SUBPEL_BITS },
-                        first_x: 0,
-                        first_y: 0,
-                        last_x: ref_w as i32 - 1,
-                        last_y: ref_h as i32 - 1,
+                        first_x,
+                        first_y,
+                        last_x,
+                        last_y,
                         bit_depth: BitDepth::Eight,
                     };
                     let stride = w + 5;
+                    let oracle = reference_subpel(&wide, ref_w, ref_h, &params);
                     let mut expected = vec![u16::MAX; stride * h + 3];
                     subpel_predict_block_strided_into(&view, &params, &mut expected, stride)
                         .unwrap();
+                    let mut compound = vec![0i32; w * h];
+                    subpel_predict_block_compound_intermediate_into(
+                        &view,
+                        &params,
+                        None,
+                        &mut compound,
+                        w,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        compound,
+                        reference_subpel_compound(&wide, ref_w, ref_h, &params),
+                        "compound {interp:?} scaled={scaled} {w}x{h} phases={horizontal_phase},{vertical_phase}"
+                    );
                     let mut actual = (0..expected.len())
                         .map(|index| (index as u8).wrapping_mul(37).wrapping_add(0x5a))
                         .collect::<Vec<_>>();
@@ -1050,6 +1091,7 @@ fn single_prediction_u8_matches_packed_u16_across_filters_phases_shapes_and_edge
 
                     for row in 0..h {
                         let expected_row = &expected[row * stride..row * stride + w];
+                        assert_eq!(expected_row, &oracle[row * w..(row + 1) * w], "u16 output");
                         saw_clip_ends[0] |= expected_row.contains(&0);
                         saw_clip_ends[1] |= expected_row.contains(&u16::from(u8::MAX));
                         assert!(
@@ -1583,7 +1625,7 @@ fn compound_average_sink_matches_scalar_oracle_across_shapes_and_clamps() {
 
 #[test]
 fn fullpel_compound_average_matches_materialized_predictors() {
-    let ref_w = 24usize;
+    let ref_w = 48usize;
     let ref_h = 20usize;
     let samples0 = (0..ref_w * ref_h)
         .map(|index| ((index * 17 + 3) % 1024) as u16)
@@ -1593,29 +1635,35 @@ fn fullpel_compound_average_matches_materialized_predictors() {
         .collect::<Vec<u16>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
-    let params0 = SubpelPredictParams {
-        interp: InterpolationFilter::EightTapSharp,
-        w: 7,
-        h: 5,
-        start_x: 6 << SCALE_SUBPEL_BITS,
-        start_y: 7 << SCALE_SUBPEL_BITS,
-        step_x: 1 << SCALE_SUBPEL_BITS,
-        step_y: 1 << SCALE_SUBPEL_BITS,
-        first_x: 0,
-        first_y: 0,
-        last_x: ref_w as i32 - 1,
-        last_y: ref_h as i32 - 1,
-        bit_depth: BitDepth::Ten,
-    };
-    let params1 = SubpelPredictParams {
-        start_x: 9 << SCALE_SUBPEL_BITS,
-        start_y: 4 << SCALE_SUBPEL_BITS,
-        ..params0
-    };
-    let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
-    let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
+    for (w, cwp_weight, last_y) in [
+        (7, 8, 19),
+        (7, 12, 19),
+        (31, 8, 19),
+        (31, 12, 19),
+        (31, 8, 9),
+    ] {
+        let params0 = SubpelPredictParams {
+            interp: InterpolationFilter::EightTapSharp,
+            w,
+            h: 5,
+            start_x: 6 << SCALE_SUBPEL_BITS,
+            start_y: 7 << SCALE_SUBPEL_BITS,
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_w as i32 - 1,
+            last_y,
+            bit_depth: BitDepth::Ten,
+        };
+        let params1 = SubpelPredictParams {
+            start_x: 9 << SCALE_SUBPEL_BITS,
+            start_y: 4 << SCALE_SUBPEL_BITS,
+            ..params0
+        };
+        let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
+        let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
 
-    for cwp_weight in [8, 12] {
         let expected =
             blend_compound_average_weighted(&pred0, &pred1, params0.bit_depth, cwp_weight).unwrap();
         let stride = params0.w + 3;
@@ -1765,15 +1813,20 @@ fn clipped_horizontal_compound_matches_materialized_predictors() {
             blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
         let stride = params0.w + 3;
         let mut output = vec![u16::MAX; stride * params0.h];
-        assert!(subpel_predict_block_compound_average_horizontal_validated(
-            &view0,
-            &params0,
-            &view1,
-            &params1,
-            weight,
-            &mut output,
-            stride,
-        ));
+        let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
+        assert!(
+            subpel_predict_block_compound_average_fast_validated_strided_into(
+                &view0,
+                &params0,
+                &view1,
+                &params1,
+                weight,
+                &mut scratch,
+                &mut output,
+                stride,
+            )
+            .unwrap()
+        );
         for row in 0..params0.h {
             assert_eq!(
                 &output[row * stride..row * stride + params0.w],
@@ -1833,16 +1886,21 @@ fn clipped_horizontal_compound_rows_match_materialized_predictors() {
     let pred1 = subpel_predict_block_compound_intermediate(&view1, &expected_params1).unwrap();
     let expected = blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, 12).unwrap();
     let mut actual = vec![u16::MAX; params0.w * params0.h];
+    let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
 
-    assert!(subpel_predict_block_compound_average_horizontal_validated(
-        &view0,
-        &params0,
-        &view1,
-        &params1,
-        12,
-        &mut actual,
-        params0.w,
-    ));
+    assert!(
+        subpel_predict_block_compound_average_fast_validated_strided_into(
+            &view0,
+            &params0,
+            &view1,
+            &params1,
+            12,
+            &mut scratch,
+            &mut actual,
+            params0.w,
+        )
+        .unwrap()
+    );
     assert_eq!(actual, expected);
 }
 
@@ -1887,21 +1945,100 @@ fn fused_two_axis_compound_matches_materialized_predictors() {
             let stride = width + 3;
             let mut output = vec![u16::MAX; stride * params0.h];
             let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
-            assert!(subpel_predict_block_compound_average_2d_validated(
-                &view0,
-                &params0,
-                &view1,
-                &params1,
-                weight,
-                &mut scratch,
-                &mut output,
-                stride,
-            ));
+            assert!(
+                subpel_predict_block_compound_average_fast_validated_strided_into(
+                    &view0,
+                    &params0,
+                    &view1,
+                    &params1,
+                    weight,
+                    &mut scratch,
+                    &mut output,
+                    stride,
+                )
+                .unwrap()
+            );
             for row in 0..params0.h {
                 assert_eq!(
                     &output[row * stride..row * stride + width],
                     &expected[row * width..(row + 1) * width],
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn compound_fast_path_u8_matches_materialized_predictors() {
+    let (ref_w, ref_h) = (24usize, 20usize);
+    let samples0 = (0..ref_w * ref_h)
+        .map(|index| ((index * 17 + 3) % 256) as u8)
+        .collect::<Vec<_>>();
+    let samples1 = (0..ref_w * ref_h)
+        .map(|index| ((index * 29 + 11) % 256) as u8)
+        .collect::<Vec<_>>();
+    let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
+    let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
+    for (w, h) in [(4, 4), (8, 8), (4, 8), (8, 4)] {
+        for (phase0, phase1) in [((5, 11), (13, 3)), ((5, 0), (0, 9)), ((0, 0), (0, 0))] {
+            for start in [3i32, -6, 20] {
+                let params0 = SubpelPredictParams {
+                    interp: InterpolationFilter::EightTapSharp,
+                    w,
+                    h,
+                    start_x: (start << SCALE_SUBPEL_BITS) + (phase0.0 << 6),
+                    start_y: (4 << SCALE_SUBPEL_BITS) + (phase0.1 << 6),
+                    step_x: 1 << SCALE_SUBPEL_BITS,
+                    step_y: 1 << SCALE_SUBPEL_BITS,
+                    first_x: 0,
+                    first_y: 0,
+                    last_x: ref_w as i32 - 1,
+                    last_y: ref_h as i32 - 1,
+                    bit_depth: BitDepth::Eight,
+                };
+                let params1 = SubpelPredictParams {
+                    interp: InterpolationFilter::EightTapSmooth,
+                    start_x: ((start + 2) << SCALE_SUBPEL_BITS) + (phase1.0 << 6),
+                    start_y: (7 << SCALE_SUBPEL_BITS) + (phase1.1 << 6),
+                    ..params0
+                };
+                let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
+                let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
+                for weight in [8, 12] {
+                    let expected =
+                        blend_compound_average_weighted(&pred0, &pred1, BitDepth::Eight, weight)
+                            .unwrap();
+                    let stride = w + 3;
+                    let mut output = vec![u8::MAX; stride * h];
+                    let mut scratch = [0i16; (8 + NUM_TAPS - 1) * 8];
+                    assert!(
+                        subpel_predict_block_compound_average_fast_validated_strided_into(
+                            &view0,
+                            &params0,
+                            &view1,
+                            &params1,
+                            weight,
+                            &mut scratch,
+                            &mut output,
+                            stride,
+                        )
+                        .unwrap()
+                    );
+                    for row in 0..h {
+                        assert!(
+                            output[row * stride..row * stride + w]
+                                .iter()
+                                .zip(&expected[row * w..(row + 1) * w])
+                                .all(|(&actual, &expected)| u16::from(actual) == expected),
+                            "{w}x{h} {phase0:?} {phase1:?} start={start} weight={weight}"
+                        );
+                        assert!(
+                            output[row * stride + w..(row + 1) * stride]
+                                .iter()
+                                .all(|&sample| sample == u8::MAX)
+                        );
+                    }
+                }
             }
         }
     }
@@ -1953,16 +2090,19 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
                 let stride = width + 3;
                 let mut output = vec![u16::MAX; stride * params0.h];
                 let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
-                assert!(subpel_predict_block_compound_average_2d_validated(
-                    &view0,
-                    &params0,
-                    &view1,
-                    &params1,
-                    weight,
-                    &mut scratch,
-                    &mut output,
-                    stride,
-                ));
+                assert!(
+                    subpel_predict_block_compound_average_fast_validated_strided_into(
+                        &view0,
+                        &params0,
+                        &view1,
+                        &params1,
+                        weight,
+                        &mut scratch,
+                        &mut output,
+                        stride,
+                    )
+                    .unwrap()
+                );
                 for row in 0..params0.h {
                     assert_eq!(
                         &output[row * stride..row * stride + width],
@@ -2314,5 +2454,46 @@ fn vertical_only_matches_independent_reference_across_shapes() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn unscaled_compound_entry_matches_two_call_path_and_declines_scaled() {
+    let samples: Vec<u16> = (0..768).map(|i| (i * 37 + 5) % 1024).collect();
+    let view = ReferencePlaneView::new(&samples, 32, 24).unwrap();
+    let entry = |p0: &SubpelPredictParams, p1: &SubpelPredictParams, weight, out: &mut [u16]| {
+        subpel_predict_block_compound_average_unscaled_strided_into(
+            &view, p0, &view, p1, weight, out, p0.w,
+        )
+    };
+    let at = |w, h, start_x, start_y| SubpelPredictParams {
+        bit_depth: BitDepth::Ten,
+        start_x,
+        start_y,
+        ..full_pel_params(InterpolationFilter::EightTapSharp, w, h, 0, 0, 32, 24)
+    };
+    for (w, h, phase0, phase1) in [(16, 8, 0, 0), (8, 8, 5 << 6, 0), (4, 4, 0, 9 << 6)] {
+        let p0 = at(w, h, (6 << 10) + phase0, 5 << 10);
+        let p1 = at(w, h, 6 << 10, (8 << 10) + phase1);
+        let pred0 = subpel_predict_block_compound_intermediate(&view, &p0).unwrap();
+        let pred1 = subpel_predict_block_compound_intermediate(&view, &p1).unwrap();
+        for weight in [8, 11] {
+            let mut out = vec![0u16; w * h];
+            assert_eq!(entry(&p0, &p1, weight, &mut out), Ok(true));
+            assert_eq!(
+                Ok(out),
+                blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight)
+            );
+        }
+    }
+    let (base, narrower) = (at(16, 8, 6 << 10, 5 << 10), at(8, 8, 6 << 10, 5 << 10));
+    let scaled = SubpelPredictParams {
+        step_x: 1100,
+        ..base
+    };
+    for other in [scaled, narrower] {
+        let mut out = vec![u16::MAX; 16 * 8];
+        assert_eq!(entry(&base, &other, 8, &mut out), Ok(false));
+        assert!(out.iter().all(|&sample| sample == u16::MAX));
     }
 }

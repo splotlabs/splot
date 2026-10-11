@@ -1334,8 +1334,8 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     let mut pc_block = block(0, 0, 0);
     pc_block.restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
     let wiener_ns_block = block(0, 8, 0);
-    with_lr_source_scratch::<u8, _>(|scratch| {
-        scratch.cell_subclasses.resize(32, usize::MAX);
+    with_lr_source_scratch(|scratch| {
+        scratch.cell_subclasses.resize(32, u8::MAX);
     });
     let mixed_luma = apply_luma_lr(
         &lr_sink(&snapshot),
@@ -1356,6 +1356,291 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     assert_eq!(luma_rect(&mixed_luma, 4), luma_rect(&snapshot, 4));
     assert_ne!(luma_rect(&mixed_luma, 0), luma_rect(&snapshot, 0));
     assert_ne!(luma_rect(&mixed_luma, 8), luma_rect(&snapshot, 8));
+}
+
+/// A 200x16 10-bit luma plane, uneven except for columns `56..140` (flat
+/// 500) and `186..` (flat 300): of the 64-column strips of a whole-width LR
+/// block, the second and the last, partial one are flat.
+fn wide_luma_sink() -> WienerNsLrReconSink<u16> {
+    let (width, height) = (200, 16);
+    let mut workspace =
+        crate::test_support::yuv420_workspace_with(BitDepth::Ten, width, height, 0_u16);
+    for (y, x) in (0..height).flat_map(|y| (0..width).map(move |x| (y, x))) {
+        let value = match x {
+            56..140 => 500,
+            186.. => 300,
+            _ => 128 + ((x * 37 + y * 91 + x * y * 13) % 700) as u16,
+        };
+        workspace
+            .set_reconstructed_sample(PlaneId::Y, x, y, value)
+            .unwrap();
+    }
+    let mut sink =
+        WienerNsLrReconSink::for_final_filtering(workspace, width, height, BitDepth::Ten);
+    sink.tx_skip_grid =
+        Some(crate::filters::wienerns_lr::WienerNsLrTxSkipGrid::new(4, 50, vec![0; 200]).unwrap());
+    sink
+}
+
+fn wide_luma_block(restoration_type: LrUnitRestorationType) -> WienerNsLrSourceBlock {
+    WienerNsLrSourceBlock {
+        restoration_type,
+        tile_mi_col_end: 50,
+        width: 200,
+        height: 16,
+        luma_end_x: 199,
+        ..block(0, 0, 0)
+    }
+}
+
+fn wide_cdef(sink: &WienerNsLrReconSink<u16>) -> CdefFrame<'_, u16> {
+    let workspace = sink.workspace.as_ref().unwrap();
+    crate::filters::cdef::cdef_stripe(
+        crate::filters::source::DeblockedPlanes::frame(workspace).unwrap(),
+        None,
+        None,
+        None,
+        None,
+        (50, 4),
+        (1, 1),
+        BitDepth::Ten,
+        None,
+        0,
+        16,
+    )
+    .unwrap()
+}
+
+/// Filters `block` through `apply_lr_stripe` into a poisoned frame target
+/// initialised by `initialization`, and returns the luma plane.
+fn apply_wide_luma_lr(
+    sink: &WienerNsLrReconSink<u16>,
+    core: &FrameHeaderCore,
+    block: WienerNsLrSourceBlock,
+    initialization: StripeInitialization,
+) -> Vec<u16> {
+    let progress = Arc::new(FrameProgress::<u16>::new(sink.frame_info()).unwrap());
+    progress.begin(&[(0, 16)]).unwrap();
+    let mut poison_lease = progress.direct_stripe(0).unwrap();
+    let mut poison_target = poison_lease.take_target().unwrap();
+    let mut poison = poison_target.take(PlaneId::Y).unwrap();
+    poison.u16_samples_mut().unwrap().fill(0x2a5);
+    drop((poison, poison_target, poison_lease));
+    let mut lease = progress.direct_stripe(0).unwrap();
+    let (target, _) = lease.take_target().unwrap().split([false, true, true]);
+    let frame = sink
+        .stripe_chain()
+        .apply_lr_stripe(
+            core,
+            wide_cdef(sink),
+            &CdefOverlap::default(),
+            [&[block], &[], &[]],
+            &[],
+            super::LrStripeOutput {
+                active_planes: [true, false, false],
+                direct_u8_planes: [false; 3],
+                initializations: [initialization; 3],
+                target,
+            },
+        )
+        .unwrap();
+    let holds_cdef = initialization == StripeInitialization::CopyAll;
+    assert_eq!(frame.post_lr_y_holds_cdef, holds_cdef);
+    drop(frame.into_filtered());
+    assert!(lease.submit());
+    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    frame.y().visible_rows().flatten().copied().collect()
+}
+
+/// The result before strips: one classification and one filter call over
+/// the whole block.
+fn unsplit_luma_lr(
+    sink: &WienerNsLrReconSink<u16>,
+    core: &FrameHeaderCore,
+    block: &WienerNsLrSourceBlock,
+) -> Vec<u16> {
+    let cdef = wide_cdef(sink);
+    let chain = sink.stripe_chain();
+    let plane = &core.lr_params.as_ref().unwrap().planes[0];
+    let qindex = core.quantization_params.as_ref().unwrap().base_q_idx;
+    let filter_set_index = pc_wiener_filter_set_index(qindex);
+    let (mut storage, mut cells) = (Vec::new(), Vec::new());
+    let window = LrSourceRows::resolve(
+        &mut storage,
+        cdef.deblocked_y,
+        &cdef.filtered_y,
+        &[],
+        &crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(block, 0, 0),
+        0,
+        0,
+        block.width,
+        block.height,
+        WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
+    )
+    .unwrap();
+    let (width, height) = (block.width, block.height);
+    let mut output = vec![0u16; width * height];
+    if block.restoration_type == LrUnitRestorationType::PcWiener {
+        let subclasses = chain
+            .luma_lr_cell_subclasses(
+                block,
+                &window,
+                qindex,
+                PC_WIENER_FULL_CLASSES,
+                filter_set_index,
+                &mut cells,
+            )
+            .unwrap();
+        let params = PcWienerFilter {
+            width,
+            height,
+            output_stride: width,
+            bit_depth: BitDepth::Ten,
+            filter_set_index,
+            subclass_block_size: MI_SIZE,
+            subclasses,
+        };
+        let (rows, col) = window.tail(PC_WIENER_FILTER_TAP_RADIUS).unwrap();
+        let source = PcWienerPaddedSource::from_rows(rows, col, width, height).unwrap();
+        pc_wiener_filter_block_padded(&mut output, &params, &source).unwrap();
+    } else {
+        let num_classes = usize::from(plane.num_filter_classes.unwrap());
+        let coeffs = luma_lr_frame_coeffs(plane, num_classes).unwrap();
+        let subclasses = chain
+            .luma_lr_cell_subclasses(
+                block,
+                &window,
+                qindex,
+                num_classes,
+                filter_set_index,
+                &mut cells,
+            )
+            .unwrap();
+        let params = WienerNsLumaFilter {
+            width,
+            height,
+            output_stride: width,
+            bit_depth: BitDepth::Ten,
+            coeffs_by_class: &coeffs,
+            subclasses: None,
+        };
+        let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
+        let source = WienerNsLumaPaddedSource::from_rows(rows, col, width, height).unwrap();
+        wiener_ns_filter_luma_block_padded_cells_into(
+            &mut output,
+            &params,
+            &source,
+            subclasses,
+            &mut WienerNsLumaScratch::default(),
+        )
+        .unwrap();
+    }
+    output
+}
+
+#[test]
+fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
+    let sink = wide_luma_sink();
+    let mut wiener_ns_core = switchable_core();
+    let luma = &mut wiener_ns_core.lr_params.as_mut().unwrap().planes[0];
+    let bank = luma.frame_filter_bank.as_mut().unwrap();
+    let mut class = bank.classes[0];
+    class
+        .coeffs
+        .iter_mut()
+        .for_each(|coeff| *coeff = -*coeff / 2);
+    bank.classes.truncate(1);
+    bank.classes.push(class);
+    luma.num_filter_classes = Some(2);
+    let pc_block = wide_luma_block(LrUnitRestorationType::PcWiener);
+    let wiener_ns_block = wide_luma_block(LrUnitRestorationType::WienerNonsep);
+
+    let cdef = wide_cdef(&sink);
+    let bounds = crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&pc_block, 0, 0);
+    let mut storage = Vec::new();
+    let window = LrSourceRows::resolve(
+        &mut storage,
+        cdef.deblocked_y,
+        &cdef.filtered_y,
+        &[],
+        &bounds,
+        0,
+        0,
+        200,
+        16,
+        WIENER_NS_LUMA_TAP_RADIUS,
+    )
+    .unwrap();
+    let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
+    let mut runs = Vec::new();
+    for_each_lr_strip(
+        rows,
+        col,
+        200,
+        WIENER_NS_LUMA_TAP_RADIUS,
+        1023,
+        |x, end, flat| {
+            runs.push((x, end, flat));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        runs,
+        [
+            (0, 64, None),
+            (64, 128, Some(500)),
+            (128, 192, None),
+            (192, 200, Some(300))
+        ]
+    );
+
+    for (core, block) in [
+        (&switchable_core(), pc_block),
+        (&wiener_ns_core, wiener_ns_block),
+    ] {
+        let expected = unsplit_luma_lr(&sink, core, &block);
+        assert!(expected[..64].iter().any(|&sample| sample != expected[0]));
+        for initialization in [
+            StripeInitialization::CopyAll,
+            StripeInitialization::FullyOverwritten,
+        ] {
+            let actual = apply_wide_luma_lr(&sink, core, block, initialization);
+            assert_eq!(actual, expected, "{block:?} {initialization:?}");
+        }
+    }
+}
+
+/// A strip is flat only when its whole tap reach holds one value no larger
+/// than the maximum sample; the last strip's reach is narrower than one
+/// SIMD check.
+#[test]
+fn a_differing_sample_in_a_strip_reach_breaks_only_that_strip() {
+    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let (width, height) = (134, 3);
+    let strips = |samples: &[Vec<u16>], max_sample| {
+        let rows: Vec<&[u16]> = samples.iter().map(Vec::as_slice).collect();
+        let mut flat = Vec::new();
+        for_each_lr_strip(&rows, 0, width, R, max_sample, |x, end, value| {
+            flat.extend((x..end).step_by(64).map(|_| value));
+            Ok(())
+        })
+        .unwrap();
+        flat
+    };
+    for row in [0, height + 2 * R - 1] {
+        for col in 0..width + 2 * R {
+            let mut samples = vec![vec![7u16; width + 2 * R]; height + 2 * R];
+            samples[row][col] = 8;
+            let expected: Vec<_> = (0..width)
+                .step_by(64)
+                .map(|x| (!(x..x + 64.min(width - x) + 2 * R).contains(&col)).then_some(7))
+                .collect();
+            assert_eq!(strips(&samples, 1023), expected, "row {row} col {col}");
+        }
+    }
+    let samples = vec![vec![1024u16; width + 2 * R]; height + 2 * R];
+    assert_eq!(strips(&samples, 1023), [None; 3]);
 }
 
 #[test]
@@ -1489,7 +1774,7 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
     let mut storage = Vec::new();
 
     assert!(
-        LrSourceWindow::<u8>::materialize(
+        LrSourceWindow::materialize(
             &mut storage,
             PlaneId::Y,
             curr,
@@ -1504,7 +1789,7 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
         )
         .is_err()
     );
-    let window = LrSourceWindow::<u8>::materialize(
+    let window = LrSourceWindow::materialize(
         &mut storage,
         PlaneId::Y,
         curr,
@@ -1521,6 +1806,68 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
     assert_eq!(window.get_abs(3, 3), 27);
     assert_eq!(window.get_abs(3, 5), 43);
     assert_eq!(window.get_abs(4, 6), 52);
+}
+
+#[test]
+fn lr_source_rows_match_the_materialized_window() {
+    let bounds = LoopRestorationSourceBounds {
+        luma_start_x: 0,
+        luma_end_x: 15,
+        luma_start_y: 0,
+        luma_end_y: 15,
+        luma_stripe_start_y: 4,
+        luma_stripe_end_y: 11,
+        subsampling_x: 0,
+        subsampling_y: 0,
+    };
+    let mut curr_workspace = crate::test_support::yuv420_workspace(16, 16, 0);
+    let mut cdef_workspace = crate::test_support::yuv420_workspace(16, 16, 0);
+    for sample in 0..256 {
+        let (x, y) = (sample % 16, sample / 16);
+        curr_workspace
+            .set_reconstructed_sample(PlaneId::Y, x, y, (sample % 97) as u8)
+            .unwrap();
+        cdef_workspace
+            .set_reconstructed_sample(PlaneId::Y, x, y, (100 + sample % 101) as u8)
+            .unwrap();
+    }
+    let curr = FramePlane::new(&curr_workspace, PlaneId::Y).unwrap();
+    let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
+    let band = StripePlane::copy_from(cdef_source, 2, 14).unwrap();
+    for (block_x, block_y) in [(0, 4), (6, 6), (11, 8), (5, 4)] {
+        let (mut window_storage, mut row_storage) = (Vec::new(), Vec::new());
+        let window = LrSourceWindow::materialize(
+            &mut window_storage,
+            PlaneId::Y,
+            curr,
+            &band,
+            &[],
+            &bounds,
+            block_x,
+            block_y,
+            5,
+            4,
+            (2, 2),
+        )
+        .unwrap();
+        let rows = LrSourceRows::resolve(
+            &mut row_storage,
+            curr,
+            &band,
+            &[],
+            &bounds,
+            block_x,
+            block_y,
+            5,
+            4,
+            2,
+        )
+        .unwrap();
+        assert_eq!(rows.len, 8);
+        for (row, expected) in rows.rows[..rows.len].iter().zip(window.samples.chunks(9)) {
+            assert_eq!(*row, expected, "block ({block_x}, {block_y})");
+        }
+    }
 }
 
 #[test]
@@ -1548,7 +1895,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
     let short_cdef = StripePlane::copy_from(cdef_source, 0, 1).unwrap();
     let mut storage = Vec::new();
 
-    let window = LrSourceWindow::<u8>::materialize(
+    let window = LrSourceWindow::materialize(
         &mut storage,
         PlaneId::Y,
         curr,
@@ -1566,7 +1913,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
     let allocation = window.samples.as_ptr();
 
     assert!(
-        LrSourceWindow::<u8>::materialize(
+        LrSourceWindow::materialize(
             &mut storage,
             PlaneId::Y,
             curr,
@@ -1581,7 +1928,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
         )
         .is_err()
     );
-    let window = LrSourceWindow::<u8>::materialize(
+    let window = LrSourceWindow::materialize(
         &mut storage,
         PlaneId::Y,
         curr,
@@ -1602,7 +1949,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
 #[test]
 fn lr_source_scratch_does_not_retain_oversized_buffers() {
     LR_SOURCE_SCRATCH.with(|slot| slot.set(None));
-    with_lr_source_scratch::<u16, _>(|scratch| {
+    with_lr_source_scratch(|scratch| {
         scratch
             .primary
             .try_reserve_exact(MAX_RETAINED_LR_SCRATCH_ELEMENTS + 1)
@@ -1610,11 +1957,11 @@ fn lr_source_scratch_does_not_retain_oversized_buffers() {
     });
     LR_SOURCE_SCRATCH.with(|slot| assert!(slot.take().is_none()));
 
-    let allocation = with_lr_source_scratch::<u16, _>(|scratch| {
+    let allocation = with_lr_source_scratch(|scratch| {
         scratch.primary.try_reserve_exact(16).unwrap();
         scratch.primary.as_ptr()
     });
-    with_lr_source_scratch::<u16, _>(|scratch| {
+    with_lr_source_scratch(|scratch| {
         assert_eq!(scratch.primary.as_ptr(), allocation);
     });
     LR_SOURCE_SCRATCH.with(|slot| slot.set(None));

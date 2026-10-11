@@ -370,9 +370,8 @@ fn compute_parallel_outputs<T: ReconSample>(
 }
 
 fn compute_batched_output<T: ReconSample>(
-    sink: &mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
     units: &[TipUnit],
-    output_samples: &mut [T],
     prediction: &TipPrediction<'_, T>,
     plan: &TipBlockPlan,
     motion: mc::CompoundMotionGrid,
@@ -392,7 +391,6 @@ fn compute_batched_output<T: ReconSample>(
         plan.batch_has_chroma,
         motion,
         tile_offset,
-        output_samples,
     )
 }
 
@@ -1088,9 +1086,8 @@ fn publish_unit_outputs<T: ReconSample>(
                 let compound = params
                     .into_compound()
                     .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-                grid =
-                    mc::predict_compound_average_block(sink, compound, grid.take(), tile_offset)?
-                        .publish(sink)?;
+                grid = mc::predict_compound_into(sink, compound, grid.take(), tile_offset)?
+                    .take_motion();
             } else {
                 mc::motion_compensate_inter_block_into(sink, params, tile_offset)?;
             }
@@ -1166,12 +1163,12 @@ pub(super) fn predict<T: ReconSample>(
     let parallel_output = !plan.use_optflow
         && matches!(sink, mc::WorkspaceSink::Frame(_))
         && plan.two_references
-        && splot_parallel::on_worker_pool();
+        && splot_parallel::current_pool_width() > 1;
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (plan.unit_size >> sub_x) * (plan.unit_size >> sub_y))
         .sum::<usize>();
-    if parallel_output || batched_output {
+    if parallel_output {
         let arena_len =
             plan.unit_count
                 .checked_mul(output_stride)
@@ -1186,7 +1183,6 @@ pub(super) fn predict<T: ReconSample>(
         Some(compute_batched_output(
             sink,
             &scratch.units,
-            &mut scratch.output_samples,
             &held.prediction(&plan.plan)?,
             &plan,
             grid.take()
@@ -1208,7 +1204,6 @@ pub(super) fn predict<T: ReconSample>(
         )?;
     }
     if let Some(metadata) = batch_metadata.as_mut() {
-        metadata.publish(&scratch.output_samples, sink)?;
         grid = metadata.take_motion();
     } else {
         grid = publish_unit_outputs(
@@ -1298,10 +1293,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
                 .inter
                 .as_ref()
                 .is_some_and(|tools| tools.enable_tip),
-            enable_trajectory: sequence
-                .inter
-                .as_ref()
-                .is_some_and(|tools| tools.enable_mv_traj),
+            enable_trajectory: false, // only § 7.12.2 reads TrajMv/TrajValid, and a TIP_FRAME_AS_OUTPUT frame parses no blocks
             reduced: sequence
                 .inter
                 .as_ref()

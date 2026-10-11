@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 #![feature(portable_simd)]
+#![feature(hint_prefetch)]
 
 //! `splot-recon` owns AV2 reconstruction primitives and frame/workspace storage.
 //!
@@ -60,19 +61,22 @@ mod workspace;
 mod y4m;
 
 pub use cdef_filter::{
-    CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT, CDEF_PAIR_STRIDE,
-    CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter, CdefSampleTaps, CdefTap, cdef_constrain,
-    cdef_direction, cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
-    cdef_filter_block_chroma_pair, cdef_filter_block_interior, cdef_filter_block_interior_to,
-    cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
+    CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
+    CDEF_PAIR_SEGMENT_BLOCK_AREA, CDEF_PAIR_SEGMENT_STRIDE, CDEF_PAIR_STRIDE,
+    CDEF_SEGMENT_BLOCK_AREA, CDEF_SEGMENT_BLOCKS, CDEF_SEGMENT_STRIDE, CDEF_UNAVAILABLE,
+    CDEF_UV_DIR, CdefBlockFilter, CdefSampleTaps, CdefTap, cdef_constrain, cdef_direction,
+    cdef_direction_padded, cdef_direction_segment, cdef_filter_block_boundary_to_valid_stride,
+    cdef_filter_block_chroma_pair, cdef_filter_block_chroma_pair_segment,
+    cdef_filter_block_interior, cdef_filter_block_interior_to,
+    cdef_filter_block_interior_to_valid_stride, cdef_filter_block_segment, cdef_filter_sample,
 };
 pub use coefficient_scan::{
     TransformClass, coefficient_scan_order, coefficient_scan_slice, tx_class,
 };
 pub use deblock_filter::{
     DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
-    deblock_filter_choice, deblock_filter_choice_and_sample_strided_4,
-    deblock_filter_choice_and_sample_strided_4_fast_validated, deblock_filter_choice_strided,
+    deblock_edge_columns, deblock_edge_rows, deblock_filter_choice,
+    deblock_filter_choice_and_sample_strided_4, deblock_filter_choice_strided,
     deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
     deblock_sample_filter_strided_4, deblock_side_threshold_index,
 };
@@ -132,8 +136,8 @@ pub use inverse_transform_2d_outer::{
     inverse_transform_2d_outer_adjusted,
 };
 pub use loop_restoration::{
-    LoopRestorationSource, LoopRestorationSourceBounds, LoopRestorationSourceSample,
-    LoopRestorationSourceSampleValue, loop_restoration_source_sample,
+    LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
+    LoopRestorationSourceSample, LoopRestorationSourceSampleValue, loop_restoration_source_sample,
     loop_restoration_source_sample_value,
 };
 pub use optflow::{
@@ -145,7 +149,7 @@ pub use pc_wiener::{
     PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
     PcWienerClassification, PcWienerClassifyPaddedSource, PcWienerClassifyParams,
     PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PcWienerTxSkipLookup,
-    pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
+    PcWienerTxSkipRun, pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_into,
     pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_block_padded_u16_into,
     pc_wiener_filter_set_index, pc_wiener_subclass_table,
@@ -153,7 +157,8 @@ pub use pc_wiener::{
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
 pub use reconstruct_block::{
-    reconstruct_transform_block_residual, reconstruct_transform_block_residual_with_secondary,
+    dequantize_with_secondary, reconstruct_transform_block_residual,
+    reconstruct_transform_block_residual_with_secondary,
 };
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
@@ -167,11 +172,12 @@ pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
     InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams,
     blend_compound_average_equal, blend_compound_average_weighted,
-    blend_compound_average_weighted_sample, subpel_predict_16x16_bilinear_horizontal_overlap_into,
+    blend_compound_average_weighted_sample, subpel_predict_12x12_bilinear_overlap_into,
     subpel_predict_block, subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_fullpel_strided_into_u8,
     subpel_predict_block_compound_average_into, subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
+    subpel_predict_block_compound_average_unscaled_strided_into,
     subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
     subpel_predict_block_into, subpel_predict_block_strided_into,
     subpel_predict_block_strided_into_u8,

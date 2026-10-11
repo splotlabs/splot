@@ -3,196 +3,22 @@
 
 use super::*;
 
-const SHIFT: usize = 8;
-const RECOMPUTED_COLUMNS: [usize; 10] = [0, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-
-/// Reuses the six stable columns shared by horizontally adjacent 16x16
-/// bilinear TIP refine-MV predictors and fills the other ten columns.
-///
-/// `output` must initially contain the prediction for the same reference,
-/// motion vector, and vertical position eight samples left of `params.start_x`.
-/// Returns `Ok(false)` when the current predictor is not an eligible unscaled
-/// 16x16 bilinear block.
-///
-/// # Errors
-///
-/// Returns the same parameter and output-length errors as
-/// [`subpel_predict_block_into`].
-pub fn subpel_predict_16x16_bilinear_horizontal_overlap_into<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    output: &mut [u16],
-) -> Result<bool> {
-    if params.interp != InterpolationFilter::Bilinear
-        || params.step_x != 1 << SCALE_SUBPEL_BITS
-        || params.step_y != 1 << SCALE_SUBPEL_BITS
-        || params.w != 16
-        || params.h != 16
-    {
-        return Ok(false);
-    }
-    validate_subpel_params(params)?;
-    let output_len = params
-        .w
-        .checked_mul(params.h)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "overlapping subpel prediction sample count",
-        })?;
-    if output.len() < output_len {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: output_len,
-            actual: output.len(),
-        });
-    }
-
-    let h_phase = (params.start_x >> 6) & SUBPEL_MASK;
-    let v_phase = (params.start_y >> 6) & SUBPEL_MASK;
-    if h_phase == 0 && v_phase == 0 {
-        reuse_fullpel(reference, params, output);
-        return Ok(true);
-    }
-    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
-    if params.first_x == x0 + 1
-        && params.last_x == x0 + 15
-        && params.first_y == y0 + 1
-        && params.last_y == y0 + 15
-        && fixed_16x16_window_in_bounds(reference, x0, y0)
-        && let Some(samples) = T::u16_slice(reference.samples)
-    {
-        let first = (x0 + 1) as usize;
-        let middle = (x0 + 7) as usize;
-        let vector = (x0 + 8) as usize;
-        let max_sample = i32::from(params.bit_depth.max_sample());
-        for row in 0..params.h {
-            let top = (y0 + (row as i32).clamp(1, 15)) as usize;
-            let bottom = (y0 + (row as i32 + 1).clamp(1, 15)) as usize;
-            let top = &samples[top * reference.stride..];
-            let bottom = &samples[bottom * reference.stride..];
-            let destination = &mut output[row * params.w..][..params.w];
-            destination.copy_within(SHIFT.., 0); // splot-copy-ok: retain stable TIP predictor columns
-            let filtered =
-                overlap_bilinear_u16x8(top, bottom, vector, None, h_phase, v_phase).to_array();
-            destination[SHIFT..].copy_from_slice(&filtered); // splot-copy-ok: publish fixed-window TIP overlap lanes
-            for (column, left, right) in [(0, first, first), (7, middle, middle + 1)] {
-                let top_left = top[left];
-                destination[column] = match (h_phase, v_phase) {
-                    (0, v_phase) => bilinear_sample(top_left, bottom[left], v_phase),
-                    (h_phase, 0) => bilinear_sample(top_left, top[right], h_phase),
-                    (h_phase, v_phase) => {
-                        let top_right = i32::from(top[right]);
-                        let bottom_left = i32::from(bottom[left]);
-                        let bottom_right = i32::from(bottom[right]);
-                        let top = (16 - h_phase) * i32::from(top_left) + h_phase * top_right;
-                        let bottom = (16 - h_phase) * bottom_left + h_phase * bottom_right;
-                        round2_i32((16 - v_phase) * top + v_phase * bottom, 8).clamp(0, max_sample)
-                            as u16
-                    }
-                };
-            }
-        }
-        return Ok(true);
-    }
-    let clipped_columns = RECOMPUTED_COLUMNS.map(|column| {
-        [
-            (x0 + column as i32)
-                .clamp(params.first_x, params.last_x)
-                .clamp(0, reference.width as i32 - 1) as usize,
-            (x0 + column as i32 + 1)
-                .clamp(params.first_x, params.last_x)
-                .clamp(0, reference.width as i32 - 1) as usize,
-        ]
-    });
-    let vector_source = (0..8)
-        .all(|lane| clipped_columns[lane + 2][0] == clipped_columns[2][0] + lane)
-        .then_some(clipped_columns[2][0])
-        .and_then(|start| {
-            if h_phase == 0 {
-                Some((start, None))
-            } else if (0..8).all(|lane| clipped_columns[lane + 2][1] == start + lane + 1) {
-                Some((start, Some(start + 1)))
-            } else {
-                (0..8)
-                    .all(|lane| clipped_columns[lane + 2][1] == start + (lane + 1).min(7))
-                    .then_some((start, None))
-            }
-        });
-    let max_sample = i32::from(params.bit_depth.max_sample());
-    for row in 0..params.h {
-        let top = (y0 + row as i32)
-            .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
-        let bottom = (y0 + row as i32 + 1)
-            .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
-        let top_samples = reference.row(top);
-        let bottom_samples = reference.row(bottom);
-        let destination = &mut output[row * params.w..][..params.w];
-        destination.copy_within(SHIFT.., 0); // splot-copy-ok: retain stable TIP predictor columns
-        let vectorized = if let (Some((start, right_start)), Some(top), Some(bottom)) = (
-            vector_source,
-            T::u16_slice(top_samples),
-            T::u16_slice(bottom_samples),
-        ) {
-            let filtered =
-                overlap_bilinear_u16x8(top, bottom, start, right_start, h_phase, v_phase)
-                    .to_array();
-            destination[SHIFT..].copy_from_slice(&filtered); // splot-copy-ok: publish eight clamped TIP overlap lanes
-            true
-        } else {
-            false
-        };
-        let scalar_columns = if vectorized {
-            2
-        } else {
-            RECOMPUTED_COLUMNS.len()
-        };
-        for (&column, &[left, right]) in RECOMPUTED_COLUMNS[..scalar_columns]
-            .iter()
-            .zip(&clipped_columns)
-        {
-            let top_left = top_samples[left].to_u16();
-            let value = match (h_phase, v_phase) {
-                (0, v_phase) => {
-                    let bottom_left = bottom_samples[left].to_u16();
-                    bilinear_sample(top_left, bottom_left, v_phase)
-                }
-                (h_phase, 0) => {
-                    let top_right = top_samples[right].to_u16();
-                    bilinear_sample(top_left, top_right, h_phase)
-                }
-                (h_phase, v_phase) => {
-                    let top_right = i32::from(top_samples[right].to_u16());
-                    let bottom_left = i32::from(bottom_samples[left].to_u16());
-                    let bottom_right = i32::from(bottom_samples[right].to_u16());
-                    let top = (16 - h_phase) * i32::from(top_left) + h_phase * top_right;
-                    let bottom = (16 - h_phase) * bottom_left + h_phase * bottom_right;
-                    round2_i32((16 - v_phase) * top + v_phase * bottom, 8).clamp(0, max_sample)
-                        as u16
-                }
-            };
-            destination[column] = value;
-        }
-    }
-    Ok(true)
-}
-
 #[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
-pub(super) fn overlap_bilinear_u16x8(
-    top: &[u16],
-    bottom: &[u16],
+pub(super) fn overlap_bilinear_u16x8<T: ReconSample>(
+    top: &[T],
+    bottom: &[T],
     start: usize,
     right_start: Option<usize>,
     h_phase: i32,
     v_phase: i32,
 ) -> Simd<u16, 8> {
-    let top_left_samples = Simd::<u16, 8>::from_slice(&top[start..]);
+    let top_left_samples = reference_lanes::<8, T>(top, start);
     match (h_phase, v_phase) {
         (0, v_phase) => {
             let v_phase = v_phase as u16;
             (top_left_samples * Simd::splat(16 - v_phase)
-                + Simd::<u16, 8>::from_slice(&bottom[start..]) * Simd::splat(v_phase)
+                + reference_lanes::<8, T>(bottom, start) * Simd::splat(v_phase)
                 + Simd::splat(8))
                 >> 4
         }
@@ -200,7 +26,7 @@ pub(super) fn overlap_bilinear_u16x8(
             let h_phase = h_phase as u16;
             let top_right = right_start.map_or_else(
                 || top_left_samples.shift_elements_left::<1>(top_left_samples[7]),
-                |right_start| Simd::<u16, 8>::from_slice(&top[right_start..]),
+                |right_start| reference_lanes::<8, T>(top, right_start),
             );
             (top_left_samples * Simd::splat(16 - h_phase)
                 + top_right * Simd::splat(h_phase)
@@ -209,7 +35,7 @@ pub(super) fn overlap_bilinear_u16x8(
         }
         (h_phase, v_phase) => {
             let h_phase = h_phase as u16;
-            let bottom_left_samples = Simd::<u16, 8>::from_slice(&bottom[start..]);
+            let bottom_left_samples = reference_lanes::<8, T>(bottom, start);
             let (top_right, bottom_right) = right_start.map_or_else(
                 || {
                     (
@@ -219,8 +45,8 @@ pub(super) fn overlap_bilinear_u16x8(
                 },
                 |right_start| {
                     (
-                        Simd::<u16, 8>::from_slice(&top[right_start..]),
-                        Simd::<u16, 8>::from_slice(&bottom[right_start..]),
+                        reference_lanes::<8, T>(top, right_start),
+                        reference_lanes::<8, T>(bottom, right_start),
                     )
                 },
             );
@@ -238,34 +64,128 @@ pub(super) fn overlap_bilinear_u16x8(
     }
 }
 
-fn reuse_fullpel<T: ReconSample>(
+/// Predicts an unscaled 12x12 bilinear block whose every tap lies inside both
+/// the clip bounds and the plane, so no sample is clamped, writing it at
+/// `stride`; returns `Ok(false)` without writing for any other block.
+///
+/// With `reuse`, `output` must hold the same reference's prediction for the
+/// same motion vector eight samples left; its columns 8..12 become columns
+/// 0..4 and only columns 4..12 are filtered.
+///
+/// # Errors
+///
+/// Returns [`ReconError::BufferLengthMismatch`] when `output` cannot hold the
+/// strided block.
+pub fn subpel_predict_12x12_bilinear_overlap_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
-) {
+    stride: usize,
+    reuse: bool,
+) -> Result<bool> {
+    const SIZE: usize = 12;
+    if params.interp != InterpolationFilter::Bilinear
+        || params.step_x != 1 << SCALE_SUBPEL_BITS
+        || params.step_y != 1 << SCALE_SUBPEL_BITS
+        || params.w != SIZE
+        || params.h != SIZE
+        || stride < SIZE
+    {
+        return Ok(false);
+    }
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
-    let direct_x = subpel_direct_copy_x(reference, params);
-    let retained = params.w - SHIFT;
-    for row in 0..params.h {
-        let source_row = (y0 + row as i32).clamp(params.first_y, params.last_y) as usize;
-        let destination = &mut output[row * params.w..][..params.w];
-        destination.copy_within(SHIFT.., 0); // splot-copy-ok: retain seven stable TIP predictor columns
-        if let Some(x) = direct_x {
-            for (slot, sample) in destination[retained..]
-                .iter_mut()
-                .zip(&reference.row(source_row)[x + retained..x + retained + SHIFT])
-            {
-                *slot = sample.to_u16();
-            }
-        } else {
-            for (col, slot) in destination[retained..].iter_mut().enumerate() {
-                let source_col =
-                    (x0 + (retained + col) as i32).clamp(params.first_x, params.last_x) as usize;
-                *slot = reference.sample(source_row, source_col) as u16;
+    if x0 < params.first_x.max(0)
+        || y0 < params.first_y.max(0)
+        || x0 + SIZE as i32 > params.last_x.min(reference.width as i32 - 1)
+        || y0 + SIZE as i32 > params.last_y.min(reference.readable_rows as i32 - 1)
+    {
+        return Ok(false);
+    }
+    let needed = (SIZE - 1) * stride + SIZE;
+    if output.len() < needed {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: needed,
+            actual: output.len(),
+        });
+    }
+    let output = &mut output[..needed];
+    let h_phase = (params.start_x >> 6) & SUBPEL_MASK;
+    let v_phase = (params.start_y >> 6) & SUBPEL_MASK;
+    let (x0, y0) = (x0 as usize, y0 as usize);
+    let ref_stride = reference.stride;
+    let origin = y0 * ref_stride + x0;
+    let Some(window) = reference
+        .samples
+        .get(origin..origin + SIZE * ref_stride + SIZE + 1)
+    else {
+        return Ok(false);
+    };
+    if reuse {
+        for row in 0..SIZE {
+            output.copy_within(row * stride + 8..row * stride + SIZE, row * stride); // splot-copy-ok: retain the four columns the left neighbour already filtered
+        }
+    } else {
+        bilinear_12x12_block::<T, 0>(window, ref_stride, (h_phase, v_phase), output, stride);
+    }
+    bilinear_12x12_block::<T, 4>(window, ref_stride, (h_phase, v_phase), output, stride);
+    Ok(true)
+}
+
+/// Filters the eight columns from `COL` of a 12x12 bilinear block whose
+/// 13x13 source `window` holds every tap unclamped.
+#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[inline(always)]
+fn bilinear_12x12_block<T: ReconSample, const COL: usize>(
+    window: &[T],
+    ref_stride: usize,
+    (h_phase, v_phase): (i32, i32),
+    output: &mut [u16],
+    stride: usize,
+) {
+    const SIZE: usize = 12;
+    let at = |row: usize| &window[row * ref_stride + COL..];
+    let mut store = |row: usize, lanes: Simd<u16, 8>| {
+        lanes.copy_to_slice(&mut output[row * stride + COL..row * stride + COL + 8]);
+    };
+    match (h_phase, v_phase) {
+        (0, 0) => (0..SIZE).for_each(|row| store(row, reference_lanes::<8, T>(at(row), 0))),
+        (h_phase, 0) => (0..SIZE).for_each(|row| {
+            let source = at(row);
+            let lanes = bilinear_u16(
+                reference_lanes::<8, T>(source, 0),
+                reference_lanes::<8, T>(source, 1),
+                h_phase,
+            );
+            store(row, lanes);
+        }),
+        (0, v_phase) => {
+            let mut top = reference_lanes::<8, T>(at(0), 0);
+            for row in 0..SIZE {
+                let bottom = reference_lanes::<8, T>(at(row + 1), 0);
+                store(row, bilinear_u16(top, bottom, v_phase));
+                top = bottom;
             }
         }
-        let first_col = x0.clamp(params.first_x, params.last_x) as usize;
-        destination[0] = reference.sample(source_row, first_col) as u16;
+        (h_phase, v_phase) => {
+            let left_weight = Simd::splat(16 - h_phase as u16);
+            let right_weight = Simd::splat(h_phase as u16);
+            let horizontal = |row: usize| {
+                let source = at(row);
+                reference_lanes::<8, T>(source, 0) * left_weight
+                    + reference_lanes::<8, T>(source, 1) * right_weight
+            };
+            let mut top = horizontal(0);
+            for row in 0..SIZE {
+                let bottom = horizontal(row + 1);
+                let blended = tap_mac(
+                    tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),
+                    bottom.cast(),
+                    v_phase,
+                );
+                store(row, round2_simd(blended, 8).cast::<u16>());
+                top = bottom;
+            }
+        }
     }
 }

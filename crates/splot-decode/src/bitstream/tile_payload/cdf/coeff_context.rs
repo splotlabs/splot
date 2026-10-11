@@ -10,6 +10,8 @@ const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
 const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
 
+const SIG_OFFSETS: [[[i32; 2]; SIG_REF_DIFF_OFFSET_NUM]; 3] = SIG_REF_DIFF_OFFSET;
+
 const MAX_BASE_BR_RANGE: u32 = 6;
 
 const MAG_REF_OFFSET_WITH_TX_CLASS: [[[usize; 2]; 3]; 3] = [
@@ -33,6 +35,14 @@ const fn tx_class_idx(tx_class: usize) -> usize {
 fn clamped_level_at(level: &[u8], stride: usize, row: usize, col: usize, limit: u32) -> u32 {
     level
         .get(row.wrapping_mul(stride).wrapping_add(col))
+        .map_or(0, |&value| u32::from(value).min(limit))
+}
+
+/// [`clamped_level_at`] for the neighbour `(dr, dc)` of the flat position
+/// `base`, with the same wrapping index arithmetic.
+fn level_near(level: &[u8], base: usize, stride: usize, dr: usize, dc: usize, limit: u32) -> u32 {
+    level
+        .get(base.wrapping_add(dr.wrapping_mul(stride)).wrapping_add(dc))
         .map_or(0, |&value| u32::from(value).min(limit))
 }
 
@@ -77,25 +87,11 @@ impl CoeffBrContext {
     pub(crate) fn ctx(self, level: &[u8]) -> usize {
         let is_dc = self.row == 0 && self.col == 0;
         let class_idx = tx_class_idx(self.tx_class);
-        let num = if class_idx != 0 && self.plane > 0 {
-            2
-        } else {
-            3
+        let mag = match class_idx {
+            1 => self.neighbour_mag::<1>(level),
+            2 => self.neighbour_mag::<2>(level),
+            _ => self.neighbour_mag::<0>(level),
         };
-        let clamp = MAX_BASE_BR_RANGE - 1;
-        let mut mag: u32 = 0;
-        let mut idx = 0;
-        while idx < num {
-            let off = MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx];
-            mag += clamped_level_at(
-                level,
-                self.stride,
-                self.row.wrapping_add(off[0]),
-                self.col.wrapping_add(off[1]),
-                clamp,
-            );
-            idx += 1;
-        }
         let mag = ((mag + 1) >> 1).min(MAX_BASE_BR_RANGE) as usize;
         if self.plane > 0 {
             mag.min(3)
@@ -103,6 +99,23 @@ impl CoeffBrContext {
             mag + 7
         } else {
             mag
+        }
+    }
+
+    /// Clamped neighbour sum for one class; a constant class makes every
+    /// offset a constant.
+    #[inline]
+    fn neighbour_mag<const CLASS: usize>(self, level: &[u8]) -> u32 {
+        let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
+        let at = |[dr, dc]: [usize; 2]| {
+            level_near(level, base, self.stride, dr, dc, MAX_BASE_BR_RANGE - 1)
+        };
+        let offsets = MAG_REF_OFFSET_WITH_TX_CLASS[CLASS];
+        let mag = at(offsets[0]) + at(offsets[1]);
+        if CLASS != 0 && self.plane > 0 {
+            mag
+        } else {
+            mag + at(offsets[2])
         }
     }
 }
@@ -152,30 +165,11 @@ impl CoeffBaseContext {
     #[inline]
     pub(crate) fn select(&self, level: &[u8]) -> CoeffBaseSelection {
         let class_idx = tx_class_idx(self.tx_class);
-        let num = if self.plane > 0 {
-            if class_idx == 0 { 3 } else { 2 }
-        } else {
-            SIG_REF_DIFF_OFFSET_NUM
+        let mag = match class_idx {
+            1 => self.neighbour_mag::<1>(level),
+            2 => self.neighbour_mag::<2>(level),
+            _ => self.neighbour_mag::<0>(level),
         };
-        let mut mag: u32 = 0;
-        let mut idx = 0;
-        while idx < num {
-            let off = SIG_REF_DIFF_OFFSET[class_idx][idx];
-            let mag_limit: u32 =
-                if self.is_lf && (class_idx == 0 || idx < 2) && !(self.is_hidden && self.c == 0) {
-                    5
-                } else {
-                    3
-                };
-            mag += clamped_level_at(
-                level,
-                self.stride,
-                self.row.wrapping_add(off[0] as usize),
-                self.col.wrapping_add(off[1] as usize),
-                mag_limit,
-            );
-            idx += 1;
-        }
         let ctx = ((mag + 1) >> 1) as usize;
 
         if self.is_hidden && self.c == 0 {
@@ -225,6 +219,28 @@ impl CoeffBaseContext {
             ctx2 + 15
         };
         CoeffBaseSelection::Hf { ctx: hf_ctx }
+    }
+
+    /// Clamped neighbour sum for one class; a constant class makes every
+    /// offset a constant.
+    #[inline]
+    fn neighbour_mag<const CLASS: usize>(&self, level: &[u8]) -> u32 {
+        let lf_limit = self.is_lf && !(self.is_hidden && self.c == 0);
+        let near_limit = if lf_limit { 5 } else { 3 };
+        let far_limit = if lf_limit && CLASS == 0 { 5 } else { 3 };
+        let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
+        let at = |[dr, dc]: [i32; 2], limit| {
+            level_near(level, base, self.stride, dr as usize, dc as usize, limit)
+        };
+        let offsets = SIG_OFFSETS[CLASS];
+        let mag = at(offsets[0], near_limit) + at(offsets[1], near_limit);
+        if self.plane == 0 {
+            mag + at(offsets[2], far_limit) + at(offsets[3], far_limit) + at(offsets[4], far_limit)
+        } else if CLASS == 0 {
+            mag + at(offsets[2], far_limit)
+        } else {
+            mag
+        }
     }
 }
 

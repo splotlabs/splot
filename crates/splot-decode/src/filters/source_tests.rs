@@ -116,6 +116,54 @@ fn stripe_windows_cover_first_middle_and_terminal_margins_for_all_formats() {
 }
 
 #[test]
+fn unread_window_planes_hold_no_rows_and_a_later_read_fails_closed() {
+    let pattern = |y: usize| {
+        (0..16)
+            .map(|x| ((y * 17 + x * 3) & 255) as u16)
+            .collect::<Vec<_>>()
+    };
+    let stripes = [(0, 56), (56, 120), (120, 129)];
+    for slide in [false, true] {
+        let (_progress, mut rows) = crate::test_support::frontier_rows(workspace(16, 129));
+        assert!(rows.publish_final_rows(129));
+        let (mut window, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
+        for (start, end) in stripes {
+            let carry = (!slide).then_some(&mut carry);
+            window
+                .copy_window(&mut rows, carry, (start, end), 2, [true, false, false])
+                .expect("luma-only stripe window");
+            let planes = window.planes().expect("window planes");
+            let (first, last) = window_bounds((start, end), 0, 2, 129).expect("luma bounds");
+            for y in first..last {
+                assert_eq!(planes.y.row(y), Some(pattern(y).as_slice()));
+            }
+            for plane in [planes.u.expect("u plane"), planes.v.expect("v plane")] {
+                assert!(plane.samples().is_empty());
+                assert!((0..65).all(|y| plane.row(y).is_none()));
+            }
+        }
+        let (_progress, mut rows) = crate::test_support::frontier_rows(workspace(16, 129));
+        assert!(rows.publish_final_rows(129));
+        let (mut window, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
+        window
+            .copy_window(
+                &mut rows,
+                Some(&mut carry),
+                stripes[0],
+                2,
+                [true, false, false],
+            )
+            .expect("luma-only stripe window");
+        let carry = (!slide).then_some(&mut carry);
+        assert!(
+            window
+                .copy_window(&mut rows, carry, stripes[1], 2, [true; 3])
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn stripe_rect_mut_rejects_a_rectangle_overhanging_the_row() {
     let mut stripe = StripePlane::from_samples(4, 2, 0, vec![0; 8]).expect("a valid stripe");
     let rect = PlaneRect::new(3, 0, 2, 1).expect("a valid rectangle");

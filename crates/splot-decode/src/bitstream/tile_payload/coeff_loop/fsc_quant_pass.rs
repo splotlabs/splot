@@ -145,10 +145,9 @@ fn fsc_branch_tx_size_facts(
     plane_tx_type: usize,
     coeff_cdf_q_ctx: usize,
 ) -> Result<CoeffFscBranchTxSizeFacts, CoeffFscBranchError> {
-    let raw_tx_width = TX_WIDTH
-        .get(tx_size)
-        .copied()
-        .ok_or(CoeffFscBranchError::InvalidTransformSize { tx_size })?;
+    let Some(&raw_tx_width) = TX_WIDTH.get(tx_size) else {
+        return Err(CoeffFscBranchError::InvalidTransformSize { tx_size });
+    };
     let tx_width = usize::try_from(raw_tx_width).map_err(|_| {
         CoeffFscBranchError::InvalidTransformSizeTableValue {
             table: "Tx_Width",
@@ -156,10 +155,9 @@ fn fsc_branch_tx_size_facts(
             value: raw_tx_width,
         }
     })?;
-    let raw_tx_height = TX_HEIGHT
-        .get(tx_size)
-        .copied()
-        .ok_or(CoeffFscBranchError::InvalidTransformSize { tx_size })?;
+    let Some(&raw_tx_height) = TX_HEIGHT.get(tx_size) else {
+        return Err(CoeffFscBranchError::InvalidTransformSize { tx_size });
+    };
     let tx_height = usize::try_from(raw_tx_height).map_err(|_| {
         CoeffFscBranchError::InvalidTransformSizeTableValue {
             table: "Tx_Height",
@@ -231,11 +229,13 @@ fn fsc_branch_tx_size_facts(
             value: tx_size_sqr_up,
         });
     }
-    let tx_size_ctx = tx_size_sqr
+    let Some(tx_size_ctx) = tx_size_sqr
         .checked_add(tx_size_sqr_up)
         .and_then(|sum| sum.checked_add(1))
         .map(|sum| sum >> 1)
-        .ok_or(CoeffFscBranchError::TransformSizeContextOverflow { tx_size })?;
+    else {
+        return Err(CoeffFscBranchError::TransformSizeContextOverflow { tx_size });
+    };
 
     let scan = coefficient_scan_slice(
         tx_width.min(MAX_SCAN_DIMENSION),
@@ -282,6 +282,9 @@ fn validate_fsc_block_geometry(
     Ok(())
 }
 
+/// Reads each FSC coefficient's sign and remainder. With TCQ and parity
+/// hiding off, a zero level reads nothing and leaves every state unchanged,
+/// and its quant of 0 is already in the block, so it is skipped.
 fn apply_interleaved_fsc_quant_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -302,10 +305,11 @@ fn apply_interleaved_fsc_quant_pass(
     });
     for (index, entry) in walk.entries().enumerate() {
         let sign_input = derive_fsc_sign_input(entry, block, config)?;
-        let sign = read_fsc_sign_symbol(cdfs, symbols, sign_input)?;
-        if sign_input.level != 0 {
-            block.set_quant_sign(entry.row(), entry.col(), quant_sign_value(sign))?;
+        if sign_input.level == 0 {
+            continue;
         }
+        let sign = read_fsc_sign_symbol(cdfs, symbols, sign_input)?;
+        block.set_quant_sign(entry.row(), entry.col(), quant_sign_value(sign))?;
         let read_quant = read_quant_state.read_one(
             symbols,
             index,

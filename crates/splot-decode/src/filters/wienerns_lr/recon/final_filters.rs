@@ -15,20 +15,19 @@ use crate::filters::source::{
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
 use splot_recon::{
-    BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
-    PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyPaddedSource,
-    PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PlaneId,
-    PlaneRect, ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
-    WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
-    WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch, WienerNsLumaFilter,
-    WienerNsLumaPaddedSource, WienerNsLumaScratch, loop_restoration_source_sample,
+    BitDepth, LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
+    PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES,
+    PcWienerClassifyPaddedSource, PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter,
+    PcWienerPaddedSource, PlaneId, PlaneRect, ReconError, ReconSample, Result as ReconResult,
+    WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS,
+    WIENER_NS_LUMA_TAP_RADIUS, WienerNsChromaFilter, WienerNsChromaPaddedSource,
+    WienerNsChromaScratch, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
-    pc_wiener_filter_block_padded_u16_into, pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    pc_wiener_filter_set_index, pc_wiener_subclass_table,
     wiener_ns_filter_chroma_block_padded_u8_into, wiener_ns_filter_chroma_block_padded_u16_into,
     wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_cells_u8_into,
-    wiener_ns_filter_luma_block_padded_cells_u16_into, wiener_ns_filter_luma_block_padded_into,
-    wiener_ns_filter_luma_block_padded_u8_into, wiener_ns_filter_luma_block_padded_u16_into,
+    wiener_ns_filter_luma_block_padded_cells_u8_into, wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_luma_block_padded_u8_into,
 };
 
 thread_local! {
@@ -38,7 +37,7 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     static WIENER_NS_CHROMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
-    static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
+    static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<LrSourceScratch>>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -78,10 +77,10 @@ fn with_wiener_ns_luma_scratch<T: ReconSample, R>(
 const MAX_RETAINED_LR_SCRATCH_ELEMENTS: usize = 64 * 1024;
 
 #[derive(Default)]
-struct LrSourceScratch<T> {
-    primary: Vec<T>,
-    secondary: Vec<T>,
-    cell_subclasses: Vec<usize>,
+struct LrSourceScratch {
+    primary: Vec<u16>,
+    secondary: Vec<u16>,
+    cell_subclasses: Vec<u8>,
 }
 
 pub(crate) struct LrFrame<'a, T> {
@@ -94,6 +93,9 @@ pub(crate) struct LrFrame<'a, T> {
     pub(crate) post_lr_y: Option<StripeOutputPlane>,
     pub(crate) post_lr_u: Option<StripeOutputPlane>,
     pub(crate) post_lr_v: Option<StripeOutputPlane>,
+    /// The luma post-LR plane already holds the CDEF output, so a flat LR
+    /// strip needs no write.
+    post_lr_y_holds_cdef: bool,
 }
 
 pub(crate) struct FilteredStripe {
@@ -145,6 +147,9 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 initializations[plane_id.index()],
             )?;
         }
+        let post_lr_y_holds_cdef = !direct_u8_planes[PlaneId::Y.index()]
+            && (target.get(PlaneId::Y).is_none()
+                || initializations[PlaneId::Y.index()] == StripeInitialization::CopyAll);
         let mut copy = |plane_id: PlaneId, plane: &mut StripePlane| {
             let end_y = plane.end_y().ok_or(StripeCopyError::Geometry)?;
             let Some(target) = target.take(plane_id) else {
@@ -206,6 +211,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
             post_lr_y,
             post_lr_u,
             post_lr_v,
+            post_lr_y_holds_cdef,
         })
     }
 
@@ -224,7 +230,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
     }
 }
 
-impl<T> LrSourceScratch<T> {
+impl LrSourceScratch {
     fn is_bounded(&self) -> bool {
         [
             self.primary.capacity(),
@@ -252,12 +258,9 @@ fn lr_plane_window_error(error: &ReconError, plane: PlaneId) -> crate::error::De
     }
 }
 
-fn with_lr_source_scratch<T: ReconSample, R>(f: impl FnOnce(&mut LrSourceScratch<T>) -> R) -> R {
+fn with_lr_source_scratch<R>(f: impl FnOnce(&mut LrSourceScratch) -> R) -> R {
     LR_SOURCE_SCRATCH.with(|slot| {
-        let mut scratch = slot
-            .take()
-            .and_then(|scratch| scratch.downcast::<LrSourceScratch<T>>().ok())
-            .unwrap_or_default();
+        let mut scratch = slot.take().unwrap_or_default();
         let result = f(&mut scratch);
         if scratch.is_bounded() {
             slot.set(Some(scratch));
@@ -656,6 +659,24 @@ enum LrDestination<'a> {
     U8(&'a mut [u8]),
 }
 
+impl LrDestination<'_> {
+    /// The destination from column `x` of its first row.
+    fn columns_from(&mut self, x: usize) -> Result<LrDestination<'_>> {
+        Ok(match self {
+            Self::U16(output) => LrDestination::U16(
+                output
+                    .get_mut(x..)
+                    .ok_or_else(super::lr_pipeline_state_error)?,
+            ),
+            Self::U8(output) => LrDestination::U8(
+                output
+                    .get_mut(x..)
+                    .ok_or_else(super::lr_pipeline_state_error)?,
+            ),
+        })
+    }
+}
+
 fn chroma_lr_block_destination<'a>(
     plane: &'a mut StripeOutputPlane,
     block: &WienerNsLrSourceBlock,
@@ -707,8 +728,10 @@ impl CdefOverlap {
     }
 }
 
-struct LrSourceWindow<'a, T> {
-    samples: &'a [T],
+/// A padded § 7.20.2 source window held as `u16` for every sample storage, so
+/// the `u16` CDEF rows copy without a narrowing check.
+struct LrSourceWindow<'a> {
+    samples: &'a [u16],
     stride: usize,
     origin_x: isize,
     origin_y: isize,
@@ -735,19 +758,32 @@ impl<T: ReconSample> LrSourceRow<'_, T> {
     }
 }
 
-impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
-    /// Resolves one padded § 7.17 source window into `samples`.
-    ///
-    /// Every row is written across the whole stride, so a buffer that already
-    /// holds enough samples keeps its previous contents instead of being
-    /// cleared and refilled.
+/// The geometry every row of one padded § 7.20.2 source window shares.
+///
+/// The § 7.20.2 column clip does not depend on the row, so every row
+/// replicates its left edge sample over the first `pre` columns, copies
+/// `mid` samples from `mid_start`, and replicates its right edge sample over
+/// the rest.
+struct LrWindowGeometry {
+    resolved: LoopRestorationPlaneBounds,
+    plane_height: usize,
+    y0: isize,
+    x0: isize,
+    stride: usize,
+    rows: usize,
+    left: usize,
+    right: usize,
+    pre: usize,
+    mid: usize,
+    mid_start: usize,
+}
+
+impl LrWindowGeometry {
     #[allow(clippy::too_many_arguments)]
-    fn materialize(
-        samples: &'a mut Vec<T>,
+    fn new<T: ReconSample>(
         plane: PlaneId,
         curr_plane: FramePlane<'_, T>,
         cdef_plane: &StripePlane,
-        cdef_overlap: &[StripePlane],
         bounds: &LoopRestorationSourceBounds,
         block_x: isize,
         block_y: isize,
@@ -768,112 +804,380 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
         let rows = height
             .checked_add(radius_y.checked_mul(2).ok_or(OVERFLOW_WINDOW)?)
             .ok_or(OVERFLOW_WINDOW)?;
-        let sample_count = stride.checked_mul(rows).ok_or(OVERFLOW_WINDOW)?;
-        let radius_x = isize::try_from(radius_x).map_err(|_| OVERFLOW_WINDOW)?;
-        let radius_y = isize::try_from(radius_y).map_err(|_| OVERFLOW_WINDOW)?;
-        if let Some(missing) = sample_count.checked_sub(samples.len()).filter(|n| *n > 0) {
-            samples.try_reserve_exact(missing).map_err(|_| {
-                ReconError::WorkspaceAllocationFailed {
-                    plane,
-                    context: "LR source window",
-                }
-            })?;
-            samples.resize(sample_count, T::default());
+        let offset = |value: isize, radius: usize| value.checked_sub(isize::try_from(radius).ok()?);
+        let x0 = offset(block_x, radius_x).ok_or(OVERFLOW_WINDOW)?;
+        let resolved = LoopRestorationPlaneBounds::new(plane, bounds)?;
+        let left = resolved.sample(isize::MIN, 0).x;
+        let right = resolved.sample(isize::MAX, 0).x;
+        if right >= plane_width {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LR source frame bounds",
+            });
         }
-        for row_index in 0..rows {
-            let y = block_y
-                .checked_sub(radius_y)
-                .and_then(|top| top.checked_add(isize::try_from(row_index).ok()?))
-                .ok_or(OVERFLOW_WINDOW)?;
-            let left = loop_restoration_source_sample(plane, isize::MIN, y, bounds)?;
-            let right = loop_restoration_source_sample(plane, isize::MAX, y, bounds)?;
-            if right.x >= plane_width || left.y >= plane_height {
-                return Err(ReconError::PcWienerInvalidBounds {
-                    field: "LR source frame bounds",
-                });
-            }
-            let source_row = match left.source {
-                LoopRestorationSource::CurrFrame => {
-                    LrSourceRow::Curr(curr_plane.row(left.y).ok_or(
-                        ReconError::BufferLengthMismatch {
-                            expected: left.y.saturating_add(1),
-                            actual: curr_plane.frame_height(),
-                        },
-                    )?)
-                }
-                LoopRestorationSource::CdefFrame => LrSourceRow::Cdef(
-                    cdef_plane
-                        .row(left.y)
-                        .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(left.y)))
-                        .ok_or(ReconError::BufferLengthMismatch {
-                            expected: left.y.saturating_add(1),
-                            actual: cdef_plane.end_y().unwrap_or(cdef_plane.origin_y()),
-                        })?,
-                ),
-            };
-            let min_x = isize::try_from(left.x).map_err(|_| OVERFLOW_WINDOW)?;
-            let max_x = isize::try_from(right.x).map_err(|_| OVERFLOW_WINDOW)?;
-            let x0 = block_x.checked_sub(radius_x).ok_or(OVERFLOW_WINDOW)?;
-            let stride_i = isize::try_from(stride).map_err(|_| OVERFLOW_WINDOW)?;
-            let pre = min_x
-                .checked_sub(x0)
-                .ok_or(OVERFLOW_WINDOW)?
-                .clamp(0, stride_i) as usize;
-            let post = x0
-                .checked_add(stride_i)
-                .and_then(|end| end.checked_sub(1))
-                .and_then(|last| last.checked_sub(max_x))
-                .ok_or(OVERFLOW_WINDOW)?
-                .clamp(
-                    0,
-                    stride_i.checked_sub(pre as isize).ok_or(OVERFLOW_WINDOW)?,
-                ) as usize;
-            let mid = stride - pre - post;
-            let left_value = T::try_from_u16(source_row.get(left.x).ok_or(
-                ReconError::BufferLengthMismatch {
-                    expected: left.x.saturating_add(1),
-                    actual: source_row.len(),
-                },
-            )?)?;
-            let row_start = row_index * stride;
-            samples[row_start..row_start + pre].fill(left_value);
-            if mid > 0 {
-                let mid_start = (x0 + pre as isize) as usize;
-                let mid_end = mid_start.saturating_add(mid);
-                let missing = ReconError::BufferLengthMismatch {
-                    expected: mid_end,
-                    actual: source_row.len(),
-                };
-                let output = &mut samples[row_start + pre..row_start + pre + mid];
-                match &source_row {
-                    LrSourceRow::Curr(row) => {
-                        output.copy_from_slice(row.get(mid_start..mid_end).ok_or(missing)?);
+        let min_x = isize::try_from(left).map_err(|_| OVERFLOW_WINDOW)?;
+        let max_x = isize::try_from(right).map_err(|_| OVERFLOW_WINDOW)?;
+        let stride_i = isize::try_from(stride).map_err(|_| OVERFLOW_WINDOW)?;
+        let pre = min_x
+            .checked_sub(x0)
+            .ok_or(OVERFLOW_WINDOW)?
+            .clamp(0, stride_i) as usize;
+        let post = x0
+            .checked_add(stride_i)
+            .and_then(|end| end.checked_sub(1))
+            .and_then(|last| last.checked_sub(max_x))
+            .ok_or(OVERFLOW_WINDOW)?
+            .clamp(
+                0,
+                stride_i.checked_sub(pre as isize).ok_or(OVERFLOW_WINDOW)?,
+            ) as usize;
+        Ok(Self {
+            resolved,
+            plane_height,
+            y0: offset(block_y, radius_y).ok_or(OVERFLOW_WINDOW)?,
+            x0,
+            stride,
+            rows,
+            left,
+            right,
+            pre,
+            mid: stride - pre - post,
+            mid_start: (x0 + pre as isize) as usize,
+        })
+    }
+
+    /// Resolves window row `row_index` to its § 7.20.2 source row.
+    fn row<'a, T: ReconSample>(
+        &self,
+        row_index: usize,
+        curr_plane: FramePlane<'a, T>,
+        cdef_plane: &'a StripePlane,
+        cdef_overlap: &'a [StripePlane],
+    ) -> ReconResult<LrSourceRow<'a, T>> {
+        let y = isize::try_from(row_index)
+            .ok()
+            .and_then(|row| self.y0.checked_add(row))
+            .ok_or(OVERFLOW_WINDOW)?;
+        let sample = self.resolved.sample(0, y);
+        if sample.y >= self.plane_height {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "LR source frame bounds",
+            });
+        }
+        Ok(match sample.source {
+            LoopRestorationSource::CurrFrame => {
+                LrSourceRow::Curr(curr_plane.row(sample.y).ok_or_else(|| {
+                    ReconError::BufferLengthMismatch {
+                        expected: sample.y.saturating_add(1),
+                        actual: curr_plane.frame_height(),
                     }
-                    LrSourceRow::Cdef(row) => {
-                        let source = row.get(mid_start..mid_end).ok_or(missing)?;
+                })?)
+            }
+            LoopRestorationSource::CdefFrame => LrSourceRow::Cdef(
+                cdef_plane
+                    .row(sample.y)
+                    .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(sample.y)))
+                    .ok_or_else(|| ReconError::BufferLengthMismatch {
+                        expected: sample.y.saturating_add(1),
+                        actual: cdef_plane.end_y().unwrap_or(cdef_plane.origin_y()),
+                    })?,
+            ),
+        })
+    }
+
+    /// The source samples of `row` themselves when no window column is
+    /// clipped and the row already holds `u16` samples.
+    fn borrowed<'a, T: ReconSample>(&self, row: &LrSourceRow<'a, T>) -> Option<&'a [u16]> {
+        if self.mid != self.stride {
+            return None;
+        }
+        let columns = self.mid_start..self.mid_start.checked_add(self.stride)?;
+        match *row {
+            LrSourceRow::Curr(row) => T::u16_slice(row.get(columns)?),
+            LrSourceRow::Cdef(row) => row.get(columns),
+        }
+    }
+
+    fn write<T: ReconSample>(
+        &self,
+        source_row: &LrSourceRow<'_, T>,
+        output: &mut [u16],
+    ) -> ReconResult<()> {
+        let edge = |x: usize| {
+            source_row.get(x).ok_or(ReconError::BufferLengthMismatch {
+                expected: x.saturating_add(1),
+                actual: source_row.len(),
+            })
+        };
+        let (pre, mid) = (self.pre, self.mid);
+        output[..pre].fill(edge(self.left)?);
+        if mid > 0 {
+            let mid_end = self.mid_start.saturating_add(mid);
+            let missing = ReconError::BufferLengthMismatch {
+                expected: mid_end,
+                actual: source_row.len(),
+            };
+            let output = &mut output[pre..pre + mid];
+            match source_row {
+                LrSourceRow::Curr(row) => {
+                    let source = row.get(self.mid_start..mid_end).ok_or(missing)?;
+                    if let Some(source) = T::u16_slice(source) {
+                        output.copy_from_slice(source);
+                    } else {
                         for (output, &value) in output.iter_mut().zip(source) {
-                            *output = T::try_from_u16(value)?;
+                            *output = value.to_u16();
                         }
                     }
                 }
+                LrSourceRow::Cdef(row) => {
+                    output.copy_from_slice(row.get(self.mid_start..mid_end).ok_or(missing)?);
+                }
             }
-            let right_value = T::try_from_u16(source_row.get(right.x).ok_or(
-                ReconError::BufferLengthMismatch {
-                    expected: right.x.saturating_add(1),
-                    actual: source_row.len(),
-                },
-            )?)?;
-            samples[row_start + pre + mid..row_start + stride].fill(right_value);
+        }
+        output[pre + mid..].fill(edge(self.right)?);
+        Ok(())
+    }
+}
+
+/// A § 7.20.1 stripe is 64 luma rows and no LR block spans two, so a luma
+/// source window never holds more rows than this, and a `u128` row mask
+/// covers it.
+const MAX_LR_WINDOW_ROWS: usize = 64 + 2 * PC_WIENER_CLASSIFY_READ_RADIUS;
+const _: () = assert!(MAX_LR_WINDOW_ROWS <= 128);
+
+/// A padded § 7.20.2 luma source window as rows: an unclipped row borrows its
+/// source plane row, and only a clipped or `u8` row is resolved into the
+/// scratch.
+struct LrSourceRows<'a> {
+    rows: [&'a [u16]; MAX_LR_WINDOW_ROWS],
+    len: usize,
+    radius: usize,
+    origin_x: isize,
+    origin_y: isize,
+}
+
+impl<'a> LrSourceRows<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn resolve<T: ReconSample>(
+        scratch: &'a mut Vec<u16>,
+        curr_plane: FramePlane<'a, T>,
+        cdef_plane: &'a StripePlane,
+        cdef_overlap: &'a [StripePlane],
+        bounds: &LoopRestorationSourceBounds,
+        block_x: isize,
+        block_y: isize,
+        width: usize,
+        height: usize,
+        radius: usize,
+    ) -> ReconResult<Self> {
+        let geometry = LrWindowGeometry::new(
+            PlaneId::Y,
+            curr_plane,
+            cdef_plane,
+            bounds,
+            block_x,
+            block_y,
+            width,
+            height,
+            (radius, radius),
+        )?;
+        let (stride, len) = (geometry.stride, geometry.rows);
+        if len > MAX_LR_WINDOW_ROWS {
+            return Err(OVERFLOW_WINDOW);
+        }
+        reserve_window(
+            scratch,
+            PlaneId::Y,
+            stride.checked_mul(len).ok_or(OVERFLOW_WINDOW)?,
+        )?;
+        let cdef_origin = usize_to_isize_recon(cdef_plane.origin_y(), "LR source window rows")?;
+        let (cdef_first, cdef_last) = geometry.resolved.cdef_rows();
+        let cdef_first = cdef_first.max(cdef_origin);
+        let cdef_start = |y: isize| {
+            let row = usize::try_from(y.checked_sub(cdef_origin)?).ok()?;
+            row.checked_mul(cdef_plane.width())?
+                .checked_add(geometry.mid_start)
+        };
+        let unclipped = geometry.mid == stride;
+        let mut rows: [&'a [u16]; MAX_LR_WINDOW_ROWS] = [&[]; MAX_LR_WINDOW_ROWS];
+        let mut in_scratch = 0u128;
+        for (row_index, row) in rows.iter_mut().enumerate().take(len) {
+            let y = geometry.y0 + row_index as isize;
+            if unclipped
+                && (cdef_first..=cdef_last).contains(&y)
+                && let Some(samples) = cdef_start(y)
+                    .and_then(|start| cdef_plane.samples().get(start..start.checked_add(stride)?))
+            {
+                *row = samples;
+                continue;
+            }
+            let source = geometry.row(row_index, curr_plane, cdef_plane, cdef_overlap)?;
+            if let Some(samples) = geometry.borrowed(&source) {
+                *row = samples;
+                continue;
+            }
+            geometry.write(
+                &source,
+                &mut scratch[row_index * stride..(row_index + 1) * stride],
+            )?;
+            in_scratch |= 1 << row_index;
+        }
+        let scratch: &'a [u16] = scratch;
+        for (row_index, row) in rows.iter_mut().enumerate().take(len) {
+            if in_scratch & (1 << row_index) != 0 {
+                *row = &scratch[row_index * stride..(row_index + 1) * stride];
+            }
+        }
+        Ok(Self {
+            rows,
+            len,
+            radius,
+            origin_x: geometry.x0,
+            origin_y: geometry.y0,
+        })
+    }
+
+    /// The rows reaching `tap_radius` around the block, and the column in
+    /// each row where they start.
+    fn tail(&self, tap_radius: usize) -> Option<(&[&'a [u16]], usize)> {
+        let skip = self.radius.checked_sub(tap_radius)?;
+        Some((self.rows.get(skip..self.len - skip)?, skip))
+    }
+}
+
+/// The one value that the `width` columns from `col` of every row hold.
+fn flat_lr_window(rows: &[&[u16]], col: usize, width: usize) -> Option<u16> {
+    use std::simd::{Simd, num::SimdUint};
+    const LANES: usize = 16;
+    let value = *rows.first()?.get(col)?;
+    let splat = Simd::<u16, LANES>::splat(value);
+    rows.iter()
+        .all(|row| {
+            let Some(row) = col.checked_add(width).and_then(|end| row.get(col..end)) else {
+                return false;
+            };
+            let Some(last) = row.last_chunk::<LANES>() else {
+                return row.iter().all(|&sample| sample == value);
+            };
+            let diff = row
+                .as_chunks::<LANES>()
+                .0
+                .iter()
+                .fold(Simd::from_array(*last) ^ splat, |diff, chunk| {
+                    diff | (Simd::from_array(*chunk) ^ splat)
+                });
+            diff.reduce_or() == 0
+        })
+        .then_some(value)
+}
+
+/// Walks the `width` output columns of a luma LR block in 64-column strips
+/// and calls `run(x, end, flat)` once for each flat strip, with its value,
+/// and once for each run of uneven strips, with `None`. A strip is flat when
+/// its whole tap reach, `radius` columns and rows past it in `rows` from
+/// column `col`, holds one value `v <= max_sample`: the § 7.20.3 tap
+/// differences are then zero and the § 7.20.4 taps sum to zero, so both
+/// filters return `v`, and no other process reads the strip's classes.
+fn for_each_lr_strip(
+    rows: &[&[u16]],
+    col: usize,
+    width: usize,
+    radius: usize,
+    max_sample: u16,
+    mut run: impl FnMut(usize, usize, Option<u16>) -> Result<()>,
+) -> Result<()> {
+    const STRIP: usize = 64;
+    let flat_at = |x: usize| {
+        flat_lr_window(rows, col + x, STRIP.min(width - x) + 2 * radius)
+            .filter(|&value| value <= max_sample)
+    };
+    let (mut x, mut next) = (0, flat_at(0));
+    while x < width {
+        let flat = next.take();
+        let mut end = (x + STRIP).min(width);
+        while end < width {
+            next = flat_at(end);
+            if flat.is_some() || next.is_some() {
+                break;
+            }
+            end = (end + STRIP).min(width);
+        }
+        run(x, end, flat)?;
+        x = end;
+    }
+    Ok(())
+}
+
+fn fill_lr_rect<O: Copy>(
+    output: &mut [O],
+    stride: usize,
+    width: usize,
+    height: usize,
+    value: O,
+) -> Result<()> {
+    for row in 0..height {
+        let start = row
+            .checked_mul(stride)
+            .ok_or_else(super::lr_pipeline_state_error)?;
+        output
+            .get_mut(start..start.saturating_add(width))
+            .ok_or_else(super::lr_pipeline_state_error)?
+            .fill(value);
+    }
+    Ok(())
+}
+
+fn reserve_window(samples: &mut Vec<u16>, plane: PlaneId, sample_count: usize) -> ReconResult<()> {
+    if let Some(missing) = sample_count.checked_sub(samples.len()).filter(|n| *n > 0) {
+        samples
+            .try_reserve_exact(missing)
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "LR source window",
+            })?;
+        samples.resize(sample_count, 0);
+    }
+    Ok(())
+}
+
+impl<'a> LrSourceWindow<'a> {
+    /// Resolves one padded § 7.17 source window into `samples`.
+    ///
+    /// Every row is written across the whole stride, so a buffer that already
+    /// holds enough samples keeps its previous contents instead of being
+    /// cleared and refilled.
+    #[allow(clippy::too_many_arguments)]
+    fn materialize<T: ReconSample>(
+        samples: &'a mut Vec<u16>,
+        plane: PlaneId,
+        curr_plane: FramePlane<'_, T>,
+        cdef_plane: &StripePlane,
+        cdef_overlap: &[StripePlane],
+        bounds: &LoopRestorationSourceBounds,
+        block_x: isize,
+        block_y: isize,
+        width: usize,
+        height: usize,
+        radius: (usize, usize),
+    ) -> ReconResult<Self> {
+        let geometry = LrWindowGeometry::new(
+            plane, curr_plane, cdef_plane, bounds, block_x, block_y, width, height, radius,
+        )?;
+        let stride = geometry.stride;
+        let sample_count = stride.checked_mul(geometry.rows).ok_or(OVERFLOW_WINDOW)?;
+        reserve_window(samples, plane, sample_count)?;
+        for (row_index, output) in samples[..sample_count].chunks_exact_mut(stride).enumerate() {
+            let row = geometry.row(row_index, curr_plane, cdef_plane, cdef_overlap)?;
+            geometry.write(&row, output)?;
         }
         Ok(Self {
             samples: samples.get(..sample_count).ok_or(OVERFLOW_WINDOW)?,
             stride,
-            origin_x: block_x.checked_sub(radius_x).ok_or(OVERFLOW_WINDOW)?,
-            origin_y: block_y.checked_sub(radius_y).ok_or(OVERFLOW_WINDOW)?,
+            origin_x: geometry.x0,
+            origin_y: geometry.y0,
         })
     }
 
-    fn tail_from(&self, x: isize, y: isize) -> Option<(&[T], usize)> {
+    fn tail_from(&self, x: isize, y: isize) -> Option<(&[u16], usize)> {
         let col = usize::try_from(x.checked_sub(self.origin_x)?).ok()?;
         let row = usize::try_from(y.checked_sub(self.origin_y)?).ok()?;
         if col >= self.stride {
@@ -884,11 +1188,11 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
     }
 
     #[cfg(test)]
-    fn get_abs(&self, x: isize, y: isize) -> T {
+    fn get_abs(&self, x: isize, y: isize) -> u16 {
         let col = x.saturating_sub(self.origin_x);
         let row = y.saturating_sub(self.origin_y);
         if col < 0 || row < 0 || col as usize >= self.stride {
-            return T::default();
+            return 0;
         }
         self.samples
             .get(
@@ -1020,6 +1324,7 @@ impl StripeChain<'_> {
                 .cdef_y
                 .end_y()
                 .ok_or_else(super::lr_pipeline_state_error)?;
+            let fill_flat = !frame.post_lr_y_holds_cdef;
             let post_lr_y = frame
                 .post_lr_y
                 .as_mut()
@@ -1041,6 +1346,7 @@ impl StripeChain<'_> {
                             qindex,
                             filter_set_index,
                             post_lr_y,
+                            fill_flat,
                         )?;
                     }
                     LrUnitRestorationType::WienerNonsep => {
@@ -1055,6 +1361,7 @@ impl StripeChain<'_> {
                                 filter_set_index,
                                 coeffs,
                                 post_lr_y,
+                                fill_flat,
                             )?;
                         } else {
                             let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, &block)?];
@@ -1068,6 +1375,7 @@ impl StripeChain<'_> {
                                 0,
                                 &coeffs,
                                 post_lr_y,
+                                fill_flat,
                             )?;
                         }
                     }
@@ -1144,6 +1452,7 @@ impl StripeChain<'_> {
         qindex: u32,
         filter_set_index: usize,
         post_lr: &mut StripePlane,
+        fill_flat: bool,
     ) -> Result<()> {
         let block = clipped_lr_source_block(
             block,
@@ -1164,9 +1473,8 @@ impl StripeChain<'_> {
                 cell_subclasses,
                 ..
             } = scratch;
-            let window = LrSourceWindow::<T>::materialize(
+            let window = LrSourceRows::resolve(
                 primary,
-                PlaneId::Y,
                 curr_luma,
                 cdef_luma,
                 cdef_luma_overlap,
@@ -1175,47 +1483,55 @@ impl StripeChain<'_> {
                 block_y,
                 block.width,
                 block.height,
-                {
-                    let radius = PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS);
-                    (radius, radius)
-                },
+                PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS),
             )
             .map_err(lr_window_error)?;
-            let subclass_map = self.luma_lr_cell_subclasses(
-                &block,
-                &window,
-                qindex,
-                PC_WIENER_FULL_CLASSES,
-                filter_set_index,
-                cell_subclasses,
-            )?;
-            let params = PcWienerFilter {
-                width: block.width,
-                height: block.height,
-                output_stride,
-                bit_depth: self.bit_depth,
-                filter_set_index,
-                subclass_block_size: MI_SIZE,
-                subclasses: subclass_map,
-            };
-            let tap_radius = isize::try_from(PC_WIENER_FILTER_TAP_RADIUS)
-                .map_err(|_| super::lr_pipeline_state_error())?;
-            let (padded, padded_stride) = window
-                .tail_from(
-                    block_x.saturating_sub(tap_radius),
-                    block_y.saturating_sub(tap_radius),
-                )
+            let (rows, col) = window
+                .tail(PC_WIENER_FILTER_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
-            let padded_source =
-                PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
-                    .map_err(lr_window_error)?;
-            if let Some(output) = T::from_u16_slice_mut(output) {
-                pc_wiener_filter_block_padded(output, &params, &padded_source)
-                    .map_err(lr_window_error)?;
-            } else {
-                pc_wiener_filter_block_padded_u16_into(output, &params, &padded_source)
-                    .map_err(lr_window_error)?;
-            }
+            for_each_lr_strip(
+                rows,
+                col,
+                block.width,
+                PC_WIENER_FILTER_TAP_RADIUS,
+                self.bit_depth.max_sample(),
+                |x, end, flat| {
+                    if flat.is_some() && !fill_flat {
+                        return Ok(());
+                    }
+                    let output = output
+                        .get_mut(x..)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    if let Some(value) = flat {
+                        return fill_lr_rect(output, output_stride, end - x, block.height, value);
+                    }
+                    let mut sub = block;
+                    sub.x += x;
+                    sub.width = end - x;
+                    let subclass_map = self.luma_lr_cell_subclasses(
+                        &sub,
+                        &window,
+                        qindex,
+                        PC_WIENER_FULL_CLASSES,
+                        filter_set_index,
+                        cell_subclasses,
+                    )?;
+                    let params = PcWienerFilter {
+                        width: sub.width,
+                        height: block.height,
+                        output_stride,
+                        bit_depth: self.bit_depth,
+                        filter_set_index,
+                        subclass_block_size: MI_SIZE,
+                        subclasses: subclass_map,
+                    };
+                    let padded_source =
+                        PcWienerPaddedSource::from_rows(rows, col + x, sub.width, block.height)
+                            .map_err(lr_window_error)?;
+                    pc_wiener_filter_block_padded(output, &params, &padded_source)
+                        .map_err(lr_window_error)
+                },
+            )?;
             self.preserve_lossless_lr_samples(
                 PlaneId::Y,
                 &block,
@@ -1290,7 +1606,7 @@ impl StripeChain<'_> {
                 cfl_ds_filter_index: self.cfl_ds_filter_index,
             };
             with_lr_source_scratch(|scratch| -> Result<()> {
-                let chroma_window = LrSourceWindow::<T>::materialize(
+                let chroma_window = LrSourceWindow::materialize(
                     &mut scratch.primary,
                     plane_id,
                     curr_chroma,
@@ -1312,7 +1628,7 @@ impl StripeChain<'_> {
                 let luma_block_y = block_y
                     .checked_mul(1 << sub_y)
                     .ok_or_else(super::lr_pipeline_state_error)?;
-                let luma_window = LrSourceWindow::<T>::materialize(
+                let luma_window = LrSourceWindow::materialize(
                     &mut scratch.secondary,
                     PlaneId::Y,
                     curr_luma,
@@ -1345,7 +1661,7 @@ impl StripeChain<'_> {
                         luma_block_y.saturating_sub(luma_radius_y as isize),
                     )
                     .ok_or_else(super::lr_pipeline_state_error)?;
-                let padded_source = WienerNsChromaPaddedSource::new(
+                let padded_source = WienerNsChromaPaddedSource::new_prevalidated(
                     chroma_padded,
                     chroma_stride,
                     luma_padded,
@@ -1355,7 +1671,7 @@ impl StripeChain<'_> {
                     (sub_x as u8, sub_y as u8),
                 )
                 .map_err(|error| lr_plane_window_error(&error, plane_id))?;
-                with_wiener_ns_chroma_scratch(|scratch| match &mut output {
+                with_wiener_ns_chroma_scratch::<u16, _>(|scratch| match &mut output {
                     LrDestination::U16(output) => wiener_ns_filter_chroma_block_padded_u16_into(
                         output,
                         &params,
@@ -1404,6 +1720,7 @@ impl StripeChain<'_> {
         filter_set_index: usize,
         coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
         post_lr: &mut StripeOutputPlane,
+        fill_flat: bool,
     ) -> Result<()> {
         let block = clipped_lr_source_block(
             block,
@@ -1412,10 +1729,6 @@ impl StripeChain<'_> {
             self.luma_width,
             self.luma_height,
         )?;
-        let sample_count = block
-            .width
-            .checked_mul(block.height)
-            .ok_or_else(super::lr_pipeline_state_error)?;
         let bounds = crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, 0, 0);
         let block_x = usize_to_isize_recon(block.x, "luma LR block x")
             .map_err(|_| super::lr_pipeline_state_error())?;
@@ -1428,9 +1741,8 @@ impl StripeChain<'_> {
                 cell_subclasses,
                 ..
             } = scratch;
-            let window = LrSourceWindow::<T>::materialize(
+            let window = LrSourceRows::resolve(
                 primary,
-                PlaneId::Y,
                 curr_luma,
                 cdef_luma,
                 cdef_luma_overlap,
@@ -1439,100 +1751,107 @@ impl StripeChain<'_> {
                 block_y,
                 block.width,
                 block.height,
-                {
-                    let radius = WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS);
-                    (radius, radius)
-                },
+                WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
             )
             .map_err(lr_window_error)?;
-            let cell_subclass_map = if num_classes > 1 {
-                Some(self.luma_lr_cell_subclasses(
-                    &block,
-                    &window,
-                    qindex,
-                    num_classes,
-                    filter_set_index,
-                    cell_subclasses,
-                )?)
-            } else {
-                None
-            };
-            let params = WienerNsLumaFilter {
-                width: block.width,
-                height: block.height,
-                output_stride,
-                bit_depth: self.bit_depth,
-                coeffs_by_class: coeffs,
-                subclasses: None,
-            };
-            let tap_radius = isize::try_from(WIENER_NS_LUMA_TAP_RADIUS)
-                .map_err(|_| super::lr_pipeline_state_error())?;
-            let (padded, padded_stride) = window
-                .tail_from(
-                    block_x.saturating_sub(tap_radius),
-                    block_y.saturating_sub(tap_radius),
-                )
+            let (rows, col) = window
+                .tail(WIENER_NS_LUMA_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
-            let padded_source =
-                WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
-                    .map_err(lr_window_error)?;
-            with_wiener_ns_luma_scratch(sample_count, |scratch| match &mut output {
-                LrDestination::U16(output) => {
-                    if let Some(output) = T::from_u16_slice_mut(output) {
-                        if let Some(cell_subclasses) = cell_subclass_map {
-                            wiener_ns_filter_luma_block_padded_cells_into(
-                                output,
-                                &params,
-                                &padded_source,
-                                cell_subclasses,
-                                scratch,
-                            )
-                        } else {
-                            wiener_ns_filter_luma_block_padded_into(
-                                output,
-                                &params,
-                                &padded_source,
-                                scratch,
-                            )
+            for_each_lr_strip(
+                rows,
+                col,
+                block.width,
+                WIENER_NS_LUMA_TAP_RADIUS,
+                self.bit_depth.max_sample(),
+                |x, end, flat| {
+                    if flat.is_some() && !fill_flat {
+                        return Ok(());
+                    }
+                    let mut output = output.columns_from(x)?;
+                    let mut sub = block;
+                    sub.x += x;
+                    sub.width = end - x;
+                    if let Some(value) = flat {
+                        return match output {
+                            LrDestination::U16(output) => {
+                                fill_lr_rect(output, output_stride, sub.width, sub.height, value)
+                            }
+                            LrDestination::U8(output) => {
+                                let value = u8::try_from(value)
+                                    .map_err(|_| super::lr_pipeline_state_error())?;
+                                fill_lr_rect(output, output_stride, sub.width, sub.height, value)
+                            }
+                        };
+                    }
+                    let sample_count = sub
+                        .width
+                        .checked_mul(sub.height)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    let cell_subclass_map = if num_classes > 1 {
+                        Some(self.luma_lr_cell_subclasses(
+                            &sub,
+                            &window,
+                            qindex,
+                            num_classes,
+                            filter_set_index,
+                            cell_subclasses,
+                        )?)
+                    } else {
+                        None
+                    };
+                    let params = WienerNsLumaFilter {
+                        width: sub.width,
+                        height: sub.height,
+                        output_stride,
+                        bit_depth: self.bit_depth,
+                        coeffs_by_class: coeffs,
+                        subclasses: None,
+                    };
+                    let padded_source =
+                        WienerNsLumaPaddedSource::from_rows(rows, col + x, sub.width, sub.height)
+                            .map_err(lr_window_error)?;
+                    with_wiener_ns_luma_scratch::<u16, _>(sample_count, |scratch| match &mut output
+                    {
+                        LrDestination::U16(output) => {
+                            if let Some(cell_subclasses) = cell_subclass_map {
+                                wiener_ns_filter_luma_block_padded_cells_into(
+                                    output,
+                                    &params,
+                                    &padded_source,
+                                    cell_subclasses,
+                                    scratch,
+                                )
+                            } else {
+                                wiener_ns_filter_luma_block_padded_into(
+                                    output,
+                                    &params,
+                                    &padded_source,
+                                    scratch,
+                                )
+                            }
                         }
-                    } else if let Some(cell_subclasses) = cell_subclass_map {
-                        wiener_ns_filter_luma_block_padded_cells_u16_into(
-                            output,
-                            &params,
-                            &padded_source,
-                            cell_subclasses,
-                            scratch,
-                        )
-                    } else {
-                        wiener_ns_filter_luma_block_padded_u16_into(
-                            output,
-                            &params,
-                            &padded_source,
-                            scratch,
-                        )
-                    }
-                }
-                LrDestination::U8(output) => {
-                    if let Some(cell_subclasses) = cell_subclass_map {
-                        wiener_ns_filter_luma_block_padded_cells_u8_into(
-                            output,
-                            &params,
-                            &padded_source,
-                            cell_subclasses,
-                            scratch,
-                        )
-                    } else {
-                        wiener_ns_filter_luma_block_padded_u8_into(
-                            output,
-                            &params,
-                            &padded_source,
-                            scratch,
-                        )
-                    }
-                }
-            })
-            .map_err(lr_window_error)?;
-            Ok(())
+                        LrDestination::U8(output) => {
+                            if let Some(cell_subclasses) = cell_subclass_map {
+                                wiener_ns_filter_luma_block_padded_cells_u8_into(
+                                    output,
+                                    &params,
+                                    &padded_source,
+                                    cell_subclasses,
+                                    scratch,
+                                )
+                            } else {
+                                wiener_ns_filter_luma_block_padded_u8_into(
+                                    output,
+                                    &params,
+                                    &padded_source,
+                                    scratch,
+                                )
+                            }
+                        }
+                    })
+                    .map_err(lr_window_error)
+                },
+            )
         })?;
         match output {
             LrDestination::U16(output) => self.preserve_lossless_lr_samples(
@@ -1609,15 +1928,15 @@ impl StripeChain<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn luma_lr_cell_subclasses<'a, T: ReconSample>(
+    fn luma_lr_cell_subclasses<'a>(
         &self,
         block: &WienerNsLrSourceBlock,
-        window: &LrSourceWindow<'_, T>,
+        window: &LrSourceRows<'_>,
         qindex: u32,
         num_classes: usize,
         filter_set_index: usize,
-        cell_subclasses: &'a mut Vec<usize>,
-    ) -> Result<&'a [usize]> {
+        cell_subclasses: &'a mut Vec<u8>,
+    ) -> Result<&'a [u8]> {
         let cell_cols = block.width.div_ceil(MI_SIZE).max(1);
         let cell_rows = block.height.div_ceil(MI_SIZE).max(1);
         let Some(tx_skip_grid) = self.tx_skip_grid else {
@@ -1646,91 +1965,53 @@ impl StripeChain<'_> {
         }
         let subclass_table =
             pc_wiener_subclass_table(num_classes, filter_set_index).map_err(lr_window_error)?;
-        let padded_source = PcWienerClassifyPaddedSource::new_prevalidated(
-            window.samples,
-            window.stride,
+        let padded_source = PcWienerClassifyPaddedSource::from_rows(
+            &window.rows[..window.len],
+            0,
             window.origin_x,
             window.origin_y,
             self.bit_depth,
         )
         .map_err(lr_window_error)?;
-        let mut group_start = 0;
-        while group_start < cell_cols {
-            let class_x = block
-                .x
-                .checked_add(group_start.saturating_mul(MI_SIZE))
-                .ok_or_else(super::lr_pipeline_state_error)?;
-            let block_start_x = (class_x >> 6) << 6;
-            let mut group_end = group_start + 1;
-            while group_end < cell_cols {
-                let next_x = block
-                    .x
-                    .checked_add(group_end.saturating_mul(MI_SIZE))
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                if ((next_x >> 6) << 6) != block_start_x {
-                    break;
-                }
-                group_end += 1;
+        let last_x = cell_cols
+            .checked_sub(1)
+            .and_then(|last| last.checked_mul(MI_SIZE))
+            .and_then(|span| block.x.checked_add(span))
+            .ok_or_else(super::lr_pipeline_state_error)?;
+        let block_end_x = super::super::pc_wiener_block_end_x(block, (last_x >> 6) << 6)
+            .map_err(|_| super::lr_pipeline_state_error())?;
+        let params = PcWienerClassifyParams {
+            x: usize_to_isize_recon(block.x, "luma LR PC-Wiener x")
+                .map_err(|_| super::lr_pipeline_state_error())?,
+            y: usize_to_isize_recon(block.y, "luma LR PC-Wiener y")
+                .map_err(|_| super::lr_pipeline_state_error())?,
+            bit_depth: self.bit_depth,
+            base_q_idx: qindex,
+            block_start_x: (block.x >> 6) << 6,
+            block_end_x,
+            luma_stripe_start_y: block.luma_stripe_start_y,
+            luma_stripe_end_y: block.luma_stripe_end_y,
+            tile_start_y,
+            tile_end_y,
+        };
+        with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
+            let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+                &params,
+                cell_cols,
+                cell_rows,
+                &padded_source,
+                |run| tx_skip_grid.run(run.row, run.col, run.len),
+                scratch,
+            )
+            .map_err(lr_window_error)?;
+            if classes.len() != cell_subclasses.len() {
+                return Err(super::lr_pipeline_state_error());
             }
-            let block_end_x = super::super::pc_wiener_block_end_x(block, block_start_x)
-                .map_err(|_| super::lr_pipeline_state_error())?;
-            let params = PcWienerClassifyParams {
-                x: usize_to_isize_recon(class_x, "luma LR PC-Wiener x")
-                    .map_err(|_| super::lr_pipeline_state_error())?,
-                y: usize_to_isize_recon(block.y, "luma LR PC-Wiener y")
-                    .map_err(|_| super::lr_pipeline_state_error())?,
-                bit_depth: self.bit_depth,
-                base_q_idx: qindex,
-                block_start_x,
-                block_end_x,
-                luma_stripe_start_y: block.luma_stripe_start_y,
-                luma_stripe_end_y: block.luma_stripe_end_y,
-                tile_start_y,
-                tile_end_y,
-            };
-            let group_cols = group_end - group_start;
-            with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
-                let classes = pc_wiener_classify_grid_padded_classes_into::<T, _>(
-                    &params,
-                    group_cols,
-                    cell_rows,
-                    &padded_source,
-                    |lookup| {
-                        tx_skip_grid.lookup(
-                            crate::filters::wienerns_lr::wienerns_lr_tx_skip_lookup_from_pc(lookup),
-                        )
-                    },
-                    scratch,
-                )
-                .map_err(lr_window_error)?;
-                for cell_row in 0..cell_rows {
-                    let class_start = cell_row
-                        .checked_mul(group_cols)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    let class_end = class_start
-                        .checked_add(group_cols)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    let cell_start = cell_row
-                        .checked_mul(cell_cols)
-                        .and_then(|start| start.checked_add(group_start))
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    let cell_end = cell_start
-                        .checked_add(group_cols)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    let Some(classes) = classes.get(class_start..class_end) else {
-                        return Err(super::lr_pipeline_state_error());
-                    };
-                    let Some(cells) = cell_subclasses.get_mut(cell_start..cell_end) else {
-                        return Err(super::lr_pipeline_state_error());
-                    };
-                    for (cell, &class) in cells.iter_mut().zip(classes) {
-                        *cell = usize::from(subclass_table[usize::from(class)]);
-                    }
-                }
-                Ok(())
-            })?;
-            group_start = group_end;
-        }
+            for (cell, &class) in cell_subclasses.iter_mut().zip(classes) {
+                *cell = subclass_table[usize::from(class)];
+            }
+            Ok(())
+        })?;
 
         Ok(cell_subclasses)
     }
