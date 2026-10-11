@@ -351,28 +351,54 @@ fn eight_bit_row(bytes: Simd<u8, 16>, taps: Simd<i16, NUM_TAPS>) -> Line8 {
     half >> (INTER_ROUND0 - 1) as i16
 }
 
-/// Source row `row` of the cell: the horizontal-pass intermediate when
-/// `HORIZONTAL`, else the samples themselves.
+/// A source row of the cell from its window: the horizontal-pass intermediate
+/// when `HORIZONTAL`, else the samples themselves.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn line8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>, row: usize) -> Option<Line8> {
+fn line8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>, window: &[T]) -> Line8 {
     if HORIZONTAL {
-        let window = window8(cell, row, 2 * NUM_TAPS)?;
         let Some(index) = cell.gather else {
             if let Some(bytes) = T::u8_slice(window) {
-                return Some(eight_bit_row(Simd::from_slice(bytes), cell.h_taps));
+                return eight_bit_row(Simd::from_slice(bytes), cell.h_taps);
             }
-            return Some(Row8::slid_intermediate(window, 0, cell.h_taps));
+            return Row8::slid_intermediate(window, 0, cell.h_taps);
         };
         let lanes = gather16(reference_lanes::<16, T>(window, 0), index).to_array();
-        return Some(Row8::slid_intermediate(&lanes[..], 0, cell.gather_taps));
+        return Row8::slid_intermediate(&lanes[..], 0, cell.gather_taps);
     }
-    let lanes = reference_lanes::<8, T>(window8(cell, row, 8)?, 0);
-    Some(
-        cell.gather
-            .map_or(lanes, |index| gather8(lanes, index[0]))
-            .cast(),
-    )
+    let lanes = reference_lanes::<8, T>(window, 0);
+    cell.gather
+        .map_or(lanes, |index| gather8(lanes, index[0]))
+        .cast()
+}
+
+/// Fills `lines` with `line` of source rows `0..lines.len()`. Unclamped rows
+/// step through the plane by stride instead of a lookup and a bounds check
+/// per row.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn fill8<T: ReconSample, L, const HORIZONTAL: bool>(
+    cell: &Cell8<'_, T>,
+    lines: &mut [L],
+    line: impl Fn(Line8) -> L,
+) -> Option<()> {
+    let len = if HORIZONTAL { 2 * NUM_TAPS } else { 8 };
+    if let Some(top) = cell.unclamped
+        && cell.stride >= len
+        && let Some(block) = lines
+            .len()
+            .checked_mul(cell.stride)
+            .and_then(|size| cell.samples.get(top..)?.get(..size))
+    {
+        for (slot, row) in lines.iter_mut().zip(block.chunks_exact(cell.stride)) {
+            *slot = line(line8::<T, HORIZONTAL>(cell, &row[..len]));
+        }
+        return Some(());
+    }
+    for (row, slot) in lines.iter_mut().enumerate() {
+        *slot = line(line8::<T, HORIZONTAL>(cell, window8(cell, row, len)?));
+    }
+    Some(())
 }
 
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
@@ -398,9 +424,7 @@ fn vertical8<const TAPS: usize>(lines: &[Line8], taps: &[i32], shift: u32) -> Op
 fn two_pass8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>) -> Option<[Row8; 8]> {
     let mut lines = [Line8::splat(0); 8 + NUM_TAPS - 1];
     let count = (8 + cell.v_taps.len() - 1).min(lines.len());
-    for (row, line) in lines[..count].iter_mut().enumerate() {
-        *line = line8::<T, HORIZONTAL>(cell, row)?;
-    }
+    fill8::<T, _, HORIZONTAL>(cell, &mut lines[..count], |line| line)?;
     let shift = if HORIZONTAL {
         INTER_ROUND1_COMPOUND
     } else {
@@ -471,17 +495,14 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
             (false, true) => two_pass8::<T, false>(self),
             (true, false) => {
                 let mut out = [Row8::splat(0); 8];
-                for (row, out) in out.iter_mut().enumerate() {
-                    *out = line8::<T, true>(self, row)?.cast();
-                }
+                fill8::<T, _, true>(self, &mut out, SimdInt::cast)?;
                 Some(out)
             }
             (false, false) => {
                 let mut out = [Row8::splat(0); 8];
-                for (row, out) in out.iter_mut().enumerate() {
-                    *out =
-                        line8::<T, false>(self, row)?.cast() << (FILTER_BITS - INTER_ROUND0) as i32;
-                }
+                fill8::<T, _, false>(self, &mut out, |line| {
+                    line.cast() << (FILTER_BITS - INTER_ROUND0) as i32
+                })?;
                 Some(out)
             }
         }
