@@ -691,6 +691,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
         .map_or(block.rect.luma_w.max(block.rect.luma_h), |grid| {
             grid.unit_size()
         });
+    let [mut luma0, mut luma1] = LumaReference::pair(sink.info(), &block, offset);
     for region_y in (0..block.rect.luma_h).step_by(base_unit) {
         for region_x in (0..block.rect.luma_w).step_by(base_unit) {
             let region_w = (block.rect.luma_w - region_x).min(base_unit);
@@ -713,24 +714,20 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                 prediction_rect.luma_h,
                 |pred0, pred1| {
                     initial_luma_prediction::<_, 0>(
-                        sink,
-                        block.reference0,
+                        &mut luma0,
                         prediction_rect,
                         base_mvs[0],
                         InterpolationFilter::Bilinear,
                         candidates.map(|mvs| (mvs[0], region_w, region_h)),
-                        offset,
                         None,
                         pred0,
                     )?;
                     initial_luma_prediction::<_, 0>(
-                        sink,
-                        block.reference1,
+                        &mut luma1,
                         prediction_rect,
                         base_mvs[1],
                         InterpolationFilter::Bilinear,
                         candidates.map(|mvs| (mvs[1], region_w, region_h)),
-                        offset,
                         None,
                         pred1,
                     )?;
@@ -829,11 +826,12 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
 /// not take. An 8x8 unit is a single optical-flow unit, so its two initial
 /// predictions and § 7.13.3.9 delta stay on the stack instead of going through
 /// a motion grid.
-pub(super) fn tip_unit_motion_cell<T: ReconSample>(
+pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    unit: CompoundMcBlock<'_, T>,
+    unit: CompoundMcBlock<'a, T>,
     unit_size: usize,
     offset: ByteOffset,
+    luma: &mut [LumaReference<'a, T>; 2],
 ) -> Result<MotionCell> {
     let mvs = [unit.mv0, unit.mv1];
     let refinemv = unit
@@ -863,19 +861,13 @@ pub(super) fn tip_unit_motion_cell<T: ReconSample>(
         .and_then(CompoundMotionGrid::uniform_refinemv_candidates);
     let bit_depth = sink.info().bit_depth();
     let mut predictions = [[0u16; 64]; 2];
-    for (reference, (samples, prediction)) in [unit.reference0, unit.reference1]
-        .into_iter()
-        .zip(&mut predictions)
-        .enumerate()
-    {
+    for (reference, (luma, prediction)) in luma.iter_mut().zip(&mut predictions).enumerate() {
         initial_luma_prediction::<_, 0>(
-            sink,
-            samples,
+            luma,
             unit.rect,
             base_mvs[reference],
             InterpolationFilter::Bilinear,
             candidates.map(|mvs| (mvs[reference], 8, 8)),
-            offset,
             None,
             prediction,
         )?;
@@ -960,6 +952,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                         cells,
                     )?;
                 let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
+                let mut luma = LumaReference::pair(sink.info(), &block, offset);
                 let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
                 let mut previous_refined = false;
                 for (column, destination) in cells.iter_mut().enumerate() {
@@ -984,17 +977,16 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                     unit.has_chroma = false;
                     unit.sub8x8_chroma = false;
                     let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
-                        sink,
                         unit,
-                        offset,
                         reuse_horizontal,
                         &mut initial_predictions,
+                        &mut luma,
                     )?;
                     previous_unit = Some((rect, mvs));
                     previous_refined = refined.is_some();
                     *destination = match refined {
                         Some(cell) => cell,
-                        None => tip_unit_motion_cell(sink, unit, unit_size, offset)?,
+                        None => tip_unit_motion_cell(sink, unit, unit_size, offset, &mut luma)?,
                     };
                 }
                 Ok::<_, crate::error::DecodeError>(())
@@ -1026,6 +1018,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             &mut cells,
         )?;
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
+    let mut luma = LumaReference::pair(sink.info(), &block, offset);
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;
     for index in 0..unit_count {
@@ -1050,11 +1043,10 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit.has_chroma = false;
         unit.sub8x8_chroma = false;
         let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
-            sink,
             unit,
-            offset,
             reuse_horizontal,
             &mut initial_predictions,
+            &mut luma,
         )?;
         previous_unit = Some((rect, mvs));
         previous_refined = refined.is_some();
@@ -1065,7 +1057,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             *destination = cell;
             continue;
         }
-        let cell = tip_unit_motion_cell(sink, unit, unit_size, offset)?;
+        let cell = tip_unit_motion_cell(sink, unit, unit_size, offset, &mut luma)?;
         let destination = cells.get_mut(index).ok_or(ReconError::ArithmeticOverflow {
             context: "TIP compound motion-grid write",
         })?;
@@ -1084,36 +1076,90 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     })
 }
 
+/// One luma reference of a block's refine-MV and optical-flow predictions,
+/// with the setup [`initial_luma_prediction`] would repeat for each unit: the
+/// unit-independent plane scaling and the last plane view it fetched.
+#[derive(Clone, Copy)]
+pub(super) struct LumaReference<'a, T: ReconSample> {
+    samples: ReferenceSamples<'a, T>,
+    scaling: PlaneScaling,
+    view: Option<ReferencePlaneView<'a, T>>,
+    bit_depth: splot_recon::BitDepth,
+    offset: ByteOffset,
+}
+
+impl<'a, T: ReconSample> LumaReference<'a, T> {
+    pub(super) fn new(
+        info: DecodedFrameInfo,
+        samples: ReferenceSamples<'a, T>,
+        offset: ByteOffset,
+    ) -> Self {
+        let (reference, frame) = (samples.info().coded_luma_size(), info.coded_luma_size());
+        let scaling = derive_plane_scaling(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            reference.width() as i32,
+            reference.height() as i32,
+            frame.width() as i32,
+            frame.height() as i32,
+        )
+        .with_reference_storage(samples.info().storage_luma_size(), 0, 0);
+        Self {
+            samples,
+            scaling,
+            view: None,
+            bit_depth: info.bit_depth(),
+            offset,
+        }
+    }
+
+    pub(super) fn pair(
+        info: DecodedFrameInfo,
+        block: &CompoundMcBlock<'a, T>,
+        offset: ByteOffset,
+    ) -> [Self; 2] {
+        [block.reference0, block.reference1].map(|samples| Self::new(info, samples, offset))
+    }
+
+    pub(super) const fn bit_depth(&self) -> splot_recon::BitDepth {
+        self.bit_depth
+    }
+
+    /// The luma view, published down to `last_row`: the last fetched view
+    /// when its published rows reach that row, else a new one (with the same
+    /// errors as fetching it per unit).
+    fn view(&mut self, last_row: i32) -> Result<ReferencePlaneView<'a, T>> {
+        if let Some(view) = self.view {
+            let row = (last_row.max(0) as usize).min(view.height() - 1);
+            if view.readable_row(row).is_some() {
+                return Ok(view);
+            }
+        }
+        let (view, _, _) = self.samples.plane_view(PlaneId::Y, last_row, self.offset)?;
+        self.view = Some(view);
+        Ok(view)
+    }
+}
+
 /// Predicts the bilinear refine-MV or optical-flow luma area `rect`, `INSET`
 /// samples in from each edge. `tip_centre` is `Some(reuse)` for the 12x12 TIP
 /// refine-MV centre, which then takes the dedicated kernel when it applies.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    reference: ReferenceSamples<'_, T>,
+    luma: &mut LumaReference<'_, T>,
     rect: McBlockRect,
     mv: Mv,
     interp: InterpolationFilter,
     refinemv_area: Option<(Mv, usize, usize)>,
-    offset: ByteOffset,
     tip_centre: Option<bool>,
     output: &mut [u16],
 ) -> Result<()> {
-    let reference_size = reference.info().coded_luma_size();
-    let frame_size = sink.info().coded_luma_size();
-    let scaling = derive_plane_scaling(
-        rect.luma_x as i32,
-        rect.luma_y as i32,
-        mv.row,
-        mv.col,
-        0,
-        0,
-        reference_size.width() as i32,
-        reference_size.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
-    )
-    .with_reference_storage(reference.info().storage_luma_size(), 0, 0);
+    let scaling =
+        luma.scaling
+            .with_mv(rect.luma_x as i32, rect.luma_y as i32, mv.row, mv.col, 0, 0);
     let bounds = refinemv_area.map(|(candidate, width, height)| {
         super::refinemv::reference_area_bounds(
             rect.luma_x as i32,
@@ -1138,10 +1184,9 @@ pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
         first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
         last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
         last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
-        bit_depth: sink.info().bit_depth(),
+        bit_depth: luma.bit_depth,
     };
-    let (view, _, _) =
-        reference.plane_view(PlaneId::Y, subpel_last_reference_row(&params), offset)?;
+    let view = luma.view(subpel_last_reference_row(&params))?;
     let (first, available) = (INSET * rect.luma_w + INSET, output.len());
     let output = output
         .get_mut(first..)

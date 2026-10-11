@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use super::super::optflow::LumaReference;
 use super::super::tests::{frame_for, workspace_for};
 use super::*;
 use crate::pipeline::frame_progress::FrameProgress;
@@ -84,12 +85,14 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
         .expect("views")
         .motion_cell(&sink, &block, (rect, mvs), 8)
         .expect("fast cell");
+    let mut luma = LumaReference::pair(sink.info(), &block, offset);
     let full = if block.search_refinemv && search_range_allowed(mvs) {
-        tip_refinemv_optflow_motion_cell(&sink, block, offset, [false; 2], &mut [[0; 256]; 2])
+        tip_refinemv_optflow_motion_cell(block, [false; 2], &mut [[0; 256]; 2], &mut luma)
             .expect("refined cell")
             .expect("searched unit")
     } else {
-        super::super::optflow::tip_unit_motion_cell(&sink, block, 8, offset).expect("unit cell")
+        super::super::optflow::tip_unit_motion_cell(&sink, block, 8, offset, &mut luma)
+            .expect("unit cell")
     };
     assert_eq!(
         fast.is_some(),
@@ -312,6 +315,38 @@ fn tip_fullpel_cells_read_only_the_published_prefix() {
     }
 }
 
+/// A luma reference reuses its view only for rows the view has published: a
+/// later unit past them fails as a unit with its own view does.
+#[test]
+fn luma_reference_refetches_views_past_the_published_prefix() {
+    let progress = partly_published(24);
+    let published = progress.read().expect("published frame");
+    let reference = ReferenceSamples::publishing(&published).expect("reference");
+    let workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, WIDTH, HEIGHT);
+    let info = workspace.info();
+    let offset = ByteOffset::new(0);
+    let predict = |luma: &mut LumaReference<'_, u8>, y: usize| {
+        let rect = McBlockRect::from_luma_rect(16, y, 8, 8);
+        let mut output = [0u16; 64];
+        super::super::optflow::initial_luma_prediction::<_, 0>(
+            luma,
+            rect,
+            mv(3, 5),
+            InterpolationFilter::Bilinear,
+            None,
+            None,
+            &mut output,
+        )
+        .map(|()| output)
+    };
+    let mut cached = LumaReference::new(info, reference, offset);
+    let inside = predict(&mut cached, 8).expect("inside the prefix");
+    let fresh = predict(&mut LumaReference::new(info, reference, offset), 8);
+    assert_eq!(fresh.expect("fresh view"), inside);
+    assert!(predict(&mut cached, 24).is_err(), "rows past the prefix");
+    assert!(predict(&mut LumaReference::new(info, reference, offset), 24).is_err());
+}
+
 /// The refine-MV search predicts only the centre of its padded predictions
 /// first; those samples must equal the centre of the whole prediction, at
 /// frame and refine-window edges and at every filter phase.
@@ -333,18 +368,17 @@ fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitD
             let area = Some((mv, 16, 16));
             let filter = InterpolationFilter::Bilinear;
             let (mut whole, mut centre) = ([0u16; 576], [u16::MAX; 576]);
+            let mut luma = LumaReference::new(sink.info(), reference, offset);
             super::super::optflow::initial_luma_prediction::<_, 0>(
-                &sink, reference, rect, mv, filter, area, offset, None, &mut whole,
+                &mut luma, rect, mv, filter, area, None, &mut whole,
             )
             .expect("whole prediction");
             super::super::optflow::initial_luma_prediction::<_, 2>(
-                &sink,
-                reference,
+                &mut luma,
                 rect,
                 mv,
                 filter,
                 area,
-                offset,
                 None,
                 &mut centre,
             )

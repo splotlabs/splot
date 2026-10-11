@@ -144,11 +144,9 @@ fn search_refinemv<T: ReconSample>(
     let mut prediction_rect = rect;
     prediction_rect.luma_w = prediction_width;
     prediction_rect.luma_h = prediction_height;
-    let predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
-        let references = [block.reference0, block.reference1];
-        for ((reference, candidate), prediction) in
-            references.into_iter().zip(candidates).zip([pred0, pred1])
-        {
+    let mut luma = super::optflow::LumaReference::pair(sink.info(), &block, offset);
+    let mut predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
+        for ((luma, candidate), prediction) in luma.iter_mut().zip(candidates).zip([pred0, pred1]) {
             let search_mv = Mv {
                 row: candidate.row - SEARCH_PADDING,
                 col: candidate.col - SEARCH_PADDING,
@@ -157,25 +155,21 @@ fn search_refinemv<T: ReconSample>(
             let filter = InterpolationFilter::Bilinear;
             if center_only {
                 super::optflow::initial_luma_prediction::<_, 2>(
-                    sink,
-                    reference,
+                    luma,
                     prediction_rect,
                     search_mv,
                     filter,
                     area,
-                    offset,
                     None,
                     prediction,
                 )?;
             } else {
                 super::optflow::initial_luma_prediction::<_, 0>(
-                    sink,
-                    reference,
+                    luma,
                     prediction_rect,
                     search_mv,
                     filter,
                     area,
-                    offset,
                     None,
                     prediction,
                 )?;
@@ -512,11 +506,10 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
 /// only the 12x12 centre of the 16x16 bilinear search area, so the centre is
 /// predicted first and the whole area only when the search goes on.
 pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
-    offset: ByteOffset,
     reuse_horizontal: [bool; 2],
     predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
 ) -> Result<Option<MotionCell>> {
     const PREDICTION_SIZE: usize = TIP_PREDICTION_SIZE;
     const CENTER_SIZE: usize = 8;
@@ -540,43 +533,38 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         col: candidate.col - SEARCH_PADDING,
     };
     let [pred0, pred1] = predictions;
-    let references = [block.reference0, block.reference1];
-    for ((reference, candidate), (prediction, reuse)) in references
-        .into_iter()
+    for ((luma, candidate), (prediction, reuse)) in luma
+        .iter_mut()
         .zip(candidates)
         .zip([&mut *pred0, &mut *pred1].into_iter().zip(reuse_horizontal))
     {
         super::optflow::initial_luma_prediction::<_, 2>(
-            sink,
-            reference,
+            luma,
             prediction_rect,
             search_mv(candidate),
             InterpolationFilter::Bilinear,
             Some((candidate, CENTER_SIZE, CENTER_SIZE)),
-            offset,
             Some(reuse),
             prediction,
         )?;
     }
-    let bit_depth = sink.info().bit_depth();
+    let bit_depth = luma[0].bit_depth();
     let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth);
     let center_sad = center - (center >> 3);
     let (dx, dy) = if center_sad < 12 * 12 * 2 {
         (0, 0)
     } else {
-        for ((reference, candidate), prediction) in references
-            .into_iter()
+        for ((luma, candidate), prediction) in luma
+            .iter_mut()
             .zip(candidates)
             .zip([&mut *pred0, &mut *pred1])
         {
             super::optflow::initial_luma_prediction::<_, 0>(
-                sink,
-                reference,
+                luma,
                 prediction_rect,
                 search_mv(candidate),
                 InterpolationFilter::Bilinear,
                 Some((candidate, CENTER_SIZE, CENTER_SIZE)),
-                offset,
                 None,
                 prediction,
             )?;
@@ -609,7 +597,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         pred1,
         start1,
         PREDICTION_SIZE,
-        sink.info().bit_depth(),
+        bit_depth,
         distances,
         block.optflow_sad_threshold,
         base_mvs,

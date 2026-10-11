@@ -386,15 +386,18 @@ fn tip_grid_and_cells<T: ReconSample>(
             let mut unit = block;
             (unit.rect, unit.mv0, unit.mv1) = (unit_rect(i), mvs[i][0], mvs[i][1]);
             unit.has_chroma = false;
+            let mut luma = LumaReference::pair(sink.info(), &unit, offset);
             super::super::refinemv::tip_refinemv_optflow_motion_cell(
-                &sink,
                 unit,
-                offset,
                 [false; 2],
                 &mut [[0; 256]; 2],
+                &mut luma,
             )
             .expect("refined cell")
-            .map_or_else(|| tip_unit_motion_cell(&sink, unit, 8, offset), Ok)
+            .map_or_else(
+                || tip_unit_motion_cell(&sink, unit, 8, offset, &mut luma),
+                Ok,
+            )
             .expect("unit cell")
         })
         .collect();

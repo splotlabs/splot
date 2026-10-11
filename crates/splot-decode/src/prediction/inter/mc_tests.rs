@@ -2022,7 +2022,9 @@ fn tip_unit_motion_cell_matches_the_motion_grid_cell() {
         .with_refinemv(use_refinemv)
         .into_compound()
         .expect("compound block");
-        let cell = optflow::tip_unit_motion_cell(&sink, block, 8, offset).expect("unit cell");
+        let mut luma = optflow::LumaReference::pair(sink.info(), &block, offset);
+        let cell =
+            optflow::tip_unit_motion_cell(&sink, block, 8, offset, &mut luma).expect("unit cell");
         let fast = CompoundMotionGrid::from_single_refinemv([mv0, mv1], cell);
         let refinemv = use_refinemv
             .then(|| refinemv::compound_default_refinemv_motion_grid(&sink, block, offset))
