@@ -87,7 +87,8 @@ pub struct BilinearOverlapCarry<'a, T: ReconSample> {
 /// # Errors
 ///
 /// Returns [`ReconError::BufferLengthMismatch`] when `output` cannot hold the
-/// strided block.
+/// strided block, or [`ReconError::ArithmeticOverflow`] when its length
+/// overflows.
 pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
     reference: &ReferencePlaneView<'a, T>,
     params: &SubpelPredictParams,
@@ -114,7 +115,12 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
     {
         return Ok(false);
     }
-    let needed = (SIZE - 1) * stride + SIZE;
+    let needed = stride
+        .checked_mul(SIZE - 1)
+        .and_then(|rows| rows.checked_add(SIZE))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "12x12 bilinear overlap output length",
+        })?;
     if output.len() < needed {
         return Err(ReconError::BufferLengthMismatch {
             expected: needed,
@@ -218,6 +224,7 @@ fn bilinear_12x12_block<T: ReconSample, const COL: usize>(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::super::tests::full_pel_params;
     use super::*;
 
     #[test]
@@ -232,6 +239,22 @@ mod tests {
             .collect::<Vec<u8>>();
         check_bilinear_12x12(&wide, &wide.clone(), BitDepth::Ten);
         check_bilinear_12x12(&narrow, &narrow.clone(), BitDepth::Eight);
+    }
+
+    #[test]
+    fn bilinear_12x12_overlap_rejects_an_overflowing_stride() {
+        let samples = vec![0u16; 48 * 40];
+        let view = ReferencePlaneView::new(&samples, 48, 40).unwrap();
+        let params = full_pel_params(InterpolationFilter::Bilinear, 12, 12, 8, 8, 48, 40);
+        let (mut output, mut carry) = ([0; 11 * 16 + 12], BilinearOverlapCarry::default());
+        let stride = usize::MAX / 11 + 1;
+        let kernel = subpel_predict_12x12_bilinear_overlap_into;
+        let predicted = kernel(&view, &params, &mut output, stride, &mut carry);
+        assert!(matches!(
+            predicted,
+            Err(ReconError::ArithmeticOverflow { .. })
+        ));
+        assert!(carry.source.is_none());
     }
 
     /// Predicts `query` into a garbage buffer with a carry that first predicted
