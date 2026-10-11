@@ -1036,7 +1036,10 @@ fn replanned(
     let mut scan = CandidateScan::default();
     let (mut candidates, mut continuations) = (Vec::new(), Vec::new());
     for &(bytes, frame) in units {
-        while let Some(candidate) = scan.next(bytes, frame).unwrap() {
+        while let Some(candidate) = scan
+            .next(bytes, frame, crate::DecodeLimits::default())
+            .unwrap()
+        {
             continuations.extend(tile_group_continuations(bytes, &candidate));
             candidates.push(candidate);
         }

@@ -5,18 +5,21 @@
 //! parsed-stream planning entry points.
 
 use core::num::NonZeroUsize;
-use std::io::{Cursor, Read, Seek};
+use std::io::Read;
 
 use splot_parallel::WorkerPool;
 
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
-use crate::bitstream::byte_stream::{
-    PreparedInput, PreparedStream, ReadSeek, plan_byte_stream, prepare_stream,
-};
+use crate::bitstream::byte_stream::{ReaderUnits, UnitSource, plan_byte_stream};
 use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
+
+/// A decode input, read forward once.
+trait ReadSend: Read + Send {}
+
+impl<R: Read + Send + ?Sized> ReadSend for R {}
 
 /// A decode context.
 ///
@@ -94,21 +97,15 @@ impl DecodeContext {
         self.pool.install(|| plan_byte_stream(bytes, &options))
     }
 
+    /// Runs `decode` inside the pool over the temporal units of `reader`.
     fn run<T: Send>(
         &self,
-        reader: &mut dyn ReadSeek,
+        reader: &mut dyn ReadSend,
         options: &DecodeOptions,
-        decode: impl FnOnce(&PreparedStream, &mut dyn ReadSeek) -> Result<T> + Send,
+        decode: impl FnOnce(&mut dyn UnitSource) -> Result<T> + Send,
     ) -> Result<T> {
-        let hashes = self.session.take_record_hashes();
-        let prepared = self
-            .pool
-            .install(|| prepare_stream(reader, options, hashes))?;
-        let result = self.pool.install(|| decode(&prepared, reader));
-        if let PreparedInput::Ivf(_, _, hashes) = prepared.input {
-            self.session.keep_record_hashes(hashes.into_vec());
-        }
-        result
+        let mut source = ReaderUnits::new(reader, options.limits());
+        self.pool.install(|| decode(&mut source))
     }
 
     /// [`Self::decode_hash_report_reader`] over in-memory bytes.
@@ -120,7 +117,7 @@ impl DecodeContext {
         bytes: &[u8],
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        self.decode_hash_report_reader(Cursor::new(bytes), options)
+        self.decode_hash_report_reader(bytes, options)
     }
 
     /// Decodes the supported envelope and returns a deterministic hash report.
@@ -135,7 +132,7 @@ impl DecodeContext {
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
     /// failures, worker-pool failures, or reconstruction model errors.
-    pub fn decode_hash_report_reader<R: Read + Seek + Send>(
+    pub fn decode_hash_report_reader<R: Read + Send>(
         &self,
         mut reader: R,
         options: DecodeOptions,
@@ -145,13 +142,12 @@ impl DecodeContext {
 
     fn decode_hash_report(
         &self,
-        reader: &mut dyn ReadSeek,
+        reader: &mut dyn ReadSend,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        self.run(reader, &options, |prepared, reader| {
+        self.run(reader, &options, |source| {
             crate::output::hash::decode_hash_report_from_plan(
-                prepared,
-                reader,
+                source,
                 &options,
                 self.threads(),
                 &self.session,
@@ -164,7 +160,7 @@ impl DecodeContext {
     /// # Errors
     /// See [`Self::decode_discard_reader`].
     pub fn decode_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
-        self.decode_discard_reader(Cursor::new(bytes), options)
+        self.decode_discard_reader(bytes, options)
     }
 
     /// Decodes the supported envelope and discards each displayed frame.
@@ -177,7 +173,7 @@ impl DecodeContext {
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
     /// failures, worker-pool failures, or reconstruction model errors.
-    pub fn decode_discard_reader<R: Read + Seek + Send>(
+    pub fn decode_discard_reader<R: Read + Send>(
         &self,
         mut reader: R,
         options: DecodeOptions,
@@ -185,16 +181,9 @@ impl DecodeContext {
         self.decode_discard(&mut reader, options)
     }
 
-    fn decode_discard(&self, reader: &mut dyn ReadSeek, options: DecodeOptions) -> Result<()> {
-        self.run(reader, &options, |prepared, reader| {
-            crate::pipeline::emit_frames_from_prepared(
-                prepared,
-                reader,
-                &options,
-                &self.session,
-                |_| Ok(()),
-                |_| Ok(()),
-            )
+    fn decode_discard(&self, reader: &mut dyn ReadSend, options: DecodeOptions) -> Result<()> {
+        self.run(reader, &options, |source| {
+            crate::pipeline::emit_frames(source, &options, &self.session, |_| Ok(()), |_| Ok(()))
         })
     }
 
@@ -208,7 +197,7 @@ impl DecodeContext {
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.decode_raw_reader(Cursor::new(bytes), options, writer)
+        self.decode_raw_reader(bytes, options, writer)
     }
 
     /// Decodes the supported envelope and streams raw sample bytes.
@@ -222,20 +211,14 @@ impl DecodeContext {
     /// unsupported structures, runtime-tier rejections, resource-limit
     /// failures, worker-pool failures, reconstruction model errors, raw
     /// serialization errors, or caller-writer I/O errors.
-    pub fn decode_raw_reader<R: Read + Seek + Send, W: std::io::Write + Send>(
+    pub fn decode_raw_reader<R: Read + Send, W: std::io::Write + Send>(
         &self,
         mut reader: R,
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.run(&mut reader, &options, |prepared, reader| {
-            crate::output::raw::write_raw_stream_from_plan(
-                prepared,
-                reader,
-                &options,
-                &self.session,
-                writer,
-            )
+        self.run(&mut reader, &options, |source| {
+            crate::output::raw::write_raw_stream_from_plan(source, &options, &self.session, writer)
         })
     }
 
@@ -251,7 +234,7 @@ impl DecodeContext {
     /// unsupported structures, runtime-tier rejections, resource-limit
     /// failures, worker-pool failures, reconstruction model errors, or
     /// output-effect errors.
-    pub fn decode_raw_discard_reader<R: Read + Seek + Send>(
+    pub fn decode_raw_discard_reader<R: Read + Send>(
         &self,
         mut reader: R,
         options: DecodeOptions,
@@ -259,14 +242,9 @@ impl DecodeContext {
         self.decode_raw_discard(&mut reader, options)
     }
 
-    fn decode_raw_discard(&self, reader: &mut dyn ReadSeek, options: DecodeOptions) -> Result<()> {
-        self.run(reader, &options, |prepared, reader| {
-            crate::output::raw::discard_raw_stream_from_plan(
-                prepared,
-                reader,
-                &options,
-                &self.session,
-            )
+    fn decode_raw_discard(&self, reader: &mut dyn ReadSend, options: DecodeOptions) -> Result<()> {
+        self.run(reader, &options, |source| {
+            crate::output::raw::discard_raw_stream_from_plan(source, &options, &self.session)
         })
     }
 
@@ -280,7 +258,7 @@ impl DecodeContext {
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.decode_y4m_reader(Cursor::new(bytes), options, writer)
+        self.decode_y4m_reader(bytes, options, writer)
     }
 
     /// Decodes the supported envelope and streams a Y4M stream.
@@ -294,21 +272,15 @@ impl DecodeContext {
     /// unsupported structures, runtime-tier rejections, resource-limit
     /// failures, worker-pool failures, reconstruction model errors, Y4M
     /// serialization errors, or caller-writer I/O errors.
-    pub fn decode_y4m_reader<R: Read + Seek + Send, W: std::io::Write + Send>(
+    pub fn decode_y4m_reader<R: Read + Send, W: std::io::Write + Send>(
         &self,
         mut reader: R,
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.run(&mut reader, &options, |prepared, reader| {
-            crate::output::y4m::write_y4m_stream_to_writer(
-                prepared,
-                reader,
-                &options,
-                &self.session,
-                writer,
-            )
-            .map(drop)
+        self.run(&mut reader, &options, |source| {
+            crate::output::y4m::write_y4m_stream_to_writer(source, &options, &self.session, writer)
+                .map(drop)
         })
     }
 

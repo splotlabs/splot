@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Bounded stream planning for raw Annex B and IVF inputs, and the record
-//! reader the decode pass reads IVF input through again.
+//! Bounded stream planning for raw Annex B and IVF inputs, and the
+//! forward-only temporal-unit source the decode loop reads them through.
 //!
-//! Feature tracking: `DECODE-BYTE-STREAM-PLANNER`.
+//! Feature tracking: `DECODE-BYTE-STREAM-PLANNER`, `DECODE-STREAMING-API`.
 
-use std::hash::BuildHasher;
-use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
+use std::io::{Read, Take};
 use std::sync::Arc;
 
 use splot_core::annexb::{AnnexBObuCursor, ObuEnvelope, PartialParse};
-use splot_core::ivf::{IVF_FRAME_HEADER_SIZE, IvfFrame, IvfHeader, is_ivf};
+use splot_core::ivf::{IVF_FRAME_HEADER_SIZE, IvfError, IvfFrame, IvfHeader, is_ivf};
 use splot_core::obu::ObuHeader;
 use splot_core::span::ByteOffset;
 use splot_core::stream::BitstreamFormat;
@@ -20,15 +19,11 @@ use splot_core::types::ObuType;
 
 use crate::bitstream::stream_plan::{
     DecodeIvfFrameContext, DecodeLayerSelection, DecodeStreamPlan, DecodeUnsupportedStructure,
-    IvfPlanner, PlanBuilder, ensure_supported_obu, plan_annex_b,
+    IvfPlanner, PlanBuilder, ensure_supported_obu, issue_from_ivf_error,
+    issue_from_unsupported_ivf_codec, plan_annex_b,
 };
 use crate::error::{DecodeError, Result};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
-
-/// A seekable decode input. Planning reads it once; decode reads it again.
-pub(crate) trait ReadSeek: Read + Seek + Send {}
-
-impl<R: Read + Seek + Send + ?Sized> ReadSeek for R {}
 
 /// Input bytes addressed by absolute stream offset: the whole input, or one
 /// temporal unit that starts at `base`.
@@ -87,119 +82,21 @@ impl UnitBytes {
 }
 
 pub(crate) fn plan_byte_stream(bytes: &[u8], options: &DecodeOptions) -> Result<DecodeStreamPlan> {
-    prepare(&mut Cursor::new(bytes), options, Vec::new(), true).map(|prepared| prepared.plan)
-}
-
-/// A planned input and what the decode pass needs to read it again.
-pub(crate) struct PreparedStream {
-    pub(crate) plan: DecodeStreamPlan,
-    pub(crate) input: PreparedInput,
-}
-
-/// IVF input is read again record by record. Annex B input stays whole in
-/// memory; split it at temporal delimiters if large Annex B inputs matter.
-pub(crate) enum PreparedInput {
-    AnnexB(UnitBytes),
-    /// The header, the input end planning read, and a hash of each non-empty
-    /// record it checked.
-    Ivf(IvfHeader, u64, RecordHashes),
-}
-
-/// Hashes of the IVF records planning checked, under keys drawn for this
-/// decode, so a record rewritten between the passes cannot be made to match.
-pub(crate) struct RecordHashes {
-    keys: std::hash::RandomState,
-    hashes: Vec<u64>,
-}
-
-impl RecordHashes {
-    /// Empties `hashes`, a list an earlier decode returned, under fresh keys.
-    pub(crate) fn new(mut hashes: Vec<u64>) -> Self {
-        hashes.clear();
-        Self {
-            keys: std::hash::RandomState::new(),
-            hashes,
-        }
-    }
-
-    /// Hashes a record's bytes with its input offset, so moved framing fails too.
-    fn push(&mut self, offset: u64, bytes: &[u8]) {
-        self.hashes.push(self.keys.hash_one((offset, bytes)));
-    }
-
-    fn matches(&self, record: usize, offset: u64, bytes: &[u8]) -> bool {
-        self.hashes.get(record) == Some(&self.keys.hash_one((offset, bytes)))
-    }
-
-    pub(crate) fn into_vec(self) -> Vec<u64> {
-        self.hashes
-    }
-}
-
-/// Plans `reader` without keeping IVF payloads: each frame record is parsed
-/// and planned, then dropped. IVF record hashes go into `hashes`, which a
-/// caller keeps between decodes. The plan keeps no per-OBU entries; the decode
-/// pass plans each record's OBUs again when it reads the record.
-pub(crate) fn prepare_stream(
-    reader: &mut dyn ReadSeek,
-    options: &DecodeOptions,
-    hashes: Vec<u64>,
-) -> Result<PreparedStream> {
-    prepare(reader, options, hashes, false)
-}
-
-fn prepare(
-    reader: &mut dyn ReadSeek,
-    options: &DecodeOptions,
-    hashes: Vec<u64>,
-    keep_obus: bool,
-) -> Result<PreparedStream> {
     let limits = options.limits();
-    let input_len = reader.seek(SeekFrom::End(0)).map_err(DecodeError::input)?;
-    limits.ensure(DecodeLimitName::MaxInputBytes, input_len)?;
-    rewind(reader)?;
-    let mut magic = [0u8; 4];
-    let ivf = match reader.read_exact(&mut magic) {
-        Ok(()) => is_ivf(&magic),
-        Err(error) if error.kind() == ErrorKind::UnexpectedEof => false,
-        Err(error) => return Err(DecodeError::input(error)),
-    };
-    rewind(reader)?;
-    if ivf {
-        let (plan, header, end, hashes) = plan_ivf(
-            reader,
-            input_len,
-            limits,
-            RecordHashes::new(hashes),
-            keep_obus,
-        )?;
-        return Ok(PreparedStream {
-            plan,
-            input: PreparedInput::Ivf(header, end, hashes),
-        });
-    }
-    let mut bytes = Vec::new();
-    let _ = bytes.try_reserve_exact(usize::try_from(input_len).unwrap_or(0));
-    Read::take(&mut *reader, input_cap(limits))
-        .read_to_end(&mut bytes)
-        .map_err(DecodeError::input)?;
     let input_len = bytes.len() as u64;
     limits.ensure(DecodeLimitName::MaxInputBytes, input_len)?;
-    let bytes = UnitBytes::new(Arc::new(bytes), 0);
-    let plan = plan_annex_b(
-        &parse_bounded_annex_b(bytes.view().bytes(), limits)?,
+    if is_ivf(bytes) {
+        return plan_ivf(bytes, limits);
+    }
+    plan_annex_b(
+        &parse_bounded_annex_b(bytes, limits)?,
         input_len,
         options,
-        keep_obus,
-    )?;
-    Ok(PreparedStream {
-        plan,
-        input: PreparedInput::AnnexB(bytes),
-    })
+        true,
+    )
 }
 
-/// One byte past the input limit: reading it proves the input is too long,
-/// whatever length the seek reported.
+/// One byte past the input limit: reading it proves the input is too long.
 fn input_cap(limits: DecodeLimits) -> u64 {
     limits
         .max_input_bytes()
@@ -207,24 +104,9 @@ fn input_cap(limits: DecodeLimits) -> u64 {
         .map_or(u64::MAX, |max| max.saturating_add(1))
 }
 
-fn rewind(reader: &mut dyn ReadSeek) -> Result<()> {
-    reader
-        .seek(SeekFrom::Start(0))
-        .map(drop)
-        .map_err(DecodeError::input)
-}
-
-fn plan_ivf(
-    reader: &mut dyn ReadSeek,
-    input_len: u64,
-    limits: DecodeLimits,
-    mut hashes: RecordHashes,
-    keep_obus: bool,
-) -> Result<(DecodeStreamPlan, IvfHeader, u64, RecordHashes)> {
-    let cap = input_cap(limits);
-    let mut capped = Read::take(&mut *reader, cap);
-    let mut units = TemporalUnitReader::with_max_unit_bytes(&mut capped, usize::MAX);
-    let mut builder = PlanBuilder::new(BitstreamFormat::Ivf, input_len, limits, keep_obus);
+fn plan_ivf(bytes: &[u8], limits: DecodeLimits) -> Result<DecodeStreamPlan> {
+    let mut units = TemporalUnitReader::with_max_unit_bytes(bytes, usize::MAX);
+    let mut builder = PlanBuilder::new(BitstreamFormat::Ivf, bytes.len() as u64, limits, true);
     let mut planner = IvfPlanner::default();
     let mut counts = (0u64, 0u64);
     let mut first_unsupported = None;
@@ -234,8 +116,7 @@ fn plan_ivf(
         let unit = match units.next_unit() {
             Ok(unit) => unit,
             Err(ReaderError::Ivf(error)) => {
-                if let splot_core::ivf::IvfError::TruncatedFramePayload { frame_index, .. } = error
-                {
+                if let IvfError::TruncatedFramePayload { frame_index, .. } = error {
                     limits.ensure(DecodeLimitName::MaxIvfFrameRecords, frame_index as u64 + 1)?;
                 }
                 break Some(error);
@@ -255,9 +136,6 @@ fn plan_ivf(
             break None;
         };
         limits.ensure(DecodeLimitName::MaxIvfFrameRecords, index as u64 + 1)?;
-        if !payload.is_empty() {
-            hashes.push(payload_offset.get(), payload);
-        }
         let mut obus = recycle(core::mem::take(&mut spare));
         let frame_error = parse_bounded_annex_b_at(
             payload,
@@ -287,19 +165,7 @@ fn plan_ivf(
         }
     };
     let header = units.ivf_header();
-    drop(units);
-    let end = cap - capped.limit();
-    limits.ensure(DecodeLimitName::MaxInputBytes, end)?;
-    builder.input_len_bytes = end;
-    let plan = planner.finish(builder, header, warning.as_slice(), error.as_ref())?;
-    let header = header.ok_or_else(|| {
-        crate::pipeline::unsupported(
-            "missing_ivf_header",
-            None,
-            "decode runtime requires a complete IVF header",
-        )
-    })?;
-    Ok((plan, header, end, hashes))
+    planner.finish(builder, header, warning.as_slice(), error.as_ref())
 }
 
 /// Empties `obus` and keeps its storage for envelopes of another lifetime.
@@ -315,117 +181,210 @@ pub(crate) struct InputScratch {
     pub(crate) obus: Vec<ObuEnvelope<'static>>,
 }
 
-/// Reads IVF frame records again during decode, one record at a time, into
-/// reused buffers that the tasks parsing a record's frames share. Planning
-/// already checked the container, so a short read here is the end of input,
-/// and a record past the planned end, or one whose bytes differ from what
-/// planning hashed, means the input changed between passes.
-pub(crate) struct IvfRecords<'r> {
-    reader: &'r mut dyn ReadSeek,
-    position: u64,
-    end: u64,
-    hashes: &'r RecordHashes,
-    current: Option<UnitBytes>,
-    record: usize,
-    frames_read: usize,
-    pts: u64,
-    buffers: &'r mut Vec<Arc<Vec<u8>>>,
+/// Copies `bytes` into a buffer of `buffers` that no task still reads.
+pub(crate) fn fill_buffer(buffers: &mut Vec<Arc<Vec<u8>>>, bytes: &[u8]) -> Arc<Vec<u8>> {
+    let index = buffers
+        .iter_mut()
+        .position(|buffer| Arc::get_mut(buffer).is_some())
+        .unwrap_or_else(|| {
+            buffers.push(Arc::default());
+            buffers.len() - 1
+        });
+    let buffer = &mut buffers[index];
+    if let Some(stored) = Arc::get_mut(buffer) {
+        stored.clear();
+        stored.extend_from_slice(bytes);
+    }
+    Arc::clone(buffer)
 }
 
-impl<'r> IvfRecords<'r> {
-    pub(crate) fn new(
-        reader: &'r mut dyn ReadSeek,
-        header: IvfHeader,
-        end: u64,
-        hashes: &'r RecordHashes,
-        buffers: &'r mut Vec<Arc<Vec<u8>>>,
-    ) -> Result<Self> {
-        let position = u64::from(header.header_len);
-        reader
-            .seek(SeekFrom::Start(position))
-            .map_err(DecodeError::input)?;
-        Ok(Self {
-            reader,
-            position,
-            end,
-            hashes,
-            current: None,
-            record: 0,
-            frames_read: 0,
-            pts: 0,
-            buffers,
-        })
-    }
+/// One non-empty temporal unit: an IVF frame record, or the Annex B OBUs from
+/// one temporal delimiter up to the next.
+pub(crate) struct SourceUnit {
+    pub(crate) bytes: UnitBytes,
+    pub(crate) ivf_frame: Option<DecodeIvfFrameContext>,
+}
 
-    /// The current record and its index among non-empty records.
-    pub(crate) fn current(&self) -> Option<(&UnitBytes, usize)> {
-        self.current.as_ref().map(|unit| (unit, self.record))
-    }
+/// Where the decode loop reads its temporal units from.
+pub(crate) trait UnitSource: Send {
+    /// The next non-empty temporal unit, copied into a free buffer of
+    /// `buffers`; `None` at end of input.
+    fn next_unit(&mut self, buffers: &mut Vec<Arc<Vec<u8>>>) -> Result<Option<SourceUnit>>;
 
-    /// The IVF frame context of the current record.
-    pub(crate) fn frame(&self) -> Option<DecodeIvfFrameContext> {
-        let view = self.current.as_ref()?.view();
-        Some(DecodeIvfFrameContext::new(
-            self.frames_read - 1,
-            ByteOffset::new(view.base()),
-            view.bytes().len() as u32,
-            self.pts,
-        ))
-    }
+    /// The IVF file header, once the first unit is read.
+    fn ivf_header(&self) -> Option<IvfHeader>;
+}
 
-    /// Makes the next non-empty record current; `false` at end of input.
-    pub(crate) fn advance(&mut self) -> Result<bool> {
-        let mut header = [0u8; IVF_FRAME_HEADER_SIZE];
-        loop {
-            match self.reader.read_exact(&mut header) {
-                Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::UnexpectedEof => return Ok(false),
-                Err(error) => return Err(DecodeError::input(error)),
-            }
-            let size = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-            self.frames_read += 1;
-            self.pts = u64::from_le_bytes([
-                header[4], header[5], header[6], header[7], header[8], header[9], header[10],
-                header[11],
-            ]);
-            let base = self.position + IVF_FRAME_HEADER_SIZE as u64;
-            self.position = base + u64::from(size);
-            if self.position > self.end {
-                return Err(input_changed());
-            }
-            if size == 0 {
-                continue;
-            }
-            if self.current.take().is_some() {
-                self.record += 1;
-            }
-            let free = self
-                .buffers
-                .iter_mut()
-                .position(|buffer| Arc::get_mut(buffer).is_some());
-            let index = free.unwrap_or_else(|| {
-                self.buffers.push(Arc::default());
-                self.buffers.len() - 1
-            });
-            let buffer = &mut self.buffers[index];
-            if let Some(bytes) = Arc::get_mut(buffer) {
-                bytes.resize(size as usize, 0);
-                self.reader.read_exact(bytes).map_err(DecodeError::input)?;
-                if !self.hashes.matches(self.record, base, bytes) {
-                    return Err(input_changed());
-                }
-            }
-            self.current = Some(UnitBytes::new(Arc::clone(buffer), base));
-            return Ok(true);
+/// Reads IVF or Annex B input forward only, one temporal unit at a time.
+pub(crate) struct ReaderUnits<R: Read> {
+    units: TemporalUnitReader<Take<R>>,
+    limits: DecodeLimits,
+    cap: u64,
+    /// The Annex B unit being collected, and the offset it starts at.
+    annex_b: Vec<u8>,
+    annex_b_offset: u64,
+    /// The temporal delimiter read ahead, which opens the next Annex B unit.
+    carry: Vec<u8>,
+    fourcc_checked: bool,
+    yielded: bool,
+}
+
+impl<R: Read> ReaderUnits<R> {
+    pub(crate) fn new(reader: R, limits: DecodeLimits) -> Self {
+        let cap = input_cap(limits);
+        Self {
+            units: TemporalUnitReader::with_max_unit_bytes(reader.take(cap), usize::MAX),
+            limits,
+            cap,
+            annex_b: Vec::new(),
+            annex_b_offset: 0,
+            carry: Vec::new(),
+            fourcc_checked: false,
+            yielded: false,
         }
     }
+
+    fn ensure_input(&self) -> Result<()> {
+        let read = self.cap - self.units.get_ref().limit();
+        self.limits
+            .ensure(DecodeLimitName::MaxInputBytes, read)
+            .map(drop)
+            .map_err(DecodeError::from)
+    }
+
+    fn reader_error(&self, error: ReaderError) -> DecodeError {
+        let ReaderError::Ivf(error) = error else {
+            return self
+                .ensure_input()
+                .err()
+                .unwrap_or_else(|| DecodeError::reader(error));
+        };
+        if let IvfError::TruncatedFramePayload { frame_index, .. } = error
+            && let Err(source) = self
+                .limits
+                .ensure(DecodeLimitName::MaxIvfFrameRecords, frame_index as u64 + 1)
+        {
+            return source.into();
+        }
+        self.ensure_input()
+            .err()
+            .unwrap_or_else(|| DecodeError::MalformedSource {
+                issue: issue_from_ivf_error(&error),
+            })
+    }
+
+    fn ensure_fourcc(&mut self) -> Result<()> {
+        if let Some(header) = self.units.ivf_header()
+            && !core::mem::replace(&mut self.fourcc_checked, true)
+            && header.fourcc != *b"AV02"
+        {
+            return Err(DecodeError::MalformedSource {
+                issue: issue_from_unsupported_ivf_codec(header.fourcc),
+            });
+        }
+        Ok(())
+    }
+
+    fn yield_unit(
+        &mut self,
+        buffers: &mut Vec<Arc<Vec<u8>>>,
+        bytes: &[u8],
+        base: u64,
+        ivf_frame: Option<DecodeIvfFrameContext>,
+    ) -> Result<Option<SourceUnit>> {
+        self.ensure_input()?;
+        self.yielded = true;
+        Ok(Some(SourceUnit {
+            bytes: UnitBytes::new(fill_buffer(buffers, bytes), base),
+            ivf_frame,
+        }))
+    }
+
+    /// Yields the collected Annex B unit, or ends the input when none is open.
+    fn finish(&mut self, buffers: &mut Vec<Arc<Vec<u8>>>) -> Result<Option<SourceUnit>> {
+        self.ensure_input()?;
+        if !self.annex_b.is_empty() {
+            let unit = core::mem::take(&mut self.annex_b);
+            let result = self.yield_unit(buffers, &unit, self.annex_b_offset, None);
+            self.annex_b = unit;
+            self.annex_b.clear();
+            return result;
+        }
+        if !self.yielded && self.units.ivf_header().is_none() {
+            return Err(crate::pipeline::unsupported(
+                "empty_annex_b_input",
+                None,
+                "decode runtime requires at least one Annex B OBU",
+            ));
+        }
+        Ok(None)
+    }
 }
 
-fn input_changed() -> DecodeError {
-    DecodeError::input(std::io::Error::new(
-        ErrorKind::InvalidData,
-        "IVF input changed between planning and decode",
-    ))
+impl<R: Read + Send> UnitSource for ReaderUnits<R> {
+    fn next_unit(&mut self, buffers: &mut Vec<Arc<Vec<u8>>>) -> Result<Option<SourceUnit>> {
+        loop {
+            let unit = match self.units.next_unit() {
+                Ok(unit) => unit,
+                Err(error) => return Err(self.reader_error(error)),
+            };
+            match unit {
+                Some(StreamUnit::IvfFrame {
+                    index,
+                    pts,
+                    payload_offset,
+                    payload,
+                }) => {
+                    self.limits
+                        .ensure(DecodeLimitName::MaxIvfFrameRecords, index as u64 + 1)?;
+                    if payload.is_empty() {
+                        continue;
+                    }
+                    let frame = DecodeIvfFrameContext::new(
+                        index,
+                        payload_offset,
+                        payload.len() as u32,
+                        pts,
+                    );
+                    let unit = SourceUnit {
+                        bytes: UnitBytes::new(fill_buffer(buffers, payload), payload_offset.get()),
+                        ivf_frame: Some(frame),
+                    };
+                    self.ensure_fourcc()?;
+                    self.ensure_input()?;
+                    self.yielded = true;
+                    return Ok(Some(unit));
+                }
+                Some(StreamUnit::AnnexBObu { offset, bytes }) => {
+                    let delimiter = AnnexBObuCursor::new(bytes, offset)
+                        .next_obu()
+                        .ok()
+                        .flatten()
+                        .is_some_and(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
+                    if delimiter && !self.annex_b.is_empty() {
+                        self.carry.clear();
+                        self.carry.extend_from_slice(bytes);
+                        let result = self.finish(buffers);
+                        self.annex_b.extend_from_slice(&self.carry);
+                        self.annex_b_offset = offset.get();
+                        return result;
+                    }
+                    if self.annex_b.is_empty() {
+                        self.annex_b_offset = offset.get();
+                    }
+                    self.annex_b.extend_from_slice(bytes);
+                }
+                Some(StreamUnit::IvfWarning(_)) | None => {
+                    self.ensure_fourcc()?;
+                    return self.finish(buffers);
+                }
+            }
+        }
+    }
+
+    fn ivf_header(&self) -> Option<IvfHeader> {
+        self.units.ivf_header()
+    }
 }
 
 /// Parses the OBUs the decode pass acts on; reserved OBUs are dropped.

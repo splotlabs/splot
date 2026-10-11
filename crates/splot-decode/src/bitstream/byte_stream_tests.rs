@@ -7,6 +7,19 @@ use super::*;
 use crate::DecodeUnsupportedReason;
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 
+/// The base offset and OBU count of each unit `source` yields.
+fn units(bytes: &[u8], options: &DecodeOptions) -> Result<(Vec<(u64, usize)>, usize)> {
+    let mut source = ReaderUnits::new(bytes, options.limits());
+    let mut buffers = Vec::new();
+    let mut seen = Vec::new();
+    while let Some(unit) = source.next_unit(&mut buffers)? {
+        let mut obus = Vec::new();
+        runtime_obus(unit.bytes.view(), &mut obus)?;
+        seen.push((unit.bytes.view().base(), obus.len()));
+    }
+    Ok((seen, buffers.len()))
+}
+
 #[test]
 fn ivf_records_are_read_one_at_a_time_and_share_reused_buffers() {
     let mut bytes = Vec::new();
@@ -15,145 +28,39 @@ fn ivf_records_are_read_one_at_a_time_and_share_reused_buffers() {
     write_ivf_frame(&mut bytes, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
     write_ivf_frame(&mut bytes, 1, &[]).unwrap();
     write_ivf_frame(&mut bytes, 2, &[0x01, 0x10]).unwrap();
-    let prepared = prepare_stream(
-        &mut Cursor::new(&bytes),
-        &DecodeOptions::default(),
-        Vec::new(),
-    )
-    .unwrap();
-    assert_eq!(prepared.plan.obu_count(), 3);
-    let (end, hashes) = planned_records(&prepared);
-
-    let mut reader = Cursor::new(&bytes);
-    let mut buffers = Vec::new();
-    let mut records = IvfRecords::new(&mut reader, header, end, hashes, &mut buffers).unwrap();
-    let mut seen = Vec::new();
-    while records.advance().unwrap() {
-        let (unit, record) = records.current().unwrap();
-        let mut obus = Vec::new();
-        runtime_obus(unit.view(), &mut obus).unwrap();
-        seen.push((record, unit.view().base(), obus.len()));
-    }
-    assert_eq!(seen, [(0, 44, 2), (1, 72, 1)]);
-    assert_eq!(records.buffers.len(), 1);
+    let (seen, buffers) = units(&bytes, &DecodeOptions::default()).unwrap();
+    assert_eq!(seen, [(44, 2), (72, 1)]);
+    assert_eq!(buffers, 1);
 }
 
 #[test]
-fn a_record_past_the_planned_end_is_refused_before_it_is_read() {
-    let mut bytes = Vec::new();
-    let header = IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1);
-    write_ivf_header(&mut bytes, &header).unwrap();
-    let planned_end = bytes.len() as u64 + 12 + 4;
-    write_ivf_frame(&mut bytes, 0, &[0x01, 0x08, 0x01, 0x04, 0x01, 0x10]).unwrap();
-    let mut buffers = Vec::new();
-    let mut reader = Cursor::new(&bytes);
-    let hashes = RecordHashes::new(Vec::new());
-    let mut records =
-        IvfRecords::new(&mut reader, header, planned_end, &hashes, &mut buffers).unwrap();
-    assert!(matches!(records.advance(), Err(DecodeError::Input { .. })));
-    assert!(buffers.is_empty());
-}
-
-/// The input end and record hashes planning hands to the decode pass.
-fn planned_records(prepared: &PreparedStream) -> (u64, &RecordHashes) {
-    let PreparedInput::Ivf(_, end, hashes) = &prepared.input else {
-        unreachable!("IVF input");
-    };
-    (*end, hashes)
+fn annex_b_input_splits_into_units_at_temporal_delimiters() {
+    let delimiter = [0x01, 0x08];
+    let padding = [0x01, 0x04];
+    let bytes = [
+        delimiter.as_slice(),
+        &padding,
+        &padding,
+        &delimiter,
+        &padding,
+        &delimiter,
+    ]
+    .concat();
+    let (seen, _) = units(&bytes, &DecodeOptions::default()).unwrap();
+    assert_eq!(seen, [(0, 3), (6, 2), (10, 1)]);
 }
 
 #[test]
-fn a_reread_record_that_changed_after_planning_is_refused() {
-    let header = IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1);
-    let stream = |payload: &[u8]| {
-        let mut bytes = Vec::new();
-        write_ivf_header(&mut bytes, &header).unwrap();
-        write_ivf_frame(&mut bytes, 0, payload).unwrap();
-        bytes
-    };
-    let planned = stream(&[0x01, 0x08, 0x01, 0x04]);
-    let prepared = prepare_stream(
-        &mut Cursor::new(&planned),
-        &DecodeOptions::default(),
-        Vec::new(),
-    )
-    .unwrap();
-    let (end, hashes) = planned_records(&prepared);
-    let mut buffers = Vec::new();
-    for rewritten in [
-        stream(&[0x03, 0x08, 0x01, 0x04]),
-        stream(&[0x01, 0x08, 0x01, 0x05]),
-    ] {
-        assert_eq!(rewritten.len(), planned.len());
-        let mut reader = Cursor::new(&rewritten);
-        let mut records = IvfRecords::new(&mut reader, header, end, hashes, &mut buffers).unwrap();
-        assert!(matches!(records.advance(), Err(DecodeError::Input { .. })));
-    }
-    let mut reader = Cursor::new(&planned);
-    let mut records = IvfRecords::new(&mut reader, header, end, hashes, &mut buffers).unwrap();
-    assert!(records.advance().unwrap());
-}
-
-#[test]
-fn a_reread_record_moved_by_an_empty_record_is_refused() {
-    let header = IvfHeader::new(*b"AV02", 16, 16, 24, 1, 2);
-    let mut planned = Vec::new();
-    write_ivf_header(&mut planned, &header).unwrap();
-    write_ivf_frame(&mut planned, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
-    write_ivf_frame(&mut planned, 1, &[]).unwrap();
-    let mut moved = Vec::new();
-    write_ivf_header(&mut moved, &header).unwrap();
-    write_ivf_frame(&mut moved, 1, &[]).unwrap();
-    write_ivf_frame(&mut moved, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
-    assert_eq!(moved.len(), planned.len());
-    let prepared = prepare_stream(
-        &mut Cursor::new(&planned),
-        &DecodeOptions::default(),
-        Vec::new(),
-    )
-    .unwrap();
-    let (end, hashes) = planned_records(&prepared);
-    let mut buffers = Vec::new();
-    let mut reader = Cursor::new(&moved);
-    let mut records = IvfRecords::new(&mut reader, header, end, hashes, &mut buffers).unwrap();
-    assert!(matches!(records.advance(), Err(DecodeError::Input { .. })));
-}
-
-/// A source whose end seek reports less than it then yields, like a file that
-/// grows while it is planned.
-struct StaleLength<'a>(Cursor<&'a [u8]>);
-
-impl Read for StaleLength<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(buf)
-    }
-}
-
-impl Seek for StaleLength<'_> {
-    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
-        match position {
-            SeekFrom::End(_) => Ok(1),
-            position => self.0.seek(position),
-        }
-    }
-}
-
-#[test]
-fn the_plan_records_the_bytes_read_not_the_reported_length() {
+fn an_empty_annex_b_input_is_refused_and_an_empty_ivf_input_has_no_units() {
+    let error = units(&[], &DecodeOptions::default()).unwrap_err();
+    assert!(matches!(error, DecodeError::UnsupportedFeature { .. }));
     let mut ivf = Vec::new();
-    write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1)).unwrap();
-    write_ivf_frame(&mut ivf, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
-    let prepared = prepare_stream(
-        &mut StaleLength(Cursor::new(&ivf)),
-        &DecodeOptions::default(),
-        Vec::new(),
-    )
-    .unwrap();
-    assert_eq!(prepared.plan.input_len_bytes(), ivf.len() as u64);
+    write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 0)).unwrap();
+    assert!(units(&ivf, &DecodeOptions::default()).unwrap().0.is_empty());
 }
 
 #[test]
-fn input_limit_holds_for_bytes_read_not_the_reported_length() {
+fn input_limit_holds_for_the_bytes_read() {
     let mut ivf = Vec::new();
     write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 2)).unwrap();
     write_ivf_frame(&mut ivf, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
@@ -162,9 +69,7 @@ fn input_limit_holds_for_bytes_read_not_the_reported_length() {
         DecodeLimits::unlimited().with_max_input_bytes(crate::DecodeLimitThreshold::Max(2)),
     );
     for bytes in [ivf.as_slice(), annex_b.as_slice()] {
-        let error = prepare_stream(&mut StaleLength(Cursor::new(bytes)), &options, Vec::new())
-            .err()
-            .unwrap();
+        let error = units(bytes, &options).unwrap_err();
         assert!(matches!(
             error,
             DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxInputBytes

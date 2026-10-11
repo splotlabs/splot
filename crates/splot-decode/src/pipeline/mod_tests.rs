@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use crate::bitstream::byte_stream::{IvfRecords, SourceBytes, plan_byte_stream, runtime_obus};
+use crate::bitstream::byte_stream::{SourceBytes, UnitSource, plan_byte_stream, runtime_obus};
 use crate::test_support::empty_avmenc_ivf;
 use crate::{DecodeContext, DecodeRuntimeConfig};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
@@ -303,21 +303,15 @@ fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf()
     write_ivf_header(&mut ivf_bytes, &header)?;
     write_ivf_frame(&mut ivf_bytes, 0, &payload)?;
     assert_eq!(plan_byte_stream(&ivf_bytes, &options)?.obu_count(), 5);
-    let mut reader = std::io::Cursor::new(ivf_bytes.as_slice());
+    let mut source =
+        crate::bitstream::byte_stream::ReaderUnits::new(ivf_bytes.as_slice(), options.limits());
     let mut buffers = Vec::new();
-    let prepared = crate::bitstream::byte_stream::prepare_stream(
-        &mut std::io::Cursor::new(ivf_bytes.as_slice()),
-        &options,
-        Vec::new(),
-    )?;
-    let crate::bitstream::byte_stream::PreparedInput::Ivf(_, end, hashes) = &prepared.input else {
-        return Err("IVF input".into());
-    };
-    let mut records = IvfRecords::new(&mut reader, header, *end, hashes, &mut buffers)?;
-    assert!(records.advance()?);
-    let (unit, record) = records.current().ok_or("missing IVF record")?;
+    let unit = source
+        .next_unit(&mut buffers)?
+        .ok_or("missing IVF record")?;
     let mut obus = Vec::new();
-    runtime_obus(unit.view(), &mut obus)?;
+    runtime_obus(unit.bytes.view(), &mut obus)?;
+    let record = 0;
     assert_eq!((record, obus.len()), (0, 3));
     assert!(obus.iter().all(|obu| !obu.header.obu_type.is_reserved()));
     Ok(())
@@ -410,15 +404,10 @@ fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter()
     .concat();
     let obus = annexb_obus(&bytes);
     let (_, frame_unit_len) = require_leading_frame_unit(&obus)?;
-    let mut next_unvalidated = frame_unit_len;
 
     assert_eq!(frame_unit_len, 3);
     assert_eq!(leading_record_inter_frame_unit_start(0, 4, &obus), Some(3));
     assert_eq!(leading_record_inter_frame_unit_start(0, 6, &obus), None);
-
-    assert!(require_following_annexb_obu_order_through(&obus, &mut next_unvalidated, 4).is_ok());
-    assert_eq!(next_unvalidated, 5);
-    assert!(require_following_annexb_obu_order_through(&obus, &mut next_unvalidated, 6).is_ok());
-    assert_eq!(next_unvalidated, 7);
+    assert!(require_inter_obu_order(&obus[5..]).is_ok());
     Ok(())
 }

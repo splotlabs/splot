@@ -53,7 +53,7 @@ fn decode_out_of_tier_y4m_text_mode_emits_unsupported_feature_without_touching_o
         "severity: Error",
         "spec_section: 7.1",
         "detail_kind: unsupported_feature",
-        "unsupported_reason: unexpected_planned_stream_shape",
+        "unsupported_reason: unexpected_obu_order",
         "output_format: y4m",
     ] {
         assert!(
@@ -89,10 +89,7 @@ fn decode_out_of_tier_y4m_json_mode_emits_unsupported_feature_object() {
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "7.1");
     assert_eq!(json["detail_kind"], "unsupported_feature");
-    assert_eq!(
-        json["unsupported_reason"],
-        "unexpected_planned_stream_shape"
-    );
+    assert_eq!(json["unsupported_reason"], "unexpected_obu_order");
     assert_eq!(json["output_format"], "y4m");
     assert_eq!(
         std::fs::read(&output).expect("read temporary output sentinel"),
@@ -129,10 +126,7 @@ fn decode_y4m_source_error_wins_before_missing_output_parent() {
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "7.1");
     assert_eq!(json["detail_kind"], "unsupported_feature");
-    assert_eq!(
-        json["unsupported_reason"],
-        "unexpected_planned_stream_shape"
-    );
+    assert_eq!(json["unsupported_reason"], "unexpected_obu_order");
     assert_eq!(json["output_format"], "y4m");
 }
 
