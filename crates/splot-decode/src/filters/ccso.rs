@@ -540,6 +540,10 @@ fn ccso_simd_row<L: ReconSample>(
 /// saturating lanes as wide as the luma samples; saturation cannot flip
 /// either compare. With 8-bit luma, `q` saturates to 255, which flips
 /// neither compare either, because no 8-bit difference reaches 256.
+///
+/// After the whole chunks, one more chunk ends at the last column whose taps
+/// stay in range. It overlaps the filtered columns, and only its lanes past
+/// them, which start at or after `first`, take the new samples.
 fn ccso_lanes_span<L: ReconSample, const SUB_X: usize>(
     destination: &mut [u16],
     center_row: &[L],
@@ -647,6 +651,24 @@ fn ccso_lanes_span<L: ReconSample, const SUB_X: usize>(
     };
     let chunks = config.offset_lut.len().div_ceil(CCSO_LANES);
     let max_sample = Simd::<i16, CCSO_LANES>::splat(config.max_sample as i16);
+    let filter = |rows: [&[L]; 3], output: &[u16; CCSO_LANES]| -> Option<Simd<u16, CCSO_LANES>> {
+        let lut_index = if L::u8_slice(rows[0]).is_some() {
+            index_u8(rows)
+        } else {
+            index_u16(rows)
+        }?;
+        let mut offset = Simd::<u8, CCSO_LANES>::splat(0);
+        for (chunk, values) in config.offset_lut_simd.iter().take(chunks).enumerate() {
+            offset |= Simd::from_array(*values)
+                .swizzle_dyn(lut_index - Simd::splat((chunk * CCSO_LANES) as u8));
+        }
+        Some(
+            (Simd::from_array(*output).cast::<i16>() + offset.cast::<i8>().cast())
+                .simd_max(Simd::splat(0))
+                .simd_min(max_sample)
+                .cast::<u16>(),
+        )
+    };
     let mut x = first;
     let lanes = centers
         .chunks_exact(step)
@@ -654,27 +676,42 @@ fn ccso_lanes_span<L: ReconSample, const SUB_X: usize>(
         .zip(taps1.chunks_exact(step))
         .zip(outputs.chunks_exact_mut(CCSO_LANES));
     for (((centers, taps0), taps1), output) in lanes {
-        let rows = [centers, taps0, taps1];
-        let lut_index = if L::u8_slice(centers).is_some() {
-            index_u8(rows)
-        } else {
-            index_u16(rows)
-        };
-        let (Some(lut_index), Some(output)) = (lut_index, output.first_chunk_mut::<CCSO_LANES>())
-        else {
+        let Some(output) = output.first_chunk_mut::<CCSO_LANES>() else {
             break;
         };
-        let mut offset = Simd::<u8, CCSO_LANES>::splat(0);
-        for (chunk, values) in config.offset_lut_simd.iter().take(chunks).enumerate() {
-            offset |= Simd::from_array(*values)
-                .swizzle_dyn(lut_index - Simd::splat((chunk * CCSO_LANES) as u8));
-        }
-        let samples = (Simd::from_array(*output).cast::<i16>() + offset.cast::<i8>().cast())
-            .simd_max(Simd::splat(0))
-            .simd_min(max_sample)
-            .cast::<u16>();
+        let Some(samples) = filter([centers, taps0, taps1], output) else {
+            break;
+        };
         *output = samples.to_array();
         x += CCSO_LANES;
+    }
+    let tail_end = x_end.min(match usize::try_from(max_luma_x as isize - max_dx) {
+        Ok(last) => (last >> SUB_X) + 1,
+        Err(_) => 0,
+    });
+    if tail_end > x
+        && let Some(start) = tail_end.checked_sub(CCSO_LANES)
+        && start <= x
+        && let luma = start << SUB_X
+        && let (Some(centers), Some(taps0), Some(taps1), Some(output)) = (
+            center_row.get(luma..).and_then(|row| row.get(..step)),
+            row0.get(luma.wrapping_add_signed(dx0)..)
+                .and_then(|row| row.get(..step)),
+            row1.get(luma.wrapping_add_signed(dx1)..)
+                .and_then(|row| row.get(..step)),
+            destination
+                .get_mut(start..)
+                .and_then(|row| row.first_chunk_mut::<CCSO_LANES>()),
+        )
+        && let Some(samples) = filter([centers, taps0, taps1], output)
+    {
+        let lane = Simd::from_array(core::array::from_fn(|lane| lane as u16));
+        let done = Simd::<u16, CCSO_LANES>::splat((x - start) as u16);
+        *output = lane
+            .simd_ge(done)
+            .select(samples, Simd::from_array(*output))
+            .to_array();
+        x = tail_end;
     }
     (first, x)
 }
