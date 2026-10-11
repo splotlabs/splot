@@ -391,6 +391,7 @@ fn tip_grid_and_cells<T: ReconSample>(
                 unit,
                 &mut [[0; 256]; 2],
                 &mut luma,
+                &mut Default::default(),
             )
             .expect("refined cell")
             .map_or_else(

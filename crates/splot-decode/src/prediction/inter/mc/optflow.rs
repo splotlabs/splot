@@ -720,7 +720,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                         base_mvs[0],
                         InterpolationFilter::Bilinear,
                         candidates.map(|mvs| (mvs[0], region_w, region_h)),
-                        false,
+                        None,
                         pred0,
                     )?;
                     initial_luma_prediction::<_, 0>(
@@ -729,7 +729,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                         base_mvs[1],
                         InterpolationFilter::Bilinear,
                         candidates.map(|mvs| (mvs[1], region_w, region_h)),
-                        false,
+                        None,
                         pred1,
                     )?;
                     if block.optflow_sad_threshold.is_some_and(|threshold| {
@@ -869,7 +869,7 @@ pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
             base_mvs[reference],
             InterpolationFilter::Bilinear,
             candidates.map(|mvs| (mvs[reference], 8, 8)),
-            false,
+            None,
             prediction,
         )?;
     }
@@ -954,6 +954,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                     )?;
                 let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
                 let mut luma = LumaReference::pair(sink.info(), &block, offset);
+                let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
                 for (column, destination) in cells.iter_mut().enumerate() {
                     if fast && destination.is_initialized() {
                         continue;
@@ -969,6 +970,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                         unit,
                         &mut initial_predictions,
                         &mut luma,
+                        &mut carries,
                     )?;
                     *destination = match refined {
                         Some(cell) => cell,
@@ -1005,6 +1007,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         )?;
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut luma = LumaReference::pair(sink.info(), &block, offset);
+    let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
     for index in 0..unit_count {
         let (rect, mvs) = unit_at(index);
         if fast && cells.get(index).is_some_and(MotionCell::is_initialized) {
@@ -1020,6 +1023,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             unit,
             &mut initial_predictions,
             &mut luma,
+            &mut carries,
         )?;
         if let Some(cell) = refined {
             let destination = cells.get_mut(index).ok_or(ReconError::ArithmeticOverflow {
@@ -1049,15 +1053,14 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
 
 /// One luma reference of a block's refine-MV and optical-flow predictions,
 /// with the setup [`initial_luma_prediction`] would repeat for each unit: the
-/// unit-independent plane scaling, the last plane view it fetched and the
-/// 12x12 TIP centre carry.
+/// unit-independent plane scaling and the last plane view it fetched.
+#[derive(Clone, Copy)]
 pub(super) struct LumaReference<'a, T: ReconSample> {
     samples: ReferenceSamples<'a, T>,
     scaling: PlaneScaling,
     view: Option<ReferencePlaneView<'a, T>>,
     bit_depth: splot_recon::BitDepth,
     offset: ByteOffset,
-    carry: BilinearOverlapCarry<'a, T>,
 }
 
 impl<'a, T: ReconSample> LumaReference<'a, T> {
@@ -1086,7 +1089,6 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
             view: None,
             bit_depth: info.bit_depth(),
             offset,
-            carry: BilinearOverlapCarry::default(),
         }
     }
 
@@ -1119,15 +1121,15 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
 }
 
 /// Predicts the bilinear refine-MV or optical-flow luma area `rect`, `INSET`
-/// samples in from each edge. `tip_centre` marks the 12x12 TIP refine-MV
-/// centre, which then takes the dedicated kernel when it applies.
-pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
-    luma: &mut LumaReference<'_, T>,
+/// samples in from each edge. `tip_centre` holds the carry of the 12x12 TIP
+/// refine-MV centre, which then takes the dedicated kernel when it applies.
+pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
+    luma: &mut LumaReference<'a, T>,
     rect: McBlockRect,
     mv: Mv,
     interp: InterpolationFilter,
     refinemv_area: Option<(Mv, usize, usize)>,
-    tip_centre: bool,
+    tip_centre: Option<&mut BilinearOverlapCarry<'a, T>>,
     output: &mut [u16],
 ) -> Result<()> {
     let scaling =
@@ -1167,14 +1169,8 @@ pub(super) fn initial_luma_prediction<T: ReconSample, const INSET: usize>(
             expected: first,
             actual: available,
         })?;
-    if tip_centre
-        && subpel_predict_12x12_bilinear_overlap_into(
-            &view,
-            &params,
-            output,
-            rect.luma_w,
-            &mut luma.carry,
-        )?
+    if let Some(carry) = tip_centre
+        && subpel_predict_12x12_bilinear_overlap_into(&view, &params, output, rect.luma_w, carry)?
     {
         return Ok(());
     }
