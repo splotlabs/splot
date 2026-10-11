@@ -2125,6 +2125,7 @@ impl TemporalProjectionSource {
         if layout.width8() == 0 {
             return None;
         }
+        debug_assert!(source.ref_order_hints.len() <= MAX_SORTED_REFS);
         let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
         let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
         Some(Self {
