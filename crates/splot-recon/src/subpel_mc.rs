@@ -1357,7 +1357,7 @@ fn blend_fullpel_u16_row(
             .zip(&left[copied..])
             .zip(&right[copied..])
         {
-            *slot = (left + right + 1) >> 1;
+            *slot = ((u32::from(left) + u32::from(right) + 1) >> 1) as u16;
         }
         return;
     }
