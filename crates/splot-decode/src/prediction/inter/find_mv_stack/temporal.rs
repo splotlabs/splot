@@ -28,6 +28,9 @@ const MAX_FRAME_DISTANCE: i32 = 31;
 const REFMVS_LIMIT: i32 = (1 << 11) - 1;
 const MV_LIMIT: i32 = (1 << 16) - 1;
 const INVALID_TEMPORAL_REF: u8 = u8::MAX;
+/// A restricted `refIdx`, which AV2 § 7.22 stores too; § 7.9.3 projects it with
+/// `refOffset = 0` and `startRefMap = NONE`.
+const RESTRICTED_TEMPORAL_REF: u8 = MAX_SORTED_REFS as u8;
 const DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
@@ -572,7 +575,10 @@ fn resolve_block_refs(
                     .position(|&candidate| candidate == Some(hint))
             })
             .and_then(|index| u8::try_from(index).ok())
-            .unwrap_or(INVALID_TEMPORAL_REF);
+            .unwrap_or(match hint {
+                Some(u32::MAX) => RESTRICTED_TEMPORAL_REF,
+                _ => INVALID_TEMPORAL_REF,
+            });
         (hint, index)
     })
 }
@@ -2101,7 +2107,7 @@ struct TemporalProjectionSource {
     source_to_current: i32,
     /// One entry per reference slot, so it sits inline rather than in a vector
     /// built for every projection of every frame.
-    target_cache: [Option<(u32, Option<usize>, i32)>; MAX_SORTED_REFS],
+    target_cache: [Option<(u32, Option<usize>, i32)>; MAX_SORTED_REFS + 1],
 }
 
 impl TemporalProjectionSource {
@@ -2131,7 +2137,7 @@ impl TemporalProjectionSource {
                 .and_then(|target| ref_order_hints.get(target).copied().flatten()),
             source_to_current: super::super::get_relative_dist(source_hint, current_hint),
             target_cache: {
-                let mut cache = [const { None }; MAX_SORTED_REFS];
+                let mut cache = [const { None }; MAX_SORTED_REFS + 1];
                 for (slot, &hint) in cache.iter_mut().zip(source.ref_order_hints.iter()) {
                     *slot = hint.map(|hint| {
                         let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
@@ -2142,6 +2148,7 @@ impl TemporalProjectionSource {
                         )
                     });
                 }
+                cache[MAX_SORTED_REFS] = Some((u32::MAX, None, 0));
                 cache
             },
         })

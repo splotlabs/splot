@@ -571,6 +571,49 @@ fn projection_records_zero_offset_reference() {
     );
 }
 
+/// AV2 § 7.22 stores a restricted `refIdx`; § 7.9.3 projects it with
+/// `refOffset = 0` (07-decoding-process.md:2304).
+#[test]
+fn projection_records_restricted_reference_with_zero_offset() {
+    let hints = reference_order_hints(&[0, 1], &[true, true], &[2, u32::MAX]);
+    let mut source = TemporalMotionField::new_with_metadata(4, 4, true, (16, 16), &hints).unwrap();
+    let mv = Mv { row: 8, col: -16 };
+    source.record_block(TemporalMotionBlock::new(
+        0,
+        0,
+        4,
+        4,
+        4,
+        4,
+        8,
+        [Some(u32::MAX), None],
+        [mv, Mv::ZERO],
+        [None; 2],
+    ));
+    let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
+
+    project_whole_temporal_motion_field(
+        &source,
+        8,
+        6,
+        1,
+        8,
+        0,
+        0,
+        None,
+        &[Some(2), Some(8)],
+        None,
+        &mut output,
+    );
+
+    for (y8, x8) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+        assert_eq!(
+            output.cell(y8, x8),
+            Some(ProjectedTemporalMotionCell::new(true, mv, 0))
+        );
+    }
+}
+
 #[test]
 fn zero_offset_projection_uses_the_zero_divisor_multiplier() {
     assert_eq!(project_mv(Mv { row: 24, col: -40 }, 3, 0), Mv::ZERO);
