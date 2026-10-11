@@ -55,6 +55,12 @@ const REVERSE: u8 = 1;
 /// The trajectory end of an intersecting lane is in the band and inside the
 /// projected position's window, so an observation records it for the end.
 const END_WRITE: u8 = 2;
+/// The lane projects.
+const PROJECT: u8 = 4;
+/// The lane runs the § 7.9.8 intersection check.
+const INTERSECT: u8 = 8;
+/// The lane projects from a cell inside the trajectory grid, so it observes.
+const OBSERVE: u8 = 16;
 
 /// The order-free values of up to [`CHUNK`] sampled cells of one source row,
 /// reused chunk after chunk; lanes past a chunk's end keep stale values.
@@ -73,17 +79,9 @@ struct ChunkLanes {
     /// The trajectory band cell where the unprojected vector lands, the end of
     /// a § 7.9.8 trajectory.
     end_index: Grid<i32>,
-    /// [`REVERSE`] and [`END_WRITE`].
+    /// [`REVERSE`], [`END_WRITE`], [`PROJECT`], [`INTERSECT`] and [`OBSERVE`]
+    /// for a tracked scan.
     bits: Grid<u8>,
-}
-
-/// The lanes of one chunk that project, that run the § 7.9.8 intersection
-/// check, and that project from a cell inside the trajectory grid.
-#[derive(Clone, Copy)]
-struct ChunkMasks {
-    projects: u64,
-    intersects: u64,
-    observes: u64,
 }
 
 /// One source's [`ProjectionTarget`] flags and divisor bytes as lane tables
@@ -271,23 +269,23 @@ pub(super) fn project_temporal_motion_field(
         for (chunk_index, chunk) in row.chunks(CHUNK * step).enumerate() {
             let x_base = chunk_index * CHUNK * step;
             if let Some(trajectories) = trajectories.as_deref_mut() {
-                let Some(masks) =
+                let Some(walk) =
                     chunk_lanes::<true>(&mut lanes, chunk, side, &tables, y8, x_base, geometry)
                 else {
                     return;
                 };
-                ChunkWalk::new(&lanes, masks, y8, x_base, step).project_tracked(
+                ChunkWalk::new(&lanes, walk, y8, x_base, step).project_tracked(
                     prepared,
                     trajectories,
                     output,
                 );
             } else {
-                let Some(masks) =
+                let Some(walk) =
                     chunk_lanes::<false>(&mut lanes, chunk, side, &tables, y8, x_base, geometry)
                 else {
                     return;
                 };
-                ChunkWalk::new(&lanes, masks, y8, x_base, step).project(prepared, output);
+                ChunkWalk::new(&lanes, walk, y8, x_base, step).project(prepared, output);
             }
         }
     }
@@ -296,23 +294,19 @@ pub(super) fn project_temporal_motion_field(
 /// One chunk's lanes, walked in raster order for their order-dependent effects.
 struct ChunkWalk<'a> {
     lanes: &'a ChunkLanes,
-    masks: ChunkMasks,
+    /// The lanes with an effect: those that project, and for a tracked scan
+    /// those that intersect.
+    walk: u64,
     y8: usize,
     x_base: usize,
     step: usize,
 }
 
 impl<'a> ChunkWalk<'a> {
-    fn new(
-        lanes: &'a ChunkLanes,
-        masks: ChunkMasks,
-        y8: usize,
-        x_base: usize,
-        step: usize,
-    ) -> Self {
+    fn new(lanes: &'a ChunkLanes, walk: u64, y8: usize, x_base: usize, step: usize) -> Self {
         Self {
             lanes,
-            masks,
+            walk,
             y8,
             x_base,
             step,
@@ -356,25 +350,20 @@ impl<'a> ChunkWalk<'a> {
         trajectories: &mut TrajectoryBand<'_>,
         output: &mut ProjectedFieldBand<'_>,
     ) {
-        let ChunkMasks {
-            projects,
-            intersects,
-            observes,
-        } = self.masks;
         let source = prepared.source_ref;
         let scanned_slot = trajectories.row_slot(source, self.y8, self.x_base);
-        let mut walk = projects | intersects;
+        let mut walk = self.walk;
         while walk != 0 {
             let lane = walk.trailing_zeros() as usize;
             walk &= walk - 1;
             let Some(target) = self.target(&prepared.targets, lane) else {
                 continue;
             };
+            let bits = self.lanes.bits.as_flattened()[lane];
             let source_slot = scanned_slot + lane * self.step;
             let mv = self.mv(lane);
             let end_slot = match target.end_ref {
-                Some(end) if intersects >> lane & 1 != 0 => {
-                    let bits = self.lanes.bits.as_flattened()[lane];
+                Some(end) if bits & INTERSECT != 0 => {
                     let end_slot = trajectories.slot(end, Self::index(&self.lanes.end_index, lane));
                     trajectories.extend_trajectories(source, end, source_slot, None, mv);
                     if bits & REVERSE != 0 {
@@ -389,10 +378,10 @@ impl<'a> ChunkWalk<'a> {
                 }
                 _ => None,
             };
-            if projects >> lane & 1 == 0 {
+            if bits & PROJECT == 0 {
                 continue;
             }
-            if observes >> lane & 1 != 0 {
+            if bits & OBSERVE != 0 {
                 let (row, col) = Self::pair(&self.lanes.projected, lane);
                 trajectories.observe_projection_at(
                     source,
@@ -418,7 +407,7 @@ impl<'a> ChunkWalk<'a> {
     /// The walk without trajectories: only projecting lanes have an effect.
     #[inline(never)]
     fn project(&self, prepared: &TemporalProjectionSource, output: &mut ProjectedFieldBand<'_>) {
-        let mut walk = self.masks.projects;
+        let mut walk = self.walk;
         while walk != 0 {
             let lane = walk.trailing_zeros() as usize;
             walk &= walk - 1;
@@ -469,7 +458,7 @@ fn chunk_lanes<const TRACKED: bool>(
     y8: usize,
     x_base: usize,
     geometry: LaneGeometry,
-) -> Option<ChunkMasks> {
+) -> Option<u64> {
     let count = chunk.len().div_ceil(geometry.step).min(CHUNK);
     let stored = chunk
         .as_flattened()
@@ -483,8 +472,8 @@ fn chunk_lanes<const TRACKED: bool>(
     let y = Lanes::splat(i32::try_from(y8).ok()?);
     let y_unit = y & Lanes::splat(!geometry.unit_mask);
     let y_track_unit = y & Lanes::splat(!track.unit_mask);
-    let row_inside = u32::try_from(y8).is_ok_and(|y8| y8 < track.height8);
-    let (mut projects, mut intersects, mut inside) = (0u64, 0u64, 0u64);
+    let row_inside = Mask::splat(u32::try_from(y8).is_ok_and(|y8| y8 < track.height8));
+    let (mut projects, mut intersects) = (0u64, 0u64);
     for group in 0..count.div_ceil(LANES) {
         let first = i32::try_from(x_base + group * LANES * geometry.step).ok()?;
         let x = Lanes::splat(first) + iota * Lanes::splat(geometry.step as i32);
@@ -519,13 +508,13 @@ fn chunk_lanes<const TRACKED: bool>(
         let column = x - base[1] + Lanes::splat(geometry.horizontal_offset8);
         let near =
             base[0].simd_eq(y_unit) & column.cast::<u32>().simd_lt(Simd::splat(geometry.window8));
-        let projecting = (flags & Simd::splat(PROJECTS)).simd_ne(Simd::splat(0));
+        let projecting =
+            (flags & Simd::splat(PROJECTS)).simd_ne(Simd::splat(0)) & (sampled & near).cast();
         let shift = group * LANES;
-        projects |= (projecting.to_bitmask() & (sampled & near).to_bitmask()) << shift;
+        projects |= projecting.to_bitmask() << shift;
         if TRACKED {
-            let intersecting = (flags & Simd::splat(INTERSECTS)).simd_ne(Simd::splat(0));
-            let cell_inside = x.cast::<u32>().simd_lt(Simd::splat(track.width8));
-            inside |= cell_inside.to_bitmask() << shift;
+            let inside = (x.cast::<u32>().simd_lt(Simd::splat(track.width8)) & row_inside).cast();
+            let intersecting = (flags & Simd::splat(INTERSECTS)).simd_ne(Simd::splat(0)) & inside;
             intersects |= intersecting.to_bitmask() << shift;
             lanes.trajectory_index[group] = track.band.index(position).to_array();
             let end_index = track.band.index(end);
@@ -544,16 +533,18 @@ fn chunk_lanes<const TRACKED: bool>(
                     .cast::<i8>()
                     .select(Simd::splat(bit), Simd::splat(0))
             };
-            lanes.bits[group] = (bit(reverse, REVERSE) | bit(window, END_WRITE)).to_array();
+            let flag =
+                |mask: Mask<i8, LANES>, bit: u8| mask.select(Simd::splat(bit), Simd::splat(0));
+            lanes.bits[group] = (bit(reverse, REVERSE)
+                | bit(window, END_WRITE)
+                | flag(projecting, PROJECT)
+                | flag(intersecting, INTERSECT)
+                | flag(projecting & inside, OBSERVE))
+            .to_array();
         }
     }
     let live = u64::MAX >> (CHUNK - count.max(1));
-    let inside = if row_inside { inside & live } else { 0 };
-    Some(ChunkMasks {
-        projects: projects & live,
-        intersects: intersects & inside,
-        observes: projects & inside,
-    })
+    Some((projects | intersects) & live)
 }
 
 /// A chunk's stored cells from the scanned list's first byte on.
@@ -799,7 +790,7 @@ mod tests {
             };
             let geometry = LaneGeometry::new(step, unit, &output, Some(band)).unwrap();
             let stored: Vec<StoredTemporalCell> = cells.iter().map(|cell| cell.store()).collect();
-            let masks = chunk_lanes::<true>(
+            let walk = chunk_lanes::<true>(
                 &mut lanes,
                 &stored,
                 side,
@@ -833,10 +824,9 @@ mod tests {
                     )
                 });
                 let target = source.targets[reference];
-                assert_eq!(
-                    masks.intersects >> lane & 1 == 1,
-                    entry.is_some() && target.end_ref.is_some() && x8 < width8
-                );
+                let bits = lanes.bits.as_flattened()[lane];
+                let intersects = entry.is_some() && target.end_ref.is_some() && x8 < width8;
+                assert_eq!(bits & INTERSECT != 0, intersects);
                 let expected = entry.and_then(|(offset, factor)| {
                     let mv = if offset < 0 {
                         Mv {
@@ -861,7 +851,6 @@ mod tests {
                 };
                 let end_index = end.map(|end| cell_index(end, band_base));
                 let in_band = end_index.filter(|&index| index < band_cells);
-                let bits = lanes.bits.as_flattened()[lane];
                 if let Some(index) = in_band {
                     assert_eq!(lanes.end_index.as_flattened()[lane] as usize, index);
                 }
@@ -872,7 +861,7 @@ mod tests {
                     "case {case} lane {lane}"
                 );
                 if let Some((_, position)) = expected {
-                    assert_eq!(masks.observes >> lane & 1 == 1, x8 < width8);
+                    assert_eq!(bits & OBSERVE != 0, x8 < width8);
                     let output_index = ChunkWalk::index(&lanes.output_index, lane);
                     assert_eq!(output_index, cell_index(position, output_base));
                     let trajectory_index = ChunkWalk::index(&lanes.trajectory_index, lane);
@@ -885,11 +874,8 @@ mod tests {
                     });
                     assert_eq!(bits & END_WRITE != 0, in_band.is_some() && window);
                 }
-                assert_eq!(
-                    masks.projects >> lane & 1 == 1,
-                    expected.is_some(),
-                    "case {case}"
-                );
+                assert_eq!(bits & PROJECT != 0, expected.is_some(), "case {case}");
+                assert_eq!(walk >> lane & 1 == 1, expected.is_some() || intersects);
                 if let Some((projected, (pos_y8, pos_x8))) = expected {
                     let lane_projected = Mv {
                         row: lanes.projected[0].as_flattened()[lane],
