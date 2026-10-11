@@ -483,37 +483,27 @@ fn vertical_interior_top<T: ReconSample>(
         .then_some(top)
 }
 
-/// Runs the § 7.13.3.18 vertical pass over a block whose tap rows need no
-/// clipping.
+/// Runs the § 7.13.3.18 vertical pass over a block whose columns need no
+/// clipping, reading the eight tap rows of output row `r` from `rows_of(r)`.
 ///
 /// The eight taps run over the whole filter row instead of its active span: a
 /// zero tap contributes exactly zero to the integer accumulator, so the sum and
 /// the order of its non-zero terms are those of the clipped path, while the
 /// constant trip count keeps the tap coefficients and the eight row bases in
 /// registers across the column loop.
-#[allow(clippy::too_many_arguments)]
-fn subpel_vertical_interior_into<T: ReconSample, O>(
-    source: &[T],
-    stride: usize,
+fn subpel_vertical_rows_into<'a, T: ReconSample + 'a, O>(
     params: &SubpelPredictParams,
     taps: &[i32; NUM_TAPS],
-    top: usize,
-    x: usize,
     inter_round1: u32,
     output: &mut [O],
     output_stride: usize,
     finish: &mut impl SubpelOutput<O>,
+    rows_of: impl Fn(usize) -> [&'a [T]; NUM_TAPS],
 ) {
     let w = params.w;
     let packed = Simd::from_array(*taps).cast::<i16>();
-    let prefetch = prefetches(source);
     for r in 0..params.h {
-        let base = (top + r) * stride + x;
-        if prefetch {
-            let ahead = (NUM_TAPS - 1 + PREFETCH_ROWS) * stride;
-            prefetch_samples(source, base.wrapping_add(ahead), w);
-        }
-        let rows: [&[T]; NUM_TAPS] = core::array::from_fn(|t| &source[base + t * stride..][..w]);
+        let rows = rows_of(r);
         let row_out = &mut output[r * output_stride..][..w];
         let mut c = 0;
         macro_rules! vectors {
@@ -557,82 +547,56 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
     let v_filter = params.interp.pass_index(params.h as u32) as usize;
     let phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
     let full_taps = &SUBPEL_FILTERS[v_filter][phase];
-    let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter][phase];
-    let taps = &full_taps[tap_start..tap_end];
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
-    let direct_x = subpel_direct_copy_x(reference, params);
 
-    if let (Some(x), Some(top)) = (direct_x, vertical_interior_top(reference, params, y0)) {
-        subpel_vertical_interior_into(
-            reference.samples,
-            reference.stride,
-            params,
-            full_taps,
-            top,
-            x,
-            inter_round1,
-            output,
-            output_stride,
-            finish,
-        );
+    if let Some(x) = subpel_direct_copy_x(reference, params) {
+        let (source, stride, w) = (reference.samples, reference.stride, params.w);
+        if let Some(top) = vertical_interior_top(reference, params, y0) {
+            let prefetch = prefetches(source);
+            subpel_vertical_rows_into(
+                params,
+                full_taps,
+                inter_round1,
+                output,
+                output_stride,
+                finish,
+                |r| {
+                    let base = (top + r) * stride + x;
+                    if prefetch {
+                        let ahead = (NUM_TAPS - 1 + PREFETCH_ROWS) * stride;
+                        prefetch_samples(source, base.wrapping_add(ahead), w);
+                    }
+                    core::array::from_fn(|t| &source[base + t * stride..][..w])
+                },
+            );
+        } else {
+            let last = reference.readable_rows - 1;
+            subpel_vertical_rows_into(
+                params,
+                full_taps,
+                inter_round1,
+                output,
+                output_stride,
+                finish,
+                |r| {
+                    core::array::from_fn(|t| {
+                        let row =
+                            (y0 + r as i32 + t as i32 - 3).clamp(params.first_y, params.last_y);
+                        &source[(row as usize).min(last) * stride + x..][..w]
+                    })
+                },
+            );
+        }
         return;
     }
 
+    let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter][phase];
     for r in 0..params.h {
-        if let Some(x) = direct_x {
-            let source = reference.samples;
-            let vector_width8 = params.w - params.w % 8;
-            for c in (0..vector_width8).step_by(8) {
-                let mut sum = Simd::<i32, 8>::splat(0);
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    let t = tap_start + tap_offset;
-                    let ref_row = (y0 + r as i32 + t as i32 - 3)
-                        .clamp(params.first_y, params.last_y)
-                        as usize;
-                    let ref_row = ref_row.min(reference.readable_rows - 1);
-                    let start = ref_row * reference.stride + x + c;
-                    sum = tap_mac(sum, reference_lanes::<8, T>(source, start).cast(), tap);
-                }
-                let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
-                finish.eight(values, &mut output[r * output_stride + c..][..8]);
-            }
-            let vector_width4 = params.w - params.w % 4;
-            for c in (vector_width8..vector_width4).step_by(4) {
-                let mut sum = Simd::<i32, 4>::splat(0);
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    let t = tap_start + tap_offset;
-                    let ref_row = (y0 + r as i32 + t as i32 - 3)
-                        .clamp(params.first_y, params.last_y)
-                        as usize;
-                    let ref_row = ref_row.min(reference.readable_rows - 1);
-                    let start = ref_row * reference.stride + x + c;
-                    sum = tap_mac(sum, reference_lanes::<4, T>(source, start).cast(), tap);
-                }
-                let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
-                finish.four(values, &mut output[r * output_stride + c..][..4]);
-            }
-            for c in vector_width4..params.w {
-                let mut sum = 0i32;
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    let t = tap_start + tap_offset;
-                    let ref_row = (y0 + r as i32 + t as i32 - 3)
-                        .clamp(params.first_y, params.last_y)
-                        as usize;
-                    let ref_row = ref_row.min(reference.readable_rows - 1);
-                    sum += tap * reference.sample(ref_row, x + c);
-                }
-                output[r * output_stride + c] = finish.one(round2_i32(
-                    sum << (FILTER_BITS - INTER_ROUND0),
-                    inter_round1,
-                ));
-            }
-            continue;
-        }
         clipped_edges::vertical_only(
             reference,
             params,
             r,
-            taps,
+            &full_taps[tap_start..tap_end],
             tap_start,
             inter_round1,
             output,
