@@ -55,6 +55,13 @@ impl<'a> RuntimeStream<'a> {
         )
     }
 
+    /// The caller data of the current unit.
+    pub(super) fn props(&self) -> crate::DataProps {
+        self.current
+            .as_ref()
+            .map_or_else(crate::DataProps::default, |unit| unit.props)
+    }
+
     /// The plan the current unit's candidates are checked against.
     pub(super) fn plan(&self) -> &'static DecodeStreamPlan {
         let ivf = self

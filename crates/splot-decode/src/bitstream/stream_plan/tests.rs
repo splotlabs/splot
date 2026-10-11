@@ -987,6 +987,7 @@ fn error_signature(error: DecodeError) -> String {
         DecodeError::Reconstruction { source } => format!("reconstruction:{source}"),
         DecodeError::ReferenceState { source } => format!("reference-state:{source}"),
         DecodeError::Input { source } => format!("input:{source}"),
+        DecodeError::State { source } => format!("state:{source}"),
         DecodeError::Output { source } => format!(
             "output:{}:{}:{}",
             source.operation(),

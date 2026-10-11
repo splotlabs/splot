@@ -30,6 +30,7 @@ pub const UNSUPPORTED_FEATURE_RULE_ID: &str = "decode/unsupported-feature";
 
 mod bitstream;
 pub mod context;
+mod decoder;
 pub mod diagnostic;
 pub mod error;
 mod filters;
@@ -53,11 +54,13 @@ mod tile;
 pub use bitstream::stream_plan;
 pub use context::DecodeContext;
 use core::fmt;
+pub use decoder::{DataProps, Decoder, DecoderSettings, Picture, PictureSamples, SendStatus};
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,
     DecodeOutputErrorDetails, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
     MALFORMED_SOURCE_RULE_ID, OUTPUT_ERROR_RULE_ID, RESOURCE_LIMIT_RULE_ID,
 };
+pub use error::DecoderStateError;
 pub use error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError, Result};
 pub use error::{DecodeOutputError, DecodeOutputOperation, DecodeUnsupportedFeature};
 pub use hash_report::{
@@ -67,7 +70,9 @@ pub use hash_report::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport, DecodeOutputVariant,
 };
 pub use runtime::DecodeRuntimeConfig;
+pub use splot_parallel::{FrameDelay, ThreadCount};
 pub use splot_recon::Y4mFrameRate;
+pub use splot_recon::{BitDepth, PixelFormat, PlaneId, PlaneRect, PlaneRef};
 pub use stream_plan::{
     DecodeIvfFrameContext, DecodeLayerSelection, DecodeObuSourceKind, DecodePlannedObu,
     DecodePlannedObuRole, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamInput,

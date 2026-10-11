@@ -154,7 +154,7 @@ fn reclaim_unowned_frames(
                         .as_ref()
                         .is_some_and(|other| frame.frame.shares_samples(&other.frame))
             });
-        if frame.frame.handle_count() > 1 && !shares {
+        if frame.frame.handle_count() > 1 && !shares && !frames.detach_held {
             continue;
         }
         let Some(frame) = frames.entries[slot_index].frame.take() else {
@@ -396,6 +396,7 @@ pub(crate) fn decode_key_frame(
             display_grain,
             None,
             FrameOutputEffects::empty(),
+            crate::DataProps::default(),
         );
         ring.harvest_all(&mut scratch_eight, &mut scratch_ten, &|| {
             admission.assist_ready(scope)
@@ -435,6 +436,7 @@ fn decode_key_frame_with_effects<'job, 'scope>(
     display_grain: Option<ActiveFilmGrain>,
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
+    props: crate::DataProps,
 ) -> Result<PipelineFrame>
 where
     'job: 'scope,
@@ -531,6 +533,7 @@ where
         segment_ids,
         frame_rate_numerator: frame_rate.numerator,
         frame_rate_denominator: frame_rate.denominator,
+        props,
     })
 }
 
@@ -855,6 +858,7 @@ where
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
+                    props: stream.props(),
                 }
             }
             BitDepthIdc::Ten => {
@@ -907,6 +911,7 @@ where
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
+                    props: stream.props(),
                 }
             }
         }
@@ -931,6 +936,7 @@ where
             key_display_grain,
             key_user_qm,
             key_output_effects,
+            stream.props(),
         )?
     };
     retained_frame_bytes =
@@ -1157,6 +1163,7 @@ where
                     segment_ids: source.segment_ids.clone(),
                     frame_rate_numerator: output_rate.numerator,
                     frame_rate_denominator: output_rate.denominator,
+                    props: stream.props(),
                     frame: inflight::PipelineFrameSlot::completed_recycled(
                         source.wait_ready_frame()?,
                         frames,
@@ -1763,6 +1770,7 @@ where
                     segment_ids: products.segment_ids,
                     frame_rate_numerator: inter_frame_rate.numerator,
                     frame_rate_denominator: inter_frame_rate.denominator,
+                    props: stream.props(),
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -2012,6 +2020,7 @@ where
                     key_display_grain,
                     key_user_qm,
                     key_output_effects,
+                    stream.props(),
                 )?;
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),

@@ -43,7 +43,8 @@ impl DecodeDiagnosticReport {
             | DecodeError::HeaderState { .. }
             | DecodeError::Reconstruction { .. }
             | DecodeError::ReferenceState { .. }
-            | DecodeError::Input { .. } => None,
+            | DecodeError::Input { .. }
+            | DecodeError::State { .. } => None,
             DecodeError::Limit { source } => Some(Self::resource_limit(*source)),
             DecodeError::MalformedSource { issue } => Some(Self::malformed_source(issue)),
             DecodeError::UnsupportedStructure { unsupported } => {

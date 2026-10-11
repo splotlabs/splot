@@ -535,6 +535,7 @@ mod tests {
             )),
             frame_rate_numerator: 1,
             frame_rate_denominator: 1,
+            props: crate::DataProps::default(),
         })
     }
 

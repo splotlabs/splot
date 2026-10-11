@@ -703,6 +703,11 @@ impl InflightRing {
         slot
     }
 
+    /// The pool retired frame buffers return to.
+    pub(crate) fn planes(&self) -> &Arc<splot_recon::PlanePool> {
+        self.buffers.planes()
+    }
+
     /// Resolved frame-admission depth used to bound pending frame slots.
     pub(crate) const fn capacity(&self) -> usize {
         self.capacity

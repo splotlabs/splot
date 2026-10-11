@@ -200,9 +200,11 @@ pub(crate) fn fill_buffer(buffers: &mut Vec<Arc<Vec<u8>>>, bytes: &[u8]) -> Arc<
 
 /// One non-empty temporal unit: an IVF frame record, or the Annex B OBUs from
 /// one temporal delimiter up to the next.
+#[derive(Debug)]
 pub(crate) struct SourceUnit {
     pub(crate) bytes: UnitBytes,
     pub(crate) ivf_frame: Option<DecodeIvfFrameContext>,
+    pub(crate) props: crate::DataProps,
 }
 
 /// Where the decode loop reads its temporal units from.
@@ -297,6 +299,7 @@ impl<R: Read> ReaderUnits<R> {
         Ok(Some(SourceUnit {
             bytes: UnitBytes::new(fill_buffer(buffers, bytes), base),
             ivf_frame,
+            props: crate::DataProps::default(),
         }))
     }
 
@@ -349,6 +352,7 @@ impl<R: Read + Send> UnitSource for ReaderUnits<R> {
                     let unit = SourceUnit {
                         bytes: UnitBytes::new(fill_buffer(buffers, payload), payload_offset.get()),
                         ivf_frame: Some(frame),
+                        props: crate::DataProps::default().with_pts(pts.cast_signed()),
                     };
                     self.ensure_fourcc()?;
                     self.ensure_input()?;
