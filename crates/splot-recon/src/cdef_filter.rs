@@ -1014,7 +1014,9 @@ fn cdef_window_linear(filter: &CdefBlockFilter, range: i32) -> bool {
         .into_iter()
         .all(|strength| {
             strength == 0
-                || range + (range >> constrain_damping_adj(strength, filter.damping)) <= strength
+                || (strength > 0
+                    && range + shr_or_zero(range, constrain_damping_adj(strength, filter.damping))
+                        <= strength)
         })
 }
 
@@ -1026,8 +1028,18 @@ fn cdef_window_clamped(filter: &CdefBlockFilter, range: i32) -> bool {
     [filter.pri_str, filter.sec_str]
         .into_iter()
         .all(|strength| {
-            strength == 0 || range >> constrain_damping_adj(strength, filter.damping) == 0
+            strength == 0
+                || (strength > 0
+                    && shr_or_zero(range, constrain_damping_adj(strength, filter.damping)) == 0)
         })
+}
+
+/// `value >> shift` for a non-negative `value`, 0 for a shift past its width.
+fn shr_or_zero(value: i32, shift: i32) -> i32 {
+    u32::try_from(shift)
+        .ok()
+        .and_then(|shift| value.checked_shr(shift))
+        .unwrap_or(0)
 }
 
 /// [`cdef_filter_rows`] in an interior layout 8 lanes wide for windows that
@@ -1456,6 +1468,21 @@ const fn constrain_with_adj(diff: i32, threshold: i32, damping_adj: i32) -> i32 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_admission_rejects_negative_strengths_and_saturates_the_shift() {
+        let filter = |pri_str, sec_str, damping| CdefBlockFilter {
+            pri_str,
+            sec_str,
+            damping,
+            dir: 0,
+            coeff_shift: 2,
+        };
+        assert!(!cdef_window_clamped(&filter(-4, 0, 6), 0));
+        assert!(!cdef_window_linear(&filter(0, -2, 6), 0));
+        assert!(cdef_window_clamped(&filter(4, 2, 200), 70_000));
+        assert!(cdef_window_linear(&filter(4, 0, 200), 3));
+    }
 
     #[test]
     fn flat_block_has_zero_variance() {
