@@ -991,8 +991,7 @@ fn compute_cdef_segment_block<S>(
                 .filtered_y
                 .rect_mut(rect)
                 .ok_or(CdefError::Workspace)?;
-            let window_min = range.and_then(|[min, max]| (max - min <= 255).then_some(min));
-            if !cdef_filter_block_segment(luma, &y_filter, window_min, output, stride) {
+            if !cdef_filter_block_segment(luma, &y_filter, range, output, stride) {
                 return Err(CdefError::Workspace);
             }
         }
