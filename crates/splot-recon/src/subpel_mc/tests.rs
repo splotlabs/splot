@@ -1902,6 +1902,20 @@ fn clipped_horizontal_compound_rows_match_materialized_predictors() {
         .unwrap()
     );
     assert_eq!(actual, expected);
+    let mut narrow = vec![0u8; params0.w * params0.h];
+    assert!(matches!(
+        subpel_predict_block_compound_average_fast_validated_strided_into(
+            &view0,
+            &params0,
+            &view1,
+            &params1,
+            12,
+            &mut scratch,
+            &mut narrow,
+            params0.w,
+        ),
+        Err(ReconError::SampleTypeUnsupportedBitDepth { .. })
+    ));
 }
 
 #[test]

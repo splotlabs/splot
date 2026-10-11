@@ -1720,8 +1720,10 @@ pub fn subpel_predict_block_compound_average_unscaled_strided_into<
 /// Internal fast dispatch for caller-constructed, already validated parameters.
 ///
 /// # Errors
-/// Returns [`ReconError::StrideTooSmall`] or [`ReconError::BufferLengthMismatch`]
-/// when the output rectangle does not fit the supplied storage.
+/// Returns [`ReconError::SampleTypeUnsupportedBitDepth`] when `O` cannot hold
+/// the bit depth, and [`ReconError::StrideTooSmall`] or
+/// [`ReconError::BufferLengthMismatch`] when the output rectangle does not fit
+/// the supplied storage.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
@@ -1748,6 +1750,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     debug_assert!([params0, params1].iter().all(|params| {
         params.step_x == 1 << SCALE_SUBPEL_BITS && params.step_y == 1 << SCALE_SUBPEL_BITS
     }));
+    crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
     validate_compound_output(params0, output, output_stride)?;
     let (params0, params1) = (
         &plane_bounded(reference0, params0),
