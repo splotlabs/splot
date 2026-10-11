@@ -18,29 +18,29 @@ note = "DynamoRIO 11.3.0 inscount -only_from_app, smallest of 3 runs; decode --t
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-gdf-intra-128x128.ivf"
 targets = "gdf"
-ir_stable = 8746359
+ir_stable = 7380360
 
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-wienerns-intra-128x128.ivf"
 targets = "wienerns-luma"
-ir_stable = 8746512
+ir_stable = 7380579
 
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-pcwiener-intra-128x128.ivf"
 targets = "pc-wiener"
-ir_stable = 8744807
+ir_stable = 7380721
 
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-2sb-deblockwide-intra-128x64-q100.ivf"
 targets = "deblock-cdef"
-ir_stable = 1851320
+ir_stable = 678562
 
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
 targets = "inter-subpel-optflow"
-ir_stable = 17099545
+ir_stable = 15486761
 
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-warp-inter-128x128.ivf"
 targets = "warp-subpel"
-ir_stable = 33978662
+ir_stable = 31916570
