@@ -404,6 +404,25 @@ fn decode_y4m_writes_to_null_device() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
 }
 
+#[cfg(unix)]
+#[test]
+fn decode_y4m_streams_to_stdout_pipe() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    for output in ["-", "/dev/stdout"] {
+        let dir = temp_dir("stdout-pipe");
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
+            .args(["decode", input.to_str().unwrap(), "-o", output])
+            .current_dir(&dir)
+            .output()
+            .expect("failed to run splot");
+
+        assert_eq!(out.status.code(), Some(0), "output {output}");
+        assert!(out.stderr.is_empty(), "stderr was not empty for {output}");
+        assert_eq!(out.stdout, expected_minimal_y4m(), "output {output}");
+        assert!(read_dir_names(&dir).is_empty(), "{output} created a file");
+    }
+}
+
 #[test]
 fn decode_y4m_skips_temp_name_that_matches_requested_output() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");

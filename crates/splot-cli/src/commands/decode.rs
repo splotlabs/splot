@@ -64,7 +64,7 @@ pub(crate) struct DecodeArgs {
     output_format: Option<DecodeOutputFormat>,
     /// Input AV2 bitstream.
     input: PathBuf,
-    /// Output path for the selected artifact.
+    /// Output path for the selected artifact; `-` writes to stdout.
     #[arg(short = 'o', long, required_unless_present = "output_format")]
     output: Option<PathBuf>,
     /// Override the Y4M frame rate as `NUM:DEN`; required for raw Annex B Y4M output.
@@ -565,8 +565,15 @@ fn publish_output(
     artifact: OutputArtifact,
     write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
-    if cfg!(unix) && path == Path::new("/dev/null") {
-        return write_stream_output(path, artifact, write);
+    if path == Path::new("-") {
+        return write_stream_output(io::stdout(), artifact, write);
+    }
+    if fs::metadata(path).is_ok_and(|metadata| !metadata.is_file() && !metadata.is_dir()) {
+        let file = OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|source| output_io(artifact.write_stream_operation, source))?;
+        return write_stream_output(file, artifact, write);
     }
 
     let (parent, final_name) = output_parent_and_name(path, artifact)?;
@@ -689,14 +696,10 @@ impl io::Write for AtomicOutput<'_> {
 }
 
 fn write_stream_output(
-    path: &Path,
+    output: impl io::Write + Send,
     artifact: OutputArtifact,
     write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
-    let output = OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|source| output_io(artifact.write_stream_operation, source))?;
     let mut output = BufWriter::new(output);
     write(&mut output)?;
     output
