@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+[package]
+name = "splot-capi"
+description = "C ABI of the splot streaming AV2 decoder."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+# The C ABI dereferences caller pointers, so this crate allows reviewed
+# unsafe blocks like splot-decode. Keep the rest synchronized with the
+# workspace lint table.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+cast_precision_loss = "allow"
+chunks_exact_to_as_chunks = "allow"
+doc_markdown = "allow"
+manual_bit_width = "allow"
+manual_midpoint = "allow"
+manual_slice_fill = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+wildcard_imports = "allow"
+if_not_else = "allow"
+
+[dependencies]
+splot-core.workspace = true
+splot-decode.workspace = true
+
+[dev-dependencies]
+cbindgen = { version = "0.29", default-features = false }
+
+# `cargo cinstall` (cargo-c) installs libsplot, splot.pc and the header.
+[package.metadata.capi.library]
+name = "splot"
+
+[package.metadata.capi.pkg_config]
+name = "splot"
+filename = "splot"
+
+[package.metadata.capi.header]
+generation = false
+subdirectory = false
+
+[package.metadata.capi.install.include]
+asset = [{ from = "include/splot.h" }]

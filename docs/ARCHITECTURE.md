@@ -68,6 +68,7 @@ Gate: `cargo xtask check-zero-copy-policy`.
 
 ## Unsafe and Errors
 
-`unsafe_code = "forbid"` applies across the workspace. Libraries return typed
+`unsafe_code = "forbid"` applies across the workspace, except reviewed blocks
+in `splot-decode` and the `splot-capi` C ABI. Libraries return typed
 errors and do not panic on malformed input. `anyhow` is limited to `splot-cli`
 and `xtask`.

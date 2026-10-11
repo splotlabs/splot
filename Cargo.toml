@@ -11,6 +11,7 @@ members = [
     "crates/splot-validate",
     "crates/splot-encode",
     "crates/splot-cli",
+    "crates/splot-capi",
     "xtask",
 ]
 exclude = ["fuzz"]

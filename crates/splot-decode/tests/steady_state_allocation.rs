@@ -35,7 +35,12 @@ const WARMED_DECODE_ALLOCATIONS: usize = 41;
 
 /// The allocation requests a warmed streaming decoder makes for one more pass
 /// over the eight-frame stream's temporal units, pictures dropped as taken.
-const WARMED_STREAMING_ALLOCATIONS: usize = 53;
+///
+/// The pass settles at 52 to 54: a picture the caller still holds when the
+/// driver retires its frame costs the frame slot one handle allocation, and
+/// that depends on how the two threads interleave. One allocation more per
+/// frame still exceeds this bound.
+const WARMED_STREAMING_ALLOCATIONS: usize = 56;
 
 fn context(threads: usize, frame_delay: FrameDelay) -> DecodeContext {
     DecodeContext::new(
