@@ -617,6 +617,24 @@ mod tests {
                 )
                 .unwrap()
             );
+            if case == 0 {
+                let half = SubpelPredictParams {
+                    w: size / 2,
+                    h: size / 2,
+                    ..params[1]
+                };
+                let declined = subpel_predict_block_compound_average_fast_validated_strided_into(
+                    &views[0],
+                    &params[0],
+                    &views[1],
+                    &half,
+                    weight,
+                    &mut [],
+                    &mut output,
+                    stride,
+                );
+                assert!(matches!(declined, Ok(false)));
+            }
             if case == 0 && bit_depth != BitDepth::Eight {
                 let mut narrow = vec![0u8; stride * size];
                 let result = subpel_predict_block_compound_average_fast_validated_strided_into(
