@@ -98,8 +98,8 @@ fn ibp_blend_rejects_undersized_buffers() {
 }
 
 /// The `u16` lane blend must match the § 7.13.2.9 per-sample formula and the
-/// scalar `u8` path for every enabled angle and block shape, including
-/// max-valued samples.
+/// `u8` path for every enabled angle and block shape, including max-valued
+/// samples.
 #[test]
 fn ibp_u16_lane_blend_matches_the_scalar_blend() {
     for p_angle in (0..ZONE_3_INDEX_BASE).filter(|&p| ibp_blend_fires(p)) {

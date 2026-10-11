@@ -3,6 +3,9 @@
 
 //! Shared DC intra prediction math.
 
+use std::simd::Simd;
+use std::simd::num::SimdUint as _;
+
 use crate::intra::{IntraDcEdge, IntraRectBlockSize};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
@@ -64,6 +67,9 @@ pub(crate) trait IntraLaneSample: ReconSample {
 
     /// Stores in-range `values` over `output`, which has the same length.
     fn store(values: &[u16], output: &mut [Self]);
+
+    /// Loads `LANES` samples as `u16` lanes.
+    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES>;
 }
 
 impl IntraLaneSample for u16 {
@@ -75,6 +81,11 @@ impl IntraLaneSample for u16 {
     #[inline]
     fn store(values: &[u16], output: &mut [Self]) {
         output.copy_from_slice(values); // splot-copy-ok: publish intra prediction lanes
+    }
+
+    #[inline]
+    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES> {
+        Simd::from_array(*samples)
     }
 }
 
@@ -89,6 +100,11 @@ impl IntraLaneSample for u8 {
         for (slot, &value) in output.iter_mut().zip(values) {
             *slot = value as u8;
         }
+    }
+
+    #[inline]
+    fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES> {
+        Simd::from_array(*samples).cast()
     }
 }
 

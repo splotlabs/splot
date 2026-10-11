@@ -9,7 +9,7 @@
 //! `secondPred` when the §7.13.2.7 `useIBP` gate and §7.13.2.9 mode gate fire.
 
 use crate::intra::IntraRectBlockSize;
-use crate::intra_dc_math::{DIV_LUT_BITS, resolve_divisor_32, round2_u32};
+use crate::intra_dc_math::{DIV_LUT_BITS, IntraLaneSample, resolve_divisor_32, round2_u32};
 use crate::intra_directional_angle::{
     DR_INTRA_DERIVATIVE, ZONE_1_MAX, ZONE_3_INDEX_BASE, ZONE_3_MIN,
 };
@@ -168,13 +168,16 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     let shift = IBP_WEIGHT_SIZE_LOG2 + 1;
     let c_shift = (width as u32) >> shift;
     let r_shift = (height as u32) >> shift;
-    if let (true, Some(primary), Some(second)) = (
-        width <= 64 && height <= 64 && width.is_multiple_of(4),
-        T::u16_slice_mut(&mut primary[..needed]),
-        T::u16_slice(&second[..needed]),
-    ) {
-        blend_rows_u16(weights, zone1, (c_shift, r_shift), width, primary, second);
-        return Ok(());
+    if width <= 64 && height <= 64 && width.is_multiple_of(4) {
+        let (primary, second) = (&mut primary[..needed], &second[..needed]);
+        if let (Some(primary), Some(second)) = (T::u16_slice_mut(primary), T::u16_slice(second)) {
+            blend_rows_lanes(weights, zone1, (c_shift, r_shift), width, primary, second);
+            return Ok(());
+        }
+        if let (Some(primary), Some(second)) = (T::u8_slice_mut(primary), T::u8_slice(second)) {
+            blend_rows_lanes(weights, zone1, (c_shift, r_shift), width, primary, second);
+            return Ok(());
+        }
     }
     for (row, (primary_row, second_row)) in primary
         .chunks_exact_mut(width)
@@ -207,16 +210,16 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     Ok(())
 }
 
-/// The `u16` form of the blend: each row's weights expand once per weight row
-/// and the samples blend in vector lanes. Every `(row, column) >> shift` index
+/// The lane form of the blend: each row's weights expand once per weight row
+/// and the samples blend in `u32` lanes. Every `(row, column) >> shift` index
 /// is below `IBP_WEIGHT_SIZE` because the shifts scale a side of at most 64.
-fn blend_rows_u16(
+fn blend_rows_lanes<O: IntraLaneSample>(
     weights: &IbpWeights,
     zone1: bool,
     (c_shift, r_shift): (u32, u32),
     width: usize,
-    primary: &mut [u16],
-    second: &[u16],
+    primary: &mut [O],
+    second: &[O],
 ) {
     let mut row_weights = [0u16; 64];
     let mut last_row_idx = usize::MAX;
@@ -238,26 +241,32 @@ fn blend_rows_u16(
             }
         }
         if width.is_multiple_of(8) {
-            blend_row_lanes::<8>(primary_row, second_row, &row_weights[..width]);
+            blend_row_lanes::<O, 8>(primary_row, second_row, &row_weights[..width]);
         } else {
-            blend_row_lanes::<4>(primary_row, second_row, &row_weights[..width]);
+            blend_row_lanes::<O, 4>(primary_row, second_row, &row_weights[..width]);
         }
     }
 }
 
-fn blend_row_lanes<const LANES: usize>(primary: &mut [u16], second: &[u16], weights: &[u16]) {
+fn blend_row_lanes<O: IntraLaneSample, const LANES: usize>(
+    primary: &mut [O],
+    second: &[O],
+    weights: &[u16],
+) {
     for ((target, source), weight) in primary
-        .chunks_exact_mut(LANES)
-        .zip(second.chunks_exact(LANES))
-        .zip(weights.chunks_exact(LANES))
+        .as_chunks_mut::<LANES>()
+        .0
+        .iter_mut()
+        .zip(second.as_chunks::<LANES>().0)
+        .zip(weights.as_chunks::<LANES>().0)
     {
-        let s = Simd::<u16, LANES>::from_slice(weight).cast::<u32>();
-        let p = Simd::<u16, LANES>::from_slice(target).cast::<u32>();
-        let q = Simd::<u16, LANES>::from_slice(source).cast::<u32>();
+        let s = Simd::from_array(*weight).cast::<u32>();
+        let p = O::load(target).cast::<u32>();
+        let q = O::load(source).cast::<u32>();
         let sum = p * s + q * (Simd::splat(u32::from(IBP_WEIGHT_MAX)) - s);
         let blended =
             (sum + Simd::splat(1 << (IBP_WEIGHT_SHIFT - 1))) >> u32::from(IBP_WEIGHT_SHIFT);
-        target.copy_from_slice(&blended.cast::<u16>().to_array()); // splot-copy-ok: publish blended lane group
+        O::store(blended.cast::<u16>().as_array(), target);
     }
 }
 
