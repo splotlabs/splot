@@ -501,8 +501,9 @@ const MAX_BLOCK_DIM: usize = 128;
 /// Returns [`ReconError::ZeroDimension`] for a zero dimension,
 /// [`ReconError::SubpelBlockDimensionUnsupported`] for `w`/`h` above the
 /// 128-sample super-block side, [`ReconError::SubpelNegativeStep`] for a negative
-/// step, and [`ReconError::ArithmeticOverflow`] if the intermediate height cannot
-/// be derived.
+/// step, [`ReconError::SubpelReferenceBoundsInvalid`] for an inverted clipping
+/// range, and [`ReconError::ArithmeticOverflow`] if the intermediate height
+/// cannot be derived.
 pub fn subpel_predict_block<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -1203,7 +1204,8 @@ fn bilinear_2d_column<'a, const LANES: usize, T: ReconSample + 'a, O: BilinearOu
 ///
 /// Returns the same errors as [`subpel_predict_block`]:
 /// [`ReconError::ZeroDimension`], [`ReconError::SubpelBlockDimensionUnsupported`],
-/// [`ReconError::SubpelNegativeStep`], and [`ReconError::ArithmeticOverflow`].
+/// [`ReconError::SubpelNegativeStep`], [`ReconError::SubpelReferenceBoundsInvalid`],
+/// and [`ReconError::ArithmeticOverflow`].
 pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -2032,6 +2034,10 @@ fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
         start_x,
         step_x,
         step_y,
+        first_x,
+        first_y,
+        last_x,
+        last_y,
         ..
     } = *params;
 
@@ -2056,6 +2062,14 @@ fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
     {
         return Err(ReconError::ArithmeticOverflow {
             context: "subpel step outside AV2 reference-scaling range",
+        });
+    }
+    if (i64::from(last_x) - i64::from(first_x)) | (i64::from(last_y) - i64::from(first_y)) < 0 {
+        return Err(ReconError::SubpelReferenceBoundsInvalid {
+            first_x,
+            first_y,
+            last_x,
+            last_y,
         });
     }
 

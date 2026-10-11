@@ -703,6 +703,33 @@ mod tests {
     }
 
     #[test]
+    fn inverted_clip_ranges_are_errors() -> Result<()> {
+        let samples = vec![100u8; 32 * 32];
+        let view = ReferencePlaneView::new(&samples, 32, 32)?;
+        for (vertical, phase_x, phase_y) in [(true, 0, 5), (false, 5, 0), (true, 5, 9)] {
+            let mut params =
+                full_pel_params(InterpolationFilter::EightTapSharp, 8, 8, 8, 8, 32, 32);
+            params.start_x += phase_x << 6;
+            params.start_y += phase_y << 6;
+            if vertical {
+                (params.first_y, params.last_y) = (20, 10);
+            } else {
+                (params.first_x, params.last_x) = (20, 10);
+            }
+            let mut predicted = vec![0u16; 64];
+            assert!(matches!(
+                subpel_predict_block_into(&view, &params, &mut predicted),
+                Err(ReconError::SubpelReferenceBoundsInvalid { .. })
+            ));
+            assert!(matches!(
+                subpel_predict_block(&view, &params),
+                Err(ReconError::SubpelReferenceBoundsInvalid { .. })
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn clipped_fullpel_and_bilinear_blocks_match_the_general_convolution() -> Result<()> {
         check_clipped_blocks::<u16>(BitDepth::Ten)?;
         check_clipped_blocks::<u8>(BitDepth::Eight)
