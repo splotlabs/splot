@@ -442,6 +442,55 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
             }
         }
     }
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = |bound: u64| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) % bound
+    };
+    for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+        let max = u64::from(bit_depth.max_sample());
+        for &width in &[4, 7, 16, 31, 32, 67, 100, 191] {
+            for height in [5, 7, 13] {
+                let stride = width + 2 * radius;
+                let padded: Vec<u16> = (0..(height + 2 * radius) * stride)
+                    .map(|_| next(max + 1) as u16)
+                    .collect();
+                let cells =
+                    width.div_ceil(PC_WIENER_BLOCK_SIZE) * height.div_ceil(PC_WIENER_BLOCK_SIZE);
+                let mut subclasses = Vec::new();
+                while subclasses.len() < cells {
+                    let run = 1 + next(12) as usize;
+                    subclasses.extend(std::iter::repeat_n(next(64) as u8, run));
+                }
+                for filter_set_index in 0..4 {
+                    let params = PcWienerFilter {
+                        width,
+                        height,
+                        output_stride: width,
+                        bit_depth,
+                        filter_set_index,
+                        subclass_block_size: PC_WIENER_BLOCK_SIZE,
+                        subclasses: &subclasses,
+                    };
+                    let mut reference = vec![0u16; width * height];
+                    pc_wiener_filter_block(&mut reference, &params, |x, y| {
+                        let (x, y) = (x + radius as isize, y + radius as isize);
+                        Ok(padded[y as usize * stride + x as usize])
+                    })
+                    .unwrap();
+                    let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+                    let mut actual = vec![0u16; width * height];
+                    pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
+                    assert_eq!(
+                        actual, reference,
+                        "random {bit_depth:?} {width}x{height} set {filter_set_index}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Flat areas with uneven patches and a gradient filter like the per-sample
