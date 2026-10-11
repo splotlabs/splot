@@ -348,11 +348,10 @@ struct IntrabcBlockFacts {
     base_col: usize,
 }
 
+/// One 4x4 cell: its block's flags in the low byte and base column above
+/// them, so that a run of cells fills as one `u32` pattern.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct IntrabcGridCell {
-    base_col: u32,
-    flags: u8,
-}
+struct IntrabcGridCell(u32);
 
 impl IntrabcGridCell {
     const CODED: u8 = 1 << 0;
@@ -362,17 +361,20 @@ impl IntrabcGridCell {
     const MORPH_PRED: u8 = 1 << 4;
 
     fn new(facts: IntrabcBlockFacts) -> Result<Self> {
-        let base_col = u32::try_from(facts.base_col).map_err(|_| intrabc_state_error())?;
+        let base_col = u32::try_from(facts.base_col)
+            .ok()
+            .filter(|&col| col < 1 << 24)
+            .ok_or_else(intrabc_state_error)?;
         let flags = Self::CODED
             | (u8::from(facts.use_intrabc) * Self::USE_INTRABC)
             | (u8::from(facts.is_inter) * Self::IS_INTER)
             | (u8::from(facts.skip_flag) * Self::SKIP)
             | (u8::from(facts.morph_pred) * Self::MORPH_PRED);
-        Ok(Self { base_col, flags })
+        Ok(Self((base_col << 8) | u32::from(flags)))
     }
 
     const fn contains(self, flag: u8) -> bool {
-        self.flags & flag != 0
+        self.0 & flag as u32 != 0
     }
 }
 
@@ -665,7 +667,7 @@ impl TileIntrabcPreludeState {
             is_inter: value.contains(IntrabcGridCell::IS_INTER),
             skip_flag: value.contains(IntrabcGridCell::SKIP),
             morph_pred: value.contains(IntrabcGridCell::MORPH_PRED),
-            base_col: value.base_col as usize,
+            base_col: (value.0 >> 8) as usize,
         })
     }
 }

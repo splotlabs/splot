@@ -1249,7 +1249,31 @@ fn disabled_intrabc_state_skips_the_tile_grid() {
 
 #[test]
 fn intrabc_grid_cell_stays_compact() {
-    assert_eq!(core::mem::size_of::<IntrabcGridCell>(), 8);
+    assert_eq!(core::mem::size_of::<IntrabcGridCell>(), 4);
+}
+
+/// The packed cell returns every flag and the widest base column it takes,
+/// and refuses a wider one.
+#[test]
+fn intrabc_grid_cell_round_trips_flags_and_base_column() {
+    let facts = IntrabcBlockFacts {
+        use_intrabc: true,
+        is_inter: false,
+        skip_flag: true,
+        morph_pred: true,
+        base_col: (1 << 24) - 1,
+    };
+    let cell = IntrabcGridCell::new(facts).unwrap();
+    let state = TileIntrabcPreludeState {
+        values: vec![cell],
+        ..TileIntrabcPreludeState::default()
+    };
+    assert_eq!(state.facts_at_index(0), Some(facts));
+    let wide = IntrabcBlockFacts {
+        base_col: 1 << 24,
+        ..facts
+    };
+    assert!(IntrabcGridCell::new(wide).is_err());
 }
 
 #[test]
