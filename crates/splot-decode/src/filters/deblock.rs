@@ -851,6 +851,11 @@ fn take_grids(
     Ok((MiGridStorage::new(mi_cols, storage), chroma, order))
 }
 
+/// Deblocks the TIP unit edges of a `TIP_FRAME_AS_OUTPUT` frame. Each unit
+/// column, then each unit row, goes to the run kernels as one run when its
+/// samples 8 either side of the edge are in the plane. An edge changes and
+/// reads only its own 4 lines, so the result is the same as in the per-edge
+/// order.
 pub(crate) fn deblock_tip_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     luma_unit_size: usize,
@@ -893,14 +898,29 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
         let stride = view.stride_samples();
         let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
         let mut plane_ctx = PlaneCtx::new(&mut band)?;
-        for y in (0..height).step_by(MI_SIZE) {
-            for x in (unit_width..width).step_by(unit_width) {
-                let tile_edge = tip_tile_edge(tile_starts.map(|(cols, _)| cols), x, sub_x);
-                if disable_loopfilters_across_tiles && tile_edge {
-                    continue;
-                }
-                let (max_width_neg, max_width_pos) =
-                    deblock_filter_max_width(unit_width, plane != 0, tile_edge);
+        let run_edge = |boundary, (max_width_neg, max_width_pos): (usize, usize)| ContiguousEdge {
+            boundary,
+            q_thr,
+            side,
+            max_width_neg: max_width_neg as u8,
+            max_width_pos: max_width_pos as u8,
+            prev_lossless: false,
+            curr_lossless: false,
+        };
+        let full_rows = height / MI_SIZE;
+        for x in (unit_width..width).step_by(unit_width) {
+            let tile_edge = tip_tile_edge(tile_starts.map(|(cols, _)| cols), x, sub_x);
+            if disable_loopfilters_across_tiles && tile_edge {
+                continue;
+            }
+            let max_widths = deblock_filter_max_width(unit_width, plane != 0, tile_edge);
+            let mut first_y = 0;
+            if full_rows > 0 && x >= GATHER_HALF && x <= width.saturating_sub(GATHER_HALF) {
+                let edge = run_edge(x, max_widths);
+                filter_contiguous_run::<T, 0>(&mut plane_ctx, edge, full_rows, bit_depth)?;
+                first_y = full_rows * MI_SIZE;
+            }
+            for y in (first_y..height).step_by(MI_SIZE) {
                 apply_tip_filter_edge(
                     &mut plane_ctx,
                     x,
@@ -910,23 +930,26 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
                     height.saturating_sub(y).min(MI_SIZE),
                     q_thr,
                     side,
-                    max_width_neg,
-                    max_width_pos,
+                    max_widths,
                     bit_depth,
                 )?;
             }
         }
-        for x in (0..width).step_by(MI_SIZE) {
-            for y in (unit_height..height).step_by(unit_height) {
-                let tile_edge = tip_tile_edge(tile_starts.map(|(_, rows)| rows), y, sub_y);
-                if disable_loopfilters_across_tiles && tile_edge {
-                    continue;
-                }
-                let (max_width_neg, max_width_pos) = deblock_filter_max_width(
-                    unit_height,
-                    plane != 0,
-                    y.is_multiple_of(64 >> sub_y),
-                );
+        let full_cols = width / MI_SIZE;
+        for y in (unit_height..height).step_by(unit_height) {
+            let tile_edge = tip_tile_edge(tile_starts.map(|(_, rows)| rows), y, sub_y);
+            if disable_loopfilters_across_tiles && tile_edge {
+                continue;
+            }
+            let max_widths =
+                deblock_filter_max_width(unit_height, plane != 0, y.is_multiple_of(64 >> sub_y));
+            let mut first_x = 0;
+            if y >= GATHER_HALF && y <= height.saturating_sub(GATHER_HALF) {
+                let edge = run_edge(y * stride, max_widths);
+                filter_contiguous_run::<T, 1>(&mut plane_ctx, edge, full_cols, bit_depth)?;
+                first_x = full_cols * MI_SIZE;
+            }
+            for x in (first_x..width).step_by(MI_SIZE) {
                 apply_tip_filter_edge(
                     &mut plane_ctx,
                     x,
@@ -936,8 +959,7 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
                     width.saturating_sub(x).min(MI_SIZE),
                     q_thr,
                     side,
-                    max_width_neg,
-                    max_width_pos,
+                    max_widths,
                     bit_depth,
                 )?;
             }
@@ -971,8 +993,7 @@ fn apply_tip_filter_edge<T: ReconSample>(
     lanes: usize,
     q_thr: i32,
     side: i32,
-    max_width_neg: usize,
-    max_width_pos: usize,
+    (max_width_neg, max_width_pos): (usize, usize),
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
     let width = choose_filter_width(
@@ -2423,3 +2444,6 @@ pub(crate) enum DeblockError {
 #[cfg(test)]
 #[path = "deblock_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod tip_tests;

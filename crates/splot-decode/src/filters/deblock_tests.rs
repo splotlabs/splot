@@ -47,7 +47,7 @@ const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
     DeblockPredictionUnit::new(r, c, tx)
 }
 
-fn with_plane_ctx<T: ReconSample, R>(
+pub(super) fn with_plane_ctx<T: ReconSample, R>(
     ws: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
     f: impl FnOnce(&mut PlaneCtx<'_, '_, T>) -> R,
