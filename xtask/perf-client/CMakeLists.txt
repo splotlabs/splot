@@ -4,7 +4,7 @@
 # DynamoRIO client for `cargo xtask perf`. Configure with
 # -DDynamoRIO_DIR=<DynamoRIO release>/cmake.
 cmake_minimum_required(VERSION 3.14)
-project(splot_inscount C)
+project(splot_inscount C CXX)
 find_package(DynamoRIO REQUIRED)
 add_library(splotinscount SHARED splotinscount.c)
 configure_DynamoRIO_client(splotinscount)
