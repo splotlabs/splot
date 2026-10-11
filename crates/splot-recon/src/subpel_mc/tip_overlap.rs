@@ -246,20 +246,52 @@ mod tests {
         check_bilinear_12x12(&narrow, &narrow.clone(), BitDepth::Eight);
     }
 
+    /// An overflowing stride or a short output fails without changing the
+    /// carry, so the next unit still takes the carried columns: unchanged,
+    /// they match the block prediction; poisoned, they do not.
     #[test]
-    fn bilinear_12x12_overlap_rejects_an_overflowing_stride() {
-        let samples = vec![0u16; 48 * 40];
+    fn bilinear_12x12_overlap_errors_keep_the_carry() {
+        let samples = (0..48 * 40)
+            .map(|index| (index * 37 % 256) as u16)
+            .collect::<Vec<u16>>();
         let view = ReferencePlaneView::new(&samples, 48, 40).unwrap();
-        let params = full_pel_params(InterpolationFilter::Bilinear, 12, 12, 8, 8, 48, 40);
-        let (mut output, mut carry) = ([0; 11 * 16 + 12], BilinearOverlapCarry::default());
-        let stride = usize::MAX / 11 + 1;
+        let unit = |x: i32| SubpelPredictParams {
+            start_x: (x << SCALE_SUBPEL_BITS) + (5 << 6),
+            start_y: (8 << SCALE_SUBPEL_BITS) + (9 << 6),
+            ..full_pel_params(InterpolationFilter::Bilinear, 12, 12, x, 8, 48, 40)
+        };
+        let mut expected = vec![0; 12 * 12];
+        subpel_predict_block_into(&view, &unit(16), &mut expected).unwrap();
         let kernel = subpel_predict_12x12_bilinear_overlap_into;
-        let predicted = kernel(&view, &params, &mut output, stride, &mut carry);
-        assert!(matches!(
-            predicted,
-            Err(ReconError::ArithmeticOverflow { .. })
-        ));
-        assert!(carry.source.is_none());
+        for poison in [false, true] {
+            let (mut output, mut carry) = (vec![0; 11 * 16 + 12], BilinearOverlapCarry::default());
+            assert!(kernel(&view, &unit(8), &mut output, 16, &mut carry).unwrap());
+            let overflow = kernel(
+                &view,
+                &unit(16),
+                &mut output,
+                usize::MAX / 11 + 1,
+                &mut carry,
+            );
+            assert!(matches!(
+                overflow,
+                Err(ReconError::ArithmeticOverflow { .. })
+            ));
+            let short = kernel(&view, &unit(16), &mut output[1..], 16, &mut carry);
+            assert!(matches!(
+                short,
+                Err(ReconError::BufferLengthMismatch { .. })
+            ));
+            if poison {
+                carry.columns = [[u16::MAX; 8]; 12];
+            }
+            output.fill(0x5a5a);
+            assert!(kernel(&view, &unit(16), &mut output, 16, &mut carry).unwrap());
+            let block = (0..12)
+                .flat_map(|row| output[row * 16..][..12].iter().copied())
+                .collect::<Vec<u16>>();
+            assert_eq!(block == expected, !poison);
+        }
     }
 
     /// Predicts `query` into a garbage buffer with a carry that first predicted
@@ -303,10 +335,10 @@ mod tests {
     /// For every phase pair, predicts the 12x12 centres of TIP-like units at
     /// `(x, y)` (bounds `x - 3..=x + 11`) after other units. Each matches the
     /// block prediction whatever the output held before, and takes the carried
-    /// columns only after the unit eight samples left in the same plane, stride,
-    /// row and phases; declined units keep the carry. A unit clamped at the left
-    /// plane edge, a clipped unit and units one sample past the right plane edge
-    /// or the last readable row are declined.
+    /// columns only when the last predicted unit lies eight samples left in the
+    /// same plane, stride, row and phases; declined units keep the carry. A
+    /// unit clamped at the left plane edge, a clipped unit and units one sample
+    /// past the right plane edge or the last readable row are declined.
     fn check_bilinear_12x12<T: ReconSample>(samples: &[T], copy: &[T], bit_depth: BitDepth) {
         let plane = |samples, stride| {
             ReferencePlaneView::from_published_strided(samples, stride, 40, 40, 30).unwrap()
@@ -350,6 +382,7 @@ mod tests {
             kept.extend(declined.map(|params| (view, params)));
             let right_edge = vec![(view, unit(width - 19, 8))];
             let last_rows = vec![(view, unit(7, rows - 11))];
+            let replaced = vec![(view, unit(7, 8)), (view, unit(23, 8))];
             let other_h = at(15, 8, ((h_phase + 1) % 16, v_phase));
             let other_v = at(15, 8, (h_phase, (v_phase + 1) % 16));
             let cases = [
@@ -358,6 +391,7 @@ mod tests {
                 (&right_edge, (view, unit(width - 11, 8)), true),
                 (&last_rows, (view, unit(15, rows - 11)), true),
                 (&left, (view, unit(15, 9)), false),
+                (&replaced, (view, unit(15, 8)), false),
                 (&left, (view, unit(11, 8)), false),
                 (&left, (view, other_h), false),
                 (&left, (view, other_v), false),
