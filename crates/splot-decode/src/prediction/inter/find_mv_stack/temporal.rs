@@ -1963,7 +1963,6 @@ struct TemporalProjectionSource {
     source_height8: usize,
     source_ref: usize,
     side: usize,
-    target_ref: Option<usize>,
     source_to_current: i32,
     /// One entry per reference slot and a last, empty one that every other
     /// stored reference reads, so the table sits inline.
@@ -2017,6 +2016,7 @@ impl TemporalProjectionSource {
                     }),
                 end_factor: clamped_tmvp_factor(ref_offset.abs() - numerator, ref_offset.abs()),
                 hint_match: target_order_hint == Some(hint),
+                end_is_target: target_ref.is_some() && end_ref == target_ref,
                 flags: if factor.is_some() { scan::PROJECTS } else { 0 }
                     | if end_ref.is_some() {
                         scan::INTERSECTS
@@ -2030,7 +2030,6 @@ impl TemporalProjectionSource {
             source_height8: layout.height8(),
             source_ref,
             side,
-            target_ref,
             source_to_current,
             targets,
         })
