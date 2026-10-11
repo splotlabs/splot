@@ -1721,8 +1721,9 @@ pub fn subpel_predict_block_compound_average_unscaled_strided_into<
 
 /// Fast compound dispatch for unscaled blocks of one shape. Returns
 /// `Ok(false)` without writing when a step is not unscaled, the two blocks
-/// differ in size or bit depth, a size is outside `1..=MAX_BLOCK_DIM`, the
-/// last column overflows, or no fast kernel takes the block; the checked
+/// differ in size or bit depth, a size is outside `1..=MAX_BLOCK_DIM`, a
+/// clipping range is inverted, the last column overflows, or no fast kernel
+/// takes the block; the checked
 /// two-call path then predicts it or reports the parameter error.
 ///
 /// # Errors
@@ -1756,7 +1757,12 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
                 .checked_add((params.w as i32 - 1) << SCALE_SUBPEL_BITS)
                 .is_some()
     };
-    if !(1..=MAX_BLOCK_DIM).contains(&params0.w)
+    let span = |params: &SubpelPredictParams| {
+        (i64::from(params.last_x) - i64::from(params.first_x))
+            | (i64::from(params.last_y) - i64::from(params.first_y))
+    };
+    if span(params0) | span(params1) < 0
+        || !(1..=MAX_BLOCK_DIM).contains(&params0.w)
         || !(1..=MAX_BLOCK_DIM).contains(&params0.h)
         || (params0.w, params0.h, params0.bit_depth) != (params1.w, params1.h, params1.bit_depth)
         || !unscaled(params0)

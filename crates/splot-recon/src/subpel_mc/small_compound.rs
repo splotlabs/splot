@@ -717,6 +717,21 @@ mod tests {
                     stride,
                 );
                 assert!(matches!(declined, Ok(false)));
+                let inverted = SubpelPredictParams {
+                    first_y: params[1].last_y + 1,
+                    ..params[1]
+                };
+                let declined = subpel_predict_block_compound_average_fast_validated_strided_into(
+                    &views[0],
+                    &params[0],
+                    &views[1],
+                    &inverted,
+                    weight,
+                    &mut [],
+                    &mut output,
+                    stride,
+                );
+                assert!(matches!(declined, Ok(false)));
             }
             if case == 0 && bit_depth != BitDepth::Eight {
                 let mut narrow = vec![0u8; stride * size];
