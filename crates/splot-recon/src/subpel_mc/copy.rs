@@ -618,6 +618,29 @@ impl<T: ReconSample> ReferencePlaneView<'_, T> {
         }
         self.samples.get(row * self.stride..)?.get(..self.width)
     }
+
+    /// The `len` samples from column `x` of each of `rows`, or `None` when a
+    /// row is past the published prefix or the span leaves the row.
+    #[must_use]
+    pub fn readable_spans<const N: usize>(
+        &self,
+        rows: [usize; N],
+        x: usize,
+        len: usize,
+    ) -> Option<[&[T]; N]> {
+        if x.checked_add(len)? > self.width {
+            return None;
+        }
+        let mut spans = [&self.samples[..0]; N];
+        for (span, row) in spans.iter_mut().zip(rows) {
+            if row >= self.readable_rows {
+                return None;
+            }
+            let start = row * self.stride + x;
+            *span = self.samples.get(start..start + len)?;
+        }
+        Some(spans)
+    }
 }
 
 #[cfg(test)]
@@ -633,6 +656,14 @@ mod tests {
         assert_eq!(view.readable_row(2), Some(&samples[20..28]));
         assert_eq!(view.readable_row(3), None);
         assert_eq!(view.readable_row(usize::MAX), None);
+        let spans = view.readable_spans([2, 0, 2], 3, 5);
+        assert_eq!(
+            spans,
+            Some([&samples[23..28], &samples[3..8], &samples[23..28]])
+        );
+        assert_eq!(view.readable_spans([0, 3], 3, 5), None);
+        assert_eq!(view.readable_spans([0, 1], 4, 5), None);
+        assert_eq!(view.readable_spans([0], usize::MAX, 2), None);
         Ok(())
     }
 

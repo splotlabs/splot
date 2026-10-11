@@ -379,11 +379,10 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             center_rows[reference] = core::array::from_fn(|k| row(2 * k as i32 - 2));
             rows[reference] = core::array::from_fn(|k| row(k as i32));
         }
-        let Some(center) = self.sad(
-            xs.map(|x| x - 2),
-            (0..6).map(|k| [center_rows[0][k], center_rows[1][k]]),
-            12,
-        ) else {
+        let Some(center) = self
+            .spans(xs.map(|x| x - 2), center_rows, 12)
+            .and_then(|spans| self.sad(&spans))
+        else {
             return Ok(None);
         };
         let center = center >> self.shift;
@@ -431,7 +430,10 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         mvs: [Mv; 2],
         distances: [i32; 2],
     ) -> Result<Option<MotionCell>> {
-        let Some(sad) = self.sad(xs, (0..8).map(|row| [rows[0][row], rows[1][row]]), 8) else {
+        let Some(spans) = self.spans(xs, rows, 8) else {
+            return Ok(None);
+        };
+        let Some(sad) = self.sad(&spans) else {
             return Ok(None);
         };
         if batch
@@ -441,15 +443,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             return Ok(Some(MotionCell::from_refinemv(mvs)));
         }
         let mut predictions = [[0u16; 64]; 2];
-        for (reference, prediction) in predictions.iter_mut().enumerate() {
-            for (output, &row) in prediction.chunks_exact_mut(8).zip(&rows[reference]) {
-                let Some(samples) = self.views[reference]
-                    .readable_row(row)
-                    .and_then(|samples| samples.get(xs[reference]..xs[reference] + 8))
-                else {
-                    return Ok(None);
-                };
-                for (output, sample) in output.iter_mut().zip(samples) {
+        for (prediction, spans) in predictions.iter_mut().zip(&spans) {
+            for (output, samples) in prediction.chunks_exact_mut(8).zip(spans) {
+                for (output, sample) in output.iter_mut().zip(*samples) {
                     *output = sample.to_u16().min(self.max_sample);
                 }
             }
@@ -466,28 +462,30 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         Ok(Some(MotionCell::from_optflow(mvs, delta)))
     }
 
-    /// `Σ |ref0 - ref1|` of `width` (8 or 12) samples from columns `xs` over
-    /// each pair of rows, or `None` when a row is not published.
-    fn sad(
+    /// The `width`-sample spans from columns `xs` of each reference's `rows`,
+    /// or `None` when a row is not published.
+    fn spans<const N: usize>(
         &self,
         xs: [usize; 2],
-        rows: impl Iterator<Item = [usize; 2]>,
+        rows: [[usize; N]; 2],
         width: usize,
-    ) -> Option<u32> {
+    ) -> Option<[[&[T]; N]; 2]> {
+        let [first, second] = [0, 1].map(|reference| {
+            self.views[reference].readable_spans(rows[reference], xs[reference], width)
+        });
+        Some([first?, second?])
+    }
+
+    /// `Σ |ref0 - ref1|` over pairs of 8- or 12-sample spans.
+    fn sad<const N: usize>(&self, spans: &[[&[T]; N]; 2]) -> Option<u32> {
         let mut sad8 = Simd::<u32, 8>::splat(0);
         let mut sad4 = Simd::<u32, 4>::splat(0);
-        for rows in rows {
-            let [left, right] = [0, 1].map(|reference| {
-                self.views[reference]
-                    .readable_row(rows[reference])?
-                    .get(xs[reference]..xs[reference] + width)
-            });
-            let (left, right) = (left?, right?);
+        for (&left, &right) in spans[0].iter().zip(&spans[1]) {
             sad8 += self
                 .lanes::<8>(left)?
                 .abs_diff(self.lanes::<8>(right)?)
                 .cast();
-            if width > 8 {
+            if left.len() > 8 {
                 sad4 += self
                     .lanes::<4>(&left[8..])?
                     .abs_diff(self.lanes::<4>(&right[8..])?)
