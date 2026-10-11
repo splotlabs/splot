@@ -146,8 +146,11 @@ impl PreparedWarpPrediction {
     /// § 7.13.3.19 `Clip1` as each sample is stored.
     ///
     /// # Errors
-    /// Returns the errors of [`Self::predict_block_into`], or
-    /// [`ReconError::BufferLengthMismatch`] when `output` cannot hold the block.
+    /// Returns the errors of [`Self::predict_block_into`],
+    /// [`ReconError::SampleTypeUnsupportedBitDepth`] when `T` cannot hold the
+    /// bit depth, [`ReconError::StrideTooSmall`] when `stride` is below
+    /// `width`, or [`ReconError::BufferLengthMismatch`] when `output` cannot
+    /// hold the block.
     pub fn predict_clipped_into<T: ReconSample>(
         &self,
         reference: &ReferencePlaneView<'_, T>,
@@ -155,6 +158,13 @@ impl PreparedWarpPrediction {
         output: &mut [T],
         stride: usize,
     ) -> Result<()> {
+        crate::intra_dc_math::validate_sample_type::<T>(self.params.bit_depth)?;
+        if stride < width {
+            return Err(ReconError::StrideTooSmall {
+                stride_samples: stride,
+                storage_width: width,
+            });
+        }
         let span = height
             .checked_sub(1)
             .and_then(|rows| rows.checked_mul(stride))
@@ -165,7 +175,7 @@ impl PreparedWarpPrediction {
                 actual: output.len(),
             })?;
         let output = &mut output[..span];
-        let max_sample = i32::from(self.params.bit_depth.max_sample().min(T::MAX_VALUE));
+        let max_sample = i32::from(self.params.bit_depth.max_sample());
         if self.translation_two_tap_into(
             reference,
             [x, y, width, height],
@@ -1547,6 +1557,16 @@ mod tests {
                 assert_eq!(output[(y + row) * stride + 16], 7, "row padding untouched");
             }
         }
+        assert!(matches!(
+            prepared.predict_clipped_into(&view, [16, 24, 16, 16], &mut output, 15),
+            Err(ReconError::StrideTooSmall { .. })
+        ));
+        params.bit_depth = BitDepth::Ten;
+        let ten_bit = PreparedWarpPrediction::new(&params).unwrap();
+        assert!(matches!(
+            ten_bit.predict_clipped_into(&view, [16, 24, 16, 16], &mut output, stride),
+            Err(ReconError::SampleTypeUnsupportedBitDepth { .. })
+        ));
     }
 
     #[test]
