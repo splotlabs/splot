@@ -404,6 +404,70 @@ fn decode_y4m_writes_to_null_device() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
 }
 
+#[cfg(unix)]
+#[test]
+fn decode_y4m_streams_to_stdout_pipe_and_redirected_file() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    for output in ["-", "/dev/stdout"] {
+        let dir = temp_dir("stdout-pipe");
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
+            .args(["decode", input.to_str().unwrap(), "-o", output])
+            .current_dir(&dir)
+            .output()
+            .expect("failed to run splot");
+
+        assert_eq!(out.status.code(), Some(0), "output {output}");
+        assert!(out.stderr.is_empty(), "stderr was not empty for {output}");
+        assert_eq!(out.stdout, expected_minimal_y4m(), "output {output}");
+        assert!(read_dir_names(&dir).is_empty(), "{output} created a file");
+
+        let redirected = temp_output("y4m");
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
+            .args(["decode", input.to_str().unwrap(), "-o", output])
+            .stdout(std::fs::File::create(&redirected).unwrap())
+            .output()
+            .expect("failed to run splot");
+
+        assert_eq!(out.status.code(), Some(0), "redirected {output}");
+        assert!(out.stderr.is_empty(), "stderr was not empty for {output}");
+        assert_eq!(std::fs::read(&redirected).unwrap(), expected_minimal_y4m());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn decode_y4m_exits_quietly_when_stdout_reader_closes() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_splot"))
+        .args(["decode", input.to_str().unwrap(), "-o", "-"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to run splot");
+    drop(child.stdout.take());
+
+    let out = child.wait_with_output().expect("failed to wait for splot");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stderr.is_empty(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn decode_y4m_stdout_output_sends_json_diagnostic_to_stderr() {
+    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
+
+    let out = splot(&["decode", "--json", input.to_str().unwrap(), "-o", "-"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "stdout was not empty");
+    let json: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(json["rule_id"], "decode/unsupported-feature");
+    assert_eq!(json["output_format"], "y4m");
+}
+
 #[test]
 fn decode_y4m_skips_temp_name_that_matches_requested_output() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
