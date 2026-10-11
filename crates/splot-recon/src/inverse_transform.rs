@@ -156,7 +156,9 @@ pub(crate) struct ColumnPass {
     pub stride: usize,
     /// Column length (`1 << Min(log2H, 5)`).
     pub len: usize,
-    /// Bit `i` marks source row `i` as written and possibly non-zero.
+    /// Bit `i` marks source row `i` as written and possibly non-zero. Every
+    /// marked row holds row-pass output inside the § 7.15.2.1 row `Clip3` bound
+    /// `±2^(BitDepth + 7)`.
     pub nonzero_rows: u32,
     /// Column-pass down-shift (`colShift`).
     pub shift: u8,
@@ -286,12 +288,13 @@ fn round2_lanes<const LANES: usize>(value: Simd<i32, LANES>, n: u32) -> Simd<i32
 
 /// One `LANES`-wide column group of [`inverse_transform_1d_columns`].
 ///
-/// Each lane repeats [`kernel_transform`] literally: the § 7.14.4 input clamp,
-/// the `i32` accumulation over the rows `nonzero_rows` marks, the `FDDT` output
-/// reversal, and the § 4.8 `Round2` expanded as
-/// `(v >> n) + ((v >> (n - 1)) & 1)` — the same value the scalar
-/// [`round2_i32`] computes for `1 <= n < 32` — followed by the § 7.15.2.1
-/// `Clip3`.
+/// Each lane repeats [`kernel_transform`]: the `i32` accumulation over the rows
+/// `nonzero_rows` marks, the `FDDT` output reversal, the § 4.8 `Round2`, and the
+/// § 7.15.2.1 `Clip3`. It skips the § 7.14.4 input clamp, because the rows hold
+/// row-pass output that is already inside that bound (see [`ColumnPass`]). So
+/// `|acc| <= 32 * 2^7 * 2^17 = 2^29`, and `(v + 2^(n - 1)) >> n` with
+/// `n = Min(colShift, 31)` is the [`round2_i32`] value with no overflow (zero
+/// at `n == 31`).
 ///
 /// `dct` marks a `DCT` kernel (the length-32 kernel always is one). Every `DCT`
 /// row is even or odd about its centre:
@@ -313,23 +316,13 @@ fn kernel_columns<const N: usize, const LANES: usize>(
     dct: bool,
     pass: ColumnPass,
 ) {
-    let input_bound = transform_input_bound(pass.bit_depth);
     let (lo, hi) = transform_clip_bounds(true, pass.bit_depth);
-    let shift = u32::from(pass.shift);
-    let (round_shift, carry_shift) = if shift == 0 || shift >= i32::BITS {
-        (Simd::splat(0), Simd::splat(0))
-    } else {
-        (Simd::splat(shift as i32), Simd::splat(shift as i32 - 1))
-    };
-    let carry_mask = Simd::splat(i32::from(shift != 0 && shift < i32::BITS));
-    let saturate = shift >= i32::BITS;
+    let shift = u32::from(pass.shift).min(i32::BITS - 1);
+    let round_shift = Simd::<i32, LANES>::splat(shift as i32);
+    let round_add = Simd::<i32, LANES>::splat(((1u32 << shift) >> 1) as i32);
     let zero = Simd::<i32, LANES>::splat(0);
     let mut emit = |index: usize, value: Simd<i32, LANES>| {
-        let rounded = if saturate {
-            zero
-        } else {
-            (value >> round_shift) + ((value >> carry_shift) & carry_mask)
-        };
+        let rounded = (value + round_add) >> round_shift;
         let clamped = rounded.simd_clamp(Simd::splat(lo), Simd::splat(hi));
         let start = index * pass.stride;
         if let Some(dst) = out.get_mut(start..start + LANES) {
@@ -338,11 +331,8 @@ fn kernel_columns<const N: usize, const LANES: usize>(
     };
     let coeff_at = |row: usize| {
         let start = row * pass.stride;
-        let chunk = src.get(start..start + LANES)?;
-        Some(
-            Simd::<i32, LANES>::from_slice(chunk)
-                .simd_clamp(Simd::splat(-input_bound), Simd::splat(input_bound - 1)),
-        )
+        src.get(start..start + LANES)
+            .map(Simd::<i32, LANES>::from_slice)
     };
     let mask = if N >= 32 {
         pass.nonzero_rows

@@ -729,7 +729,7 @@ mod tests {
                     .flat_map(|row| types.map(|col| (row, col)))
                 {
                     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-                        for col_shift in [0u8, 1, 4, 12] {
+                        for col_shift in [0u8, 1, 4, 12, 31, 255] {
                             let (w, h) = (1usize << log2_w, 1usize << log2_h);
                             let mut dequant = vec![0i32; w * h];
                             let range = 1i32 << 17;
