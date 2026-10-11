@@ -17,6 +17,7 @@ fn mv(row: i32, col: i32) -> Mv {
 fn reference<T: ReconSample>(
     bit_depth: BitDepth,
     format: PixelFormat,
+    (width, height): (usize, usize),
     seed: usize,
 ) -> DecodedFrame<T> {
     let max = usize::from(bit_depth.max_sample());
@@ -28,13 +29,13 @@ fn reference<T: ReconSample>(
             .collect()
     };
     let chroma =
-        WIDTH.div_ceil(1 << format.subsampling_x()) * HEIGHT.div_ceil(1 << format.subsampling_y());
+        width.div_ceil(1 << format.subsampling_x()) * height.div_ceil(1 << format.subsampling_y());
     frame_for(
         bit_depth,
         format,
-        WIDTH,
-        HEIGHT,
-        samples(WIDTH * HEIGHT, 1),
+        width,
+        height,
+        samples(width * height, 1),
         samples(chroma, 2),
         samples(chroma, 3),
     )
@@ -160,10 +161,7 @@ fn merged_runs_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
     bit_depth: BitDepth,
     format: PixelFormat,
 ) {
-    let references = [
-        reference::<T>(bit_depth, format, 13),
-        reference::<T>(bit_depth, format, 29),
-    ];
+    let references = [13, 29].map(|seed| reference::<T>(bit_depth, format, (WIDTH, HEIGHT), seed));
     let still = [mv(0, 0); 2];
     let shifted = [mv(16, -32), mv(-16, 32)];
     let subpel = [mv(3, -5), mv(-2, 7)];
@@ -219,6 +217,70 @@ fn merged_runs_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
     };
     assert!(fullpel_run_pairs(&cells_of(&cells), 6));
     assert!(!fullpel_run_pairs(&cells_of(&[subpel, shifted]), 2));
+}
+
+/// A U plane large enough for the per-row parallel branch still fills the
+/// shared V output, which then equals the V plane predicted on its own.
+#[test]
+fn parallel_grid_fills_the_shared_v_output() {
+    let size = 512;
+    let references = [13, 29]
+        .map(|seed| reference::<u16>(BitDepth::Ten, PixelFormat::Yuv420, (size, size), seed));
+    let columns = size / 8;
+    let cells: Vec<[Mv; 2]> = (0..columns * columns)
+        .map(|i| {
+            [
+                mv((i % 7) as i32 - 3, (i % 5) as i32 * 3),
+                mv(2 - (i % 3) as i32, -5),
+            ]
+        })
+        .collect();
+    let motion = grid(columns, &cells, &cells, false);
+    let rect = McBlockRect::from_luma_rect(0, 0, size, size);
+    let block = InterBlockParams::compound_average(
+        ReferenceSamples::settled(&references[0]),
+        ReferenceSamples::settled(&references[1]),
+        rect,
+        cells[0][0],
+        cells[0][1],
+        InterpolationFilter::EightTap,
+        CompoundBlend::default(),
+    )
+    .into_compound()
+    .expect("compound block");
+    let info = references[0].info();
+    let half = size / 2;
+    let predict = |plane: PlaneId, output: &mut [u16], chroma_v: Option<&mut [u16]>| {
+        predict_motion_grid_compound_average_into(
+            info,
+            block,
+            plane,
+            1,
+            1,
+            &motion,
+            true,
+            CWP_EQUAL,
+            ByteOffset::new(0),
+            output,
+            half,
+            chroma_v,
+        )
+        .expect("grid prediction")
+    };
+    let pool = splot_parallel::WorkerPool::new(splot_parallel::ThreadCount::Fixed(
+        2.try_into().expect("two workers"),
+    ))
+    .expect("pool");
+    let (mut u, mut shared_v, mut v) = (
+        vec![0; half * half],
+        vec![0; half * half],
+        vec![0; half * half],
+    );
+    pool.install(|| {
+        assert!(predict(PlaneId::U, &mut u, Some(&mut shared_v)));
+        assert!(predict(PlaneId::V, &mut v, None));
+    });
+    assert_eq!(shared_v, v);
 }
 
 #[test]
