@@ -635,6 +635,14 @@ fn warp_predict_section<T: ReconSample>(
             && let Some(high) = two_tap_phase(projected.sx4)
         {
             two_tap_intermediate(reference, source_origin, high, &mut intermediate);
+        } else if shear.alpha != 0 && shear.beta == 0 {
+            row_invariant_intermediate(
+                reference,
+                shear,
+                &projected,
+                source_origin,
+                &mut intermediate,
+            );
         } else {
             build_interior_intermediate(
                 reference,
@@ -650,7 +658,60 @@ fn warp_predict_section<T: ReconSample>(
     if shear.gamma == 0 && shear.delta == 0 && two_tap_phase(projected.sy4).is_some() {
         return two_tap_output(projected.sy4, &intermediate, round1, store);
     }
+    if shear.gamma != 0 && shear.delta == 0 {
+        return row_invariant_output(shear, &projected, &intermediate, round1, store);
+    }
     build_output(shear, &projected, &intermediate, round1, store)
+}
+
+/// Runs the § 7.13.3.19 horizontal pass of a section with `beta == 0`, whose
+/// rows all use the same eight column filters: they are transposed once for
+/// the section instead of once per row.
+fn row_invariant_intermediate<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    shear: &Shear,
+    projected: &ProjectedCenter,
+    (first_col, first_row): (usize, usize),
+    intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+) {
+    let taps = transpose_warp_taps(core::array::from_fn(|col| {
+        warp_taps(projected.sx4 + shear.alpha * (col as i32 - 4))
+    }));
+    for row in 0..WARP_INTERMEDIATE_ROWS {
+        let windows = warp_windows(reference.row(first_row + row), first_col);
+        let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
+        for (window, taps) in windows.into_iter().zip(taps) {
+            sum += window.cast::<i32>() * taps.cast::<i32>();
+        }
+        let rounded = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+        rounded.cast::<i16>().copy_to_slice(
+            &mut intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE],
+        );
+    }
+}
+
+/// Runs the § 7.13.3.19 vertical pass of a section with `delta == 0`, whose
+/// output rows all use the same eight column filters.
+fn row_invariant_output(
+    shear: &Shear,
+    projected: &ProjectedCenter,
+    intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    round1: u32,
+    mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
+) -> Result<()> {
+    let taps = transpose_warp_taps(core::array::from_fn(|col| {
+        warp_taps(projected.sy4 + shear.gamma * (col as i32 - 4))
+    }));
+    for row in 0..WARPED_BLOCK_SIZE {
+        let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
+        for (tap, taps) in taps.into_iter().enumerate() {
+            let samples =
+                Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]).cast::<i32>();
+            sum += taps.cast::<i32>() * samples;
+        }
+        store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
+    }
+    Ok(())
 }
 
 /// First of the two adjacent nonzero taps of a two-tap `Warped_Filters` row.
@@ -2019,6 +2080,67 @@ mod tests {
             }
         }
         assert_eq!(covered, [true; 4], "two-tap sections, interior and clamped");
+    }
+
+    #[test]
+    fn row_invariant_shear_sections_match_the_spec_trace() {
+        let (ref_w, ref_h) = (64usize, 64usize);
+        let samples = noise_samples(ref_w * ref_h, 1023, 11);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let samples8 = samples.iter().map(|&s| (s >> 2) as u8).collect::<Vec<u8>>();
+        let view8 = ReferencePlaneView::new(&samples8, ref_w, ref_h).unwrap();
+        let wide8 = samples8.iter().map(|&s| u16::from(s)).collect::<Vec<u16>>();
+        let unit = 1 << WARPEDMODEL_PREC_BITS;
+        let models = [
+            [
+                unit,
+                -(2 << WARPEDMODEL_PREC_BITS),
+                unit + 256,
+                0,
+                192,
+                unit,
+            ],
+            [
+                translation(1, 300, 0),
+                900,
+                unit - 640,
+                0,
+                -1024,
+                unit + 128,
+            ],
+            [translation(-1, 7, 0), 4000, unit, 512, 320, unit],
+        ];
+        let mut covered = [false; 2];
+        for warp_params in models {
+            let shear = setup_shear(warp_params).unwrap();
+            covered[1] |= shear.gamma != 0 && shear.delta == 0;
+            for (block_x, block_y) in [(24, 24), (40, 8), (0, 0), (56, 56)] {
+                let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
+                params.warp_params = warp_params;
+                let projected = project_section_center(&params).unwrap();
+                covered[0] |= shear.alpha != 0
+                    && shear.beta == 0
+                    && interior_warp_source_origin(&view, &params, &projected).is_some();
+                for round1 in [INTER_ROUND1_NON_COMPOUND, INTER_ROUND1_COMPOUND] {
+                    let is_compound = round1 == INTER_ROUND1_COMPOUND;
+                    params.bit_depth = BitDepth::Ten;
+                    let want = reference_warp_rounded(&samples, ref_w, ref_h, &params, round1);
+                    let got = warp_predict_block(&view, &params, is_compound).unwrap();
+                    assert!(
+                        got.iter().map(|&v| i64::from(v)).eq(want),
+                        "{warp_params:?}"
+                    );
+                    params.bit_depth = BitDepth::Eight;
+                    let want = reference_warp_rounded(&wide8, ref_w, ref_h, &params, round1);
+                    let got = warp_predict_block(&view8, &params, is_compound).unwrap();
+                    assert!(
+                        got.iter().map(|&v| i64::from(v)).eq(want),
+                        "{warp_params:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(covered, [true; 2], "both row-invariant passes exercised");
     }
 
     /// Runs the block path and the clipped block predictor over one block and
