@@ -7,10 +7,13 @@
 //! DynamoRIO's `inscount` sample client and compares the executed-instruction
 //! count of each against a checked-in baseline (`tests/perf/baseline.toml`).
 //! DynamoRIO decodes every instruction the release build emits (AVX2
-//! included), and the count is a stable, runner-independent proxy for decode
-//! CPU work, unlike wall-clock time. The client keeps one counter for all
-//! threads and idle worker spins only add to it, so each fixture keeps the
-//! smallest count of [`RUNS`] runs.
+//! included), and the count is a stable proxy for decode CPU work, unlike
+//! wall-clock time. The client counts only the `splot` binary
+//! (`-only_from_app`), because glibc picks its string functions per CPU, and
+//! the decode discards its output, because the frame hash dispatches on CPU
+//! features; both made the count depend on the runner's CPU. The client
+//! keeps one counter for all threads and idle worker spins only add to it, so
+//! each fixture keeps the smallest count of [`RUNS`] runs.
 //!
 //! This is a heavy gate and is **not** part of `cargo xtask ci`; it runs as its
 //! own CI job and on demand. `--bless` re-runs every fixture and rewrites the
@@ -42,10 +45,10 @@ const BASELINE_HEADER: &str = "\
 # and keeps the smallest count of three runs. Counts are only comparable within
 # one binary/toolchain: a compiler or RUSTFLAGS bump shifts every count
 # wholesale and requires a re-bless (`cargo xtask perf --bless`), not a
-# regression. The counts include glibc, so they are pinned to the `perf` CI
-# job's ubuntu-latest image and its DynamoRIO release; that job is the enforced
-# check. If a runner or DynamoRIO bump skews a fixture past the tolerance,
-# re-bless on-runner.
+# regression. The counts cover only the `splot` binary (`-only_from_app`) and
+# a decode with null output, so the runner's CPU does not change them. The
+# `perf` CI job and its DynamoRIO release are the enforced check; after a
+# toolchain or DynamoRIO bump, re-bless on-runner.
 # Generated file: edit fixtures here, but let `--bless` set the numbers.
 ";
 /// Fail the gate when a fixture's count rises more than this percentage above
@@ -188,6 +191,7 @@ fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Pat
         let output = Command::new(drrun)
             .arg("-c")
             .arg(client)
+            .arg("-only_from_app")
             .arg("--")
             .arg(splot)
             .args([
@@ -198,7 +202,7 @@ fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Pat
                 "--frame-delay",
                 "1",
                 "--output-format",
-                "hash",
+                "null",
             ])
             .arg(fixture)
             .output()
