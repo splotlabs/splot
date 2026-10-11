@@ -198,9 +198,9 @@ fn add_residual_row<T: ReconSample>(
 /// Adds the § 7.14.3 residual to `samples` in place: `Clip1(sample + residual)`
 /// with saturating `i32` addition, over the samples `residual` covers.
 ///
-/// `u16` storage, and `u8` storage with an 8-bit `max`, take a plain loop that
-/// vectorizes; every value it writes is the one the checked conversion of the
-/// generic loop writes.
+/// `u16` storage takes 8-lane groups, and `u8` storage with an 8-bit `max`
+/// takes a plain loop that vectorizes; every value they write is the one the
+/// checked conversion of the generic loop writes.
 ///
 /// # Errors
 /// Returns the [`ReconSample::try_from_u16`] error when a clipped value does not
@@ -211,6 +211,13 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
     max: i32,
 ) -> Result<()> {
     if let Some(samples) = T::u16_slice_mut(samples) {
+        let len = samples.len().min(residual.len());
+        let (samples, residual) = (&mut samples[..len], &residual[..len]);
+        let (groups, samples) = samples.as_chunks_mut::<8>();
+        let (residual_groups, residual) = residual.as_chunks::<8>();
+        for (group, residual) in groups.iter_mut().zip(residual_groups) {
+            *group = add_residual_lanes(*group, residual, max);
+        }
         for (sample, &res) in samples.iter_mut().zip(residual) {
             *sample = i32::from(*sample).saturating_add(res).clamp(0, max) as u16;
         }
@@ -231,40 +238,55 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
     Ok(())
 }
 
-/// Adds the § 7.14.3 residual over `u16` storage, widest lane group first.
+/// Adds the § 7.14.3 residual over `u16` storage in 8- and 4-lane groups.
 ///
 /// Each lane repeats the scalar `Clip1(prediction + residual)` step with the
 /// same saturating `i32` addition, so every output sample is bit-identical;
 /// `Clip1` bounds the result to `0..=max`, which the `u16` storage represents
 /// exactly.
 fn add_residual_u16(prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
-    let len = out.len();
-    let mut index = 0usize;
-    macro_rules! add_lane_group {
-        ($lanes:literal) => {
-            while index + $lanes <= len {
-                let pred = Simd::<u16, $lanes>::from_slice(&prediction[index..]).cast::<i32>();
-                let res = Simd::<i32, $lanes>::from_slice(&residual[index..]);
-                let values = pred
-                    .saturating_add(res)
-                    .simd_clamp(Simd::splat(0), Simd::splat(max))
-                    .cast::<u16>()
-                    .to_array();
-                out[index..index + $lanes].copy_from_slice(&values); // splot-copy-ok: publish a § 7.14.3 residual-addition lane group
-                index += $lanes;
-            }
-        };
-    }
-    add_lane_group!(16);
-    add_lane_group!(8);
-    add_lane_group!(4);
-    for ((slot, &pred), &res) in out[index..]
+    let len = out.len().min(prediction.len()).min(residual.len());
+    let (out, prediction, residual) = (&mut out[..len], &prediction[..len], &residual[..len]);
+    let (out_groups, out) = out.as_chunks_mut::<8>();
+    let (prediction_groups, prediction) = prediction.as_chunks::<8>();
+    let (residual_groups, residual) = residual.as_chunks::<8>();
+    for ((slot, &pred), res) in out_groups
         .iter_mut()
-        .zip(&prediction[index..])
-        .zip(&residual[index..])
+        .zip(prediction_groups)
+        .zip(residual_groups)
     {
+        *slot = add_residual_lanes(pred, res, max);
+    }
+    let (out, prediction, residual) = match (
+        out.split_first_chunk_mut::<4>(),
+        prediction.split_first_chunk::<4>(),
+        residual.split_first_chunk::<4>(),
+    ) {
+        (Some((slot, out)), Some((&pred, prediction)), Some((res, residual))) => {
+            *slot = add_residual_lanes(pred, res, max);
+            (out, prediction, residual)
+        }
+        _ => (out, prediction, residual),
+    };
+    for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
         *slot = i32::from(pred).saturating_add(res).clamp(0, max) as u16;
     }
+}
+
+/// `Clip1(prediction + residual)` over one lane group, for `max >= 0`.
+#[inline]
+fn add_residual_lanes<const LANES: usize>(
+    prediction: [u16; LANES],
+    residual: &[i32; LANES],
+    max: i32,
+) -> [u16; LANES] {
+    Simd::from_array(prediction)
+        .cast::<i32>()
+        .saturating_add(Simd::from_array(*residual))
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(max))
+        .cast::<u16>()
+        .to_array()
 }
 
 #[cfg(test)]
@@ -324,9 +346,9 @@ mod tests {
         assert_eq!(out, [255, 0]);
     }
 
-    /// The `u16` lane groups must reproduce the scalar `Clip1` step exactly for
-    /// every block length, over randomized predictions and residuals including
-    /// the `i32` extremes.
+    /// The `u16` lane groups, also in place, must reproduce the scalar `Clip1`
+    /// step exactly for every block length, over randomized predictions and
+    /// residuals including the `i32` extremes.
     #[test]
     fn u16_lane_groups_match_the_scalar_reference() {
         let mut state = 0x1234_5678_9abc_def1u64;
@@ -357,6 +379,9 @@ mod tests {
                 let mut actual = vec![0u16; len];
                 add_residual_u16(&prediction, &residual, max, &mut actual);
                 assert_eq!(actual, expected, "len {len} {bit_depth:?}");
+                let mut in_place = prediction.clone();
+                add_residual_in_place(&mut in_place, &residual, max).unwrap();
+                assert_eq!(in_place, expected, "in place, len {len} {bit_depth:?}");
             }
         }
     }
