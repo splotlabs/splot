@@ -63,8 +63,11 @@ impl TileSmoothGrid {
         Ok(())
     }
 
+    /// Records one intra block. Each cell belongs to one block per tile and
+    /// holds `false` until its block records, so a non-smooth block only moves
+    /// the window.
     pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {
-        self.grid.record_block((r, c), (n4w, n4h), smooth);
+        self.grid.record_owned_block((r, c), (n4w, n4h), smooth);
     }
 
     /// Whether an access touched a row the window had already reused.
