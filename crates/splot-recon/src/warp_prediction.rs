@@ -1038,13 +1038,14 @@ fn build_interior_intermediate<T: ReconSample>(
         let sx = projected.sx4 + shear.beta * i1;
         let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
         if shear.alpha == 0 {
-            for (&window, &weight) in windows.iter().zip(warped_filter_row(sx)) {
-                sum = warp_tap_mac(sum, window, weight);
+            let taps = warp_taps(sx);
+            for (tap, window) in windows.into_iter().enumerate() {
+                sum = warp_tap_mac(sum, window, taps[tap]);
             }
         } else {
             let columns =
-                core::array::from_fn(|col| warped_filter_row(sx + shear.alpha * (col as i32 - 4)));
-            for (window, taps) in windows.into_iter().zip(transpose_warp_taps(&columns)) {
+                core::array::from_fn(|col| warp_taps(sx + shear.alpha * (col as i32 - 4)));
+            for (window, taps) in windows.into_iter().zip(transpose_warp_taps(columns)) {
                 sum += window.cast::<i32>() * taps.cast::<i32>();
             }
         }
@@ -1064,7 +1065,7 @@ fn build_interior_intermediate<T: ReconSample>(
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn transpose_warp_taps(
-    columns: &[&'static [i8; WARP_FILTER_TAPS]; WARPED_BLOCK_SIZE],
+    rows: [Simd<i16, WARP_FILTER_TAPS>; WARPED_BLOCK_SIZE],
 ) -> [Simd<i16, WARPED_BLOCK_SIZE>; WARP_FILTER_TAPS] {
     const TRN1: [usize; 8] = [0, 8, 2, 10, 4, 12, 6, 14];
     const TRN2: [usize; 8] = [1, 9, 3, 11, 5, 13, 7, 15];
@@ -1072,8 +1073,6 @@ fn transpose_warp_taps(
     const TRN2_PAIRS: [usize; 8] = [2, 3, 10, 11, 6, 7, 14, 15];
     const TRN1_QUADS: [usize; 8] = [0, 1, 2, 3, 8, 9, 10, 11];
     const TRN2_QUADS: [usize; 8] = [4, 5, 6, 7, 12, 13, 14, 15];
-    let rows: [Simd<i16, WARPED_BLOCK_SIZE>; WARPED_BLOCK_SIZE] =
-        core::array::from_fn(|col| Simd::<i8, WARP_FILTER_TAPS>::from_slice(columns[col]).cast());
     let ones = [
         simd_swizzle!(rows[0], rows[1], TRN1),
         simd_swizzle!(rows[0], rows[1], TRN2),
@@ -1116,12 +1115,11 @@ fn build_output(
     if shear.gamma == 0 {
         for row in 0..WARPED_BLOCK_SIZE {
             let i1 = row as i32 - 4;
-            let taps = warped_filter_row(projected.sy4 + shear.delta * i1);
+            let taps = warp_taps(projected.sy4 + shear.delta * i1);
             let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-            for (tap, &weight) in taps.iter().enumerate() {
-                let samples = Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..])
-                    .cast::<i32>();
-                sum += Simd::splat(i32::from(weight)) * samples;
+            for tap in 0..WARP_FILTER_TAPS {
+                let samples = Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]);
+                sum = warp_tap_mac(sum, samples, taps[tap]);
             }
             store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
         }
@@ -1129,12 +1127,11 @@ fn build_output(
     }
     for row in 0..WARPED_BLOCK_SIZE {
         let i1 = row as i32 - 4;
-        let columns: [&'static [i8; WARP_FILTER_TAPS]; WARPED_BLOCK_SIZE] =
-            core::array::from_fn(|col| {
-                let i2 = col as i32 - 4;
-                warped_filter_row(projected.sy4 + shear.gamma * i2 + shear.delta * i1)
-            });
-        let taps_by_tap = transpose_warp_taps(&columns);
+        let columns = core::array::from_fn(|col| {
+            let i2 = col as i32 - 4;
+            warp_taps(projected.sy4 + shear.gamma * i2 + shear.delta * i1)
+        });
+        let taps_by_tap = transpose_warp_taps(columns);
         let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
         for (tap, taps) in taps_by_tap.into_iter().enumerate() {
             let samples =
@@ -1205,10 +1202,9 @@ fn warp_windows<T: ReconSample>(
 fn warp_tap_mac(
     accumulator: Simd<i32, WARPED_BLOCK_SIZE>,
     samples: Simd<i16, WARPED_BLOCK_SIZE>,
-    tap: i8,
+    tap: i16,
 ) -> Simd<i32, WARPED_BLOCK_SIZE> {
-    accumulator
-        + samples.cast::<i32>() * Simd::<i16, WARPED_BLOCK_SIZE>::splat(i16::from(tap)).cast()
+    accumulator + samples.cast::<i32>() * Simd::<i16, WARPED_BLOCK_SIZE>::splat(tap).cast()
 }
 
 #[allow(
@@ -1225,6 +1221,36 @@ fn warped_filter_row(phase: i32) -> &'static [i8; WARP_FILTER_TAPS] {
         ((phase + (1 << (WARPEDDIFF_PREC_BITS - 1))) >> WARPEDDIFF_PREC_BITS) + WARP_FILTER_CENTER;
     debug_assert!((0..WARPED_FILTERS.len() as i32).contains(&offset));
     &WARPED_FILTERS[offset as usize]
+}
+
+/// `Warped_Filters` widened to `i16` and zero-padded to a power-of-two length.
+static WARPED_TAPS: [[i16; WARP_FILTER_TAPS]; 512] = {
+    let mut taps = [[0; WARP_FILTER_TAPS]; 512];
+    let mut row = 0;
+    while row < WARPED_FILTERS.len() {
+        let mut tap = 0;
+        while tap < WARP_FILTER_TAPS {
+            taps[row][tap] = WARPED_FILTERS[row][tap] as i16;
+            tap += 1;
+        }
+        row += 1;
+    }
+    taps
+};
+
+/// [`warped_filter_row`] as `i16` lanes, indexed with one mask instead of a
+/// bounds check: setup-shear keeps every section phase inside the table, where
+/// the mask changes nothing.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn warp_taps(phase: i32) -> Simd<i16, WARP_FILTER_TAPS> {
+    const BIAS: i32 =
+        (1 << (WARPEDDIFF_PREC_BITS - 1)) + (WARP_FILTER_CENTER << WARPEDDIFF_PREC_BITS);
+    debug_assert!(
+        (0..WARPED_FILTERS.len() as i32).contains(&((phase + BIAS) >> WARPEDDIFF_PREC_BITS))
+    );
+    let index = ((phase + BIAS) as u32 >> WARPEDDIFF_PREC_BITS) as usize & (WARPED_TAPS.len() - 1);
+    Simd::from_array(WARPED_TAPS[index])
 }
 
 fn project_coordinate(
@@ -1404,6 +1430,17 @@ mod tests {
                 "row {index}"
             );
             assert!(row.iter().map(|&tap| i32::from(tap).abs()).sum::<i32>() <= 222);
+        }
+    }
+
+    #[test]
+    fn masked_tap_rows_match_the_filter_rows_over_every_table_phase() {
+        let first = -(WARP_FILTER_CENTER << WARPEDDIFF_PREC_BITS) - 512;
+        let last =
+            ((WARPED_FILTERS.len() as i32 - WARP_FILTER_CENTER) << WARPEDDIFF_PREC_BITS) - 513;
+        for phase in first..=last {
+            let want = Simd::<i8, WARP_FILTER_TAPS>::from_array(*warped_filter_row(phase));
+            assert_eq!(warp_taps(phase), want.cast(), "phase {phase}");
         }
     }
 
