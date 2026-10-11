@@ -63,9 +63,10 @@ impl TileSmoothGrid {
         Ok(())
     }
 
-    /// Records one intra block. Each cell belongs to one block per tile and
-    /// holds `false` until its block records, so a non-smooth block only moves
-    /// the window.
+    /// Records one intra block. A cell holds `false` until its last writer in
+    /// the tile records it; the only earlier writer is the `false` write of a
+    /// luma-part leaf, which comes before the chroma-part write of the same
+    /// region. So a non-smooth block only moves the window.
     pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {
         self.grid.record_owned_block((r, c), (n4w, n4h), smooth);
     }

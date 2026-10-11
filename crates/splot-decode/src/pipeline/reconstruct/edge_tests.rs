@@ -307,7 +307,8 @@ fn chroma_d135_top_row_filters_available_left_edge() {
 
 /// The row and column edge gathers must return the per-sample reads of
 /// `Min(start + i, limit)`, and must fail whenever one of those reads fails:
-/// a limit past the storage edge, a start past the limit, or an absent row.
+/// a limit past the storage edge or an absent row. A start past the limit
+/// reads the sample at the limit.
 #[test]
 fn edge_gathers_match_per_sample_reads_and_fail_closed() {
     use super::super::one_sided::{gather_column_clamped, gather_row_clamped};

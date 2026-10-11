@@ -512,7 +512,9 @@ struct GdfUniformParams {
     bias: [i32; 3],
     scale: i32,
     /// Whether `flat_rows` keeps the samples when every class block has
-    /// gradient bias 0: the error table gives a zero residual at `bias`.
+    /// gradient bias 0: the error table gives a zero residual at `bias`. The
+    /// skip relies on every base sample already lying in `[0, max_sample]`,
+    /// as reconstruction and the earlier filters leave it.
     keeps_flat: bool,
 }
 

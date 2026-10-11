@@ -365,6 +365,9 @@ pub(crate) fn lr_source_blocks_by_plane(
 ) -> (Vec<WienerNsLrSourceBlock>, [usize; 2]) {
     blocks.retain(|block| block.plane < 3);
     blocks.sort_unstable_by_key(|block| (block.plane, block.y, block.x));
+    debug_assert!(blocks.windows(2).all(|pair| {
+        (pair[0].plane, pair[0].y, pair[0].x) != (pair[1].plane, pair[1].y, pair[1].x)
+    }));
     let y_end = blocks.partition_point(|block| block.plane < 1);
     let u_end = blocks.partition_point(|block| block.plane < 2);
     (blocks, [y_end, u_end])

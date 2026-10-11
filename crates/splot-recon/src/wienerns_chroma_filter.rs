@@ -257,8 +257,9 @@ fn validate_padded_window(
 /// Returns typed [`ReconError`] values for unsupported sample storage, zero block
 /// dimensions, output shape errors, invalid subsampling or luma bounds, invalid
 /// `cfl_ds_filter_index`, and source samples outside the active bit-depth range.
-/// The caller output is not modified unless all validation and filtering
-/// succeeds.
+/// Luma source samples are read and checked only when
+/// [`WienerNsChromaFilter::reads_luma`] is true. The caller output is not
+/// modified unless all validation and filtering succeeds.
 pub fn wiener_ns_filter_chroma_block<T, C, L>(
     output: &mut [T],
     params: &WienerNsChromaFilter<'_>,
