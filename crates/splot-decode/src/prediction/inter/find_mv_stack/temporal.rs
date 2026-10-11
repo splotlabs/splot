@@ -62,6 +62,45 @@ impl Default for TemporalMotionCell {
     }
 }
 
+/// A [`TemporalMotionCell`] as a field stores it, one list after the other:
+/// `[ref0, row0, col0, ref1, row1, col1]`, so a row of cells reads as bytes.
+type StoredTemporalCell = [u8; 6];
+
+impl TemporalMotionCell {
+    const STORED_EMPTY: StoredTemporalCell =
+        [INVALID_TEMPORAL_REF, 0, 0, INVALID_TEMPORAL_REF, 0, 0];
+
+    fn store(self) -> StoredTemporalCell {
+        let [first, second] = self.mvs;
+        [
+            self.ref_indices[0],
+            first.row as u8,
+            first.col as u8,
+            self.ref_indices[1],
+            second.row as u8,
+            second.col as u8,
+        ]
+    }
+
+    #[cfg(test)]
+    fn load(stored: StoredTemporalCell) -> Self {
+        let [ref0, row0, col0, ref1, row1, col1] = stored;
+        Self {
+            ref_indices: [ref0, ref1],
+            mvs: [
+                CompressedTemporalMv {
+                    row: row0 as i8,
+                    col: col0 as i8,
+                },
+                CompressedTemporalMv {
+                    row: row1 as i8,
+                    col: col1 as i8,
+                },
+            ],
+        }
+    }
+}
+
 /// The order hints one motion field carries, one per reference slot.
 ///
 /// A sequence bounds the slot count at
@@ -74,16 +113,20 @@ fn empty_ref_order_hints() -> RefOrderHints {
     RefOrderHints::default()
 }
 
-fn allocate_temporal_grid<T>(mi_rows: usize, mi_cols: usize) -> Option<(usize, usize, Vec<T>)>
+fn allocate_temporal_grid<T>(
+    mi_rows: usize,
+    mi_cols: usize,
+    fill: T,
+) -> Option<(usize, usize, Vec<T>)>
 where
-    T: Clone + Default + Send + 'static,
+    T: Clone + Send + 'static,
 {
     let width8 = mi_cols.div_ceil(2);
     let height8 = mi_rows.div_ceil(2);
     let cells = width8.checked_mul(height8)?;
     let mut grid = crate::support::reusable_scratch::take_pooled_vec::<T>(cells);
     grid.try_reserve_exact(cells).ok()?;
-    grid.resize(cells, T::default());
+    grid.resize(cells, fill);
     Some((width8, height8, grid))
 }
 
@@ -110,7 +153,7 @@ pub(crate) struct TemporalMotionField {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TemporalMotionStorage {
-    Contiguous(Vec<TemporalMotionCell>),
+    Contiguous(Vec<StoredTemporalCell>),
     Bands(Vec<TemporalMotionBand>),
 }
 
@@ -200,7 +243,8 @@ impl TemporalMotionField {
 
     #[cfg(test)]
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        let (width8, height8, cells) =
+            allocate_temporal_grid(mi_rows, mi_cols, TemporalMotionCell::STORED_EMPTY)?;
         let pending_ref_hints = vec![[u32::MAX; 2]; cells.len()];
         Some(Self {
             width8,
@@ -222,7 +266,8 @@ impl TemporalMotionField {
         frame_size: (usize, usize),
         ref_order_hints: &[Option<u32>],
     ) -> Option<Self> {
-        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        let (width8, height8, cells) =
+            allocate_temporal_grid(mi_rows, mi_cols, TemporalMotionCell::STORED_EMPTY)?;
         let mut owned_ref_order_hints = RefOrderHints::default();
         owned_ref_order_hints.extend_within(ref_order_hints.iter().copied());
         Some(Self {
@@ -258,7 +303,7 @@ impl TemporalMotionField {
                     if hint == u32::MAX {
                         continue;
                     }
-                    cell.ref_indices[list] = self
+                    cell[3 * list] = self
                         .ref_order_hints
                         .iter()
                         .position(|&candidate| candidate == Some(hint))
@@ -337,7 +382,7 @@ impl TemporalMotionField {
         }
     }
 
-    fn contiguous_cells(&self) -> &[TemporalMotionCell] {
+    fn contiguous_cells(&self) -> &[StoredTemporalCell] {
         match &self.storage {
             TemporalMotionStorage::Contiguous(cells) => cells,
             TemporalMotionStorage::Bands(_) => &[],
@@ -460,7 +505,7 @@ impl TemporalMotionField {
                     *pending = hints.map(|hint| hint.unwrap_or(u32::MAX));
                 }
                 if let Some(target) = cells.get_mut(index) {
-                    *target = cell;
+                    *target = cell.store();
                 }
             });
         }
@@ -468,16 +513,17 @@ impl TemporalMotionField {
 
     #[cfg(test)]
     fn cell(&self, y8: usize, x8: usize) -> Option<TemporalMotionCell> {
-        self.row(y8)?.get(x8).copied()
+        self.row(y8)?.get(x8).copied().map(TemporalMotionCell::load)
     }
 
     #[cfg(test)]
-    fn cell_mut(&mut self, y8: usize, x8: usize) -> Option<&mut TemporalMotionCell> {
-        let index = temporal_grid_index(self.width8, self.height8, y8, x8)?;
-        let TemporalMotionStorage::Contiguous(cells) = &mut self.storage else {
-            return None;
-        };
-        cells.get_mut(index)
+    fn set_cell(&mut self, y8: usize, x8: usize, cell: TemporalMotionCell) {
+        if let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8)
+            && let TemporalMotionStorage::Contiguous(cells) = &mut self.storage
+            && let Some(target) = cells.get_mut(index)
+        {
+            *target = cell.store();
+        }
     }
 }
 
@@ -776,7 +822,8 @@ impl Drop for ProjectedTemporalMotionField {
 impl ProjectedTemporalMotionField {
     #[cfg(test)]
     fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        let (width8, height8, cells) =
+            allocate_temporal_grid(mi_rows, mi_cols, ProjectedTemporalMotionCell::default())?;
         Some(Self {
             width8,
             height8,
@@ -2038,7 +2085,7 @@ impl TemporalProjectionSource {
 
 trait TemporalMotionRows {
     fn dimensions8(&self) -> (usize, usize);
-    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]>;
+    fn row(&self, y8: usize) -> Option<&[StoredTemporalCell]>;
 }
 
 impl TemporalMotionRows for TemporalMotionField {
@@ -2046,7 +2093,7 @@ impl TemporalMotionRows for TemporalMotionField {
         (self.width8, self.height8)
     }
 
-    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
+    fn row(&self, y8: usize) -> Option<&[StoredTemporalCell]> {
         match &self.storage {
             TemporalMotionStorage::Contiguous(cells) => {
                 let start = y8.checked_mul(self.width8)?;

@@ -3,20 +3,22 @@
 
 use std::ops::Range;
 use std::simd::{
-    Mask, Select, Simd,
+    Mask, Select, Simd, Swizzle,
     cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd},
     num::{SimdInt, SimdUint},
 };
 
 use super::trajectory::BandGeometry;
 use super::{
-    Mv, ProjectedFieldBand, ProjectedTemporalMotionCell, TemporalMotionCell, TemporalMotionRows,
+    Mv, ProjectedFieldBand, ProjectedTemporalMotionCell, StoredTemporalCell, TemporalMotionRows,
     TemporalProjectionSource, TrajectoryBand,
 };
 
 const LANES: usize = 16;
 const GROUPS: usize = 4;
 const CHUNK: usize = LANES * GROUPS;
+/// 64-byte blocks of the stored cells a chunk spans at the widest step.
+const BLOCKS: usize = CHUNK * 2 * size_of::<StoredTemporalCell>() / 64;
 
 type Lanes = Simd<i32, LANES>;
 type Narrow = Simd<i16, LANES>;
@@ -58,8 +60,8 @@ const END_WRITE: u8 = 2;
 /// reused chunk after chunk; lanes past a chunk's end keep stale values.
 #[derive(Default)]
 struct ChunkLanes {
+    window: Window,
     refs: Grid<u8>,
-    compressed: [Grid<i8>; 2],
     mv: [Grid<i32>; 2],
     projected: [Grid<i32>; 2],
     position: [Grid<i32>; 2],
@@ -461,7 +463,7 @@ fn write_projection(
 #[inline(never)]
 fn chunk_lanes<const TRACKED: bool>(
     lanes: &mut ChunkLanes,
-    chunk: &[TemporalMotionCell],
+    chunk: &[StoredTemporalCell],
     side: usize,
     tables: &TargetTables,
     y8: usize,
@@ -469,18 +471,13 @@ fn chunk_lanes<const TRACKED: bool>(
     geometry: LaneGeometry,
 ) -> Option<ChunkMasks> {
     let count = chunk.len().div_ceil(geometry.step).min(CHUNK);
-    let refs: &mut [u8; CHUNK] = lanes.refs.as_flattened_mut().try_into().ok()?;
-    let [rows, cols] = &mut lanes.compressed;
-    let rows: &mut [i8; CHUNK] = rows.as_flattened_mut().try_into().ok()?;
-    let cols: &mut [i8; CHUNK] = cols.as_flattened_mut().try_into().ok()?;
-    for lane in 0..count {
-        let Some(cell) = chunk.get(lane * geometry.step) else {
-            break;
-        };
-        refs[lane] = cell.ref_indices[side];
-        rows[lane] = cell.mvs[side].row;
-        cols[lane] = cell.mvs[side].col;
-    }
+    let stored = chunk
+        .as_flattened()
+        .get(side * size_of::<StoredTemporalCell>() / 2..)
+        .unwrap_or_default();
+    let window = lanes.window.0.as_flattened_mut();
+    let copied = stored.len().min(window.len());
+    window[..copied].copy_from_slice(&stored[..copied]);
     let track = geometry.track;
     let iota = Lanes::from_array(core::array::from_fn(|lane| lane as i32));
     let y = Lanes::splat(i32::try_from(y8).ok()?);
@@ -491,14 +488,15 @@ fn chunk_lanes<const TRACKED: bool>(
     for group in 0..count.div_ceil(LANES) {
         let first = i32::try_from(x_base + group * LANES * geometry.step).ok()?;
         let x = Lanes::splat(first) + iota * Lanes::splat(geometry.step as i32);
-        let (flags, factor) = tables.lookup(Simd::from_array(lanes.refs[group]));
+        let [refs, saved_rows, saved_cols] = deinterleave(&lanes.window.0, group, geometry.step);
+        lanes.refs[group] = refs.to_array();
+        let (flags, factor) = tables.lookup(refs);
         let (mut sampled, mut ended) = (Mask::splat(true), Mask::splat(true));
         let mut base = [Lanes::splat(0); 2];
         let mut position = [Lanes::splat(0); 2];
         let mut end = [Lanes::splat(0); 2];
-        for component in 0..2 {
-            let saved = Simd::<i8, LANES>::from_array(lanes.compressed[component][group]);
-            let mv: Lanes = decompress(saved.cast()).cast();
+        for (component, saved) in [saved_rows, saved_cols].into_iter().enumerate() {
+            let mv: Lanes = decompress(saved.cast::<i8>().cast()).cast();
             lanes.mv[component][group] = mv.to_array();
             let projected = project(mv, factor);
             lanes.projected[component][group] = projected.to_array();
@@ -556,6 +554,80 @@ fn chunk_lanes<const TRACKED: bool>(
         intersects: intersects & inside,
         observes: projects & inside,
     })
+}
+
+/// A chunk's stored cells from the scanned list's first byte on.
+struct Window([[u8; 64]; BLOCKS]);
+
+impl Default for Window {
+    fn default() -> Self {
+        Self([[0; 64]; BLOCKS])
+    }
+}
+
+/// Lane `i` reads byte `OFFSET + STRIDE * i - BASE` of two concatenated
+/// blocks, or byte 0 when that byte lies outside them.
+struct Strided<const OFFSET: usize, const STRIDE: usize, const BASE: usize>;
+
+impl<const OFFSET: usize, const STRIDE: usize, const BASE: usize> Swizzle<LANES>
+    for Strided<OFFSET, STRIDE, BASE>
+{
+    const INDEX: [usize; LANES] = {
+        let mut index = [0; LANES];
+        let mut lane = 0;
+        while lane < LANES {
+            let byte = OFFSET + STRIDE * lane;
+            if byte >= BASE && byte - BASE < 128 {
+                index[lane] = byte - BASE;
+            }
+            lane += 1;
+        }
+        index
+    };
+}
+
+/// The stored reference and saved row and column of each lane of `group`,
+/// read from a chunk window whose cells start at the scanned list. A step-1
+/// group spans 96 bytes, so even groups start on a block and odd groups 32
+/// bytes in; a step-2 group spans three blocks, and its last five lanes read
+/// the third.
+fn deinterleave(window: &[[u8; 64]; BLOCKS], group: usize, step: usize) -> [Simd<u8, LANES>; 3] {
+    type Block = Simd<u8, 64>;
+    let block = |index: usize| Block::from_array(window[index]);
+    if step == 1 {
+        let first = 3 * group / 2;
+        let (low, high) = (block(first), block(first + 1));
+        if group.is_multiple_of(2) {
+            [
+                Strided::<0, 6, 0>::concat_swizzle(low, high),
+                Strided::<1, 6, 0>::concat_swizzle(low, high),
+                Strided::<2, 6, 0>::concat_swizzle(low, high),
+            ]
+        } else {
+            [
+                Strided::<32, 6, 0>::concat_swizzle(low, high),
+                Strided::<33, 6, 0>::concat_swizzle(low, high),
+                Strided::<34, 6, 0>::concat_swizzle(low, high),
+            ]
+        }
+    } else {
+        let [low, middle, high] = [0, 1, 2].map(|offset| block(3 * group + offset));
+        let tail = Mask::<i8, LANES>::from_array(core::array::from_fn(|lane| lane >= 11));
+        [
+            tail.select(
+                Strided::<0, 12, 128>::concat_swizzle(high, high),
+                Strided::<0, 12, 0>::concat_swizzle(low, middle),
+            ),
+            tail.select(
+                Strided::<1, 12, 128>::concat_swizzle(high, high),
+                Strided::<1, 12, 0>::concat_swizzle(low, middle),
+            ),
+            tail.select(
+                Strided::<2, 12, 128>::concat_swizzle(high, high),
+                Strided::<2, 12, 0>::concat_swizzle(low, middle),
+            ),
+        ]
+    }
 }
 
 /// AV2 § 7.9.2 decompression of a saved vector component, lane by lane.
@@ -687,7 +759,7 @@ mod tests {
             let y8 = next(height8) & !(step - 1);
             let x_base = next(width8.div_ceil(CHUNK * step)) * CHUNK * step;
             let wide = next(2) == 0;
-            let cells: Vec<TemporalMotionCell> = (0..=next(CHUNK * step))
+            let cells: Vec<super::super::TemporalMotionCell> = (0..=next(CHUNK * step))
                 .map(|_| {
                     let mut component = || {
                         if wide {
@@ -701,7 +773,7 @@ mod tests {
                         col: component() as i8,
                     });
                     let reference = if next(8) == 0 { 255 } else { next(12) as u8 };
-                    TemporalMotionCell {
+                    super::super::TemporalMotionCell {
                         ref_indices: [reference; 2],
                         mvs,
                     }
@@ -726,9 +798,10 @@ mod tests {
                 row_base: output_base,
             };
             let geometry = LaneGeometry::new(step, unit, &output, Some(band)).unwrap();
+            let stored: Vec<StoredTemporalCell> = cells.iter().map(|cell| cell.store()).collect();
             let masks = chunk_lanes::<true>(
                 &mut lanes,
-                &cells,
+                &stored,
                 side,
                 &TargetTables::new(&source, hints.len()),
                 y8,

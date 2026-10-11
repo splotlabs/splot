@@ -102,7 +102,8 @@ pub(super) struct TrajectoryMotionField {
 
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        let (width8, height8, cells) =
+            allocate_temporal_grid(mi_rows, mi_cols, PackedTrajectoryMv::INVALID)?;
         Some(Self {
             width8,
             height8,

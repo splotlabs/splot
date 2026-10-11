@@ -61,14 +61,14 @@ fn temporal_grid_cell_count_fits_at_maximum_frame_size() {
     let max_frame_dimension = 1_usize << 16;
     let max_mi_dimension = 2 * ((max_frame_dimension + 7) >> 3);
     let (width8, height8, cells) =
-        allocate_temporal_grid::<()>(max_mi_dimension, max_mi_dimension).unwrap();
+        allocate_temporal_grid(max_mi_dimension, max_mi_dimension, ()).unwrap();
     assert_eq!((width8, height8), (8192, 8192));
     assert_eq!(cells.len(), width8 * height8);
 }
 
 #[test]
 fn temporal_grid_rejects_impossible_capacity() {
-    assert!(allocate_temporal_grid::<u8>(1, usize::MAX).is_none());
+    assert!(allocate_temporal_grid(1, usize::MAX, 0u8).is_none());
 }
 
 #[test]
@@ -127,13 +127,17 @@ fn tip_context(
 fn whole_field_round_trips_published_band_cells() {
     let mut field = TemporalMotionField::new(4, 4).unwrap();
     field.set_reference_metadata(true, (16, 16), &[Some(0)]);
-    *field.cell_mut(0, 0).unwrap() = TemporalMotionCell {
-        ref_indices: [0, INVALID_TEMPORAL_REF],
-        mvs: [
-            CompressedTemporalMv { row: 1, col: 2 },
-            CompressedTemporalMv::ZERO,
-        ],
-    };
+    field.set_cell(
+        0,
+        0,
+        TemporalMotionCell {
+            ref_indices: [0, INVALID_TEMPORAL_REF],
+            mvs: [
+                CompressedTemporalMv { row: 1, col: 2 },
+                CompressedTemporalMv::ZERO,
+            ],
+        },
+    );
     let layout = field.layout();
     let metadata = field.metadata();
     let expected = field.cell(0, 0);
@@ -155,7 +159,15 @@ fn whole_field_round_trips_published_band_cells() {
     let denied = first.record_blocks(&[clear, clear]);
     assert_eq!(rebuilt.cell(0, 0), expected);
     assert!(denied.is_err());
-    assert_eq!(first.row(0).unwrap().first().copied(), expected);
+    assert_eq!(
+        first
+            .row(0)
+            .unwrap()
+            .first()
+            .copied()
+            .map(TemporalMotionCell::load),
+        expected
+    );
     drop(rebuilt);
     let address = first.row(0).unwrap().as_ptr();
     let marked = TemporalMotionBlock::new(
@@ -171,14 +183,22 @@ fn whole_field_round_trips_published_band_cells() {
         [None; 2],
     );
     first.record_blocks(&[clear, marked]).unwrap();
-    let cell = first.row(0).unwrap()[0];
+    let cell = TemporalMotionCell::load(first.row(0).unwrap()[0]);
     assert_eq!(
         cell.mvs.map(uncompress_tmvp_mv),
         [Mv { row: 8, col: -12 }; 2]
     );
     first.record_blocks(&[marked, clear]).unwrap();
     assert_eq!(first.row(0).unwrap().as_ptr(), address);
-    assert_ne!(first.row(0).unwrap().first().copied(), expected);
+    assert_ne!(
+        first
+            .row(0)
+            .unwrap()
+            .first()
+            .copied()
+            .map(TemporalMotionCell::load),
+        expected
+    );
 }
 
 #[test]
@@ -518,13 +538,17 @@ fn step_two_projection_samples_and_stores_on_the_even_grid() {
     let mut source = TemporalMotionField::new(8, 8).unwrap();
     source.set_reference_metadata(true, (32, 32), &[Some(0)]);
     for x8 in 0..source.width8 {
-        *source.cell_mut(0, x8).unwrap() = TemporalMotionCell {
-            ref_indices: [0, INVALID_TEMPORAL_REF],
-            mvs: [
-                compress_tmvp_mv(Mv { row: 0, col: -64 }),
-                CompressedTemporalMv::ZERO,
-            ],
-        };
+        source.set_cell(
+            0,
+            x8,
+            TemporalMotionCell {
+                ref_indices: [0, INVALID_TEMPORAL_REF],
+                mvs: [
+                    compress_tmvp_mv(Mv { row: 0, col: -64 }),
+                    CompressedTemporalMv::ZERO,
+                ],
+            },
+        );
     }
     let mut other = TemporalMotionField::new(8, 8).unwrap();
     other.set_reference_metadata(true, (32, 32), &[]);
@@ -565,13 +589,17 @@ fn backward_projection_preserves_source_to_current_direction() {
             .install(|| {
                 let mut source = TemporalMotionField::new(18, 56).unwrap();
                 source.set_reference_metadata(true, (56 * 8, 18 * 8), &[Some(9)]);
-                *source.cell_mut(8, 26).unwrap() = TemporalMotionCell {
-                    ref_indices: [INVALID_TEMPORAL_REF, 0],
-                    mvs: [
-                        CompressedTemporalMv::ZERO,
-                        compress_tmvp_mv(Mv { row: 10, col: 232 }),
-                    ],
-                };
+                source.set_cell(
+                    8,
+                    26,
+                    TemporalMotionCell {
+                        ref_indices: [INVALID_TEMPORAL_REF, 0],
+                        mvs: [
+                            CompressedTemporalMv::ZERO,
+                            compress_tmvp_mv(Mv { row: 10, col: 232 }),
+                        ],
+                    },
+                );
                 let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
                 project_whole_temporal_motion_field(
                     &source,
@@ -610,10 +638,14 @@ fn backward_projection_preserves_source_to_current_direction() {
 fn projection_records_zero_offset_reference() {
     let mut source = TemporalMotionField::new(4, 4).unwrap();
     source.set_reference_metadata(true, (16, 16), &[Some(4)]);
-    *source.cell_mut(0, 0).unwrap() = TemporalMotionCell {
-        ref_indices: [0, INVALID_TEMPORAL_REF],
-        mvs: [CompressedTemporalMv::ZERO; 2],
-    };
+    source.set_cell(
+        0,
+        0,
+        TemporalMotionCell {
+            ref_indices: [0, INVALID_TEMPORAL_REF],
+            mvs: [CompressedTemporalMv::ZERO; 2],
+        },
+    );
     let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
 
     project_whole_temporal_motion_field(
@@ -1180,13 +1212,17 @@ fn trajectories_do_not_change_the_projected_motion_field() {
         let mut source = TemporalMotionField::new(8, 8).unwrap();
         source.set_reference_metadata(true, (32, 32), &[Some(1)]);
         for x8 in 0..source.width8 {
-            *source.cell_mut(1, x8).unwrap() = TemporalMotionCell {
-                ref_indices: [0, INVALID_TEMPORAL_REF],
-                mvs: [
-                    compress_tmvp_mv(Mv { row: 12, col: -40 }),
-                    CompressedTemporalMv::ZERO,
-                ],
-            };
+            source.set_cell(
+                1,
+                x8,
+                TemporalMotionCell {
+                    ref_indices: [0, INVALID_TEMPORAL_REF],
+                    mvs: [
+                        compress_tmvp_mv(Mv { row: 12, col: -40 }),
+                        CompressedTemporalMv::ZERO,
+                    ],
+                },
+            );
         }
         let mut other = TemporalMotionField::new(8, 8).unwrap();
         other.set_reference_metadata(true, (32, 32), &[]);
