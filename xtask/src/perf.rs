@@ -182,7 +182,7 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
 /// output's `summary:` line.
 fn measure_ir(splot: &Path, fixture: &Path, out_file: &Path) -> Result<u64> {
     let _ = std::fs::remove_file(out_file);
-    let status = Command::new("valgrind")
+    let output = Command::new("valgrind")
         .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
         .arg(format!("--callgrind-out-file={}", out_file.display()))
         .arg(splot)
@@ -198,11 +198,18 @@ fn measure_ir(splot: &Path, fixture: &Path, out_file: &Path) -> Result<u64> {
         ])
         .arg(fixture)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .context("failed to spawn valgrind")?;
-    if !status.success() {
-        bail!("valgrind decode failed for {}", fixture.display());
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = stderr.lines().collect();
+        let tail = lines[lines.len().saturating_sub(40)..].join("\n");
+        bail!(
+            "valgrind decode failed for {} ({}):\n{tail}",
+            fixture.display(),
+            output.status
+        );
     }
     let text = std::fs::read_to_string(out_file)
         .with_context(|| format!("failed to read {}", out_file.display()))?;
