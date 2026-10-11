@@ -143,6 +143,8 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
 /// A flat window has range 0 and skips the taps; one sample that the
 /// farthest tap of the last lane reads, one above the rest, keeps the range
 /// at 1. Both match the scalar samples for every table, class and bit depth.
+/// The class gradient biases cross error-table digits, so the class blocks
+/// do not all share one residual.
 #[test]
 fn flat_uniform_windows_match_scalar_samples() {
     let stride = 16 + GDF_READ_RADIUS * 2;
@@ -156,8 +158,7 @@ fn flat_uniform_windows_match_scalar_samples() {
                     let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
                     for class_index in 0..4_u8 {
                         let classes: [GdfClass; 8] = core::array::from_fn(|index| {
-                            let delta = i32::try_from(index).unwrap_or_default() * 37;
-                            GdfClass::new(class_index, 511 - delta)
+                            GdfClass::new(class_index, i32::try_from(index * 1500).unwrap_or(0))
                         });
                         let params = GdfUniformParams::new(&block, usize::from(class_index));
                         let (actual, expected) = filter_both_ways::<16, 28>(
