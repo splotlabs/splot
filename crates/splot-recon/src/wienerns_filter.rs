@@ -208,7 +208,6 @@ where
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WienerNsLumaPaddedSource<'a, T> {
     rows: PaddedRows<'a, T>,
-    prevalidated: bool,
 }
 
 impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
@@ -247,35 +246,15 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
         }
         Ok(Self {
             rows: PaddedRows::Strided { samples, stride },
-            prevalidated: false,
         })
     }
 
-    /// Wraps decoder-owned samples whose range reconstruction already
-    /// guarantees, so filtering skips the per-block source range scan.
-    ///
-    /// # Errors
-    /// Returns the same errors as [`Self::new`].
-    #[doc(hidden)]
-    pub fn new_prevalidated(
-        samples: &'a [T],
-        stride: usize,
-        width: usize,
-        height: usize,
-    ) -> Result<Self> {
-        Ok(Self {
-            prevalidated: true,
-            ..Self::new(samples, stride, width, height)?
-        })
-    }
-
-    /// Wraps decoder-owned padded rows whose range reconstruction already
-    /// guarantees: padded row `i` starts at column `col` of `rows[i]`.
+    /// Wraps padded rows: padded row `i` starts at column `col` of
+    /// `rows[i]`. Filtering checks the sample range as for [`Self::new`].
     ///
     /// # Errors
     /// Returns a typed error when a row cannot cover the block plus the
     /// § 7.20.3 luma tap reach.
-    #[doc(hidden)]
     pub fn from_rows(rows: &'a [&'a [T]], col: usize, width: usize, height: usize) -> Result<Self> {
         Self::check_table(PaddedRows::table(rows, col), width, height)
     }
@@ -294,10 +273,7 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
                 actual: 0,
             });
         }
-        Ok(Self {
-            rows,
-            prevalidated: true,
-        })
+        Ok(Self { rows })
     }
 
     fn validate_cover(&self, width: usize, height: usize) -> Result<()> {
@@ -559,15 +535,11 @@ fn prepare_luma_padded<T: ReconSample>(
                     .fold(0, |mask, &coeff| (mask << 1) | u16::from(coeff != 0)),
             }
         }));
-    if source.prevalidated {
-        scratch.clean_rows.resize(padded_rows, true);
-    } else {
-        for row_index in 0..padded_rows {
-            let row = padded_row(source.rows, row_index, padded_width)?;
-            scratch.clean_rows.push(
-                T::u16_slice(row).is_none_or(|samples| !u16_samples_exceed(samples, max_sample)),
-            );
-        }
+    for row_index in 0..padded_rows {
+        let row = padded_row(source.rows, row_index, padded_width)?;
+        scratch
+            .clean_rows
+            .push(T::u16_slice(row).is_none_or(|samples| !u16_samples_exceed(samples, max_sample)));
     }
 
     let direct = scratch.clean_rows.iter().all(|&clean| clean);
@@ -1731,7 +1703,6 @@ mod tests {
                 samples: &samples[..samples.len() - 1],
                 stride: source_stride,
             },
-            prevalidated: false,
         };
         let coeffs = [ZERO];
         let short_cells: [u8; 0] = [];
@@ -2180,21 +2151,17 @@ mod tests {
             let mut reference = vec![0u16; width * height];
             wiener_ns_filter_luma_block(&mut reference, &reference_params, source_at).unwrap();
             let cell_params = params(width, height, width, BitDepth::Ten, &coeffs, None);
-            for source in [
-                WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap(),
-                WienerNsLumaPaddedSource::new_prevalidated(&padded, stride, width, height).unwrap(),
-            ] {
-                let mut actual = vec![0u16; width * height];
-                wiener_ns_filter_luma_block_padded_cells_into(
-                    &mut actual,
-                    &cell_params,
-                    &source,
-                    &cells,
-                    &mut WienerNsLumaScratch::default(),
-                )
-                .unwrap();
-                assert_eq!(actual, reference, "{width}x{height}");
-            }
+            let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+            let mut actual = vec![0u16; width * height];
+            wiener_ns_filter_luma_block_padded_cells_into(
+                &mut actual,
+                &cell_params,
+                &source,
+                &cells,
+                &mut WienerNsLumaScratch::default(),
+            )
+            .unwrap();
+            assert_eq!(actual, reference, "{width}x{height}");
         }
     }
 

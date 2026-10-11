@@ -701,14 +701,10 @@ fn padded_and_callback_filters_match_bit_exactly() {
             ));
         }
     }
-    for source in [
-        PcWienerPaddedSource::new(&padded, stride, width, height).unwrap(),
-        PcWienerPaddedSource::new_prevalidated(&padded, stride, width, height).unwrap(),
-    ] {
-        let mut padded_output = vec![0u16; width * height];
-        pc_wiener_filter_block_padded(&mut padded_output, &params, &source).unwrap();
-        assert_eq!(callback_output, padded_output);
-    }
+    let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+    let mut padded_output = vec![0u16; width * height];
+    pc_wiener_filter_block_padded(&mut padded_output, &params, &source).unwrap();
+    assert_eq!(callback_output, padded_output);
 }
 
 #[test]

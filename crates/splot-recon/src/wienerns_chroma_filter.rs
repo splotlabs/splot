@@ -107,7 +107,6 @@ pub struct WienerNsChromaPaddedSource<'a, T> {
     chroma_stride: usize,
     luma_samples: &'a [T],
     luma_stride: usize,
-    prevalidated: bool,
 }
 
 impl<'a, T: ReconSample> WienerNsChromaPaddedSource<'a, T> {
@@ -150,36 +149,6 @@ impl<'a, T: ReconSample> WienerNsChromaPaddedSource<'a, T> {
             chroma_stride,
             luma_samples,
             luma_stride,
-            prevalidated: false,
-        })
-    }
-
-    /// Wraps decoder-owned windows whose range reconstruction already
-    /// guarantees, so filtering skips the per-block source range scans.
-    ///
-    /// # Errors
-    /// Returns the same errors as [`Self::new`].
-    #[doc(hidden)]
-    pub fn new_prevalidated(
-        chroma_samples: &'a [T],
-        chroma_stride: usize,
-        luma_samples: &'a [T],
-        luma_stride: usize,
-        width: usize,
-        height: usize,
-        subsampling: (u8, u8),
-    ) -> Result<Self> {
-        Ok(Self {
-            prevalidated: true,
-            ..Self::new(
-                chroma_samples,
-                chroma_stride,
-                luma_samples,
-                luma_stride,
-                width,
-                height,
-                subsampling,
-            )?
         })
     }
 }
@@ -464,31 +433,29 @@ fn prepare_chroma_padded<T: ReconSample>(
         (params.subsampling_x, params.subsampling_y),
     )?;
 
-    if !source.prevalidated {
-        let max_sample = params.bit_depth.max_sample();
-        let (chroma_padded_width, chroma_padded_rows) =
-            padded_window_shape(params.width, params.height, 0, 0)?;
-        validate_padded_samples(
-            source.chroma_samples,
-            source.chroma_stride,
-            chroma_padded_width,
-            chroma_padded_rows,
-            max_sample,
-        )?;
-        let (luma_padded_width, luma_padded_rows) = padded_window_shape(
-            params.width,
-            params.height,
-            params.subsampling_x,
-            params.subsampling_y,
-        )?;
-        validate_padded_samples(
-            source.luma_samples,
-            source.luma_stride,
-            luma_padded_width,
-            luma_padded_rows,
-            max_sample,
-        )?;
-    }
+    let max_sample = params.bit_depth.max_sample();
+    let (chroma_padded_width, chroma_padded_rows) =
+        padded_window_shape(params.width, params.height, 0, 0)?;
+    validate_padded_samples(
+        source.chroma_samples,
+        source.chroma_stride,
+        chroma_padded_width,
+        chroma_padded_rows,
+        max_sample,
+    )?;
+    let (luma_padded_width, luma_padded_rows) = padded_window_shape(
+        params.width,
+        params.height,
+        params.subsampling_x,
+        params.subsampling_y,
+    )?;
+    validate_padded_samples(
+        source.luma_samples,
+        source.luma_stride,
+        luma_padded_width,
+        luma_padded_rows,
+        max_sample,
+    )?;
 
     let ds_width = params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
     let ds_height = params.height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
@@ -1660,28 +1627,16 @@ mod tests {
                     })
                     .collect();
                 let geometry = (width, height, (sub_x, sub_y));
-                let sources = [
-                    WienerNsChromaPaddedSource::new(
-                        &chroma,
-                        chroma_stride,
-                        &luma,
-                        luma_stride,
-                        geometry.0,
-                        geometry.1,
-                        geometry.2,
-                    )
-                    .unwrap(),
-                    WienerNsChromaPaddedSource::new_prevalidated(
-                        &chroma,
-                        chroma_stride,
-                        &luma,
-                        luma_stride,
-                        geometry.0,
-                        geometry.1,
-                        geometry.2,
-                    )
-                    .unwrap(),
-                ];
+                let sources = [WienerNsChromaPaddedSource::new(
+                    &chroma,
+                    chroma_stride,
+                    &luma,
+                    luma_stride,
+                    geometry.0,
+                    geometry.1,
+                    geometry.2,
+                )
+                .unwrap()];
                 let chroma8: Vec<u8> = chroma.iter().map(|&value| value as u8).collect();
                 let luma8: Vec<u8> = luma.iter().map(|&value| value as u8).collect();
                 let source8 = WienerNsChromaPaddedSource::new(

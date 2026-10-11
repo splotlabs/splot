@@ -1670,7 +1670,6 @@ where
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcWienerPaddedSource<'a, T> {
     rows: PaddedRows<'a, T>,
-    prevalidated: bool,
 }
 
 impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
@@ -1708,35 +1707,15 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
         }
         Ok(Self {
             rows: PaddedRows::Strided { samples, stride },
-            prevalidated: false,
         })
     }
 
-    /// Wraps decoder-owned samples whose range reconstruction already
-    /// guarantees, so filtering skips the per-block source range scan.
-    ///
-    /// # Errors
-    /// Returns the same errors as [`Self::new`].
-    #[doc(hidden)]
-    pub fn new_prevalidated(
-        samples: &'a [T],
-        stride: usize,
-        width: usize,
-        height: usize,
-    ) -> Result<Self> {
-        Ok(Self {
-            prevalidated: true,
-            ..Self::new(samples, stride, width, height)?
-        })
-    }
-
-    /// Wraps decoder-owned padded rows whose range reconstruction already
-    /// guarantees: padded row `i` starts at column `col` of `rows[i]`.
+    /// Wraps padded rows: padded row `i` starts at column `col` of
+    /// `rows[i]`. Filtering checks the sample range as for [`Self::new`].
     ///
     /// # Errors
     /// Returns a typed error when a row cannot cover the block plus the
     /// § 7.20.4 filter tap reach.
-    #[doc(hidden)]
     pub fn from_rows(rows: &'a [&'a [T]], col: usize, width: usize, height: usize) -> Result<Self> {
         Self::check_table(PaddedRows::table(rows, col), width, height)
     }
@@ -1751,10 +1730,7 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
                 field: "PC-Wiener padded source rows",
             });
         }
-        Ok(Self {
-            rows,
-            prevalidated: true,
-        })
+        Ok(Self { rows })
     }
 
     fn validate_cover(&self, width: usize, height: usize) -> Result<()> {
@@ -1829,8 +1805,7 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
     let max_sample = params.bit_depth.max_sample();
     let padded_width = params.width + 2 * PC_WIENER_FILTER_TAP_RADIUS;
     let padded_rows = params.height + 2 * PC_WIENER_FILTER_TAP_RADIUS;
-    let source_is_valid = source.prevalidated
-        || T::MAX_VALUE <= max_sample
+    let source_is_valid = T::MAX_VALUE <= max_sample
         || (0..padded_rows).all(|row| {
             source
                 .rows

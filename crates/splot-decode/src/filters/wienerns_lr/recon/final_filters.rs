@@ -1661,7 +1661,7 @@ impl StripeChain<'_> {
                         luma_block_y.saturating_sub(luma_radius_y as isize),
                     )
                     .ok_or_else(super::lr_pipeline_state_error)?;
-                let padded_source = WienerNsChromaPaddedSource::new_prevalidated(
+                let padded_source = WienerNsChromaPaddedSource::new(
                     chroma_padded,
                     chroma_stride,
                     luma_padded,
