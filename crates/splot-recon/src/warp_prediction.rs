@@ -222,7 +222,8 @@ impl PreparedWarpPrediction {
             block_y: y as i32,
             ..self.params
         })?;
-        let (Some(high), Some(_)) = (two_tap_phase(projected.sx4), two_tap_phase(projected.sy4))
+        let (Some(high), Some(vertical_high)) =
+            (two_tap_phase(projected.sx4), two_tap_phase(projected.sy4))
         else {
             return Ok(false);
         };
@@ -239,20 +240,18 @@ impl PreparedWarpPrediction {
         {
             return Ok(false);
         }
-        let taps = warped_filter_row(projected.sy4);
-        let taps = [taps[TWO_TAP_FIRST], taps[TWO_TAP_FIRST + 1]].map(i32::from);
         let (first_col, first_row) = (first_col as usize, first_row as usize);
         let mut col = 0;
         while col + 16 <= width {
             let strip = [first_col + col, first_row, height, high];
             let target = &mut output[col..];
-            two_tap_strip::<T, 16>(reference, strip, taps, target, stride, max_sample)?;
+            two_tap_strip::<T, 16>(reference, strip, vertical_high, target, stride, max_sample)?;
             col += 16;
         }
         if col < width {
             let strip = [first_col + col, first_row, height, high];
             let target = &mut output[col..];
-            two_tap_strip::<T, 8>(reference, strip, taps, target, stride, max_sample)?;
+            two_tap_strip::<T, 8>(reference, strip, vertical_high, target, stride, max_sample)?;
         }
         Ok(true)
     }
@@ -266,23 +265,17 @@ impl PreparedWarpPrediction {
 fn two_tap_strip<T: ReconSample, const LANES: usize>(
     reference: &ReferencePlaneView<'_, T>,
     [first_col, first_row, height, high]: [usize; 4],
-    [top_tap, bottom_tap]: [i32; 2],
+    vertical_high: usize,
     output: &mut [T],
     stride: usize,
     max_sample: i32,
 ) -> Result<()> {
-    let rounding = Simd::splat(1 << (INTER_ROUND1_NON_COMPOUND - 1));
     let mut top = two_tap_horizontal::<T, LANES>(reference.row(first_row), first_col, high);
     for row in 0..height {
         let bottom = two_tap_horizontal(reference.row(first_row + row + 1), first_col, high);
-        let sum = top.cast::<i32>() * Simd::splat(top_tap)
-            + bottom.cast::<i32>() * Simd::splat(bottom_tap);
+        let rounded = two_tap_vertical(top, bottom, vertical_high, INTER_ROUND1_NON_COMPOUND);
         let at = row * stride;
-        store_clipped_row(
-            &mut output[at..at + LANES],
-            (sum + rounding) >> INTER_ROUND1_NON_COMPOUND as i32,
-            max_sample,
-        )?;
+        store_clipped_row(&mut output[at..at + LANES], rounded.cast(), max_sample)?;
         top = bottom;
     }
     Ok(())
@@ -655,8 +648,11 @@ fn warp_predict_section<T: ReconSample>(
     } else {
         build_intermediate(reference, params, shear, &projected, &mut intermediate);
     }
-    if shear.gamma == 0 && shear.delta == 0 && two_tap_phase(projected.sy4).is_some() {
-        return two_tap_output(projected.sy4, &intermediate, round1, store);
+    if shear.gamma == 0
+        && shear.delta == 0
+        && let Some(high) = two_tap_phase(projected.sy4)
+    {
+        return two_tap_output(high, &intermediate, round1, store);
     }
     if shear.gamma != 0 && shear.delta == 0 {
         return row_invariant_output(shear, &projected, &intermediate, round1, store);
@@ -770,23 +766,46 @@ fn two_tap_intermediate<T: ReconSample>(
 /// Runs the § 7.13.3.19 vertical pass of a two-tap phase, which reads only
 /// intermediate rows [`TWO_TAP_FIRST`] through `TWO_TAP_FIRST + 8`.
 fn two_tap_output(
-    phase: i32,
+    high: usize,
     intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
     round1: u32,
     mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
 ) -> Result<()> {
-    let taps = warped_filter_row(phase);
-    let top_tap = Simd::splat(i32::from(taps[TWO_TAP_FIRST]));
-    let bottom_tap = Simd::splat(i32::from(taps[TWO_TAP_FIRST + 1]));
     for row in 0..WARPED_BLOCK_SIZE {
         let top = (row + TWO_TAP_FIRST) * WARPED_BLOCK_SIZE;
         let top_samples = Simd::<i16, WARPED_BLOCK_SIZE>::from_slice(&intermediate[top..]);
         let bottom_samples =
             Simd::<i16, WARPED_BLOCK_SIZE>::from_slice(&intermediate[top + WARPED_BLOCK_SIZE..]);
-        let sum = top_samples.cast::<i32>() * top_tap + bottom_samples.cast::<i32>() * bottom_tap;
-        store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
+        store(
+            row,
+            two_tap_vertical(top_samples, bottom_samples, high, round1).cast(),
+        )?;
     }
     Ok(())
+}
+
+/// Runs the § 7.13.3.19 vertical pass of a two-tap phase on `i16` lanes:
+/// `Round2(127 * main + side, round1)`, where `high` selects `bottom` as the
+/// sample under the 127.
+///
+/// `127 * main + side` is `128 * main + (side - main)`, and for `round1 >= 7`
+/// that rounds to `(main + ((side - main + 2^(round1 - 1)) >> 7)) >> (round1 - 7)`.
+/// Intermediates lie in `-6010..=22378`, so every step stays within `i16`.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn two_tap_vertical<const LANES: usize>(
+    top: Simd<i16, LANES>,
+    bottom: Simd<i16, LANES>,
+    high: usize,
+    round1: u32,
+) -> Simd<i16, LANES> {
+    let (main, side) = if high == 0 {
+        (top, bottom)
+    } else {
+        (bottom, top)
+    };
+    let side = (side - main + Simd::splat(1 << (round1 - 1))) >> 7;
+    (main + side) >> (round1 - 7) as i16
 }
 
 /// Admits the unclamped interior source origin for one 8x8 warp section.
