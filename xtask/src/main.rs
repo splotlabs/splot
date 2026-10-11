@@ -218,8 +218,8 @@ enum Task {
     Conformance,
     /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
     Coverage,
-    /// Decode instruction-count (DynamoRIO inscount) regression gate over
-    /// curated conformance fixtures (requires `DYNAMORIO_HOME`). Heavy; not
+    /// Decode instruction-count (DynamoRIO) regression gate over
+    /// curated conformance fixtures (requires `DYNAMORIO_HOME` and CMake). Heavy; not
     /// part of `ci`.
     Perf {
         /// Re-run every fixture and rewrite `tests/perf/baseline.toml` instead

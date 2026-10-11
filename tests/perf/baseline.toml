@@ -6,14 +6,15 @@
 # and keeps the smallest count of three runs. Counts are only comparable within
 # one binary/toolchain: a compiler or RUSTFLAGS bump shifts every count
 # wholesale and requires a re-bless (`cargo xtask perf --bless`), not a
-# regression. The counts cover only the `splot` binary (`-only_from_app`) and
-# a decode with null output, so the runner's CPU does not change them. The
+# regression. The counts cover only the `splot` binary (the atomic counter in
+# xtask/perf-client) and a decode with null output, so the runner's CPU does
+# not change them. The
 # `perf` CI job and its DynamoRIO release are the enforced check; after a
 # toolchain or DynamoRIO bump, re-bless on-runner.
 # Generated file: edit fixtures here, but let `--bless` set the numbers.
 
 [meta]
-note = "DynamoRIO 11.3.0 inscount -only_from_app, smallest of 3 runs; decode --threads 1 --output-format null"
+note = "DynamoRIO 11.3.0, xtask/perf-client atomic counter of the splot binary, smallest of 3 runs; decode --threads 1 --output-format null"
 
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-gdf-intra-128x128.ivf"

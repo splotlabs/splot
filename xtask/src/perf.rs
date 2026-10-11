@@ -3,19 +3,17 @@
 
 //! The decode instruction-count regression gate (`cargo xtask perf`).
 //!
-//! Decodes a curated subset of committed conformance vectors under
-//! DynamoRIO's `inscount` sample client and compares the executed-instruction
-//! count of each against a checked-in baseline (`tests/perf/baseline.toml`).
-//! DynamoRIO decodes every instruction the release build emits (AVX2
-//! included), and the count is a stable proxy for decode CPU work, unlike
-//! wall-clock time. The client counts only the `splot` binary
-//! (`-only_from_app`), because glibc picks its string functions per CPU, and
-//! the decode discards its output, because the frame hash dispatches on CPU
-//! features; both made the count depend on the runner's CPU. The client
-//! keeps one plain counter for all threads, so the decode runs pinned to one
-//! CPU (`taskset`): its main thread and pool worker never run at the same
-//! time and cannot lose each other's updates. Idle worker spins only add to
-//! the count, so each fixture keeps the smallest count of [`RUNS`] runs.
+//! Decodes a curated subset of committed conformance vectors under DynamoRIO
+//! and compares the executed-instruction count of each against a checked-in
+//! baseline (`tests/perf/baseline.toml`). DynamoRIO decodes every instruction
+//! the release build emits (AVX2 included), and the count is a stable proxy
+//! for decode CPU work, unlike wall-clock time. The counting client
+//! (`xtask/perf-client`, built with CMake against the release) counts only the
+//! `splot` binary, because glibc picks its string functions per CPU, and adds
+//! each block's count with one atomic 64-bit add, so threads cannot lose
+//! updates. The decode discards its output, because the frame hash dispatches
+//! on CPU features. Idle worker spins only add to the count, so each fixture
+//! keeps the smallest count of [`RUNS`] runs.
 //!
 //! This is a heavy gate and is **not** part of `cargo xtask ci`; it runs as its
 //! own CI job and on demand. `--bless` re-runs every fixture and rewrites the
@@ -47,8 +45,9 @@ const BASELINE_HEADER: &str = "\
 # and keeps the smallest count of three runs. Counts are only comparable within
 # one binary/toolchain: a compiler or RUSTFLAGS bump shifts every count
 # wholesale and requires a re-bless (`cargo xtask perf --bless`), not a
-# regression. The counts cover only the `splot` binary (`-only_from_app`) and
-# a decode with null output, so the runner's CPU does not change them. The
+# regression. The counts cover only the `splot` binary (the atomic counter in
+# xtask/perf-client) and a decode with null output, so the runner's CPU does
+# not change them. The
 # `perf` CI job and its DynamoRIO release are the enforced check; after a
 # toolchain or DynamoRIO bump, re-bless on-runner.
 # Generated file: edit fixtures here, but let `--bless` set the numbers.
@@ -87,13 +86,43 @@ struct FixtureRow {
     ir_stable: u64,
 }
 
-/// `drrun` and the `inscount` client of the DynamoRIO release that
-/// `DYNAMORIO_HOME` names, when both exist.
+/// The DynamoRIO release that `DYNAMORIO_HOME` names and its `drrun`, when
+/// both exist.
 fn dynamorio() -> Option<(PathBuf, PathBuf)> {
     let home = PathBuf::from(std::env::var_os("DYNAMORIO_HOME")?);
     let drrun = home.join("bin64").join("drrun");
-    let client = home.join("samples").join("bin64").join("libinscount.so");
-    (drrun.is_file() && client.is_file()).then_some((drrun, client))
+    (drrun.is_file() && home.join("cmake").is_dir()).then_some((home, drrun))
+}
+
+/// Builds the counting client in `xtask/perf-client` against the DynamoRIO
+/// release at `home` and returns the path of its shared library.
+fn build_client(root: &Path, home: &Path) -> Result<PathBuf> {
+    let build = root.join("target").join("perf-client");
+    let mut configure = Command::new("cmake");
+    configure
+        .arg("-S")
+        .arg(root.join("xtask").join("perf-client"))
+        .arg("-B")
+        .arg(&build)
+        .arg(format!("-DDynamoRIO_DIR={}", home.join("cmake").display()))
+        .arg("-DCMAKE_BUILD_TYPE=Release");
+    let mut compile = Command::new("cmake");
+    compile.arg("--build").arg(&build);
+    for command in [&mut configure, &mut compile] {
+        let output = command
+            .output()
+            .context("failed to run cmake for the perf client")?;
+        if !output.status.success() {
+            bail!(
+                "building the perf client failed ({}):
+{}{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    Ok(build.join("libsplotinscount.so"))
 }
 
 /// Runs the perf gate. With `bless`, rewrites the baseline from the measured
@@ -116,7 +145,7 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
         );
     }
 
-    let Some((drrun, client)) = dynamorio() else {
+    let Some((home, drrun)) = dynamorio() else {
         if bless {
             bail!(
                 "perf --bless requires DynamoRIO; set DYNAMORIO_HOME to a release to record the baseline"
@@ -129,6 +158,7 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
     };
 
     let splot = crate::conformance::build_splot_binary(root, true)?;
+    let client = build_client(root, &home)?;
     let mut regressions = Vec::new();
     eprintln!(
         "perf: {:>14}  {:>14}  {:>8}  target / fixture",
@@ -185,17 +215,14 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
     )
 }
 
-/// Decodes one fixture under the `inscount` client [`RUNS`] times and returns
+/// Decodes one fixture under the counting client [`RUNS`] times and returns
 /// the smallest executed-instruction count.
 fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Path) -> Result<u64> {
     let mut best = u64::MAX;
     for _ in 0..RUNS {
-        let output = Command::new("taskset")
-            .args(["--cpu-list", "0"])
-            .arg(drrun)
+        let output = Command::new(drrun)
             .arg("-c")
             .arg(client)
-            .arg("-only_from_app")
             .arg("--")
             .arg(splot)
             .args([
@@ -210,7 +237,7 @@ fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Pat
             ])
             .arg(fixture)
             .output()
-            .context("failed to spawn taskset with drrun")?;
+            .context("failed to spawn drrun")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let lines: Vec<&str> = stderr.lines().collect();
@@ -228,7 +255,7 @@ fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Pat
     Ok(best)
 }
 
-/// Extracts the count from the `inscount` client's
+/// Extracts the count from the counting client's
 /// `Instrumentation results: N instructions executed` line.
 fn parse_inscount(text: &str) -> Result<u64> {
     for line in text.lines() {

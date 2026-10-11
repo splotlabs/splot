@@ -19987,7 +19987,7 @@ diagnostics = []
 
 [[feature]]
 id = "PERF-REGRESSION-GATE"
-name = "Decode instruction-count (DynamoRIO inscount) regression gate"
+name = "Decode instruction-count (DynamoRIO) regression gate"
 category = "infrastructure"
 kind = "infrastructure"
 spec_sections = []
@@ -19997,7 +19997,7 @@ module = "xtask/src/perf.rs"
 change_id = "perf-regression-gate"
 owner = "automation"
 risk = "low"
-notes = "cargo xtask perf compares single-threaded executed-instruction counts of the splot binary (DynamoRIO inscount -only_from_app, null output, smallest of 3 runs) for committed fixtures against tests/perf/baseline.toml and fails above 0.5% regression. --bless rewrites baselines. The separate CI job installs a pinned, checksummed DynamoRIO release; the slow gate is outside cargo xtask ci. Without DYNAMORIO_HOME ordinary checks skip but --bless fails. Counts depend on the binary and measurement environment; they are CPU-work evidence rather than wall-clock timing."
+notes = "cargo xtask perf compares single-threaded executed-instruction counts of the splot binary (DynamoRIO with the atomic xtask/perf-client counter, null output, smallest of 3 runs) for committed fixtures against tests/perf/baseline.toml and fails above 0.5% regression. --bless rewrites baselines. The separate CI job installs a pinned, checksummed DynamoRIO release; the slow gate is outside cargo xtask ci. Without DYNAMORIO_HOME ordinary checks skip but --bless fails. Counts depend on the binary and measurement environment; they are CPU-work evidence rather than wall-clock timing."
 replaces = []
 
 [feature.status]
