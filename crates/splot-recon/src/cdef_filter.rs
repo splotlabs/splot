@@ -1275,22 +1275,31 @@ pub fn cdef_filter_block_chroma_pair(
 
 /// [`cdef_filter_block_chroma_pair`] for one block of the chroma-pair segment
 /// scratch: rows `CDEF_PAIR_SEGMENT_STRIDE` lanes apart, with the block's
-/// first tap-reach lane at index 0.
+/// first tap-reach lane at index 0. Within each plane, the samples of the
+/// block's window span at most `range`, so the block skips `constrain` when
+/// [`cdef_window_linear`] admits it.
 pub fn cdef_filter_block_chroma_pair_segment(
     pad: &[u16; CDEF_PAIR_SEGMENT_BLOCK_AREA],
     filter: &CdefBlockFilter,
+    range: u16,
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
-    cdef_filter_block_rows::<
-        8,
-        16,
-        false,
-        CDEF_PAIR_SEGMENT_STRIDE,
-        4,
-        4,
-        { 3 * CDEF_PAIR_SEGMENT_STRIDE + 8 },
-        CDEF_PAIR_SEGMENT_BLOCK_AREA,
-    >(pad, 4, filter, &CDEF_PAIR_SEGMENT_TAP_STARTS, out, 8)
+    const SPAN: usize = 3 * CDEF_PAIR_SEGMENT_STRIDE + 8;
+    const AREA: usize = CDEF_PAIR_SEGMENT_BLOCK_AREA;
+    let starts = &CDEF_PAIR_SEGMENT_TAP_STARTS;
+    if cdef_window_linear(filter, i32::from(range)) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_linear::<CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
+                pad, 4, filter, starts, out, 8
+            ),
+            cdef_copy_centre_rows::<8, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, AREA>(pad, 4, out, 8)
+        )
+        .is_some();
+    }
+    cdef_filter_block_rows::<8, 16, false, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
+        pad, 4, filter, starts, out, 8,
+    )
     .is_some()
 }
 
@@ -2011,7 +2020,10 @@ mod tests {
                         let (mut got, mut want) =
                             ([0u16; CDEF_PAIR_OUTPUT], [0u16; CDEF_PAIR_OUTPUT]);
                         assert!(cdef_filter_block_chroma_pair_segment(
-                            pair_block, &filter, &mut got
+                            pair_block,
+                            &filter,
+                            u16::MAX,
+                            &mut got
                         ));
                         assert!(cdef_filter_block_chroma_pair(
                             &single_pair,
@@ -2080,6 +2092,52 @@ mod tests {
     }
 
     #[test]
+    fn linear_pair_segment_matches_chroma_pair_kernel() {
+        let mut state = 0x6a09_e667u32;
+        let mut pad = [0u16; CDEF_PAIR_SEGMENT_BLOCK_AREA];
+        let mut single = [0u16; CDEF_PADDED_AREA];
+        let mut linear_families = [false; 3];
+        for spread in [1u32, 3, 6, 13] {
+            for row in 0..8 {
+                for lane in 0..16 {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let sample = [100u16, 900][lane % 2] + ((state >> 13) % spread) as u16;
+                    pad[row * CDEF_PAIR_SEGMENT_STRIDE + lane] = sample;
+                    single[row * CDEF_PAIR_STRIDE + lane] = sample;
+                }
+            }
+            let range = spread as u16 - 1;
+            for dir in 0..8 {
+                for (pri_str, sec_str) in [(4, 0), (12, 0), (0, 4), (0, 16), (8, 4), (16, 8)] {
+                    for damping in 4..=7 {
+                        let filter = CdefBlockFilter {
+                            pri_str,
+                            sec_str,
+                            damping,
+                            dir,
+                            coeff_shift: 2,
+                        };
+                        if cdef_window_linear(&filter, i32::from(range)) {
+                            linear_families
+                                [usize::from(pri_str == 0) + usize::from(sec_str == 0) * 2] = true;
+                        }
+                        let (mut got, mut want) =
+                            ([0u16; CDEF_PAIR_OUTPUT], [0u16; CDEF_PAIR_OUTPUT]);
+                        assert!(cdef_filter_block_chroma_pair_segment(
+                            &pad, &filter, range, &mut got
+                        ));
+                        assert!(cdef_filter_block_chroma_pair(
+                            &single, 4, &filter, &mut want
+                        ));
+                        assert_eq!(got, want, "spread={spread} dir={dir} pri={pri_str}");
+                    }
+                }
+            }
+        }
+        assert_eq!(linear_families, [true; 3]);
+    }
+
+    #[test]
     fn linear_window_bound_matches_per_sample_filter() {
         let mut pad = [0u16; CDEF_SEGMENT_BLOCK_AREA];
         let mut single = [0u16; CDEF_PADDED_AREA];
@@ -2107,7 +2165,9 @@ mod tests {
                                 coeff_shift: 2,
                             };
                             let mut got = [0u16; 80];
-                            assert!(cdef_filter_block_segment(&pad, &filter, window, &mut got, 10));
+                            assert!(cdef_filter_block_segment(
+                                &pad, &filter, window, &mut got, 10
+                            ));
                             for (i, j) in (0..8).flat_map(|i| (0..8).map(move |j| (i, j))) {
                                 assert_eq!(
                                     i32::from(got[i * 10 + j]),

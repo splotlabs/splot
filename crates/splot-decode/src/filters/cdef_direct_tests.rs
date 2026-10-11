@@ -853,14 +853,62 @@ fn luma_segment_gather_returns_each_block_window_range() {
     }
 }
 
+/// The plane of squares `x^2` makes each block's range depend on where its
+/// window starts, and either plane may hold the larger range.
+#[test]
+fn pair_segment_gather_returns_each_block_plane_range() {
+    let stride = 24;
+    let mut state = 0x1357_9bdfu32;
+    let noise: Vec<u16> = (0..stride * 10)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            300 + ((state >> 13) % 40) as u16
+        })
+        .collect();
+    let square: Vec<u16> = (0..stride * 10)
+        .map(|index| 300 + ((index % stride) * (index % stride)) as u16)
+        .collect();
+    for (u, v) in [(&noise, &square), (&square, &noise)] {
+        check_pair_segment_ranges(u, v, stride);
+    }
+}
+
+fn check_pair_segment_ranges(u: &[u16], v: &[u16], stride: usize) {
+    let mut pad = [0u16; PAIR_SEGMENT_AREA];
+    let ranges = gather_pair_segment(u, v, stride + 1, stride, &mut pad).unwrap();
+    for (block, range) in ranges.into_iter().enumerate() {
+        let plane_range = |samples: &[u16]| {
+            let window = (1..9).flat_map(|y| {
+                let start = y * stride + 1 + 4 * block;
+                samples[start..start + 8].iter().copied()
+            });
+            window.clone().max().unwrap() - window.min().unwrap()
+        };
+        assert_eq!(range, plane_range(u).max(plane_range(v)), "block {block}");
+    }
+    for row in 0..8 {
+        for col in 0..CDEF_PAIR_SEGMENT_STRIDE / 2 {
+            let start = (row + 1) * stride + 1 + col;
+            let lanes = &pad[row * CDEF_PAIR_SEGMENT_STRIDE + 2 * col..][..2];
+            assert_eq!(lanes, [u[start], v[start]]);
+        }
+    }
+}
+
 #[test]
 fn segment_path_matches_per_block_path_on_narrow_windows() {
+    for spread in [241, 5, 3] {
+        segment_path_matches_per_block_path_on(spread);
+    }
+}
+
+fn segment_path_matches_per_block_path_on(spread: usize) {
     let mut workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 144, 24);
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         let size = workspace.plane(plane).unwrap().storage_size();
         for y in 0..size.height() {
             for x in 0..size.width() {
-                let sample = 700 + ((x * 37 + y * 59 + plane.index() * 11) % 241) as u16;
+                let sample = 700 + ((x * 37 + y * 59 + plane.index() * 11) % spread) as u16;
                 workspace
                     .set_reconstructed_sample(plane, x, y, sample)
                     .unwrap();
@@ -871,18 +919,23 @@ fn segment_path_matches_per_block_path_on_narrow_windows() {
         crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
             .unwrap();
     for damping in [3, 4, 5, 6] {
-        for (y_pri, y_sec) in [(4, 4), (15, 0), (0, 2), (1, 1)] {
+        for ((y_pri, y_sec), (uv_pri, uv_sec)) in [
+            ((4, 4), (2, 4)),
+            ((15, 0), (0, 1)),
+            ((0, 2), (3, 0)),
+            ((1, 1), (2, 4)),
+        ] {
             let params = CdefFrameParams {
                 y_pri,
                 y_sec,
-                uv_pri: 2,
-                uv_sec: 4,
+                uv_pri,
+                uv_sec,
                 damping,
             };
             assert_eq!(
                 run_segment(&workspace, params, &lossless, 8, true),
                 run_segment(&workspace, params, &lossless, 8, false),
-                "{params:?}"
+                "spread={spread} {params:?}"
             );
         }
     }
