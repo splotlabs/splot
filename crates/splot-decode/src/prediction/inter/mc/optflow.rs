@@ -1404,16 +1404,16 @@ pub(super) fn predict_motion_grid_compound_average_into<
     };
     let fullpel_runs = |cell_row: usize,
                         [row, height]: [usize; 2],
-                        prediction: &CompoundSubpelPlane<'_, T>,
                         intermediate_scratch: &mut [i16],
                         output: &mut [O],
-                        output_stride: usize|
-     -> Result<u64> {
+                        output_stride: usize,
+                        second: Option<SecondPlane<'_, '_, T, O>>|
+     -> Result<[u64; 2]> {
         if !merge_runs {
-            return Ok(0);
+            return Ok([0; 2]);
         }
         predict_fullpel_runs(
-            prediction,
+            &prediction,
             cells,
             refine,
             cell_row * motion.columns,
@@ -1429,6 +1429,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
             intermediate_scratch,
             output,
             output_stride,
+            second,
         )
     };
     macro_rules! cell_inputs {
@@ -1487,13 +1488,13 @@ pub(super) fn predict_motion_grid_compound_average_into<
                        intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE]|
      -> Result<()> {
         let height = subblock_h.min(prediction.block_h - row);
-        let mut merged = fullpel_runs(
+        let [mut merged, _] = fullpel_runs(
             cell_row,
             [row, height],
-            &prediction,
             intermediate_scratch,
             output,
             output_stride,
+            None,
         )?;
         for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
             let skip = merged & 1 != 0;
@@ -1567,22 +1568,13 @@ pub(super) fn predict_motion_grid_compound_average_into<
         let height = subblock_h.min(prediction.block_h - row);
         let output = &mut output[row * output_stride..];
         let second_output = &mut second_output[row * second.block_w..];
-        let scratch = &mut intermediate_scratch;
-        let mut merged = fullpel_runs(
+        let [mut merged, mut second_merged] = fullpel_runs(
             cell_row,
             [row, height],
-            &prediction,
-            scratch,
+            &mut intermediate_scratch,
             output,
             output_stride,
-        )?;
-        let mut second_merged = fullpel_runs(
-            cell_row,
-            [row, height],
-            &second,
-            scratch,
-            second_output,
-            second.block_w,
+            Some((&second.views, &mut *second_output, second.block_w)),
         )?;
         for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
             let skip = [merged & 1 != 0, second_merged & 1 != 0];
@@ -1763,9 +1755,15 @@ fn fullpel_motion(mvs: [[i32; 2]; 2], sub_x: u32, sub_y: u32) -> bool {
         .all(|mv| fullpel_phase(mv[0], sub_y) | fullpel_phase(mv[1], sub_x) == 0)
 }
 
+/// The reference views, packed output and output stride of the V plane that
+/// a shared U pass predicts too.
+type SecondPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O], usize);
+
 /// Predicts each run of full-width, full-pel cells in one grid row that share
 /// their motion and clipping-bound source as one block of at most 64 samples,
-/// and returns a mask of the cells it predicted.
+/// and returns a mask of the cells it predicted. With `second`, the same runs
+/// are predicted from those views into that output too (the V plane of a
+/// shared U pass), and the second mask holds its cells.
 ///
 /// Each cell's bounds are the run's first cell's unclamped bounds shifted by
 /// the cell's offset, so when the first cell reads inside its bounds and the
@@ -1789,13 +1787,14 @@ fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
     intermediate_scratch: &mut [i16],
     output: &mut [O],
     output_stride: usize,
-) -> Result<u64> {
+    mut second: Option<SecondPlane<'_, '_, T, O>>,
+) -> Result<[u64; 2]> {
     let columns = (prediction.block_w / subblock_w).min(64);
     let row_cells = cells
         .get(row_index..row_index + columns)
         .unwrap_or_default();
     let candidate = |column: usize| refine.0.get((row_index + column) * refine.1);
-    let mut merged = 0u64;
+    let mut merged = [0u64; 2];
     let mut start = 0;
     while start + 1 < row_cells.len() {
         let cell = row_cells[start];
@@ -1809,36 +1808,56 @@ fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
                 run += 1;
             }
         }
+        let col = start * subblock_w;
         if run > 1
-            && predict_fullpel_run(
+            && let Some(params) = fullpel_run_params(
                 prediction,
                 cell,
                 refine,
                 row_index + start,
-                [
-                    start * subblock_w,
-                    row,
-                    subblock_w,
-                    run * subblock_w,
-                    height,
-                ],
+                [col, row, subblock_w, run * subblock_w, height],
                 (sub_x, sub_y),
                 (bit_depth, interp, subblock_area),
                 (uniform_everywhere, implicit_mask, cwp_weight, frame),
-                intermediate_scratch,
-                &mut output[start * subblock_w..],
-                output_stride,
-            )?
+            )
         {
-            merged |= ((1 << run) - 1) << start;
+            let run_cells = ((1 << run) - 1) << start;
+            if O::predict_fast(
+                &prediction.views[0],
+                &params[0],
+                &prediction.views[1],
+                &params[1],
+                cwp_weight,
+                intermediate_scratch,
+                &mut output[col..],
+                output_stride,
+            )? {
+                merged[0] |= run_cells;
+            }
+            if let Some((views, output, output_stride)) = &mut second
+                && O::predict_fast(
+                    &views[0],
+                    &params[0],
+                    &views[1],
+                    &params[1],
+                    cwp_weight,
+                    intermediate_scratch,
+                    &mut output[col..],
+                    *output_stride,
+                )?
+            {
+                merged[1] |= run_cells;
+            }
         }
         start += run;
     }
     Ok(merged)
 }
 
+/// The parameters of one full-pel run, or `None` when the run reads outside
+/// its bounds or the plane, or its weights are not uniform.
 #[allow(clippy::too_many_arguments)]
-fn predict_fullpel_run<T: ReconSample, O: CompoundAverageOutput>(
+fn fullpel_run_params<T: ReconSample>(
     prediction: &CompoundSubpelPlane<'_, T>,
     cell: MotionCell,
     refine: (&[[Mv; 2]], usize, usize),
@@ -1851,10 +1870,7 @@ fn predict_fullpel_run<T: ReconSample, O: CompoundAverageOutput>(
         Option<(usize, usize)>,
     ),
     (uniform_everywhere, implicit_mask, cwp_weight, frame): (bool, bool, i16, (usize, usize)),
-    intermediate_scratch: &mut [i16],
-    output: &mut [O],
-    output_stride: usize,
-) -> Result<bool> {
+) -> Option<[SubpelPredictParams; 2]> {
     let scalings = core::array::from_fn(|reference| {
         prediction.scalings[reference].with_prescaled_mv(
             (prediction.plane_x + col) as i32,
@@ -1904,22 +1920,13 @@ fn predict_fullpel_run<T: ReconSample, O: CompoundAverageOutput>(
                 frame,
             ))
     {
-        return Ok(false);
+        return None;
     }
     for params in &mut params {
         params.w = run_w;
         params.last_x = (params.start_x >> 10) + run_w as i32 - 1;
     }
-    Ok(O::predict_fast(
-        &prediction.views[0],
-        &params[0],
-        &prediction.views[1],
-        &params[1],
-        cwp_weight,
-        intermediate_scratch,
-        output,
-        output_stride,
-    )?)
+    Some(params)
 }
 
 #[allow(clippy::too_many_arguments)]

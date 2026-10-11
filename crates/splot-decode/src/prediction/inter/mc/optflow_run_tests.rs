@@ -144,8 +144,9 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
                 &mut [0; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
                 &mut output,
                 rect.luma_w,
+                None,
             )
-            .expect("runs")
+            .expect("runs")[0]
         })
         .collect();
     (samples, masks)
