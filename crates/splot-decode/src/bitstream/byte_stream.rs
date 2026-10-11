@@ -419,25 +419,6 @@ impl<'r> IvfRecords<'r> {
             return Ok(true);
         }
     }
-
-    /// [`Self::advance`], then checks the new record's OBUs with `check`.
-    pub(crate) fn advance_checked(
-        &mut self,
-        storage: &mut Vec<ObuEnvelope<'static>>,
-        check: fn(&[ObuEnvelope<'_>], usize) -> Result<()>,
-    ) -> Result<bool> {
-        if !self.advance()? {
-            return Ok(false);
-        }
-        let Some(unit) = &self.current else {
-            return Ok(false);
-        };
-        let mut obus = recycle(core::mem::take(storage));
-        runtime_obus(unit.view(), &mut obus)?;
-        check(&obus, self.record)?;
-        *storage = recycle(obus);
-        Ok(true)
-    }
 }
 
 fn input_changed() -> DecodeError {

@@ -108,7 +108,6 @@ pub struct DecodeStreamPlan {
     selected_layer: DecodeLayerSelection,
     input_len_bytes: u64,
     obus: Vec<DecodePlannedObu>,
-    candidate_types: Vec<u8>,
     obu_count: u64,
     frame_candidate_count: u64,
     source_warnings: Vec<DecodeSourceIssue>,
@@ -155,14 +154,6 @@ impl DecodeStreamPlan {
     /// walks (AV2 § 5.2.1, § 6.18).
     pub fn frame_candidates_all(&self) -> impl Iterator<Item = &DecodePlannedObu> {
         self.obus.iter().filter(|obu| obu.role.is_frame_candidate())
-    }
-
-    /// The OBU type of each frame candidate, in source order; the decode pass
-    /// plans each candidate again when it reads the candidate's bytes.
-    pub(crate) fn candidate_types(&self) -> impl Iterator<Item = ObuType> + '_ {
-        self.candidate_types
-            .iter()
-            .map(|&raw| ObuType::from_raw(raw))
     }
 
     /// Non-fatal source/container warnings carried into the plan.
@@ -827,7 +818,6 @@ pub(crate) struct PlanBuilder {
     limits: crate::DecodeLimits,
     keep_obus: bool,
     obus: Vec<DecodePlannedObu>,
-    candidate_types: Vec<u8>,
     obu_count: u64,
     traversed_obu_count: u64,
     frame_candidate_count: u64,
@@ -848,7 +838,6 @@ impl PlanBuilder {
             limits,
             keep_obus,
             obus: Vec::new(),
-            candidate_types: Vec::new(),
             obu_count: 0,
             traversed_obu_count: 0,
             frame_candidate_count: 0,
@@ -919,9 +908,6 @@ impl PlanBuilder {
         ivf_frame: Option<DecodeIvfFrameContext>,
         role: DecodePlannedObuRole,
     ) {
-        if role.is_frame_candidate() {
-            self.candidate_types.push(envelope.header.obu_type.raw());
-        }
         if self.keep_obus {
             self.obus.push(DecodePlannedObu::new(
                 self.obu_count,
@@ -941,7 +927,6 @@ impl PlanBuilder {
             input_len_bytes: self.input_len_bytes,
             obu_count: self.obu_count,
             obus: self.obus,
-            candidate_types: self.candidate_types,
             frame_candidate_count: self.frame_candidate_count,
             source_warnings: self.source_warnings,
         }

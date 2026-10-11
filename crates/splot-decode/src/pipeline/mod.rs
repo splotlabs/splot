@@ -700,7 +700,7 @@ where
     let frame_rate = stream.frame_rate();
 
     let leading_unit = stream.first_unit()?;
-    let key_candidate = stream.first_candidate(plan.candidate_types().next());
+    let key_candidate = stream.first_candidate();
     let mut leading_buffer = recycle(core::mem::take(obu_storage));
     let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
     let ([_, sequence_envelope, key_envelope], leading_frame_unit_len) =
@@ -1042,7 +1042,7 @@ where
     let mut shared_sequence = None;
     let mut tip_eight = Vec::new();
     let mut tip_ten = Vec::new();
-    for next_type in plan.candidate_types().skip(1) {
+    loop {
         entropy_eight.retire_completed();
         entropy_ten.retire_completed();
         if !frames.has_space() {
@@ -1076,7 +1076,11 @@ where
             }
         }
         frames.reserve()?;
-        match next_type {
+        let Some((next_candidate, unit)) = stream.candidate(obu_storage)? else {
+            break;
+        };
+        let next_candidate = &next_candidate;
+        match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
                 frame_pipeline::drain_entropy_before_barrier(
                     &mut pending_entropy,
@@ -1084,8 +1088,6 @@ where
                     admission,
                     recon_lane,
                 );
-                let (next_candidate, unit) = stream.candidate(next_type, obu_storage, false)?;
-                let next_candidate = &next_candidate;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) = stream.inter_envelope(
@@ -1248,8 +1250,6 @@ where
             | ObuType::LeadingTip
             | ObuType::RegularTip
             | ObuType::BridgeFrame => {
-                let (next_candidate, unit) = stream.candidate(next_type, obu_storage, false)?;
-                let next_candidate = &next_candidate;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (inter_prefix_obus, inter_envelope) = stream.inter_envelope(
@@ -1875,10 +1875,7 @@ where
                     admission,
                     recon_lane,
                 );
-                let starts_new_sequence = next_type == ObuType::ClosedLoopKey;
-                let (next_candidate, unit) =
-                    stream.candidate(next_type, obu_storage, starts_new_sequence)?;
-                let next_candidate = &next_candidate;
+                let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence

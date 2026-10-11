@@ -1091,9 +1091,5 @@ fn the_decode_pass_replans_the_planned_candidates_and_continuations() {
                 .iter()
                 .eq(plan.obus().filter(|obu| obu.role().is_frame_continuation()))
         );
-        assert!(
-            plan.candidate_types()
-                .eq(candidates.iter().map(DecodePlannedObu::obu_type))
-        );
     }
 }

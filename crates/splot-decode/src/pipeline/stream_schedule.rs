@@ -10,7 +10,9 @@ use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 
-use crate::bitstream::byte_stream::{IvfRecords, PreparedInput, ReadSeek, UnitBytes, runtime_obus};
+use crate::bitstream::byte_stream::{
+    IvfRecords, PreparedInput, ReadSeek, UnitBytes, recycle, runtime_obus,
+};
 use crate::bitstream::stream_plan::CandidateScan;
 use crate::error::Result;
 use crate::support::capability::missing_capability_message;
@@ -113,49 +115,54 @@ impl<'a> RuntimeStream<'a> {
         }
     }
 
-    /// The leading unit's first frame candidate, which the plan typed `planned`.
-    pub(super) fn first_candidate(&mut self, planned: Option<ObuType>) -> Result<DecodePlannedObu> {
-        match (planned, self.next_in_unit()?) {
-            (Some(obu_type), Some((candidate, _))) if candidate.obu_type() == obu_type => {
-                Ok(candidate)
-            }
-            _ => Err(unsupported(
-                "missing_frame_candidate",
-                None,
-                "decode runtime requires one selected key frame candidate",
-            )),
-        }
+    /// The leading unit's first frame candidate.
+    pub(super) fn first_candidate(&mut self) -> Result<DecodePlannedObu> {
+        self.next_in_unit()?
+            .map(|(candidate, _)| candidate)
+            .ok_or_else(|| {
+                unsupported(
+                    "missing_frame_candidate",
+                    None,
+                    "decode runtime requires one selected key frame candidate",
+                )
+            })
     }
 
-    /// The next frame candidate, which the plan typed `planned`, and the unit
-    /// holding it, checking each IVF record read on the way as a key frame
-    /// unit when `key`, else in inter order.
+    /// The next frame candidate and the unit holding it; `None` at end of
+    /// input. Each IVF record read on the way is checked as a key frame unit
+    /// when the candidate is a closed-loop key, else in inter order. Records
+    /// after the last candidate are not checked.
     pub(super) fn candidate(
         &mut self,
-        planned: ObuType,
         storage: &mut Vec<ObuEnvelope<'static>>,
-        key: bool,
-    ) -> Result<(DecodePlannedObu, UnitBytes)> {
-        let found = loop {
-            if let Some(found) = self.next_in_unit()? {
-                break Some(found);
+    ) -> Result<Option<(DecodePlannedObu, UnitBytes)>> {
+        let mut skipped: Vec<UnitBytes> = Vec::new();
+        let mut fresh = false;
+        loop {
+            if let Some((candidate, unit)) = self.next_in_unit()? {
+                let check = if candidate.obu_type() == ObuType::ClosedLoopKey {
+                    require_key_ivf_obu_order
+                } else {
+                    require_inter_obu_order
+                };
+                for skipped in &skipped {
+                    check_unit(skipped, storage, check)?;
+                }
+                if fresh {
+                    check_unit(&unit, storage, check)?;
+                }
+                return Ok(Some((candidate, unit)));
             }
             let Self::Ivf { records, .. } = self else {
-                break None;
+                return Ok(None);
             };
-            let check = if key {
-                |obus: &[ObuEnvelope<'_>], _| require_key_ivf_obu_order(obus)
-            } else {
-                require_following_ivf_record_obu_order
-            };
-            if !records.advance_checked(storage, check)? {
-                break None;
+            if fresh && let Some((unit, _)) = records.current() {
+                skipped.push(unit.clone());
             }
-        };
-        match found {
-            Some((candidate, unit)) if candidate.obu_type() == planned => Ok((candidate, unit)),
-            _ if key => Err(missing_key_ivf_obu(None)),
-            _ => Err(missing_inter_ivf_obu(None)),
+            if !records.advance()? {
+                return Ok(None);
+            }
+            fresh = true;
         }
     }
 
@@ -211,6 +218,18 @@ impl<'a> RuntimeStream<'a> {
             Self::Ivf { .. } => ivf_key_frame_unit(obus, candidate),
         }
     }
+}
+
+fn check_unit(
+    unit: &UnitBytes,
+    storage: &mut Vec<ObuEnvelope<'static>>,
+    check: fn(&[ObuEnvelope<'_>]) -> Result<()>,
+) -> Result<()> {
+    let mut obus = recycle(core::mem::take(storage));
+    runtime_obus(unit.view(), &mut obus)?;
+    check(&obus)?;
+    *storage = recycle(obus);
+    Ok(())
 }
 
 fn missing_inter_ivf_obu(offset: Option<ByteOffset>) -> crate::DecodeError {
@@ -389,17 +408,7 @@ pub(super) fn leading_record_inter_frame_unit_start(
     None
 }
 
-fn require_following_ivf_record_obu_order(
-    obus: &[ObuEnvelope<'_>],
-    ivf_frame_index: usize,
-) -> Result<()> {
-    if ivf_frame_index == 0 {
-        require_leading_ivf_obu_order(obus)
-    } else {
-        require_inter_obu_order(obus)
-    }
-}
-
+#[cfg(test)]
 pub(super) fn require_leading_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
     let (_, frame_unit_len) = require_leading_frame_unit(obus)?;
     require_inter_obus_after_key(obus, frame_unit_len)
