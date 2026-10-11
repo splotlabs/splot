@@ -413,17 +413,13 @@ where
     for row in 0..geo.source_height {
         let y = coordinate_add(
             geo.source_start_y,
-            isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
-                context: "PC-Wiener source-grid row",
-            })?,
+            usize_to_isize(row, "PC-Wiener source-grid row")?,
             "PC-Wiener source-grid y",
         )?;
         for col in 0..geo.source_width {
             let x = coordinate_add(
                 geo.source_start_x,
-                isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
-                    context: "PC-Wiener source-grid column",
-                })?,
+                usize_to_isize(col, "PC-Wiener source-grid column")?,
                 "PC-Wiener source-grid x",
             )?;
             source_cache.push(source_sample_u16(
@@ -683,9 +679,7 @@ fn classify_grid_geometry(
     let feature_start_y = coordinate_add(params.y, -PC_WIENER_LEAD, "PC-Wiener grid y")?;
     let feature_last_x = coordinate_add(
         feature_start_x,
-        isize::try_from(feature_width - 1).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener feature-grid last column",
-        })?,
+        usize_to_isize(feature_width - 1, "PC-Wiener feature-grid last column")?,
         "PC-Wiener feature-grid last x",
     )?;
     let block_end_plus_two = usize_to_isize(
@@ -1630,12 +1624,8 @@ where
     for row in 0..params.height {
         for col in 0..params.width {
             let coeffs = &filters[pc_wiener_subclass_at(params, row, col)];
-            let row = isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
-                context: "PC-Wiener filter row",
-            })?;
-            let col = isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
-                context: "PC-Wiener filter column",
-            })?;
+            let row = usize_to_isize(row, "PC-Wiener filter row")?;
+            let col = usize_to_isize(col, "PC-Wiener filter column")?;
             let center = source_value(&mut source_sample, col, row, params.bit_depth)?;
             let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
             for (&(dy, dx), &coeff) in PC_WIENER_CONFIG.iter().zip(coeffs) {
@@ -1761,29 +1751,33 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
 }
 
 /// § 9.8 `Pc_Wiener_Filters` with each class narrowed to the `i16` lane factors
-/// the SIMD row kernel multiplies by, and the center tap pre-folded with the
-/// § 3 `PC_WIENER_PREC_BITS` unit scale.
-static PC_WIENER_FILTERS_I16: std::sync::LazyLock<Vec<[[i16; 13]; PC_WIENER_FULL_CLASSES]>> =
+/// the SIMD row kernel multiplies by, the center tap pre-folded with the § 3
+/// `PC_WIENER_PREC_BITS` unit scale, and a bit set for each nonzero tap pair.
+static PC_WIENER_FILTERS_I16: std::sync::LazyLock<Vec<[LaneCoeffs; PC_WIENER_FULL_CLASSES]>> =
     std::sync::LazyLock::new(|| {
         PC_WIENER_FILTERS
             .iter()
             .map(|set| {
                 set.map(|coeffs| {
-                    let mut packed = [0i16; 13];
+                    let mut packed = [0i16; 16];
                     for (slot, &coeff) in packed.iter_mut().zip(&coeffs) {
                         *slot = coeff as i16;
                     }
                     packed[12] = ((1 << PC_WIENER_PREC_BITS) + coeffs[12]) as i16;
-                    packed
+                    let nonzero = (0..12).filter(|&tap| coeffs[tap] != 0).map(|tap| 1 << tap);
+                    (Simd::from_array(packed), nonzero.sum())
                 })
             })
             .collect()
     });
 
+/// One class's `i16` lane factors and nonzero tap-pair bits.
+type LaneCoeffs = (Simd<i16, 16>, u16);
+
 struct PcWienerPaddedFilterSetup {
     sample_count: usize,
     filters: &'static [[i32; 13]; PC_WIENER_FULL_CLASSES],
-    filters16: &'static [[i16; 13]; PC_WIENER_FULL_CLASSES],
+    filters16: &'static [LaneCoeffs; PC_WIENER_FULL_CLASSES],
     max_sample: u16,
     source_is_valid: bool,
 }
@@ -1924,9 +1918,10 @@ impl PcWienerPaddedSample for u8 {
     }
 }
 
-/// Filters the block row by row; a 32-column chunk whose whole tap reach in a
-/// 4-row group holds one value takes that value, since every
-/// `Pc_Wiener_Filters` row sums to zero, as checked at compile time below.
+/// Filters the block one subclass run at a time for all rows of a cell row; a
+/// 32-column chunk whose whole tap reach in a 4-row group holds one value
+/// takes that value, since every `Pc_Wiener_Filters` row sums to zero, as
+/// checked at compile time below.
 fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + LumaSimdSource + 'a>(
     destination: &mut [u16],
     params: &PcWienerFilter<'_>,
@@ -1942,31 +1937,32 @@ fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + LumaSimdSource +
     };
     let mut flat = FlatChunks::<R>::new();
     let mut window = [&[][..]; PC_WIENER_BLOCK_SIZE + 2 * R];
-    for row in 0..params.height {
+    let mut row = 0;
+    while row < params.height {
+        let group = PC_WIENER_BLOCK_SIZE.min(params.height - row);
         if row % PC_WIENER_BLOCK_SIZE == 0 {
-            let reach = PC_WIENER_BLOCK_SIZE.min(params.height - row) + 2 * R;
-            for (dy, slot) in window.iter_mut().enumerate().take(reach) {
+            for (dy, slot) in window.iter_mut().enumerate().take(group + 2 * R) {
                 *slot = source
                     .row(row + dy, padded_width)
                     .and_then(&cast)
                     .ok_or_else(rows_error)?;
             }
-            flat.update(&window[..reach], row, params.width);
+            flat.update(&window[..group + 2 * R], row, params.width);
         }
+        let group_rows = row..row + group.min(params.subclass_block_size);
         let subclass_row = row / params.subclass_block_size;
         let row_subclasses =
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
-        let output = &mut destination[row * params.output_stride..][..params.width];
-        let rows = window[row % PC_WIENER_BLOCK_SIZE..]
-            .first_chunk::<PC_WIENER_WINDOW_ROWS>()
-            .ok_or_else(rows_error)?;
         let mut c0 = 0usize;
         let (mut end, mut run) = flat.split(0, params.width);
         while c0 < params.width {
             if c0 == end
                 && let Some((value, run_end)) = run
             {
-                output[c0..run_end].fill(value.min(setup.max_sample));
+                for row in group_rows.clone() {
+                    let output = &mut destination[row * params.output_stride..];
+                    output[c0..run_end].fill(value.min(setup.max_sample));
+                }
                 c0 = run_end;
                 (end, run) = flat.split(c0, params.width);
                 continue;
@@ -1979,42 +1975,50 @@ fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + LumaSimdSource +
             }
             let c1 = (subclass_end * params.subclass_block_size).min(end);
             let coeffs = &setup.filters[usize::from(subclass)];
-            let coeffs16 = &setup.filters16[usize::from(subclass)];
-            let mut col = c0;
-            macro_rules! filter_chunks {
-                ($lanes:literal) => {
-                    while col + $lanes <= c1 {
-                        filter_pc_wiener_padded_u16_simd::<$lanes, T>(
-                            &mut output[col..],
-                            rows,
-                            col,
-                            coeffs16,
-                            setup.max_sample,
-                        );
-                        col += $lanes;
-                    }
-                };
-            }
-            filter_chunks!(32);
-            filter_chunks!(16);
-            filter_chunks!(8);
-            filter_chunks!(4);
-            for (x, slot) in output.iter_mut().enumerate().take(c1).skip(col) {
-                let tap = |dy: isize, dx: isize| {
-                    i32::from(
-                        rows[R.wrapping_add_signed(dy)][(x + R).wrapping_add_signed(dx)].to_u16(),
-                    )
-                };
-                let center = tap(0, 0);
-                let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
-                for (&(dy, dx), &coeff) in PC_WIENER_CONFIG.iter().zip(coeffs) {
-                    sum += (tap(dy, dx) + tap(-dy, -dx)) * coeff;
+            let coeffs16 = setup.filters16[usize::from(subclass)];
+            for row in group_rows.clone() {
+                let output = &mut destination[row * params.output_stride..][..params.width];
+                let rows = window[row % PC_WIENER_BLOCK_SIZE..]
+                    .first_chunk::<PC_WIENER_WINDOW_ROWS>()
+                    .ok_or_else(rows_error)?;
+                let mut col = c0;
+                macro_rules! filter_chunks {
+                    ($lanes:literal) => {
+                        while col + $lanes <= c1 {
+                            filter_pc_wiener_padded_u16_simd::<$lanes, T>(
+                                &mut output[col..],
+                                rows,
+                                col,
+                                coeffs16,
+                                setup.max_sample,
+                            );
+                            col += $lanes;
+                        }
+                    };
                 }
-                *slot = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, i32::from(setup.max_sample))
-                    as u16;
+                filter_chunks!(32);
+                filter_chunks!(16);
+                filter_chunks!(8);
+                filter_chunks!(4);
+                for (x, slot) in output.iter_mut().enumerate().take(c1).skip(col) {
+                    let tap = |dy: isize, dx: isize| {
+                        i32::from(
+                            rows[R.wrapping_add_signed(dy)][(x + R).wrapping_add_signed(dx)]
+                                .to_u16(),
+                        )
+                    };
+                    let center = tap(0, 0);
+                    let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
+                    for (&(dy, dx), &coeff) in PC_WIENER_CONFIG.iter().zip(coeffs) {
+                        sum += (tap(dy, dx) + tap(-dy, -dx)) * coeff;
+                    }
+                    *slot = round2_i32(sum, PC_WIENER_PREC_BITS)
+                        .clamp(0, i32::from(setup.max_sample)) as u16;
+                }
             }
             c0 = c1;
         }
+        row = group_rows.end;
     }
     Ok(())
 }
@@ -2054,13 +2058,13 @@ fn filter_pc_wiener_padded_u16_simd<const LANES: usize, T: PcWienerPaddedSample>
     output: &mut [u16],
     rows: &[&[T]; PC_WIENER_WINDOW_ROWS],
     col: usize,
-    coeffs: &[i16; 13],
+    coeffs: LaneCoeffs,
     max_sample: u16,
 ) {
     const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
     let window = rows.map(|row| &row[col..col + LANES + 2 * R]);
     let mut sum = T::load_lanes::<LANES>(window[R], R).cast::<i32>()
-        * Simd::<i16, LANES>::splat(coeffs[12]).cast::<i32>();
+        * Simd::<i16, LANES>::splat(coeffs.0[12]).cast::<i32>();
     macro_rules! tap_pairs {
         ($($j:literal)*) => {
             $(add_pc_wiener_tap_pair::<LANES, $j, T>(&mut sum, &window, coeffs);)*
@@ -2077,15 +2081,18 @@ fn filter_pc_wiener_padded_u16_simd<const LANES: usize, T: PcWienerPaddedSample>
 }
 
 /// Adds § 7.20.4 symmetric tap pair `J` of a [`filter_pc_wiener_padded_u16_simd`]
-/// group.
+/// group, skipping a zero coefficient by its bit.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn add_pc_wiener_tap_pair<const LANES: usize, const J: usize, T: PcWienerPaddedSample>(
     sum: &mut Simd<i32, LANES>,
     window: &[&[T]; PC_WIENER_WINDOW_ROWS],
-    coeffs: &[i16; 13],
+    (coeffs, nonzero): LaneCoeffs,
 ) {
     const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
+    if LANES > 4 && nonzero & (1 << J) == 0 {
+        return;
+    }
     let (dy, dx) = PC_WIENER_CONFIG[J];
     let plus = T::load_lanes::<LANES>(window[R.wrapping_add_signed(dy)], R.wrapping_add_signed(dx));
     let minus = T::load_lanes::<LANES>(
