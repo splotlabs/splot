@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "35c39a2bfa70d2b1f3cd894ebee07b48ba52f7b6",
+  "audited_commit": "95b8ab7c9272db4083e65fb5a64ce6339d46e85e",
   "outcome": "success",
   "files": [
     {
@@ -2883,7 +2883,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/frame_progress.rs",
-      "sha256": "e70e92a98522bd14618c6a6cf8fbca6484fed08d5a69686a2831f9590f9aa527",
+      "sha256": "83318ac1785e2031f47eadcd3bddc2b347cc3c52b4f44c4b8ea61c2f0a5a8861",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING"
@@ -4391,7 +4391,7 @@
     },
     {
       "path": "crates/splot-recon/src/frame.rs",
-      "sha256": "255f395f25d9c9b0aa852988ae614239c9cea693e0b741ca5694d50cce02aa69",
+      "sha256": "ff90112723b1cad1b03449211f89a20d093d994d3f1adc412d57d65edd95eee5",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -4793,7 +4793,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace.rs",
-      "sha256": "974c996e9657dc3447faa539a267e0a2cea7cea1acedf1fb824f40321f0547a5",
+      "sha256": "b4b3e2334c423ef9975a7abf3c14c3c4dd2d30c64591a193e97435183b406a4a",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-CURRENT-FRAME-WORKSPACE",
@@ -4865,7 +4865,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace_tests.rs",
-      "sha256": "b436d6a90eee9ea420862b2abfaedc11a9c8e43af76bd8331db5e51015aea4b3",
+      "sha256": "bd63dd004c2c9c5a6ef7d603550f42eb25086d3f920a2f14d31f99da9e558a02",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"
@@ -9629,7 +9629,7 @@
     },
     {
       "path": "xtask/src/perf.rs",
-      "sha256": "74193203d5b0f1cb18cbe0f452392ad4874f78fe592588a0dfa3d5b07cc75507",
+      "sha256": "c349d1584ec0a6362033eb07d97482db7669e8ffb72f26418be0c89b3b84f4e7",
       "scope_kind": "workspace:xtask",
       "feature_ids": [
         "PERF-REGRESSION-GATE"
