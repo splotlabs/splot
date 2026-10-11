@@ -738,94 +738,70 @@ impl TrajectoryBand<'_> {
             return None;
         }
         if let Some(index) = self.band_index(y8, x8) {
-            self.extend_end_trajectories(source, end, index, mv);
+            self.extend_trajectories(source, end, index, None, mv);
         }
         let end_position = end_position?;
         if self.unit_base(end_position.0) == self.unit_base(y8)
             && let Some(index) = self.band_index(end_position.0, end_position.1)
         {
-            self.extend_source_trajectories(source, end, (y8, x8), index, mv);
+            let back = Mv {
+                row: -mv.row,
+                col: -mv.col,
+            };
+            self.extend_trajectories(end, source, index, Some(x8), back);
         }
         Some(end_position)
     }
 
-    /// Extends to `end` every trajectory recorded at the scanned cell for `source`.
+    /// Extends to `to` every trajectory recorded for `from` at the band-relative
+    /// cell `index`, moving each by `delta`: `from` the source and `to` the end
+    /// for the scanned cell's record, and the reverse, with the negated vector,
+    /// for the end record the scanned cell's vector reaches.
+    ///
+    /// `column` is the scanned column for the reverse walk. Every write keeps a
+    /// record in the TMVP unit row of the trajectories it holds, and the caller
+    /// passes an end record in the scanned cell's unit row, so only the column
+    /// is tested against a trajectory's window.
     #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
     #[inline(always)]
-    fn extend_end_trajectories(&mut self, source: usize, end: usize, index: usize, mv: Mv) {
-        let Some(source_slots) = self.positions_at_index(source, index) else {
-            return;
-        };
-        let mut source_mask = source_slots.mask;
-        while source_mask != 0 {
-            let phase = source_mask.trailing_zeros() as usize;
-            source_mask &= source_mask - 1;
-            let Some(&packed) = source_slots.phases.get(phase) else {
-                break;
-            };
-            let trajectory = (packed.y as usize, packed.x as usize);
-            let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
-                continue;
-            };
-            if self.trajectory_mv(end, traj_index).is_some() {
-                continue;
-            }
-            let Some(source_mv) = self.trajectory_mv(source, traj_index) else {
-                continue;
-            };
-            let bounds = self.position_bounds(trajectory);
-            let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
-            if let Some(position) = self
-                .sampled_position(trajectory.0, trajectory.1, end_mv)
-                .filter(|&position| Self::position_allowed(position, bounds))
-            {
-                self.set_position(end, position, phase, trajectory);
-            }
-        }
-    }
-
-    /// Extends back to `source` every trajectory recorded for `end` at the
-    /// band-relative cell `index` that the scanned cell's vector reaches.
-    #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
-    #[inline(always)]
-    fn extend_source_trajectories(
+    fn extend_trajectories(
         &mut self,
-        source: usize,
-        end: usize,
-        (y8, x8): Position,
+        from: usize,
+        to: usize,
         index: usize,
-        mv: Mv,
+        column: Option<usize>,
+        delta: Mv,
     ) {
-        let Some(end_slots) = self.positions_at_index(end, index) else {
+        let Some(slots) = self.positions_at_index(from, index) else {
             return;
         };
-        let mut end_mask = end_slots.mask;
-        while end_mask != 0 {
-            let phase = end_mask.trailing_zeros() as usize;
-            end_mask &= end_mask - 1;
-            let Some(&packed) = end_slots.phases.get(phase) else {
+        let mut mask = slots.mask;
+        while mask != 0 {
+            let phase = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let Some(&packed) = slots.phases.get(phase) else {
                 break;
             };
             let trajectory = (packed.y as usize, packed.x as usize);
             let bounds = self.position_bounds(trajectory);
-            if !Self::position_allowed((y8, x8), bounds) {
+            if column.is_some_and(|x8| x8 < bounds.2 || x8 >= bounds.3) {
                 continue;
             }
             let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
                 continue;
             };
-            if self.trajectory_mv(source, traj_index).is_some() {
+            if self.trajectory_mv(to, traj_index).is_some() {
                 continue;
             }
-            let Some(end_mv) = self.trajectory_mv(end, traj_index) else {
+            let Some(from_mv) = self.trajectory_mv(from, traj_index) else {
                 continue;
             };
-            let source_mv = self.set_field_at(source, traj_index, subtract_mv(end_mv, mv));
+            let to_mv = self.set_field_at(to, traj_index, add_mv(from_mv, delta));
             if let Some(position) = self
-                .sampled_position(trajectory.0, trajectory.1, source_mv)
+                .sampled_position(trajectory.0, trajectory.1, to_mv)
                 .filter(|&position| Self::position_allowed(position, bounds))
             {
-                self.set_position(source, position, phase, trajectory);
+                self.set_position(to, position, phase, trajectory);
             }
         }
     }
@@ -1027,13 +1003,6 @@ fn add_mv(a: Mv, b: Mv) -> Mv {
     Mv {
         row: a.row + b.row,
         col: a.col + b.col,
-    }
-}
-
-fn subtract_mv(a: Mv, b: Mv) -> Mv {
-    Mv {
-        row: a.row - b.row,
-        col: a.col - b.col,
     }
 }
 
