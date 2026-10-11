@@ -122,7 +122,8 @@ impl CdefPairSegment {
 
 /// The `rows` rows of `span` samples from column `x0 - TAP_REACH`, row
 /// `y0 - TAP_REACH` on, as one slice whose row `r` starts at `r * stride`,
-/// provided they lie inside `width` and `samples`.
+/// provided they lie inside `width` and `samples` and rows `stride` apart do
+/// not overlap (`stride` is at least `width`).
 fn reach_rows(
     samples: &[u16],
     width: usize,
@@ -131,7 +132,7 @@ fn reach_rows(
     (span, rows): (usize, usize),
 ) -> Option<&[u16]> {
     let left = x0.checked_sub(TAP_REACH)?;
-    if left.checked_add(span)? > width {
+    if stride < width || left.checked_add(span)? > width {
         return None;
     }
     let first = y0
@@ -477,6 +478,12 @@ mod tests {
         }
         assert!(!luma.gather(&samples, width, usize::MAX / 4, (4, 3)));
         assert!(!pair.gather(&samples, &samples, 24, usize::MAX / 4, (3, 3)));
+        for narrow in [0, width - 1] {
+            assert!(!luma.gather(&samples, width, narrow, (4, 3)));
+        }
+        for narrow in [0, 23] {
+            assert!(!pair.gather(&samples, &samples, 24, narrow, (3, 3)));
+        }
     }
 
     #[test]
