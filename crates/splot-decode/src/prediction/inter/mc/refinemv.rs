@@ -160,7 +160,7 @@ fn search_refinemv<T: ReconSample>(
                     search_mv,
                     filter,
                     area,
-                    None,
+                    false,
                     prediction,
                 )?;
             } else {
@@ -170,7 +170,7 @@ fn search_refinemv<T: ReconSample>(
                     search_mv,
                     filter,
                     area,
-                    None,
+                    false,
                     prediction,
                 )?;
             }
@@ -507,7 +507,6 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
 /// predicted first and the whole area only when the search goes on.
 pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
     block: CompoundMcBlock<'_, T>,
-    reuse_horizontal: [bool; 2],
     predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
     luma: &mut [super::optflow::LumaReference<'_, T>; 2],
 ) -> Result<Option<MotionCell>> {
@@ -533,10 +532,10 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         col: candidate.col - SEARCH_PADDING,
     };
     let [pred0, pred1] = predictions;
-    for ((luma, candidate), (prediction, reuse)) in luma
+    for ((luma, candidate), prediction) in luma
         .iter_mut()
         .zip(candidates)
-        .zip([&mut *pred0, &mut *pred1].into_iter().zip(reuse_horizontal))
+        .zip([&mut *pred0, &mut *pred1])
     {
         super::optflow::initial_luma_prediction::<_, 2>(
             luma,
@@ -544,7 +543,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
             search_mv(candidate),
             InterpolationFilter::Bilinear,
             Some((candidate, CENTER_SIZE, CENTER_SIZE)),
-            Some(reuse),
+            true,
             prediction,
         )?;
     }
@@ -565,7 +564,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
                 search_mv(candidate),
                 InterpolationFilter::Bilinear,
                 Some((candidate, CENTER_SIZE, CENTER_SIZE)),
-                None,
+                false,
                 prediction,
             )?;
         }

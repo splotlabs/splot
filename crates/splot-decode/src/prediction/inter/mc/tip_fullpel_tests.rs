@@ -87,7 +87,7 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
         .expect("fast cell");
     let mut luma = LumaReference::pair(sink.info(), &block, offset);
     let full = if block.search_refinemv && search_range_allowed(mvs) {
-        tip_refinemv_optflow_motion_cell(block, [false; 2], &mut [[0; 256]; 2], &mut luma)
+        tip_refinemv_optflow_motion_cell(block, &mut [[0; 256]; 2], &mut luma)
             .expect("refined cell")
             .expect("searched unit")
     } else {
@@ -334,7 +334,7 @@ fn luma_reference_refetches_views_past_the_published_prefix() {
             mv(3, 5),
             InterpolationFilter::Bilinear,
             None,
-            None,
+            false,
             &mut output,
         )
         .map(|()| output)
@@ -370,7 +370,7 @@ fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitD
             let (mut whole, mut centre) = ([0u16; 576], [u16::MAX; 576]);
             let mut luma = LumaReference::new(sink.info(), reference, offset);
             super::super::optflow::initial_luma_prediction::<_, 0>(
-                &mut luma, rect, mv, filter, area, None, &mut whole,
+                &mut luma, rect, mv, filter, area, false, &mut whole,
             )
             .expect("whole prediction");
             super::super::optflow::initial_luma_prediction::<_, 2>(
@@ -379,7 +379,7 @@ fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitD
                 mv,
                 filter,
                 area,
-                None,
+                false,
                 &mut centre,
             )
             .expect("centre prediction");

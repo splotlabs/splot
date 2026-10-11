@@ -389,7 +389,6 @@ fn tip_grid_and_cells<T: ReconSample>(
             let mut luma = LumaReference::pair(sink.info(), &unit, offset);
             super::super::refinemv::tip_refinemv_optflow_motion_cell(
                 unit,
-                [false; 2],
                 &mut [[0; 256]; 2],
                 &mut luma,
             )

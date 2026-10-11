@@ -171,8 +171,8 @@ pub use secondary_transform::{SecondaryInverseTransform, secondary_inverse_trans
 /// `splot-tables` directly.
 pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
-    InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams,
-    blend_compound_average_equal, blend_compound_average_weighted,
+    BilinearOverlapCarry, InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS,
+    SubpelPredictParams, blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample, subpel_predict_12x12_bilinear_overlap_into,
     subpel_predict_block, subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_fullpel_strided_into_u8,
