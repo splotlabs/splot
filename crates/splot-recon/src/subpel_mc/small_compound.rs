@@ -39,12 +39,17 @@ const SMALL_TAPS: [[[i16; 4]; NUM_PHASES]; NUM_FILTER_TYPES] = {
     taps
 };
 
-/// One reference of a 4x4 cell.
+/// One reference of a 4x4 cell. `top` is source row `y0 - 1`, the first the
+/// vertical taps read, and `column` the first column the cell loads.
 struct Cell<'a, T> {
     samples: &'a [T],
-    /// Offsets of the clamped source rows `y0 - 1 ..= y0 + 5` at the first
-    /// column the cell loads.
-    rows: [usize; 7],
+    stride: usize,
+    column: usize,
+    top: i32,
+    first_y: i32,
+    last_y: i32,
+    /// Whether no source row `y0 - 1 ..= y0 + 5` is clamped.
+    unclamped: bool,
     /// The [`clamped_window`] shuffle when a window column is clamped.
     gather: Option<Simd<u8, 16>>,
     h_taps: Taps,
@@ -150,6 +155,45 @@ trait CellReference<'a, T: ReconSample>: Sized {
     fn predict(&self) -> Option<Self::Rows>;
 }
 
+impl<T: ReconSample> Cell<'_, T> {
+    /// Source rows `FIRST..FIRST + N` from `top` as `u16` lanes, gathered
+    /// when a column is clamped. Unclamped rows split the plane by stride: one
+    /// length test per row instead of a row clamp, a multiply and two slice
+    /// checks.
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn lanes<const FIRST: usize, const N: usize>(&self) -> Option<[Simd<u16, 8>; N]> {
+        let mut lanes = [Simd::splat(0); N];
+        if self.unclamped && self.stride >= 8 {
+            let start = (self.top as usize + FIRST) * self.stride + self.column;
+            let mut rest = self.samples.get(start..)?;
+            for (row, lane) in lanes.iter_mut().enumerate() {
+                let (window, tail) = if row + 1 < N {
+                    rest.split_at_checked(self.stride)?
+                } else {
+                    (rest, rest)
+                };
+                *lane = reference_lanes::<8, T>(window.get(..8)?, 0);
+                rest = tail;
+            }
+        } else {
+            for (row, lane) in lanes.iter_mut().enumerate() {
+                let y = (self.top + (FIRST + row) as i32)
+                    .max(self.first_y)
+                    .min(self.last_y) as usize;
+                let offset = y * self.stride + self.column;
+                *lane = reference_lanes::<8, T>(self.samples.get(offset..offset + 8)?, 0);
+            }
+        }
+        if let Some(index) = self.gather {
+            for lane in &mut lanes {
+                *lane = gather8(*lane, index);
+            }
+        }
+        Some(lanes)
+    }
+}
+
 impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
     type Rows = [Row; 4];
 
@@ -171,13 +215,15 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
             let (column, index) = clamped_window(first, params);
             (column, Some(index[0]))
         };
-        let rows = (Simd::<i32, 8>::splat((params.start_y >> SCALE_SUBPEL_BITS) - 1)
-            + Simd::from_array([0, 1, 2, 3, 4, 5, 6, 7]))
-        .simd_max(Simd::splat(params.first_y))
-        .simd_min(Simd::splat(params.last_y));
+        let top = (params.start_y >> SCALE_SUBPEL_BITS) - 1;
         Some(Cell {
             samples: reference.samples,
-            rows: core::array::from_fn(|row| rows[row] as usize * reference.stride + column),
+            stride: reference.stride,
+            column,
+            top,
+            first_y: params.first_y,
+            last_y: params.last_y,
+            unclamped: top >= params.first_y && top + 6 <= params.last_y,
             gather,
             h_taps: horizontal_taps::<T>(Simd::from_array(SMALL_TAPS[filter][h_phase])),
             v_taps: Simd::from_array(SMALL_TAPS[filter][v_phase]),
@@ -191,38 +237,33 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
     fn predict(&self) -> Option<[Row; 4]> {
-        let lanes = |row: usize| {
-            let offset = self.rows[row];
-            let lanes = reference_lanes::<8, T>(self.samples.get(offset..offset + 8)?, 0);
-            Some(self.gather.map_or(lanes, |index| gather8(lanes, index)))
-        };
         let mut rows = [Simd::splat(0); 7];
         let mut out = [Row::splat(0); 4];
         match (self.horizontal, self.vertical) {
             (true, true) => {
-                for (row, value) in rows.iter_mut().enumerate() {
-                    *value = horizontal::<T>(lanes(row)?, self.h_taps);
+                for (value, lanes) in rows.iter_mut().zip(self.lanes::<0, 7>()?) {
+                    *value = horizontal::<T>(lanes, self.h_taps);
                 }
                 for (i, out) in out.iter_mut().enumerate() {
                     *out = vertical(&rows[i..], self.v_taps, INTER_ROUND1_COMPOUND);
                 }
             }
             (true, false) => {
-                for (i, out) in out.iter_mut().enumerate() {
-                    *out = horizontal::<T>(lanes(i + 1)?, self.h_taps).cast();
+                for (out, lanes) in out.iter_mut().zip(self.lanes::<1, 4>()?) {
+                    *out = horizontal::<T>(lanes, self.h_taps).cast();
                 }
             }
             (false, true) => {
-                for (row, value) in rows.iter_mut().enumerate() {
-                    *value = simd_swizzle!(lanes(row)?, [0, 1, 2, 3]).cast();
+                for (value, lanes) in rows.iter_mut().zip(self.lanes::<0, 7>()?) {
+                    *value = simd_swizzle!(lanes, [0, 1, 2, 3]).cast();
                 }
                 for (i, out) in out.iter_mut().enumerate() {
                     *out = vertical(&rows[i..], self.v_taps, INTER_ROUND0);
                 }
             }
             (false, false) => {
-                for (i, out) in out.iter_mut().enumerate() {
-                    *out = simd_swizzle!(lanes(i + 1)?, [0, 1, 2, 3]).cast::<i32>()
+                for (out, lanes) in out.iter_mut().zip(self.lanes::<1, 4>()?) {
+                    *out = simd_swizzle!(lanes, [0, 1, 2, 3]).cast::<i32>()
                         << (FILTER_BITS - INTER_ROUND0) as i32;
                 }
             }
