@@ -12,8 +12,10 @@
 //! (`-only_from_app`), because glibc picks its string functions per CPU, and
 //! the decode discards its output, because the frame hash dispatches on CPU
 //! features; both made the count depend on the runner's CPU. The client
-//! keeps one counter for all threads and idle worker spins only add to it, so
-//! each fixture keeps the smallest count of [`RUNS`] runs.
+//! keeps one plain counter for all threads, so the decode runs pinned to one
+//! CPU (`taskset`): its main thread and pool worker never run at the same
+//! time and cannot lose each other's updates. Idle worker spins only add to
+//! the count, so each fixture keeps the smallest count of [`RUNS`] runs.
 //!
 //! This is a heavy gate and is **not** part of `cargo xtask ci`; it runs as its
 //! own CI job and on demand. `--bless` re-runs every fixture and rewrites the
@@ -188,7 +190,9 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
 fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Path) -> Result<u64> {
     let mut best = u64::MAX;
     for _ in 0..RUNS {
-        let output = Command::new(drrun)
+        let output = Command::new("taskset")
+            .args(["--cpu-list", "0"])
+            .arg(drrun)
             .arg("-c")
             .arg(client)
             .arg("-only_from_app")
@@ -206,7 +210,7 @@ fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Pat
             ])
             .arg(fixture)
             .output()
-            .context("failed to spawn drrun")?;
+            .context("failed to spawn taskset with drrun")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let lines: Vec<&str> = stderr.lines().collect();
