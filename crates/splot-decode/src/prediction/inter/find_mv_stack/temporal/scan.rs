@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::simd::{
     Mask, Simd,
     cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd},
-    num::SimdInt,
+    num::{SimdInt, SimdUint},
 };
 
 use super::{
@@ -27,9 +27,11 @@ type Grid<T> = [[T; LANES]; GROUPS];
 pub(super) struct ProjectionTarget {
     pub(super) end_ref: Option<usize>,
     pub(super) ref_offset: i32,
-    /// The projection factor with the sign of `ref_offset` folded in, which
-    /// projects the stored vector exactly as the factor projects its negation.
-    pub(super) factor: i32,
+    /// `DIV_MULT[|ref_offset|]` with the sign of `ref_offset` when the reference
+    /// admits a projection factor, else 0. Times `source_to_current` it is the
+    /// projection factor with the offset sign folded in, which projects the
+    /// stored vector exactly as the factor projects its negation.
+    pub(super) divisor: i16,
     /// The factor that projects the stored vector onto the § 7.9.8 trajectory
     /// end, the vector `observe_projection_at` records for `end_ref`.
     pub(super) end_factor: i32,
@@ -47,8 +49,6 @@ pub(super) const INTERSECTS: u8 = 2;
 #[derive(Default)]
 struct ChunkLanes {
     refs: Grid<u8>,
-    flags: Grid<u8>,
-    factors: Grid<i32>,
     compressed: [Grid<i8>; 2],
     mv: [Grid<i32>; 2],
     projected: [Grid<i32>; 2],
@@ -64,6 +64,37 @@ struct ChunkMasks {
     projects: u64,
     intersects: u64,
     ends: u64,
+}
+
+/// One source's [`ProjectionTarget`] flags and divisor bytes as lane tables
+/// indexed by the stored reference. Entries past the targets, and lookups past
+/// the table, read 0, as the empty target does.
+struct TargetTables {
+    flags: Simd<u8, LANES>,
+    divisor: [Simd<u8, LANES>; 2],
+    source_to_current: i32,
+}
+
+impl TargetTables {
+    fn new(prepared: &TemporalProjectionSource) -> Self {
+        let entry = |index: usize| prepared.targets.get(index).copied().unwrap_or_default();
+        let byte = |index: usize, shift: u32| (entry(index).divisor >> shift) as u8;
+        Self {
+            flags: Simd::from_array(core::array::from_fn(|index| entry(index).flags)),
+            divisor: [0, 8].map(|shift| Simd::from_array(core::array::from_fn(|i| byte(i, shift)))),
+            source_to_current: prepared.source_to_current,
+        }
+    }
+
+    /// The flags and the folded projection factor of each lane's reference.
+    fn lookup(&self, refs: Simd<u8, LANES>) -> (Simd<u8, LANES>, Lanes) {
+        let [low, high] = self
+            .divisor
+            .map(|table| table.swizzle_dyn(refs).cast::<u16>());
+        let divisor: Lanes = (low | high << 8).cast::<i16>().cast();
+        let factor = divisor * Lanes::splat(self.source_to_current);
+        (self.flags.swizzle_dyn(refs), factor)
+    }
 }
 
 /// Fixed geometry the per-lane arithmetic of one scan shares.
@@ -133,6 +164,7 @@ pub(super) fn project_temporal_motion_field(
     let step = geometry.step;
     let side = prepared.side & 1;
     let rows = rows.start..rows.end.min(prepared.source_height8);
+    let tables = TargetTables::new(prepared);
     let mut lanes = ChunkLanes::default();
     for y8 in rows.step_by(step) {
         let Some(row) = source.row(y8) else {
@@ -140,15 +172,8 @@ pub(super) fn project_temporal_motion_field(
         };
         for (chunk_index, chunk) in row.chunks(CHUNK * step).enumerate() {
             let x_base = chunk_index * CHUNK * step;
-            let Some(masks) = chunk_lanes(
-                &mut lanes,
-                chunk,
-                side,
-                &prepared.targets,
-                y8,
-                x_base,
-                geometry,
-            ) else {
+            let Some(masks) = chunk_lanes(&mut lanes, chunk, side, &tables, y8, x_base, geometry)
+            else {
                 return;
             };
             let walk = ChunkWalk {
@@ -321,16 +346,13 @@ fn chunk_lanes(
     lanes: &mut ChunkLanes,
     chunk: &[TemporalMotionCell],
     side: usize,
-    targets: &[ProjectionTarget],
+    tables: &TargetTables,
     y8: usize,
     x_base: usize,
     geometry: LaneGeometry,
 ) -> Option<ChunkMasks> {
-    let miss = u8::try_from(targets.len().checked_sub(1)?).ok()?;
     let count = chunk.len().div_ceil(geometry.step).min(CHUNK);
     let refs: &mut [u8; CHUNK] = lanes.refs.as_flattened_mut().try_into().ok()?;
-    let flags: &mut [u8; CHUNK] = lanes.flags.as_flattened_mut().try_into().ok()?;
-    let factors: &mut [i32; CHUNK] = lanes.factors.as_flattened_mut().try_into().ok()?;
     let [rows, cols] = &mut lanes.compressed;
     let rows: &mut [i8; CHUNK] = rows.as_flattened_mut().try_into().ok()?;
     let cols: &mut [i8; CHUNK] = cols.as_flattened_mut().try_into().ok()?;
@@ -338,11 +360,7 @@ fn chunk_lanes(
         let Some(cell) = chunk.get(lane * geometry.step) else {
             break;
         };
-        let reference = cell.ref_indices[side].min(miss);
-        let target = targets.get(usize::from(reference))?;
-        refs[lane] = reference;
-        flags[lane] = target.flags;
-        factors[lane] = target.factor;
+        refs[lane] = cell.ref_indices[side];
         rows[lane] = cell.mvs[side].row;
         cols[lane] = cell.mvs[side].col;
     }
@@ -353,7 +371,7 @@ fn chunk_lanes(
     for group in 0..count.div_ceil(LANES) {
         let first = i32::try_from(x_base + group * LANES * geometry.step).ok()?;
         let x = Lanes::splat(first) + iota * Lanes::splat(geometry.step as i32);
-        let factor = Lanes::from_array(lanes.factors[group]);
+        let (flags, factor) = tables.lookup(Simd::from_array(lanes.refs[group]));
         let (mut sampled, mut ended) = (Mask::splat(true), Mask::splat(true));
         let mut base = [Lanes::splat(0); 2];
         for (component, base) in base.iter_mut().enumerate() {
@@ -380,7 +398,6 @@ fn chunk_lanes(
         let column = x - base[1] + Lanes::splat(geometry.horizontal_offset8);
         let near =
             base[0].simd_eq(y_unit) & column.cast::<u32>().simd_lt(Simd::splat(geometry.window8));
-        let flags = Simd::<u8, LANES>::from_array(lanes.flags[group]);
         let projecting = (flags & Simd::splat(PROJECTS)).simd_ne(Simd::splat(0));
         let intersecting = (flags & Simd::splat(INTERSECTS)).simd_ne(Simd::splat(0));
         let shift = group * LANES;
@@ -550,7 +567,7 @@ mod tests {
                 &mut lanes,
                 &cells,
                 side,
-                &source.targets,
+                &TargetTables::new(&source),
                 y8,
                 x_base,
                 geometry,

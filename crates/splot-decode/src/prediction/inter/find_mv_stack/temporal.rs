@@ -1964,6 +1964,7 @@ struct TemporalProjectionSource {
     source_ref: usize,
     side: usize,
     target_ref: Option<usize>,
+    source_to_current: i32,
     /// One entry per reference slot and a last, empty one that every other
     /// stored reference reads, so the table sits inline.
     targets: [ProjectionTarget; MAX_SORTED_REFS + 1],
@@ -2009,7 +2010,11 @@ impl TemporalProjectionSource {
             *target = ProjectionTarget {
                 end_ref,
                 ref_offset,
-                factor: factor.map_or(0, |factor| if ref_offset < 0 { -factor } else { factor }),
+                divisor: factor
+                    .and(DIV_MULT.get(ref_offset.unsigned_abs() as usize))
+                    .map_or(0, |&scale| {
+                        (if ref_offset < 0 { -scale } else { scale }) as i16
+                    }),
                 end_factor: clamped_tmvp_factor(ref_offset.abs() - numerator, ref_offset.abs()),
                 hint_match: target_order_hint == Some(hint),
                 flags: if factor.is_some() { scan::PROJECTS } else { 0 }
@@ -2026,6 +2031,7 @@ impl TemporalProjectionSource {
             source_ref,
             side,
             target_ref,
+            source_to_current,
             targets,
         })
     }
