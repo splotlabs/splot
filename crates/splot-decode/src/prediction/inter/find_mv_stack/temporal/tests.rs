@@ -355,27 +355,33 @@ fn reference_order_hints_exclude_invalid_and_restricted_slots() {
 #[test]
 fn metadata_constructor_matches_delayed_reference_resolution() {
     let ref_order_hints = [Some(1), None, Some(3)];
-    let block = TemporalMotionBlock::new(
-        0,
-        0,
-        2,
-        2,
-        2,
-        2,
-        4,
-        [Some(3), Some(1)],
-        [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
-        [None; 2],
-    );
-    let mut delayed = TemporalMotionField::new(2, 2).unwrap();
-    delayed.record_block(block);
-    delayed.set_reference_metadata(true, (8, 8), &ref_order_hints);
+    for (block_hints, expected) in [
+        ([Some(3), Some(1)], [2, 0]),
+        ([Some(u32::MAX), Some(1)], [0, RESTRICTED_TEMPORAL_REF]),
+    ] {
+        let block = TemporalMotionBlock::new(
+            0,
+            0,
+            2,
+            2,
+            2,
+            2,
+            4,
+            block_hints,
+            [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
+            [None; 2],
+        );
+        let mut delayed = TemporalMotionField::new(2, 2).unwrap();
+        delayed.record_block(block);
+        delayed.set_reference_metadata(true, (8, 8), &ref_order_hints);
 
-    let mut immediate =
-        TemporalMotionField::new_with_metadata(2, 2, true, (8, 8), &ref_order_hints).unwrap();
-    immediate.record_block(block);
+        let mut immediate =
+            TemporalMotionField::new_with_metadata(2, 2, true, (8, 8), &ref_order_hints).unwrap();
+        immediate.record_block(block);
 
-    assert_eq!(immediate, delayed);
+        assert_eq!(immediate, delayed);
+        assert_eq!(immediate.cell(0, 0).unwrap().ref_indices, expected);
+    }
 }
 
 #[test]
@@ -573,6 +579,49 @@ fn projection_records_zero_offset_reference() {
         output.cell(0, 0),
         Some(ProjectedTemporalMotionCell::new(true, Mv::ZERO, 0))
     );
+}
+
+/// AV2 § 7.22 stores a restricted `refIdx`; § 7.9.3 projects it with
+/// `refOffset = 0` (07-decoding-process.md:2304).
+#[test]
+fn projection_records_restricted_reference_with_zero_offset() {
+    let hints = reference_order_hints(&[0, 1], &[true, true], &[2, u32::MAX]);
+    let mut source = TemporalMotionField::new_with_metadata(4, 4, true, (16, 16), &hints).unwrap();
+    let mv = Mv { row: 8, col: -16 };
+    source.record_block(TemporalMotionBlock::new(
+        0,
+        0,
+        4,
+        4,
+        4,
+        4,
+        8,
+        [Some(u32::MAX), None],
+        [mv, Mv::ZERO],
+        [None; 2],
+    ));
+    let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
+
+    project_whole_temporal_motion_field(
+        &source,
+        8,
+        6,
+        1,
+        8,
+        0,
+        0,
+        None,
+        &[Some(2), Some(8)],
+        None,
+        &mut output,
+    );
+
+    for (y8, x8) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+        assert_eq!(
+            output.cell(y8, x8),
+            Some(ProjectedTemporalMotionCell::new(true, mv, 0))
+        );
+    }
 }
 
 #[test]
