@@ -617,6 +617,23 @@ mod tests {
                 )
                 .unwrap()
             );
+            if case == 0 && bit_depth != BitDepth::Eight {
+                let mut narrow = vec![0u8; stride * size];
+                let result = subpel_predict_block_compound_average_fast_validated_strided_into(
+                    &views[0],
+                    &params[0],
+                    &views[1],
+                    &params[1],
+                    weight,
+                    &mut [],
+                    &mut narrow,
+                    stride,
+                );
+                assert!(matches!(
+                    result,
+                    Err(ReconError::SampleTypeUnsupportedBitDepth { .. })
+                ));
+            }
             let bounded = [0, 1].map(|index| plane_bounded(&views[index], &params[index]));
             let mut direct = vec![sentinel; stride * size];
             let accepted = predict(
