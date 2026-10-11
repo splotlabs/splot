@@ -669,6 +669,52 @@ fn projection_records_zero_offset_reference() {
 }
 
 #[test]
+fn projection_replaces_only_for_the_mapped_target_reference_index() {
+    let source = |stored_hint| {
+        let mut source = TemporalMotionField::new(4, 4).unwrap();
+        source.set_reference_metadata(true, (16, 16), &[Some(stored_hint)]);
+        source.set_cell(
+            0,
+            0,
+            TemporalMotionCell {
+                ref_indices: [0, INVALID_TEMPORAL_REF],
+                mvs: [CompressedTemporalMv::ZERO; 2],
+            },
+        );
+        source
+    };
+    let shared_hint = 6;
+    let ref_order_hints = [Some(shared_hint), Some(shared_hint), Some(7), Some(4)];
+    let project = |target_ref| {
+        let mut trajectories = TrajectoryState::new((4, 4), 4, 1, 8).unwrap();
+        let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
+        for (source, source_hint, source_ref, target_ref) in [
+            (source(0), 4, 3, None),
+            (source(shared_hint), 7, 2, target_ref),
+        ] {
+            project_whole_temporal_motion_field(
+                &source,
+                source_hint,
+                8,
+                1,
+                8,
+                source_ref,
+                0,
+                target_ref,
+                &ref_order_hints,
+                Some(&mut trajectories),
+                &mut output,
+            );
+        }
+        let offset = output.cell(0, 0).unwrap().ref_offset();
+        (offset, trajectories.trajectory_cell(2, 0, 0))
+    };
+
+    assert_eq!(project(Some(1)), (4, None));
+    assert_eq!(project(Some(0)), (1, Some(Mv::ZERO)));
+}
+
+#[test]
 fn zero_offset_projection_uses_the_zero_divisor_multiplier() {
     assert_eq!(project_mv(Mv { row: 24, col: -40 }, 3, 0), Mv::ZERO);
 }
@@ -742,7 +788,6 @@ fn side_rejected_projection_still_extends_existing_trajectory() {
     let mut trajectories = TrajectoryState::new((112, 252), 6, 1, 8).unwrap();
     trajectories.whole_band().unwrap().observe_projection(
         0,
-        Some(1),
         Some(1),
         54,
         125,
@@ -1175,7 +1220,6 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let trajectories = context.trajectories.as_ref().unwrap();
     let trajectory_ptr = trajectories.cells.as_ptr();
     let positions_ptr = trajectories.scratch[0].positions.as_ptr();
-    let offsets_ptr = trajectories.scratch[0].projection_offsets.as_ptr();
 
     let parked = TemporalProjectionConfig {
         enable_trajectory: false,
@@ -1200,10 +1244,6 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     assert_eq!(context.field.cells.as_ptr(), field_ptr);
     assert_eq!(trajectories.cells.as_ptr(), trajectory_ptr);
     assert_eq!(trajectories.scratch[0].positions.as_ptr(), positions_ptr);
-    assert_eq!(
-        trajectories.scratch[0].projection_offsets.as_ptr(),
-        offsets_ptr
-    );
 }
 
 #[test]

@@ -38,7 +38,6 @@ pub(super) struct ProjectionTarget {
     /// The factor that projects the stored vector onto the § 7.9.8 trajectory
     /// end, the vector `observe_projection_at` records for `end_ref`.
     pub(super) end_factor: i32,
-    pub(super) hint_match: bool,
     /// Whether `end_ref` is the projection's target reference.
     pub(super) end_is_target: bool,
     /// [`PROJECTS`] when the reference admits a projection factor, and
@@ -399,16 +398,15 @@ impl<'a> ChunkWalk<'a> {
                 }
                 _ => None,
             };
-            if bits & PROJECT == 0 {
-                continue;
-            }
-            if bits & OBSERVE != 0 {
+            if bits & PROJECT != 0
+                && write_projection(output, target, mv, ints.cell(OUTPUT_CELL))
+                && bits & OBSERVE != 0
+            {
                 let (row, col) = ints.pair(PROJECTED);
                 let (y8, x8) = ints.pair(POSITION);
                 trajectories.observe_projection_at(
                     source,
                     target.end_ref,
-                    target.end_is_target,
                     source_slot,
                     ints.cell(TRAJECTORY_CELL),
                     Mv { row, col },
@@ -418,10 +416,8 @@ impl<'a> ChunkWalk<'a> {
                     },
                     (y8 as usize, x8 as usize),
                     end_slot,
-                    target.ref_offset.abs(),
                 );
             }
-            write_projection(output, target, mv, ints.cell(OUTPUT_CELL));
         }
     }
 
@@ -441,31 +437,31 @@ impl<'a> ChunkWalk<'a> {
     }
 }
 
-/// Writes one projection into the output band cell `index` unless that cell
-/// already holds an earlier one that it does not replace.
+/// Writes one projection into the output band cell `index` when AV2 § 7.9.3
+/// admits it there, and returns whether it wrote.
 fn write_projection(
     output: &mut ProjectedFieldBand<'_>,
     target: &ProjectionTarget,
     mv: Mv,
     index: usize,
-) {
+) -> bool {
     let Some(output_cell) = output.cells.get_mut(index) else {
-        return;
+        return false;
     };
     let ref_offset = target.ref_offset.abs();
-    let replace =
-        !output_cell.valid || (target.hint_match && output_cell.ref_offset() != ref_offset);
-    if replace {
-        let mv = if target.ref_offset < 0 {
-            Mv {
-                row: -mv.row,
-                col: -mv.col,
-            }
-        } else {
-            mv
-        };
-        *output_cell = ProjectedTemporalMotionCell::new(true, mv, ref_offset);
+    if output_cell.valid && !(target.end_is_target && output_cell.ref_offset() != ref_offset) {
+        return false;
     }
+    let mv = if target.ref_offset < 0 {
+        Mv {
+            row: -mv.row,
+            col: -mv.col,
+        }
+    } else {
+        mv
+    };
+    *output_cell = ProjectedTemporalMotionCell::new(true, mv, ref_offset);
+    true
 }
 
 /// Reads the sampled cells of one chunk and computes, for each, its
@@ -661,7 +657,7 @@ fn project(component: Lanes, factor: Lanes) -> Lanes {
 }
 
 /// [`project`] for one component.
-pub(super) fn project_component(component: i32, factor: i32) -> i32 {
+fn project_component(component: i32, factor: i32) -> i32 {
     let scaled = component * factor;
     (scaled + (scaled >> 31) + (1 << 13)) >> 14
 }

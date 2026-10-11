@@ -8,7 +8,6 @@ use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint, tem
 type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
 
-const INVALID_PROJECTION_OFFSET: i32 = i32::MIN;
 const MAX_TRAJECTORY_REFERENCES: usize = 7;
 pub(super) const INVALID_TRAJECTORY_MV: Mv = Mv {
     row: i32::MIN,
@@ -344,7 +343,6 @@ pub(super) struct TrajectoryBand<'a> {
     positions: &'a mut [TrajectoryPositions],
     cells: usize,
     epoch: u8,
-    projection_offsets: &'a mut [i32],
     row_base: usize,
     step: usize,
     step_mask: usize,
@@ -398,7 +396,6 @@ impl<'a> TrajectoryGrids<'a> {
             positions: &mut scratch.positions,
             cells,
             epoch: scratch.epoch,
-            projection_offsets: &mut scratch.projection_offsets,
             row_base,
             step: self.step,
             step_mask: self.step - 1,
@@ -415,7 +412,6 @@ pub(super) struct OwnedTrajectoryBand {
     fields: Vec<PackedTrajectoryMv>,
     positions: Vec<TrajectoryPositions>,
     epoch: u8,
-    projection_offsets: Vec<i32>,
     cells_per_reference: usize,
     reference_count: usize,
     row_base: usize,
@@ -429,7 +425,6 @@ pub(super) struct OwnedTrajectoryBand {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct OwnedTrajectoryScratch {
     pub(super) positions: Vec<TrajectoryPositions>,
-    pub(super) projection_offsets: Vec<i32>,
     /// Stamps this band's position records, so a new band clears them by
     /// moving to the next epoch instead of rewriting every record.
     pub(super) epoch: u8,
@@ -448,10 +443,6 @@ impl OwnedTrajectoryScratch {
             .try_reserve_exact(total.saturating_sub(self.positions.len()))
             .ok()?;
         self.positions.resize(total, TrajectoryPositions::EMPTY);
-        self.projection_offsets.clear();
-        self.projection_offsets.try_reserve_exact(cells).ok()?;
-        self.projection_offsets
-            .resize(cells, INVALID_PROJECTION_OFFSET);
         Some(())
     }
 }
@@ -525,7 +516,6 @@ impl OwnedTrajectoryBand {
             fields,
             positions: core::mem::take(&mut scratch.positions),
             epoch: scratch.epoch,
-            projection_offsets: core::mem::take(&mut scratch.projection_offsets),
             cells_per_reference: cell_count,
             reference_count,
             row_base,
@@ -545,7 +535,6 @@ impl OwnedTrajectoryBand {
             positions: &mut self.positions,
             cells: self.cells_per_reference,
             epoch: self.epoch,
-            projection_offsets: &mut self.projection_offsets,
             row_base: self.row_base,
             step: self.step,
             step_mask: self.step - 1,
@@ -572,7 +561,6 @@ impl OwnedTrajectoryBand {
             }
         }
         scratch.positions = core::mem::take(&mut self.positions);
-        scratch.projection_offsets = core::mem::take(&mut self.projection_offsets);
         OwnedTrajectoryFields {
             cells: core::mem::take(&mut self.fields),
             reference_count: self.reference_count,
@@ -846,7 +834,6 @@ impl TrajectoryBand<'_> {
         &mut self,
         source: usize,
         end: Option<usize>,
-        target: Option<usize>,
         y8: usize,
         x8: usize,
         mv: Mv,
@@ -881,7 +868,6 @@ impl TrajectoryBand<'_> {
         self.observe_projection_at(
             source,
             end,
-            target.is_some() && target == end,
             self.row_slot(source, y8, x8),
             self.band_index(position.0, position.1)
                 .unwrap_or(usize::MAX),
@@ -889,12 +875,11 @@ impl TrajectoryBand<'_> {
             || super::project_tmvp_mv(mv, reference_offset - numerator, reference_offset),
             position,
             end_slot,
-            reference_offset,
         );
     }
 
-    /// Records a § 7.9.8 observation of a scanned cell unless the projected
-    /// position, band cell `index`, already holds one it does not replace.
+    /// Records the § 7.9.3 trajectory observation of a projection that replaced
+    /// the motion field cell at the projected position, band cell `index`.
     ///
     /// `source_slot` is the scanned cell's record for `source`, and `end_slot`
     /// the trajectory end's record for `end` when the end lies inside the
@@ -905,24 +890,16 @@ impl TrajectoryBand<'_> {
         &mut self,
         source: usize,
         end: Option<usize>,
-        end_is_target: bool,
         source_slot: usize,
         index: usize,
         projected: Mv,
         end_mv: impl FnOnce() -> Mv,
         position: Position,
         end_slot: Option<usize>,
-        reference_offset: i32,
     ) {
-        let Some(recorded_offset) = self.projection_offsets.get_mut(index) else {
-            return;
-        };
-        let replace = *recorded_offset == INVALID_PROJECTION_OFFSET
-            || (end_is_target && *recorded_offset != reference_offset);
-        if !replace {
+        if index >= self.cells {
             return;
         }
-        *recorded_offset = reference_offset;
         let phase = self.phase(position.1);
         self.set_position_slot(source_slot, phase, position);
         self.set_field_at(
@@ -1046,7 +1023,6 @@ mod tests {
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
         assert_eq!(std::mem::size_of::<TrajectoryPositions>(), 14);
-        assert_eq!(std::mem::size_of::<i32>(), 4);
         assert_eq!(
             PackedPosition::new((8191, 8191)).and_then(PackedPosition::unpack),
             Some((8191, 8191))
@@ -1077,7 +1053,6 @@ mod tests {
         state.whole_band().unwrap().observe_projection(
             1,
             Some(0),
-            None,
             1,
             1,
             Mv { row: 16, col: 32 },
@@ -1100,7 +1075,7 @@ mod tests {
         state
             .whole_band()
             .unwrap()
-            .observe_projection(0, None, None, 1, 1, Mv::ZERO, 2, 0, false);
+            .observe_projection(0, None, 1, 1, Mv::ZERO, 2, 0, false);
 
         assert_eq!(state.trajectory_cell(0, 1, 1), Some(Mv::ZERO));
     }
@@ -1111,7 +1086,6 @@ mod tests {
         state.whole_band().unwrap().observe_projection(
             0,
             Some(1),
-            None,
             1,
             7,
             Mv { row: 0, col: 1120 },
@@ -1136,7 +1110,6 @@ mod tests {
         state.whole_band().unwrap().observe_projection(
             0,
             Some(1),
-            None,
             1,
             1,
             Mv { row: 0, col: 64 },
@@ -1150,6 +1123,15 @@ mod tests {
             .check_intersection(1, Some(2), 1, 2, Mv { row: 0, col: 64 });
 
         assert_eq!(state.trajectory_cell(2, 1, 1), Some(Mv { row: 0, col: 96 }));
+    }
+
+    #[test]
+    fn observation_past_the_band_records_nothing() {
+        let mut state = TrajectoryState::new((2, 2), 1, 1, 8).unwrap();
+        let mut band = state.whole_band().unwrap();
+        let cells = band.cells;
+        band.observe_projection_at(0, None, 0, cells, Mv::ZERO, || Mv::ZERO, (0, 0), None);
+        assert_eq!(band.positions_at(0, (0, 0)), None);
     }
 
     #[test]

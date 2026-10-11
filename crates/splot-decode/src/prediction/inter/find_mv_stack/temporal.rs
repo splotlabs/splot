@@ -2034,8 +2034,6 @@ impl TemporalProjectionSource {
         let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
         let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
         let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
-        let target_order_hint =
-            target_ref.and_then(|target| ref_order_hints.get(target).copied().flatten());
         let numerator = if side & 1 == 1 {
             -source_to_current
         } else {
@@ -2062,7 +2060,6 @@ impl TemporalProjectionSource {
                         (if ref_offset < 0 { -scale } else { scale }) as i16
                     }),
                 end_factor: clamped_tmvp_factor(ref_offset.abs() - numerator, ref_offset.abs()),
-                hint_match: target_order_hint == Some(hint),
                 end_is_target: target_ref.is_some() && end_ref == target_ref,
                 flags: if factor.is_some() { scan::PROJECTS } else { 0 }
                     | if end_ref.is_some() {
