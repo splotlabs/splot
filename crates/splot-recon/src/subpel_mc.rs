@@ -474,7 +474,9 @@ pub struct SubpelPredictParams {
     pub last_x: i32,
     /// The § 7.13.3.18 reference-clipping region bottom bound (`lastY`).
     pub last_y: i32,
-    /// The active bit depth, used by the final § 4.8 `Clip1`.
+    /// The active bit depth, used by the final § 4.8 `Clip1`. Reference
+    /// samples above its maximum give unspecified predictions, which can
+    /// also be above the maximum.
     pub bit_depth: BitDepth,
 }
 
