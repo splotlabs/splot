@@ -458,6 +458,10 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let context = DecodeContext::new(
         DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
     )?;
+    let stdout_carries_output = matches!(
+        target,
+        DecodeOutputTarget::Y4m { path } | DecodeOutputTarget::Raw { path } if is_stdout_path(path)
+    );
     let report = match target {
         DecodeOutputTarget::Null => match context.decode_discard_reader(input, options) {
             Ok(()) => return Ok(ExitCode::SUCCESS),
@@ -487,7 +491,11 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     if args.json {
         let json = serde_json::to_string_pretty(&DecodeDiagnosticJson::new(&report, output_format))
             .context("failed to serialize decode diagnostic")?;
-        println!("{json}");
+        if stdout_carries_output {
+            eprintln!("{json}");
+        } else {
+            println!("{json}");
+        }
     } else {
         render_text_diagnostic(&report, output_format);
     }
@@ -565,7 +573,7 @@ fn publish_output(
     artifact: OutputArtifact,
     write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
-    if path == Path::new("-") {
+    if is_stdout_path(path) {
         return write_stream_output(io::stdout(), artifact, write);
     }
     if fs::metadata(path).is_ok_and(|metadata| !metadata.is_file() && !metadata.is_dir()) {
@@ -701,10 +709,21 @@ fn write_stream_output(
     write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
     let mut output = BufWriter::new(output);
-    write(&mut output)?;
-    output
-        .flush()
-        .map_err(|source| output_io(artifact.write_stream_operation, source))
+    let result = write(&mut output).and_then(|()| {
+        output
+            .flush()
+            .map_err(|source| output_io(artifact.write_stream_operation, source))
+    });
+    match result {
+        Err(DecodeError::Output {
+            source: DecodeOutputError::Io { source, .. },
+        }) if source.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        result => result,
+    }
+}
+
+fn is_stdout_path(path: &Path) -> bool {
+    matches!(path.to_str(), Some("-" | "/dev/stdout"))
 }
 
 fn replace_output(
