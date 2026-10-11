@@ -79,6 +79,19 @@ pub(super) trait SubpelOutput<O> {
         }
     }
 
+    /// Stores the horizontal-only output of the `Round2(.., InterRound0)`
+    /// intermediates `values`, `Round2(values << FILTER_BITS, InterRound1)`.
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn horizontal<const LANES: usize>(
+        &mut self,
+        values: Simd<i16, LANES>,
+        inter_round1: u32,
+        output: &mut [O],
+    ) {
+        self.rounded(values.cast(), super::FILTER_BITS, inter_round1, output);
+    }
+
     fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [O]) {
         for (output, value) in output.iter_mut().zip(values.to_array()) {
             *output = self.one(value);
@@ -147,6 +160,23 @@ impl SubpelOutput<u16> for ClippedU16SubpelOutput {
         output[..LANES].copy_from_slice(values.cast::<u16>().as_array()); // splot-copy-ok: publish clipped SIMD prediction lanes
     }
 
+    /// Rounds in `i16` lanes: an 8- or 10-bit intermediate is at most 23529,
+    /// so adding the rounding bias cannot wrap.
+    #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
+    #[inline(always)]
+    fn horizontal<const LANES: usize>(
+        &mut self,
+        values: Simd<i16, LANES>,
+        _: u32,
+        output: &mut [u16],
+    ) {
+        let shift = INTER_ROUND1_NON_COMPOUND - super::FILTER_BITS;
+        let values = ((values + Simd::splat(1 << (shift - 1))) >> shift as i16)
+            .simd_max(Simd::splat(0))
+            .simd_min(Simd::splat(self.max_sample as i16));
+        output[..LANES].copy_from_slice(values.cast::<u16>().as_array()); // splot-copy-ok: publish clipped SIMD prediction lanes
+    }
+
     #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
     #[inline(always)]
     fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [u16]) {
@@ -199,6 +229,20 @@ impl SubpelOutput<u8> for ClippedU8SubpelOutput {
         let shift = INTER_ROUND1_NON_COMPOUND - prescale;
         let values = ((sums + Simd::splat(1 << (shift - 1))) >> shift as i32)
             .cast::<i16>()
+            .simd_clamp(Simd::splat(0), Simd::splat(i16::from(u8::MAX)));
+        output[..LANES].copy_from_slice(values.cast::<u8>().as_array()); // splot-copy-ok: publish clipped SIMD prediction lanes
+    }
+
+    #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
+    #[inline(always)]
+    fn horizontal<const LANES: usize>(
+        &mut self,
+        values: Simd<i16, LANES>,
+        _: u32,
+        output: &mut [u8],
+    ) {
+        let shift = INTER_ROUND1_NON_COMPOUND - super::FILTER_BITS;
+        let values = ((values + Simd::splat(1 << (shift - 1))) >> shift as i16)
             .simd_clamp(Simd::splat(0), Simd::splat(i16::from(u8::MAX)));
         output[..LANES].copy_from_slice(values.cast::<u8>().as_array()); // splot-copy-ok: publish clipped SIMD prediction lanes
     }

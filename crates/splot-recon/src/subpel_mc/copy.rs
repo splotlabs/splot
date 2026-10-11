@@ -421,12 +421,23 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
             )
         };
         let mut c = 0;
+        if let Some(spans) = window.get(..params.w + 16) {
+            for (span, row_out) in spans
+                .windows(32)
+                .step_by(16)
+                .zip(row_out.chunks_exact_mut(16))
+            {
+                let horizontal = Simd::<i32, 16>::slid_intermediate(span, 0, packed_taps);
+                finish.horizontal(horizontal, inter_round1, row_out);
+            }
+            c = params.w - params.w % 16;
+        }
         macro_rules! vectors {
             ($lanes:literal) => {
                 while c + $lanes <= params.w {
                     let span = window.get(c..c + <Simd<i32, $lanes> as SlideLanes>::SPAN);
                     let horizontal = if let Some(span) = span {
-                        Simd::<i32, $lanes>::slid_intermediate(span, 0, packed_taps).cast()
+                        Simd::<i32, $lanes>::slid_intermediate(span, 0, packed_taps)
                     } else {
                         let mut sum = Simd::<i32, $lanes>::splat(0);
                         for (tap_offset, &tap) in taps.iter().enumerate() {
@@ -434,10 +445,9 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
                                 reference_lanes::<$lanes, T>(window, c + tap_start + tap_offset);
                             sum = tap_mac(sum, lanes.cast(), tap);
                         }
-                        round2_simd(sum, INTER_ROUND0)
+                        round2_simd(sum, INTER_ROUND0).cast()
                     };
-                    let row_out = &mut row_out[c..c + $lanes];
-                    finish.rounded(horizontal, FILTER_BITS, inter_round1, row_out);
+                    finish.horizontal(horizontal, inter_round1, &mut row_out[c..c + $lanes]);
                     c += $lanes;
                 }
             };
