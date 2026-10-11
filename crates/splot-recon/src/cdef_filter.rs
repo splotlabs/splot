@@ -1018,18 +1018,34 @@ fn cdef_window_linear(filter: &CdefBlockFilter, range: i32) -> bool {
         })
 }
 
+/// Whether `constrain` is `Clip3(-strength, strength, d)` for every tap
+/// difference of a window whose samples span `range`: it is when
+/// `|d| >> dampingAdj` is 0, which holds for every `|d|` up to `range` when
+/// it holds for `range`.
+fn cdef_window_clamped(filter: &CdefBlockFilter, range: i32) -> bool {
+    [filter.pri_str, filter.sec_str]
+        .into_iter()
+        .all(|strength| {
+            strength == 0 || range >> constrain_damping_adj(strength, filter.damping) == 0
+        })
+}
+
 /// [`cdef_filter_rows`] in an interior layout 8 lanes wide for windows that
-/// [`cdef_window_linear`] admits. Every constrained difference is the
-/// difference itself, so the weighted sum is the weighted tap sum minus the
-/// centre times the active weight, 12 per tap family.
+/// [`cdef_window_clamped`] admits, or with `!CLAMP` that
+/// [`cdef_window_linear`] admits. A constrained difference is then the
+/// difference clipped to the strength, `Clip3(c - s, c + s, tap) - c`, or
+/// the difference itself, so the weighted sum is the weighted sum of the
+/// (clipped) taps minus the centre times the active weight, 12 per tap
+/// family.
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
-fn cdef_filter_rows_linear<
+fn cdef_filter_rows_clamped<
     const STRIDE: usize,
     const CENTER: usize,
     const ROWS: usize,
     const SPAN: usize,
     const AREA: usize,
+    const CLAMP: bool,
     const PRI: bool,
     const SEC: bool,
 >(
@@ -1046,6 +1062,10 @@ fn cdef_filter_rows_linear<
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i16, 16>::splat(tap as i16));
     let weight = Simd::splat(-12 * (i16::from(PRI) + i16::from(SEC)));
+    let (pri_str, sec_str) = (
+        Simd::splat(filter.pri_str as i16),
+        Simd::splat(filter.sec_str as i16),
+    );
     macro_rules! filter_row_pair {
         ($row:literal) => {{
             let row: usize = $row;
@@ -1055,25 +1075,34 @@ fn cdef_filter_rows_linear<
                 let mut min = center;
                 let mut max = center;
                 macro_rules! add_pair {
-                    ($first:expr, $second:expr, $weight:expr) => {{
+                    ($first:expr, $second:expr, $weight:expr, $strength:expr) => {{
                         let first = cdef_row_pair::<8, 16, STRIDE, SPAN>($first, row)?;
                         let second = cdef_row_pair::<8, 16, STRIDE, SPAN>($second, row)?;
                         if PRI && SEC {
                             min = min.simd_min(first).simd_min(second);
                             max = max.simd_max(first).simd_max(second);
                         }
+                        let (first, second) = if CLAMP {
+                            let (low, high) = (center - $strength, center + $strength);
+                            (
+                                first.simd_max(low).simd_min(high),
+                                second.simd_max(low).simd_min(high),
+                            )
+                        } else {
+                            (first, second)
+                        };
                         sum += $weight * (first + second);
                     }};
                 }
                 if PRI {
-                    add_pair!(pri_views[0], pri_views[1], pri_taps[0]);
-                    add_pair!(pri_views[2], pri_views[3], pri_taps[1]);
+                    add_pair!(pri_views[0], pri_views[1], pri_taps[0], pri_str);
+                    add_pair!(pri_views[2], pri_views[3], pri_taps[1], pri_str);
                 }
                 if SEC {
-                    add_pair!(sec_views[0], sec_views[1], sec_taps[0]);
-                    add_pair!(sec_views[2], sec_views[3], sec_taps[0]);
-                    add_pair!(sec_views[4], sec_views[5], sec_taps[1]);
-                    add_pair!(sec_views[6], sec_views[7], sec_taps[1]);
+                    add_pair!(sec_views[0], sec_views[1], sec_taps[0], sec_str);
+                    add_pair!(sec_views[2], sec_views[3], sec_taps[0], sec_str);
+                    add_pair!(sec_views[4], sec_views[5], sec_taps[1], sec_str);
+                    add_pair!(sec_views[6], sec_views[7], sec_taps[1], sec_str);
                 }
                 let negative = sum.is_negative().select(Simd::splat(1), Simd::splat(0));
                 let mut filtered = center + ((Simd::splat(8) + sum - negative) >> 4);
@@ -1287,15 +1316,24 @@ pub fn cdef_filter_block_chroma_pair_segment(
     const SPAN: usize = 3 * CDEF_PAIR_SEGMENT_STRIDE + 8;
     const AREA: usize = CDEF_PAIR_SEGMENT_BLOCK_AREA;
     let starts = &CDEF_PAIR_SEGMENT_TAP_STARTS;
-    if cdef_window_linear(filter, i32::from(range)) {
-        return cdef_by_families!(
-            filter,
-            cdef_filter_rows_linear::<CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
-                pad, 4, filter, starts, out, 8
-            ),
-            cdef_copy_centre_rows::<8, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, AREA>(pad, 4, out, 8)
-        )
-        .is_some();
+    macro_rules! clamped {
+        ($clamp:literal) => {
+            cdef_by_families!(
+                filter,
+                cdef_filter_rows_clamped::<CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA, $clamp>(
+                    pad, 4, filter, starts, out, 8
+                ),
+                cdef_copy_centre_rows::<8, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, AREA>(pad, 4, out, 8)
+            )
+            .is_some()
+        };
+    }
+    let range = i32::from(range);
+    if cdef_window_linear(filter, range) {
+        return clamped!(false);
+    }
+    if cdef_window_clamped(filter, range) {
+        return clamped!(true);
     }
     cdef_filter_block_rows::<8, 16, false, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
         pad, 4, filter, starts, out, 8,
@@ -1332,15 +1370,23 @@ pub fn cdef_filter_block_segment(
             cdef_copy_centre_rows::<8, CDEF_SEGMENT_STRIDE, 2, 8, AREA>(pad, 8, out, out_stride)
         };
     }
+    macro_rules! clamped {
+        ($clamp:literal) => {
+            cdef_by_families!(
+                filter,
+                cdef_filter_rows_clamped::<CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA, $clamp>(
+                    pad, 8, filter, starts, out, out_stride
+                ),
+                copy!()
+            )
+            .is_some()
+        };
+    }
     if cdef_window_linear(filter, range) {
-        return cdef_by_families!(
-            filter,
-            cdef_filter_rows_linear::<CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
-                pad, 8, filter, starts, out, out_stride
-            ),
-            copy!()
-        )
-        .is_some();
+        return clamped!(false);
+    }
+    if cdef_window_clamped(filter, range) {
+        return clamped!(true);
     }
     if range <= 255 && cdef_u8_lanes_fit(filter) {
         return cdef_by_families!(
@@ -2038,12 +2084,23 @@ mod tests {
         }
     }
 
+    /// Marks the tap-family mix of `filter` under the linear (row 0) or the
+    /// clamped (row 1) kernel when a window of `range` takes one.
+    fn mark_mode(modes: &mut [[bool; 3]; 2], filter: &CdefBlockFilter, range: i32) {
+        let family = usize::from(filter.pri_str == 0) + usize::from(filter.sec_str == 0) * 2;
+        if cdef_window_linear(filter, range) {
+            modes[0][family] = true;
+        } else if cdef_window_clamped(filter, range) {
+            modes[1][family] = true;
+        }
+    }
+
     #[test]
     fn rebased_segment_blocks_match_per_sample_filter() {
         let mut state = 0x51ed_270bu32;
         let mut pad = [0u16; CDEF_SEGMENT_BLOCK_AREA];
         let mut single = [0u16; CDEF_PADDED_AREA];
-        let mut linear_families = [false; 3];
+        let mut mode_families = [[false; 3]; 2];
         for (base, range) in [(0u16, 256u32), (767, 256), (300, 41), (500, 4), (90, 13)] {
             pad[..12 * CDEF_SEGMENT_STRIDE].fill_with(|| {
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -2065,10 +2122,7 @@ mod tests {
                             dir,
                             coeff_shift: 2,
                         };
-                        if cdef_window_linear(&filter, i32::from(max - min)) {
-                            linear_families
-                                [usize::from(pri_str == 0) + usize::from(sec_str == 0) * 2] = true;
-                        }
+                        mark_mode(&mut mode_families, &filter, i32::from(max - min));
                         let mut got = [0u16; 80];
                         assert!(cdef_filter_block_segment(
                             &pad,
@@ -2088,16 +2142,16 @@ mod tests {
                 }
             }
         }
-        assert_eq!(linear_families, [true; 3]);
+        assert_eq!(mode_families, [[true; 3]; 2]);
     }
 
     #[test]
-    fn linear_pair_segment_matches_chroma_pair_kernel() {
+    fn narrow_pair_segment_matches_chroma_pair_kernel() {
         let mut state = 0x6a09_e667u32;
         let mut pad = [0u16; CDEF_PAIR_SEGMENT_BLOCK_AREA];
         let mut single = [0u16; CDEF_PADDED_AREA];
-        let mut linear_families = [false; 3];
-        for spread in [1u32, 3, 6, 13] {
+        let mut mode_families = [[false; 3]; 2];
+        for spread in [1u32, 3, 6, 13, 20, 40] {
             for row in 0..8 {
                 for lane in 0..16 {
                     state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -2117,10 +2171,7 @@ mod tests {
                             dir,
                             coeff_shift: 2,
                         };
-                        if cdef_window_linear(&filter, i32::from(range)) {
-                            linear_families
-                                [usize::from(pri_str == 0) + usize::from(sec_str == 0) * 2] = true;
-                        }
+                        mark_mode(&mut mode_families, &filter, i32::from(range));
                         let (mut got, mut want) =
                             ([0u16; CDEF_PAIR_OUTPUT], [0u16; CDEF_PAIR_OUTPUT]);
                         assert!(cdef_filter_block_chroma_pair_segment(
@@ -2134,21 +2185,22 @@ mod tests {
                 }
             }
         }
-        assert_eq!(linear_families, [true; 3]);
+        assert_eq!(mode_families, [[true; 3]; 2]);
     }
 
     #[test]
-    fn linear_window_bound_matches_per_sample_filter() {
+    fn linear_and_clamped_window_bounds_match_per_sample_filter() {
         let mut pad = [0u16; CDEF_SEGMENT_BLOCK_AREA];
         let mut single = [0u16; CDEF_PADDED_AREA];
         for strength in [4, 8, 12, 16, 40, 60] {
             for damping in 5..=8 {
                 let adj = constrain_damping_adj(strength, damping);
-                let bound = (0..=strength)
+                let linear = (0..=strength)
                     .filter(|&range| range + (range >> adj) <= strength)
                     .max()
                     .unwrap_or(0);
-                for range in [bound, bound + 1] {
+                let clamped = (1 << adj) - 1;
+                for range in [linear, linear + 1, clamped, clamped + 1] {
                     for (row, col) in (0..12).flat_map(|row| (0..12).map(move |col| (row, col))) {
                         let sample = 400 + range as u16 * ((row + col) % 2) as u16;
                         pad[row * CDEF_SEGMENT_STRIDE + col] = sample;
