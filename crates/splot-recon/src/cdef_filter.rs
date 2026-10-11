@@ -103,8 +103,8 @@ pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) ->
     cdef_direction_strided::<CDEF_PADDED_SIDE, _>(pad, coeff_shift)
 }
 
-/// [`cdef_direction_padded`] for one block of the luma segment scratch that
-/// [`cdef_filter_block_segment`] reads.
+/// [`cdef_direction_padded`] for a block of a luma segment, as
+/// [`CdefLumaSegment::block`] gives it.
 pub fn cdef_direction_segment(
     pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
     coeff_shift: u32,
@@ -1302,107 +1302,11 @@ pub fn cdef_filter_block_chroma_pair(
     .is_some()
 }
 
-/// [`cdef_filter_block_chroma_pair`] for one block of the chroma-pair segment
-/// scratch: rows `CDEF_PAIR_SEGMENT_STRIDE` lanes apart, with the block's
-/// first tap-reach lane at index 0. Within each plane, the samples of the
-/// block's window span at most `range`, so the block skips `constrain` when
-/// `cdef_window_linear` admits it.
-pub fn cdef_filter_block_chroma_pair_segment(
-    pad: &[u16; CDEF_PAIR_SEGMENT_BLOCK_AREA],
-    filter: &CdefBlockFilter,
-    range: u16,
-    out: &mut [u16; CDEF_PAIR_OUTPUT],
-) -> bool {
-    const SPAN: usize = 3 * CDEF_PAIR_SEGMENT_STRIDE + 8;
-    const AREA: usize = CDEF_PAIR_SEGMENT_BLOCK_AREA;
-    let starts = &CDEF_PAIR_SEGMENT_TAP_STARTS;
-    macro_rules! clamped {
-        ($clamp:literal) => {
-            cdef_by_families!(
-                filter,
-                cdef_filter_rows_clamped::<CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA, $clamp>(
-                    pad, 4, filter, starts, out, 8
-                ),
-                cdef_copy_centre_rows::<8, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, AREA>(pad, 4, out, 8)
-            )
-            .is_some()
-        };
-    }
-    let range = i32::from(range);
-    if cdef_window_linear(filter, range) {
-        return clamped!(false);
-    }
-    if cdef_window_clamped(filter, range) {
-        return clamped!(true);
-    }
-    cdef_filter_block_rows::<8, 16, false, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
-        pad, 4, filter, starts, out, 8,
-    )
-    .is_some()
-}
-
-/// AV2 § 7.18.3 CDEF over one interior 8x8 luma block of the luma segment
-/// scratch: rows `CDEF_SEGMENT_STRIDE` lanes apart, with the block's first
-/// tap-reach lane at index 0. `window` is `Some([min, max])` only when every
-/// sample of the block's 12x12 window lies in `min..=max`. The block then
-/// skips `constrain` when `cdef_window_linear` admits the range, or runs
-/// in `u8` lanes when the range is below 256 and its filter fits them.
-/// Returns `false` when `out` cannot hold the block at `out_stride`.
-pub fn cdef_filter_block_segment(
-    pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
-    filter: &CdefBlockFilter,
-    window: Option<[u16; 2]>,
-    out: &mut [u16],
-    out_stride: usize,
-) -> bool {
-    const SPAN: usize = 7 * CDEF_SEGMENT_STRIDE + 8;
-    const AREA: usize = CDEF_SEGMENT_BLOCK_AREA;
-    let starts = &CDEF_SEGMENT_TAP_STARTS;
-    let Some([base, max]) = window else {
-        return cdef_filter_block_rows::<8, 16, false, CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
-            pad, 8, filter, starts, out, out_stride,
-        )
-        .is_some();
-    };
-    let range = i32::from(max) - i32::from(base);
-    macro_rules! copy {
-        () => {
-            cdef_copy_centre_rows::<8, CDEF_SEGMENT_STRIDE, 2, 8, AREA>(pad, 8, out, out_stride)
-        };
-    }
-    macro_rules! clamped {
-        ($clamp:literal) => {
-            cdef_by_families!(
-                filter,
-                cdef_filter_rows_clamped::<CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA, $clamp>(
-                    pad, 8, filter, starts, out, out_stride
-                ),
-                copy!()
-            )
-            .is_some()
-        };
-    }
-    if cdef_window_linear(filter, range) {
-        return clamped!(false);
-    }
-    if cdef_window_clamped(filter, range) {
-        return clamped!(true);
-    }
-    if range <= 255 && cdef_u8_lanes_fit(filter) {
-        return cdef_by_families!(
-            filter,
-            cdef_filter_rows_8bit::<CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
-                pad, 8, filter, starts, out, out_stride, base
-            ),
-            copy!()
-        )
-        .is_some();
-    }
-    cdef_filter_block_rows::<8, 16, false, CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
-        pad, 8, filter, starts, out, out_stride,
-    )
-    .is_some()
-}
+mod segment;
+pub use segment::{
+    CdefLumaSegment, CdefPairSegment, cdef_filter_block_chroma_pair_segment,
+    cdef_filter_block_segment,
+};
 
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block over a padded scratch.
 ///
@@ -2012,22 +1916,20 @@ mod tests {
     }
 
     #[test]
-    fn segment_blocks_match_single_block_kernels() {
+    fn segment_blocks_match_single_block_kernels() -> Result<(), &'static str> {
         for coeff_shift in [2u32, 0] {
             let mut state = 0x9e37_79b9u32;
             let mut next = || {
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 ((state >> 13) & ((256 << coeff_shift) - 1)) as u16
             };
-            let mut luma = [0u16; 8 * (CDEF_SEGMENT_BLOCKS - 1) + CDEF_SEGMENT_BLOCK_AREA];
-            let mut pair = [0u16; 8 * (CDEF_SEGMENT_BLOCKS - 1) + CDEF_PAIR_SEGMENT_BLOCK_AREA];
-            luma[..12 * CDEF_SEGMENT_STRIDE].fill_with(&mut next);
-            pair[..8 * CDEF_PAIR_SEGMENT_STRIDE].fill_with(&mut next);
+            let samples = core::array::from_fn(|_| next());
+            let planes = core::array::from_fn(|_| core::array::from_fn(|_| next()));
+            let luma = luma_segment(&samples);
+            let pair = pair_segment(&planes);
             for block in 0..CDEF_SEGMENT_BLOCKS {
-                let luma_block: &[u16; CDEF_SEGMENT_BLOCK_AREA] =
-                    &core::array::from_fn(|lane| luma[8 * block + lane]);
-                let pair_block: &[u16; CDEF_PAIR_SEGMENT_BLOCK_AREA] =
-                    &core::array::from_fn(|lane| pair[8 * block + lane]);
+                let luma_block = luma.block(block).ok_or("luma block")?;
+                let pair_block = pair.block(block).ok_or("pair block")?;
                 let mut single = [0u16; CDEF_PADDED_AREA];
                 let mut single_pair = [0u16; CDEF_PADDED_AREA];
                 for row in 0..12 {
@@ -2055,21 +1957,21 @@ mod tests {
                             dir,
                             coeff_shift,
                         };
-                        let (mut got, mut want) = ([0u16; 80], [0u16; 80]);
-                        assert!(cdef_filter_block_segment(
-                            luma_block, &filter, None, &mut got, 10
-                        ));
+                        let mut want = [0u16; 80];
                         assert!(cdef_filter_block_interior_to_valid_stride(
                             &single, 8, 8, &filter, &mut want, 10
                         ));
-                        assert_eq!(got, want, "luma block={block} dir={dir} pri={pri_str}");
+                        for use_range in [false, true] {
+                            let mut got = [0u16; 80];
+                            assert!(cdef_filter_block_segment(
+                                &luma, block, &filter, use_range, &mut got, 10
+                            ));
+                            assert_eq!(got, want, "luma block={block} dir={dir} pri={pri_str}");
+                        }
                         let (mut got, mut want) =
                             ([0u16; CDEF_PAIR_OUTPUT], [0u16; CDEF_PAIR_OUTPUT]);
                         assert!(cdef_filter_block_chroma_pair_segment(
-                            pair_block,
-                            &filter,
-                            u16::MAX,
-                            &mut got
+                            &pair, block, &filter, &mut got
                         ));
                         assert!(cdef_filter_block_chroma_pair(
                             &single_pair,
@@ -2082,6 +1984,26 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    const PAIR_PLANE_STRIDE: usize = CDEF_PAIR_SEGMENT_STRIDE / 2;
+
+    /// Gathers a luma segment from 12 rows laid out as its scratch.
+    fn luma_segment(samples: &[u16; 12 * CDEF_SEGMENT_STRIDE]) -> CdefLumaSegment {
+        let mut segment = CdefLumaSegment::default();
+        let stride = CDEF_SEGMENT_STRIDE;
+        assert!(segment.gather(samples, stride, stride, (2, 2)));
+        segment
+    }
+
+    /// Gathers a chroma-pair segment from 8 rows of each plane, so that lane
+    /// `2 * col + plane` of a scratch row is column `col` of `planes[plane]`.
+    fn pair_segment(planes: &[[u16; 8 * PAIR_PLANE_STRIDE]; 2]) -> CdefPairSegment {
+        let mut segment = CdefPairSegment::default();
+        let stride = PAIR_PLANE_STRIDE;
+        assert!(segment.gather(&planes[0], &planes[1], stride, stride, (2, 2)));
+        segment
     }
 
     /// Marks the tap-family mix of `filter` under the linear (row 0) or the
@@ -2098,20 +2020,19 @@ mod tests {
     #[test]
     fn rebased_segment_blocks_match_per_sample_filter() {
         let mut state = 0x51ed_270bu32;
-        let mut pad = [0u16; CDEF_SEGMENT_BLOCK_AREA];
+        let mut samples = [0u16; 12 * CDEF_SEGMENT_STRIDE];
         let mut single = [0u16; CDEF_PADDED_AREA];
         let mut mode_families = [[false; 3]; 2];
         for (base, range) in [(0u16, 256u32), (767, 256), (300, 41), (500, 4), (90, 13)] {
-            pad[..12 * CDEF_SEGMENT_STRIDE].fill_with(|| {
+            samples.fill_with(|| {
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 base + ((state >> 13) % range) as u16
             });
             for (row, col) in (0..12).flat_map(|row| (0..12).map(move |col| (row, col))) {
-                single[row * CDEF_PADDED_SIDE + col] = pad[row * CDEF_SEGMENT_STRIDE + col];
+                single[row * CDEF_PADDED_SIDE + col] = samples[row * CDEF_SEGMENT_STRIDE + col];
             }
-            let window = &pad[..12 * CDEF_SEGMENT_STRIDE];
-            let min = window.iter().copied().min().unwrap_or(0);
-            let max = window.iter().copied().max().unwrap_or(0);
+            let segment = luma_segment(&samples);
+            let [min, max] = segment.range(0).unwrap_or([0, u16::MAX]);
             for dir in 0..8 {
                 for (pri_str, sec_str) in [(1, 0), (60, 0), (0, 4), (0, 16), (15, 4), (60, 16)] {
                     for damping in 5..=8 {
@@ -2125,11 +2046,7 @@ mod tests {
                         mark_mode(&mut mode_families, &filter, i32::from(max - min));
                         let mut got = [0u16; 80];
                         assert!(cdef_filter_block_segment(
-                            &pad,
-                            &filter,
-                            Some([min, max]),
-                            &mut got,
-                            10
+                            &segment, 0, &filter, true, &mut got, 10
                         ));
                         for (i, j) in (0..8).flat_map(|i| (0..8).map(move |j| (i, j))) {
                             assert_eq!(
@@ -2148,7 +2065,7 @@ mod tests {
     #[test]
     fn narrow_pair_segment_matches_chroma_pair_kernel() {
         let mut state = 0x6a09_e667u32;
-        let mut pad = [0u16; CDEF_PAIR_SEGMENT_BLOCK_AREA];
+        let mut planes = [[0u16; 8 * PAIR_PLANE_STRIDE]; 2];
         let mut single = [0u16; CDEF_PADDED_AREA];
         let mut mode_families = [[false; 3]; 2];
         for spread in [1u32, 3, 6, 13, 20, 40] {
@@ -2156,11 +2073,13 @@ mod tests {
                 for lane in 0..16 {
                     state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                     let sample = [100u16, 900][lane % 2] + ((state >> 13) % spread) as u16;
-                    pad[row * CDEF_PAIR_SEGMENT_STRIDE + lane] = sample;
+                    planes[lane % 2][row * PAIR_PLANE_STRIDE + lane / 2] = sample;
                     single[row * CDEF_PAIR_STRIDE + lane] = sample;
                 }
             }
-            let range = spread as u16 - 1;
+            let segment = pair_segment(&planes);
+            let range = segment.range(0).unwrap_or(u16::MAX);
+            assert!(u32::from(range) < spread);
             for dir in 0..8 {
                 for (pri_str, sec_str) in [(4, 0), (12, 0), (0, 4), (0, 16), (8, 4), (16, 8)] {
                     for damping in 4..=7 {
@@ -2175,7 +2094,7 @@ mod tests {
                         let (mut got, mut want) =
                             ([0u16; CDEF_PAIR_OUTPUT], [0u16; CDEF_PAIR_OUTPUT]);
                         assert!(cdef_filter_block_chroma_pair_segment(
-                            &pad, &filter, range, &mut got
+                            &segment, 0, &filter, &mut got
                         ));
                         assert!(cdef_filter_block_chroma_pair(
                             &single, 4, &filter, &mut want
@@ -2190,7 +2109,7 @@ mod tests {
 
     #[test]
     fn linear_and_clamped_window_bounds_match_per_sample_filter() {
-        let mut pad = [0u16; CDEF_SEGMENT_BLOCK_AREA];
+        let mut samples = [0u16; 12 * CDEF_SEGMENT_STRIDE];
         let mut single = [0u16; CDEF_PADDED_AREA];
         for strength in [4, 8, 12, 16, 40, 60] {
             for damping in 5..=8 {
@@ -2203,10 +2122,11 @@ mod tests {
                 for range in [linear, linear + 1, clamped, clamped + 1] {
                     for (row, col) in (0..12).flat_map(|row| (0..12).map(move |col| (row, col))) {
                         let sample = 400 + range as u16 * ((row + col) % 2) as u16;
-                        pad[row * CDEF_SEGMENT_STRIDE + col] = sample;
+                        samples[row * CDEF_SEGMENT_STRIDE + col] = sample;
                         single[row * CDEF_PADDED_SIDE + col] = sample;
                     }
-                    let window = Some([400, 400 + range as u16]);
+                    let segment = luma_segment(&samples);
+                    assert_eq!(segment.range(0), Some([400, 400 + range as u16]));
                     for dir in 0..8 {
                         for (pri_str, sec_str) in [(strength, 0), (0, strength), (strength, 16)] {
                             let filter = CdefBlockFilter {
@@ -2218,7 +2138,7 @@ mod tests {
                             };
                             let mut got = [0u16; 80];
                             assert!(cdef_filter_block_segment(
-                                &pad, &filter, window, &mut got, 10
+                                &segment, 0, &filter, true, &mut got, 10
                             ));
                             for (i, j) in (0..8).flat_map(|i| (0..8).map(move |j| (i, j))) {
                                 assert_eq!(

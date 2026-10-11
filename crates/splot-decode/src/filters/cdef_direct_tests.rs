@@ -704,10 +704,7 @@ fn run_segment(
         fill_flat: [true; 3],
     };
     if segment {
-        let mut scratch = CdefSegmentScratch {
-            luma: [0; LUMA_SEGMENT_AREA],
-            pair: [0; PAIR_SEGMENT_AREA],
-        };
+        let mut scratch = CdefSegmentScratch::default();
         assert!(cdef_segment(&lookup, params, (2, c), (0, 6), &mut scratch, &mut frame).unwrap());
     } else {
         let mut pad = [0u16; CDEF_PADDED_AREA];
@@ -808,10 +805,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
     )
     .unwrap();
     let before = cdef_frame_samples(&frame);
-    let mut scratch = CdefSegmentScratch {
-        luma: [0; LUMA_SEGMENT_AREA],
-        pair: [0; PAIR_SEGMENT_AREA],
-    };
+    let mut scratch = CdefSegmentScratch::default();
     let params = active_params()[0];
     for (r, c) in [(0, 16), (2, 0), (2, 8), (2, 32), (4, 16)] {
         assert!(
@@ -822,77 +816,6 @@ fn edge_segment_falls_back_to_the_per_block_path() {
     assert_eq!(cdef_frame_samples(&frame), before);
     assert!(cdef_segment(&lookup, params, (2, 16), (0, 6), &mut scratch, &mut frame).unwrap());
     assert_ne!(cdef_frame_samples(&frame), before);
-}
-
-#[test]
-fn luma_segment_gather_returns_each_block_window_range() {
-    let (width, stride) = (44, 48);
-    let mut state = 0x2468_ace1u32;
-    let samples: Vec<u16> = (0..stride * 14)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (state >> 22) as u16
-        })
-        .collect();
-    let mut pad = [0u16; LUMA_SEGMENT_AREA];
-    let ranges = gather_luma_segment(&samples, width, stride, &mut pad, (4, 3)).unwrap();
-    for (block, range) in ranges.into_iter().enumerate() {
-        let window = (1..13).flat_map(|y| {
-            let start = y * stride + 2 + 8 * block;
-            samples[start..start + 12].iter().copied()
-        });
-        let (min, max) = (window.clone().min().unwrap(), window.max().unwrap());
-        assert_eq!(range, [min, max], "block {block}");
-    }
-    for row in 0..12 {
-        let start = (row + 1) * stride + 2;
-        assert_eq!(
-            &pad[row * CDEF_SEGMENT_STRIDE..(row + 1) * CDEF_SEGMENT_STRIDE],
-            &samples[start..start + CDEF_SEGMENT_STRIDE]
-        );
-    }
-}
-
-/// The plane of squares `x^2` makes each block's range depend on where its
-/// window starts, and either plane may hold the larger range.
-#[test]
-fn pair_segment_gather_returns_each_block_plane_range() {
-    let stride = 24;
-    let mut state = 0x1357_9bdfu32;
-    let noise: Vec<u16> = (0..stride * 10)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            300 + ((state >> 13) % 40) as u16
-        })
-        .collect();
-    let square: Vec<u16> = (0..stride * 10)
-        .map(|index| 300 + ((index % stride) * (index % stride)) as u16)
-        .collect();
-    for (u, v) in [(&noise, &square), (&square, &noise)] {
-        check_pair_segment_ranges(u, v, stride);
-    }
-}
-
-fn check_pair_segment_ranges(u: &[u16], v: &[u16], stride: usize) {
-    let mut pad = [0u16; PAIR_SEGMENT_AREA];
-    let ranges = gather_pair_segment(u, v, stride + 1, stride, &mut pad).unwrap();
-    for (block, range) in ranges.into_iter().enumerate() {
-        let plane_range = |samples: &[u16]| {
-            let window = (1..9).flat_map(|y| {
-                let start = y * stride + 1 + 4 * block;
-                samples[start..start + 8].iter().copied()
-            });
-            window.clone().max().unwrap() - window.min().unwrap()
-        };
-        assert_eq!(range, plane_range(u).max(plane_range(v)), "block {block}");
-    }
-    for row in 0..8 {
-        for col in 0..CDEF_PAIR_SEGMENT_STRIDE / 2 {
-            let start = (row + 1) * stride + 1 + col;
-            let lanes = &pad[row * CDEF_PAIR_SEGMENT_STRIDE + 2 * col..][..2];
-            assert_eq!(lanes, [u[start], v[start]]);
-        }
-    }
 }
 
 #[test]
