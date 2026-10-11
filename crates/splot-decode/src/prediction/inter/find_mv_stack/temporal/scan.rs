@@ -62,26 +62,59 @@ const INTERSECT: u8 = 8;
 /// The lane projects from a cell inside the trajectory grid, so it observes.
 const OBSERVE: u8 = 16;
 
+/// Rows of [`ChunkLanes::ints`]: the decompressed vector, its projection and
+/// the sampled position (two rows each, row then column).
+const MV: usize = 0;
+const PROJECTED: usize = 2;
+const POSITION: usize = 4;
+/// The projected position's cell in the output band, past it when the
+/// position sits above the band.
+const OUTPUT_CELL: usize = 6;
+/// The same cell in the trajectory band.
+const TRAJECTORY_CELL: usize = 7;
+/// The trajectory band cell where the unprojected vector lands, the end of a
+/// § 7.9.8 trajectory.
+const END_CELL: usize = 8;
+const INT_ROWS: usize = 9;
+/// One lane's view of [`ChunkLanes::ints`], from its first row to its last.
+const LANE_SPAN: usize = (INT_ROWS - 1) * CHUNK + 1;
+
 /// The order-free values of up to [`CHUNK`] sampled cells of one source row,
 /// reused chunk after chunk; lanes past a chunk's end keep stale values.
 #[derive(Default)]
 struct ChunkLanes {
     window: Window,
     refs: Grid<u8>,
-    mv: [Grid<i32>; 2],
-    projected: [Grid<i32>; 2],
-    position: [Grid<i32>; 2],
-    /// The projected position's cell in the output band, past it when the
-    /// position sits above the band.
-    output_index: Grid<i32>,
-    /// The same cell in the trajectory band.
-    trajectory_index: Grid<i32>,
-    /// The trajectory band cell where the unprojected vector lands, the end of
-    /// a § 7.9.8 trajectory.
-    end_index: Grid<i32>,
+    /// One row per integer value, so one lane reads every value at a fixed
+    /// offset from one address.
+    ints: [Grid<i32>; INT_ROWS],
     /// [`REVERSE`], [`END_WRITE`], [`PROJECT`], [`INTERSECT`] and [`OBSERVE`]
     /// for a tracked scan.
     bits: Grid<u8>,
+}
+
+/// One lane's integer values.
+#[derive(Clone, Copy)]
+struct LaneInts<'a>(&'a [i32; LANE_SPAN]);
+
+impl LaneInts<'_> {
+    fn get(self, row: usize) -> i32 {
+        self.0[row * CHUNK]
+    }
+
+    fn pair(self, row: usize) -> (i32, i32) {
+        (self.get(row), self.get(row + 1))
+    }
+
+    /// A band cell; -1 reads as a cell past every band.
+    fn cell(self, row: usize) -> usize {
+        self.get(row) as u32 as usize
+    }
+
+    fn mv(self) -> Mv {
+        let (row, col) = self.pair(MV);
+        Mv { row, col }
+    }
 }
 
 /// One source's [`ProjectionTarget`] flags and divisor bytes as lane tables
@@ -313,23 +346,9 @@ impl<'a> ChunkWalk<'a> {
         }
     }
 
-    fn pair(grid: &[Grid<i32>; 2], lane: usize) -> (i32, i32) {
-        (grid[0].as_flattened()[lane], grid[1].as_flattened()[lane])
-    }
-
-    /// A band cell lane; -1 reads as a cell past every band.
-    fn index(grid: &Grid<i32>, lane: usize) -> usize {
-        grid.as_flattened()[lane] as u32 as usize
-    }
-
-    fn mv(&self, lane: usize) -> Mv {
-        let (row, col) = Self::pair(&self.lanes.mv, lane);
-        Mv { row, col }
-    }
-
-    fn position(&self, lane: usize) -> (usize, usize) {
-        let (y8, x8) = Self::pair(&self.lanes.position, lane);
-        (y8 as usize, x8 as usize)
+    fn ints(&self, lane: usize) -> Option<LaneInts<'a>> {
+        let ints = self.lanes.ints.as_flattened().as_flattened();
+        ints.get(lane..)?.first_chunk().map(LaneInts)
     }
 
     fn target<'t>(
@@ -356,15 +375,17 @@ impl<'a> ChunkWalk<'a> {
         while walk != 0 {
             let lane = walk.trailing_zeros() as usize;
             walk &= walk - 1;
-            let Some(target) = self.target(&prepared.targets, lane) else {
+            let (Some(target), Some(ints)) =
+                (self.target(&prepared.targets, lane), self.ints(lane))
+            else {
                 continue;
             };
             let bits = self.lanes.bits.as_flattened()[lane];
             let source_slot = scanned_slot + lane * self.step;
-            let mv = self.mv(lane);
+            let mv = ints.mv();
             let end_slot = match target.end_ref {
                 Some(end) if bits & INTERSECT != 0 => {
-                    let end_slot = trajectories.slot(end, Self::index(&self.lanes.end_index, lane));
+                    let end_slot = trajectories.slot(end, ints.cell(END_CELL));
                     trajectories.extend_trajectories(source, end, source_slot, None, mv);
                     if bits & REVERSE != 0 {
                         let back = Mv {
@@ -382,25 +403,25 @@ impl<'a> ChunkWalk<'a> {
                 continue;
             }
             if bits & OBSERVE != 0 {
-                let (row, col) = Self::pair(&self.lanes.projected, lane);
+                let (row, col) = ints.pair(PROJECTED);
+                let (y8, x8) = ints.pair(POSITION);
                 trajectories.observe_projection_at(
                     source,
                     target.end_ref,
                     target.end_is_target,
                     source_slot,
-                    Self::index(&self.lanes.trajectory_index, lane),
+                    ints.cell(TRAJECTORY_CELL),
                     Mv { row, col },
                     || Mv {
                         row: project_component(mv.row, target.end_factor),
                         col: project_component(mv.col, target.end_factor),
                     },
-                    self.position(lane),
+                    (y8 as usize, x8 as usize),
                     end_slot,
                     target.ref_offset.abs(),
                 );
             }
-            let index = Self::index(&self.lanes.output_index, lane);
-            write_projection(output, target, mv, index);
+            write_projection(output, target, mv, ints.cell(OUTPUT_CELL));
         }
     }
 
@@ -411,9 +432,10 @@ impl<'a> ChunkWalk<'a> {
         while walk != 0 {
             let lane = walk.trailing_zeros() as usize;
             walk &= walk - 1;
-            if let Some(target) = self.target(&prepared.targets, lane) {
-                let index = Self::index(&self.lanes.output_index, lane);
-                write_projection(output, target, self.mv(lane), index);
+            if let (Some(target), Some(ints)) =
+                (self.target(&prepared.targets, lane), self.ints(lane))
+            {
+                write_projection(output, target, ints.mv(), ints.cell(OUTPUT_CELL));
             }
         }
     }
@@ -486,9 +508,9 @@ fn chunk_lanes<const TRACKED: bool>(
         let mut end = [Lanes::splat(0); 2];
         for (component, saved) in [saved_rows, saved_cols].into_iter().enumerate() {
             let mv: Lanes = decompress(saved.cast::<i8>().cast()).cast();
-            lanes.mv[component][group] = mv.to_array();
+            lanes.ints[MV + component][group] = mv.to_array();
             let projected = project(mv, factor);
-            lanes.projected[component][group] = projected.to_array();
+            lanes.ints[PROJECTED + component][group] = projected.to_array();
             let (origin, limit) = if component == 0 {
                 (y, geometry.height8)
             } else {
@@ -498,13 +520,13 @@ fn chunk_lanes<const TRACKED: bool>(
             let unrounded = origin + divide_by_64(projected);
             sampled &= inside(unrounded);
             position[component] = unrounded & Lanes::splat(!geometry.step_mask);
-            lanes.position[component][group] = position[component].to_array();
+            lanes.ints[POSITION + component][group] = position[component].to_array();
             base[component] = position[component] & Lanes::splat(!geometry.unit_mask);
             let unrounded = origin + divide_by_64(mv);
             ended &= inside(unrounded);
             end[component] = unrounded & Lanes::splat(!geometry.step_mask);
         }
-        lanes.output_index[group] = geometry.output.index(position).to_array();
+        lanes.ints[OUTPUT_CELL][group] = geometry.output.index(position).to_array();
         let column = x - base[1] + Lanes::splat(geometry.horizontal_offset8);
         let near =
             base[0].simd_eq(y_unit) & column.cast::<u32>().simd_lt(Simd::splat(geometry.window8));
@@ -516,9 +538,9 @@ fn chunk_lanes<const TRACKED: bool>(
             let inside = (x.cast::<u32>().simd_lt(Simd::splat(track.width8)) & row_inside).cast();
             let intersecting = (flags & Simd::splat(INTERSECTS)).simd_ne(Simd::splat(0)) & inside;
             intersects |= intersecting.to_bitmask() << shift;
-            lanes.trajectory_index[group] = track.band.index(position).to_array();
+            lanes.ints[TRAJECTORY_CELL][group] = track.band.index(position).to_array();
             let end_index = track.band.index(end);
-            lanes.end_index[group] = end_index.to_array();
+            lanes.ints[END_CELL][group] = end_index.to_array();
             let in_band = ended & end_index.cast::<u32>().simd_lt(Simd::splat(track.cells));
             let reverse = (end[0] & Lanes::splat(!track.unit_mask)).simd_eq(y_track_unit);
             let unit = position.map(|value| value & Lanes::splat(!track.unit_mask));
@@ -809,8 +831,8 @@ mod tests {
                 let reference = usize::from(cell.ref_indices[side]).min(MAX_SORTED_REFS);
                 let mv = uncompress_tmvp_mv(cell.mvs[side]);
                 let lane_mv = Mv {
-                    row: lanes.mv[0].as_flattened()[lane],
-                    col: lanes.mv[1].as_flattened()[lane],
+                    row: lanes.ints[MV].as_flattened()[lane],
+                    col: lanes.ints[MV + 1].as_flattened()[lane],
                 };
                 assert_eq!(lane_mv, mv, "case {case} lane {lane}");
                 let hint = source_hints
@@ -852,7 +874,7 @@ mod tests {
                 let end_index = end.map(|end| cell_index(end, band_base));
                 let in_band = end_index.filter(|&index| index < band_cells);
                 if let Some(index) = in_band {
-                    assert_eq!(lanes.end_index.as_flattened()[lane] as usize, index);
+                    assert_eq!(lanes.ints[END_CELL].as_flattened()[lane] as usize, index);
                 }
                 let unit_base = |value: usize| value & !(unit - 1);
                 assert_eq!(
@@ -862,10 +884,9 @@ mod tests {
                 );
                 if let Some((_, position)) = expected {
                     assert_eq!(bits & OBSERVE != 0, x8 < width8);
-                    let output_index = ChunkWalk::index(&lanes.output_index, lane);
-                    assert_eq!(output_index, cell_index(position, output_base));
-                    let trajectory_index = ChunkWalk::index(&lanes.trajectory_index, lane);
-                    assert_eq!(trajectory_index, cell_index(position, band_base));
+                    let cell = |row: usize| lanes.ints[row].as_flattened()[lane] as u32 as usize;
+                    assert_eq!(cell(OUTPUT_CELL), cell_index(position, output_base));
+                    assert_eq!(cell(TRAJECTORY_CELL), cell_index(position, band_base));
                     let (base_y8, base_x8) = (unit_base(position.0), unit_base(position.1));
                     let window = end.is_some_and(|(end_y8, end_x8)| {
                         (base_y8..base_y8 + unit).contains(&end_y8)
@@ -878,12 +899,15 @@ mod tests {
                 assert_eq!(walk >> lane & 1 == 1, expected.is_some() || intersects);
                 if let Some((projected, (pos_y8, pos_x8))) = expected {
                     let lane_projected = Mv {
-                        row: lanes.projected[0].as_flattened()[lane],
-                        col: lanes.projected[1].as_flattened()[lane],
+                        row: lanes.ints[PROJECTED].as_flattened()[lane],
+                        col: lanes.ints[PROJECTED + 1].as_flattened()[lane],
                     };
                     assert_eq!(lane_projected, projected, "case {case} lane {lane}");
-                    assert_eq!(lanes.position[0].as_flattened()[lane] as usize, pos_y8);
-                    assert_eq!(lanes.position[1].as_flattened()[lane] as usize, pos_x8);
+                    assert_eq!(lanes.ints[POSITION].as_flattened()[lane] as usize, pos_y8);
+                    assert_eq!(
+                        lanes.ints[POSITION + 1].as_flattened()[lane] as usize,
+                        pos_x8
+                    );
                 }
             }
         }
