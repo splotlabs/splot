@@ -1613,6 +1613,34 @@ fn fullpel_compound_average_matches_materialized_predictors() {
 }
 
 #[test]
+fn fullpel_equal_weight_tail_widens_large_u16_samples() {
+    let left = [40_000u16; 9];
+    let right = [50_001u16; 9];
+    let view0 = ReferencePlaneView::new(&left, 9, 1).unwrap();
+    let view1 = ReferencePlaneView::new(&right, 9, 1).unwrap();
+    let params = SubpelPredictParams {
+        bit_depth: BitDepth::Ten,
+        ..full_pel_params(InterpolationFilter::EightTapSharp, 9, 1, 0, 0, 9, 1)
+    };
+    let mut output = [0u16; 9];
+    assert!(
+        subpel_predict_block_compound_average_fast_validated_strided_into(
+            &view0,
+            &params,
+            &view1,
+            &params,
+            8,
+            &mut [],
+            &mut output,
+            9,
+        )
+        .unwrap()
+    );
+    let [.., scalar_tail] = output;
+    assert_eq!(scalar_tail, 45_001);
+}
+
+#[test]
 fn fullpel_compound_average_u8_matches_materialized_predictors() {
     let ref_w = 24usize;
     let ref_h = 20usize;

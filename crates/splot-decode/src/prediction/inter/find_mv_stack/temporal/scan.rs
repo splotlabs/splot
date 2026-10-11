@@ -742,8 +742,9 @@ mod tests {
             let hint =
                 |next: &mut dyn FnMut(usize) -> usize| (next(5) != 0).then(|| next(64) as u32);
             let hints: Vec<Option<u32>> = (0..7).map(|_| hint(&mut next)).collect();
-            let source_hints: Vec<Option<u32>> =
-                (0..7 + next(6)).map(|_| hint(&mut next)).collect();
+            let source_hints: Vec<Option<u32>> = (0..7 + next(MAX_SORTED_REFS - 6))
+                .map(|_| hint(&mut next))
+                .collect();
             let mut ref_order_hints = RefOrderHints::default();
             ref_order_hints.extend_within(source_hints.iter().copied());
             let metadata = TemporalMotionFieldMetadata {
@@ -824,7 +825,8 @@ mod tests {
             };
             for (lane, cell) in cells.iter().step_by(step).enumerate() {
                 let x8 = x_base + lane * step;
-                let reference = usize::from(cell.ref_indices[side]).min(MAX_SORTED_REFS);
+                let raw = usize::from(cell.ref_indices[side]);
+                let reference = raw.min(MAX_SORTED_REFS);
                 let mv = uncompress_tmvp_mv(cell.mvs[side]);
                 let lane_mv = Mv {
                     row: lanes.ints[MV].as_flattened()[lane],
@@ -834,8 +836,12 @@ mod tests {
                 let hint = source_hints
                     .get(reference)
                     .filter(|_| reference < MAX_SORTED_REFS);
-                let entry = hint.copied().flatten().map(|hint| {
-                    let offset = get_relative_dist(source_hint as i32, hint as i32);
+                let offset = hint
+                    .copied()
+                    .flatten()
+                    .map(|hint| get_relative_dist(source_hint as i32, hint as i32))
+                    .or((raw == MAX_SORTED_REFS).then_some(0));
+                let entry = offset.map(|offset| {
                     (
                         offset,
                         tmvp_projection_factor(source_to_current, offset, side),

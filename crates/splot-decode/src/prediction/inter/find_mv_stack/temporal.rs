@@ -32,6 +32,9 @@ const MAX_FRAME_DISTANCE: i32 = 31;
 const REFMVS_LIMIT: i32 = (1 << 11) - 1;
 const MV_LIMIT: i32 = (1 << 16) - 1;
 const INVALID_TEMPORAL_REF: u8 = u8::MAX;
+/// A restricted `refIdx`, which AV2 § 7.22 stores too; § 7.9.3 projects it with
+/// `refOffset = 0` and `startRefMap = NONE`.
+const RESTRICTED_TEMPORAL_REF: u8 = MAX_SORTED_REFS as u8;
 const DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
@@ -645,7 +648,11 @@ impl BlockRefs {
                         .position(|&candidate| candidate == Some(hint))
                 })
                 .and_then(|index| u8::try_from(index).ok())
-                .unwrap_or(INVALID_TEMPORAL_REF)
+                .unwrap_or(if hint == Some(u32::MAX) {
+                    RESTRICTED_TEMPORAL_REF
+                } else {
+                    INVALID_TEMPORAL_REF
+                })
             }),
             swap: temporal_lists_swap(*block),
         }
@@ -2011,8 +2018,9 @@ struct TemporalProjectionSource {
     source_ref: usize,
     side: usize,
     source_to_current: i32,
-    /// One entry per reference slot and a last, empty one that every other
-    /// stored reference reads, so the table sits inline.
+    /// One entry per reference slot and a last one for a restricted
+    /// reference ([`RESTRICTED_TEMPORAL_REF`]); a stored index past them reads
+    /// an empty entry from the lane tables. The table sits inline.
     targets: [ProjectionTarget; MAX_SORTED_REFS + 1],
 }
 
@@ -2031,6 +2039,7 @@ impl TemporalProjectionSource {
         if layout.width8() == 0 {
             return None;
         }
+        debug_assert!(source.ref_order_hints.len() <= MAX_SORTED_REFS);
         let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
         let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
         let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
@@ -2069,6 +2078,14 @@ impl TemporalProjectionSource {
                     },
             };
         }
+        targets[MAX_SORTED_REFS] = ProjectionTarget {
+            flags: if tmvp_projection_factor(source_to_current, 0, side).is_some() {
+                scan::PROJECTS
+            } else {
+                0
+            },
+            ..ProjectionTarget::default()
+        };
         Some(Self {
             source_width8: layout.width8(),
             source_height8: layout.height8(),
