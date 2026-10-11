@@ -6,7 +6,8 @@
 use super::lr_syntax::{MI_SIZE, WIENER_NS_CHROMA_COEFFS, WienerNsUnitFilterState};
 use super::{
     DecodeLimitName, DecodeLimits, TilePartitionBounds, TilePartitionFrameFacts,
-    TilePartitionTraversalError, checked_add, checked_mul, checked_mul_shifted, checked_sub,
+    TilePartitionTraversalError, checked_add, checked_mul, checked_mul_shifted, checked_shl,
+    checked_sub,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,32 +168,71 @@ pub(super) fn record_active_wiener_ns_source_blocks_for_unit(
     lr_activity: &mut WienerNsLrUnitActivity,
 ) -> Result<(), TilePartitionTraversalError> {
     let geometry = lr_unit_geometry(input)?;
-    let mut row_start = None;
-    let mut row_end = input.tile_bounds.mi_row_start;
-    for row in input.tile_bounds.mi_row_start..input.tile_bounds.mi_row_end {
-        if lr_unit_row_for_mi(input, geometry, row)? == input.unit_row {
-            row_start.get_or_insert(row);
-            row_end = checked_add("lr_source_row_end", row, 1)?;
-        }
-    }
-    let mut col_start = None;
-    let mut col_end = input.tile_bounds.mi_col_start;
-    for col in input.tile_bounds.mi_col_start..input.tile_bounds.mi_col_end {
-        if lr_unit_col_for_mi(input, geometry, col)? == input.unit_col {
-            col_start.get_or_insert(col);
-            col_end = checked_add("lr_source_col_end", col, 1)?;
-        }
-    }
-    let Some(col_start) = col_start else {
+    let tile = input.tile_bounds;
+    let row_axis = UnitMiAxis {
+        offset: geometry.lr_row_offset,
+        units: geometry.unit_rows,
+        unit_size: input.unit_size,
+        sub: input.sub_y,
+        bias: 8,
+        mi_count: geometry.mi_rows,
+    };
+    let col_axis = UnitMiAxis {
+        offset: geometry.lr_col_offset,
+        units: geometry.unit_cols,
+        unit_size: input.unit_size,
+        sub: input.sub_x,
+        bias: 0,
+        mi_count: geometry.mi_cols,
+    };
+    let (Some((row_start, row_end)), Some((col_start, col_end))) = (
+        row_axis.span(input.unit_row)?,
+        col_axis.span(input.unit_col)?,
+    ) else {
         return Ok(());
     };
-    let cols = checked_sub("lr_source_cols", col_end, col_start)?;
-    for row in row_start.unwrap_or(row_end)..row_end {
-        let mut block = lr_source_block_for(input, row, col_start)?;
+    let cols = col_end - col_start;
+    for row in tile.mi_row_start + row_start..tile.mi_row_start + row_end {
+        let mut block = lr_source_block_for(input, row, tile.mi_col_start + col_start)?;
         block.width = checked_mul("lr_source_run_width", block.width, cols)?;
         lr_activity.record_source_block(block, limits)?;
     }
     Ok(())
+}
+
+/// One axis of the monotone map from local MI index `mi` to restoration unit
+/// `offset + min(((MI_SIZE * mi + bias) >> sub) / unit_size, units - 1)`.
+struct UnitMiAxis {
+    offset: usize,
+    units: usize,
+    unit_size: usize,
+    sub: usize,
+    bias: usize,
+    mi_count: usize,
+}
+
+impl UnitMiAxis {
+    /// Returns the local MI range `[start, end)` that maps to `unit`.
+    fn span(&self, unit: usize) -> Result<Option<(usize, usize)>, TilePartitionTraversalError> {
+        let Some(local) = unit.checked_sub(self.offset).filter(|&u| u < self.units) else {
+            return Ok(None);
+        };
+        let first_mi = |local: usize| -> Result<usize, TilePartitionTraversalError> {
+            let sample = checked_mul("lr_source_unit_sample", local, self.unit_size)?;
+            let sample = checked_shl("lr_source_unit_sample", sample, self.sub)?;
+            Ok(sample
+                .saturating_sub(self.bias)
+                .div_ceil(MI_SIZE)
+                .min(self.mi_count))
+        };
+        let start = first_mi(local)?;
+        let end = if local + 1 == self.units {
+            self.mi_count
+        } else {
+            first_mi(local + 1)?
+        };
+        Ok((start < end).then_some((start, end)))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -201,6 +241,8 @@ struct LrUnitGeometry {
     unit_cols: usize,
     lr_row_offset: usize,
     lr_col_offset: usize,
+    mi_rows: usize,
+    mi_cols: usize,
 }
 
 fn lr_unit_geometry(
@@ -237,38 +279,9 @@ fn lr_unit_geometry(
         unit_cols,
         lr_row_offset,
         lr_col_offset,
+        mi_rows,
+        mi_cols,
     })
-}
-
-fn lr_unit_row_for_mi(
-    input: LrSourceBlockDerivation,
-    geometry: LrUnitGeometry,
-    row: usize,
-) -> Result<usize, TilePartitionTraversalError> {
-    let local_row = checked_sub("lr_source_row", row, input.tile_bounds.mi_row_start)?;
-    let row_sample = checked_mul("lr_source_unit_row_sample", local_row, MI_SIZE)?;
-    let row_sample = checked_add("lr_source_unit_row_sample", row_sample, 8)?;
-    let row_sample = row_sample >> input.sub_y;
-    checked_add(
-        "lr_source_unit_row",
-        geometry.lr_row_offset,
-        (row_sample / input.unit_size).min(geometry.unit_rows.saturating_sub(1)),
-    )
-}
-
-fn lr_unit_col_for_mi(
-    input: LrSourceBlockDerivation,
-    geometry: LrUnitGeometry,
-    col: usize,
-) -> Result<usize, TilePartitionTraversalError> {
-    let local_col = checked_sub("lr_source_col", col, input.tile_bounds.mi_col_start)?;
-    let col_sample =
-        checked_mul_shifted("lr_source_unit_col_sample", local_col, MI_SIZE, input.sub_x)?;
-    checked_add(
-        "lr_source_unit_col",
-        geometry.lr_col_offset,
-        (col_sample / input.unit_size).min(geometry.unit_cols.saturating_sub(1)),
-    )
 }
 
 fn lr_source_block_for(
@@ -356,4 +369,39 @@ pub(super) fn ceil_unit_index(
 ) -> Result<usize, TilePartitionTraversalError> {
     let adjusted = checked_add("lr_unit_ceil", value, unit_size.saturating_sub(1))?;
     Ok(adjusted / unit_size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MI_SIZE, UnitMiAxis};
+
+    #[test]
+    fn unit_mi_span_inverts_the_mi_to_unit_map() {
+        for unit_size in [16, 18, 32, 64, 128, 256, 512] {
+            for (sub, bias, offset) in [(0, 0, 0), (1, 0, 3), (0, 8, 2), (1, 8, 0)] {
+                for mi_count in (1..80).chain([270, 480]) {
+                    let samples = (MI_SIZE * mi_count) >> sub;
+                    let units = ((samples + (unit_size >> 1)) / unit_size).max(1);
+                    let axis = UnitMiAxis {
+                        offset,
+                        units,
+                        unit_size,
+                        sub,
+                        bias,
+                        mi_count,
+                    };
+                    for unit in 0..offset + units + 2 {
+                        let mapped: Vec<usize> = (0..mi_count)
+                            .filter(|&mi| {
+                                let local = ((MI_SIZE * mi + bias) >> sub) / unit_size;
+                                offset + local.min(units - 1) == unit
+                            })
+                            .collect();
+                        let expected = mapped.first().zip(mapped.last()).map(|(&s, &e)| (s, e + 1));
+                        assert_eq!(axis.span(unit).ok().flatten(), expected);
+                    }
+                }
+            }
+        }
+    }
 }
