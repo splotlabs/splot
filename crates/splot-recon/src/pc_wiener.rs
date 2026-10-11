@@ -906,8 +906,13 @@ where
             let near = skips.next(&mut tx_skip)? + skips.next(&mut tx_skip)?;
             let far = skips.next(&mut tx_skip)? + skips.next(&mut tx_skip)?;
             let sums = (carry + near + far).to_array();
-            for (sum, lane) in row_sums[..lanes].iter_mut().zip(sums) {
-                *sum = lane;
+            match row_sums.first_chunk_mut::<TX_SKIP_LANES>() {
+                Some(full) if lanes == TX_SKIP_LANES => *full = sums,
+                _ => {
+                    for (sum, lane) in row_sums[..lanes].iter_mut().zip(sums) {
+                        *sum = lane;
+                    }
+                }
             }
             carry = far;
         }
