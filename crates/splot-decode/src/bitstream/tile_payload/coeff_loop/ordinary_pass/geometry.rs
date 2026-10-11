@@ -69,7 +69,6 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
 struct CoeffOrdinaryStagedTxSizeDimensionsInput {
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     start: NonZeroCoeffBlockStart,
-    coeff_cdf_q_ctx: usize,
     base_config: CoeffOrdinaryBranchTxSizeDimensionsBaseConfig,
     lossless: bool,
 }
@@ -77,7 +76,6 @@ struct CoeffOrdinaryStagedTxSizeDimensionsInput {
 pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
     pub(crate) start: NonZeroCoeffBlockStart,
-    pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) is_inter: bool,
     pub(crate) base_config: CoeffOrdinaryBranchTxSetBaseConfig,
     pub(crate) lossless: bool,
@@ -216,7 +214,6 @@ impl CoeffOrdinaryDerivedTxSize {
             start: input.start,
             scan: self.scan,
             base_config: CoeffBaseDerivedLevelPassConfig {
-                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                 tx_size_ctx: self.tx_size_ctx,
                 tx_width_log2: self.adjusted_dimensions.tx_width_log2,
                 tx_width: self.adjusted_dimensions.tx_width,
@@ -227,7 +224,6 @@ impl CoeffOrdinaryDerivedTxSize {
                 use_tcq: input.base_config.use_tcq,
             },
             state_context: CoeffOrdinaryStateContextConfig {
-                coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                 plane_type: usize::from(input.geometry.plane > 0),
                 x4: input.geometry.start_x >> 2,
                 y4: input.geometry.start_y >> 2,
@@ -248,7 +244,6 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
     let CoeffOrdinaryStagedLosslessNonZeroInput {
         geometry,
         start,
-        coeff_cdf_q_ctx,
         is_inter,
         base_config,
         lossless,
@@ -262,7 +257,6 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
     let input = CoeffOrdinaryStagedTxSizeDimensionsInput {
         geometry,
         start,
-        coeff_cdf_q_ctx,
         base_config,
         lossless,
     };

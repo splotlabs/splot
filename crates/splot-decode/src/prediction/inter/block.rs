@@ -285,7 +285,6 @@ impl InterBlockSetup {
                 params: self.params,
                 filter_states: Some((self.cdef_state, self.gdf_state, self.ccso_state)),
                 initial_frame_cdfs: self.initial_frame_cdfs,
-                qindex: self.qindex,
             },
             self.params,
             self.prelude,
@@ -299,7 +298,6 @@ pub(crate) struct InterParseSetup {
     pub(crate) params: TileWalkParams,
     pub(crate) filter_states: Option<(CdefState, GdfState, CcsoState)>,
     pub(crate) initial_frame_cdfs: Arc<FrameCdfSubset>,
-    pub(crate) qindex: u32,
 }
 
 pub(crate) struct InterBlockSetup {
@@ -310,7 +308,6 @@ pub(crate) struct InterBlockSetup {
     ccso_state: CcsoState,
     motion_field: TemporalMotionField,
     initial_frame_cdfs: Arc<FrameCdfSubset>,
-    qindex: u32,
 }
 
 /// The per-frame inputs of the entropy pass that neither the header nor the
@@ -322,7 +319,6 @@ pub(crate) struct InterBlockFacts {
     pub(crate) num_total_refs: usize,
     pub(crate) reference_select: bool,
     pub(crate) num_same_ref_compound: u8,
-    pub(crate) qindex: u32,
     pub(crate) luma_use_tcq: bool,
     pub(crate) residual_use_ddt: bool,
 }
@@ -346,7 +342,6 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         num_total_refs,
         reference_select,
         num_same_ref_compound,
-        qindex,
         luma_use_tcq,
         residual_use_ddt,
     } = facts;
@@ -481,7 +476,6 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         ccso_state,
         motion_field,
         initial_frame_cdfs,
-        qindex,
     })
 }
 
@@ -490,7 +484,6 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
 fn finish_frame_cdfs(
     initial: &Arc<FrameCdfSubset>,
     work_units: &[DecodeTileWorkUnit],
-    qindex: u32,
     products: &mut super::FrameProductWriters,
 ) -> Result<Arc<FrameCdfSubset>> {
     let mut saved = false;
@@ -503,7 +496,7 @@ fn finish_frame_cdfs(
             &mut saved,
         );
     }
-    products.frame_cdfs()?.finish_saved(initial, saved, qindex);
+    products.frame_cdfs()?.finish_saved(initial, saved);
     products.cdf_output()
 }
 
@@ -542,7 +535,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
         initial_frame_cdfs,
-        qindex,
     } = setup;
     let mut lease =
         crate::support::decode_buffers::DecodeBuffers::lend_temporal(scratch.buffers.as_deref());
@@ -575,7 +567,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         segment_ids,
     )?;
     scratch.tile = Some(tile_scratch);
-    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, products)?;
+    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, products)?;
     let ccso_grid = products.finish_ccso(walked.ccso_state)?;
     let filter_inputs = InterFilterInputs {
         records,

@@ -58,7 +58,6 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
             "intra frame decode requires a parsed base_q_idx",
         )
     })?;
-    let qindex = quantization.base_q_idx;
     let quantizer_deltas =
         effective_quantizer_deltas(sequence, &quantization).ok_or_else(|| {
             unsupported_at(
@@ -123,7 +122,6 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
             num_total_refs: 0,
             reference_select: false,
             num_same_ref_compound: 0,
-            qindex,
             luma_use_tcq,
             residual_use_ddt: false,
         },

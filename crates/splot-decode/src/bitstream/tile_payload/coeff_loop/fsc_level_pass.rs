@@ -18,8 +18,8 @@ use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk};
 
 const TX_16X16_CONTEXT: usize = 2;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct CoeffFscLevelPassConfig {
-    pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) tx_size_ctx: usize,
     pub(crate) tx_width: usize,
     pub(crate) tx_height: usize,
@@ -131,7 +131,6 @@ fn derive_fsc_level_input(
     let base = if index == 0 {
         CoeffFscLevelSymbolSource::BaseBob {
             selector: CoeffCdfSelector::BaseBob {
-                coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
                 tx_size_ctx,
                 ctx: coeff_base_bob_ctx(walk.bob(), walk.seg_eob()),
             },
@@ -139,7 +138,6 @@ fn derive_fsc_level_input(
     } else {
         CoeffFscLevelSymbolSource::BaseIdtx {
             selector: CoeffCdfSelector::BaseIdtx {
-                coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
                 tx_size_ctx,
                 ctx: coeff_base_idtx_ctx(
                     block.level(),
@@ -159,7 +157,6 @@ fn derive_fsc_level_input(
     CoeffFscLevelReadInput {
         base,
         base_range: CoeffCdfSelector::BrIdtx {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             tx_size_ctx,
             ctx: br_ctx,
         },

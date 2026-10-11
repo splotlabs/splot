@@ -58,7 +58,6 @@ const Y_MODE_INDEX_CONTEXTS: usize = 3;
 const INTRA_MODE_CDF_ROW_LEN: usize = 9;
 const Y_MODE_OFFSET_CDF_ROW_LEN: usize = 7;
 const Y_MODE_OFFSET_CONTEXTS: usize = 3;
-const COEFF_CDF_Q_CONTEXTS: usize = 4;
 const EOB_PLANE_CTXS: usize = 3;
 const PLANE_TYPES: usize = 2;
 const TX_SIZE_CONTEXTS: usize = 5;
@@ -152,8 +151,8 @@ pub(crate) type YModeSetCdfRow = [u16; Y_MODE_SET_CDF_ROW_LEN];
 pub(crate) type DpcmCdfRow = [u16; CDF_ROW_LEN];
 pub(crate) type YModeIndexCdfRows = [[u16; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
 pub(crate) type YModeOffsetCdfRows = [[u16; Y_MODE_OFFSET_CDF_ROW_LEN]; Y_MODE_OFFSET_CONTEXTS];
-pub(crate) type TxbSkipCdfRows = [[[[[u16; CDF_ROW_LEN]; TXB_SKIP_CONTEXTS]; TX_SIZE_CONTEXTS];
-    PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type TxbSkipCdfRows =
+    [[[[u16; CDF_ROW_LEN]; TXB_SKIP_CONTEXTS]; TX_SIZE_CONTEXTS]; PLANE_TYPES];
 pub(crate) type UvModeCflNotAllowedCdfRows = [[u16; INTRA_MODE_CDF_ROW_LEN]; UV_MODE_CONTEXTS];
 pub(crate) type IsCflCdfRows = [[u16; CDF_ROW_LEN]; CFL_CONTEXTS];
 pub(crate) type CflIndexCdfRow = [u16; CDF_ROW_LEN];
@@ -163,10 +162,10 @@ pub(crate) type CflMhccpCdfRow = [u16; CDF_ROW_LEN];
 pub(crate) type CflMhDirCdfRows = [[u16; CFL_MH_DIR_CDF_ROW_LEN]; CFL_MH_DIR_GROUPS];
 pub(crate) type UseDipCdfRows = [[u16; CDF_ROW_LEN]; DIP_CONTEXTS];
 pub(crate) type DipModeCdfRow = [u16; DIP_MODE_ROW_LEN];
-pub(crate) type VTxbSkipCdfRows = [[[u16; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobExtraCdfRows = [[u16; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type VTxbSkipCdfRows = [[u16; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS];
+pub(crate) type EobExtraCdfRow = [u16; CDF_ROW_LEN];
 pub(crate) type DcSignCdfRows =
-    [[[[[u16; CDF_ROW_LEN]; DC_SIGN_CONTEXTS]; DC_SIGN_GROUPS]; PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
+    [[[[u16; CDF_ROW_LEN]; DC_SIGN_CONTEXTS]; DC_SIGN_GROUPS]; PLANE_TYPES];
 pub(crate) type IsInterCdfRows = [[u16; CDF_ROW_LEN]; IS_INTER_CONTEXTS];
 pub(crate) type SkipModeCdfRows = [[u16; CDF_ROW_LEN]; SKIP_MODE_CONTEXTS];
 pub(crate) type SkipCdfRows = [[u16; CDF_ROW_LEN]; SKIP_CONTEXTS];
@@ -272,13 +271,13 @@ pub(crate) type PaletteSize7YColorCdfRows = [[u16; 8]; PALETTE_COLOR_CONTEXTS];
 pub(crate) type PaletteSize8YColorCdfRows = [[u16; 9]; PALETTE_COLOR_CONTEXTS];
 pub(crate) type InterpFilterCdfRows = [[u16; 4]; INTERP_FILTER_CONTEXTS];
 
-pub(crate) type EobPt16CdfRows = [[[u16; 6]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt32CdfRows = [[[u16; 7]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt64CdfRows = [[[u16; 8]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt128CdfRows = [[[u16; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt256CdfRows = [[[u16; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt512CdfRows = [[[u16; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt1024CdfRows = [[[u16; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt16CdfRows = [[u16; 6]; EOB_PLANE_CTXS];
+pub(crate) type EobPt32CdfRows = [[u16; 7]; EOB_PLANE_CTXS];
+pub(crate) type EobPt64CdfRows = [[u16; 8]; EOB_PLANE_CTXS];
+pub(crate) type EobPt128CdfRows = [[u16; 9]; EOB_PLANE_CTXS];
+pub(crate) type EobPt256CdfRows = [[u16; 9]; EOB_PLANE_CTXS];
+pub(crate) type EobPt512CdfRows = [[u16; 9]; EOB_PLANE_CTXS];
+pub(crate) type EobPt1024CdfRows = [[u16; 9]; EOB_PLANE_CTXS];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EobPtSize {
@@ -311,7 +310,7 @@ pub(crate) struct BlockCdfRows {
     pub(crate) use_dip: UseDipCdfRows,
     pub(crate) dip_mode: DipModeCdfRow,
     pub(crate) v_txb_skip: VTxbSkipCdfRows,
-    pub(crate) eob_extra: EobExtraCdfRows,
+    pub(crate) eob_extra: EobExtraCdfRow,
     pub(crate) eob_pt_16: EobPt16CdfRows,
     pub(crate) eob_pt_32: EobPt32CdfRows,
     pub(crate) eob_pt_64: EobPt64CdfRows,
@@ -436,9 +435,9 @@ macro_rules! block_cdf_count_rows {
         $row!(y_mode_set);
         $rows!(y_mode_index);
         $rows!(y_mode_offset);
-        $rows!(txb_skip.flatten().flatten().flatten());
-        $rows!(v_txb_skip.flatten());
-        $rows!(eob_extra);
+        $rows!(txb_skip.flatten().flatten());
+        $rows!(v_txb_skip);
+        $row!(eob_extra);
         $rows!(uv_mode_cfl_not_allowed);
         $rows!(is_cfl);
         $row!(cfl_index);
@@ -448,14 +447,14 @@ macro_rules! block_cdf_count_rows {
         $rows!(cfl_mh_dir);
         $rows!(use_dip);
         $row!(dip_mode);
-        $rows!(eob_pt_16.flatten());
-        $rows!(eob_pt_32.flatten());
-        $rows!(eob_pt_64.flatten());
-        $rows!(eob_pt_128.flatten());
-        $rows!(eob_pt_256.flatten());
-        $rows!(eob_pt_512.flatten());
-        $rows!(eob_pt_1024.flatten());
-        $rows!(dc_sign.flatten().flatten().flatten());
+        $rows!(eob_pt_16);
+        $rows!(eob_pt_32);
+        $rows!(eob_pt_64);
+        $rows!(eob_pt_128);
+        $rows!(eob_pt_256);
+        $rows!(eob_pt_512);
+        $rows!(eob_pt_1024);
+        $rows!(dc_sign.flatten().flatten());
         $rows!(is_inter);
         $rows!(skip_mode);
         $rows!(skip);
@@ -544,7 +543,8 @@ macro_rules! block_cdf_count_rows {
 }
 
 impl BlockCdfRows {
-    pub(crate) const fn from_defaults() -> Self {
+    pub(crate) const fn from_defaults(q: CoeffCdfQContext) -> Self {
+        let q_index = q.index();
         Self {
             use_dpcm_y: DEFAULT_USE_DPCM_Y_CDF,
             dpcm_mode_y: DEFAULT_DPCM_MODE_Y_CDF,
@@ -553,7 +553,7 @@ impl BlockCdfRows {
             y_mode_set: DEFAULT_Y_MODE_SET_CDF,
             y_mode_index: DEFAULT_Y_MODE_INDEX_CDF,
             y_mode_offset: DEFAULT_Y_MODE_OFFSET_CDF,
-            txb_skip: DEFAULT_TXB_SKIP_CDF,
+            txb_skip: DEFAULT_TXB_SKIP_CDF[q_index],
             uv_mode_cfl_not_allowed: DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
             is_cfl: DEFAULT_IS_CFL_CDF,
             cfl_index: DEFAULT_CFL_INDEX_CDF,
@@ -563,16 +563,16 @@ impl BlockCdfRows {
             cfl_mh_dir: DEFAULT_CFL_MH_DIR_CDF,
             use_dip: DEFAULT_USE_DIP_CDF,
             dip_mode: DEFAULT_DIP_MODE_CDF,
-            v_txb_skip: DEFAULT_V_TXB_SKIP_CDF,
-            eob_extra: DEFAULT_EOB_EXTRA_CDF,
-            eob_pt_16: DEFAULT_EOB_PT_16_CDF,
-            eob_pt_32: DEFAULT_EOB_PT_32_CDF,
-            eob_pt_64: DEFAULT_EOB_PT_64_CDF,
-            eob_pt_128: DEFAULT_EOB_PT_128_CDF,
-            eob_pt_256: DEFAULT_EOB_PT_256_CDF,
-            eob_pt_512: DEFAULT_EOB_PT_512_CDF,
-            eob_pt_1024: DEFAULT_EOB_PT_1024_CDF,
-            dc_sign: DEFAULT_DC_SIGN_CDF,
+            v_txb_skip: DEFAULT_V_TXB_SKIP_CDF[q_index],
+            eob_extra: DEFAULT_EOB_EXTRA_CDF[q_index],
+            eob_pt_16: DEFAULT_EOB_PT_16_CDF[q_index],
+            eob_pt_32: DEFAULT_EOB_PT_32_CDF[q_index],
+            eob_pt_64: DEFAULT_EOB_PT_64_CDF[q_index],
+            eob_pt_128: DEFAULT_EOB_PT_128_CDF[q_index],
+            eob_pt_256: DEFAULT_EOB_PT_256_CDF[q_index],
+            eob_pt_512: DEFAULT_EOB_PT_512_CDF[q_index],
+            eob_pt_1024: DEFAULT_EOB_PT_1024_CDF[q_index],
+            dc_sign: DEFAULT_DC_SIGN_CDF[q_index],
             is_inter: DEFAULT_IS_INTER_CDF,
             skip_mode: DEFAULT_SKIP_MODE_CDF,
             skip: DEFAULT_SKIP_CDF,
@@ -656,24 +656,8 @@ impl BlockCdfRows {
             palette_size_6_y_color: DEFAULT_PALETTE_SIZE_6_Y_COLOR_CDF,
             palette_size_7_y_color: DEFAULT_PALETTE_SIZE_7_Y_COLOR_CDF,
             palette_size_8_y_color: DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF,
-            coeff: CoeffCdfRows::from_defaults(),
+            coeff: CoeffCdfRows::from_defaults(q),
         }
-    }
-
-    pub(super) fn replicate_bounded_coeff_q_context(&mut self, coeff_cdf_q_ctx: CoeffCdfQContext) {
-        let q = coeff_cdf_q_ctx.index();
-        self.txb_skip = [self.txb_skip[q]; COEFF_CDF_Q_CONTEXTS];
-        self.v_txb_skip = [self.v_txb_skip[q]; COEFF_CDF_Q_CONTEXTS];
-        self.eob_extra = [self.eob_extra[q]; COEFF_CDF_Q_CONTEXTS];
-        self.eob_pt_16 = [self.eob_pt_16[q]; COEFF_CDF_Q_CONTEXTS];
-        self.eob_pt_32 = [self.eob_pt_32[q]; COEFF_CDF_Q_CONTEXTS];
-        self.eob_pt_64 = [self.eob_pt_64[q]; COEFF_CDF_Q_CONTEXTS];
-        self.eob_pt_128 = [self.eob_pt_128[q]; COEFF_CDF_Q_CONTEXTS];
-        self.eob_pt_256 = [self.eob_pt_256[q]; COEFF_CDF_Q_CONTEXTS];
-        self.eob_pt_512 = [self.eob_pt_512[q]; COEFF_CDF_Q_CONTEXTS];
-        self.eob_pt_1024 = [self.eob_pt_1024[q]; COEFF_CDF_Q_CONTEXTS];
-        self.dc_sign = [self.dc_sign[q]; COEFF_CDF_Q_CONTEXTS];
-        self.coeff.replicate_q_context(coeff_cdf_q_ctx);
     }
 
     #[inline]
@@ -694,17 +678,14 @@ impl BlockCdfRows {
                 block_row_slice!(self.y_mode_offset, ctx, "ctx", TileCdfArray::YModeOffset)
             }
             TileCdfSelector::TxbSkip {
-                coeff_cdf_q_ctx,
                 plane_type,
                 tx_size,
                 ctx,
             } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
                 let plane_type = checked_plane_type(TileCdfArray::TxbSkip, plane_type)?;
                 let tx_size = checked_tx_size(TileCdfArray::TxbSkip, tx_size)?;
                 block_row_slice!(
-                    self.txb_skip[coeff_cdf_q_ctx][plane_type][tx_size],
+                    self.txb_skip[plane_type][tx_size],
                     ctx,
                     "ctx",
                     TileCdfArray::TxbSkip
@@ -735,52 +716,31 @@ impl BlockCdfRows {
                 block_row_slice!(self.use_dip, ctx, "ctx", TileCdfArray::UseDip)
             }
             TileCdfSelector::DipMode => Ok(self.dip_mode.as_mut_slice()),
-            TileCdfSelector::VTxbSkip {
-                coeff_cdf_q_ctx,
-                ctx,
-            } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::VTxbSkip, coeff_cdf_q_ctx)?;
-                block_row_slice!(
-                    self.v_txb_skip[coeff_cdf_q_ctx],
-                    ctx,
-                    "ctx",
-                    TileCdfArray::VTxbSkip
-                )
+            TileCdfSelector::VTxbSkip { ctx } => {
+                block_row_slice!(self.v_txb_skip, ctx, "ctx", TileCdfArray::VTxbSkip)
             }
-            TileCdfSelector::EobExtra { coeff_cdf_q_ctx } => {
-                let coeff_cdf_q_ctx =
-                    checked_coeff_cdf_q_context(TileCdfArray::EobExtra, coeff_cdf_q_ctx)?;
-                Ok(self.eob_extra[coeff_cdf_q_ctx].as_mut_slice())
-            }
-            TileCdfSelector::EobPt {
-                size,
-                coeff_cdf_q_ctx,
-                eob_ctx,
-            } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::EobPt, coeff_cdf_q_ctx)?;
+            TileCdfSelector::EobExtra => Ok(self.eob_extra.as_mut_slice()),
+            TileCdfSelector::EobPt { size, eob_ctx } => {
                 let c = checked_eob_plane_ctx(eob_ctx)?;
                 Ok(match size {
-                    EobPtSize::Pt16 => self.eob_pt_16[q][c].as_mut_slice(),
-                    EobPtSize::Pt32 => self.eob_pt_32[q][c].as_mut_slice(),
-                    EobPtSize::Pt64 => self.eob_pt_64[q][c].as_mut_slice(),
-                    EobPtSize::Pt128 => self.eob_pt_128[q][c].as_mut_slice(),
-                    EobPtSize::Pt256 => self.eob_pt_256[q][c].as_mut_slice(),
-                    EobPtSize::Pt512 => self.eob_pt_512[q][c].as_mut_slice(),
-                    EobPtSize::Pt1024 => self.eob_pt_1024[q][c].as_mut_slice(),
+                    EobPtSize::Pt16 => self.eob_pt_16[c].as_mut_slice(),
+                    EobPtSize::Pt32 => self.eob_pt_32[c].as_mut_slice(),
+                    EobPtSize::Pt64 => self.eob_pt_64[c].as_mut_slice(),
+                    EobPtSize::Pt128 => self.eob_pt_128[c].as_mut_slice(),
+                    EobPtSize::Pt256 => self.eob_pt_256[c].as_mut_slice(),
+                    EobPtSize::Pt512 => self.eob_pt_512[c].as_mut_slice(),
+                    EobPtSize::Pt1024 => self.eob_pt_1024[c].as_mut_slice(),
                 })
             }
             TileCdfSelector::DcSign {
-                coeff_cdf_q_ctx,
                 plane_type,
                 group,
                 ctx,
             } => {
-                let q = checked_coeff_cdf_q_context(TileCdfArray::DcSign, coeff_cdf_q_ctx)?;
                 let plane_type = checked_plane_type(TileCdfArray::DcSign, plane_type)?;
                 let group = checked_dc_sign_group(group)?;
                 block_row_slice!(
-                    self.dc_sign[q][plane_type][group],
+                    self.dc_sign[plane_type][group],
                     ctx,
                     "ctx",
                     TileCdfArray::DcSign
@@ -1234,18 +1194,6 @@ fn checked_sec_tx_is_inter(is_inter: usize) -> Result<usize, TileCdfError> {
 
 fn checked_dc_sign_group(group: usize) -> Result<usize, TileCdfError> {
     checked_context(TileCdfArray::DcSign, "group", group, DC_SIGN_GROUPS)
-}
-
-fn checked_coeff_cdf_q_context(
-    array: TileCdfArray,
-    coeff_cdf_q_ctx: usize,
-) -> Result<usize, TileCdfError> {
-    checked_context(
-        array,
-        "coeff_cdf_q_ctx",
-        coeff_cdf_q_ctx,
-        COEFF_CDF_Q_CONTEXTS,
-    )
 }
 
 fn checked_plane_type(array: TileCdfArray, plane_type: usize) -> Result<usize, TileCdfError> {

@@ -29,12 +29,11 @@ fn encode_refined_eob() -> (Vec<u8>, TileCdfSubset) {
         (
             TileCdfSelector::EobPt {
                 size: EobPtSize::Pt128,
-                coeff_cdf_q_ctx: 0,
                 eob_ctx: 0,
             },
             3,
         ),
-        (TileCdfSelector::EobExtra { coeff_cdf_q_ctx: 0 }, 1),
+        (TileCdfSelector::EobExtra, 1),
     ] {
         tile.with_row_mut(selector, |row| {
             encoder.write_symbol_u16(row, Symbol::new(symbol))
@@ -125,7 +124,6 @@ fn live_eob_read_uses_selected_cdfs_and_literal_refinement() {
         &mut symbols,
         NonZeroCoeffEobSymbolInput {
             size: EobPtSize::Pt128,
-            coeff_cdf_q_ctx: 0,
             eob_ctx: 0,
         },
     )
@@ -149,7 +147,6 @@ fn live_eob_read_honors_disabled_cdf_updates() {
         &mut symbols,
         NonZeroCoeffEobSymbolInput {
             size: EobPtSize::Pt128,
-            coeff_cdf_q_ctx: 0,
             eob_ctx: 0,
         },
     )
@@ -172,8 +169,7 @@ fn live_eob_read_rejects_selector_before_consumption() {
         &mut symbols,
         NonZeroCoeffEobSymbolInput {
             size: EobPtSize::Pt16,
-            coeff_cdf_q_ctx: 4,
-            eob_ctx: 0,
+            eob_ctx: 3,
         },
     )
     .unwrap_err();
@@ -183,9 +179,9 @@ fn live_eob_read_rejects_selector_before_consumption() {
         CoeffLoopContextError::EobSymbolRead(BlockSymbolTraceReadError::Cdf(
             TileCdfError::SelectorOutOfRange {
                 array: TileCdfArray::EobPt,
-                index_name: "coeff_cdf_q_ctx",
-                actual: 4,
-                max_exclusive: 4,
+                index_name: "eob_ctx",
+                actual: 3,
+                max_exclusive: 3,
             }
         ))
     ));
@@ -202,7 +198,6 @@ fn live_eob_read_reports_truncation_and_wrapped_offsets() {
         &mut truncated,
         NonZeroCoeffEobSymbolInput {
             size: EobPtSize::Pt16,
-            coeff_cdf_q_ctx: 0,
             eob_ctx: 0,
         },
     )

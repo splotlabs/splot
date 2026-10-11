@@ -61,7 +61,6 @@ fn read_start(tile: &mut TileCdfSubset, symbols: &mut SymbolDecoder<'_>) -> NonZ
                 is_inter: false,
                 tx_width_log2: 2,
                 tx_height_log2: 2,
-                coeff_cdf_q_ctx: 0,
             },
         },
     )
@@ -84,7 +83,6 @@ fn base_config(parity_hiding: bool, use_tcq: bool) -> CoeffOrdinaryBranchTxSetBa
 fn staged_input(
     start: NonZeroCoeffBlockStart,
     tx_size: usize,
-    coeff_cdf_q_ctx: usize,
     start_x: usize,
     lossless: bool,
     base_config: CoeffOrdinaryBranchTxSetBaseConfig,
@@ -97,7 +95,6 @@ fn staged_input(
             tx_size,
         },
         start,
-        coeff_cdf_q_ctx,
         is_inter: false,
         base_config,
         lossless,
@@ -112,7 +109,6 @@ fn encode_lossless_extended_quant() -> (Vec<u8>, TileCdfSubset) {
         &mut encoder,
         TileCdfSelector::EobPt {
             size: super::super::EobPtSize::Pt16,
-            coeff_cdf_q_ctx: 0,
             eob_ctx: 0,
         },
         0,
@@ -120,27 +116,19 @@ fn encode_lossless_extended_quant() -> (Vec<u8>, TileCdfSubset) {
     write_symbol(
         &mut tile,
         &mut encoder,
-        TileCdfSelector::Coeff(CoeffCdfSelector::BaseLfEob {
-            coeff_cdf_q_ctx: 0,
-            tx_size: 0,
-            ctx: 0,
-        }),
+        TileCdfSelector::Coeff(CoeffCdfSelector::BaseLfEob { tx_size: 0, ctx: 0 }),
         4,
     );
     write_symbol(
         &mut tile,
         &mut encoder,
-        TileCdfSelector::Coeff(CoeffCdfSelector::BrLf {
-            coeff_cdf_q_ctx: 0,
-            ctx: 0,
-        }),
+        TileCdfSelector::Coeff(CoeffCdfSelector::BrLf { ctx: 0 }),
         3,
     );
     write_symbol(
         &mut tile,
         &mut encoder,
         TileCdfSelector::DcSign {
-            coeff_cdf_q_ctx: 0,
             plane_type: 0,
             group: 0,
             ctx: 0,
@@ -159,23 +147,17 @@ fn encode_evolving_tcq_levels() -> (Vec<u8>, TileCdfSubset) {
         (
             TileCdfSelector::EobPt {
                 size: super::super::EobPtSize::Pt16,
-                coeff_cdf_q_ctx: 0,
                 eob_ctx: 0,
             },
             2,
         ),
-        (TileCdfSelector::EobExtra { coeff_cdf_q_ctx: 0 }, 0),
+        (TileCdfSelector::EobExtra, 0),
         (
-            TileCdfSelector::Coeff(CoeffCdfSelector::BaseLfEob {
-                coeff_cdf_q_ctx: 0,
-                tx_size: 0,
-                ctx: 1,
-            }),
+            TileCdfSelector::Coeff(CoeffCdfSelector::BaseLfEob { tx_size: 0, ctx: 1 }),
             0,
         ),
         (
             TileCdfSelector::Coeff(CoeffCdfSelector::BaseLf {
-                coeff_cdf_q_ctx: 0,
                 tx_size: 0,
                 ctx: 9,
                 tcq_ctx: 0,
@@ -184,7 +166,6 @@ fn encode_evolving_tcq_levels() -> (Vec<u8>, TileCdfSubset) {
         ),
         (
             TileCdfSelector::Coeff(CoeffCdfSelector::BaseLf {
-                coeff_cdf_q_ctx: 0,
                 tx_size: 0,
                 ctx: 2,
                 tcq_ctx: 1,
@@ -201,7 +182,6 @@ fn encode_evolving_tcq_levels() -> (Vec<u8>, TileCdfSubset) {
         &mut tile,
         &mut encoder,
         TileCdfSelector::DcSign {
-            coeff_cdf_q_ctx: 0,
             plane_type: 0,
             group: 0,
             ctx: 0,
@@ -219,7 +199,6 @@ fn encode_start_only() -> Vec<u8> {
         &mut encoder,
         TileCdfSelector::EobPt {
             size: super::super::EobPtSize::Pt16,
-            coeff_cdf_q_ctx: 0,
             eob_ctx: 0,
         },
         0,
@@ -240,7 +219,7 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(start, TX_4X4, 0, 4, true, base_config(true, true)),
+        staged_input(start, TX_4X4, 4, true, base_config(true, true)),
     )
     .unwrap();
 
@@ -269,7 +248,7 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(start, TX_4X4, 0, 4, false, base_config(false, true)),
+        staged_input(start, TX_4X4, 4, false, base_config(false, true)),
     )
     .unwrap();
 
@@ -284,13 +263,11 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
     assert_eq!(state.above_dc(0).unwrap()[1], 2);
     assert_eq!(state.left_dc(0).unwrap()[1], 2);
     let evolved_tcq_selector = TileCdfSelector::Coeff(CoeffCdfSelector::BaseLf {
-        coeff_cdf_q_ctx: 0,
         tx_size: 0,
         ctx: 2,
         tcq_ctx: 1,
     });
     let initial_tcq_selector = TileCdfSelector::Coeff(CoeffCdfSelector::BaseLf {
-        coeff_cdf_q_ctx: 0,
         tx_size: 0,
         ctx: 2,
         tcq_ctx: 0,
@@ -330,7 +307,7 @@ fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
             &mut state,
             &mut tile,
             &mut symbols,
-            staged_input(start, tx_size, 0, start_x, true, base_config(false, false)),
+            staged_input(start, tx_size, start_x, true, base_config(false, false)),
         );
 
         assert!(result.is_err());
@@ -338,31 +315,6 @@ fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
         assert_eq!(tile, tile_before);
         assert_eq!(symbols.checkpoint(), checkpoint);
     }
-}
-
-#[test]
-fn staged_ordinary_selector_error_preserves_context_and_reader_state() {
-    let payload = encode_start_only();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let start = read_start(&mut tile, &mut symbols);
-    let tile_before = tile.clone();
-    let checkpoint = symbols.checkpoint();
-    let mut state =
-        TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
-    let state_before = state.clone();
-
-    let result = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        staged_input(start, TX_4X4, 4, 4, true, base_config(false, false)),
-    );
-
-    assert!(matches!(result, Err(CoeffOrdinaryBranchError::Ordinary(_))));
-    assert_eq!(state, state_before);
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.checkpoint(), checkpoint);
 }
 
 #[test]
@@ -379,14 +331,7 @@ fn staged_ordinary_context_commit_failure_preserves_context_after_reads() {
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(
-            start,
-            TX_4X4,
-            0,
-            usize::MAX,
-            true,
-            base_config(false, false),
-        ),
+        staged_input(start, TX_4X4, usize::MAX, true, base_config(false, false)),
     );
 
     assert!(matches!(
@@ -419,7 +364,6 @@ fn scan_walk_rejects_a_block_width_that_is_not_a_power_of_two() {
             is_inter: false,
             tx_width_log2: 2,
             tx_height_log2: 2,
-            coeff_cdf_q_ctx: 0,
         },
     };
     let scan: Vec<u16> = (0..48).collect();

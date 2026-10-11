@@ -46,7 +46,6 @@ pub(crate) struct CoeffFscStagedTxSizeNonZeroInput {
     pub(crate) start: NonZeroCoeffBlockStart,
     pub(crate) tx_size: usize,
     pub(crate) plane_tx_type: usize,
-    pub(crate) coeff_cdf_q_ctx: usize,
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffFscQuantPassError {
@@ -115,12 +114,7 @@ pub(crate) fn apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
         });
     }
 
-    let facts = fsc_branch_tx_size_facts(
-        input.block,
-        input.tx_size,
-        input.plane_tx_type,
-        input.coeff_cdf_q_ctx,
-    )?;
+    let facts = fsc_branch_tx_size_facts(input.block, input.tx_size, input.plane_tx_type)?;
     let walk = walk_fsc_coeff_scan(&input.start, facts.scan.len(), facts.scan)?;
     let level_pass =
         apply_nonzero_coeff_fsc_level_pass(cdfs, symbols, input.start, walk, facts.level_config)?;
@@ -143,7 +137,6 @@ fn fsc_branch_tx_size_facts(
     block: AllZeroCoeffBlockInput,
     tx_size: usize,
     plane_tx_type: usize,
-    coeff_cdf_q_ctx: usize,
 ) -> Result<CoeffFscBranchTxSizeFacts, CoeffFscBranchError> {
     let Some(&raw_tx_width) = TX_WIDTH.get(tx_size) else {
         return Err(CoeffFscBranchError::InvalidTransformSize { tx_size });
@@ -253,7 +246,6 @@ fn fsc_branch_tx_size_facts(
     Ok(CoeffFscBranchTxSizeFacts {
         scan,
         level_config: CoeffFscLevelPassConfig {
-            coeff_cdf_q_ctx,
             tx_size_ctx,
             tx_width: adjusted_tx_width,
             tx_height: adjusted_tx_height,

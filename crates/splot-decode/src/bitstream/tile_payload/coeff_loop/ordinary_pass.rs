@@ -48,7 +48,6 @@ pub(crate) struct CoeffOrdinaryStateContextPassInput<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CoeffOrdinaryDerivedSignPassConfig<'a> {
-    coeff_cdf_q_ctx: usize,
     plane_type: usize,
     above_dc: &'a [u8],
     left_dc: &'a [u8],
@@ -60,7 +59,6 @@ struct CoeffOrdinaryDerivedSignPassConfig<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryStateContextConfig {
-    pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) plane_type: usize,
     pub(crate) x4: usize,
     pub(crate) y4: usize,
@@ -137,7 +135,6 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
     )?;
     let first_pass = base_level_pass.first_pass();
     let sign_derive_config = CoeffSignSourceDeriveConfig {
-        coeff_cdf_q_ctx: sign_config.coeff_cdf_q_ctx,
         plane: base_config.plane,
         plane_type: sign_config.plane_type,
         tx_class: base_config.tx_class,
@@ -200,7 +197,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
             scan,
             base_config,
             sign_config: CoeffOrdinaryDerivedSignPassConfig {
-                coeff_cdf_q_ctx: state_context.coeff_cdf_q_ctx,
                 plane_type: state_context.plane_type,
                 above_dc: state.above_dc(plane)?,
                 left_dc: state.left_dc(plane)?,

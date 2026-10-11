@@ -71,7 +71,6 @@ pub(crate) fn derive_fsc_sign_input(
     } else {
         CoeffFscSignReadSource::IdtxSign {
             selector: CoeffCdfSelector::IdtxSign {
-                coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
                 tx_size_ctx: config.fsc_tx_size_ctx(),
                 ctx: idtx_sign_ctx(
                     block.quant_sign(),

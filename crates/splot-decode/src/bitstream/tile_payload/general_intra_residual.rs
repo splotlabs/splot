@@ -19,10 +19,10 @@ use splot_recon::{
     reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
 
+use super::cdf::TileCdfSelector;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
-use super::cdf::{TileCdfSelector, coeff_cdf_q_ctx_from_base_q_idx};
 use super::coeff_loop::fsc_quant_pass::{
     CoeffFscBranchError, CoeffFscStagedTxSizeNonZeroInput,
     apply_staged_nonzero_coeff_fsc_branch_from_tx_size,
@@ -1017,7 +1017,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let y4 = start_y >> 2;
     let w4 = usize::try_from(TX_WIDTH.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
     let h4 = usize::try_from(TX_HEIGHT.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
-    let coeff_cdf_q_ctx = coeff_cdf_q_ctx_from_base_q_idx(frame_facts.base_q_idx());
     let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
 
     let local_x4 = context.local_x4(plane, x4).map_err(coeff_ctx_err)?;
@@ -1045,12 +1044,10 @@ pub(crate) fn decode_general_intra_plane_coeffs(
                 || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, local_y4, h4) != 0;
             if plane == 2 {
                 TileCdfSelector::VTxbSkip {
-                    coeff_cdf_q_ctx,
                     ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
                 }
             } else {
                 TileCdfSelector::TxbSkip {
-                    coeff_cdf_q_ctx,
                     plane_type: txb_skip_intra_inter,
                     tx_size: tx_size_ctx,
                     ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
@@ -1058,7 +1055,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             }
         }
         _ => TileCdfSelector::TxbSkip {
-            coeff_cdf_q_ctx,
             plane_type: txb_skip_intra_inter,
             tx_size: tx_size_ctx,
             ctx: txb_skip_ctx_luma(
@@ -1106,7 +1102,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         arena,
         frame_facts,
         geometry,
-        coeff_cdf_q_ctx,
         uv_mode,
         angle_delta_uv,
         chroma_inter_tx_type,
@@ -1126,7 +1121,6 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     arena: &mut Vec<i32>,
     frame_facts: TileCoeffFrameFacts,
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
-    coeff_cdf_q_ctx: usize,
     uv_mode: usize,
     angle_delta_uv: i32,
     chroma_inter_tx_type: usize,
@@ -1156,7 +1150,6 @@ fn decode_staged_transform_tool_nonzero_coeffs(
                 is_inter,
                 tx_width_log2,
                 tx_height_log2,
-                coeff_cdf_q_ctx,
             },
         },
     )
@@ -1209,7 +1202,6 @@ fn decode_staged_transform_tool_nonzero_coeffs(
                 start,
                 tx_size: geometry.tx_size,
                 plane_tx_type: metadata.luma_tx_type,
-                coeff_cdf_q_ctx,
             },
         )
         .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?
@@ -1221,7 +1213,6 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             CoeffOrdinaryStagedLosslessNonZeroInput {
                 geometry,
                 start,
-                coeff_cdf_q_ctx,
                 is_inter,
                 base_config,
                 lossless,

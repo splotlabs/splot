@@ -25,7 +25,6 @@ const PHTHRESH: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBaseDerivedLevelPassConfig {
-    pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) tx_size_ctx: usize,
     pub(crate) tx_width_log2: u32,
     pub(crate) tx_width: usize,
@@ -316,25 +315,17 @@ fn base_eob_selector(
     let ctx = coeff_base_eob_ctx(entry.scan_index(), config.tx_width_log2, config.tx_height);
     if config.plane > 0 {
         if is_lf {
-            CoeffCdfSelector::BaseLfEobUv {
-                coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-                ctx,
-            }
+            CoeffCdfSelector::BaseLfEobUv { ctx }
         } else {
-            CoeffCdfSelector::BaseEobUv {
-                coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
-                ctx,
-            }
+            CoeffCdfSelector::BaseEobUv { ctx }
         }
     } else if is_lf {
         CoeffCdfSelector::BaseLfEob {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             tx_size: config.tx_size_ctx,
             ctx,
         }
     } else {
         CoeffCdfSelector::BaseEob {
-            coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
             tx_size: config.tx_size_ctx,
             ctx,
         }
@@ -370,12 +361,7 @@ fn read_base_symbol(
     let tcq_ctx = (first_pass.tcq_state >> 1) & 1;
     let row = cdfs
         .coeff_rows_mut()
-        .base_row(
-            selection,
-            config.coeff_cdf_q_ctx,
-            config.tx_size_ctx,
-            tcq_ctx,
-        )
+        .base_row(selection, config.tx_size_ctx, tcq_ctx)
         .map_err(read_error)?;
     let symbol = match row {
         CoeffBaseRow::Base(row) => symbols.read_symbol_u16_array(row),
@@ -409,7 +395,7 @@ fn read_br_symbol(
     .ctx(block.level());
     let row = cdfs
         .coeff_rows_mut()
-        .br_row(config.coeff_cdf_q_ctx, config.plane, is_lf, ctx)
+        .br_row(config.plane, is_lf, ctx)
         .map_err(read_error)?;
     let symbol = symbols.read_symbol_u16_array(row).map_err(read_error)?;
     Ok(u32::from(symbol.get()))

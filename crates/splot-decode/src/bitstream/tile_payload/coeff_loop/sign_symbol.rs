@@ -17,7 +17,6 @@ use super::scan_walk::CoeffScanEntry;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffDcSignSelector {
-    pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) plane_type: usize,
     pub(crate) group: usize,
     pub(crate) ctx: usize,
@@ -26,7 +25,6 @@ pub(crate) struct CoeffDcSignSelector {
 impl CoeffDcSignSelector {
     fn tile_selector(self) -> TileCdfSelector {
         TileCdfSelector::DcSign {
-            coeff_cdf_q_ctx: self.coeff_cdf_q_ctx,
             plane_type: self.plane_type,
             group: self.group,
             ctx: self.ctx,
@@ -48,7 +46,6 @@ pub(crate) struct CoeffSignReadInput {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffSignSourceDeriveConfig<'a> {
-    pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) plane: usize,
     pub(crate) plane_type: usize,
     pub(crate) tx_class: CoeffTransformClass,
@@ -65,7 +62,6 @@ pub(crate) struct CoeffSignSourceDeriveConfig<'a> {
 impl CoeffSignSourceDeriveConfig<'_> {
     fn dc_selector(self, ctx: usize) -> CoeffDcSignSelector {
         CoeffDcSignSelector {
-            coeff_cdf_q_ctx: self.coeff_cdf_q_ctx,
             plane_type: self.plane_type,
             group: usize::from(self.is_hidden),
             ctx,

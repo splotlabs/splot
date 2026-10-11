@@ -169,10 +169,6 @@ impl CoeffCdfQContext {
     }
 }
 
-pub(crate) const fn coeff_cdf_q_ctx_from_base_q_idx(base_q_idx: u32) -> usize {
-    CoeffCdfQContext::from_base_q_idx(base_q_idx).index()
-}
-
 type DoSplitCdfRows = [[[u16; CDF_ROW_LEN]; DO_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
 type DoExtPartitionCdfRows =
     [[[u16; CDF_ROW_LEN]; DO_EXT_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
@@ -260,33 +256,26 @@ pub(crate) struct FrameCdfSubset {
 }
 
 impl FrameCdfSubset {
+    /// The default bank of `base_q_idx` 0.
     #[must_use]
     pub(crate) fn from_defaults() -> Self {
-        Self {
-            rows: Box::new(DEFAULT_TILE_CDF_ROWS),
-        }
+        Self::default_for_base_q(0)
     }
 
+    /// The default bank of `base_q_idx`: one bank holds the coefficient
+    /// rows of the q context the frame reads (§ 6.17.2 `init_coeff_cdfs`).
     pub(crate) fn default_for_base_q(base_q_idx: u32) -> Self {
-        let mut cdfs = Self::from_defaults();
-        cdfs.rows
-            .block
-            .replicate_bounded_coeff_q_context(CoeffCdfQContext::from_base_q_idx(base_q_idx));
-        cdfs
-    }
-
-    pub(crate) fn replicate_coeff_q_context_for_base_q(&mut self, base_q_idx: u32) {
-        self.rows
-            .block
-            .replicate_bounded_coeff_q_context(CoeffCdfQContext::from_base_q_idx(base_q_idx));
+        Self {
+            rows: Box::new(*default_tile_cdf_rows(base_q_idx)),
+        }
     }
 
     pub(crate) fn reset_from(&mut self, source: &Self) {
         self.rows.clone_from(&source.rows);
     }
 
-    pub(crate) fn reset_to_defaults(&mut self) {
-        *self.rows = DEFAULT_TILE_CDF_ROWS;
+    pub(crate) fn reset_to_defaults(&mut self, base_q_idx: u32) {
+        *self.rows = *default_tile_cdf_rows(base_q_idx);
     }
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
@@ -493,7 +482,6 @@ pub(crate) enum TileCdfSelector {
         ctx: usize,
     },
     TxbSkip {
-        coeff_cdf_q_ctx: usize,
         plane_type: usize,
         tx_size: usize,
         ctx: usize,
@@ -577,19 +565,14 @@ pub(crate) enum TileCdfSelector {
     },
     DipMode,
     VTxbSkip {
-        coeff_cdf_q_ctx: usize,
         ctx: usize,
     },
-    EobExtra {
-        coeff_cdf_q_ctx: usize,
-    },
+    EobExtra,
     EobPt {
         size: EobPtSize,
-        coeff_cdf_q_ctx: usize,
         eob_ctx: usize,
     },
     DcSign {
-        coeff_cdf_q_ctx: usize,
         plane_type: usize,
         group: usize,
         ctx: usize,
@@ -796,7 +779,6 @@ tile_cdf_arrays! {
     CflMhDir => "TileCflMhDirCdf",
     UseDip => "TileUseDipCdf",
     VTxbSkip => "TileVTxbSkipCdf",
-    EobExtra => "TileEobExtraCdf",
     EobPt => "TileEobPtCdf",
     DcSign => "TileDcSignCdf",
     CoeffBase => "TileCoeffBaseCdf",
@@ -1079,10 +1061,19 @@ fn tx_partition_rows_mut(rows: &mut TileCdfRows, reduced: bool) -> &mut TxPartit
     }
 }
 
-static DEFAULT_TILE_CDF_ROWS: TileCdfRows = TileCdfRows::from_defaults();
+static DEFAULT_TILE_CDF_ROWS: [TileCdfRows; 4] = [
+    TileCdfRows::from_defaults(CoeffCdfQContext::Q0),
+    TileCdfRows::from_defaults(CoeffCdfQContext::Q1),
+    TileCdfRows::from_defaults(CoeffCdfQContext::Q2),
+    TileCdfRows::from_defaults(CoeffCdfQContext::Q3),
+];
+
+fn default_tile_cdf_rows(base_q_idx: u32) -> &'static TileCdfRows {
+    &DEFAULT_TILE_CDF_ROWS[CoeffCdfQContext::from_base_q_idx(base_q_idx).index()]
+}
 
 impl TileCdfRows {
-    const fn from_defaults() -> Self {
+    const fn from_defaults(q: CoeffCdfQContext) -> Self {
         Self {
             do_split: DEFAULT_DO_SPLIT_CDF,
             do_ext_partition: DEFAULT_DO_EXT_PARTITION_CDF,
@@ -1117,7 +1108,7 @@ impl TileCdfRows {
             segment_id_ext: DEFAULT_SEGMENT_ID_EXT_CDF,
             segment_id_predicted: DEFAULT_SEGMENT_ID_PREDICTED_CDF,
             region_type: DEFAULT_REGION_TYPE_CDF,
-            block: BlockCdfRows::from_defaults(),
+            block: BlockCdfRows::from_defaults(q),
         }
     }
 
