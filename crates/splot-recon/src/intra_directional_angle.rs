@@ -1542,6 +1542,12 @@ fn fill_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
     }
 }
 
+/// `LANES` adjacent § 7.13.2.8 4-tap IDIF samples over `edge[first..]`.
+///
+/// Every caller validates the edge samples to the bit depth (at most 10 bits)
+/// and every `Dr_Interp_Filter` tap fits `i16`, so the products take `i16`
+/// lanes widened to `i32` with no loss. One slice of the whole tap window
+/// replaces a bounds check per tap.
 #[inline]
 fn idif_above_row_chunk<const LANES: usize>(
     edge: &[u16],
@@ -1549,16 +1555,17 @@ fn idif_above_row_chunk<const LANES: usize>(
     taps: [i32; DR_INTERP_FILTER_TAPS],
     bit_depth: BitDepth,
 ) -> Simd<u16, LANES> {
+    let window = &edge[first..first + LANES + DR_INTERP_FILTER_TAPS - 1];
     let mut sum = Simd::<i32, LANES>::splat(0);
     for (tap, coefficient) in taps.into_iter().enumerate() {
-        sum += Simd::<u16, LANES>::from_slice(&edge[first + tap..]).cast::<i32>()
-            * Simd::splat(coefficient);
+        sum += Simd::<u16, LANES>::from_slice(&window[tap..tap + LANES])
+            .cast::<i16>()
+            .cast::<i32>()
+            * Simd::splat(coefficient as i16).cast::<i32>();
     }
     ((sum + Simd::splat(1 << (DR_INTERP_FILTER_ROUND - 1))) >> i32::from(DR_INTERP_FILTER_ROUND))
-        .simd_clamp(
-            Simd::splat(0),
-            Simd::splat(i32::from(bit_depth.max_sample())),
-        )
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(i32::from(bit_depth.max_sample())))
         .cast()
 }
 
