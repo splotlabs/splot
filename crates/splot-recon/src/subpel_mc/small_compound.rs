@@ -646,19 +646,33 @@ mod tests {
     }
 
     /// Compares random `size x size` compound cells of every phase class with
-    /// the two-call path, through the fast dispatch and the fused kernel.
-    fn check_cells<T: ReconSample>(bit_depth: BitDepth, size: usize) {
-        let (width, height) = (24 + 4 * size, 20 + 4 * size);
+    /// the two-call path, through the fast dispatch and the fused kernel, on
+    /// views of `width` samples spaced `plane_stride` apart whose first
+    /// `readable` of `height` rows are published, and returns how many cells
+    /// the fused kernel took and declined.
+    fn check_cells<T: ReconSample>(
+        bit_depth: BitDepth,
+        size: usize,
+        (width, plane_stride, height, readable): (usize, usize, usize, usize),
+    ) -> (usize, usize) {
         let max = bit_depth.max_sample();
         let mut rng = Lcg(u64::from(max) * 31 + size as u64);
         let mut plane = || {
-            (0..width * height)
+            (0..(readable - 1) * plane_stride + width)
                 .map(|_| T::try_from_u16(rng.below(usize::from(max) + 1) as u16).unwrap())
                 .collect::<Vec<T>>()
         };
         let planes = [plane(), plane()];
-        let views =
-            [0, 1].map(|index| ReferencePlaneView::new(&planes[index], width, height).unwrap());
+        let views = [0, 1].map(|index| {
+            ReferencePlaneView::from_published_strided(
+                &planes[index],
+                plane_stride,
+                width,
+                height,
+                readable,
+            )
+            .unwrap()
+        });
         let stride = size + 3;
         let sentinel = T::try_from_u16(max / 3).unwrap();
         let (mut fused, mut declined) = (0, 0);
@@ -760,18 +774,32 @@ mod tests {
                 );
             }
         }
-        assert!(
-            fused > 2000 && declined > 600,
-            "fused {fused} declined {declined}"
-        );
+        (fused, declined)
     }
 
+    /// Full planes, planes narrower than one window, and published prefixes
+    /// whose last row ends at the view width.
     #[test]
     fn fused_cells_match_the_two_call_path() {
         for size in [4, 8] {
-            check_cells::<u8>(BitDepth::Eight, size);
-            check_cells::<u16>(BitDepth::Ten, size);
-            check_cells::<u16>(BitDepth::Eight, size);
+            let full = (24 + 4 * size, 24 + 4 * size, 20 + 4 * size, 20 + 4 * size);
+            for (geometry, min_fused) in [
+                (full, 2000),
+                ((6, 6, 28, 28), 1000),
+                ((13, 13, 28, 28), 1300),
+                ((20, 27, 30, 20), 1200),
+            ] {
+                for (fused, declined) in [
+                    check_cells::<u8>(BitDepth::Eight, size, geometry),
+                    check_cells::<u16>(BitDepth::Ten, size, geometry),
+                    check_cells::<u16>(BitDepth::Eight, size, geometry),
+                ] {
+                    assert!(
+                        fused > min_fused && declined > 600,
+                        "{size} {geometry:?} fused {fused} declined {declined}"
+                    );
+                }
+            }
         }
     }
 }
