@@ -858,6 +858,26 @@ fn padded_and_callback_classify_grids_match_bit_exactly() {
     )
     .unwrap();
     assert_eq!(callback, from_table);
+
+    let mut out_of_range = shifted.clone();
+    let row = usize::try_from(params.y + 4 - origin_y).unwrap();
+    let col = usize::try_from(params.x + 4 - origin_x).unwrap();
+    out_of_range[row][2 + col] = 1024;
+    let table: Vec<&[u16]> = out_of_range.iter().map(Vec::as_slice).collect();
+    let source =
+        PcWienerClassifyPaddedSource::from_rows(&table, 2, origin_x, origin_y, BitDepth::Ten)
+            .unwrap();
+    let rejected = pc_wiener_classify_grid_padded::<u16, _>(
+        &params,
+        cell_cols,
+        cell_rows,
+        &source,
+        alternating_tx_skip,
+    );
+    assert!(matches!(
+        rejected,
+        Err(ReconError::PcWienerSourceSampleOutOfRange { value: 1024, .. })
+    ));
 }
 
 #[test]

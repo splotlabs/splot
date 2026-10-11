@@ -212,7 +212,6 @@ pub struct PcWienerClassifyPaddedSource<'a, T> {
     rows: PaddedRows<'a, T>,
     origin_x: isize,
     origin_y: isize,
-    validated_bit_depth: Option<BitDepth>,
 }
 
 impl<'a, T: ReconSample> PcWienerClassifyPaddedSource<'a, T> {
@@ -224,43 +223,12 @@ impl<'a, T: ReconSample> PcWienerClassifyPaddedSource<'a, T> {
             rows: PaddedRows::Strided { samples, stride },
             origin_x,
             origin_y,
-            validated_bit_depth: None,
         }
     }
 
-    /// Wraps decoder-owned samples whose range is guaranteed by reconstruction
-    /// before the padded source window is materialized.
-    ///
-    /// This avoids rescanning the same window before every classification.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] if the sample storage cannot represent
-    /// `bit_depth` or `stride` is zero.
-    #[doc(hidden)]
-    pub fn new_prevalidated(
-        samples: &'a [T],
-        stride: usize,
-        origin_x: isize,
-        origin_y: isize,
-        bit_depth: BitDepth,
-    ) -> Result<Self> {
-        validate_sample_type::<T>(bit_depth)?;
-        if stride == 0 {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "PC-Wiener padded source stride",
-            });
-        }
-        Ok(Self {
-            rows: PaddedRows::Strided { samples, stride },
-            origin_x,
-            origin_y,
-            validated_bit_depth: Some(bit_depth),
-        })
-    }
-
-    /// Wraps decoder-owned padded rows like [`Self::new_prevalidated`]:
-    /// row `i` starts at column `col` of `rows[i]`, and its first sample is
-    /// current-plane luma coordinate `(origin_x, origin_y + i)`.
+    /// Wraps padded rows: row `i` starts at column `col` of `rows[i]`, and its
+    /// first sample is current-plane luma coordinate `(origin_x, origin_y + i)`.
+    /// Classification checks the sample range as for [`Self::new`].
     ///
     /// # Errors
     /// Returns [`ReconError`] if the sample storage cannot represent
@@ -278,7 +246,6 @@ impl<'a, T: ReconSample> PcWienerClassifyPaddedSource<'a, T> {
             rows: PaddedRows::table(rows, col),
             origin_x,
             origin_y,
-            validated_bit_depth: Some(bit_depth),
         })
     }
 }
@@ -599,14 +566,11 @@ where
     }
     let geo = classify_grid_geometry(params, cell_cols, cell_rows)?;
     let region = padded_source_region(source, &geo)?;
-    let validate = source.validated_bit_depth != Some(params.bit_depth);
     let direct = T::u16_slice(&[]).is_some();
     if direct {
-        if validate {
-            validate_padded_u16_source(region, &geo, params.bit_depth)?;
-        }
+        validate_padded_u16_source(region, &geo, params.bit_depth)?;
     } else {
-        build_padded_source_cache_into(region, &geo, params.bit_depth, validate, source_scratch)?;
+        build_padded_source_cache_into(region, &geo, params.bit_depth, source_scratch)?;
     }
     let key = (params.base_q_idx, params.bit_depth);
     if *qval_cache_key != Some(key) {
@@ -746,7 +710,6 @@ fn build_padded_source_cache_into<T: ReconSample>(
     region: PaddedRows<'_, T>,
     geo: &ClassifyGridGeometry,
     bit_depth: BitDepth,
-    validate: bool,
     source_cache: &mut Vec<u16>,
 ) -> Result<()> {
     let max_sample = bit_depth.max_sample();
@@ -766,10 +729,9 @@ fn build_padded_source_cache_into<T: ReconSample>(
                 })?;
         let cached_start = source_cache.len();
         source_cache.extend(row_samples.iter().map(|sample| sample.to_u16()));
-        if validate
-            && let Some(col) = source_cache[cached_start..]
-                .iter()
-                .position(|&value| value > max_sample)
+        if let Some(col) = source_cache[cached_start..]
+            .iter()
+            .position(|&value| value > max_sample)
         {
             return Err(ReconError::PcWienerSourceSampleOutOfRange {
                 x: geo.source_start_x + col as isize,
