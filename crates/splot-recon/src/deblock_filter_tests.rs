@@ -450,6 +450,41 @@ fn edge_kernels_reject_short_spans() {
 }
 
 #[test]
+fn edge_kernels_reject_overlapping_lines() {
+    let choice = DeblockFilterChoice {
+        boundary: 136,
+        q_thr: 40,
+        side_thr: 60,
+        max_width_pos: 3,
+        max_width_neg: 3,
+        q_first: Q_FIRST,
+    };
+    let mut samples = [0u16; 512];
+    for (rows, stride, edges) in [(true, 0, 1), (true, 15, 1), (false, 0, 1), (false, 7, 2)] {
+        let kernel = if rows {
+            deblock_edge_rows::<u16>
+        } else {
+            deblock_edge_columns::<u16>
+        };
+        let result = kernel(
+            &mut samples,
+            stride,
+            &choice,
+            edges,
+            &Q_THRESH_MULTS,
+            &W_MULT,
+            false,
+            false,
+            BitDepth::Ten,
+        );
+        assert!(
+            matches!(result, Err(ReconError::StrideTooSmall { .. })),
+            "{rows} {stride} {edges}"
+        );
+    }
+}
+
+#[test]
 fn fused_choice_and_four_lane_filter_matches_separate_primitives() {
     let stride = 32;
     let boundary = 8 * stride + 4;

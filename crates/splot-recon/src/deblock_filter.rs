@@ -998,7 +998,9 @@ pub fn deblock_filter_choice_and_sample_strided_4<T: ReconSample>(
 /// # Errors
 /// Returns [`ReconError::DeblockFilterInvalidWidth`] for widths outside
 /// `1..=8`, [`ReconError::DeblockFilterLineTooShort`] when a row's eight
-/// samples either side of the edge fall outside `samples`, and
+/// samples either side of the edge fall outside `samples`,
+/// [`ReconError::StrideTooSmall`] when `stride` is below the 16 samples of a
+/// row, so rows would overlap, and
 /// [`ReconError::SampleTypeUnsupportedBitDepth`] when `T` cannot hold
 /// `bit_depth`.
 #[doc(hidden)]
@@ -1015,6 +1017,7 @@ pub fn deblock_edge_rows<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
+    reject_overlapping_lines(stride, 2 * EDGE_REACH)?;
     if choice.q_thr == 0 || choice.side_thr == 0 {
         return Ok(());
     }
@@ -1062,7 +1065,9 @@ pub fn deblock_edge_rows<T: ReconSample>(
 /// `w_mults` must be the § 9.2 `W_Mult` table, as for [`deblock_edge_rows`].
 ///
 /// # Errors
-/// Returns the same errors as [`deblock_edge_rows`].
+/// Returns the same errors as [`deblock_edge_rows`], with
+/// [`ReconError::StrideTooSmall`] when `stride` is below the run's
+/// `4 * edges` columns, so columns would overlap.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn deblock_edge_columns<T: ReconSample>(
@@ -1077,6 +1082,7 @@ pub fn deblock_edge_columns<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
+    reject_overlapping_lines(stride, edges.saturating_mul(MI_LINES).max(1))?;
     if choice.q_thr == 0 || choice.side_thr == 0 {
         return Ok(());
     }
@@ -1106,6 +1112,18 @@ pub fn deblock_edge_columns<T: ReconSample>(
         edge.column_run(samples, first, stride, edges);
     } else {
         return Err(edge.too_short(len));
+    }
+    Ok(())
+}
+
+/// Rejects a `stride` below `span`, the samples one line covers along it, at
+/// which lines of one run would share samples.
+fn reject_overlapping_lines(stride: usize, span: usize) -> Result<()> {
+    if stride < span {
+        return Err(ReconError::StrideTooSmall {
+            stride_samples: stride,
+            storage_width: span,
+        });
     }
     Ok(())
 }
