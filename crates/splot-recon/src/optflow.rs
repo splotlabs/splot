@@ -162,17 +162,8 @@ pub fn derive_optflow_mv_deltas_into<'a>(
         let left_samples = Simd::from_array(*left_samples);
         let right_samples = Simd::from_array(*right_samples);
         peak = peak.simd_max(left_samples).simd_max(right_samples);
-        let left = left_samples.cast::<i32>();
-        let right = right_samples.cast::<i32>();
-        *weighted = round2_signed_simd(
-            Simd::splat(distances[0]) * left - Simd::splat(distances[1]) * right,
-            downshift,
-        )
-        .cast::<i16>()
-        .to_array();
-        *difference = round2_signed_simd(left - right, downshift)
-            .cast::<i16>()
-            .to_array();
+        let rows = weighted_difference_row(left_samples, right_samples, distances, downshift);
+        (*weighted, *difference) = (rows.0.to_array(), rows.1.to_array());
     }
     if peak.reduce_max() > max_sample {
         for (sample_index, (&left, &right)) in pred0.iter().zip(pred1).enumerate() {
@@ -322,17 +313,8 @@ fn prepare_optflow_strided_rows(
         let left_samples = Simd::<u16, 8>::from_slice(&pred0[source..]);
         let right_samples = Simd::<u16, 8>::from_slice(&pred1[source..]);
         peak = peak.simd_max(left_samples).simd_max(right_samples);
-        let left = left_samples.cast::<i32>();
-        let right = right_samples.cast::<i32>();
-        *weighted = round2_signed_simd(
-            Simd::splat(distances[0]) * left - Simd::splat(distances[1]) * right,
-            downshift,
-        )
-        .cast::<i16>()
-        .to_array();
-        *difference = round2_signed_simd(left - right, downshift)
-            .cast::<i16>()
-            .to_array();
+        let rows = weighted_difference_row(left_samples, right_samples, distances, downshift);
+        (*weighted, *difference) = (rows.0.to_array(), rows.1.to_array());
     }
     if peak.reduce_max() > max_sample {
         for row in 0..weighted_rows.len() {
@@ -353,6 +335,32 @@ fn prepare_optflow_strided_rows(
         }
     }
     Ok(())
+}
+
+/// The § 7.13.3.9 `weighted` and `difference` rows of eight predictor sample
+/// pairs, in `i16` lanes.
+///
+/// The reduced distances are at most 2 in magnitude, so validated samples keep
+/// `weighted` within `±4092` and `difference` within `±1023` before the
+/// `Round2Signed`. Rows of samples past the bit depth are discarded by the
+/// caller's range check, so their wrapped values never reach a solve.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn weighted_difference_row(
+    left: Simd<u16, 8>,
+    right: Simd<u16, 8>,
+    distances: [i32; 2],
+    downshift: u32,
+) -> (Simd<i16, 8>, Simd<i16, 8>) {
+    let (left, right) = (left.cast::<i16>(), right.cast::<i16>());
+    let round = |value: Simd<i16, 8>| {
+        if downshift == 0 {
+            return value;
+        }
+        (value + Simd::splat(1 << (downshift - 1)) + (value >> 15)) >> downshift as i16
+    };
+    let [near, far] = distances.map(|distance| Simd::splat(distance as i16));
+    (round(near * left - far * right), round(left - right))
 }
 
 /// `Round2Signed` lane-wise: a negative value rounds its half away from zero
@@ -790,6 +798,24 @@ mod tests {
                 unit_8x8_sums(&weighted, &difference),
                 solve_unit_sums::<8>(&gradient_x, &gradient_y, &difference, 8, 0, 0)
             );
+        }
+    }
+
+    #[test]
+    fn i16_weighted_difference_rows_match_the_i32_rounding() {
+        let left = Simd::from_array([0, 1023, 1, 512, 1023, 7, 0, 333]);
+        let right = Simd::from_array([1023, 0, 2, 511, 1023, 9, 0, 1000]);
+        for distances in [[1, 1], [2, -1], [-1, 2], [-2, -1], [1, -2]] {
+            for downshift in [0, 2] {
+                let (weighted, difference) =
+                    weighted_difference_row(left, right, distances, downshift);
+                for lane in 0..8 {
+                    let (l, r) = (i32::from(left[lane]), i32::from(right[lane]));
+                    let want = |value: i32| round2_signed_i32(value, downshift) as i16;
+                    assert_eq!(weighted[lane], want(distances[0] * l - distances[1] * r));
+                    assert_eq!(difference[lane], want(l - r));
+                }
+            }
         }
     }
 
