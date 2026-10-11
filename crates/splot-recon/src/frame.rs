@@ -400,17 +400,27 @@ impl<T: ReconSample> SharedFrame<T> {
     /// Takes the frame back when this is its last handle, keeping the handle's
     /// allocation so [`Self::new_in`] can wrap a later frame without one.
     ///
-    /// Returns `None` while any other handle is still sharing the storage.
+    /// Returns `None` while any other handle is still sharing the storage. When
+    /// the other handles drop during the call, the frame comes back without a
+    /// shell, so exactly one of the racing owners gets the storage.
     #[must_use]
-    pub fn into_frame_and_shell(self) -> Option<(DecodedFrame<T>, SharedFrameShell<T>)> {
+    pub fn into_frame_and_shell(self) -> Option<(DecodedFrame<T>, Option<SharedFrameShell<T>>)> {
         let mut inner = self.inner;
-        let frame = Arc::get_mut(&mut inner)?;
+        let Some(frame) = Arc::get_mut(&mut inner) else {
+            return Arc::into_inner(inner).map(|frame| (frame, None));
+        };
         let vacant = DecodedFrame {
             info: frame.info,
             planes: FramePlanes::new(crate::plane::Plane::vacant(), None, None),
         };
         let taken = core::mem::replace(frame, vacant);
-        Some((taken, SharedFrameShell(inner)))
+        Some((taken, Some(SharedFrameShell(inner))))
+    }
+
+    /// Takes the frame when this is its last handle, else drops this handle.
+    #[must_use]
+    pub fn into_inner(self) -> Option<DecodedFrame<T>> {
+        Arc::into_inner(self.inner)
     }
 
     /// Wraps an owned decoded frame, in a retired handle's allocation when

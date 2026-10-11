@@ -157,25 +157,24 @@ fn reclaim_unowned_frames(
         {
             continue;
         }
-        if frame.frame.handle_count() > 1
-            && !frames
-                .entries
-                .iter()
-                .enumerate()
-                .any(|(other_index, other)| {
-                    other_index != slot_index
-                        && other
-                            .frame
-                            .as_ref()
-                            .is_some_and(|other| frame.frame.shares_samples(&other.frame))
-                })
-        {
+        let shares = frames
+            .entries
+            .iter()
+            .enumerate()
+            .any(|(other_index, other)| {
+                other_index != slot_index
+                    && other
+                        .frame
+                        .as_ref()
+                        .is_some_and(|other| frame.frame.shares_samples(&other.frame))
+            });
+        if frame.frame.handle_count() > 1 && !shares {
             continue;
         }
         let Some(frame) = frames.entries[slot_index].frame.take() else {
             continue;
         };
-        let frame_bytes = retained_decoded_frame_bytes(&frame)?;
+        let frame_bytes = if shares { 0 } else { frame.byte_len()? as u64 };
         *retained_frame_bytes = retained_frame_bytes
             .checked_sub(frame_bytes)
             .ok_or_else(|| {

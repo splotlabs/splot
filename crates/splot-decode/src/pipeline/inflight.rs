@@ -184,7 +184,9 @@ impl<T: ReconSample> RefFrameSlot<T> {
             return None;
         };
         let (frame, shell) = frame.into_frame_and_shell()?;
-        self.shell = Some(shell);
+        if shell.is_some() {
+            self.shell = shell;
+        }
         Some(frame)
     }
 
