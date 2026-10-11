@@ -5,6 +5,7 @@ use std::simd::{
     Mask, Select, Simd, SimdElement, ToBytes,
     cmp::{SimdOrd, SimdPartialEq},
     num::{SimdInt, SimdUint},
+    simd_swizzle,
 };
 
 use splot_core::tables::loop_restoration::{
@@ -438,6 +439,37 @@ pub(super) fn gdf_rows<
     }
 }
 
+/// Filters in place a 16-sample uniform-class row pair whose window has
+/// `tap_range` 0. Each tap would add `2 * center` times its weights and the
+/// low-range clip pass would subtract the same sum, so the sums stay at
+/// `init`, one lane per two-sample class block, for both rows.
+#[inline(never)]
+pub(super) fn flat_rows(output: [&mut [u16; 16]; 2], init: &[Simd<i32, 8>; 3], block: &GdfBlock) {
+    let residual = if block.ref_dst_idx == GDF_INTRA_REF_DST {
+        let error = &GDF_INTRA_ERROR[block.qp_idx];
+        residual_with_error::<8, 8, 4096>(block, error, *init, None)
+    } else {
+        let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
+        residual_with_error::<8, 5, 1000>(block, error, *init, None)
+    };
+    let residual = simd_swizzle!(residual, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
+    for output in output {
+        *output = add_residual(Simd::from_array(*output), residual, block).to_array();
+    }
+}
+
+#[inline]
+fn add_residual<const W: usize>(
+    base: Simd<u16, W>,
+    residual: Simd<i16, W>,
+    block: &GdfBlock,
+) -> Simd<u16, W> {
+    (base.cast::<i16>() + residual)
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(block.max_sample as i16))
+        .cast::<u16>()
+}
+
 /// Adds every tap of the `ROWS` rows from row `first_row`. With `CLIP`, a tap
 /// adds its clipped and clamped differences to the center; without it, the
 /// tap adds `above + below`, and the caller subtracts the doubled center.
@@ -551,6 +583,20 @@ fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: 
     sums: [Simd<i32, WIDTH>; 3],
     swap: Option<Mask<i16, WIDTH>>,
 ) -> Simd<u16, WIDTH> {
+    add_residual(
+        base,
+        residual_with_error::<WIDTH, SCALE, ERROR_LEN>(block, error, sums, swap),
+        block,
+    )
+}
+
+/// The residual that `finish_gdf_width_simd` adds.
+fn residual_with_error<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: usize>(
+    block: &GdfBlock,
+    error: &[i32; ERROR_LEN],
+    sums: [Simd<i32, WIDTH>; 3],
+    swap: Option<Mask<i16, WIDTH>>,
+) -> Simd<i16, WIDTH> {
     let digit_offset = Simd::splat((1 << 15) + (SCALE << 16));
     let [first, second, third] = sums.map(|sum| {
         ((sum + (sum >> 31) + digit_offset) >> 16)
@@ -565,13 +611,9 @@ fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: 
     let error = Simd::gather_or_default(error, pos.cast::<usize>()).cast::<i16>();
     let scaled_error = error * Simd::splat(block.pix_scale as i16);
     let rounding = 12 - i16::from(block.bit_depth.bits());
-    let residual = if rounding == 0 {
+    if rounding == 0 {
         scaled_error
     } else {
         (scaled_error + Simd::splat(1 << (rounding - 1)) + (scaled_error >> 15)) >> rounding
-    };
-    (base.cast::<i16>() + residual)
-        .simd_max(Simd::splat(0))
-        .simd_min(Simd::splat(block.max_sample as i16))
-        .cast::<u16>()
+    }
 }

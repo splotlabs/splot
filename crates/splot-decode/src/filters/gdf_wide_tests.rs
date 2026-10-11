@@ -169,7 +169,11 @@ fn flat_uniform_windows_match_scalar_samples() {
                                 let range = tap_range::<16, 28>(window, params.clip_taps.limit);
                                 let low = differ < params.clip_taps.limit;
                                 assert_eq!(range, low.then_some(differ));
-                                params.rows(window, output, &classes, &block, range);
+                                if range == Some(0) {
+                                    params.flat_rows(output, &classes, &block);
+                                } else {
+                                    params.rows(window, output, &classes, &block, range);
+                                }
                             },
                         );
                         assert_eq!(

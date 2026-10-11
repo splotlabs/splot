@@ -30,8 +30,8 @@ mod simd;
 use simd::{
     EVEN_CLASS_ZERO_WEIGHTS, GDF_CLIP_TAPS, GDF_WEIGHT_SUMS, GdfClipTaps, GdfLowRange,
     GdfMixedParams, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH, WINDOW_ROWS, class_bias,
-    gdf_index_scale, gdf_rows, mixed_class_rows, source_rows, tap_range, uniform_gdf_class,
-    window_at,
+    flat_rows, gdf_index_scale, gdf_rows, mixed_class_rows, source_rows, tap_range,
+    uniform_gdf_class, window_at,
 };
 
 const MI_SIZE: usize = 4;
@@ -535,6 +535,14 @@ impl GdfUniformParams {
         }
     }
 
+    /// Filters in place a 16-sample row pair of this class through `flat_rows`.
+    fn flat_rows(&self, output: [&mut [u16; 16]; 2], classes: &[GdfClass; 8], block: &GdfBlock) {
+        let [first, second, gradient] = self.bias.map(Simd::splat);
+        let bias = Simd::from_array(classes.map(GdfClass::gradient_bias));
+        let init = [first, second, bias * Simd::splat(self.scale) + gradient];
+        flat_rows(output, &init, block);
+    }
+
     /// Filters in place a row pair of `W` samples that all have this class.
     /// `range` is the row pair's `tap_range` below this class's limit, when
     /// the caller measured it.
@@ -766,7 +774,11 @@ fn compute_enabled_segment(
                 let output = output_pair::<16>(top, bottom, x).ok_or_else(geometry_error)?;
                 let params = &uniform_params[class_index as usize];
                 let range = tap_range::<16, 28>(&window, params.clip_taps.limit);
-                params.rows(&window, output, classes, block, range);
+                if range == Some(0) {
+                    params.flat_rows(output, classes, block);
+                } else {
+                    params.rows(&window, output, classes, block, range);
+                }
                 x += 16;
             } else if width >= 8 {
                 let classes = row_classes
