@@ -53,7 +53,7 @@ impl CoeffScanEntry {
 #[derive(Debug)]
 pub(crate) struct NonZeroCoeffScanWalk<'a> {
     scan: &'a [u16],
-    width: usize,
+    width_log2: u32,
 }
 
 impl NonZeroCoeffScanWalk<'_> {
@@ -70,7 +70,8 @@ impl NonZeroCoeffScanWalk<'_> {
     pub(crate) fn entry(&self, index: usize) -> CoeffScanEntry {
         let scan_index = self.scan.len() - index - 1;
         let pos = usize::from(self.scan[scan_index]);
-        CoeffScanEntry::new(scan_index, pos, pos / self.width, pos % self.width)
+        let col_mask = (1 << self.width_log2) - 1;
+        CoeffScanEntry::new(scan_index, pos, pos >> self.width_log2, pos & col_mask)
     }
 }
 
@@ -135,6 +136,9 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
 
     let block = start.block();
     let width = block.width();
+    if !width.is_power_of_two() {
+        return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
+    }
     let coeff_count = block.coeff_count();
     for (scan_index, scan_pos) in scan[..eob].iter().copied().enumerate().rev() {
         let pos = usize::from(scan_pos);
@@ -149,7 +153,7 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
 
     Ok(NonZeroCoeffScanWalk {
         scan: &scan[..eob],
-        width,
+        width_log2: width.trailing_zeros(),
     })
 }
 

@@ -210,6 +210,8 @@ pub(crate) enum CoeffLoopContextError {
     ScanWalkEobOutOfRange { eob: usize, scan_len: usize },
     #[error("coefficient FSC scan walk EOB {eob} exceeds segment EOB {seg_eob}")]
     FscScanWalkEobOutOfRange { eob: usize, seg_eob: usize },
+    #[error("coefficient scan walk block width {width} is not a power of two")]
+    ScanWalkWidthNotPowerOfTwo { width: usize },
     #[error(
         "coefficient scan index {scan_index} points to position {pos}, outside coefficient count {coeff_count}"
     )]

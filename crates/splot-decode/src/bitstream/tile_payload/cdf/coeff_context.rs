@@ -83,7 +83,11 @@ pub(crate) struct CoeffBrContext {
 }
 
 impl CoeffBrContext {
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: plain inline leaves two out-of-line calls in the level loop"
+    )]
+    #[inline(always)]
     pub(crate) fn ctx(self, level: &[u8]) -> usize {
         let is_dc = self.row == 0 && self.col == 0;
         let class_idx = tx_class_idx(self.tx_class);

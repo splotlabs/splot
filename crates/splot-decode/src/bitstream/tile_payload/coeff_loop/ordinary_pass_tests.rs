@@ -400,3 +400,43 @@ fn staged_ordinary_context_commit_failure_preserves_context_after_reads() {
     assert_eq!(symbols.symbol_count(), 7);
     assert!(symbols.finish().is_ok());
 }
+
+#[test]
+fn scan_walk_rejects_a_block_width_that_is_not_a_power_of_two() {
+    let payload = encode_start_only();
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&payload);
+    let mut input = NonZeroCoeffBlockStartInput {
+        block: AllZeroCoeffBlockInput {
+            plane: 0,
+            x4: 0,
+            y4: 0,
+            w4: 3,
+            h4: 1,
+        },
+        eob: NonZeroCoeffEobContextInput {
+            plane: 0,
+            is_inter: false,
+            tx_width_log2: 2,
+            tx_height_log2: 2,
+            coeff_cdf_q_ctx: 0,
+        },
+    };
+    let scan: Vec<u16> = (0..48).collect();
+    let start = read_nonzero_coeff_block_start(&mut tile, &mut symbols, input).unwrap();
+
+    assert!(matches!(
+        walk_nonzero_coeff_scan(&start, &scan),
+        Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width: 12 })
+    ));
+
+    input.block.w4 = 4;
+    let mut symbols = symbol_decoder(&payload);
+    let start = read_nonzero_coeff_block_start(&mut tile, &mut symbols, input).unwrap();
+    let walk = walk_nonzero_coeff_scan(&start, &scan).unwrap();
+    let entry = walk.entry(0);
+    assert_eq!(
+        (entry.row(), entry.col()),
+        (entry.pos() / 16, entry.pos() % 16)
+    );
+}
