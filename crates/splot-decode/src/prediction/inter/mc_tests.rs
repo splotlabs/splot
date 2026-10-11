@@ -1517,6 +1517,7 @@ fn uniform_motion_direct_average_matches_materialized_path() {
             ByteOffset::new(0),
             &mut output,
             rect.luma_w,
+            None,
         )
         .expect("compound motion prediction");
         output
@@ -1577,6 +1578,7 @@ fn mixed_implicit_mask_grid_matches_the_whole_plane_blend() {
         ByteOffset::new(0),
         &mut hybrid,
         16,
+        None,
     )
     .expect("per-cell compound prediction");
 

@@ -87,9 +87,11 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
     .expect("compound block");
     let offset = ByteOffset::new(0);
     let mut samples = Vec::new();
+    let mut shared_v = Vec::new();
     for (plane, sub_x, sub_y) in super::super::mc_planes(info.pixel_format()) {
         let (_, _, w, h) = rect.plane_rect(plane, sub_x, sub_y);
         let mut output = vec![T::default(); w * h];
+        let mut v = vec![T::default(); w * h];
         assert!(
             predict_motion_grid_compound_average_into(
                 info,
@@ -103,10 +105,22 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
                 offset,
                 &mut output,
                 w,
+                (plane == PlaneId::U).then_some(&mut v[..]),
             )
             .expect("grid prediction")
         );
-        samples.extend(output.iter().map(|sample| sample.to_u16()));
+        let to_u16 = |plane: &[T]| {
+            plane
+                .iter()
+                .map(|sample| sample.to_u16())
+                .collect::<Vec<_>>()
+        };
+        match plane {
+            PlaneId::U => shared_v = to_u16(&v),
+            PlaneId::V => assert_eq!(to_u16(&output), shared_v, "V from the shared U pass"),
+            PlaneId::Y => {}
+        }
+        samples.extend(to_u16(&output));
     }
     let prediction =
         super::super::compound_subpel_plane(info, block, PlaneId::Y, 0, 0, offset).expect("plane");

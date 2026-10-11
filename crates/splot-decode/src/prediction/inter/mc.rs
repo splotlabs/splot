@@ -714,6 +714,7 @@ pub(super) fn predict_compound_from_grid<T: ReconSample>(
                 offset,
                 plane_samples,
                 block_w,
+                None,
             )?;
         }
     }
@@ -734,6 +735,12 @@ pub(super) fn predict_compound_into<T: ReconSample>(
 ) -> Result<CompoundBlockMetadata> {
     let info = sink.info();
     let mut luma_diff_weighted_mask = None;
+    let shares_chroma_grid = motion
+        .as_ref()
+        .is_some_and(|motion| motion.uniform_mvs().is_none())
+        && matches!(block.blend, CompoundBlend::Average { .. })
+        && block.warp_params.iter().all(Option::is_none);
+    let mut staged_v: Option<RecycledMcSamples<T>> = None;
     for (plane, sub_x, sub_y) in mc_planes(info.pixel_format()) {
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
@@ -754,6 +761,20 @@ pub(super) fn predict_compound_into<T: ReconSample>(
         }
         let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
         let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
+        if plane == PlaneId::V
+            && let Some(staged) = staged_v.take()
+            && let Some(samples) = staged.get(..block_w * block_h)
+        {
+            sink.write_rect(plane, rect, samples, block_w)?;
+            continue;
+        }
+        let mut chroma_v = (plane == PlaneId::U && shares_chroma_grid).then(|| {
+            let mut staged = RecycledMcSamples::take();
+            if staged.len() < block_w * block_h {
+                staged.resize(block_w * block_h, T::default());
+            }
+            staged
+        });
         let mut predict = |output: &mut [T], stride: usize| {
             predict_compound_plane_output(
                 info,
@@ -766,19 +787,23 @@ pub(super) fn predict_compound_into<T: ReconSample>(
                 offset,
                 output,
                 stride,
+                chroma_v.as_deref_mut().map(Vec::as_mut_slice),
             )
         };
-        if let Some(predicted) = sink
-            .with_contiguous_rect_mut(plane, rect, |output, stride| Ok(predict(output, stride)))?
-        {
-            predicted?;
+        let shared = if let Some(predicted) =
+            sink.with_contiguous_rect_mut(plane, rect, |output, stride| {
+                Ok(predict(output, stride))
+            })? {
+            predicted?
         } else {
             let mut staged = RecycledMcSamples::take();
             staged.clear();
             staged.resize(block_w * block_h, T::default());
-            predict(&mut staged, block_w)?;
+            let shared = predict(&mut staged, block_w)?;
             sink.write_rect(plane, rect, &staged, block_w)?;
-        }
+            shared
+        };
+        staged_v = chroma_v.filter(|_| shared);
     }
     Ok(CompoundBlockMetadata {
         rect: block.rect,
@@ -1171,7 +1196,8 @@ fn predict_compound_plane_output<T: ReconSample>(
     offset: ByteOffset,
     samples: &mut [T],
     stride: usize,
-) -> Result<()> {
+    mut chroma_v: Option<&mut [T]>,
+) -> Result<bool> {
     let storage_luma_size = info.storage_luma_size();
     let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
     let frame_h = storage_luma_size.height().div_ceil(1 << sub_y);
@@ -1197,7 +1223,7 @@ fn predict_compound_plane_output<T: ReconSample>(
         ) = (motion, blend)
     {
         if let Some(output) = T::u8_slice_mut(samples)
-            && predict_motion_compound_average_into(
+            && let (true, shared) = predict_motion_compound_average_into(
                 info,
                 block,
                 plane,
@@ -1209,12 +1235,13 @@ fn predict_compound_plane_output<T: ReconSample>(
                 offset,
                 output,
                 stride,
+                chroma_v.as_deref_mut().and_then(T::u8_slice_mut),
             )?
         {
-            return Ok(());
+            return Ok(shared);
         }
         if let Some(output) = T::u16_slice_mut(samples)
-            && predict_motion_compound_average_into(
+            && let (true, shared) = predict_motion_compound_average_into(
                 info,
                 block,
                 plane,
@@ -1226,9 +1253,10 @@ fn predict_compound_plane_output<T: ReconSample>(
                 offset,
                 output,
                 stride,
+                chroma_v.and_then(T::u16_slice_mut),
             )?
         {
-            return Ok(());
+            return Ok(shared);
         }
     }
     let translation = if motion.is_none() && !has_warp {
@@ -1265,7 +1293,7 @@ fn predict_compound_plane_output<T: ReconSample>(
             output,
             stride,
         )?;
-        return Ok(());
+        return Ok(false);
     }
     let prediction = match translation {
         Some(translation) => compound_plane_prediction_from_translation(translation)?,
@@ -1290,7 +1318,7 @@ fn predict_compound_plane_output<T: ReconSample>(
         *luma_diff_weighted_mask = Some(mask);
     }
     let mask = luma_diff_weighted_mask.as_deref().map(Vec::as_slice);
-    Ok(blend_compound_average::<T>(
+    blend_compound_average::<T>(
         pred0,
         pred1,
         info.bit_depth(),
@@ -1311,7 +1339,8 @@ fn predict_compound_plane_output<T: ReconSample>(
         sub_y,
         samples,
         stride,
-    )?)
+    )?;
+    Ok(false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1327,7 +1356,8 @@ fn predict_motion_compound_average_into<T: ReconSample, O: CompoundAverageOutput
     offset: ByteOffset,
     output: &mut [O],
     stride: usize,
-) -> Result<bool> {
+    chroma_v: Option<&mut [O]>,
+) -> Result<(bool, bool)> {
     if optflow::predict_uniform_motion_compound_average_into(
         info,
         block,
@@ -1341,9 +1371,10 @@ fn predict_motion_compound_average_into<T: ReconSample, O: CompoundAverageOutput
         output,
         stride,
     )? {
-        return Ok(true);
+        return Ok((true, false));
     }
-    optflow::predict_motion_grid_compound_average_into(
+    let shared = chroma_v.is_some();
+    let predicted = optflow::predict_motion_grid_compound_average_into(
         info,
         block,
         plane,
@@ -1355,7 +1386,9 @@ fn predict_motion_compound_average_into<T: ReconSample, O: CompoundAverageOutput
         offset,
         output,
         stride,
-    )
+        chroma_v,
+    )?;
+    Ok((predicted, predicted && shared))
 }
 
 fn predict_compound_average_into<T: ReconSample, O: CompoundAverageOutput>(
@@ -1709,24 +1742,34 @@ fn compound_subpel_plane<T: ReconSample>(
         frame_size.height() as i32,
     )
     .with_reference_storage(block.reference1.info().storage_luma_size(), sub_x, sub_y);
-    let last_row = |scaling: PlaneScaling| {
-        compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y)
-    };
-    let (view0, _, _) = block
-        .reference0
-        .plane_view(plane, last_row(scaling0), offset)?;
-    let (view1, _, _) = block
-        .reference1
-        .plane_view(plane, last_row(scaling1), offset)?;
-
     Ok(CompoundSubpelPlane {
-        views: [view0, view1],
+        views: compound_plane_views(block, plane, [scaling0, scaling1], block_h, offset)?,
         plane_x,
         plane_y,
         block_w,
         block_h,
         scalings: [scaling0, scaling1],
     })
+}
+
+/// The two reference views of a `block_h`-row compound plane prediction.
+fn compound_plane_views<T: ReconSample>(
+    block: CompoundMcBlock<'_, T>,
+    plane: PlaneId,
+    scalings: [PlaneScaling; 2],
+    block_h: usize,
+    offset: ByteOffset,
+) -> Result<[ReferencePlaneView<'_, T>; 2]> {
+    let last_row = |scaling: PlaneScaling| {
+        compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y)
+    };
+    let (view0, _, _) = block
+        .reference0
+        .plane_view(plane, last_row(scalings[0]), offset)?;
+    let (view1, _, _) = block
+        .reference1
+        .plane_view(plane, last_row(scalings[1]), offset)?;
+    Ok([view0, view1])
 }
 
 fn translational_compound_plane<T: ReconSample>(

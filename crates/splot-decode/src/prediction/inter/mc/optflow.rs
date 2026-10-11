@@ -1310,6 +1310,10 @@ pub(super) fn predict_uniform_motion_compound_average_into<
     Ok(true)
 }
 
+/// Predicts a multi-cell grid plane and returns whether it did. With
+/// `chroma_v` while `plane` is U, the V plane goes into that packed
+/// `block_w`-stride output too, from the same per-cell parameters: U and V share
+/// the plane geometry, scalings and motion, and only the reference views differ.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict_motion_grid_compound_average_into<
     T: ReconSample,
@@ -1326,11 +1330,41 @@ pub(super) fn predict_motion_grid_compound_average_into<
     offset: ByteOffset,
     output: &mut [O],
     output_stride: usize,
+    chroma_v: Option<&mut [O]>,
 ) -> Result<bool> {
     if motion.cells.as_slice().len() == 1 {
         return Ok(false);
     }
     let prediction = super::compound_subpel_plane(info, block, plane, sub_x, sub_y, offset)?;
+    let parallel = prediction
+        .block_w
+        .checked_mul(prediction.block_h)
+        .is_some_and(|samples| samples >= 256 * 256)
+        && splot_parallel::on_worker_pool();
+    let mut chroma_v = chroma_v;
+    let mut second = None;
+    if let Some(v_output) = chroma_v.take_if(|_| plane == PlaneId::U && !parallel) {
+        if v_output.len() >= prediction.block_w * prediction.block_h {
+            let views = super::compound_plane_views(
+                block,
+                PlaneId::V,
+                prediction.scalings,
+                prediction.block_h,
+                offset,
+            )?;
+            let v = CompoundSubpelPlane {
+                views,
+                plane_x: prediction.plane_x,
+                plane_y: prediction.plane_y,
+                block_w: prediction.block_w,
+                block_h: prediction.block_h,
+                scalings: prediction.scalings,
+            };
+            second = Some((v, v_output));
+        } else {
+            chroma_v = Some(v_output);
+        }
+    }
     let sample_count = (prediction.block_h.saturating_sub(1))
         .checked_mul(output_stride)
         .and_then(|rows| rows.checked_add(prediction.block_w))
@@ -1360,43 +1394,48 @@ pub(super) fn predict_motion_grid_compound_average_into<
         && !prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
         && refine.1 == 1
         && refine.2 >> sub_x == subblock_w;
-    let process_row = |cell_row: usize,
-                       row: usize,
-                       output: &mut [O],
-                       pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-                       intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE]|
-     -> Result<()> {
-        let height = subblock_h.min(prediction.block_h - row);
-        let mut merged = if merge_runs {
-            predict_fullpel_runs(
-                &prediction,
-                cells,
-                refine,
-                cell_row * motion.columns,
-                [row, subblock_w, height],
-                (sub_x, sub_y),
-                (bit_depth, block.interp, subblock_area),
-                (
-                    uniform_everywhere,
-                    implicit_mask,
-                    cwp_weight,
-                    (frame_w, frame_h),
-                ),
-                intermediate_scratch,
-                output,
-                output_stride,
-            )?
-        } else {
-            0
-        };
-        for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
-            let skip = merged & 1 != 0;
-            merged >>= 1;
-            if skip {
-                continue;
-            }
+    let grid_block = GridBlock {
+        prediction: &prediction,
+        motion,
+        bit_depth,
+        frame: (frame_w, frame_h),
+        sub: (sub_x, sub_y),
+        cwp_weight,
+    };
+    let fullpel_runs = |cell_row: usize,
+                        [row, height]: [usize; 2],
+                        prediction: &CompoundSubpelPlane<'_, T>,
+                        intermediate_scratch: &mut [i16],
+                        output: &mut [O],
+                        output_stride: usize|
+     -> Result<u64> {
+        if !merge_runs {
+            return Ok(0);
+        }
+        predict_fullpel_runs(
+            prediction,
+            cells,
+            refine,
+            cell_row * motion.columns,
+            [row, subblock_w, height],
+            (sub_x, sub_y),
+            (bit_depth, block.interp, subblock_area),
+            (
+                uniform_everywhere,
+                implicit_mask,
+                cwp_weight,
+                (frame_w, frame_h),
+            ),
+            intermediate_scratch,
+            output,
+            output_stride,
+        )
+    };
+    macro_rules! cell_inputs {
+        ($cell_row:expr, $cell_col:expr, [$col:expr, $row:expr, $height:expr]) => {{
+            let (col, row, height) = ($col, $row, $height);
             let width = subblock_w.min(prediction.block_w - col);
-            let cell_index = cell_row * motion.columns + cell_col;
+            let cell_index = $cell_row * motion.columns + $cell_col;
             let cell = *cells
                 .get(cell_index)
                 .ok_or(ReconError::ArithmeticOverflow {
@@ -1438,69 +1477,44 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 width,
                 height,
             );
-            if !uniform {
-                let [pred0, pred1] = &mut *pred_scratch;
-                let preds = prediction.views.iter().zip([&mut *pred0, &mut *pred1]);
-                for ((view, pred), params) in preds.zip(&params) {
-                    subpel_predict_block_compound_intermediate_into(
-                        view,
-                        params,
-                        Some(&mut *intermediate_scratch),
-                        &mut pred[..width * height],
-                        width,
-                    )?;
-                }
-                blend_implicit_mask_region(
-                    [&pred0[..], &pred1[..]],
-                    width,
-                    [col, row, width, height],
-                    motion,
-                    (prediction.plane_x, prediction.plane_y),
-                    prediction.scalings,
-                    ImplicitMaskBlend::new(bit_depth, frame_w, frame_h),
-                    (sub_x, sub_y),
-                    &mut output[col..],
-                    output_stride,
-                )?;
+            (params, uniform, scalings, [col, row, width, height])
+        }};
+    }
+    let process_row = |cell_row: usize,
+                       row: usize,
+                       output: &mut [O],
+                       pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
+                       intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE]|
+     -> Result<()> {
+        let height = subblock_h.min(prediction.block_h - row);
+        let mut merged = fullpel_runs(
+            cell_row,
+            [row, height],
+            &prediction,
+            intermediate_scratch,
+            output,
+            output_stride,
+        )?;
+        for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
+            let skip = merged & 1 != 0;
+            merged >>= 1;
+            if skip {
                 continue;
             }
-            if O::predict_fast(
-                &prediction.views[0],
-                &params[0],
-                &prediction.views[1],
-                &params[1],
-                cwp_weight,
+            let (params, uniform, scalings, rect) =
+                cell_inputs!(cell_row, cell_col, [col, row, height]);
+            predict_grid_cell(
+                &prediction.views,
+                (&params, uniform, &scalings, rect),
+                &grid_block,
+                pred_scratch,
                 intermediate_scratch,
-                &mut output[col..],
-                output_stride,
-            )? {
-                continue;
-            }
-            let subplane = CompoundSubpelPlane {
-                views: prediction.views,
-                plane_x: prediction.plane_x + col,
-                plane_y: prediction.plane_y + row,
-                block_w: width,
-                block_h: height,
-                scalings,
-            };
-            super::predict_compound_average_into(
-                &subplane,
-                &params,
-                cwp_weight,
-                Some(&mut pred_scratch[0]),
-                Some(intermediate_scratch),
                 &mut output[col..],
                 output_stride,
             )?;
         }
         Ok(())
     };
-    let parallel = prediction
-        .block_w
-        .checked_mul(prediction.block_h)
-        .is_some_and(|samples| samples >= 256 * 256)
-        && splot_parallel::on_worker_pool();
     if parallel {
         let row_samples = output_stride * subblock_h;
         output
@@ -1517,21 +1531,222 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     &mut intermediate_scratch,
                 )
             })?;
-        return Ok(true);
+        return predict_chroma_v_separately(
+            info,
+            block,
+            (sub_x, sub_y),
+            motion,
+            (implicit_mask, cwp_weight),
+            offset,
+            chroma_v,
+        );
     }
     let mut pred_scratch = [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
     let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+    let Some((second, second_output)) = second else {
+        for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
+            process_row(
+                cell_row,
+                row,
+                &mut output[row * output_stride..],
+                &mut pred_scratch,
+                &mut intermediate_scratch,
+            )?;
+        }
+        return predict_chroma_v_separately(
+            info,
+            block,
+            (sub_x, sub_y),
+            motion,
+            (implicit_mask, cwp_weight),
+            offset,
+            chroma_v,
+        );
+    };
     for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
-        let output_start = row * output_stride;
-        process_row(
+        let height = subblock_h.min(prediction.block_h - row);
+        let output = &mut output[row * output_stride..];
+        let second_output = &mut second_output[row * second.block_w..];
+        let scratch = &mut intermediate_scratch;
+        let mut merged = fullpel_runs(
             cell_row,
-            row,
-            &mut output[output_start..],
-            &mut pred_scratch,
-            &mut intermediate_scratch,
+            [row, height],
+            &prediction,
+            scratch,
+            output,
+            output_stride,
+        )?;
+        let mut second_merged = fullpel_runs(
+            cell_row,
+            [row, height],
+            &second,
+            scratch,
+            second_output,
+            second.block_w,
+        )?;
+        for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
+            let skip = [merged & 1 != 0, second_merged & 1 != 0];
+            merged >>= 1;
+            second_merged >>= 1;
+            if skip == [true; 2] {
+                continue;
+            }
+            let (params, uniform, scalings, rect) =
+                cell_inputs!(cell_row, cell_col, [col, row, height]);
+            let cell = (&params, uniform, &scalings, rect);
+            if !skip[0] {
+                predict_grid_cell(
+                    &prediction.views,
+                    cell,
+                    &grid_block,
+                    &mut pred_scratch,
+                    &mut intermediate_scratch,
+                    &mut output[col..],
+                    output_stride,
+                )?;
+            }
+            if !skip[1] {
+                predict_grid_cell(
+                    &second.views,
+                    cell,
+                    &grid_block,
+                    &mut pred_scratch,
+                    &mut intermediate_scratch,
+                    &mut second_output[col..],
+                    second.block_w,
+                )?;
+            }
+        }
+    }
+    predict_chroma_v_separately(
+        info,
+        block,
+        (sub_x, sub_y),
+        motion,
+        (implicit_mask, cwp_weight),
+        offset,
+        chroma_v,
+    )
+}
+
+/// Predicts the V plane into a packed `chroma_v` output that the shared U pass
+/// declined, so that a grid prediction always fills `chroma_v` when given one.
+fn predict_chroma_v_separately<T: ReconSample, O: CompoundAverageOutput + Send>(
+    info: DecodedFrameInfo,
+    block: CompoundMcBlock<'_, T>,
+    (sub_x, sub_y): (u32, u32),
+    motion: &CompoundMotionGrid,
+    (implicit_mask, cwp_weight): (bool, i16),
+    offset: ByteOffset,
+    chroma_v: Option<&mut [O]>,
+) -> Result<bool> {
+    if let Some(v_output) = chroma_v {
+        let (_, _, block_w, _) = block.rect.plane_rect(PlaneId::V, sub_x, sub_y);
+        predict_motion_grid_compound_average_into(
+            info,
+            block,
+            PlaneId::V,
+            sub_x,
+            sub_y,
+            motion,
+            implicit_mask,
+            cwp_weight,
+            offset,
+            v_output,
+            block_w,
+            None,
         )?;
     }
     Ok(true)
+}
+
+/// One grid cell's derived parameters, uniform-weight flag, scalings and
+/// `[col, row, width, height]`.
+type GridCell<'a> = (
+    &'a [SubpelPredictParams; 2],
+    bool,
+    &'a [PlaneScaling; 2],
+    [usize; 4],
+);
+
+/// The block-level inputs every cell of one grid plane shares.
+struct GridBlock<'a, 'b, T: ReconSample> {
+    prediction: &'a CompoundSubpelPlane<'b, T>,
+    motion: &'a CompoundMotionGrid,
+    bit_depth: splot_recon::BitDepth,
+    frame: (usize, usize),
+    sub: (u32, u32),
+    cwp_weight: i16,
+}
+
+/// Predicts one grid cell from `views` into `output`.
+#[allow(clippy::inline_always, reason = "per-cell motion-grid hot path")]
+#[inline(always)]
+fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
+    views: &[ReferencePlaneView<'_, T>; 2],
+    (params, uniform, scalings, [col, row, width, height]): GridCell<'_>,
+    block: &GridBlock<'_, '_, T>,
+    pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
+    intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+    output: &mut [O],
+    output_stride: usize,
+) -> Result<()> {
+    let prediction = block.prediction;
+    if !uniform {
+        let [pred0, pred1] = &mut *pred_scratch;
+        let preds = views.iter().zip([&mut *pred0, &mut *pred1]);
+        for ((view, pred), params) in preds.zip(params) {
+            subpel_predict_block_compound_intermediate_into(
+                view,
+                params,
+                Some(&mut *intermediate_scratch),
+                &mut pred[..width * height],
+                width,
+            )?;
+        }
+        let (frame_w, frame_h) = block.frame;
+        return Ok(blend_implicit_mask_region(
+            [&pred0[..], &pred1[..]],
+            width,
+            [col, row, width, height],
+            block.motion,
+            (prediction.plane_x, prediction.plane_y),
+            prediction.scalings,
+            ImplicitMaskBlend::new(block.bit_depth, frame_w, frame_h),
+            block.sub,
+            output,
+            output_stride,
+        )?);
+    }
+    if O::predict_fast(
+        &views[0],
+        &params[0],
+        &views[1],
+        &params[1],
+        block.cwp_weight,
+        intermediate_scratch,
+        output,
+        output_stride,
+    )? {
+        return Ok(());
+    }
+    let subplane = CompoundSubpelPlane {
+        views: *views,
+        plane_x: prediction.plane_x + col,
+        plane_y: prediction.plane_y + row,
+        block_w: width,
+        block_h: height,
+        scalings: *scalings,
+    };
+    Ok(super::predict_compound_average_into(
+        &subplane,
+        params,
+        block.cwp_weight,
+        Some(&mut pred_scratch[0]),
+        Some(intermediate_scratch),
+        output,
+        output_stride,
+    )?)
 }
 
 /// The unscaled start phase `(start >> 6) & 15` of a prescaled MV component:
