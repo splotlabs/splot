@@ -219,8 +219,10 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         let mut samples = [T::default(); CURRENT_FRAME_INTRA_EDGE_CAPACITY];
         let actual_len = match edge {
             IntraDcEdge::Left => {
-                for (index, row) in (rect.y()..rect.y() + rect.height()).enumerate() {
-                    samples[index] = self.samples[self.sample_index(rect.x() - 1, row)?];
+                let column = self.left_column_start(rect)?;
+                let stride = self.stride_samples();
+                for (index, slot) in samples[..rect.height()].iter_mut().enumerate() {
+                    *slot = self.samples[column + index * stride];
                 }
                 rect.height()
             }
@@ -259,10 +261,10 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         let len = dc_edge_len(rect, edge);
         match edge {
             IntraDcEdge::Left => {
+                let column = self.left_column_start(rect)?;
+                let stride = self.stride_samples();
                 for edge_index in (0..len).step_by(step) {
-                    let row = rect.y() + edge_index;
-                    let sample = self.samples[self.sample_index(rect.x() - 1, row)?];
-                    acc = fold(acc, sample)?;
+                    acc = fold(acc, self.samples[column + edge_index * stride])?;
                 }
             }
             IntraDcEdge::Above => {
@@ -273,6 +275,13 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             }
         }
         Ok(Some(acc))
+    }
+
+    /// Returns the storage index of sample `(rect.x() - 1, rect.y())`, after one
+    /// check that all `rect.height()` rows of the left column are stored.
+    fn left_column_start(&self, rect: PlaneRect) -> Result<usize> {
+        let row = self.band_row(rect.y(), rect.height())?;
+        Ok(row * self.stride_samples() + rect.x() - 1)
     }
 
     fn edge_scratch(&self, len: usize, context: &'static str) -> Result<Vec<T>> {

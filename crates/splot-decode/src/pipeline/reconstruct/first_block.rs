@@ -11,6 +11,7 @@ use splot_recon::{
 };
 
 use super::middle::middle_directional_angle;
+use super::one_sided::{gather_column_clamped, gather_row_clamped};
 use super::sink::{
     IntraEdgeAvailability, invalid_directional_edge_state, noneighbour_above, noneighbour_corner,
     noneighbour_left, write_intra_prediction_block,
@@ -200,32 +201,22 @@ fn collect_available_dip_edge<T: ReconSample>(
     let readable = initial_len
         .saturating_add(extra_units.saturating_mul(MI_SIZE))
         .min(edge_len);
-    let mut edge = RecycledIntraSamples::with_capacity(edge_len);
-    for offset in 0..readable {
-        let Some(variable) = start.checked_add(offset) else {
-            break;
-        };
-        if variable >= storage_len {
-            break;
+    let Some(limit) = start
+        .checked_add(readable)
+        .and_then(|end| end.min(storage_len).checked_sub(1))
+        .filter(|&limit| limit >= start)
+    else {
+        return Err(invalid_directional_edge_state());
+    };
+    let mut edge = RecycledIntraSamples::filled(edge_len, T::default());
+    match direction {
+        DipEdge::Above => {
+            gather_row_clamped(workspace, PlaneId::Y, (start, fixed), limit, &mut edge)
         }
-        let (sample_x, sample_y) = match direction {
-            DipEdge::Above => (variable, fixed),
-            DipEdge::Left => (fixed, variable),
-        };
-        edge.push(workspace.reconstructed_sample(PlaneId::Y, sample_x, sample_y)?);
-    }
-    extend_edge_with_last(edge, edge_len)
-}
-
-fn extend_edge_with_last<T: ReconSample>(
-    mut edge: RecycledIntraSamples<T>,
-    edge_len: usize,
-) -> core::result::Result<RecycledIntraSamples<T>, GeneralIntraResidualError> {
-    let last = edge
-        .last()
-        .copied()
-        .ok_or_else(invalid_directional_edge_state)?;
-    edge.resize(edge_len, last);
+        DipEdge::Left => {
+            gather_column_clamped(workspace, PlaneId::Y, (fixed, start), limit, &mut edge)
+        }
+    }?;
     Ok(edge)
 }
 
@@ -369,5 +360,76 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             workspace, block, prediction, plane_id, x, y, block_size, qindex, use_tcq, None, None,
             bit_depth,
         )
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use splot_recon::PixelFormat;
+
+    /// The gathered DIP edge must equal the per-sample read of every readable
+    /// position inside the storage, extended with the last one, and must fail
+    /// when no position is readable.
+    #[test]
+    fn available_dip_edge_matches_the_per_sample_reads() {
+        let (width, height) = (24, 20);
+        let mut ws = super::super::new_general_intra_workspace::<u16>(
+            width,
+            height,
+            BitDepth::Ten,
+            PixelFormat::Yuv420,
+        )
+        .unwrap();
+        for row in 0..height {
+            for column in 0..width {
+                ws.set_reconstructed_sample(PlaneId::Y, column, row, (row * 40 + column) as u16)
+                    .unwrap();
+            }
+        }
+        for direction in [DipEdge::Above, DipEdge::Left] {
+            for (start, initial_len, edge_len, extra_units) in [
+                (4, 4, 5, 0),
+                (4, 8, 10, 1),
+                (16, 8, 10, 4),
+                (19, 4, 5, 3),
+                (23, 4, 5, 3),
+                (24, 4, 5, 0),
+                (8, 0, 5, 0),
+            ] {
+                let (x, y) = match direction {
+                    DipEdge::Above => (start, 3),
+                    DipEdge::Left => (3, start),
+                };
+                let storage_len = match direction {
+                    DipEdge::Above => width,
+                    DipEdge::Left => height,
+                };
+                let readable = (initial_len + extra_units * MI_SIZE).min(edge_len);
+                let reads: Vec<u16> = (start..(start + readable).min(storage_len))
+                    .map(|at| match direction {
+                        DipEdge::Above => ws.reconstructed_sample(PlaneId::Y, at, 2).unwrap(),
+                        DipEdge::Left => ws.reconstructed_sample(PlaneId::Y, 2, at).unwrap(),
+                    })
+                    .collect();
+                let gathered = collect_available_dip_edge(
+                    &ws,
+                    direction,
+                    x,
+                    y,
+                    initial_len,
+                    edge_len,
+                    extra_units,
+                );
+                let Some(&last) = reads.last() else {
+                    assert!(gathered.is_err(), "start {start} readable {readable}");
+                    continue;
+                };
+                let mut expected = reads.clone();
+                expected.resize(edge_len, last);
+                assert_eq!(gathered.unwrap().as_slice(), expected.as_slice());
+            }
+        }
     }
 }
