@@ -168,9 +168,11 @@ struct SmoothColumnWeights {
 /// Writes the whole § 7.13.2.13 prediction over `u16` storage, hoisting the
 /// row- and block-invariant weights out of the sample loop.
 ///
-/// Returns `false` without writing a partial row when a predicted sample leaves
-/// `0..=max_sample`, which hands the block back to the per-sample path so it
-/// reports the § 7.13.2.13 range error with its exact position and value.
+/// The caller validates every edge sample to `0..=max_sample`. Each
+/// § 7.13.2.13 stage is then a `Round2` interpolation between in-range values
+/// with a weight below its scale, so the lane groups write without a range
+/// check. Returns `false` when the scalar tail finds a sample outside the range,
+/// which hands the block back to the per-sample path for the exact error.
 fn predict_smooth_rect_u16(
     max: i32,
     size: IntraRectBlockSize,
@@ -254,16 +256,14 @@ fn predict_smooth_row_u16(
     macro_rules! smooth_lane_group {
         ($lanes:literal) => {
             while column + $lanes <= width {
-                if !smooth_lanes::<$lanes>(
+                smooth_lanes::<$lanes>(
                     &mut target[column..],
                     &above[column..],
                     &weights.h_factor[column..],
                     &weights.s_left[column..],
                     row,
                     shape,
-                ) {
-                    return false;
-                }
+                );
                 column += $lanes;
             }
         };
@@ -291,10 +291,9 @@ fn predict_smooth_row_u16(
 
 /// One `LANES`-wide group of [`predict_smooth_row_u16`].
 ///
-/// Each lane repeats [`predict_smooth_sample_values`] in § 7.13.2.13 order with
-/// `Round2` expanded as `(v >> n) + ((v >> (n - 1)) & 1)`, its definition for
-/// every `i32` and every shift this kernel uses (all at least 1). Every product
-/// is bounded by a `Clip1` sample times 64, so none can overflow.
+/// Each lane repeats [`predict_smooth_sample_values`] in § 7.13.2.13 order. Every
+/// product is bounded by a `Clip1` sample times 64, so neither it nor the
+/// `Round2` rounding add can overflow.
 #[allow(clippy::inline_always, reason = "measured § 7.13.2.13 smooth hot path")]
 #[inline(always)]
 fn smooth_lanes<const LANES: usize>(
@@ -304,7 +303,7 @@ fn smooth_lanes<const LANES: usize>(
     s_left: &[i32],
     row: &SmoothRowWeights,
     shape: SmoothShape,
-) -> bool {
+) {
     let top = Simd::<u16, LANES>::from_slice(above).cast::<i32>();
     let h_factor = Simd::<i32, LANES>::from_slice(h_factor);
     let s_left = Simd::<i32, LANES>::from_slice(s_left);
@@ -322,18 +321,18 @@ fn smooth_lanes<const LANES: usize>(
         IntraSmoothMode::SmoothVertical => pred_v2,
         IntraSmoothMode::Smooth => round2_lanes(pred_v2 + pred_h2, 1),
     };
-    if (predicted.simd_lt(Simd::splat(0)) | predicted.simd_gt(Simd::splat(shape.max))).any() {
-        return false;
-    }
+    debug_assert!(
+        !(predicted.simd_lt(Simd::splat(0)) | predicted.simd_gt(Simd::splat(shape.max))).any()
+    );
     target[..LANES].copy_from_slice(&predicted.cast::<u16>().to_array()); // splot-copy-ok: publish a § 7.13.2.13 smooth lane group
-    true
 }
 
-/// `Round2(v, n)` over `LANES` lanes, for any `n` in `1..i32::BITS`.
+/// `Round2(v, n)` over `LANES` lanes, for `n` in `1..i32::BITS` and
+/// `v + 2^(n - 1)` inside `i32`.
 #[allow(clippy::inline_always, reason = "measured § 7.13.2.13 smooth hot path")]
 #[inline(always)]
 fn round2_lanes<const LANES: usize>(value: Simd<i32, LANES>, n: u32) -> Simd<i32, LANES> {
-    (value >> Simd::splat(n as i32)) + ((value >> Simd::splat(n as i32 - 1)) & Simd::splat(1))
+    (value + Simd::splat(1 << (n - 1))) >> Simd::splat(n as i32)
 }
 
 /// The scalar tail of [`predict_smooth_row_u16`], matching [`smooth_lanes`].
