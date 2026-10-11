@@ -1378,6 +1378,9 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
     )
 }
 
+/// Blends two zero-phase unscaled predictors into 10-bit output. The
+/// parameters are plane-bounded (see [`plane_bounded`]), so every row inside
+/// `[firstY, lastY]` is a readable row.
 fn subpel_predict_block_compound_average_fullpel_validated<T: ReconSample>(
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
@@ -1402,6 +1405,43 @@ fn subpel_predict_block_compound_average_fullpel_validated<T: ReconSample>(
     let forward = i32::from(cwp_weight);
     let backward = 16 - forward;
     let max_sample = i32::from(params0.bit_depth.max_sample());
+    let unclamped_top = |y: i32, params: &SubpelPredictParams| {
+        (y >= params.first_y && y + params.h as i32 - 1 <= params.last_y).then_some(y as usize)
+    };
+    if let ([Some(x0), Some(x1)], Some(top0), Some(top1)) = (
+        direct_x,
+        unclamped_top(y0[0], params0),
+        unclamped_top(y0[1], params1),
+    ) && let (Some(left), Some(right)) = (
+        reference0
+            .samples
+            .get(top0 * reference0.stride + x0..)
+            .and_then(T::u16_slice),
+        reference1
+            .samples
+            .get(top1 * reference1.stride + x1..)
+            .and_then(T::u16_slice),
+    ) {
+        let w = params0.w;
+        let rows = left
+            .chunks(reference0.stride)
+            .zip(right.chunks(reference1.stride));
+        for (destination, (left, right)) in
+            output.chunks_mut(output_stride).zip(rows).take(params0.h)
+        {
+            let destination = &mut destination[..w];
+            blend_fullpel_u16_row(
+                &left[..w],
+                &right[..w],
+                cwp_weight,
+                forward,
+                backward,
+                max_sample,
+                destination,
+            );
+        }
+        return true;
+    }
     for row in 0..params0.h {
         let source_row = [
             (y0[0] + row as i32).clamp(params0.first_y, params0.last_y) as usize,

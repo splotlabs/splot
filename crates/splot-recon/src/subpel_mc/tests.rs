@@ -1635,7 +1635,13 @@ fn fullpel_compound_average_matches_materialized_predictors() {
         .collect::<Vec<u16>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
-    for (w, cwp_weight) in [7, 31].into_iter().flat_map(|w| [(w, 8), (w, 12)]) {
+    for (w, cwp_weight, last_y) in [
+        (7, 8, 19),
+        (7, 12, 19),
+        (31, 8, 19),
+        (31, 12, 19),
+        (31, 8, 9),
+    ] {
         let params0 = SubpelPredictParams {
             interp: InterpolationFilter::EightTapSharp,
             w,
@@ -1647,7 +1653,7 @@ fn fullpel_compound_average_matches_materialized_predictors() {
             first_x: 0,
             first_y: 0,
             last_x: ref_w as i32 - 1,
-            last_y: ref_h as i32 - 1,
+            last_y,
             bit_depth: BitDepth::Ten,
         };
         let params1 = SubpelPredictParams {
