@@ -1104,16 +1104,42 @@ fn build_interior_intermediate<T: ReconSample>(
                 sum = warp_tap_mac(sum, window, taps[tap]);
             }
         } else {
-            let columns =
-                core::array::from_fn(|col| warp_taps(sx + shear.alpha * (col as i32 - 4)));
-            for (window, taps) in windows.into_iter().zip(transpose_warp_taps(columns)) {
-                sum += window.cast::<i32>() * taps.cast::<i32>();
-            }
+            sum = column_dot_products(core::array::from_fn(|col| {
+                windows[col].cast::<i32>()
+                    * warp_taps(sx + shear.alpha * (col as i32 - 4)).cast::<i32>()
+            }));
         }
         let rounded = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
         intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
             .copy_from_slice(&rounded.cast::<i16>().to_array()); // splot-copy-ok: store row-wide SIMD warp intermediate
     }
+}
+
+/// Sums the eight lanes of each column's tap products into lane `col`.
+///
+/// Column `col` of a sheared row is the dot product of its own filter with
+/// its own window, so the products reduce with three levels of pairwise adds
+/// (`addp`) instead of transposing the filters first.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn column_dot_products(
+    products: [Simd<i32, WARP_FILTER_TAPS>; WARPED_BLOCK_SIZE],
+) -> Simd<i32, WARPED_BLOCK_SIZE> {
+    let pairwise = |a: Simd<i32, 4>, b: Simd<i32, 4>| {
+        simd_swizzle!(a, b, [0, 2, 4, 6]) + simd_swizzle!(a, b, [1, 3, 5, 7])
+    };
+    let quads: [Simd<i32, 4>; WARPED_BLOCK_SIZE] = core::array::from_fn(|col| {
+        let product = products[col];
+        pairwise(
+            simd_swizzle!(product, [0, 1, 2, 3]),
+            simd_swizzle!(product, [4, 5, 6, 7]),
+        )
+    });
+    let pairs: [Simd<i32, 4>; 4] =
+        core::array::from_fn(|k| pairwise(quads[2 * k], quads[2 * k + 1]));
+    let low = pairwise(pairs[0], pairs[1]);
+    let high = pairwise(pairs[2], pairs[3]);
+    simd_swizzle!(low, high, [0, 1, 2, 3, 4, 5, 6, 7])
 }
 
 /// Transposes the eight per-column § 7.13.3.20 warp filters into per-tap lanes.
