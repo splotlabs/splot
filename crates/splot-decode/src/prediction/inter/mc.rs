@@ -1149,6 +1149,13 @@ fn predict_warp_plane<T: ReconSample>(
         bit_depth,
     };
     let prepared = PreparedWarpPrediction::new(&params)?;
+    let visible_w = block_w.min(destination_width.saturating_sub(plane_x));
+    let visible_h = block_h.min(destination_height.saturating_sub(plane_y));
+    let (block_w, block_h) = if visible_w > 0 && visible_h > 0 {
+        (visible_w, visible_h)
+    } else {
+        (block_w, block_h)
+    };
     let block = [plane_x, plane_y, block_w, block_h];
     let block_rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     if sink

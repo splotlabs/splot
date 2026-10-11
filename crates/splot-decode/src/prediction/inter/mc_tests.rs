@@ -1946,6 +1946,61 @@ fn warp_skips_prediction_units_beyond_the_current_frame() {
 }
 
 #[test]
+fn edge_clipped_sheared_warp_writes_its_visible_sections() {
+    let (width, height) = (40usize, 24usize);
+    let reference = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 7);
+    let mut workspace = workspace(width, height);
+    let warp_params = [
+        3 << 15,
+        -(1 << 15),
+        (1 << 16) + 448,
+        -320,
+        256,
+        (1 << 16) - 192,
+    ];
+    motion_compensate_inter_block_into(
+        &mut super::WorkspaceSink::Frame(&mut workspace),
+        InterBlockParams::single_warp(
+            ReferenceSamples::settled(&reference),
+            McBlockRect::from_luma_rect(24, 8, 32, 32),
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+            warp_params,
+        )
+        .with_chroma(false),
+        ByteOffset::new(0),
+    )
+    .expect("edge-clipped sheared warp dispatcher");
+
+    let decoded = workspace.freeze().expect("freeze sheared warp workspace");
+    let y = visible_samples(&decoded, PlaneId::Y);
+    let reference_y = visible_samples(&reference, PlaneId::Y);
+    let view = ReferencePlaneView::new(&reference_y, width, height).expect("reference view");
+    for (x, y0) in [(24, 8), (32, 8), (24, 16), (32, 16)] {
+        let params = WarpPredictBlockParams {
+            warp_params,
+            block_x: x as i32,
+            block_y: y0 as i32,
+            subsampling_x: 0,
+            subsampling_y: 0,
+            reference_scale_x: 1 << 14,
+            reference_scale_y: 1 << 14,
+            first_x: 0,
+            first_y: 0,
+            last_x: width as i32 - 1,
+            last_y: height as i32 - 1,
+            bit_depth: BitDepth::Eight,
+        };
+        let section = splot_recon::warp_predict_block(&view, &params, false).expect("section");
+        for (row, values) in section.chunks_exact(8).enumerate() {
+            let start = (y0 + row) * width + x;
+            let want = values.iter().map(|&value| value.clamp(0, 255) as u8);
+            assert!(y[start..start + 8].iter().copied().eq(want), "({x}, {y0})");
+        }
+    }
+}
+
+#[test]
 fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
     let reference = patterned_frame(16, 8);
     let mut workspace = workspace(16, 8);
