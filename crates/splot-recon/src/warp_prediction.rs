@@ -1368,6 +1368,9 @@ fn warp_taps(phase: i32) -> Simd<i16, WARP_FILTER_TAPS> {
     Simd::from_array(WARPED_TAPS[index])
 }
 
+/// `coefficient_x * src_x + coefficient_y * src_y + translation`, or an
+/// overflow error when it leaves `i64`. Each `i32` product fits `i64`, and
+/// so does a product plus the translation, so only the last add can overflow.
 fn project_coordinate(
     coefficient_x: i32,
     coefficient_y: i32,
@@ -1376,10 +1379,9 @@ fn project_coordinate(
     src_y: i32,
     context: &'static str,
 ) -> Result<i64> {
-    let projected = i128::from(coefficient_x) * i128::from(src_x)
-        + i128::from(coefficient_y) * i128::from(src_y)
-        + i128::from(translation);
-    i64::try_from(projected).map_err(|_| ReconError::ArithmeticOverflow { context })
+    (i64::from(coefficient_x) * i64::from(src_x) + i64::from(translation))
+        .checked_add(i64::from(coefficient_y) * i64::from(src_y))
+        .ok_or(ReconError::ArithmeticOverflow { context })
 }
 
 fn warp_product(left: i32, middle: i32, right: i32, context: &'static str) -> Result<i64> {
@@ -1545,6 +1547,31 @@ mod tests {
                 "row {index}"
             );
             assert!(row.iter().map(|&tap| i32::from(tap).abs()).sum::<i32>() <= 222);
+        }
+    }
+
+    #[test]
+    fn projection_matches_the_wide_sum_and_its_overflow() {
+        let values = [i32::MIN, i32::MIN + 1, -65_536, -1, 0, 1, 70_000, i32::MAX];
+        for coefficient_x in values {
+            for coefficient_y in values {
+                for (src_x, src_y) in [(i32::MIN, i32::MIN), (i32::MAX, -7), (12, 40)] {
+                    for translation in [i32::MIN, -1, 0, i32::MAX] {
+                        let wide = i128::from(coefficient_x) * i128::from(src_x)
+                            + i128::from(coefficient_y) * i128::from(src_y)
+                            + i128::from(translation);
+                        let got = project_coordinate(
+                            coefficient_x,
+                            coefficient_y,
+                            translation,
+                            src_x,
+                            src_y,
+                            "test",
+                        );
+                        assert_eq!(got.ok(), i64::try_from(wide).ok());
+                    }
+                }
+            }
         }
     }
 
