@@ -144,13 +144,15 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
 /// farthest tap of the last lane reads, one above the rest, keeps the range
 /// at 1. Both match the scalar samples for every table, class and bit depth.
 /// The class gradient biases cross error-table digits, so the class blocks
-/// do not all share one residual.
+/// do not all share one residual. Zero biases also take the `keeps_flat`
+/// skip, and the tables where it does not hold.
 #[test]
 fn flat_uniform_windows_match_scalar_samples() {
     let stride = 16 + GDF_READ_RADIUS * 2;
     let far = (ORIGIN.1 + 1 + TAP_REACH) * stride + ORIGIN.0 + 15;
+    let mut keeps_flat = [0; 2];
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        for differ in [0, 1] {
+        for (differ, spread) in [0, 1].into_iter().flat_map(|d| [(d, 1500), (d, 0)]) {
             let mut samples = vec![bit_depth.max_sample() / 3; stride * (2 + GDF_READ_RADIUS * 2)];
             samples[far] += differ;
             for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
@@ -158,9 +160,10 @@ fn flat_uniform_windows_match_scalar_samples() {
                     let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
                     for class_index in 0..4_u8 {
                         let classes: [GdfClass; 8] = core::array::from_fn(|index| {
-                            GdfClass::new(class_index, i32::try_from(index * 1500).unwrap_or(0))
+                            GdfClass::new(class_index, i32::try_from(index * spread).unwrap_or(0))
                         });
                         let params = GdfUniformParams::new(&block, usize::from(class_index));
+                        keeps_flat[usize::from(params.keeps_flat)] += 1;
                         let (actual, expected) = filter_both_ways::<16, 28>(
                             &samples,
                             stride,
@@ -179,14 +182,15 @@ fn flat_uniform_windows_match_scalar_samples() {
                         );
                         assert_eq!(
                             actual, expected,
-                            "{bit_depth:?}, differ {differ}, reference {ref_dst_idx}, qp \
-                             {qp_idx}, class {class_index}"
+                            "{bit_depth:?}, differ {differ}, spread {spread}, reference \
+                             {ref_dst_idx}, qp {qp_idx}, class {class_index}"
                         );
                     }
                 }
             }
         }
     }
+    assert!(keeps_flat.iter().all(|&count| count > 0));
 }
 
 #[test]

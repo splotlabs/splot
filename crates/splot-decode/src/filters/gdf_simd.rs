@@ -441,16 +441,24 @@ pub(super) fn gdf_rows<
 /// `init`, one lane per two-sample class block, for both rows.
 #[inline(never)]
 pub(super) fn flat_rows(output: [&mut [u16; 16]; 2], init: &[Simd<i32, 8>; 3], block: &GdfBlock) {
-    let residual = if block.ref_dst_idx == GDF_INTRA_REF_DST {
-        let error = &GDF_INTRA_ERROR[block.qp_idx];
-        residual_with_error::<8, 8, 4096>(block, error, *init, None)
-    } else {
-        let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
-        residual_with_error::<8, 5, 1000>(block, error, *init, None)
-    };
-    let residual = simd_swizzle!(residual, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
+    let residual = simd_swizzle!(
+        flat_residual(*init, block),
+        [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]
+    );
     for output in output {
         *output = add_residual(Simd::from_array(*output), residual, block).to_array();
+    }
+}
+
+/// The residual that `flat_rows` adds to both samples of each class block.
+#[inline]
+pub(super) fn flat_residual(init: [Simd<i32, 8>; 3], block: &GdfBlock) -> Simd<i16, 8> {
+    if block.ref_dst_idx == GDF_INTRA_REF_DST {
+        let error = &GDF_INTRA_ERROR[block.qp_idx];
+        residual_with_error::<8, 8, 4096>(block, error, init, None)
+    } else {
+        let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
+        residual_with_error::<8, 5, 1000>(block, error, init, None)
     }
 }
 

@@ -30,7 +30,7 @@ mod simd;
 use simd::{
     EVEN_CLASS_ZERO_WEIGHTS, GDF_CLIP_TAPS, GDF_WEIGHT_SUMS, GdfClipTaps, GdfLowRange,
     GdfMixedParams, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH, WINDOW_ROWS, class_bias,
-    flat_rows, gdf_index_scale, gdf_rows, mixed_class_rows, source_rows, tap_range,
+    flat_residual, flat_rows, gdf_index_scale, gdf_rows, mixed_class_rows, source_rows, tap_range,
     uniform_gdf_class, window_at,
 };
 
@@ -511,6 +511,9 @@ struct GdfUniformParams {
     clip_taps: &'static GdfClipTaps,
     bias: [i32; 3],
     scale: i32,
+    /// Whether `flat_rows` keeps the samples when every class block has
+    /// gradient bias 0: the error table gives a zero residual at `bias`.
+    keeps_flat: bool,
 }
 
 impl GdfUniformParams {
@@ -518,10 +521,12 @@ impl GdfUniformParams {
         let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
         let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
         let scale = gdf_index_scale(block);
+        let bias = GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale));
         Self {
             class,
-            bias: GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale)),
+            bias,
             scale: i32::from(scale),
+            keeps_flat: flat_residual(bias.map(Simd::splat), block) == Simd::splat(0),
             weight_sums: &GDF_WEIGHT_SUMS[block.ref_dst_idx][block.qp_idx][class],
             clip_taps: &GDF_CLIP_TAPS[block.ref_dst_idx][block.qp_idx][class],
             bounds: core::array::from_fn(|tap| {
@@ -537,8 +542,11 @@ impl GdfUniformParams {
 
     /// Filters in place a 16-sample row pair of this class through `flat_rows`.
     fn flat_rows(&self, output: [&mut [u16; 16]; 2], classes: &[GdfClass; 8], block: &GdfBlock) {
-        let [first, second, gradient] = self.bias.map(Simd::splat);
         let bias = Simd::from_array(classes.map(GdfClass::gradient_bias));
+        if self.keeps_flat && bias == Simd::splat(0) {
+            return;
+        }
+        let [first, second, gradient] = self.bias.map(Simd::splat);
         let init = [first, second, bias * Simd::splat(self.scale) + gradient];
         flat_rows(output, &init, block);
     }
