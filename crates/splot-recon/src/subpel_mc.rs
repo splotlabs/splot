@@ -1862,16 +1862,24 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
 ///
 /// `Clip3(firstX, lastX, x)` followed by the plane clamp equals one clamp to
 /// the bounded range, so the prediction does not change, and the kernels can
-/// convert the clipped coordinates to indices directly.
+/// convert the clipped coordinates to indices directly. A view has at least
+/// one column and one readable row, so `max` then `min` is that clamp
+/// without the panic path of `i32::clamp`.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
 fn plane_bounded<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> SubpelPredictParams {
+    let (last_column, last_row) = (
+        reference.width as i32 - 1,
+        reference.readable_rows as i32 - 1,
+    );
     SubpelPredictParams {
-        first_x: params.first_x.clamp(0, reference.width as i32 - 1),
-        first_y: params.first_y.clamp(0, reference.readable_rows as i32 - 1),
-        last_x: params.last_x.clamp(0, reference.width as i32 - 1),
-        last_y: params.last_y.clamp(0, reference.readable_rows as i32 - 1),
+        first_x: params.first_x.max(0).min(last_column),
+        first_y: params.first_y.max(0).min(last_row),
+        last_x: params.last_x.max(0).min(last_column),
+        last_y: params.last_y.max(0).min(last_row),
         ..*params
     }
 }
