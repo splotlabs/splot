@@ -299,9 +299,9 @@ pub fn cdef_filter_block_chroma_pair_segment(
 /// the range; its `CLAMP` mode, which clips each tap to the centre -/+
 /// strength, when `cdef_window_clamped` admits it; else `u8` lanes when the
 /// range is below 256 and the filter fits them. Other blocks take the
-/// kernel of [`cdef_filter_block_interior_to`]. Returns `false` when `block`
-/// is not below [`CDEF_SEGMENT_BLOCKS`] or `out` cannot hold the block at
-/// `out_stride`.
+/// kernel of [`cdef_filter_block_interior_to`]. Returns `false` without
+/// writing when `block` is not below [`CDEF_SEGMENT_BLOCKS`], `out_stride` is
+/// below 8, or `out` cannot hold the block at `out_stride`.
 pub fn cdef_filter_block_segment(
     segment: &CdefLumaSegment,
     block: usize,
@@ -315,6 +315,12 @@ pub fn cdef_filter_block_segment(
     let (Some(pad), Some([base, max])) = (segment.block(block), segment.range(block)) else {
         return false;
     };
+    let end = out_stride
+        .checked_mul(7)
+        .and_then(|rows| rows.checked_add(8));
+    if out_stride < 8 || end.is_none_or(|end| out.len() < end) {
+        return false;
+    }
     let starts = &CDEF_SEGMENT_TAP_STARTS;
     if !use_range {
         return cdef_filter_block_rows::<8, 16, false, CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
@@ -504,6 +510,13 @@ mod tests {
                 &filter,
                 &mut pair_out
             ));
+        }
+        for (len, stride) in [(64, 7), (63, 8), (64, usize::MAX)] {
+            let mut short = vec![u16::MAX; len];
+            assert!(!cdef_filter_block_segment(
+                &luma, 0, &filter, true, &mut short, stride
+            ));
+            assert!(short.iter().all(|&sample| sample == u16::MAX));
         }
     }
 }
