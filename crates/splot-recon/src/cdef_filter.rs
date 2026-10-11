@@ -1306,7 +1306,7 @@ pub fn cdef_filter_block_chroma_pair(
 /// scratch: rows `CDEF_PAIR_SEGMENT_STRIDE` lanes apart, with the block's
 /// first tap-reach lane at index 0. Within each plane, the samples of the
 /// block's window span at most `range`, so the block skips `constrain` when
-/// [`cdef_window_linear`] admits it.
+/// `cdef_window_linear` admits it.
 pub fn cdef_filter_block_chroma_pair_segment(
     pad: &[u16; CDEF_PAIR_SEGMENT_BLOCK_AREA],
     filter: &CdefBlockFilter,
@@ -1345,7 +1345,7 @@ pub fn cdef_filter_block_chroma_pair_segment(
 /// scratch: rows `CDEF_SEGMENT_STRIDE` lanes apart, with the block's first
 /// tap-reach lane at index 0. `window` is `Some([min, max])` only when every
 /// sample of the block's 12x12 window lies in `min..=max`. The block then
-/// skips `constrain` when [`cdef_window_linear`] admits the range, or runs
+/// skips `constrain` when `cdef_window_linear` admits the range, or runs
 /// in `u8` lanes when the range is below 256 and its filter fits them.
 /// Returns `false` when `out` cannot hold the block at `out_stride`.
 pub fn cdef_filter_block_segment(
