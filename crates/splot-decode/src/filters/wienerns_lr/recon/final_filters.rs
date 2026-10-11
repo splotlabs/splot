@@ -1177,7 +1177,7 @@ impl<'a> LrSourceWindow<'a> {
         })
     }
 
-    fn tail_from(&self, x: isize, y: isize) -> Option<(&[u16], usize)> {
+    fn tail_from(&self, x: isize, y: isize) -> Option<(&'a [u16], usize)> {
         let col = usize::try_from(x.checked_sub(self.origin_x)?).ok()?;
         let row = usize::try_from(y.checked_sub(self.origin_y)?).ok()?;
         if col >= self.stride {
@@ -1620,34 +1620,6 @@ impl StripeChain<'_> {
                     (WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAP_RADIUS),
                 )
                 .map_err(lr_window_error)?;
-                let luma_radius_x = WIENER_NS_CHROMA_TAP_RADIUS << sub_x;
-                let luma_radius_y = WIENER_NS_CHROMA_TAP_RADIUS << sub_y;
-                let luma_block_x = block_x
-                    .checked_mul(1 << sub_x)
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let luma_block_y = block_y
-                    .checked_mul(1 << sub_y)
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let luma_window = LrSourceWindow::materialize(
-                    &mut scratch.secondary,
-                    PlaneId::Y,
-                    curr_luma,
-                    cdef_luma,
-                    cdef_luma_overlap,
-                    &bounds,
-                    luma_block_x,
-                    luma_block_y,
-                    block
-                        .width
-                        .checked_shl(sub_x as u32)
-                        .ok_or_else(super::lr_pipeline_state_error)?,
-                    block
-                        .height
-                        .checked_shl(sub_y as u32)
-                        .ok_or_else(super::lr_pipeline_state_error)?,
-                    (luma_radius_x, luma_radius_y),
-                )
-                .map_err(lr_window_error)?;
                 let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
                 let (chroma_padded, chroma_stride) = chroma_window
                     .tail_from(
@@ -1655,21 +1627,58 @@ impl StripeChain<'_> {
                         block_y.saturating_sub(radius),
                     )
                     .ok_or_else(super::lr_pipeline_state_error)?;
-                let (luma_padded, luma_stride) = luma_window
-                    .tail_from(
-                        luma_block_x.saturating_sub(luma_radius_x as isize),
-                        luma_block_y.saturating_sub(luma_radius_y as isize),
+                let padded_source = if params.reads_luma() {
+                    let luma_radius_x = WIENER_NS_CHROMA_TAP_RADIUS << sub_x;
+                    let luma_radius_y = WIENER_NS_CHROMA_TAP_RADIUS << sub_y;
+                    let luma_block_x = block_x
+                        .checked_mul(1 << sub_x)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    let luma_block_y = block_y
+                        .checked_mul(1 << sub_y)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    let luma_window = LrSourceWindow::materialize(
+                        &mut scratch.secondary,
+                        PlaneId::Y,
+                        curr_luma,
+                        cdef_luma,
+                        cdef_luma_overlap,
+                        &bounds,
+                        luma_block_x,
+                        luma_block_y,
+                        block
+                            .width
+                            .checked_shl(sub_x as u32)
+                            .ok_or_else(super::lr_pipeline_state_error)?,
+                        block
+                            .height
+                            .checked_shl(sub_y as u32)
+                            .ok_or_else(super::lr_pipeline_state_error)?,
+                        (luma_radius_x, luma_radius_y),
                     )
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let padded_source = WienerNsChromaPaddedSource::new(
-                    chroma_padded,
-                    chroma_stride,
-                    luma_padded,
-                    luma_stride,
-                    block.width,
-                    block.height,
-                    (sub_x as u8, sub_y as u8),
-                )
+                    .map_err(lr_window_error)?;
+                    let (luma_padded, luma_stride) = luma_window
+                        .tail_from(
+                            luma_block_x.saturating_sub(luma_radius_x as isize),
+                            luma_block_y.saturating_sub(luma_radius_y as isize),
+                        )
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    WienerNsChromaPaddedSource::new(
+                        chroma_padded,
+                        chroma_stride,
+                        luma_padded,
+                        luma_stride,
+                        block.width,
+                        block.height,
+                        (sub_x as u8, sub_y as u8),
+                    )
+                } else {
+                    WienerNsChromaPaddedSource::chroma_only(
+                        chroma_padded,
+                        chroma_stride,
+                        block.width,
+                        block.height,
+                    )
+                }
                 .map_err(|error| lr_plane_window_error(&error, plane_id))?;
                 with_wiener_ns_chroma_scratch::<u16, _>(|scratch| match &mut output {
                     LrDestination::U16(output) => wiener_ns_filter_chroma_block_padded_u16_into(
