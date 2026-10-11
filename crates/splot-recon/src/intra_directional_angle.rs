@@ -1299,6 +1299,17 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
                 *slot = one_sided_idif_reference(branch, 0, column, derivative, mrl_index)?;
             }
             if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
+                if size.width().is_multiple_of(8) && size.height().is_multiple_of(8) {
+                    return write_one_sided_idif_tiles_u16(
+                        edge,
+                        &columns[..size.width()],
+                        max_base,
+                        bit_depth,
+                        output,
+                        stride_samples,
+                        size.height(),
+                    );
+                }
                 for (column, reference) in columns.iter().take(size.width()).enumerate() {
                     write_one_sided_idif_line_u16::<false>(
                         edge,
@@ -1393,6 +1404,100 @@ fn write_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
     }
     fill_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, active, count, last);
     Ok(())
+}
+
+/// Writes a zone-3 prediction whose sides are multiples of 8 in 8x8 tiles.
+///
+/// Each tile computes eight column chunks of [`write_one_sided_idif_line_u16`]
+/// and transposes them, so each output row takes one contiguous store instead
+/// of eight strided ones.
+fn write_one_sided_idif_tiles_u16(
+    edge: &[u16],
+    columns: &[OneSidedReference],
+    max_base: i32,
+    bit_depth: BitDepth,
+    output: &mut [u16],
+    stride_samples: usize,
+    height: usize,
+) -> Result<()> {
+    let last = logical_idif_edge_sample(edge, max_base)?;
+    for (tile, tile_columns) in columns.chunks_exact(8).enumerate() {
+        for top in (0..height).step_by(8) {
+            let mut lines = [Simd::splat(0); 8];
+            for (line, &reference) in lines.iter_mut().zip(tile_columns) {
+                *line =
+                    one_sided_idif_line_chunk8(edge, reference, max_base, last, top, bit_depth)?;
+            }
+            for (row, values) in transpose_u16x8(lines).iter().enumerate() {
+                let start = (top + row) * stride_samples + tile * 8;
+                output[start..start + 8].copy_from_slice(values.as_array()); // splot-copy-ok: publish a transposed IDIF tile row
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Line positions `at..at + 8` of [`write_one_sided_idif_line_u16`], with
+/// `last` the clamped `maxBase` edge sample.
+fn one_sided_idif_line_chunk8(
+    edge: &[u16],
+    reference: OneSidedReference,
+    max_base: i32,
+    last: u16,
+    at: usize,
+    bit_depth: BitDepth,
+) -> Result<Simd<u16, 8>> {
+    let active = usize::try_from(max_base - reference.base + 1).unwrap_or(0);
+    if at >= active {
+        return Ok(Simd::splat(last));
+    }
+    if at + 8 > active {
+        let mut lanes = [last; 8];
+        for (lane, slot) in lanes.iter_mut().enumerate().take(active - at) {
+            *slot = idif_tap(
+                edge,
+                reference.base + (at + lane) as i32,
+                reference.shift,
+                bit_depth,
+            )?;
+        }
+        return Ok(Simd::from_array(lanes));
+    }
+    if reference.shift == 0 {
+        let start = logical_idif_edge_offset(reference.base, edge.len())? + at;
+        return Ok(Simd::from_slice(&edge[start..start + 8]));
+    }
+    let taps = DR_INTERP_FILTER.get(usize::from(reference.shift)).ok_or(
+        ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF shift index",
+        },
+    )?;
+    let first = reference
+        .base
+        .checked_sub(1)
+        .and_then(|base| logical_idif_edge_offset(base, edge.len()).ok())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF tap index",
+        })?;
+    Ok(idif_above_row_chunk::<8>(
+        edge,
+        first + at,
+        *taps,
+        bit_depth,
+    ))
+}
+
+/// Transposes an 8x8 block: three rounds of interleaving row `i` with row
+/// `i + 4` rotate each element's 6-bit (row, column) index by three bits.
+fn transpose_u16x8(mut rows: [Simd<u16, 8>; 8]) -> [Simd<u16, 8>; 8] {
+    for _ in 0..3 {
+        let mut next = rows;
+        for i in 0..4 {
+            (next[2 * i], next[2 * i + 1]) = rows[i].interleave(rows[i + 4]);
+        }
+        rows = next;
+    }
+    rows
 }
 
 /// Publishes `values` to line positions `at..at + values.len()`.

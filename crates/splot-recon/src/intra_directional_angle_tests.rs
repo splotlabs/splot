@@ -1044,9 +1044,9 @@ fn middle_row_walk_matches_the_per_sample_reference() {
 
 /// The vectorized `u16` one-sided IDIF line writer must reproduce the
 /// per-sample § 7.13.2.8 reference exactly. Zone-1 (step 1) writes along the
-/// row and zone-3 (step 3) writes down the column, so this covers both the
-/// contiguous and the strided store form, every chunk width, the `shift == 0`
-/// copy, and the `maxBase` clamp tail.
+/// row and zone-3 (step 3) writes down the column, so this covers the
+/// contiguous and the strided store form, the zone-3 8x8 transposed tiles,
+/// every chunk width, the `shift == 0` copy, and the `maxBase` clamp tail.
 #[test]
 fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
     for p_angle in [3u16, 45, 67, 81, 87, 183, 189, 203, 225, 267] {
