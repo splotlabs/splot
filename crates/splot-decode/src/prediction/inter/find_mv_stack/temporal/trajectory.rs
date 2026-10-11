@@ -15,7 +15,9 @@ pub(super) const INVALID_TRAJECTORY_MV: Mv = Mv {
     col: 0,
 };
 
+/// Word-aligned, so the walk writes both components with one store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C, align(4))]
 pub(super) struct PackedTrajectoryMv {
     row: i16,
     col: i16,
