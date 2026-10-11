@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use std::simd::simd_swizzle;
 
 #[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
@@ -65,14 +64,14 @@ pub(super) fn overlap_bilinear_u16x8<T: ReconSample>(
     }
 }
 
-/// The last four output columns of the last block that
+/// Output columns 4..12 of the last block that
 /// [`subpel_predict_12x12_bilinear_overlap_into`] predicted, with the reference
 /// and geometry it read them at. Only that function writes it; the held
 /// reference borrow keeps those samples unchanged while the carry lives.
 #[derive(Default)]
 pub struct BilinearOverlapCarry<'a, T: ReconSample> {
     source: Option<(&'a [T], usize, [i32; 4])>,
-    columns: [[u16; 4]; 12],
+    columns: [[u16; 8]; 12],
 }
 
 /// Predicts an unscaled 12x12 bilinear block whose every tap lies inside both
@@ -147,77 +146,83 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
                 && carry_stride == ref_stride
                 && [x + 8, y, h, v] == geometry
         });
-    let phases = (h_phase, v_phase);
-    if !reuse {
-        bilinear_12x12_block::<T, 0>(window, ref_stride, phases, |row, lanes| {
-            lanes.copy_to_slice(&mut output[row * stride..row * stride + 8]);
-        });
+    let block = (window, ref_stride, output, stride, &mut carry.columns);
+    if reuse {
+        bilinear_12x12_block::<T, true>(block, (h_phase, v_phase));
+    } else {
+        bilinear_12x12_block::<T, false>(block, (h_phase, v_phase));
     }
-    let columns = &mut carry.columns;
-    bilinear_12x12_block::<T, 4>(window, ref_stride, phases, |row, lanes| {
-        let output = &mut output[row * stride..row * stride + SIZE];
-        if reuse {
-            output[..4].copy_from_slice(&columns[row]); // splot-copy-ok: the left neighbour's last four filtered columns
-        }
-        lanes.copy_to_slice(&mut output[4..]);
-        columns[row] = simd_swizzle!(lanes, [4, 5, 6, 7]).to_array();
-    });
     carry.source = Some((reference.samples, ref_stride, geometry));
     Ok(true)
 }
 
-/// Filters the eight columns from `COL` of a 12x12 bilinear block whose
-/// 13x13 source `window` holds every tap unclamped, passing each row to
-/// `store`.
+/// A source window and its stride, an output and its stride, and the carry
+/// columns.
+type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8]; 12]);
+
+/// Filters a 12x12 bilinear block whose 13x13 source window holds every tap
+/// unclamped into the strided output, keeping columns 4..12 in the carry
+/// columns. With `REUSE`, carried columns 8..12 become columns 0..4.
 #[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
-fn bilinear_12x12_block<T: ReconSample, const COL: usize>(
-    window: &[T],
-    ref_stride: usize,
+fn bilinear_12x12_block<T: ReconSample, const REUSE: bool>(
+    block: Block12x12<'_, T>,
     (h_phase, v_phase): (i32, i32),
-    mut store: impl FnMut(usize, Simd<u16, 8>),
 ) {
-    const SIZE: usize = 12;
-    let at = |row: usize| &window[row * ref_stride + COL..];
+    let lanes = |line: &[T], col: usize| reference_lanes::<8, T>(line, col);
+    let (left_weight, right_weight) = (
+        Simd::splat(16 - h_phase as u16),
+        Simd::splat(h_phase as u16),
+    );
+    let horizontal = |line: &[T], col: usize| {
+        lanes(line, col) * left_weight + lanes(line, col + 1) * right_weight
+    };
     match (h_phase, v_phase) {
-        (0, 0) => (0..SIZE).for_each(|row| store(row, reference_lanes::<8, T>(at(row), 0))),
-        (h_phase, 0) => (0..SIZE).for_each(|row| {
-            let source = at(row);
-            let lanes = bilinear_u16(
-                reference_lanes::<8, T>(source, 0),
-                reference_lanes::<8, T>(source, 1),
-                h_phase,
-            );
-            store(row, lanes);
+        (0, 0) => bilinear_12x12_rows::<T, REUSE>(block, lanes, |top, _| top),
+        (_, 0) => {
+            bilinear_12x12_rows::<T, REUSE>(block, horizontal, |top, _| {
+                (top + Simd::splat(8)) >> 4
+            });
+        }
+        (0, v_phase) => bilinear_12x12_rows::<T, REUSE>(block, lanes, |top, bottom| {
+            bilinear_u16(top, bottom, v_phase)
         }),
-        (0, v_phase) => {
-            let mut top = reference_lanes::<8, T>(at(0), 0);
-            for row in 0..SIZE {
-                let bottom = reference_lanes::<8, T>(at(row + 1), 0);
-                store(row, bilinear_u16(top, bottom, v_phase));
-                top = bottom;
-            }
+        (_, v_phase) => bilinear_12x12_rows::<T, REUSE>(block, horizontal, |top, bottom| {
+            let blended = tap_mac(
+                tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),
+                bottom.cast(),
+                v_phase,
+            );
+            round2_simd(blended, 8).cast::<u16>()
+        }),
+    }
+}
+
+/// Runs the rows of [`bilinear_12x12_block`] in one pass: `horizontal`
+/// filters eight columns of one source line and `vertical` blends two such
+/// results.
+#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[inline(always)]
+fn bilinear_12x12_rows<T: ReconSample, const REUSE: bool>(
+    (window, ref_stride, output, stride, columns): Block12x12<'_, T>,
+    horizontal: impl Fn(&[T], usize) -> Simd<u16, 8>,
+    vertical: impl Fn(Simd<u16, 8>, Simd<u16, 8>) -> Simd<u16, 8>,
+) {
+    let line = |row: usize| &window[row * ref_stride..row * ref_stride + 13];
+    let mut top = [horizontal(line(0), 0), horizontal(line(0), 4)];
+    for (row, carried) in columns.iter_mut().enumerate() {
+        let source = line(row + 1);
+        let bottom = [horizontal(source, 0), horizontal(source, 4)];
+        let output = &mut output[row * stride..row * stride + 12];
+        if REUSE {
+            output[..4].copy_from_slice(&carried[4..]); // splot-copy-ok: the left neighbour's last four filtered columns
+        } else {
+            vertical(top[0], bottom[0]).copy_to_slice(&mut output[..8]);
         }
-        (h_phase, v_phase) => {
-            let left_weight = Simd::splat(16 - h_phase as u16);
-            let right_weight = Simd::splat(h_phase as u16);
-            let horizontal = |row: usize| {
-                let source = at(row);
-                reference_lanes::<8, T>(source, 0) * left_weight
-                    + reference_lanes::<8, T>(source, 1) * right_weight
-            };
-            let mut top = horizontal(0);
-            for row in 0..SIZE {
-                let bottom = horizontal(row + 1);
-                let blended = tap_mac(
-                    tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),
-                    bottom.cast(),
-                    v_phase,
-                );
-                store(row, round2_simd(blended, 8).cast::<u16>());
-                top = bottom;
-            }
-        }
+        let right = vertical(top[1], bottom[1]);
+        right.copy_to_slice(&mut output[4..]);
+        *carried = right.to_array();
+        top = bottom;
     }
 }
 
@@ -279,7 +284,7 @@ mod tests {
             .unwrap();
         }
         if poison {
-            carry.columns = [[u16::MAX; 4]; 12];
+            carry.columns = [[u16::MAX; 8]; 12];
         }
         output.fill(0x5a5a);
         let predicted = subpel_predict_12x12_bilinear_overlap_into(
