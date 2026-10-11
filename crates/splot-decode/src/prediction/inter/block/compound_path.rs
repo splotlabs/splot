@@ -869,8 +869,16 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
     mi_cols: usize,
     current_order_hint: u32,
 ) -> Result<()> {
-    for y in (0..placed.luma_h).step_by(8) {
-        for x in (0..placed.luma_w).step_by(8) {
+    let uniform = motion_grid.is_none()
+        && warp_params == [None, None]
+        && !matches!(placed.block.compound_blend, mc::CompoundBlend::Wedge { .. });
+    let (step_w, step_h) = if uniform {
+        (placed.luma_w.max(8), placed.luma_h.max(8))
+    } else {
+        (8, 8)
+    };
+    for y in (0..placed.luma_h).step_by(step_h) {
+        for x in (0..placed.luma_w).step_by(step_w) {
             let mvs = if let Some(grid) = motion_grid {
                 grid.temporal_mvs_at_luma_offset(x, y)?
             } else {
@@ -907,8 +915,8 @@ pub(super) fn append_compound_temporal_motion<T: ReconSample>(
                 ref_frame_idx,
                 mi_row + y / 4,
                 mi_col + x / 4,
-                (placed.luma_w - x).min(8).div_ceil(4),
-                (placed.luma_h - y).min(8).div_ceil(4),
+                (placed.luma_w - x).min(step_w).div_ceil(4),
+                (placed.luma_h - y).min(step_h).div_ceil(4),
                 mi_rows,
                 mi_cols,
                 current_order_hint,

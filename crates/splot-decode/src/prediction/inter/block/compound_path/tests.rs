@@ -1195,3 +1195,89 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
     assert!(!use_refinemv);
     symbols.exit_symbol().unwrap();
 }
+
+#[test]
+fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
+    let reference = InterReferenceState::<u8>::empty().unwrap();
+    let compound = CompoundBlockSyntax {
+        y_mode: CompoundYMode::NewNew,
+        use_optflow: false,
+        ref_frame0: 0,
+        ref_frame1: 1,
+        mv0: Mv { row: 8, col: -16 },
+        mv1: Mv { row: -24, col: 40 },
+    };
+    let records = |width, height, blend, warp_params| {
+        let placed = PlacedInterBlock {
+            luma_x: 16,
+            luma_y: 24,
+            luma_w: width,
+            luma_h: height,
+            chroma_luma_x: 16,
+            chroma_luma_y: 24,
+            chroma_luma_w: width,
+            chroma_luma_h: height,
+            predict_chroma: false,
+            sub8x8_chroma: false,
+            interintra_chroma: false,
+            interintra_edges: [crate::pipeline::reconstruct::IntraEdgeAvailability::new(true, true);
+                2],
+            block: InterBlock {
+                ref_frame0: 0,
+                ref_frame1: Some(1),
+                mv: compound.mv0,
+                mv1: compound.mv1,
+                interp: ReconInterpolationFilter::EightTap,
+                warp_params,
+                bawp: BawpSyntax::default(),
+                interintra: None,
+                compound_blend: blend,
+                optflow_distances: None,
+                residual: None,
+            },
+        };
+        let mut records = Vec::new();
+        append_compound_temporal_motion(
+            &mut records,
+            &reference,
+            &[0, 1],
+            &placed,
+            compound,
+            warp_params,
+            None,
+            6,
+            4,
+            64,
+            64,
+            9,
+        )
+        .unwrap();
+        records
+    };
+    let average = mc::CompoundBlend::default();
+    let whole = temporal_motion_block(
+        &reference,
+        &[0, 1],
+        6,
+        4,
+        4,
+        6,
+        64,
+        64,
+        9,
+        0,
+        Some(1),
+        compound.mv0,
+        compound.mv1,
+        [None, None],
+    );
+    assert_eq!(records(16, 24, average, [None, None]), [whole]);
+    let warp = Some([1 << 16, 0, 2 << 16, 0, 1 << 16, -(1 << 16)]);
+    assert_eq!(records(16, 24, average, [warp, None]).len(), 6);
+    assert_eq!(records(16, 24, average, [None, warp]).len(), 6);
+    let wedge = mc::CompoundBlend::Wedge {
+        index: 0,
+        sign: false,
+    };
+    assert_eq!(records(16, 16, wedge, [None, None]).len(), 4);
+}

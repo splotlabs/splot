@@ -534,6 +534,49 @@ fn compound_references_are_stored_in_temporal_slot_order() {
 }
 
 #[test]
+fn whole_block_record_writes_the_cells_of_its_8x8_records() {
+    let (mi_rows, mi_cols) = (11, 13);
+    let block = |mi_row, mi_col, n4w, n4h| {
+        TemporalMotionBlock::new(
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            mi_rows,
+            mi_cols,
+            4,
+            [Some(1), Some(6)],
+            [Mv { row: 8, col: -16 }, Mv { row: -24, col: 40 }],
+            [None; 2],
+        )
+    };
+    let new_field = || {
+        let mut field = TemporalMotionField::new(mi_rows, mi_cols).unwrap();
+        field.set_reference_metadata(true, (52, 44), &[Some(1), Some(6)]);
+        field
+    };
+    for (mi_row, mi_col, n4w, n4h) in [(1, 3, 4, 6), (5, 7, 8, 8), (8, 10, 6, 4), (0, 0, 2, 2)] {
+        let (mut whole, mut split) = (new_field(), new_field());
+        whole.record_block(block(mi_row, mi_col, n4w, n4h));
+        let per_8x8: Vec<_> = (0..n4h)
+            .step_by(2)
+            .flat_map(|y| {
+                (0..n4w)
+                    .step_by(2)
+                    .map(move |x| block(mi_row + y, mi_col + x, (n4w - x).min(2), (n4h - y).min(2)))
+            })
+            .collect();
+        split.record_blocks(&per_8x8);
+        assert_ne!(whole.cell(mi_row >> 1, mi_col >> 1), new_field().cell(0, 0));
+        for y8 in 0..whole.height8 {
+            for x8 in 0..whole.width8 {
+                assert_eq!(whole.cell(y8, x8), split.cell(y8, x8), "({y8}, {x8})");
+            }
+        }
+    }
+}
+
+#[test]
 fn step_two_projection_samples_and_stores_on_the_even_grid() {
     let mut source = TemporalMotionField::new(8, 8).unwrap();
     source.set_reference_metadata(true, (32, 32), &[Some(0)]);
