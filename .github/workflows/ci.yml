@@ -285,6 +285,10 @@ jobs:
 
   perf:
     runs-on: ubuntu-latest
+    env:
+      DYNAMORIO_TAG: release_11.3.0-1
+      DYNAMORIO_ASSET: DynamoRIO-Linux-11.3.0.tar.gz
+      DYNAMORIO_SHA256: ae02049df5c4daeb82d4087aaa0d38bf58cdd26b38fb6042dccf27cbc32ceed9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -293,8 +297,23 @@ jobs:
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Install valgrind
-        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - name: Cache DynamoRIO release
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/dynamorio.tar.gz
+          key: dynamorio-${{ env.DYNAMORIO_SHA256 }}
 
-      - name: Decode Ir regression gate
+      - name: Install DynamoRIO
+        run: |
+          archive="$HOME/dynamorio.tar.gz"
+          if [ ! -f "$archive" ]; then
+            curl -fsSL -o "$archive" \
+              "https://github.com/DynamoRIO/dynamorio/releases/download/${DYNAMORIO_TAG}/${DYNAMORIO_ASSET}"
+          fi
+          echo "${DYNAMORIO_SHA256}  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/dynamorio"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/dynamorio" --strip-components=1
+          echo "DYNAMORIO_HOME=$RUNNER_TEMP/dynamorio" >> "$GITHUB_ENV"
+
+      - name: Decode instruction-count regression gate
         run: cargo xtask perf

@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 #
-# Deterministic decode instruction-count (callgrind Ir) baselines for the
-# `cargo xtask perf` regression gate. Each fixture is decoded single-threaded so
-# the Ir count is reproducible to the instruction on a fixed binary. Ir is only
-# comparable within one binary/toolchain: a compiler or RUSTFLAGS bump shifts
-# every count wholesale and requires a re-bless (`cargo xtask perf --bless`), not
-# a regression. Under callgrind the environment also spans glibc and the valgrind
-# build (which redirects malloc/memcpy/...), so these numbers are pinned to the
-# `perf` CI job's ubuntu-latest image; that job is the enforced check. If a
-# valgrind/glibc bump skews a fixture past the tolerance, re-bless on-runner.
+# Decode instruction-count baselines (DynamoRIO inscount) for the
+# `cargo xtask perf` regression gate. Each fixture is decoded single-threaded
+# and keeps the smallest count of three runs. Counts are only comparable within
+# one binary/toolchain: a compiler or RUSTFLAGS bump shifts every count
+# wholesale and requires a re-bless (`cargo xtask perf --bless`), not a
+# regression. The counts include glibc, so they are pinned to the `perf` CI
+# job's ubuntu-latest image and its DynamoRIO release; that job is the enforced
+# check. If a runner or DynamoRIO bump skews a fixture past the tolerance,
+# re-bless on-runner.
 # Generated file: edit fixtures here, but let `--bless` set the numbers.
 
 [meta]
-note = "callgrind --cache-sim=no --branch-sim=no; decode --threads 1 --output-format hash"
+note = "DynamoRIO 11.3.0 inscount, smallest of 3 runs; decode --threads 1 --output-format hash"
 
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-gdf-intra-128x128.ivf"

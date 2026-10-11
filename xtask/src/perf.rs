@@ -4,25 +4,28 @@
 //! The decode instruction-count regression gate (`cargo xtask perf`).
 //!
 //! Decodes a curated subset of committed conformance vectors under
-//! `valgrind --tool=callgrind` and compares the total retired-instruction count
-//! (Ir) of each against a checked-in baseline (`tests/perf/baseline.toml`).
-//! Callgrind Ir with cache/branch simulation disabled is deterministic to the
-//! instruction for a fixed binary, so — run single-threaded — it is a stable,
-//! runner-independent proxy for decode CPU work, unlike wall-clock time.
+//! DynamoRIO's `inscount` sample client and compares the executed-instruction
+//! count of each against a checked-in baseline (`tests/perf/baseline.toml`).
+//! DynamoRIO decodes every instruction the release build emits (AVX2
+//! included), and the count is a stable, runner-independent proxy for decode
+//! CPU work, unlike wall-clock time. The client keeps one counter for all
+//! threads and idle worker spins only add to it, so each fixture keeps the
+//! smallest count of [`RUNS`] runs.
 //!
-//! This is a heavy gate (valgrind is ~20-30x slowdown) and is **not** part of
-//! `cargo xtask ci`; it runs as its own CI job and on demand. `--bless` re-runs
-//! every fixture and rewrites the baseline (the only write it performs). When
-//! `valgrind` is absent it skips with a hint rather than failing, mirroring the
+//! This is a heavy gate and is **not** part of `cargo xtask ci`; it runs as its
+//! own CI job and on demand. `--bless` re-runs every fixture and rewrites the
+//! baseline (the only write it performs). When `DYNAMORIO_HOME` does not name a
+//! DynamoRIO release it skips with a hint rather than failing, mirroring the
 //! run-if-present style of the fuzz/coverage tooling, so a fresh checkout can
-//! still run the rest of `xtask` — CI installs valgrind and therefore enforces.
+//! still run the rest of `xtask` — CI installs a pinned release and therefore
+//! enforces.
 //!
 //! `xtask` depends on no `splot-*` crate, so it shells out to the built `splot`
 //! binary's `decode` command, exactly as `xtask conformance` shells out to
 //! `validate`.
 
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -34,22 +37,23 @@ const BASELINE_HEADER: &str = "\
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 #
-# Deterministic decode instruction-count (callgrind Ir) baselines for the
-# `cargo xtask perf` regression gate. Each fixture is decoded single-threaded so
-# the Ir count is reproducible to the instruction on a fixed binary. Ir is only
-# comparable within one binary/toolchain: a compiler or RUSTFLAGS bump shifts
-# every count wholesale and requires a re-bless (`cargo xtask perf --bless`), not
-# a regression. Under callgrind the environment also spans glibc and the valgrind
-# build (which redirects malloc/memcpy/...), so these numbers are pinned to the
-# `perf` CI job's ubuntu-latest image; that job is the enforced check. If a
-# valgrind/glibc bump skews a fixture past the tolerance, re-bless on-runner.
+# Decode instruction-count baselines (DynamoRIO inscount) for the
+# `cargo xtask perf` regression gate. Each fixture is decoded single-threaded
+# and keeps the smallest count of three runs. Counts are only comparable within
+# one binary/toolchain: a compiler or RUSTFLAGS bump shifts every count
+# wholesale and requires a re-bless (`cargo xtask perf --bless`), not a
+# regression. The counts include glibc, so they are pinned to the `perf` CI
+# job's ubuntu-latest image and its DynamoRIO release; that job is the enforced
+# check. If a runner or DynamoRIO bump skews a fixture past the tolerance,
+# re-bless on-runner.
 # Generated file: edit fixtures here, but let `--bless` set the numbers.
 ";
-/// Fail the gate when a fixture's Ir rises more than this percentage above its
-/// baseline. Callgrind Ir is deterministic for a fixed binary (sub-0.1%
-/// run-to-run), so this budget only absorbs incidental codegen drift within one
+/// Fail the gate when a fixture's count rises more than this percentage above
+/// its baseline. This budget only absorbs incidental codegen drift within one
 /// pinned toolchain; a real regression moves far past it.
 const TOLERANCE_PCT: f64 = 0.5;
+/// Runs per fixture; the smallest count is kept.
+const RUNS: usize = 3;
 
 /// The whole `tests/perf/baseline.toml` document. `deny_unknown_fields` turns a
 /// mistyped table (e.g. `[[fixtures]]`) into a load error instead of silently
@@ -69,7 +73,7 @@ struct Meta {
 }
 
 /// One measured fixture: its path, the hot kernel(s) it exercises, and the
-/// recorded stable-toolchain Ir baseline.
+/// recorded instruction-count baseline.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureRow {
@@ -78,22 +82,22 @@ struct FixtureRow {
     ir_stable: u64,
 }
 
-/// Removes a scratch directory when dropped, so a mid-loop `?` cannot leak it.
-struct ScratchDir(std::path::PathBuf);
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+/// `drrun` and the `inscount` client of the DynamoRIO release that
+/// `DYNAMORIO_HOME` names, when both exist.
+fn dynamorio() -> Option<(PathBuf, PathBuf)> {
+    let home = PathBuf::from(std::env::var_os("DYNAMORIO_HOME")?);
+    let drrun = home.join("bin64").join("drrun");
+    let client = home.join("samples").join("bin64").join("libinscount.so");
+    (drrun.is_file() && client.is_file()).then_some((drrun, client))
 }
 
 /// Runs the perf gate. With `bless`, rewrites the baseline from the measured
 /// numbers instead of comparing against it.
 ///
 /// # Errors
-/// Returns an error if the baseline is unreadable, a fixture is missing,
-/// valgrind fails, or (without `bless`) any fixture regresses beyond
-/// [`TOLERANCE_PCT`].
+/// Returns an error if the baseline is unreadable, a fixture is missing, a
+/// decode under DynamoRIO fails, or (without `bless`) any fixture regresses
+/// beyond [`TOLERANCE_PCT`].
 pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
     let baseline_path = root.join(BASELINE_REL);
     let mut baseline: Baseline = crate::util::load_toml(&baseline_path)?;
@@ -107,21 +111,19 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
         );
     }
 
-    if !crate::tool_available("valgrind") {
+    let Some((drrun, client)) = dynamorio() else {
         if bless {
-            bail!("perf --bless requires valgrind; install it to record the baseline");
+            bail!(
+                "perf --bless requires DynamoRIO; set DYNAMORIO_HOME to a release to record the baseline"
+            );
         }
-        eprintln!("perf: skipped (valgrind not found; install valgrind to run the decode Ir gate)");
+        eprintln!(
+            "perf: skipped (DYNAMORIO_HOME does not name a DynamoRIO release; set it to run the decode instruction gate)"
+        );
         return Ok(());
-    }
+    };
 
     let splot = crate::conformance::build_splot_binary(root, true)?;
-    let scratch =
-        ScratchDir(std::env::temp_dir().join(format!("splot-perf-{}", std::process::id())));
-    std::fs::create_dir_all(&scratch.0)
-        .with_context(|| format!("failed to create scratch dir {}", scratch.0.display()))?;
-    let out_file = scratch.0.join("callgrind.out");
-
     let mut regressions = Vec::new();
     eprintln!(
         "perf: {:>14}  {:>14}  {:>8}  target / fixture",
@@ -132,7 +134,7 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
         if !fixture.exists() {
             bail!("perf fixture missing: {}", row.path);
         }
-        let measured = measure_ir(&splot, &fixture, &out_file)?;
+        let measured = measure_instructions(&drrun, &client, &splot, &fixture)?;
         let base = row.ir_stable;
         let delta = if base == 0 {
             0.0
@@ -178,90 +180,79 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
     )
 }
 
-/// Decodes one fixture under callgrind and returns the total Ir from the
-/// output's `summary:` line.
-fn measure_ir(splot: &Path, fixture: &Path, out_file: &Path) -> Result<u64> {
-    let _ = std::fs::remove_file(out_file);
-    let output = Command::new("valgrind")
-        .args(["--tool=callgrind", "--cache-sim=no", "--branch-sim=no"])
-        .arg(format!("--callgrind-out-file={}", out_file.display()))
-        .arg(splot)
-        .args([
-            "decode",
-            "--quiet",
-            "--threads",
-            "1",
-            "--frame-delay",
-            "1",
-            "--output-format",
-            "hash",
-        ])
-        .arg(fixture)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to spawn valgrind")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let lines: Vec<&str> = stderr.lines().collect();
-        let vex = lines
-            .iter()
-            .filter(|line| line.contains("unhandled") || line.contains("vex "))
-            .copied()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let tail = lines[lines.len().saturating_sub(40)..].join("\n");
-        bail!(
-            "valgrind decode failed for {} ({}):\n{vex}\n{tail}",
-            fixture.display(),
-            output.status
-        );
+/// Decodes one fixture under the `inscount` client [`RUNS`] times and returns
+/// the smallest executed-instruction count.
+fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Path) -> Result<u64> {
+    let mut best = u64::MAX;
+    for _ in 0..RUNS {
+        let output = Command::new(drrun)
+            .arg("-c")
+            .arg(client)
+            .arg("--")
+            .arg(splot)
+            .args([
+                "decode",
+                "--quiet",
+                "--threads",
+                "1",
+                "--frame-delay",
+                "1",
+                "--output-format",
+                "hash",
+            ])
+            .arg(fixture)
+            .output()
+            .context("failed to spawn drrun")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let lines: Vec<&str> = stderr.lines().collect();
+            let tail = lines[lines.len().saturating_sub(40)..].join("\n");
+            bail!(
+                "DynamoRIO decode failed for {} ({}):\n{tail}",
+                fixture.display(),
+                output.status
+            );
+        }
+        let count = parse_inscount(&String::from_utf8_lossy(&output.stdout))
+            .with_context(|| format!("inscount output for {}", fixture.display()))?;
+        best = best.min(count);
     }
-    let text = std::fs::read_to_string(out_file)
-        .with_context(|| format!("failed to read {}", out_file.display()))?;
-    parse_summary_ir(&text).with_context(|| format!("callgrind output for {}", fixture.display()))
+    Ok(best)
 }
 
-/// Extracts the total Ir from a callgrind output body's `summary:` line (the
-/// first whitespace-separated integer after the `summary:` prefix).
-fn parse_summary_ir(text: &str) -> Result<u64> {
+/// Extracts the count from the `inscount` client's
+/// `Instrumentation results: N instructions executed` line.
+fn parse_inscount(text: &str) -> Result<u64> {
     for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("summary:") {
+        if let Some(rest) = line.trim().strip_prefix("Instrumentation results:") {
             return rest
                 .split_whitespace()
                 .next()
                 .and_then(|token| token.parse::<u64>().ok())
-                .ok_or_else(|| anyhow!("could not parse callgrind summary line: {line}"));
+                .ok_or_else(|| anyhow!("could not parse inscount line: {line}"));
         }
     }
-    bail!("no `summary:` line in callgrind output")
+    bail!("no `Instrumentation results:` line in inscount output")
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::parse_summary_ir;
+    use super::parse_inscount;
 
     #[test]
-    fn parses_single_token_summary() {
-        assert_eq!(
-            parse_summary_ir("events: Ir\nsummary: 21219322\n").unwrap(),
-            21_219_322
-        );
+    fn parses_the_results_line_among_decode_output() {
+        let text = "frame.hash: abc\nInstrumentation results: 21219322 instructions executed\n";
+        assert_eq!(parse_inscount(text).unwrap(), 21_219_322);
     }
 
     #[test]
-    fn parses_first_token_of_multi_column_summary() {
-        assert_eq!(parse_summary_ir("summary: 42 7 3\n").unwrap(), 42);
+    fn missing_results_line_is_an_error() {
+        assert!(parse_inscount("frame.hash: abc\n").is_err());
     }
 
     #[test]
-    fn missing_summary_line_is_an_error() {
-        assert!(parse_summary_ir("events: Ir\ntotals: 5\n").is_err());
-    }
-
-    #[test]
-    fn non_numeric_summary_is_an_error() {
-        assert!(parse_summary_ir("summary: not-a-number\n").is_err());
+    fn non_numeric_count_is_an_error() {
+        assert!(parse_inscount("Instrumentation results: many instructions executed\n").is_err());
     }
 }
