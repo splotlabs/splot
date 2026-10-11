@@ -148,7 +148,8 @@ impl PreparedWarpPrediction {
     /// # Errors
     /// Returns the errors of [`Self::predict_block_into`],
     /// [`ReconError::SampleTypeUnsupportedBitDepth`] when `T` cannot hold the
-    /// bit depth, [`ReconError::StrideTooSmall`] when `stride` is below
+    /// bit depth, [`ReconError::ArithmeticOverflow`] when the block's end
+    /// does not fit `i32`, [`ReconError::StrideTooSmall`] when `stride` is below
     /// `width`, or [`ReconError::BufferLengthMismatch`] when `output` cannot
     /// hold the block.
     pub fn predict_clipped_into<T: ReconSample>(
@@ -159,6 +160,16 @@ impl PreparedWarpPrediction {
         stride: usize,
     ) -> Result<()> {
         crate::intra_dc_math::validate_sample_type::<T>(self.params.bit_depth)?;
+        let fits = |start: usize, len: usize| {
+            start
+                .checked_add(len)
+                .is_some_and(|end| i32::try_from(end).is_ok())
+        };
+        if !fits(x, width) || !fits(y, height) {
+            return Err(ReconError::ArithmeticOverflow {
+                context: "warp block position",
+            });
+        }
         if stride < width {
             return Err(ReconError::StrideTooSmall {
                 stride_samples: stride,
@@ -1561,6 +1572,12 @@ mod tests {
             prepared.predict_clipped_into(&view, [16, 24, 16, 16], &mut output, 15),
             Err(ReconError::StrideTooSmall { .. })
         ));
+        for at in [[1 << 31, 24, 16, 16], [16, (1 << 31) - 8, 16, 16]] {
+            assert!(matches!(
+                prepared.predict_clipped_into(&view, at, &mut output, stride),
+                Err(ReconError::ArithmeticOverflow { .. })
+            ));
+        }
         params.bit_depth = BitDepth::Ten;
         let ten_bit = PreparedWarpPrediction::new(&params).unwrap();
         assert!(matches!(
