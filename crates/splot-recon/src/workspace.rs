@@ -233,6 +233,7 @@ pub struct CurrentFramePlaneRect<'a, T: ReconSample> {
     plane: PlaneId,
     storage_size: PlaneSize,
     rect: PlaneRect,
+    stride: usize,
     samples: &'a mut [T],
 }
 
@@ -248,7 +249,7 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
     }
 
     const fn stride(&self) -> usize {
-        self.storage_size.width()
+        self.stride
     }
 
     fn offset_of(&self, rect: PlaneRect) -> Result<usize> {
@@ -288,7 +289,7 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
             rect,
             samples,
             row_stride_samples,
-            self.storage_size.width(),
+            self.stride(),
             max_sample,
         )?;
         let stride = self.stride();
@@ -837,6 +838,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
 struct PlaneBandSplit<'a, T: ReconSample> {
     plane: PlaneId,
     storage_size: PlaneSize,
+    stride: usize,
     rest: &'a mut [T],
     settled_rows: usize,
 }
@@ -846,6 +848,7 @@ impl<'a, T: ReconSample> PlaneBandSplit<'a, T> {
         Self {
             plane: plane.plane,
             storage_size: plane.storage_size,
+            stride: plane.stride,
             rest: &mut plane.samples,
             settled_rows: plane.origin_y,
         }
@@ -857,8 +860,11 @@ impl<'a, T: ReconSample> PlaneBandSplit<'a, T> {
     /// reaches back above one already handed out cannot be carved out here.
     fn take(&mut self, rect: PlaneRect) -> Result<CurrentFramePlaneRect<'a, T>> {
         ensure_rect_in_storage(self.plane, self.storage_size, rect)?;
-        let stride = self.storage_size.width();
-        if rect.x() != 0 || rect.width() != stride || rect.y() < self.settled_rows {
+        let stride = self.stride;
+        if rect.x() != 0
+            || rect.width() != self.storage_size.width()
+            || rect.y() < self.settled_rows
+        {
             return Err(ReconError::WorkspaceRectSurfaceNotABand {
                 plane: self.plane,
                 storage: self.storage_size,
@@ -884,6 +890,7 @@ impl<'a, T: ReconSample> PlaneBandSplit<'a, T> {
             plane: self.plane,
             storage_size: self.storage_size,
             rect,
+            stride,
             samples: band,
         })
     }
@@ -1438,6 +1445,8 @@ pub struct CurrentFramePlane<T: ReconSample> {
     visible_rect: PlaneRect,
     /// The first plane row `samples` holds; a band stores no row above it.
     origin_y: usize,
+    /// Samples from one row to the next; see [`crate::plane_stride`].
+    stride: usize,
     samples: crate::PlaneBuf<T>,
     pool: Option<Arc<crate::PlanePool>>,
 }
@@ -1469,7 +1478,11 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             }
         })?;
 
-        let stride_samples = storage_size.width();
+        let stride_samples = crate::plane_stride::<T>(storage_size.width()).ok_or(
+            ReconError::ArithmeticOverflow {
+                context: "current-frame workspace plane stride",
+            },
+        )?;
         let required_samples = stride_samples.checked_mul(storage_size.height()).ok_or(
             ReconError::ArithmeticOverflow {
                 context: "current-frame workspace plane required sample count",
@@ -1511,6 +1524,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             storage_size,
             visible_rect,
             origin_y: 0,
+            stride: stride_samples,
             samples,
         })
     }
@@ -1527,7 +1541,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
     /// Returns the storage stride in samples.
     pub const fn stride_samples(&self) -> usize {
-        self.storage_size.width()
+        self.stride
     }
 
     /// Returns the visible decoded-output rectangle.

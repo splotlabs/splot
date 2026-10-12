@@ -971,7 +971,7 @@ impl<'a> LrSourceRows<'a> {
         let cdef_first = cdef_first.max(cdef_origin);
         let cdef_start = |y: isize| {
             let row = usize::try_from(y.checked_sub(cdef_origin)?).ok()?;
-            row.checked_mul(cdef_plane.width())?
+            row.checked_mul(cdef_plane.stride())?
                 .checked_add(geometry.mid_start)
         };
         let unclipped = geometry.mid == stride;

@@ -958,7 +958,7 @@ fn apply_luma_lr(
     drop(filtered);
     assert!(lease.submit());
     let frame = progress.freeze_workspace(core::convert::identity).unwrap();
-    frame.y().samples().to_vec()
+    crate::test_support::packed(frame.y())
 }
 
 #[test]

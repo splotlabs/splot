@@ -15,6 +15,14 @@ use std::alloc::{AllocError, Allocator, Global, Layout};
 /// The byte alignment of every plane buffer's first sample and row stride.
 pub const PLANE_ALIGNMENT: usize = 64;
 
+/// The row stride, in samples, of a plane `width` samples wide: the width
+/// rounded up to a whole number of [`PLANE_ALIGNMENT`]-byte blocks, or `None`
+/// when that overflows.
+#[must_use]
+pub const fn plane_stride<T>(width: usize) -> Option<usize> {
+    width.checked_next_multiple_of(PLANE_ALIGNMENT / size_of::<T>())
+}
+
 /// The global allocator, with every allocation aligned to [`PLANE_ALIGNMENT`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PlaneAlloc;

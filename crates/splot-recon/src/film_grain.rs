@@ -93,24 +93,29 @@ fn apply_grain<T: ReconSample>(
 
 struct GrainDestination<T: ReconSample> {
     samples: crate::PlaneBuf<T>,
+    stride: usize,
 }
 
 impl<T: ReconSample> GrainDestination<T> {
     fn from_visible(plane: &Plane<T>) -> Self {
+        let size = plane.visible_size();
+        let stride = crate::plane_stride::<T>(size.width()).unwrap_or(size.width());
         let mut samples = crate::plane_buf();
-        samples.reserve_exact(plane.visible_size().width() * plane.visible_size().height());
+        samples.reserve_exact(stride * size.height());
         for row in plane.visible_rows() {
             samples.extend_from_slice(row); // splot-copy-ok: final film-grain output materialization
+            let padded = samples.len() + stride - row.len();
+            samples.resize(padded, T::default());
         }
-        Self { samples }
+        Self { samples, stride }
     }
 
-    fn get(&self, index: usize) -> i32 {
-        i32::from(self.samples[index].to_u16())
+    fn get(&self, row: usize, col: usize) -> i32 {
+        i32::from(self.samples[row * self.stride + col].to_u16())
     }
 
-    fn set(&mut self, index: usize, value: u16) -> Result<()> {
-        self.samples[index] = T::try_from_u16(value)?;
+    fn set(&mut self, row: usize, col: usize, value: u16) -> Result<()> {
+        self.samples[row * self.stride + col] = T::try_from_u16(value)?;
         Ok(())
     }
 }
@@ -122,7 +127,7 @@ fn plane_from_visible<T: ReconSample>(
 ) -> Result<Plane<T>> {
     let size = PlaneSize::new(width, height)?;
     let rect = PlaneRect::new(0, 0, width, height)?;
-    Plane::from_buf(size, width, rect, destination.samples)
+    Plane::from_buf(size, destination.stride, rect, destination.samples)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -666,12 +671,11 @@ fn add_noise_to_samples<T: ReconSample>(
     if grain.model.num_y_points > 0 {
         for row in 0..height {
             for col in 0..width {
-                let index = row * width + col;
-                let orig = y.get(index);
+                let orig = y.get(row, col);
                 let scaled = scale_lut(&scaling[0], orig, bit_depth);
                 let noise_sample = noise.planes[0][row * noise.widths[0] + col];
                 let delta = round2(scaled * noise_sample, scaling_shift);
-                y.set(index, (orig + delta).clamp(min_value, max_luma) as u16)?;
+                y.set(row, col, (orig + delta).clamp(min_value, max_luma) as u16)?;
             }
         }
     }
@@ -704,16 +708,13 @@ fn add_chroma_noise<T: ReconSample>(
             let luma_y = row << sub_y;
             let luma_next_x = (luma_x + 1).min(luma_width - 1);
             let average_luma = if sub_x == 1 {
-                round2(
-                    y.get(luma_y * luma_width + luma_x) + y.get(luma_y * luma_width + luma_next_x),
-                    1,
-                )
+                round2(y.get(luma_y, luma_x) + y.get(luma_y, luma_next_x), 1)
             } else {
-                y.get(luma_y * luma_width + luma_x)
+                y.get(luma_y, luma_x)
             };
             let index = row * chroma_width + col;
             if model.num_cb_points > 0 || model.chroma_scaling_from_luma {
-                let orig = u.get(index);
+                let orig = u.get(row, col);
                 let merged = chroma_merged_sample(
                     average_luma,
                     orig,
@@ -728,10 +729,10 @@ fn add_chroma_noise<T: ReconSample>(
                     scale_lut(&scaling[1], merged, bit_depth) * noise.planes[1][index],
                     scaling_shift,
                 );
-                u.set(index, (orig + delta).clamp(min_value, max_chroma) as u16)?;
+                u.set(row, col, (orig + delta).clamp(min_value, max_chroma) as u16)?;
             }
             if model.num_cr_points > 0 || model.chroma_scaling_from_luma {
-                let orig = v.get(index);
+                let orig = v.get(row, col);
                 let merged = chroma_merged_sample(
                     average_luma,
                     orig,
@@ -746,7 +747,7 @@ fn add_chroma_noise<T: ReconSample>(
                     scale_lut(&scaling[2], merged, bit_depth) * noise.planes[2][index],
                     scaling_shift,
                 );
-                v.set(index, (orig + delta).clamp(min_value, max_chroma) as u16)?;
+                v.set(row, col, (orig + delta).clamp(min_value, max_chroma) as u16)?;
             }
         }
     }

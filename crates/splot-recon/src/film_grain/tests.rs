@@ -246,6 +246,7 @@ fn destination_allocation_is_retained<T: ReconSample + std::fmt::Debug + Partial
 ) -> Vec<T> {
     let destination = GrainDestination {
         samples: crate::plane_buf_from(samples),
+        stride: 2,
     };
     let pointer = destination.samples.as_ptr();
     let capacity = destination.samples.capacity();
@@ -284,7 +285,10 @@ fn visible_source_samples_are_copied_directly_in_destination_type() {
     .unwrap();
     let destination = GrainDestination::from_visible(&source);
 
-    assert_eq!(destination.samples.as_slice(), [11, 12, 21, 22]);
+    assert_eq!(destination.stride, crate::PLANE_ALIGNMENT);
+    assert_eq!(destination.samples.len(), 2 * crate::PLANE_ALIGNMENT);
+    assert_eq!(destination.samples[..2], [11, 12]);
+    assert_eq!(destination.samples[crate::PLANE_ALIGNMENT..][..2], [21, 22]);
 }
 
 #[test]

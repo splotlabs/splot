@@ -932,6 +932,7 @@ struct PlaneSamples<'a, T: ReconSample> {
     origin_y: usize,
     stored_rows: usize,
     width: usize,
+    stride: usize,
     height: usize,
 }
 
@@ -948,6 +949,7 @@ impl<'a, T: ReconSample> PlaneSamples<'a, T> {
             origin_y: plane.origin_y(),
             stored_rows: plane.samples().len() / plane.stride_samples().max(1),
             width: size.width(),
+            stride: plane.stride_samples(),
             height: size.height(),
         })
     }
@@ -960,7 +962,7 @@ impl<'a, T: ReconSample> PlaneSamples<'a, T> {
             && y < self.height
             && let Some(row) = y.checked_sub(self.origin_y)
             && row < self.stored_rows
-            && let Some(sample) = self.samples.get(row * self.width + x)
+            && let Some(sample) = self.samples.get(row * self.stride + x)
         {
             return Ok(sample.to_u16());
         }
@@ -981,8 +983,8 @@ impl<'a, T: ReconSample> PlaneSamples<'a, T> {
         if y >= self.height || local >= self.stored_rows || self.width == 0 {
             return None;
         }
-        self.samples
-            .get(local * self.width..(local + 1) * self.width)
+        let start = local * self.stride;
+        self.samples.get(start..start + self.width)
     }
 }
 

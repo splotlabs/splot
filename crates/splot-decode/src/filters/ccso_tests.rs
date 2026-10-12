@@ -176,7 +176,7 @@ fn ccso_matches_per_sample_reference_for_edge_classifiers() {
                     .unwrap();
             }
         }
-        let pre = workspace.samples(plane_id).unwrap().to_vec();
+        let pre = crate::test_support::workspace_rows(&workspace, plane_id);
         ccso_plane(
             &mut workspace,
             &curr_luma,
@@ -189,7 +189,7 @@ fn ccso_matches_per_sample_reference_for_edge_classifiers() {
             BitDepth::Eight,
         )
         .unwrap();
-        let post = workspace.samples(plane_id).unwrap();
+        let post = crate::test_support::workspace_rows(&workspace, plane_id);
         for y in 0..ph {
             for x in 0..pw {
                 let expected = reference_filtered_sample(
@@ -232,7 +232,7 @@ fn chroma_ccso_uses_frame_subsampling_for_yuv422() {
                 .unwrap();
         }
     }
-    let pre = workspace.samples(plane_id).unwrap().to_vec();
+    let pre = crate::test_support::workspace_rows(&workspace, plane_id);
     ccso_plane(
         &mut workspace,
         &curr_luma,
@@ -245,7 +245,7 @@ fn chroma_ccso_uses_frame_subsampling_for_yuv422() {
         BitDepth::Eight,
     )
     .unwrap();
-    let post = workspace.samples(plane_id).unwrap();
+    let post = crate::test_support::workspace_rows(&workspace, plane_id);
     for y in 0..ph {
         for x in 0..pw {
             let expected = reference_filtered_sample(

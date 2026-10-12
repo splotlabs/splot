@@ -780,19 +780,13 @@ fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
             "frame {index} luma must be flat {FLAT_LUMA}"
         );
         assert!(
-            frame
-                .u()
-                .unwrap()
-                .samples()
+            crate::test_support::packed(frame.u().unwrap())
                 .iter()
                 .all(|&s| s == FLAT_CHROMA_U),
             "frame {index} U must be flat {FLAT_CHROMA_U}"
         );
         assert!(
-            frame
-                .v()
-                .unwrap()
-                .samples()
+            crate::test_support::packed(frame.v().unwrap())
                 .iter()
                 .all(|&s| s == FLAT_CHROMA_V),
             "frame {index} V must be flat {FLAT_CHROMA_V}"
@@ -995,13 +989,13 @@ fn inter_frame_is_a_bit_exact_copy_of_the_key_frame() {
     let inter = frames[1].frame();
     assert_eq!(key.y().samples(), inter.y().samples(), "luma copy");
     assert_eq!(
-        key.u().unwrap().samples(),
-        inter.u().unwrap().samples(),
+        &crate::test_support::packed(key.u().unwrap()),
+        &crate::test_support::packed(inter.u().unwrap()),
         "U copy"
     );
     assert_eq!(
-        key.v().unwrap().samples(),
-        inter.v().unwrap().samples(),
+        &crate::test_support::packed(key.v().unwrap()),
+        &crate::test_support::packed(inter.v().unwrap()),
         "V copy"
     );
 }
@@ -1102,29 +1096,23 @@ fn residual_inter_frame_differs_from_key_frame() {
         "the residual inter luma must differ from the flat key luma (real residual)"
     );
     assert_eq!(
-        key.u().unwrap().samples(),
-        inter.u().unwrap().samples(),
+        &crate::test_support::packed(key.u().unwrap()),
+        &crate::test_support::packed(inter.u().unwrap()),
         "U: no chroma residual"
     );
     assert_eq!(
-        key.v().unwrap().samples(),
-        inter.v().unwrap().samples(),
+        &crate::test_support::packed(key.v().unwrap()),
+        &crate::test_support::packed(inter.v().unwrap()),
         "V: no chroma residual"
     );
     assert!(
-        inter
-            .u()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(inter.u().unwrap())
             .iter()
             .all(|&s| s == FLAT_CHROMA_U),
         "inter U flat {FLAT_CHROMA_U}"
     );
     assert!(
-        inter
-            .v()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(inter.v().unwrap())
             .iter()
             .all(|&s| s == FLAT_CHROMA_V),
         "inter V flat {FLAT_CHROMA_V}"
@@ -1180,8 +1168,14 @@ fn nonzero_y_dc_quantizer_delta_fixture_is_bit_exact() {
     let key = frames[0].frame();
     let inter = frames[1].frame();
     assert_ne!(key.y().samples(), inter.y().samples());
-    assert_eq!(key.u().unwrap().samples(), inter.u().unwrap().samples());
-    assert_eq!(key.v().unwrap().samples(), inter.v().unwrap().samples());
+    assert_eq!(
+        crate::test_support::packed(key.u().unwrap()),
+        crate::test_support::packed(inter.u().unwrap())
+    );
+    assert_eq!(
+        crate::test_support::packed(key.v().unwrap()),
+        crate::test_support::packed(inter.v().unwrap())
+    );
 }
 
 #[test]
@@ -1554,11 +1548,15 @@ fn multiref_fixture_decodes_three_frames_bit_exact() {
             "frame {index} luma must be flat {y}"
         );
         assert!(
-            frame.u().unwrap().samples().iter().all(|&s| s == u),
+            crate::test_support::packed(frame.u().unwrap())
+                .iter()
+                .all(|&s| s == u),
             "frame {index} U must be flat {u}"
         );
         assert!(
-            frame.v().unwrap().samples().iter().all(|&s| s == v),
+            crate::test_support::packed(frame.v().unwrap())
+                .iter()
+                .all(|&s| s == v),
             "frame {index} V must be flat {v}"
         );
     }
@@ -1715,13 +1713,13 @@ fn multiref_frame2_reads_retained_inter_frame_not_key() {
         "frame 2 luma must equal the retained frame 1 (slot 1)"
     );
     assert_eq!(
-        inter2.u().unwrap().samples(),
-        inter1.u().unwrap().samples(),
+        &crate::test_support::packed(inter2.u().unwrap()),
+        &crate::test_support::packed(inter1.u().unwrap()),
         "frame 2 U must equal the retained frame 1 (slot 1)"
     );
     assert_eq!(
-        inter2.v().unwrap().samples(),
-        inter1.v().unwrap().samples(),
+        &crate::test_support::packed(inter2.v().unwrap()),
+        &crate::test_support::packed(inter1.v().unwrap()),
         "frame 2 V must equal the retained frame 1 (slot 1)"
     );
     assert_ne!(
@@ -1770,14 +1768,14 @@ fn compound_average_fixture_decodes_three_frames_bit_exact() {
         frame2.y().samples(),
     );
     assert_rounded_average(
-        frame0.u().unwrap().samples(),
-        frame1.u().unwrap().samples(),
-        frame2.u().unwrap().samples(),
+        &crate::test_support::packed(frame0.u().unwrap()),
+        &crate::test_support::packed(frame1.u().unwrap()),
+        &crate::test_support::packed(frame2.u().unwrap()),
     );
     assert_rounded_average(
-        frame0.v().unwrap().samples(),
-        frame1.v().unwrap().samples(),
-        frame2.v().unwrap().samples(),
+        &crate::test_support::packed(frame0.v().unwrap()),
+        &crate::test_support::packed(frame1.v().unwrap()),
+        &crate::test_support::packed(frame2.v().unwrap()),
     );
     assert_ne!(
         frame2.y().samples(),

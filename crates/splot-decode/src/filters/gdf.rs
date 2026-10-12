@@ -293,12 +293,12 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     let Some(config) = gdf_config(core, block_grid, bit_depth, reference)? else {
         return Ok(());
     };
-    let width = post_lr_luma.width();
+    let (width, stride) = (post_lr_luma.width(), post_lr_luma.stride());
     let frame_height = post_lr_luma.frame_height();
     let y = post_lr_luma.origin_y();
     let sample_count = post_lr_luma.samples().len();
-    let height = sample_count.checked_div(width).filter(|&height| {
-        height >= 2 && height.is_multiple_of(2) && height.checked_mul(width) == Some(sample_count)
+    let height = sample_count.checked_div(stride).filter(|&height| {
+        height >= 2 && height.is_multiple_of(2) && height.checked_mul(stride) == Some(sample_count)
     });
     let Some(height) = height else {
         return Err(gdf_state_error());
@@ -318,7 +318,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
             cdef_luma.width() != width
                 || cdef_luma.frame_height() != frame_height
                 || cdef_luma.origin_y() != y
-                || cdef_luma.samples().len() != sample_count
+                || cdef_luma.end_y() != Some(end_y)
         })
     {
         return Err(gdf_state_error());
@@ -368,6 +368,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                     frame_width: width,
                     frame_height,
                     base_origin_y: y,
+                    base_stride: stride,
                     bit_depth,
                     qp_idx: config.qp_idx,
                     ref_dst_idx: config.ref_dst_idx,
@@ -445,7 +446,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                         preserve_lossless_luma_samples(
                             lossless_grid,
                             post_lr_luma.samples(),
-                            width,
+                            stride,
                             y,
                             x,
                             block_y,
@@ -455,7 +456,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                         )?;
                         for row in 0..block_height {
                             let src = &output[row * block_width..(row + 1) * block_width];
-                            let start = (local_y + row) * width + x;
+                            let start = (local_y + row) * stride + x;
                             post_lr_luma.samples_mut()[start..start + block_width]
                                 .copy_from_slice(src);
                         }
@@ -493,6 +494,7 @@ struct GdfBlock {
     frame_width: usize,
     frame_height: usize,
     base_origin_y: usize,
+    base_stride: usize,
     bit_depth: BitDepth,
     qp_idx: usize,
     ref_dst_idx: usize,
@@ -690,10 +692,10 @@ fn compute_block<T: ReconSample>(
                 .y
                 .checked_add(row)
                 .and_then(|y| y.checked_sub(block.base_origin_y))
-                .and_then(|y| y.checked_mul(block.frame_width))
+                .and_then(|y| y.checked_mul(block.base_stride))
                 .and_then(|index| index.checked_add(block.x))
                 .ok_or_else(gdf_state_error)?;
-            let mut rows = base_row_pair::<MI_SIZE>(base_luma, base_start, block.frame_width)?;
+            let mut rows = base_row_pair::<MI_SIZE>(base_luma, base_start, block.base_stride)?;
             let origin = (source_origin.0, source_origin.1 + row);
             let window_rows = source_rows(source, origin, MI_SIZE + 2 * TAP_REACH)?;
             let window = window_at::<{ MI_SIZE + 2 * TAP_REACH }>(&window_rows, 0)
@@ -753,7 +755,7 @@ fn compute_enabled_segment(
             .checked_mul(class_cols)
             .ok_or_else(geometry_error)?;
         let output_row = row
-            .checked_mul(block.frame_width)
+            .checked_mul(block.base_stride)
             .and_then(|row| row.checked_add(block.x))
             .ok_or_else(geometry_error)?;
         let window_rows = source_rows(
@@ -766,7 +768,7 @@ fn compute_enabled_segment(
             .ok_or_else(geometry_error)?;
         let (top, bottom) = base_luma
             .get_mut(output_row + cols.start..)
-            .and_then(|rows| rows.split_at_mut_checked(block.frame_width))
+            .and_then(|rows| rows.split_at_mut_checked(block.base_stride))
             .ok_or_else(geometry_error)?;
         let (Some(top), Some(bottom)) = (top.get_mut(..run), bottom.get_mut(..run)) else {
             return Err(geometry_error());
@@ -840,7 +842,7 @@ fn compute_enabled_segment(
                             (source_origin.0 + col, source_origin.1 + sample_row),
                             class,
                         );
-                        let output = sample_row * block.frame_width + block.x + col;
+                        let output = sample_row * block.base_stride + block.x + col;
                         *base_luma.get_mut(output).ok_or_else(source_error)? = sample;
                     }
                 }
@@ -855,7 +857,7 @@ fn compute_enabled_segment(
 fn preserve_lossless_luma_samples<T: ReconSample>(
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     base_luma: &[u16],
-    luma_width: usize,
+    luma_stride: usize,
     origin_y: usize,
     x: usize,
     y: usize,
@@ -875,7 +877,7 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
             }
             let src = sample_y
                 .checked_sub(origin_y)
-                .and_then(|row| row.checked_mul(luma_width))
+                .and_then(|row| row.checked_mul(luma_stride))
                 .and_then(|start| start.checked_add(sample_x))
                 .and_then(|index| base_luma.get(index).copied())
                 .ok_or_else(gdf_state_error)?;
@@ -1597,7 +1599,7 @@ fn gdf_sample(
         .y
         .checked_add(row)
         .and_then(|y| y.checked_sub(block.base_origin_y))
-        .and_then(|y| y.checked_mul(block.frame_width))
+        .and_then(|y| y.checked_mul(block.base_stride))
         .and_then(|index| index.checked_add(block.x + col))
         .and_then(|index| base_luma.get(index))
         .copied()
@@ -1946,6 +1948,7 @@ mod tests {
             frame_width,
             frame_height,
             base_origin_y: 0,
+            base_stride: frame_width,
             bit_depth: BitDepth::Ten,
             qp_idx: 0,
             ref_dst_idx: 0,
@@ -2108,6 +2111,7 @@ mod tests {
             frame_width,
             frame_height,
             base_origin_y: 0,
+            base_stride: frame_width,
             bit_depth: BitDepth::Ten,
             qp_idx: 0,
             ref_dst_idx: 0,

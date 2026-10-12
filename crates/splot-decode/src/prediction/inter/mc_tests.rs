@@ -48,9 +48,10 @@ fn intrabc_integer_copy_clips_bottom_edge_to_coded_storage() {
     intrabc_copy_plane_into(&mut workspace, PlaneId::Y, source, target)
         .expect("edge-clipped IntraBC copy");
 
+    let stride = workspace.plane(PlaneId::Y).expect("luma").stride_samples();
     let y = workspace.samples(PlaneId::Y).expect("luma samples");
-    assert_eq!(&y[4 * 8..4 * 8 + 4], [1, 2, 3, 4]);
-    assert_eq!(&y[5 * 8..5 * 8 + 4], [5, 6, 7, 8]);
+    assert_eq!(&y[4 * stride..4 * stride + 4], [1, 2, 3, 4]);
+    assert_eq!(&y[5 * stride..5 * stride + 4], [5, 6, 7, 8]);
 }
 
 /// A bilinear IntraBC prediction reads the row below only at a non-zero
@@ -2417,9 +2418,10 @@ fn prediction_reads_padded_reference_samples_and_masks_at_storage_edges() {
         )
         .expect("prediction");
         let expected = if compound { 60 } else { 100 };
+        let stride = output.plane(PlaneId::Y).expect("luma").stride_samples();
         for row in 0..4 {
             assert_eq!(
-                &output.samples(PlaneId::Y).expect("luma")[row * 16..row * 16 + 4],
+                &output.samples(PlaneId::Y).expect("luma")[row * stride..row * stride + 4],
                 &[expected; 4]
             );
         }

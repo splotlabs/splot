@@ -494,7 +494,8 @@ impl<'a> FrameDeblock<'a> {
             Ok(())
         };
         for (plane, samples) in [Some(y), u, v].into_iter().enumerate() {
-            let (Some(samples), Some((width, height))) = (samples, dimensions[plane]) else {
+            let (Some((samples, stride)), Some((width, height))) = (samples, dimensions[plane])
+            else {
                 continue;
             };
             if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
@@ -511,7 +512,6 @@ impl<'a> FrameDeblock<'a> {
             ) else {
                 continue;
             };
-            let stride = width;
             let band_rows = (VERTICAL_BAND_MI_ROWS * MI_SIZE) >> plane_pass.plane_sub_y;
             let plane_samples = samples
                 .get_mut(..stride.checked_mul(height).ok_or(DeblockError::Workspace)?)

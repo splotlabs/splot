@@ -156,10 +156,15 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         rows: usize,
         mut samples: crate::PlaneBuf<T>,
     ) -> Result<Self> {
+        let stride = crate::plane_stride::<T>(storage_size.width()).ok_or(
+            ReconError::ArithmeticOverflow {
+                context: "current-frame band stride",
+            },
+        )?;
         let len = rows
             .saturating_add(BAND_EDGE_ROWS)
             .min(storage_size.height())
-            .checked_mul(storage_size.width())
+            .checked_mul(stride)
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "current-frame band sample count",
             })?;
@@ -177,6 +182,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             storage_size,
             visible_rect,
             origin_y: 0,
+            stride,
             samples,
             pool: None,
         })
