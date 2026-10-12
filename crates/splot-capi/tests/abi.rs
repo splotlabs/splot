@@ -53,12 +53,17 @@ fn append(picture: &SplotPicture, out: &mut Vec<u8>) {
         };
         let width = (picture.width as usize).div_ceil(1 << shift_x) * bytes;
         let height = (picture.height as usize).div_ceil(1 << shift_y);
+        let top = (picture.crop_top >> shift_y) as isize;
+        let left = (picture.crop_left >> shift_x) as usize * bytes;
+        assert_eq!(picture.data[plane] as usize % 64, 0);
+        assert_eq!(picture.stride[plane] % 64, 0);
         for row in 0..height {
             let row = unsafe {
                 core::slice::from_raw_parts(
                     picture.data[plane]
                         .cast::<u8>()
-                        .offset(row as isize * picture.stride[plane]),
+                        .offset((top + row as isize) * picture.stride[plane])
+                        .add(left),
                     width,
                 )
             };

@@ -20,9 +20,12 @@ static int write_picture(FILE *out, const SplotPicture *picture) {
     for (int plane = 0; plane < 3; plane++) {
         if (!picture->data[plane])
             continue;
-        size_t width = plane ? (picture->width + sub_x) >> sub_x : picture->width;
-        size_t height = plane ? (picture->height + sub_y) >> sub_y : picture->height;
-        const unsigned char *row = picture->data[plane];
+        int shift_x = plane ? sub_x : 0, shift_y = plane ? sub_y : 0;
+        size_t width = (picture->width + shift_x) >> shift_x;
+        size_t height = (picture->height + shift_y) >> shift_y;
+        const unsigned char *row = (const unsigned char *)picture->data[plane] +
+                                   (ptrdiff_t)(picture->crop_top >> shift_y) * picture->stride[plane] +
+                                   (size_t)(picture->crop_left >> shift_x) * bytes;
         for (size_t y = 0; y < height; y++, row += picture->stride[plane])
             if (fwrite(row, bytes, width, out) != width)
                 return -1;
