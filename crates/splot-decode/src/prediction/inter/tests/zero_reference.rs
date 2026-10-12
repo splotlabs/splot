@@ -28,18 +28,12 @@ fn zero_reference_inter_frame_decodes_when_every_block_is_intra() {
 
     assert!(frame.y().samples().iter().all(|&sample| sample == 128));
     assert!(
-        frame
-            .u()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.u().unwrap())
             .iter()
             .all(|&sample| sample == 128)
     );
     assert!(
-        frame
-            .v()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.v().unwrap())
             .iter()
             .all(|&sample| sample == 128)
     );

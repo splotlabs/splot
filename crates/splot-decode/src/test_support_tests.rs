@@ -73,6 +73,27 @@ pub(crate) fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
     DecodedFrame::try_new(info, FramePlanes::new(y, None, None)).unwrap()
 }
 
+pub(crate) fn packed<T: ReconSample>(plane: &Plane<T>) -> Vec<T> {
+    let width = plane.storage_size().width();
+    let rows = plane.samples().chunks(plane.stride_samples());
+    rows.flat_map(|row| &row[..width]).copied().collect()
+}
+
+pub(crate) fn workspace_rows<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane: PlaneId,
+) -> Vec<T> {
+    let plane = workspace.plane(plane).unwrap();
+    let width = plane.storage_size().width();
+    let rows = plane.samples().chunks(plane.stride_samples());
+    rows.flat_map(|row| &row[..width]).copied().collect()
+}
+
+pub(crate) fn stripe_rows(plane: &crate::filters::source::StripePlane) -> Vec<u16> {
+    let rows = plane.origin_y()..plane.end_y().unwrap();
+    rows.flat_map(|y| plane.row(y).unwrap()).copied().collect()
+}
+
 /// Wraps `workspace` in a frame progress and opens its frontier rows.
 pub(crate) fn frontier_rows<T: ReconSample>(
     workspace: CurrentFrameWorkspace<T>,
@@ -88,10 +109,14 @@ pub(crate) fn frontier_plane<T: ReconSample>(
     plane: PlaneId,
 ) -> Option<(Vec<T>, usize)> {
     let (width, height) = rows.plane_size(plane)?;
-    let mut samples = Vec::new();
-    if rows.append_rows(plane, 0, height, &mut samples).is_none() {
-        samples = rows.with_plane_rows_mut(plane, 0, height, |rows, _, _, _, _| rows.to_vec())?;
+    let mut samples = splot_recon::plane_buf();
+    if rows.append_rows(plane, 0, height, &mut samples).is_some() {
+        return Some((samples.to_vec(), width));
     }
+    let samples = rows.with_plane_rows_mut(plane, 0, height, |rows, stride, width, _, _| {
+        let rows = rows.chunks(stride).flat_map(|row| &row[..width]);
+        rows.copied().collect()
+    })?;
     Some((samples, width))
 }
 

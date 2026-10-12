@@ -19,7 +19,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{BitDepth, ReconSample};
 
 use crate::prediction::inter::{self, InterReferenceState};
-use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
+use crate::{DecodeOptions, DecodePlannedObu, Result};
 
 pub(crate) mod finish;
 pub(crate) mod intra;
@@ -41,7 +41,6 @@ pub(crate) enum FrameSetup<'a, T: ReconSample> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_frame<T: ReconSample>(
     scratch: &mut inter::InterDecodeScratch<T>,
-    plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: crate::bitstream::byte_stream::SourceBytes<'_>,
     frame_envelope: ObuEnvelope<'_>,
@@ -55,7 +54,6 @@ pub(crate) fn walk_frame<T: ReconSample>(
     match *setup {
         FrameSetup::Inter(reference) => inter::walk_inter_frame(
             scratch,
-            plan,
             candidate,
             bytes,
             frame_envelope,
@@ -68,7 +66,6 @@ pub(crate) fn walk_frame<T: ReconSample>(
         ),
         FrameSetup::Intra => intra::walk_intra_frame::<T>(
             scratch,
-            plan,
             candidate,
             bytes,
             frame_envelope,

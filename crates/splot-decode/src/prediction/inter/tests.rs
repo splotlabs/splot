@@ -196,21 +196,19 @@ fn decode_fixture_with_options(
     threads: usize,
 ) -> Result<Vec<PipelineFrame>> {
     let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))?;
-    let plan = context.plan_bytes(bytes, *options).expect("plan");
     context
         .pool()
-        .install(|| decode_frames_from_plan(bytes, options, &plan))
+        .install(|| decode_frames_from_plan(bytes, options))
 }
 
 fn decode_frames_from_plan_on_pool(
     bytes: &[u8],
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
     let context = decode_context();
     context
         .pool()
-        .install(|| decode_frames_from_plan(bytes, options, plan))
+        .install(|| decode_frames_from_plan(bytes, options))
 }
 
 fn decode_frames() -> Vec<PipelineFrame> {
@@ -319,7 +317,6 @@ fn decode_inter_frame_after_core_mutation_inner(
     let key_frame = crate::pipeline::decode_key_frame(
         bytes,
         &options,
-        &plan,
         key_candidate,
         key_envelope,
         &sequence,
@@ -375,7 +372,6 @@ fn decode_inter_frame_after_core_mutation_inner(
     let mut products = super::FrameProductWriters::fresh().expect("fresh product writers");
     let walk = crate::pipeline::frame_engine::walk_frame(
         &mut super::InterDecodeScratch::default(),
-        &plan,
         inter_candidate,
         bytes.into(),
         inter_envelope,
@@ -420,7 +416,6 @@ fn parse_inter_core_for_validation_inner(
     let key_frame = crate::pipeline::decode_key_frame(
         bytes,
         &options,
-        &plan,
         key_candidate,
         key_envelope,
         &sequence,
@@ -785,19 +780,13 @@ fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
             "frame {index} luma must be flat {FLAT_LUMA}"
         );
         assert!(
-            frame
-                .u()
-                .unwrap()
-                .samples()
+            crate::test_support::packed(frame.u().unwrap())
                 .iter()
                 .all(|&s| s == FLAT_CHROMA_U),
             "frame {index} U must be flat {FLAT_CHROMA_U}"
         );
         assert!(
-            frame
-                .v()
-                .unwrap()
-                .samples()
+            crate::test_support::packed(frame.v().unwrap())
                 .iter()
                 .all(|&s| s == FLAT_CHROMA_V),
             "frame {index} V must be flat {FLAT_CHROMA_V}"
@@ -1000,13 +989,13 @@ fn inter_frame_is_a_bit_exact_copy_of_the_key_frame() {
     let inter = frames[1].frame();
     assert_eq!(key.y().samples(), inter.y().samples(), "luma copy");
     assert_eq!(
-        key.u().unwrap().samples(),
-        inter.u().unwrap().samples(),
+        &crate::test_support::packed(key.u().unwrap()),
+        &crate::test_support::packed(inter.u().unwrap()),
         "U copy"
     );
     assert_eq!(
-        key.v().unwrap().samples(),
-        inter.v().unwrap().samples(),
+        &crate::test_support::packed(key.v().unwrap()),
+        &crate::test_support::packed(inter.v().unwrap()),
         "V copy"
     );
 }
@@ -1107,29 +1096,23 @@ fn residual_inter_frame_differs_from_key_frame() {
         "the residual inter luma must differ from the flat key luma (real residual)"
     );
     assert_eq!(
-        key.u().unwrap().samples(),
-        inter.u().unwrap().samples(),
+        &crate::test_support::packed(key.u().unwrap()),
+        &crate::test_support::packed(inter.u().unwrap()),
         "U: no chroma residual"
     );
     assert_eq!(
-        key.v().unwrap().samples(),
-        inter.v().unwrap().samples(),
+        &crate::test_support::packed(key.v().unwrap()),
+        &crate::test_support::packed(inter.v().unwrap()),
         "V: no chroma residual"
     );
     assert!(
-        inter
-            .u()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(inter.u().unwrap())
             .iter()
             .all(|&s| s == FLAT_CHROMA_U),
         "inter U flat {FLAT_CHROMA_U}"
     );
     assert!(
-        inter
-            .v()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(inter.v().unwrap())
             .iter()
             .all(|&s| s == FLAT_CHROMA_V),
         "inter V flat {FLAT_CHROMA_V}"
@@ -1185,8 +1168,14 @@ fn nonzero_y_dc_quantizer_delta_fixture_is_bit_exact() {
     let key = frames[0].frame();
     let inter = frames[1].frame();
     assert_ne!(key.y().samples(), inter.y().samples());
-    assert_eq!(key.u().unwrap().samples(), inter.u().unwrap().samples());
-    assert_eq!(key.v().unwrap().samples(), inter.v().unwrap().samples());
+    assert_eq!(
+        crate::test_support::packed(key.u().unwrap()),
+        crate::test_support::packed(inter.u().unwrap())
+    );
+    assert_eq!(
+        crate::test_support::packed(key.v().unwrap()),
+        crate::test_support::packed(inter.v().unwrap())
+    );
 }
 
 #[test]
@@ -1559,11 +1548,15 @@ fn multiref_fixture_decodes_three_frames_bit_exact() {
             "frame {index} luma must be flat {y}"
         );
         assert!(
-            frame.u().unwrap().samples().iter().all(|&s| s == u),
+            crate::test_support::packed(frame.u().unwrap())
+                .iter()
+                .all(|&s| s == u),
             "frame {index} U must be flat {u}"
         );
         assert!(
-            frame.v().unwrap().samples().iter().all(|&s| s == v),
+            crate::test_support::packed(frame.v().unwrap())
+                .iter()
+                .all(|&s| s == v),
             "frame {index} V must be flat {v}"
         );
     }
@@ -1603,8 +1596,7 @@ fn multiref_fixture_decodes_repacked_frame_units() {
 fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
     let repacked = repack_multiref_first_inter_td_separate_from_tile_group();
     let options = DecodeOptions::default();
-    let plan = plan_fixture(&repacked, &options);
-    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options) else {
         panic!("record-leading tile group must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1620,7 +1612,7 @@ fn multiref_runtime_rejects_state_obu_before_following_inter_candidate() {
         3,
         "test fixture must retain the key plus two inter frame candidates"
     );
-    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options) else {
         panic!("extra state before a following inter candidate must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1636,7 +1628,7 @@ fn multiref_runtime_rejects_state_obu_after_inter_candidate_before_next_frame() 
         3,
         "test fixture must retain the key plus two inter frame candidates"
     );
-    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options) else {
         panic!("state after one inter candidate and before the next must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1652,7 +1644,7 @@ fn four_frame_multiref_decodes_without_total_refs_gate() {
         4,
         "test fixture must exercise the former total frame-count gate"
     );
-    decode_frames_from_plan_on_pool(&four_frame, &options, &plan)
+    decode_frames_from_plan_on_pool(&four_frame, &options)
         .expect("fourth multiref frame should decode after widening NumTotalRefs support");
 }
 
@@ -1666,7 +1658,7 @@ fn multiref_runtime_does_not_preflight_future_ivf_records_after_decodable_fourth
         4,
         "test fixture keeps the malformed state-only IVF record after the fourth candidate"
     );
-    decode_frames_from_plan_on_pool(&future_state, &options, &plan).expect(
+    decode_frames_from_plan_on_pool(&future_state, &options).expect(
         "malformed state-only IVF record after the fourth candidate should not be preflighted",
     );
 }
@@ -1721,13 +1713,13 @@ fn multiref_frame2_reads_retained_inter_frame_not_key() {
         "frame 2 luma must equal the retained frame 1 (slot 1)"
     );
     assert_eq!(
-        inter2.u().unwrap().samples(),
-        inter1.u().unwrap().samples(),
+        &crate::test_support::packed(inter2.u().unwrap()),
+        &crate::test_support::packed(inter1.u().unwrap()),
         "frame 2 U must equal the retained frame 1 (slot 1)"
     );
     assert_eq!(
-        inter2.v().unwrap().samples(),
-        inter1.v().unwrap().samples(),
+        &crate::test_support::packed(inter2.v().unwrap()),
+        &crate::test_support::packed(inter1.v().unwrap()),
         "frame 2 V must equal the retained frame 1 (slot 1)"
     );
     assert_ne!(
@@ -1776,14 +1768,14 @@ fn compound_average_fixture_decodes_three_frames_bit_exact() {
         frame2.y().samples(),
     );
     assert_rounded_average(
-        frame0.u().unwrap().samples(),
-        frame1.u().unwrap().samples(),
-        frame2.u().unwrap().samples(),
+        &crate::test_support::packed(frame0.u().unwrap()),
+        &crate::test_support::packed(frame1.u().unwrap()),
+        &crate::test_support::packed(frame2.u().unwrap()),
     );
     assert_rounded_average(
-        frame0.v().unwrap().samples(),
-        frame1.v().unwrap().samples(),
-        frame2.v().unwrap().samples(),
+        &crate::test_support::packed(frame0.v().unwrap()),
+        &crate::test_support::packed(frame1.v().unwrap()),
+        &crate::test_support::packed(frame2.v().unwrap()),
     );
     assert_ne!(
         frame2.y().samples(),

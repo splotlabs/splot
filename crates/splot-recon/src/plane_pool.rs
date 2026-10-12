@@ -13,6 +13,8 @@
 //! other's spares nor thrash them against a different frame size.
 
 use std::sync::Mutex;
+
+use crate::{PlaneBuf, plane_buf};
 /// Spare buffers held per sample depth.
 ///
 /// One workspace is three buffers and a frame in flight holds up to three
@@ -28,8 +30,8 @@ const MIN_POOLED_SAMPLES: usize = 1 << 14;
 /// The plane storage one decode's retired workspaces leave for its next ones.
 #[derive(Default)]
 pub struct PlanePool {
-    eight: Mutex<Vec<Vec<u8>>>,
-    ten: Mutex<Vec<Vec<u16>>>,
+    eight: Mutex<Vec<PlaneBuf<u8>>>,
+    ten: Mutex<Vec<PlaneBuf<u16>>>,
 }
 
 impl core::fmt::Debug for PlanePool {
@@ -45,15 +47,15 @@ impl PlanePool {
     /// A spare that is already `samples` long is worth much more than one that
     /// is merely large enough: the caller's `resize` then writes nothing. See
     /// [`Self::recycle`].
-    pub(crate) fn take<T: PooledPlaneSamples>(&self, samples: usize) -> Vec<T> {
+    pub(crate) fn take<T: PooledPlaneSamples>(&self, samples: usize) -> PlaneBuf<T> {
         let Ok(mut spares) = T::spares(self).lock() else {
-            return Vec::new();
+            return plane_buf();
         };
         spares
             .iter()
             .position(|spare| spare.len() == samples)
             .or_else(|| spares.iter().position(|spare| spare.capacity() >= samples))
-            .map_or_else(Vec::new, |index| spares.swap_remove(index))
+            .map_or_else(plane_buf, |index| spares.swap_remove(index))
     }
 
     /// Offers `buffer` back, keeping it only while there is room.
@@ -62,7 +64,7 @@ impl PlanePool {
     /// every sample it later reads -- that is what makes the retiring hand-off
     /// this pool serves alongside sound -- so clearing here would only add a
     /// multi-megabyte `resize` fill to the next frame that takes the buffer.
-    pub(crate) fn recycle<T: PooledPlaneSamples>(&self, buffer: Vec<T>) {
+    pub(crate) fn recycle<T: PooledPlaneSamples>(&self, buffer: PlaneBuf<T>) {
         if buffer.capacity() < MIN_POOLED_SAMPLES {
             return;
         }
@@ -81,17 +83,17 @@ impl PlanePool {
 /// whole of the mechanism.
 #[doc(hidden)]
 pub trait PooledPlaneSamples: Sized {
-    fn spares(pool: &PlanePool) -> &Mutex<Vec<Vec<Self>>>;
+    fn spares(pool: &PlanePool) -> &Mutex<Vec<PlaneBuf<Self>>>;
 }
 
 impl PooledPlaneSamples for u8 {
-    fn spares(pool: &PlanePool) -> &Mutex<Vec<Vec<Self>>> {
+    fn spares(pool: &PlanePool) -> &Mutex<Vec<PlaneBuf<Self>>> {
         &pool.eight
     }
 }
 
 impl PooledPlaneSamples for u16 {
-    fn spares(pool: &PlanePool) -> &Mutex<Vec<Vec<Self>>> {
+    fn spares(pool: &PlanePool) -> &Mutex<Vec<PlaneBuf<Self>>> {
         &pool.ten
     }
 }
@@ -100,8 +102,8 @@ impl PooledPlaneSamples for u16 {
 mod tests {
     use super::{MIN_POOLED_SAMPLES, PlanePool};
 
-    fn frame_sized() -> Vec<u16> {
-        vec![0; MIN_POOLED_SAMPLES]
+    fn frame_sized() -> crate::PlaneBuf<u16> {
+        crate::plane_buf_from(&vec![0; MIN_POOLED_SAMPLES])
     }
 
     #[test]

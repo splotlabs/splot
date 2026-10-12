@@ -146,14 +146,9 @@ fn large_chroma_smooth_corner_cap_fixture_decodes_to_oracle() {
     let context =
         crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
             .expect("decode context");
-    let plan = context
-        .plan_bytes(CHROMA_CORNER_CAP_FIXTURE, options)
-        .expect("decode plan");
     let decoded = context
         .pool()
-        .install(|| {
-            crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options, &plan)
-        })
+        .install(|| crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options))
         .expect("decode fixture");
     let ready = decoded.ready_frame().expect("ready frame");
     assert!(

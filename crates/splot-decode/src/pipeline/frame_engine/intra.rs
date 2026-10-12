@@ -24,12 +24,11 @@ use crate::pipeline::{
 use crate::prediction::inter::{
     InterBlockDecodeOutput, InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
 };
-use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
+use crate::{DecodeOptions, DecodePlannedObu, Result};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_intra_frame<T: ReconSample>(
     scratch: &mut crate::prediction::inter::InterDecodeScratch<T>,
-    plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: crate::bitstream::byte_stream::SourceBytes<'_>,
     frame_envelope: ObuEnvelope<'_>,
@@ -71,7 +70,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
     // Enforce DecodeLimits before allocating the workspace, as the inter path does.
-    let tile_plan = derive_tile_plan(plan, candidate, bytes, sequence, &core, options)?;
+    let tile_plan = derive_tile_plan(candidate, bytes, sequence, &core, options)?;
     let tile_size = tile_plan
         .work_units()
         .iter()

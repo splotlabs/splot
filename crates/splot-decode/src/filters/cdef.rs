@@ -1274,8 +1274,8 @@ fn write_chroma_pair(
 /// `plane`'s samples from `(x, y)` on, and its row stride, provided rows
 /// keep `CHROMA_PAIR_SIDE` samples from `x` on.
 fn stripe_rows_from(plane: &mut StripePlane, x: usize, y: usize) -> Option<(&mut [u16], usize)> {
-    let stride = plane.width();
-    if x.checked_add(CHROMA_PAIR_SIDE)? > stride {
+    let stride = plane.stride();
+    if x.checked_add(CHROMA_PAIR_SIDE)? > plane.width() {
         return None;
     }
     let start = y

@@ -148,14 +148,18 @@ impl<T: ReconSample> FramePlanes<T> {
 /// again, which is what dav2d's picture pool does for the same lifetime.
 #[derive(Debug, Default)]
 pub struct FramePlaneSamples<T: ReconSample> {
-    planes: [Vec<T>; 3],
+    planes: [crate::PlaneBuf<T>; 3],
     pub(crate) pool: Option<std::sync::Arc<crate::PlanePool>>,
 }
 
 impl<T: ReconSample> FramePlaneSamples<T> {
     /// Collects one frame's plane buffers, absent chroma included.
     #[must_use]
-    pub fn new(y: Vec<T>, u: Option<Vec<T>>, v: Option<Vec<T>>) -> Self {
+    pub fn new(
+        y: crate::PlaneBuf<T>,
+        u: Option<crate::PlaneBuf<T>>,
+        v: Option<crate::PlaneBuf<T>>,
+    ) -> Self {
         Self {
             planes: [y, u.unwrap_or_default(), v.unwrap_or_default()],
             pool: None,
@@ -180,7 +184,7 @@ impl<T: ReconSample> FramePlaneSamples<T> {
 
     /// Takes the buffer kept for `plane`, leaving nothing behind.
     #[must_use]
-    pub fn take(&mut self, plane: PlaneId) -> Vec<T> {
+    pub fn take(&mut self, plane: PlaneId) -> crate::PlaneBuf<T> {
         core::mem::take(&mut self.planes[plane.index()])
     }
 }

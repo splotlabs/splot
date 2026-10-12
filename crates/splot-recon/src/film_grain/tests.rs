@@ -242,9 +242,12 @@ fn edge_dimensions_overlap_and_extreme_grain_values_match_reference() {
 }
 
 fn destination_allocation_is_retained<T: ReconSample + std::fmt::Debug + PartialEq>(
-    samples: Vec<T>,
+    samples: &[T],
 ) -> Vec<T> {
-    let destination = GrainDestination { samples };
+    let destination = GrainDestination {
+        samples: crate::plane_buf_from(samples),
+        stride: 2,
+    };
     let pointer = destination.samples.as_ptr();
     let capacity = destination.samples.capacity();
     let plane = plane_from_visible(2, 2, destination).unwrap();
@@ -252,21 +255,21 @@ fn destination_allocation_is_retained<T: ReconSample + std::fmt::Debug + Partial
 
     assert_eq!(samples.as_ptr(), pointer);
     assert_eq!(samples.capacity(), capacity);
-    samples
+    samples.to_vec() // splot-copy-ok: the test compares against plain Vec storage
 }
 
 #[test]
 fn u16_plane_retains_the_synthesis_allocation() {
     let mut samples = Vec::with_capacity(8);
     samples.extend([1_u16, 2, 3, 4]);
-    assert_eq!(destination_allocation_is_retained(samples), [1, 2, 3, 4]);
+    assert_eq!(destination_allocation_is_retained(&samples), [1, 2, 3, 4]);
 }
 
 #[test]
 fn u8_plane_uses_its_single_final_sample_allocation() {
     let mut samples = Vec::with_capacity(8);
     samples.extend([1_u8, 2, 3, 4]);
-    assert_eq!(destination_allocation_is_retained(samples), [1, 2, 3, 4]);
+    assert_eq!(destination_allocation_is_retained(&samples), [1, 2, 3, 4]);
 }
 
 #[test]
@@ -282,7 +285,10 @@ fn visible_source_samples_are_copied_directly_in_destination_type() {
     .unwrap();
     let destination = GrainDestination::from_visible(&source);
 
-    assert_eq!(destination.samples, [11, 12, 21, 22]);
+    assert_eq!(destination.stride, crate::PLANE_ALIGNMENT);
+    assert_eq!(destination.samples.len(), 2 * crate::PLANE_ALIGNMENT);
+    assert_eq!(destination.samples[..2], [11, 12]);
+    assert_eq!(destination.samples[crate::PLANE_ALIGNMENT..][..2], [21, 22]);
 }
 
 #[test]

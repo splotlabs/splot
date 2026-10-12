@@ -43,7 +43,6 @@ pub(super) fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError)
 
 fn malformed_tile_boundary_reason(malformed: FrameCandidateTileMalformed) -> &'static str {
     match malformed {
-        FrameCandidateTileMalformed::PlanSourceKindMismatch { .. } => "plan_source_kind_mismatch",
         FrameCandidateTileMalformed::CandidateEnvelopeMismatch { field } => match field {
             "payload_source" => "payload_source_mismatch",
             "offset" => "candidate_offset_mismatch",
@@ -51,7 +50,6 @@ fn malformed_tile_boundary_reason(malformed: FrameCandidateTileMalformed) -> &'s
             "header" => "candidate_header_mismatch",
             "payload_len" => "candidate_payload_len_mismatch",
             "payload" => "candidate_payload_mismatch",
-            "input_len_bytes" => "input_len_mismatch",
             "ivf_frame" => "ivf_frame_mismatch",
             _ => "candidate_envelope_mismatch",
         },

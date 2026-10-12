@@ -114,9 +114,12 @@ pub enum SendStatus {
 /// A decoded picture.
 ///
 /// The planes are the decoder's own sample storage, shared without a copy.
-/// The decoder never writes them again; dropping the last picture that holds
-/// them gives the storage back to the decoder. Film grain, when the stream
-/// signals it, is applied to a new buffer.
+/// Each plane's storage starts on a [`PLANE_ALIGNMENT`](crate::PLANE_ALIGNMENT)-byte
+/// boundary and its row stride is a multiple of that many bytes; the visible
+/// area may start inside it (see [`PlaneRef::visible_rect`]). The decoder never
+/// writes the planes again; dropping the last picture that holds them gives
+/// the storage back to the decoder. Film grain, when the stream signals it, is
+/// applied to a new buffer with the same layout guarantees.
 #[derive(Debug)]
 pub struct Picture {
     samples: Option<Samples>,

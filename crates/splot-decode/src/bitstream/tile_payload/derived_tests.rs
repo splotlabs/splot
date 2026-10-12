@@ -161,7 +161,6 @@ fn derive_tile_payload_plan<'a>(
     let stream_plan = ctx.plan_bytes(bytes, DecodeOptions::default()).unwrap();
     let candidate = stream_plan.frame_candidates_all().next().unwrap();
     let input = FrameCandidateTileBoundaryInput::new(
-        &stream_plan,
         candidate,
         bytes.into(),
         envelope,

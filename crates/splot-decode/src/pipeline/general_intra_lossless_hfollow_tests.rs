@@ -149,10 +149,7 @@ fn assert_lossless_sdp_d113follow_oracle(fixture: &[u8], expected_len: usize, ex
             > 16
     );
     assert!(
-        frame
-            .u()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.u().unwrap())
             .iter()
             .copied()
             .collect::<BTreeSet<_>>()
@@ -160,10 +157,7 @@ fn assert_lossless_sdp_d113follow_oracle(fixture: &[u8], expected_len: usize, ex
             > 16
     );
     assert!(
-        frame
-            .v()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.v().unwrap())
             .iter()
             .copied()
             .collect::<BTreeSet<_>>()
@@ -173,10 +167,10 @@ fn assert_lossless_sdp_d113follow_oracle(fixture: &[u8], expected_len: usize, ex
     assert_eq!(frame.y().samples()[0], 128);
     assert_eq!(frame.y().samples()[64], 34);
     assert_eq!(frame.y().samples()[127], 34);
-    assert_eq!(frame.u().unwrap().samples()[0], 128);
-    assert_eq!(frame.u().unwrap().samples()[63], 42);
-    assert_eq!(frame.v().unwrap().samples()[0], 128);
-    assert_eq!(frame.v().unwrap().samples()[63], 214);
+    assert_eq!(crate::test_support::packed(frame.u().unwrap())[0], 128);
+    assert_eq!(crate::test_support::packed(frame.u().unwrap())[63], 42);
+    assert_eq!(crate::test_support::packed(frame.v().unwrap())[0], 128);
+    assert_eq!(crate::test_support::packed(frame.v().unwrap())[63], 214);
     assert_hash(&frame, expected_hash);
 }
 
@@ -203,18 +197,12 @@ fn assert_lossless_sdp_directional_follow_oracle(
             > 16
     );
     assert!(
-        frame
-            .u()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.u().unwrap())
             .iter()
             .all(|&sample| sample == expected_u)
     );
     assert!(
-        frame
-            .v()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.v().unwrap())
             .iter()
             .all(|&sample| sample == expected_v)
     );
@@ -260,10 +248,7 @@ fn lossless_nondc_chroma_v_leftedge_frame_decodes_to_oracle() {
             "{label}"
         );
         assert_eq!(
-            frame
-                .u()
-                .unwrap()
-                .samples()
+            crate::test_support::packed(frame.u().unwrap())
                 .iter()
                 .copied()
                 .collect::<BTreeSet<_>>()
@@ -272,10 +257,7 @@ fn lossless_nondc_chroma_v_leftedge_frame_decodes_to_oracle() {
             "{label}"
         );
         assert_eq!(
-            frame
-                .v()
-                .unwrap()
-                .samples()
+            crate::test_support::packed(frame.v().unwrap())
                 .iter()
                 .copied()
                 .collect::<BTreeSet<_>>()
@@ -352,10 +334,7 @@ fn assert_lossless_ramped_leftedge_oracle(oracle: &LosslessRampedLeftedgeOracle)
             > 4
     );
     assert!(
-        frame
-            .u()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.u().unwrap())
             .iter()
             .copied()
             .collect::<BTreeSet<_>>()
@@ -363,10 +342,7 @@ fn assert_lossless_ramped_leftedge_oracle(oracle: &LosslessRampedLeftedgeOracle)
             > 4
     );
     assert!(
-        frame
-            .v()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.v().unwrap())
             .iter()
             .copied()
             .collect::<BTreeSet<_>>()

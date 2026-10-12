@@ -186,10 +186,9 @@ fn decode_context() -> DecodeContext {
 fn decode_fixture(fixture: &[u8]) -> PipelineDecodedFrame {
     let options = DecodeOptions::default();
     let context = decode_context();
-    let plan = context.plan_bytes(fixture, options).expect("plan");
     context
         .pool()
-        .install(|| decode_frame_from_plan(fixture, &options, &plan))
+        .install(|| decode_frame_from_plan(fixture, &options))
         .expect("decode")
         .ready_frame()
         .expect("ready")
@@ -269,8 +268,8 @@ fn assert_chroma_eq<T>(frame: &DecodedFrame<T>, u: T, v: T)
 where
     T: Copy + Debug + PartialEq + ReconSample,
 {
-    assert_all_samples_eq(frame.u().unwrap().samples(), u, "U");
-    assert_all_samples_eq(frame.v().unwrap().samples(), v, "V");
+    assert_all_samples_eq(&crate::test_support::packed(frame.u().unwrap()), u, "U");
+    assert_all_samples_eq(&crate::test_support::packed(frame.v().unwrap()), v, "V");
 }
 
 fn distinct_count<T: Ord>(samples: &[T]) -> usize {
@@ -694,12 +693,12 @@ fn lossless_nondc_luma_d113_and_d157_chroma_follow_leftedge_frames_decode_to_ora
     assert_chroma_size(&d113_frame, 64, 32);
     assert_distinct_gt(d113_frame.y().samples(), 16, "lossless D113 left-edge luma");
     assert_distinct_gt(
-        d113_frame.u().unwrap().samples(),
+        &crate::test_support::packed(d113_frame.u().unwrap()),
         16,
         "lossless D113-follow U",
     );
     assert_distinct_gt(
-        d113_frame.v().unwrap().samples(),
+        &crate::test_support::packed(d113_frame.v().unwrap()),
         16,
         "lossless D113-follow V",
     );
@@ -841,8 +840,14 @@ fn assert_lossless_chroma_v_oracle<T>(
     assert_yuv420_frame(&frame, bit_depth, 64, 64);
     assert_chroma_size(&frame, 32, 32);
     assert_all_samples_eq(frame.y().samples(), luma, luma_label);
-    assert_eq!(distinct_count(frame.u().unwrap().samples()), 2);
-    assert_eq!(distinct_count(frame.v().unwrap().samples()), 2);
+    assert_eq!(
+        distinct_count(&crate::test_support::packed(frame.u().unwrap())),
+        2
+    );
+    assert_eq!(
+        distinct_count(&crate::test_support::packed(frame.v().unwrap())),
+        2
+    );
     assert_hash(&frame, expected_hash);
 }
 
@@ -853,8 +858,14 @@ fn assert_lossless_chroma_h_oracle(fixture: &[u8], expected_len: usize, luma_lab
     assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
     assert_chroma_size(&frame, 32, 32);
     assert_all_samples_eq(frame.y().samples(), 128, luma_label);
-    assert_eq!(distinct_count(frame.u().unwrap().samples()), 2);
-    assert_eq!(distinct_count(frame.v().unwrap().samples()), 2);
+    assert_eq!(
+        distinct_count(&crate::test_support::packed(frame.u().unwrap())),
+        2
+    );
+    assert_eq!(
+        distinct_count(&crate::test_support::packed(frame.v().unwrap())),
+        2
+    );
     assert_hash(
         &frame,
         "d72b424056b3f818fea000d6847c90733ac85e36a87396c4d8731f0d16e0820f",
@@ -915,12 +926,12 @@ pub(super) fn assert_lossless_explicit_chroma_oracle(
         &format!("{label_prefix} chroma luma"),
     );
     assert_distinct_gt(
-        frame.u().unwrap().samples(),
+        &crate::test_support::packed(frame.u().unwrap()),
         4,
         &format!("{label_prefix} U"),
     );
     assert_distinct_gt(
-        frame.v().unwrap().samples(),
+        &crate::test_support::packed(frame.v().unwrap()),
         4,
         &format!("{label_prefix} V"),
     );
@@ -1011,12 +1022,12 @@ fn lossless_nondc_chroma_d203_frame_decodes_to_oracle() {
     assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
     assert_chroma_size(&frame, 64, 32);
     assert_all_samples_eq(
-        frame.u().unwrap().samples(),
+        &crate::test_support::packed(frame.u().unwrap()),
         128,
         "lossless SDP explicit D203 left-edge U",
     );
     assert_distinct_gt(
-        frame.v().unwrap().samples(),
+        &crate::test_support::packed(frame.v().unwrap()),
         1,
         "lossless SDP explicit D203 left-edge V",
     );
@@ -1089,11 +1100,11 @@ fn assert_lossless_chroma_d135_oracle(
     assert_chroma_size(&frame, 32, 32);
     assert_all_samples_eq(frame.y().samples(), 128, luma_label);
     assert_eq!(
-        distinct_count(frame.u().unwrap().samples()),
+        distinct_count(&crate::test_support::packed(frame.u().unwrap())),
         expected_u_distinct
     );
     assert_eq!(
-        distinct_count(frame.v().unwrap().samples()),
+        distinct_count(&crate::test_support::packed(frame.v().unwrap())),
         expected_v_distinct
     );
     assert_hash(&frame, expected_hash);
@@ -1111,8 +1122,8 @@ fn assert_lossless_dpcm_uv_oracle(
     assert_yuv420_frame(&frame, BitDepth::Eight, 64, 64);
     assert_chroma_size(&frame, 32, 32);
     assert_all_samples_eq(frame.y().samples(), 128, label);
-    assert_distinct_gt(frame.u().unwrap().samples(), 16, label);
-    assert_distinct_gt(frame.v().unwrap().samples(), 16, label);
+    assert_distinct_gt(&crate::test_support::packed(frame.u().unwrap()), 16, label);
+    assert_distinct_gt(&crate::test_support::packed(frame.v().unwrap()), 16, label);
     assert_hash(&frame, expected_hash);
 }
 
@@ -1172,14 +1183,11 @@ fn deep_split_sub_32x32_intra_frame_decodes_to_oracle() {
     assert_eq!((at(48, 16), at(16, 48), at(48, 48)), (130, 70, 200));
 
     assert!(
-        frame
-            .u()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.u().unwrap())
             .iter()
             .all(|&s| s == 120 || s == 121)
     );
-    assert_all_samples_eq(frame.v().unwrap().samples(), 130, "V");
+    assert_all_samples_eq(&crate::test_support::packed(frame.v().unwrap()), 130, "V");
     assert_hash(
         &frame,
         "73123e51c66787b59fb6b93a6221e9d78a550c6e0d1c4e0c1adfd21a41ed39ab",
@@ -1256,8 +1264,8 @@ fn grid_2d_intra_frame_decodes_to_oracle() {
         }
         out
     };
-    let u = frame.u().unwrap().samples();
-    let v = frame.v().unwrap().samples();
+    let u = &crate::test_support::packed(frame.u().unwrap());
+    let v = &crate::test_support::packed(frame.v().unwrap());
 
     assert_all_samples_eq(&quad(u, 0, 0), 110, "U top-left");
     assert_all_samples_eq(&quad(u, 0, 1), 200, "U top-right");
@@ -1303,8 +1311,16 @@ fn vsmooth_single_block_intra_frame_decodes_to_oracle() {
     );
     assert!(y[0] < y[63 * 64], "luma should increase top-to-bottom");
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1324,8 +1340,16 @@ fn hsmooth_single_block_intra_frame_decodes_to_oracle() {
     );
     assert!(y[0] < y[63], "luma should increase left-to-right");
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1357,8 +1381,8 @@ fn smooth_single_block_intra_frame_decodes_to_oracle() {
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat 2-D reconstruction");
 
-    let u = frame.u().unwrap().samples();
-    let v = frame.v().unwrap().samples();
+    let u = &crate::test_support::packed(frame.u().unwrap());
+    let v = &crate::test_support::packed(frame.v().unwrap());
     assert!(
         u.iter().any(|&s| s != u[0]),
         "chroma U carries a DC-mode residual"
@@ -1426,8 +1450,16 @@ fn hedge_directional_d135_intra_frame_decodes_to_oracle() {
     let y = frame.y().samples();
     assert!(y[0] < y[63 * 64], "luma should increase top-to-bottom");
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1447,8 +1479,8 @@ fn dfchroma_directional_follow_chroma_intra_frame_decodes_to_oracle() {
     let y = frame.y().samples();
     assert!(y[0] < y[63 * 64], "luma should increase top-to-bottom");
 
-    let u = frame.u().unwrap().samples();
-    let v = frame.v().unwrap().samples();
+    let u = &crate::test_support::packed(frame.u().unwrap());
+    let v = &crate::test_support::packed(frame.v().unwrap());
     let at = |p: &[u8], r: usize, c: usize| p[r * 32 + c];
     assert_distinct_gt(u, 4, "U chroma non-flat directional reconstruction");
     assert_distinct_gt(v, 4, "V chroma non-flat directional reconstruction");
@@ -1500,8 +1532,16 @@ fn mbvg_multiblock_smooth_v_neighbour_intra_frame_decodes_to_oracle() {
         "right superblock must read the real neighbour edge, not duplicate the left"
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1533,8 +1573,16 @@ fn dirneigh_directional_neighbour_ctx_intra_frame_decodes_to_oracle() {
         at(0, 64) < at(63, 64),
         "right increases top-to-bottom (SMOOTH_V)"
     );
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1576,8 +1624,16 @@ fn vgrid_multirow_smooth_v_above_row_intra_frame_decodes_to_oracle() {
         "left (DC) and middle (SMOOTH_V) bottom superblocks must reconstruct distinct values"
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1620,8 +1676,8 @@ fn shgrid_multirow_smooth_h_above_right_intra_frame_decodes_to_oracle() {
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
 
-    let u = frame.u().unwrap().samples();
-    let v = frame.v().unwrap().samples();
+    let u = &crate::test_support::packed(frame.u().unwrap());
+    let v = &crate::test_support::packed(frame.v().unwrap());
     let cat = |p: &[u8], r: usize, c: usize| p[r * 64 + c];
     assert!(
         (32..64).all(|r| (0..32).all(|c| cat(u, r, c) == cat(u, 32, 0))),
@@ -1662,8 +1718,16 @@ fn rdir_neighbour_directional_d135_intra_frame_decodes_to_oracle() {
         "right superblock top row must vary across columns (directional D135, not flat)"
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1698,8 +1762,8 @@ fn vpred_cardinal_multirow_intra_frame_decodes_to_oracle() {
         "bottom superblock top row must continue the real above row, not jump to the 127 fallback"
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    let u = frame.u().unwrap().samples();
-    let v = frame.v().unwrap().samples();
+    let u = &crate::test_support::packed(frame.u().unwrap());
+    let v = &crate::test_support::packed(frame.v().unwrap());
     assert!(u.iter().all(|&s| s == u[0]), "chroma U must be uniform");
     assert!(v.iter().all(|&s| s == v[0]), "chroma V must be uniform");
 
@@ -1736,8 +1800,8 @@ fn hpred_cardinal_multicolumn_intra_frame_decodes_to_oracle() {
         "right superblock left column must continue the real left neighbour, not jump to a fallback"
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    let u = frame.u().unwrap().samples();
-    let v = frame.v().unwrap().samples();
+    let u = &crate::test_support::packed(frame.u().unwrap());
+    let v = &crate::test_support::packed(frame.v().unwrap());
     assert!(u.iter().all(|&s| s == u[0]), "chroma U must be uniform");
     assert!(v.iter().all(|&s| s == v[0]), "chroma V must be uniform");
 
@@ -1771,8 +1835,16 @@ fn d157_neighbour_directional_idif_intra_frame_decodes_to_oracle() {
         "right superblock bottom row must vary across columns (directional D157, not flat / H_PRED)"
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1807,8 +1879,16 @@ fn d135row_neighbour_directional_row_gt0_corner_intra_frame_decodes_to_oracle() 
         "bottom-right block left-branch must propagate the real left column (not flat DC)"
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1845,8 +1925,16 @@ fn d113_neighbour_directional_idif_above_intra_frame_decodes_to_oracle() {
         "bottom-right D113 left-branch must propagate the real left column (not flat DC)"
     );
     assert_distinct_gt(y, 4, "luma should be a non-flat reconstruction");
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1883,8 +1971,16 @@ fn d45_neighbour_one_sided_above_right_intra_frame_decodes_to_oracle() {
         .collect();
     assert_distinct_gt(&block, 4, "D45 block non-flat above-right reconstruction");
 
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1907,7 +2003,7 @@ fn luma_skip_fixture_decodes_skip_branch_through_general_path() {
         &y[..8]
     );
 
-    let u = frame.u().unwrap().samples();
+    let u = &crate::test_support::packed(frame.u().unwrap());
     assert!(
         u.iter().any(|&s| s != u[0]),
         "U must carry a coded (non-flat) residual; first samples: {:?}",
@@ -1944,8 +2040,16 @@ fn d203_neighbour_one_sided_left_intra_frame_decodes_to_oracle() {
         .collect();
     assert_distinct_gt(&block, 4, "D203 block non-flat left-column reconstruction");
 
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 120));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 130));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 120)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 130)
+    );
 
     assert_hash(
         &frame,
@@ -1964,8 +2068,16 @@ fn horz_rectangular_partition_intra_frame_decodes_to_oracle() {
     let y = frame.y().samples();
     let at = |col: usize, row: usize| y[row * 64 + col];
     assert_eq!((at(32, 16), at(32, 48)), (60, 200));
-    assert!(frame.u().unwrap().samples().iter().all(|&s| s == 128));
-    assert!(frame.v().unwrap().samples().iter().all(|&s| s == 128));
+    assert!(
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&s| s == 128)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
+            .iter()
+            .all(|&s| s == 128)
+    );
 
     assert_hash(
         &frame,

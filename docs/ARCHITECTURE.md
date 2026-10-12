@@ -59,6 +59,9 @@ Media storage is view-first. Algorithms borrow `PlaneRef`, `PlaneMut`,
 `FrameRef`, or `FrameMut`; immutable frames are shared explicitly through
 `SharedFrame`; frame/plane/workspace storage does not use implicit `Clone`.
 Intentional materialization must carry a `splot-copy-ok:` marker.
+Plane storage is `PlaneBuf`: the first sample is 64-byte aligned and the row
+stride (`plane_stride`) is a multiple of 64 bytes, so hosts can wrap decoded
+planes without a copy.
 
 `zerocopy` is allowed only for private fixed-layout wire views, such as IVF
 headers. It is not the media-buffer ownership model and must not parse AV2
@@ -69,6 +72,7 @@ Gate: `cargo xtask check-zero-copy-policy`.
 ## Unsafe and Errors
 
 `unsafe_code = "forbid"` applies across the workspace, except reviewed blocks
-in `splot-decode` and the `splot-capi` C ABI. Libraries return typed
+in `splot-decode`, the `splot-recon` plane allocator and the `splot-capi` C
+ABI. Libraries return typed
 errors and do not panic on malformed input. `anyhow` is limited to `splot-cli`
 and `xtask`.

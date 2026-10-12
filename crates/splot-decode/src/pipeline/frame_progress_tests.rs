@@ -60,20 +60,20 @@ fn direct_stripes_write_the_canonical_allocation_and_publish_out_of_order() {
     assert_eq!(progress.published_luma_rows(), 8);
 
     let published = progress.read().expect("published frame");
-    let samples = published
+    let plane = published
         .plane(splot_recon::PlaneId::Y)
         .expect("published luma")
-        .expect("present luma")
-        .samples;
-    assert!(samples[..32].iter().all(|&sample| sample == 11));
-    assert!(samples[32..].iter().all(|&sample| sample == 22));
+        .expect("present luma");
+    let (samples, half) = (plane.samples, 4 * plane.stride);
+    assert!(samples[..half].iter().all(|&sample| sample == 11));
+    assert!(samples[half..].iter().all(|&sample| sample == 22));
     drop(published);
 
     let frame = progress
         .freeze_workspace(core::convert::identity)
         .expect("frozen frame");
-    assert_eq!(&frame.y().samples()[..32], &[11; 32]);
-    assert_eq!(&frame.y().samples()[32..], &[22; 32]);
+    assert_eq!(&frame.y().samples()[..half], vec![11; half]);
+    assert_eq!(&frame.y().samples()[half..], vec![22; half]);
 }
 
 #[test]
@@ -142,7 +142,10 @@ fn u8_direct_stripe_writes_the_canonical_allocation() {
     let frame = progress
         .freeze_workspace(core::convert::identity)
         .expect("frozen frame");
-    assert_eq!(frame.y().samples(), &[77; 32]);
+    assert_eq!(
+        frame.y().samples(),
+        vec![77; 4 * frame.y().stride_samples()]
+    );
 }
 
 #[test]
@@ -491,8 +494,13 @@ fn frontier_rows_lend_only_rows_no_stripe_or_reader_holds() {
         .fill(99);
     assert!(lease.submit());
     assert!(
-        rows.append_rows(splot_recon::PlaneId::Y, 12, 20, &mut Vec::new())
-            .is_none(),
+        rows.append_rows(
+            splot_recon::PlaneId::Y,
+            12,
+            20,
+            &mut splot_recon::plane_buf()
+        )
+        .is_none(),
         "a published row is not the frontier's"
     );
     assert!(

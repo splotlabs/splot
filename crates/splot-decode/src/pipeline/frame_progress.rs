@@ -172,7 +172,8 @@ impl<T: ReconSample> DirectWorkspace<T> {
         Some(DirectPlaneRegion {
             samples,
             len,
-            width: storage.stride,
+            width: storage.size.width(),
+            stride: storage.stride,
             frame_height: storage.height,
             origin_y: start,
         })
@@ -202,6 +203,7 @@ struct DirectPlaneRegion {
     samples: DirectPlaneSamples,
     len: usize,
     width: usize,
+    stride: usize,
     frame_height: usize,
     origin_y: usize,
 }
@@ -221,6 +223,10 @@ impl DirectPlaneTarget {
         self.region.width
     }
 
+    pub(crate) const fn stride(&self) -> usize {
+        self.region.stride
+    }
+
     pub(crate) const fn frame_height(&self) -> usize {
         self.region.frame_height
     }
@@ -229,14 +235,10 @@ impl DirectPlaneTarget {
         self.region.origin_y
     }
 
-    pub(crate) const fn len(&self) -> usize {
-        self.region.len
-    }
-
     pub(crate) fn end_y(&self) -> Option<usize> {
         self.region
             .origin_y
-            .checked_add(self.region.len.checked_div(self.region.width)?)
+            .checked_add(self.region.len.checked_div(self.region.stride)?)
     }
 
     pub(crate) const fn is_u16(&self) -> bool {
@@ -798,7 +800,7 @@ impl<T: ReconSample> FrontierRows<T> {
 
     pub(crate) fn plane_size(&self, plane: PlaneId) -> Option<(usize, usize)> {
         let storage = self.progress.planes[plane.index()]?;
-        (storage.size.width() == storage.stride).then_some((storage.stride, storage.height))
+        Some((storage.size.width(), storage.height))
     }
 
     pub(crate) const fn final_luma_rows(&self) -> usize {
@@ -835,19 +837,25 @@ impl<T: ReconSample> FrontierRows<T> {
             return None;
         }
         let (width, height) = self.plane_size(plane)?;
+        let stride = self.progress.planes[plane.index()]?.stride;
         let (samples, len) = self.span(plane, start, end)?; // SAFETY: rows at or past `final_luma_rows` (never below `released_luma_rows`) are this unique frontier's alone: `direct_stripe` refuses a stripe ending past the release and the published prefix is made of such stripes; freeze and plane take refuse while this handle lives, so the storage stays allocated.
         let samples = unsafe { slice::from_raw_parts_mut(samples, len) };
-        Some(f(samples, width, width, height, start))
+        Some(f(samples, stride, width, height, start))
     }
 
-    /// Lends every whole plane while no row is final, for a pass that filters
-    /// them all before the frontier advances.
-    pub(crate) fn planes_mut(&mut self) -> [Option<&mut [T]>; 3] {
+    /// Lends every whole plane and its row stride while no row is final, for a
+    /// pass that filters them all before the frontier advances.
+    pub(crate) fn planes_mut(&mut self) -> [Option<(&mut [T], usize)>; 3] {
         let final_rows = self.final_luma_rows;
         [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
-            let height = self.progress.planes[plane.index()]?.height;
-            let (samples, len) = self.span(plane, 0, height).filter(|_| final_rows == 0)?; // SAFETY: with no final row every row is this frontier's, as in `with_plane_rows_mut`, and the three planes are disjoint allocations.
-            Some(unsafe { slice::from_raw_parts_mut(samples, len) })
+            let storage = self.progress.planes[plane.index()]?;
+            let (samples, len) = self
+                .span(plane, 0, storage.height)
+                .filter(|_| final_rows == 0)?; // SAFETY: with no final row every row is this frontier's, as in `with_plane_rows_mut`, and the three planes are disjoint allocations.
+            Some((
+                unsafe { slice::from_raw_parts_mut(samples, len) },
+                storage.stride,
+            ))
         })
     }
 
@@ -897,7 +905,7 @@ impl<T: ReconSample> FrontierRows<T> {
         plane: PlaneId,
         start: usize,
         end: usize,
-        out: &mut Vec<T>,
+        out: &mut splot_recon::PlaneBuf<T>,
     ) -> Option<()> {
         let scale = 1 << self.shift(plane);
         if start < self.released_luma_rows.div_ceil(scale)
@@ -906,7 +914,18 @@ impl<T: ReconSample> FrontierRows<T> {
             return None;
         }
         let (samples, len) = self.span(plane, start, end)?; // SAFETY: final rows at or past `released_luma_rows` are, as in `with_plane_rows_mut`, viewed by no stripe or reader, and no deblock pass writes below `final_luma_rows`.
-        out.extend_from_slice(unsafe { slice::from_raw_parts(samples, len) });
+        let rows = unsafe { slice::from_raw_parts(samples, len) };
+        let (width, stride) = (
+            self.plane_size(plane)?.0,
+            self.progress.planes[plane.index()]?.stride,
+        );
+        if width == stride {
+            out.extend_from_slice(rows);
+        } else {
+            for row in rows.chunks_exact(stride) {
+                out.extend_from_slice(row.get(..width)?);
+            }
+        }
         Some(())
     }
 

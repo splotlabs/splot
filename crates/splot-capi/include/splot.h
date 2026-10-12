@@ -83,16 +83,22 @@ typedef struct SplotColor {
 // A decoded picture. Valid from [`splot_get_picture`] until
 // [`splot_picture_unref`].
 typedef struct SplotPicture {
-  // Y, U and V planes at their visible top-left sample. 8-bit pictures
-  // hold one byte per sample, 10-bit pictures one `uint16_t` per sample in
-  // the low bits. U and V are null for [`SplotPixelLayout::I400`].
+  // Y, U and V planes at their first stored sample, 64-byte aligned.
+  // The visible area starts `crop_top` rows and `crop_left` samples in
+  // (both shifted right by the chroma subsampling for U and V). 8-bit
+  // pictures hold one byte per sample, 10-bit pictures one `uint16_t` per
+  // sample in the low bits. U and V are null for [`SplotPixelLayout::I400`].
   const void *data[3];
-  // Bytes from one row to the next, for each plane.
+  // Bytes from one row to the next, for each plane; a multiple of 64.
   ptrdiff_t stride[3];
   // Visible width in luma samples.
   uint32_t width;
   // Visible height in luma samples.
   uint32_t height;
+  // Luma samples between the left of `data` and the visible area.
+  uint32_t crop_left;
+  // Luma rows between the top of `data` and the visible area.
+  uint32_t crop_top;
   // Bits per sample: 8 or 10.
   uint32_t bit_depth;
   // Chroma layout.

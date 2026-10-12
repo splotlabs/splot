@@ -267,7 +267,7 @@ impl<'a, T: ReconSample> DeblockedPlanes<'a, T> {
 /// stripe above may already have overwritten them in the frame.
 #[derive(Default)]
 pub(crate) struct DeblockedWindow<T> {
-    planes: [Vec<T>; 3],
+    planes: [splot_recon::PlaneBuf<T>; 3],
     rows: [Option<(usize, usize)>; 3],
     sizes: [(usize, usize); 3],
 }
@@ -501,7 +501,7 @@ impl StripeSamples {
             .checked_sub(origin_y)
             .and_then(|rows| rows.checked_mul(source.width()))
             .ok_or(StripeCopyError::Geometry)?;
-        if target.len() != sample_count {
+        if target.end_y() != Some(end_y) {
             return Err(StripeCopyError::Geometry);
         }
         let mut staging = take_stripe_sample_buffer(sample_count)?;
@@ -541,28 +541,6 @@ impl StripeSamples {
         })
     }
 
-    fn direct_u8_from_u16_slice(
-        mut target: crate::pipeline::frame_progress::DirectPlaneTarget,
-        source: &[u16],
-    ) -> Result<Self, StripeCopyError> {
-        if target.u8_samples_mut().is_none() || target.len() != source.len() {
-            return Err(StripeCopyError::Geometry);
-        }
-        let mut staging = take_stripe_sample_buffer(source.len())?;
-        let initialized = staging
-            .spare_capacity_mut()
-            .get_mut(..source.len())
-            .ok_or(StripeCopyError::Geometry)
-            .and_then(|destination| write_uninit_u16(destination, source));
-        initialized?;
-        unsafe { staging.set_len(source.len()) }; // SAFETY: the live pooled allocation has length zero and sufficient capacity; the equal-length helper initialized every in-bounds spare slot without a `&mut [u16]` before this non-panicking call, errors and panics drop length-zero storage, and the owner prevents reallocation until the fully initialized vector is cleared and recycled.
-        let pointer = core::ptr::NonNull::from(staging.as_mut_slice());
-        Ok(Self {
-            samples: pointer,
-            owner: StripeOwner::DirectU8 { target, staging },
-        })
-    }
-
     #[inline]
     fn as_slice(&self) -> &[u16] {
         unsafe {
@@ -587,14 +565,21 @@ impl StripeSamples {
         let StripeOwner::DirectU8 { target, staging } = &mut self.owner else {
             return Ok(());
         };
+        let (width, stride) = (target.width(), target.stride());
         let unpublished_destination = target.u8_samples_mut().ok_or(StripeCopyError::Geometry)?;
-        if unpublished_destination.len() != staging.len() {
+        if width == 0
+            || stride < width
+            || unpublished_destination.len() / stride * width != staging.len()
+        {
             return Err(StripeCopyError::Geometry);
         }
         let mut discarded_high_bits = 0u16;
-        for (destination, &sample) in unpublished_destination.iter_mut().zip(staging.iter()) {
-            discarded_high_bits |= sample & !u16::from(u8::MAX);
-            *destination = sample as u8;
+        let rows = unpublished_destination.chunks_exact_mut(stride);
+        for (destination, staged) in rows.zip(staging.chunks_exact(width)) {
+            for (destination, &sample) in destination.iter_mut().zip(staged) {
+                discarded_high_bits |= sample & !u16::from(u8::MAX);
+                *destination = sample as u8;
+            }
         }
         (discarded_high_bits == 0)
             .then_some(())
@@ -617,6 +602,7 @@ fn write_uninit_u16(
 
 pub(crate) struct StripePlane {
     width: usize,
+    stride: usize,
     frame_height: usize,
     origin_y: usize,
     samples: StripeSamples,
@@ -652,6 +638,7 @@ impl StripePlane {
         }
         Some(Self {
             width,
+            stride: width,
             frame_height,
             origin_y,
             samples: StripeSamples::owned(samples),
@@ -663,6 +650,7 @@ impl StripePlane {
     ) -> Result<Self, StripeCopyError> {
         Ok(Self {
             width: target.width(),
+            stride: target.stride(),
             frame_height: target.frame_height(),
             origin_y: target.origin_y(),
             samples: StripeSamples::direct_u16(target)?,
@@ -705,15 +693,11 @@ impl StripePlane {
         if origin_y > end_y || end_y > source.frame_height() {
             return Err(geometry);
         }
-        let sample_count = source
-            .width()
-            .checked_mul(end_y - origin_y)
-            .ok_or(geometry)?;
         match target {
             Some(target) => (target.width() == source.width()
                 && target.frame_height() == source.frame_height()
                 && target.origin_y() == origin_y
-                && target.len() == sample_count
+                && target.end_y() == Some(end_y)
                 && (initialization == StripeInitialization::CopyAll || target.is_u16()))
             .then_some(())
             .ok_or(geometry),
@@ -741,6 +725,7 @@ impl StripePlane {
             } else {
                 return Ok(Self {
                     width: source.width(),
+                    stride: source.width(),
                     frame_height: source.frame_height(),
                     origin_y,
                     samples: StripeSamples::direct_u8_from_frame(target, source, origin_y, end_y)?,
@@ -768,6 +753,7 @@ impl StripePlane {
             }
             return Ok(Self {
                 width: source.width(),
+                stride: source.width(),
                 frame_height: source.frame_height(),
                 origin_y,
                 samples: StripeSamples::owned(samples),
@@ -776,13 +762,15 @@ impl StripePlane {
         if initialization == StripeInitialization::FullyOverwritten {
             return Ok(output);
         }
-        let samples = output.samples_mut();
-        if source.copy_u16_rows(origin_y, end_y, samples).is_none() {
-            let mut written = 0usize;
+        if source
+            .copy_u16_rows(origin_y, end_y, output.samples_mut())
+            .is_none()
+        {
             for y in origin_y..end_y {
                 let row = source.row(y).ok_or(geometry)?;
-                let destination = samples
-                    .get_mut(written..written.checked_add(row.len()).ok_or(geometry)?)
+                let destination = output
+                    .row_mut(y)
+                    .and_then(|destination| destination.get_mut(..row.len()))
                     .ok_or(geometry)?;
                 if let Some(row) = T::u16_slice(row) {
                     destination.copy_from_slice(row);
@@ -791,10 +779,6 @@ impl StripePlane {
                         *destination = source.to_u16();
                     }
                 }
-                written += row.len();
-            }
-            if written != sample_count {
-                return Err(geometry);
             }
         }
         Ok(output)
@@ -817,29 +801,10 @@ impl StripePlane {
         target: Option<&crate::pipeline::frame_progress::DirectPlaneTarget>,
         initialization: StripeInitialization,
     ) -> Result<(), StripeCopyError> {
-        let geometry = StripeCopyError::Geometry;
-        let start = origin_y
-            .checked_sub(self.origin_y)
-            .ok_or(geometry)?
-            .checked_mul(self.width)
-            .ok_or(geometry)?;
-        let end = end_y
-            .checked_sub(self.origin_y)
-            .ok_or(geometry)?
-            .checked_mul(self.width)
-            .ok_or(geometry)?;
-        let source = self.samples().get(start..end).ok_or(geometry)?;
-        match target {
-            Some(target) => (target.width() == self.width
-                && target.frame_height() == self.frame_height
-                && target.origin_y() == origin_y
-                && target.len() == source.len()
-                && (initialization == StripeInitialization::CopyAll || target.is_u16()))
-            .then_some(())
-            .ok_or(geometry),
-            None if initialization == StripeInitialization::FullyOverwritten => Err(geometry),
-            None => Ok(()),
+        if origin_y < self.origin_y || origin_y > end_y || Some(end_y) > self.end_y() {
+            return Err(StripeCopyError::Geometry);
         }
+        StripePlane::preflight_copy_from_into(self.view()?, origin_y, end_y, target, initialization)
     }
 
     pub(crate) fn copy_rows_into_mode(
@@ -850,44 +815,20 @@ impl StripePlane {
         initialization: StripeInitialization,
     ) -> Result<Self, StripeCopyError> {
         self.preflight_copy_rows_into(origin_y, end_y, target.as_ref(), initialization)?;
-        let geometry = StripeCopyError::Geometry;
-        let start = origin_y
-            .checked_sub(self.origin_y)
-            .ok_or(geometry)?
-            .checked_mul(self.width)
-            .ok_or(geometry)?;
-        let end = end_y
-            .checked_sub(self.origin_y)
-            .ok_or(geometry)?
-            .checked_mul(self.width)
-            .ok_or(geometry)?;
-        let source = self.samples().get(start..end).ok_or(geometry)?;
-        let mut output = if let Some(target) = target {
-            if target.is_u16() {
-                Self::from_target(target)?
-            } else {
-                return Ok(Self {
-                    width: self.width,
-                    frame_height: self.frame_height,
-                    origin_y,
-                    samples: StripeSamples::direct_u8_from_u16_slice(target, source)?,
-                });
-            }
-        } else {
-            let mut samples = take_stripe_sample_buffer(source.len())?;
-            samples.extend_from_slice(source);
-            return Ok(Self {
-                width: self.width,
-                frame_height: self.frame_height,
-                origin_y,
-                samples: StripeSamples::owned(samples),
-            });
-        };
-        if initialization == StripeInitialization::FullyOverwritten {
-            return Ok(output);
-        }
-        output.samples_mut().copy_from_slice(source);
-        Ok(output)
+        Self::copy_from_into_mode(self.view()?, origin_y, end_y, target, initialization)
+    }
+
+    /// These rows as a frame-plane view.
+    fn view(&self) -> Result<FramePlane<'_, u16>, StripeCopyError> {
+        let end_y = self.end_y().ok_or(StripeCopyError::Geometry)?;
+        Ok(FramePlane {
+            width: self.width,
+            height: self.frame_height,
+            stride: self.stride,
+            storage_origin_y: self.origin_y,
+            storage_rows: end_y - self.origin_y,
+            samples: self.samples(),
+        })
     }
 
     pub(crate) const fn width(&self) -> usize {
@@ -902,9 +843,13 @@ impl StripePlane {
         self.origin_y
     }
 
+    pub(crate) const fn stride(&self) -> usize {
+        self.stride
+    }
+
     pub(crate) fn end_y(&self) -> Option<usize> {
         self.origin_y
-            .checked_add(self.samples().len().checked_div(self.width)?)
+            .checked_add(self.samples().len().checked_div(self.stride)?)
     }
 
     #[inline]
@@ -920,7 +865,7 @@ impl StripePlane {
     #[inline]
     pub(crate) fn row(&self, y: usize) -> Option<&[u16]> {
         let row = y.checked_sub(self.origin_y)?;
-        let start = row.checked_mul(self.width)?;
+        let start = row.checked_mul(self.stride)?;
         self.samples().get(start..start.checked_add(self.width)?)
     }
 
@@ -928,7 +873,7 @@ impl StripePlane {
     pub(crate) fn row_mut(&mut self, y: usize) -> Option<&mut [u16]> {
         let row = y.checked_sub(self.origin_y)?;
         let width = self.width;
-        let start = row.checked_mul(width)?;
+        let start = row.checked_mul(self.stride)?;
         self.samples_mut().get_mut(start..start.checked_add(width)?)
     }
 
@@ -953,16 +898,15 @@ impl StripePlane {
         if rect.x().checked_add(rect.width())? > self.width {
             return None;
         }
-        let row = rect.y().checked_sub(self.origin_y)?;
-        let start = row.checked_mul(self.width)?.checked_add(rect.x())?;
+        let (row, stride) = (rect.y().checked_sub(self.origin_y)?, self.stride);
+        let start = row.checked_mul(stride)?.checked_add(rect.x())?;
         let end = rect
             .height()
             .checked_sub(1)?
-            .checked_mul(self.width)?
+            .checked_mul(stride)?
             .checked_add(start)?
             .checked_add(rect.width())?;
-        let width = self.width;
-        Some((self.samples_mut().get_mut(start..end)?, width))
+        Some((self.samples_mut().get_mut(start..end)?, stride))
     }
 
     pub(crate) fn is_direct(&self) -> bool {
@@ -988,7 +932,7 @@ impl StripeOutputPlane {
             || target.width() != source.width()
             || target.frame_height() != source.frame_height()
             || target.origin_y() != source.origin_y()
-            || target.len() != source.samples().len()
+            || target.end_y() != Some(end_y)
             || target.u8_samples_mut().is_none()
             || end_y > source.frame_height()
         {
@@ -1044,19 +988,19 @@ impl StripeOutputPlane {
         let Self::DirectU8(target) = self else {
             return None;
         };
-        let width = target.width();
-        if rect.x().checked_add(rect.width())? > width {
+        let stride = target.stride();
+        if rect.x().checked_add(rect.width())? > target.width() {
             return None;
         }
         let row = rect.y().checked_sub(target.origin_y())?;
-        let start = row.checked_mul(width)?.checked_add(rect.x())?;
+        let start = row.checked_mul(stride)?.checked_add(rect.x())?;
         let end = rect
             .height()
             .checked_sub(1)?
-            .checked_mul(width)?
+            .checked_mul(stride)?
             .checked_add(start)?
             .checked_add(rect.width())?;
-        Some((target.u8_samples_mut()?.get_mut(start..end)?, width))
+        Some((target.u8_samples_mut()?.get_mut(start..end)?, stride))
     }
 
     pub(crate) fn is_direct(&self) -> bool {

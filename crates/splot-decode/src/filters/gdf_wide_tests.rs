@@ -38,6 +38,7 @@ fn test_block(width: usize, bit_depth: BitDepth, ref_dst_idx: usize, qp_idx: usi
         frame_width: width,
         frame_height: 2,
         base_origin_y: 0,
+        base_stride: width,
         bit_depth,
         qp_idx,
         ref_dst_idx,

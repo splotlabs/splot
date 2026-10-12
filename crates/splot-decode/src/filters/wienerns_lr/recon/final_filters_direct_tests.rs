@@ -84,7 +84,10 @@ fn poison_progress(progress: &Arc<crate::pipeline::frame_progress::FrameProgress
     let mut target = lease.take_target().unwrap();
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         if let Some(mut plane) = target.take(plane) {
-            plane.u16_samples_mut().unwrap().fill(POISON);
+            let (width, stride) = (plane.width(), plane.stride());
+            for row in plane.u16_samples_mut().unwrap().chunks_mut(stride) {
+                row[..width].fill(POISON);
+            }
         }
     }
 }
@@ -211,13 +214,15 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
             }
             .and_then(StripeOutputPlane::as_u16_mut)
             .unwrap();
-            assert!(output.samples().iter().all(|&sample| sample == POISON));
+            let rows = crate::test_support::stripe_rows(output);
+            assert!(rows.iter().all(|&sample| sample == POISON));
             write_blocks(
                 output,
                 block_slices[plane.index()],
                 700 + plane.index() as u16,
             );
-            assert!(output.samples().iter().all(|&sample| sample != POISON));
+            let rows = crate::test_support::stripe_rows(output);
+            assert!(rows.iter().all(|&sample| sample != POISON));
         }
         let mut filtered = frame.into_filtered();
         filtered.y.finish_direct().unwrap();
@@ -232,7 +237,8 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
         let frame = progress.freeze_workspace(core::convert::identity).unwrap();
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             if let Some(plane) = frame.plane(plane) {
-                assert!(plane.samples().iter().all(|&sample| sample != POISON));
+                let rows = crate::test_support::packed(plane);
+                assert!(rows.iter().all(|&sample| sample != POISON));
             }
         }
     }
@@ -267,14 +273,8 @@ fn a_coverage_hole_selects_copy_all_and_replaces_poison_with_cdef() {
     )
     .unwrap();
     assert_eq!(
-        frame
-            .post_lr_y
-            .as_ref()
-            .unwrap()
-            .as_u16()
-            .unwrap()
-            .samples(),
-        workspace.samples(PlaneId::Y).unwrap()
+        crate::test_support::stripe_rows(frame.post_lr_y.as_ref().unwrap().as_u16().unwrap()),
+        crate::test_support::workspace_rows(&workspace, PlaneId::Y)
     );
 }
 
@@ -304,14 +304,13 @@ fn every_post_lr_plane_is_preflighted_before_any_target_mutation() {
     let mut lease = progress.direct_stripe(0).unwrap();
     let mut target = lease.take_target().unwrap();
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let mut target = target.take(plane).unwrap();
+        let (width, stride) = (target.width(), target.stride());
+        let samples = target.u16_samples_mut().unwrap();
         assert!(
-            target
-                .take(plane)
-                .unwrap()
-                .u16_samples_mut()
-                .unwrap()
-                .iter()
-                .all(|&sample| sample == POISON),
+            samples
+                .chunks(stride)
+                .all(|row| row[..width].iter().all(|&sample| sample == POISON)),
             "plane {plane:?} changed before V preflight failed"
         );
     }
@@ -416,9 +415,9 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
         .unwrap();
     for y in 0..8 {
         for x in 0..8 {
-            let actual = output.samples()[y * 8 + x];
+            let actual = output.row(y).unwrap()[x];
             let expected = if x < 4 && y < 4 {
-                workspace.samples(PlaneId::Y).unwrap()[y * 8 + x]
+                crate::test_support::workspace_rows(&workspace, PlaneId::Y)[y * 8 + x]
             } else {
                 777
             };
@@ -484,13 +483,13 @@ fn u8_lossless_luma_samples_write_exactly_to_both_output_representations() {
     for y in 0..8 {
         for x in 0..8 {
             let expected = if x < 4 && y < 4 {
-                u16::from(workspace.samples(PlaneId::Y).unwrap()[y * 8 + x])
+                u16::from(crate::test_support::workspace_rows(&workspace, PlaneId::Y)[y * 8 + x])
             } else {
                 777
             };
             assert_eq!(output[y * 8 + x], expected, "sample ({x}, {y})");
             let expected = if x < 4 && y < 4 {
-                workspace.samples(PlaneId::Y).unwrap()[y * 8 + x]
+                crate::test_support::workspace_rows(&workspace, PlaneId::Y)[y * 8 + x]
             } else {
                 0xee
             };
@@ -530,7 +529,9 @@ fn poison_oracle_exposes_one_suppressed_lr_block_write() {
         .unwrap();
     write_blocks(output, &blocks[1..], 777);
     assert!(
-        output.samples().iter().all(|&sample| sample != POISON),
+        crate::test_support::stripe_rows(output)
+            .iter()
+            .all(|&sample| sample != POISON),
         "omitted LR block write escaped poison oracle"
     );
 }
@@ -547,12 +548,12 @@ fn direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write() {
     progress.begin(&[(0, 8)]).unwrap();
     let mut poison_lease = progress.direct_stripe(0).unwrap();
     let mut poison_target = poison_lease.take_target().unwrap();
-    poison_target
-        .take(PlaneId::Y)
-        .unwrap()
-        .u8_samples_mut()
-        .unwrap()
-        .fill(0xde);
+    let mut poison_plane = poison_target.take(PlaneId::Y).unwrap();
+    let (width, stride) = (poison_plane.width(), poison_plane.stride());
+    for row in poison_plane.u8_samples_mut().unwrap().chunks_mut(stride) {
+        row[..width].fill(0xde);
+    }
+    drop(poison_plane);
     drop(poison_target);
     drop(poison_lease);
 
@@ -572,11 +573,12 @@ fn direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write() {
     }
     assert!(
         match output {
-            StripeOutputPlane::DirectU8(mut target) => target
-                .u8_samples_mut()
-                .unwrap()
-                .iter()
-                .all(|&sample| sample != 0xde),
+            StripeOutputPlane::DirectU8(mut target) => {
+                let (width, stride) = (target.width(), target.stride());
+                let samples = target.u8_samples_mut().unwrap();
+                let mut rows = samples.chunks(stride).map(|row| &row[..width]);
+                rows.all(|row| row.iter().all(|&sample| sample != 0xde))
+            }
             StripeOutputPlane::U16(_) => false,
         },
         "omitted direct-u8 LR block write escaped poison oracle"

@@ -201,10 +201,9 @@ fn decode_hashes(bytes: &[u8], threads: usize) -> Vec<String> {
     let context =
         crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(threads)))
             .expect("context");
-    let plan = context.plan_bytes(bytes, options).expect("plan");
     context
         .pool()
-        .install(|| crate::pipeline::decode_frames_from_plan(bytes, &options, &plan))
+        .install(|| crate::pipeline::decode_frames_from_plan(bytes, &options))
         .expect("decode")
         .iter()
         .map(|output| match output.ready_frame().expect("ready") {
@@ -269,12 +268,9 @@ fn corrupted_tile_payload_error(bytes: &[u8], threads: usize) -> crate::DecodeEr
     let context =
         crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(threads)))
             .expect("context");
-    let plan = context
-        .plan_bytes(&corrupted, options)
-        .expect("length-preserving tile-payload corruption remains planner-valid");
     context
         .pool()
-        .install(|| crate::pipeline::decode_frames_from_plan(&corrupted, &options, &plan))
+        .install(|| crate::pipeline::decode_frames_from_plan(&corrupted, &options))
         .err()
         .expect("planner-valid tile payload corruption must fail during decode")
 }

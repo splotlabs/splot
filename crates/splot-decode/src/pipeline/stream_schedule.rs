@@ -8,14 +8,13 @@ use super::{PipelineFrameRate, unsupported, unsupported_at};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
-use splot_core::stream::BitstreamFormat;
 use splot_core::types::ObuType;
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, recycle, runtime_obus};
 use crate::bitstream::stream_plan::CandidateScan;
 use crate::error::Result;
 use crate::support::capability::missing_capability_message;
-use crate::{DecodeLimits, DecodePlannedObu, DecodeStreamPlan};
+use crate::{DecodeLimits, DecodePlannedObu};
 
 /// The temporal units the frame loop reads frame units from, one at a time.
 pub(super) struct RuntimeStream<'a> {
@@ -60,19 +59,6 @@ impl<'a> RuntimeStream<'a> {
         self.current
             .as_ref()
             .map_or_else(crate::DataProps::default, |unit| unit.props)
-    }
-
-    /// The plan the current unit's candidates are checked against.
-    pub(super) fn plan(&self) -> &'static DecodeStreamPlan {
-        let ivf = self
-            .current
-            .as_ref()
-            .is_some_and(|unit| unit.ivf_frame.is_some());
-        DecodeStreamPlan::runtime(if ivf {
-            BitstreamFormat::Ivf
-        } else {
-            BitstreamFormat::AnnexB
-        })
     }
 
     /// Makes the next unit current; `false` at end of input.

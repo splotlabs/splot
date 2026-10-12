@@ -124,7 +124,8 @@ Generated status markdown is not committed; render it on demand.
 - Every `.rs` file starts with the PolyForm SPDX header.
 - Rust source files target <=1000 physical lines; hard cap is 2500.
 - `unsafe_code = "forbid"` workspace-wide, except the reviewed blocks in
-  `splot-decode` and the `splot-capi` C ABI (`deny` plus module `allow`).
+  `splot-decode`, the `splot-recon` plane allocator and the `splot-capi` C ABI
+  (`deny` plus module `allow`).
 
 ## AV2 and Diagnostics
 

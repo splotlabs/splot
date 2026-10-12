@@ -2268,9 +2268,10 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
         predicted.resize(prediction_len, 0);
         let result: Result<()> = (|| {
             {
+                let source = workspace.plane(plane)?;
                 let view = ReferencePlaneView::from_strided(
-                    workspace.plane(plane)?.rows(first_row, first_row + rows)?,
-                    storage.width(),
+                    source.rows(first_row, first_row + rows)?,
+                    source.stride_samples(),
                     storage.width(),
                     rows,
                 )?;

@@ -43,7 +43,22 @@ fn workspace_keeps_mi_storage_separate_from_header_size_and_crop() {
     let frame = workspace.freeze().unwrap();
     assert_eq!(frame.y().storage_size(), size(272, 272));
     assert_eq!(frame.y().visible_rect(), visible);
-    assert_eq!(frame.y().samples()[271 * 272 + 271], 41);
+    assert_eq!(
+        frame.y().samples()[271 * frame.y().stride_samples() + 271],
+        41
+    );
+}
+
+/// The storage rows of `plane`, without the stride padding.
+fn packed<T: ReconSample>(workspace: &CurrentFrameWorkspace<T>, plane: PlaneId) -> Vec<T> {
+    let plane = workspace.plane(plane).unwrap();
+    let width = plane.storage_size().width();
+    plane
+        .samples()
+        .chunks(plane.stride_samples())
+        .flat_map(|row| &row[..width])
+        .copied()
+        .collect()
 }
 
 fn size(width: usize, height: usize) -> PlaneSize {
@@ -196,10 +211,7 @@ fn a_filled_workspace_overwrites_a_recycled_buffer_whole() {
     let filled = CurrentFrameWorkspace::<u8>::new(info, 7).unwrap();
     let recycled = CurrentFrameWorkspace::<u8>::with_planes(info, Some(7), &mut retired).unwrap();
 
-    assert_eq!(
-        recycled.samples(PlaneId::Y).unwrap(),
-        filled.samples(PlaneId::Y).unwrap()
-    );
+    assert_eq!(packed(&recycled, PlaneId::Y), packed(&filled, PlaneId::Y));
 }
 
 #[test]
@@ -260,7 +272,7 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
     let expected = [
         3, 3, 3, 3, 3, 3, 10, 11, 12, 3, 3, 20, 21, 22, 3, 3, 3, 3, 3, 3,
     ];
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &expected);
+    assert_eq!(packed(&workspace, PlaneId::Y), &expected);
 
     assert!(
         CurrentFrameSurface::Frame(&mut workspace)
@@ -268,7 +280,7 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
             .unwrap()
             .is_none()
     );
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &expected);
+    assert_eq!(packed(&workspace, PlaneId::Y), &expected);
 
     let mut wide =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Ten, 5, 4), 7).unwrap();
@@ -295,7 +307,7 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
         .unwrap();
     assert_eq!(written, Some(2));
     drop(split);
-    let samples = workspace.samples(PlaneId::Y).unwrap();
+    let samples = packed(&workspace, PlaneId::Y);
     assert_eq!(samples[6], 30);
     assert_eq!(samples[11], 40);
 }
@@ -387,7 +399,7 @@ fn rectangular_surface_reports_plane_global_sample_index() {
         surface.write_rect(PlaneId::Y, rect(4, 1, 2, 2), &[1, 2, 3, 300], 2),
         Err(ReconError::SampleOutOfRange {
             plane: PlaneId::Y,
-            sample_index: 21,
+            sample_index: 69,
             value: 300,
             max: 255,
         })
@@ -441,7 +453,7 @@ where
         .add_residual_rect_block(PlaneId::Y, 0, 0, rect_block(2, 2), &residual)
         .unwrap();
 
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &expected);
+    assert_eq!(packed(&workspace, PlaneId::Y), &expected);
     assert_eq!(expected[0].to_u16(), 0);
     assert_eq!(expected[4].to_u16(), bit_depth.max_sample());
 }
@@ -497,8 +509,8 @@ fn assert_adjusted_transform_surface_matches_expanded(params: InverseTransform2d
         )
         .unwrap();
     assert_eq!(
-        adjusted_frame.samples(PlaneId::Y).unwrap(),
-        expanded_frame.samples(PlaneId::Y).unwrap()
+        packed(&adjusted_frame, PlaneId::Y),
+        packed(&expanded_frame, PlaneId::Y)
     );
 }
 
@@ -568,10 +580,7 @@ fn constant_residual_matches_block_for_clipped_frame_surface() {
         .add_constant_residual_rect_block(PlaneId::Y, 6, 65, rect_block(2, 2), 7)
         .unwrap();
 
-    assert_eq!(
-        frame.samples(PlaneId::Y).unwrap(),
-        block.samples(PlaneId::Y).unwrap()
-    );
+    assert_eq!(packed(&frame, PlaneId::Y), packed(&block, PlaneId::Y));
 }
 
 #[test]
@@ -596,7 +605,8 @@ fn surface_add_residual_rejects_inputs_atomically() {
             .all(|&sample| sample == 20)
     );
 
-    workspace.as_frame_mut().unwrap().y_mut().samples_mut()[15] = 300;
+    let stride = workspace.plane(PlaneId::Y).unwrap().stride_samples();
+    workspace.as_frame_mut().unwrap().y_mut().samples_mut()[3 * stride + 3] = 300;
     assert!(matches!(
         CurrentFrameSurface::Frame(&mut workspace).add_residual_rect_block(
             PlaneId::Y,
@@ -613,7 +623,7 @@ fn surface_add_residual_rejects_inputs_atomically() {
     ));
     let mut expected = [20; 16];
     expected[15] = 300;
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), expected);
+    assert_eq!(packed(&workspace, PlaneId::Y), expected);
 }
 
 #[test]
@@ -623,9 +633,9 @@ fn workspace_allocates_yuv420_planes_from_frame_info() {
 
     assert_eq!(workspace.info().pixel_format(), PixelFormat::Yuv420);
     assert_eq!(luma.storage_size(), size(5, 3));
-    assert_eq!(luma.stride_samples(), 5);
-    assert_eq!(luma.required_samples(), 15);
-    assert_eq!(luma.allocation_bytes(), 15);
+    assert_eq!(luma.stride_samples(), crate::PLANE_ALIGNMENT);
+    assert_eq!(luma.required_samples(), 3 * crate::PLANE_ALIGNMENT);
+    assert_eq!(luma.allocation_bytes(), 3 * crate::PLANE_ALIGNMENT);
     assert_eq!(
         workspace.plane(PlaneId::U).unwrap().storage_size(),
         size(3, 2)
@@ -634,8 +644,8 @@ fn workspace_allocates_yuv420_planes_from_frame_info() {
         workspace.plane(PlaneId::V).unwrap().visible_rect(),
         rect(0, 0, 3, 2)
     );
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[7_u8; 15]);
-    assert_eq!(workspace.samples(PlaneId::U).unwrap(), &[7_u8; 6]);
+    assert_eq!(packed(&workspace, PlaneId::Y), &[7_u8; 15]);
+    assert_eq!(packed(&workspace, PlaneId::U), &[7_u8; 6]);
 }
 
 #[test]
@@ -700,7 +710,7 @@ fn workspace_rejects_overflowing_required_sample_count() {
     assert!(matches!(
         err,
         ReconError::ArithmeticOverflow {
-            context: "current-frame workspace plane required sample count"
+            context: "current-frame workspace plane stride"
         }
     ));
 }
@@ -736,7 +746,7 @@ fn workspace_rect_writes_are_bounded_and_preserve_other_samples() {
         .unwrap();
 
     assert_eq!(
-        workspace.samples(PlaneId::Y).unwrap(),
+        packed(&workspace, PlaneId::Y),
         &[1, 1, 1, 1, 1, 9, 8, 1, 1, 7, 6, 1]
     );
     let rows: Vec<&[u8]> = workspace
@@ -779,7 +789,7 @@ fn workspace_rect_writes_reject_invalid_shape_and_bounds() {
         .fill_rect(PlaneId::Y, rect(3, 0, 2, 1), 4)
         .unwrap();
     assert_eq!(
-        workspace.samples(PlaneId::Y).unwrap(),
+        packed(&workspace, PlaneId::Y),
         &[0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     );
     assert!(matches!(
@@ -807,7 +817,7 @@ fn workspace_write_rect_block_clamps_frame_edge_overhang_to_in_frame_samples() {
         .unwrap();
 
     assert_eq!(
-        workspace.samples(PlaneId::Y).unwrap(),
+        packed(&workspace, PlaneId::Y),
         &[
             0, 0, 0, 0, 0, 0, // row 0
             0, 0, 0, 0, 0, 0, // row 1
@@ -931,7 +941,7 @@ fn workspace_copy_rect_within_plane_copies_luma_samples() {
         .unwrap();
 
     assert_eq!(
-        workspace.samples(PlaneId::Y).unwrap(),
+        packed(&workspace, PlaneId::Y),
         &[
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 15, 16, 17, 5, 6
         ]
@@ -950,7 +960,7 @@ fn workspace_copy_rect_within_plane_snapshots_overlapping_source() {
         .copy_rect_within_plane(PlaneId::Y, rect(0, 0, 4, 1), rect(1, 0, 4, 1))
         .unwrap();
 
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[0, 0, 1, 2, 3, 5]);
+    assert_eq!(packed(&workspace, PlaneId::Y), &[0, 0, 1, 2, 3, 5]);
 }
 
 #[test]
@@ -965,7 +975,7 @@ fn workspace_copy_rect_within_plane_rejects_invalid_inputs_without_mutation() {
         )
         .unwrap();
     // splot-copy-ok: test snapshots workspace samples to prove invalid IntrABC copies are fail-atomic.
-    let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
+    let before = packed(&workspace, PlaneId::Y);
 
     assert!(matches!(
         workspace.copy_rect_within_plane(PlaneId::Y, rect(0, 0, 2, 2), rect(2, 0, 1, 4)),
@@ -989,7 +999,7 @@ fn workspace_copy_rect_within_plane_rejects_invalid_inputs_without_mutation() {
         })
     ));
 
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before.as_slice());
+    assert_eq!(packed(&workspace, PlaneId::Y), before.as_slice());
 }
 
 #[test]
@@ -997,13 +1007,13 @@ fn workspace_copy_rect_within_plane_rejects_missing_plane() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 3).unwrap();
     // splot-copy-ok: test snapshots workspace samples to prove missing-plane IntrABC copy is fail-atomic.
-    let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
+    let before = packed(&workspace, PlaneId::Y);
 
     assert!(matches!(
         workspace.copy_rect_within_plane(PlaneId::U, rect(0, 0, 1, 1), rect(1, 1, 1, 1)),
         Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
     ));
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before.as_slice());
+    assert_eq!(packed(&workspace, PlaneId::Y), before.as_slice());
 }
 
 #[test]
@@ -1023,7 +1033,7 @@ fn workspace_write_rejects_out_of_range_samples_without_partial_write() {
             max: 255
         }
     ));
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[1, 1, 1, 1]);
+    assert_eq!(packed(&workspace, PlaneId::Y), &[1, 1, 1, 1]);
 }
 
 #[test]
@@ -1068,8 +1078,8 @@ fn packed_and_strided_write_sources_agree_on_range_and_error() {
             ReconError::SampleOutOfRange { value: 300, .. }
         ));
         assert_eq!(
-            from_packed.samples(PlaneId::Y).unwrap(),
-            from_strided.samples(PlaneId::Y).unwrap(),
+            self::packed(&from_packed, PlaneId::Y),
+            self::packed(&from_strided, PlaneId::Y),
         );
         assert!(
             from_packed
@@ -1175,7 +1185,7 @@ fn workspace_subsampled_dc_top_left_uses_midpoint_without_edges() {
         .predict_intra_dc_subsampled_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
         .unwrap();
 
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[512; 16]);
+    assert_eq!(packed(&workspace, PlaneId::Y), &[512; 16]);
 }
 
 #[test]
@@ -1271,7 +1281,7 @@ fn workspace_rectangular_and_ibp_dc_top_left_use_midpoint_without_edges() {
 
         predict(&mut workspace, PlaneId::Y, 0, 0, rect_block(2, 2)).unwrap();
 
-        assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[128; 16]);
+        assert_eq!(packed(&workspace, PlaneId::Y), &[128; 16]);
     }
 }
 

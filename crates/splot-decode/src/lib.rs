@@ -72,7 +72,9 @@ pub use hash_report::{
 pub use runtime::DecodeRuntimeConfig;
 pub use splot_parallel::{FrameDelay, ThreadCount};
 pub use splot_recon::Y4mFrameRate;
-pub use splot_recon::{BitDepth, PixelFormat, PlaneId, PlaneRect, PlaneRef, ReconSample};
+pub use splot_recon::{
+    BitDepth, PLANE_ALIGNMENT, PixelFormat, PlaneId, PlaneRect, PlaneRef, ReconSample,
+};
 pub use stream_plan::{
     DecodeIvfFrameContext, DecodeLayerSelection, DecodeObuSourceKind, DecodePlannedObu,
     DecodePlannedObuRole, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamInput,

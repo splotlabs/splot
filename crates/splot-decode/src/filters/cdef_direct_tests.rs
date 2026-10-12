@@ -18,12 +18,11 @@ use crate::test_support::yuv420_workspace;
 
 fn poison_u16_target(target: &mut DirectStripeTarget, poison: u16) {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        target
-            .take(plane)
-            .unwrap()
-            .u16_samples_mut()
-            .unwrap()
-            .fill(poison);
+        let mut plane = target.take(plane).unwrap();
+        let (width, stride) = (plane.width(), plane.stride());
+        for row in plane.u16_samples_mut().unwrap().chunks_mut(stride) {
+            row[..width].fill(poison);
+        }
     }
 }
 
@@ -63,9 +62,9 @@ fn patterned_10bit_workspace(
 
 fn cdef_frame_samples(frame: &CdefFrame<'_, u16>) -> [Vec<u16>; 3] {
     [
-        frame.filtered_y.samples().to_vec(),
-        frame.filtered_u.as_ref().unwrap().samples().to_vec(),
-        frame.filtered_v.as_ref().unwrap().samples().to_vec(),
+        crate::test_support::stripe_rows(&frame.filtered_y),
+        crate::test_support::stripe_rows(frame.filtered_u.as_ref().unwrap()),
+        crate::test_support::stripe_rows(frame.filtered_v.as_ref().unwrap()),
     ]
 }
 
@@ -162,11 +161,11 @@ fn direct_cdef_10bit(
         .zip(&samples)
     {
         let actual = match plane {
-            PlaneId::Y => frame.y().samples(),
-            PlaneId::U => frame.u().unwrap().samples(),
-            PlaneId::V => frame.v().unwrap().samples(),
+            PlaneId::Y => crate::test_support::packed(frame.y()),
+            PlaneId::U => crate::test_support::packed(frame.u().unwrap()),
+            PlaneId::V => crate::test_support::packed(frame.v().unwrap()),
         };
-        assert_eq!(actual, expected);
+        assert_eq!(&actual, expected);
     }
     samples
 }
@@ -387,20 +386,18 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
     drop(frame);
     assert!(lease.submit());
     let frame = progress.freeze_workspace(core::convert::identity).unwrap();
-    assert!(frame.y().samples().iter().all(|&sample| sample == 91));
     assert!(
-        frame
-            .u()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.y())
             .iter()
             .all(|&sample| sample == 91)
     );
     assert!(
-        frame
-            .v()
-            .unwrap()
-            .samples()
+        crate::test_support::packed(frame.u().unwrap())
+            .iter()
+            .all(|&sample| sample == 91)
+    );
+    assert!(
+        crate::test_support::packed(frame.v().unwrap())
             .iter()
             .all(|&sample| sample == 91)
     );
@@ -440,14 +437,13 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
     let mut lease = progress.direct_stripe(0).unwrap();
     let mut target = lease.take_target().unwrap();
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let mut target = target.take(plane).unwrap();
+        let (width, stride) = (target.width(), target.stride());
+        let samples = target.u16_samples_mut().unwrap();
         assert!(
-            target
-                .take(plane)
-                .unwrap()
-                .u16_samples_mut()
-                .unwrap()
-                .iter()
-                .all(|&sample| sample == 0xdead),
+            samples
+                .chunks(stride)
+                .all(|row| row[..width].iter().all(|&sample| sample == 0xdead)),
             "plane {plane:?} changed before V preflight failed"
         );
     }

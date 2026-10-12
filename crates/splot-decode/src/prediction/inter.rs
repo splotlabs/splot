@@ -33,10 +33,7 @@ use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::RefSlots;
 use crate::reference::buffer::ReferenceMetadata;
-use crate::{
-    DecodeIvfFrameContext, DecodeOptions, DecodePlannedObu, DecodeSourceIssue, DecodeStreamPlan,
-    Result,
-};
+use crate::{DecodeIvfFrameContext, DecodeOptions, DecodePlannedObu, DecodeSourceIssue, Result};
 
 macro_rules! inter_allocation {
     ($context:literal $(,)?) => {
@@ -84,7 +81,6 @@ fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn walk_inter_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
-    plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'_>,
     frame_envelope: ObuEnvelope<'_>,
@@ -154,7 +150,6 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         ref_frame_idx,
         quantizer_deltas,
     } = frame_walk::derive_inter_walk_prologue(
-        plan,
         candidate,
         bytes,
         &core,

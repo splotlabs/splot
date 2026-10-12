@@ -209,7 +209,10 @@ fn u8_direct_stripe_initializes_contiguous_u16_source() {
     let frame = progress
         .freeze_workspace(core::convert::identity)
         .expect("frozen frame");
-    assert_eq!(frame.y().samples(), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        crate::test_support::packed(frame.y()),
+        [1, 2, 3, 4, 5, 6, 7, 8]
+    );
 }
 
 #[test]
@@ -247,7 +250,10 @@ fn u8_direct_stripe_initializes_strided_u8_rows() {
     let frame = progress
         .freeze_workspace(core::convert::identity)
         .expect("frozen frame");
-    assert_eq!(frame.y().samples(), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        crate::test_support::packed(frame.y()),
+        [1, 2, 3, 4, 5, 6, 7, 8]
+    );
 }
 
 #[test]
@@ -325,7 +331,7 @@ fn u8_direct_stripe_flushes_checked_filter_samples() {
         .expect("frozen frame");
     let mut expected: Vec<u8> = (0_u8..32).collect();
     expected[7] = 201;
-    assert_eq!(frame.y().samples(), expected);
+    assert_eq!(crate::test_support::packed(frame.y()), expected);
 }
 
 #[test]
@@ -399,20 +405,18 @@ fn completed_direct_u8_and_staged_fallback_planes_publish_together() {
     let frame = progress
         .freeze_workspace(core::convert::identity)
         .expect("frozen frame");
-    assert!(frame.y().samples().iter().all(|&sample| sample == 91));
     assert!(
-        frame
-            .u()
-            .expect("U plane")
-            .samples()
+        crate::test_support::packed(frame.y())
+            .iter()
+            .all(|&sample| sample == 91)
+    );
+    assert!(
+        crate::test_support::packed(frame.u().expect("U plane"))
             .iter()
             .all(|&sample| sample == 77)
     );
     assert!(
-        frame
-            .v()
-            .expect("V plane")
-            .samples()
+        crate::test_support::packed(frame.v().expect("V plane"))
             .iter()
             .all(|&sample| sample == 91)
     );

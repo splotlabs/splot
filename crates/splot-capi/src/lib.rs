@@ -115,16 +115,22 @@ pub struct SplotColor {
 #[repr(C)]
 #[derive(Debug)]
 pub struct SplotPicture {
-    /// Y, U and V planes at their visible top-left sample. 8-bit pictures
-    /// hold one byte per sample, 10-bit pictures one `uint16_t` per sample in
-    /// the low bits. U and V are null for [`SplotPixelLayout::I400`].
+    /// Y, U and V planes at their first stored sample, 64-byte aligned.
+    /// The visible area starts `crop_top` rows and `crop_left` samples in
+    /// (both shifted right by the chroma subsampling for U and V). 8-bit
+    /// pictures hold one byte per sample, 10-bit pictures one `uint16_t` per
+    /// sample in the low bits. U and V are null for [`SplotPixelLayout::I400`].
     pub data: [*const c_void; 3],
-    /// Bytes from one row to the next, for each plane.
+    /// Bytes from one row to the next, for each plane; a multiple of 64.
     pub stride: [isize; 3],
     /// Visible width in luma samples.
     pub width: u32,
     /// Visible height in luma samples.
     pub height: u32,
+    /// Luma samples between the left of `data` and the visible area.
+    pub crop_left: u32,
+    /// Luma rows between the top of `data` and the visible area.
+    pub crop_top: u32,
     /// Bits per sample: 8 or 10.
     pub bit_depth: u32,
     /// Chroma layout.
@@ -325,6 +331,8 @@ const fn empty_picture() -> SplotPicture {
         stride: [0; 3],
         width: 0,
         height: 0,
+        crop_left: 0,
+        crop_top: 0,
         bit_depth: 0,
         layout: SplotPixelLayout::I400,
         color: SplotColor {
@@ -347,8 +355,8 @@ fn c_picture(picture: Picture) -> SplotPicture {
     let mut out = empty_picture();
     for (index, plane) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().enumerate() {
         (out.data[index], out.stride[index]) = match picture.plane(plane) {
-            Some(PictureSamples::Eight(plane)) => visible_origin(plane),
-            Some(PictureSamples::Ten(plane)) => visible_origin(plane),
+            Some(PictureSamples::Eight(plane)) => storage_origin(plane),
+            Some(PictureSamples::Ten(plane)) => storage_origin(plane),
             None => (ptr::null(), 0),
         };
     }
@@ -360,6 +368,13 @@ fn c_picture(picture: Picture) -> SplotPicture {
     let props = picture.props();
     out.width = picture.width() as u32;
     out.height = picture.height() as u32;
+    let crop = match picture.plane(PlaneId::Y) {
+        Some(PictureSamples::Eight(luma)) => Some(luma.visible_rect()),
+        Some(PictureSamples::Ten(luma)) => Some(luma.visible_rect()),
+        None => None,
+    };
+    out.crop_left = crop.map_or(0, |crop| crop.x() as u32);
+    out.crop_top = crop.map_or(0, |crop| crop.y() as u32);
     out.bit_depth = match picture.bit_depth() {
         BitDepth::Eight => 8,
         BitDepth::Ten => 10,
@@ -385,13 +400,10 @@ fn c_picture(picture: Picture) -> SplotPicture {
     out
 }
 
-/// The address of `plane`'s visible top-left sample and its stride in bytes.
-fn visible_origin<T: splot_decode::ReconSample>(plane: PlaneRef<'_, T>) -> (*const c_void, isize) {
-    let rect = plane.visible_rect();
-    let origin = rect.y() * plane.stride_samples() + rect.x();
-    let samples = plane.samples().get(origin..).unwrap_or_default();
+/// The address of `plane`'s first stored sample and its stride in bytes.
+fn storage_origin<T: splot_decode::ReconSample>(plane: PlaneRef<'_, T>) -> (*const c_void, isize) {
     (
-        samples.as_ptr().cast(),
+        plane.samples().as_ptr().cast(),
         (plane.stride_samples() * size_of::<T>()) as isize,
     )
 }
