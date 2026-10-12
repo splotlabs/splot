@@ -68,7 +68,7 @@ impl<T> core::ops::DerefMut for PlaneBuf<T> {
 
 /// An empty plane buffer; it allocates nothing.
 #[must_use]
-pub const fn plane_buf<T>() -> PlaneBuf<T> {
+pub fn plane_buf<T>() -> PlaneBuf<T> {
     PlaneBuf(Vec::new_in(PlaneAlloc))
 }
 

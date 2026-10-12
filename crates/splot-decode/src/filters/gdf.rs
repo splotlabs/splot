@@ -625,7 +625,7 @@ fn uniform_class_rows<const W: usize, const WIN: usize, const ZERO_WEIGHTS: u64>
 fn base_row_pair<const W: usize>(
     base_luma: &[u16],
     start: usize,
-    frame_width: usize,
+    stride: usize,
 ) -> Result<[[u16; W]; 2]> {
     let row = |start: usize| {
         exact_slice(base_luma, start, W)
@@ -633,7 +633,7 @@ fn base_row_pair<const W: usize>(
             .copied()
             .ok_or_else(gdf_state_error)
     };
-    Ok([row(start)?, row(start + frame_width)?])
+    Ok([row(start)?, row(start + stride)?])
 }
 
 /// The `W` samples from column `x` of both output rows.

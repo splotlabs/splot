@@ -22,7 +22,7 @@ pub struct Plane<T: ReconSample> {
 
 impl<T: ReconSample> Plane<T> {
     /// A plane that holds no samples and allocates nothing.
-    pub(crate) const fn vacant() -> Self {
+    pub(crate) fn vacant() -> Self {
         Self {
             storage_size: crate::PlaneSize::EMPTY,
             stride_samples: 0,
