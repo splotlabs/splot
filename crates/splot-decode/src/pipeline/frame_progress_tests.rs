@@ -491,8 +491,13 @@ fn frontier_rows_lend_only_rows_no_stripe_or_reader_holds() {
         .fill(99);
     assert!(lease.submit());
     assert!(
-        rows.append_rows(splot_recon::PlaneId::Y, 12, 20, &mut Vec::new())
-            .is_none(),
+        rows.append_rows(
+            splot_recon::PlaneId::Y,
+            12,
+            20,
+            &mut splot_recon::plane_buf()
+        )
+        .is_none(),
         "a published row is not the frontier's"
     );
     assert!(

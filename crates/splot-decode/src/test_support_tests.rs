@@ -88,10 +88,11 @@ pub(crate) fn frontier_plane<T: ReconSample>(
     plane: PlaneId,
 ) -> Option<(Vec<T>, usize)> {
     let (width, height) = rows.plane_size(plane)?;
-    let mut samples = Vec::new();
-    if rows.append_rows(plane, 0, height, &mut samples).is_none() {
-        samples = rows.with_plane_rows_mut(plane, 0, height, |rows, _, _, _, _| rows.to_vec())?;
+    let mut samples = splot_recon::plane_buf();
+    if rows.append_rows(plane, 0, height, &mut samples).is_some() {
+        return Some((samples.to_vec(), width));
     }
+    let samples = rows.with_plane_rows_mut(plane, 0, height, |rows, _, _, _, _| rows.to_vec())?;
     Some((samples, width))
 }
 

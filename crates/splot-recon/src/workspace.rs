@@ -1438,7 +1438,7 @@ pub struct CurrentFramePlane<T: ReconSample> {
     visible_rect: PlaneRect,
     /// The first plane row `samples` holds; a band stores no row above it.
     origin_y: usize,
-    samples: Vec<T>,
+    samples: crate::PlaneBuf<T>,
     pool: Option<Arc<crate::PlanePool>>,
 }
 
@@ -1458,7 +1458,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         storage_size: PlaneSize,
         visible_rect: PlaneRect,
         fill: Option<T>,
-        mut samples: Vec<T>,
+        mut samples: crate::PlaneBuf<T>,
         pool: Option<&Arc<crate::PlanePool>>,
     ) -> Result<Self> {
         visible_rect.ensure_within(storage_size).map_err(|_| {
@@ -1490,8 +1490,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             samples = pool.take(required_samples);
         }
         samples.truncate(required_samples);
+        let missing = required_samples.saturating_sub(samples.len());
         samples
-            .try_reserve_exact(required_samples.saturating_sub(samples.len()))
+            .try_reserve_exact(missing)
             .map_err(|_| ReconError::WorkspaceAllocationFailed {
                 plane,
                 context: "sample buffer",
@@ -1816,7 +1817,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
     fn freeze(mut self) -> Result<Plane<T>> {
         let stride_samples = self.stride_samples();
-        Plane::from_vec(
+        Plane::from_buf(
             self.storage_size,
             stride_samples,
             self.visible_rect,

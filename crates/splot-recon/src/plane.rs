@@ -5,7 +5,7 @@
 
 use core::mem;
 
-use crate::{PlaneRect, PlaneRef, PlaneSize, ReconError, ReconSample, Result};
+use crate::{PlaneBuf, PlaneRect, PlaneRef, PlaneSize, ReconError, ReconSample, Result};
 
 /// Immutable owned decoded plane with explicit storage and visible geometry.
 ///
@@ -17,7 +17,7 @@ pub struct Plane<T: ReconSample> {
     storage_size: PlaneSize,
     stride_samples: usize,
     visible_rect: PlaneRect,
-    samples: Vec<T>,
+    samples: PlaneBuf<T>,
 }
 
 impl<T: ReconSample> Plane<T> {
@@ -27,7 +27,7 @@ impl<T: ReconSample> Plane<T> {
             storage_size: crate::PlaneSize::EMPTY,
             stride_samples: 0,
             visible_rect: crate::PlaneRect::EMPTY,
-            samples: Vec::new(),
+            samples: crate::plane_buf(),
         }
     }
 
@@ -42,11 +42,33 @@ impl<T: ReconSample> Plane<T> {
     /// Returns a [`ReconError`] if the stride is too small, arithmetic
     /// overflows, `samples.len()` does not match the derived backing length, or
     /// `visible_rect` falls outside `storage_size`.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers hand over plain Vec storage; it is copied into aligned storage"
+    )]
     pub fn from_vec(
         storage_size: PlaneSize,
         stride_samples: usize,
         visible_rect: PlaneRect,
         samples: Vec<T>,
+    ) -> Result<Self> {
+        Self::from_buf(
+            storage_size,
+            stride_samples,
+            visible_rect,
+            crate::plane_buf_from(&samples),
+        )
+    }
+
+    /// [`Self::from_vec`] over aligned plane storage, without a copy.
+    ///
+    /// # Errors
+    /// See [`Self::from_vec`].
+    pub fn from_buf(
+        storage_size: PlaneSize,
+        stride_samples: usize,
+        visible_rect: PlaneRect,
+        samples: PlaneBuf<T>,
     ) -> Result<Self> {
         if stride_samples < storage_size.width() {
             return Err(ReconError::StrideTooSmall {
@@ -119,7 +141,7 @@ impl<T: ReconSample> Plane<T> {
     }
 
     /// Consumes the plane and returns the complete backing sample buffer.
-    pub fn into_samples(self) -> Vec<T> {
+    pub fn into_samples(self) -> PlaneBuf<T> {
         self.samples
     }
 

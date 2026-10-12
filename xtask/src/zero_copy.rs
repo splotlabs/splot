@@ -52,6 +52,7 @@ const BANNED_BYTE_CRATES: &[&str] = &[
 /// Every one still needs a safety rationale beside each use, and every other
 /// media module remains under the workspace-wide unsafe ban enforced below.
 const AUDITED_UNSAFE_MEDIA_MODULES: &[&str] = &[
+    "crates/splot-recon/src/plane_buf.rs",
     "crates/splot-decode/src/filters/source.rs",
     "crates/splot-decode/src/pipeline/frame_progress.rs",
 ];

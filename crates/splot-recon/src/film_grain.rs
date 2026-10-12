@@ -92,13 +92,13 @@ fn apply_grain<T: ReconSample>(
 }
 
 struct GrainDestination<T: ReconSample> {
-    samples: Vec<T>,
+    samples: crate::PlaneBuf<T>,
 }
 
 impl<T: ReconSample> GrainDestination<T> {
     fn from_visible(plane: &Plane<T>) -> Self {
-        let mut samples =
-            Vec::with_capacity(plane.visible_size().width() * plane.visible_size().height());
+        let mut samples = crate::plane_buf();
+        samples.reserve_exact(plane.visible_size().width() * plane.visible_size().height());
         for row in plane.visible_rows() {
             samples.extend_from_slice(row); // splot-copy-ok: final film-grain output materialization
         }
@@ -122,7 +122,7 @@ fn plane_from_visible<T: ReconSample>(
 ) -> Result<Plane<T>> {
     let size = PlaneSize::new(width, height)?;
     let rect = PlaneRect::new(0, 0, width, height)?;
-    Plane::from_vec(size, width, rect, destination.samples)
+    Plane::from_buf(size, width, rect, destination.samples)
 }
 
 #[allow(clippy::too_many_arguments)]

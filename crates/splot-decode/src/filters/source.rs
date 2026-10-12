@@ -267,7 +267,7 @@ impl<'a, T: ReconSample> DeblockedPlanes<'a, T> {
 /// stripe above may already have overwritten them in the frame.
 #[derive(Default)]
 pub(crate) struct DeblockedWindow<T> {
-    planes: [Vec<T>; 3],
+    planes: [splot_recon::PlaneBuf<T>; 3],
     rows: [Option<(usize, usize)>; 3],
     sizes: [(usize, usize); 3],
 }

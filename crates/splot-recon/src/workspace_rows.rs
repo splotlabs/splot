@@ -154,7 +154,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         storage_size: PlaneSize,
         visible_rect: PlaneRect,
         rows: usize,
-        mut samples: Vec<T>,
+        mut samples: crate::PlaneBuf<T>,
     ) -> Result<Self> {
         let len = rows
             .saturating_add(BAND_EDGE_ROWS)
@@ -164,8 +164,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
                 context: "current-frame band sample count",
             })?;
         samples.truncate(len);
+        let missing = len - samples.len();
         samples
-            .try_reserve_exact(len - samples.len())
+            .try_reserve_exact(missing)
             .map_err(|_| ReconError::WorkspaceAllocationFailed {
                 plane,
                 context: "band sample buffer",

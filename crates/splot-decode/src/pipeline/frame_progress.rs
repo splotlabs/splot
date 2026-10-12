@@ -897,7 +897,7 @@ impl<T: ReconSample> FrontierRows<T> {
         plane: PlaneId,
         start: usize,
         end: usize,
-        out: &mut Vec<T>,
+        out: &mut splot_recon::PlaneBuf<T>,
     ) -> Option<()> {
         let scale = 1 << self.shift(plane);
         if start < self.released_luma_rows.div_ceil(scale)
