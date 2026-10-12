@@ -56,7 +56,7 @@ const SPDX_COPYRIGHT_PREFIX: &str = "// SPDX-FileCopyrightText: ";
 /// adding a workspace crate that should not gate here, or it joins the
 /// threshold scope.
 const SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX: &str =
-    r"crates/splot-(core|parallel|recon|decode|encode|cli)/|(^|/)xtask/|(^|/)fuzz/";
+    r"crates/splot-(core|parallel|recon|decode|encode|cli|capi)/|(^|/)xtask/|(^|/)fuzz/";
 
 /// Committed AV2 spec mirrors, each pinned to `(dir, pdf_sha256, checksums_sha256)`.
 ///
@@ -418,8 +418,55 @@ fn run_ci() -> Result<()> {
     fixtures::check_fixtures(&root)?;
     dupehound::check_duplication(&root)?;
     doc_budget::check_doc_budget(&root)?;
+    check_capi_example(&root)?;
 
     eprintln!("ci: all checks passed");
+    Ok(())
+}
+
+/// Builds the C ABI example against the shared library and checks that it
+/// decodes a conformance vector to the committed AVM raw output.
+fn check_capi_example(root: &Path) -> Result<()> {
+    run_cargo(&["build", "-p", "splot-capi", "--locked"])?;
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), PathBuf::from)
+        .join("debug");
+    let scratch = std::env::temp_dir().join(format!("splot-capi-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch)?;
+    let program = scratch.join("decode");
+    let output = scratch.join("decoded.raw");
+    let crate_dir = root.join("crates/splot-capi");
+    let vector = root.join("tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal");
+    let path = |path: &Path| path.to_string_lossy().into_owned();
+    run_program(
+        &std::env::var("CC").unwrap_or_else(|_| "cc".to_owned()),
+        &[
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            &path(&crate_dir.join("examples/decode.c")),
+            "-I",
+            &path(&crate_dir.join("include")),
+            "-L",
+            &path(&target),
+            "-lsplot_capi",
+            &format!("-Wl,-rpath,{}", path(&target)),
+            "-o",
+            &path(&program),
+        ],
+    )?;
+    run_program(
+        &path(&program),
+        &[&path(&vector.with_extension("ivf")), &path(&output)],
+    )?;
+    let decoded = std::fs::read(&output)?;
+    let expected = std::fs::read(vector.with_extension("raw"))?;
+    std::fs::remove_dir_all(&scratch)?;
+    if decoded != expected {
+        bail!("check-capi-example: the C example's output differs from the AVM raw output");
+    }
+    eprintln!("check-capi-example: ok");
     Ok(())
 }
 
@@ -1160,6 +1207,7 @@ const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
             "splot-parallel",
         ],
     ),
+    ("splot-capi", &["splot-core", "splot-decode"]),
     ("xtask", &[]),
 ];
 

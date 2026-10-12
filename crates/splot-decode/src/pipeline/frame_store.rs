@@ -31,7 +31,10 @@ use crate::support::decode_buffers::DecodeBuffers;
 pub(crate) struct DecodeSession {
     frame_delay: NonZeroUsize,
     retained: Mutex<Option<RetainedDecode>>,
-    record_hashes: Mutex<Vec<u64>>,
+    /// Whether frames that an outside owner still holds leave the store.
+    detach_held: bool,
+    /// The plane pool of the decode in progress, which held frames return to.
+    planes: Mutex<Option<Arc<splot_recon::PlanePool>>>,
 }
 
 impl core::fmt::Debug for DecodeSession {
@@ -48,17 +51,23 @@ impl DecodeSession {
         Self {
             frame_delay,
             retained: Mutex::new(None),
-            record_hashes: Mutex::new(Vec::new()),
+            detach_held: false,
+            planes: Mutex::new(None),
         }
     }
 
-    /// The IVF record-hash list the last decode on this context planned into.
-    pub(crate) fn take_record_hashes(&self) -> Vec<u64> {
-        core::mem::take(&mut *self.record_hashes.lock())
+    /// A session whose frames leave the store while an outside owner, such
+    /// as a caller's picture, still holds their samples.
+    pub(crate) fn detaching_held(frame_delay: NonZeroUsize) -> Self {
+        Self {
+            detach_held: true,
+            ..Self::new(frame_delay)
+        }
     }
 
-    pub(crate) fn keep_record_hashes(&self, hashes: Vec<u64>) {
-        *self.record_hashes.lock() = hashes;
+    /// The plane pool of the last decode that started on this session.
+    pub(crate) fn planes(&self) -> Option<Arc<splot_recon::PlanePool>> {
+        self.planes.lock().clone()
     }
 
     pub(crate) const fn frame_delay(&self) -> NonZeroUsize {
@@ -70,14 +79,17 @@ impl DecodeSession {
     /// the same context gets new state instead.
     pub(super) fn take(&self, depth: NonZeroUsize) -> RetainedDecode {
         let width = splot_parallel::current_pool_width();
-        match self.retained.lock().take() {
+        let mut retained = match self.retained.lock().take() {
             Some(retained)
                 if retained.ring.capacity() == depth.get() && retained.width == width =>
             {
                 retained
             }
             _ => RetainedDecode::new(depth, width),
-        }
+        };
+        retained.frames.detach_held = self.detach_held;
+        *self.planes.lock() = Some(Arc::clone(retained.ring.planes()));
+        retained
     }
 
     /// Keeps the state of a decode that finished, for the next call.
@@ -153,6 +165,7 @@ pub(crate) struct FrameStore {
     count: usize,
     retain: bool,
     reserved: Option<usize>,
+    pub(super) detach_held: bool,
 }
 
 impl FrameStore {
@@ -176,6 +189,7 @@ impl FrameStore {
             count: 0,
             retain,
             reserved: None,
+            detach_held: false,
         }
     }
 
@@ -317,6 +331,7 @@ impl From<Vec<Option<PipelineFrame>>> for FrameStore {
                 .collect(),
             retain: true,
             reserved: None,
+            detach_held: false,
         }
     }
 }

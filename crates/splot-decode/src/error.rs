@@ -82,6 +82,25 @@ pub enum DecodeError {
         /// The underlying read failure.
         source: io::Error,
     },
+    /// A [`crate::Decoder`] call its session state does not allow.
+    #[error("decoder call refused: {source}")]
+    State {
+        /// Why the session refused the call.
+        #[from]
+        source: DecoderStateError,
+    },
+}
+
+/// Why a [`crate::Decoder`] session refused a call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DecoderStateError {
+    /// The session failed earlier and its error was already returned.
+    #[error("the decoder failed earlier; open a new decoder")]
+    Failed,
+    /// The session is draining and takes no more data.
+    #[error("the decoder is draining and takes no more data")]
+    Draining,
 }
 
 impl DecodeError {

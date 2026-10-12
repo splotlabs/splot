@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::DecodeOptions;
-use crate::bitstream::byte_stream::{PreparedStream, ReadSeek};
+use crate::bitstream::byte_stream::UnitSource;
 use crate::error::Result;
 use crate::hash_report::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport,
@@ -22,14 +22,12 @@ use crate::pipeline::PipelineDecodedFrame;
 use parking_lot::Mutex;
 
 pub(crate) fn decode_hash_report_from_plan(
-    prepared: &PreparedStream,
-    reader: &mut dyn ReadSeek,
+    source: &mut dyn UnitSource,
     options: &DecodeOptions,
     resolved_threads: NonZeroUsize,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<DecodeHashReport> {
-    let report_frames =
-        decode_hash_frames_pipelined(prepared, reader, options, resolved_threads, session)?;
+    let report_frames = decode_hash_frames_pipelined(source, options, resolved_threads, session)?;
 
     Ok(DecodeHashReport::raw_intermediate_output(
         resolved_threads.to_string(),
@@ -57,8 +55,7 @@ fn hash_backlog_capacity(resolved_threads: NonZeroUsize, frame_delay: NonZeroUsi
 
 /// Hashes decoded frames on short worker tasks while the driver decodes.
 fn decode_hash_frames_pipelined(
-    prepared: &PreparedStream,
-    reader: &mut dyn ReadSeek,
+    source: &mut dyn UnitSource,
     options: &DecodeOptions,
     resolved_threads: NonZeroUsize,
     session: &crate::pipeline::DecodeSession,
@@ -68,9 +65,8 @@ fn decode_hash_frames_pipelined(
     splot_parallel::ready_task_scope(|scope| {
         let mut emitted = 0u64;
         let mut outstanding: VecDeque<Arc<CompletionCell<()>>> = VecDeque::new();
-        crate::pipeline::emit_frames_from_prepared(
-            prepared,
-            reader,
+        crate::pipeline::emit_frames(
+            source,
             options,
             session,
             |_| Ok(()),

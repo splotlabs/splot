@@ -97,6 +97,7 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
         )),
         frame_rate_numerator: 1,
         frame_rate_denominator: 1,
+        props: crate::DataProps::default(),
     }
 }
 

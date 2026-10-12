@@ -160,6 +160,12 @@ impl<R: Read> TemporalUnitReader<R> {
         self.ivf_header
     }
 
+    /// Borrows the underlying reader.
+    #[must_use]
+    pub const fn get_ref(&self) -> &R {
+        &self.inner
+    }
+
     /// Reads the next framed unit, or `Ok(None)` at clean end of stream.
     ///
     /// # Errors

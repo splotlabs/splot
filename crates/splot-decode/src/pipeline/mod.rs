@@ -26,9 +26,7 @@ use splot_recon::BitDepth;
 use splot_recon::DecodedFrame;
 
 use crate::DecodeIvfFrameContext as IvfFrameContext;
-use crate::bitstream::byte_stream::{
-    InputScratch, PreparedInput, PreparedStream, ReadSeek, SourceBytes, recycle,
-};
+use crate::bitstream::byte_stream::{InputScratch, SourceBytes, UnitSource, recycle};
 use crate::bitstream::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCdfSubset,
@@ -94,15 +92,12 @@ pub(crate) fn decode_frame_from_plan(
 pub(crate) fn decode_frames_from_plan(
     bytes: &[u8],
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
+    _plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
-    let mut reader = std::io::Cursor::new(bytes);
-    let prepared = crate::bitstream::byte_stream::prepare_stream(&mut reader, options, Vec::new())?;
+    let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
     decode_frames_from_plan_impl(
-        &prepared.input,
-        &mut reader,
+        &mut source,
         options,
-        plan,
         &DecodeSession::new(NonZeroUsize::MIN),
         |_| Ok(()),
         true,
@@ -110,25 +105,16 @@ pub(crate) fn decode_frames_from_plan(
     )
 }
 
-pub(crate) fn emit_frames_from_prepared(
-    prepared: &PreparedStream,
-    reader: &mut dyn ReadSeek,
+/// Decodes every temporal unit of `source` and passes each displayed frame
+/// to `emit` in display order.
+pub(crate) fn emit_frames(
+    source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &DecodeSession,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
     emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
 ) -> Result<()> {
-    decode_frames_from_plan_impl(
-        &prepared.input,
-        reader,
-        options,
-        &prepared.plan,
-        session,
-        preflight,
-        false,
-        emit,
-    )
-    .map(drop)
+    decode_frames_from_plan_impl(source, options, session, preflight, false, emit).map(drop)
 }
 
 /// Retires unowned frames into their physical entries and returns their planes.
@@ -157,25 +143,24 @@ fn reclaim_unowned_frames(
         {
             continue;
         }
-        if frame.frame.handle_count() > 1
-            && !frames
-                .entries
-                .iter()
-                .enumerate()
-                .any(|(other_index, other)| {
-                    other_index != slot_index
-                        && other
-                            .frame
-                            .as_ref()
-                            .is_some_and(|other| frame.frame.shares_samples(&other.frame))
-                })
-        {
+        let shares = frames
+            .entries
+            .iter()
+            .enumerate()
+            .any(|(other_index, other)| {
+                other_index != slot_index
+                    && other
+                        .frame
+                        .as_ref()
+                        .is_some_and(|other| frame.frame.shares_samples(&other.frame))
+            });
+        if frame.frame.handle_count() > 1 && !shares && !frames.detach_held {
             continue;
         }
         let Some(frame) = frames.entries[slot_index].frame.take() else {
             continue;
         };
-        let frame_bytes = retained_decoded_frame_bytes(&frame)?;
+        let frame_bytes = if shares { 0 } else { frame.byte_len()? as u64 };
         *retained_frame_bytes = retained_frame_bytes
             .checked_sub(frame_bytes)
             .ok_or_else(|| {
@@ -411,6 +396,7 @@ pub(crate) fn decode_key_frame(
             display_grain,
             None,
             FrameOutputEffects::empty(),
+            crate::DataProps::default(),
         );
         ring.harvest_all(&mut scratch_eight, &mut scratch_ten, &|| {
             admission.assist_ready(scope)
@@ -450,6 +436,7 @@ fn decode_key_frame_with_effects<'job, 'scope>(
     display_grain: Option<ActiveFilmGrain>,
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
+    props: crate::DataProps,
 ) -> Result<PipelineFrame>
 where
     'job: 'scope,
@@ -546,6 +533,7 @@ where
         segment_ids,
         frame_rate_numerator: frame_rate.numerator,
         frame_rate_denominator: frame_rate.denominator,
+        props,
     })
 }
 
@@ -553,10 +541,8 @@ where
 /// delay bounds in-flight storage at every worker count.
 #[allow(clippy::too_many_arguments)]
 fn decode_frames_from_plan_impl<'job>(
-    input: &'job PreparedInput,
-    reader: &mut dyn ReadSeek,
+    source: &mut dyn UnitSource,
     options: &'job DecodeOptions,
-    plan: &'job DecodeStreamPlan,
     session: &DecodeSession,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
     retain_decoded_frames: bool,
@@ -577,10 +563,8 @@ fn decode_frames_from_plan_impl<'job>(
     let decoded = splot_parallel::ready_task_scope(|scope| {
         admission.run_with_runners(scope, || {
             drive_frames(
-                input,
-                reader,
+                source,
                 options,
-                plan,
                 &mut retained,
                 (&mut entropy_eight, &mut entropy_ten),
                 preflight,
@@ -611,10 +595,8 @@ type EntropyPair<'a, 'job> = (
 /// lowest-indexed collected failure is the one the caller sees.
 #[allow(clippy::too_many_arguments)]
 fn drive_frames<'job, 'scope>(
-    input: &'job PreparedInput,
-    reader: &mut dyn ReadSeek,
+    source: &mut dyn UnitSource,
     options: &'job DecodeOptions,
-    plan: &'job DecodeStreamPlan,
     retained: &mut frame_store::RetainedDecode,
     entropy: EntropyPair<'_, 'job>,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
@@ -636,10 +618,8 @@ where
         ..
     } = retained;
     let decoded = decode_frames_in_order(
-        input,
-        reader,
+        source,
         options,
-        plan,
         preflight,
         retain_decoded_frames,
         emit,
@@ -664,10 +644,8 @@ where
 
 #[allow(clippy::too_many_arguments)]
 fn decode_frames_in_order<'job, 'scope>(
-    input: &'job PreparedInput,
-    reader: &mut dyn ReadSeek,
+    source: &mut dyn UnitSource,
     options: &'job DecodeOptions,
-    plan: &'job DecodeStreamPlan,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
@@ -688,23 +666,17 @@ where
         records,
         obus: obu_storage,
     } = input_scratch;
-    let mut stream = RuntimeStream::new(input, reader, records)?;
-    if matches!(stream, RuntimeStream::Ivf { .. })
-        && plan.obu_count() == 0
-        && plan.frame_candidate_count() == 0
-    {
+    let mut stream = RuntimeStream::new(source, records, options.limits());
+    let Some(leading_unit) = stream.first_unit()? else {
         return Ok(Vec::new());
-    }
-    ensure_multiframe_plan_shape(plan)?;
+    };
+    let key_candidate = stream.first_candidate()?;
+    let mut leading_buffer = recycle(core::mem::take(obu_storage));
+    let leading_obus = RuntimeStream::obus(&leading_unit, &mut leading_buffer)?;
+    let ([_, sequence_envelope, key_envelope], _) = require_leading_frame_unit(leading_obus)?;
     preflight(stream.ivf_header())?;
     let frame_rate = stream.frame_rate();
-
-    let leading_unit = stream.first_unit()?;
-    let key_candidate = stream.first_candidate(plan.candidate_types().next());
-    let mut leading_buffer = recycle(core::mem::take(obu_storage));
-    let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
-    let ([_, sequence_envelope, key_envelope], leading_frame_unit_len) =
-        require_leading_frame_unit(leading_obus)?;
+    let plan = stream.plan();
 
     let mut sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
@@ -826,7 +798,6 @@ where
     output_effect_state.observe_suffix(suffix_after_candidate(leading_obus, key_candidate)?)?;
     let key_output_effects = output_effect_state.finish_frame();
     let mut retained_frame_bytes = 0;
-    let mut next_unvalidated_following_annexb_obu = leading_frame_unit_len;
     ensure_retained_frame_byte_limits_for_core(
         options.limits(),
         retained_frame_bytes,
@@ -887,6 +858,7 @@ where
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
+                    props: stream.props(),
                 }
             }
             BitDepthIdc::Ten => {
@@ -939,6 +911,7 @@ where
                     segment_ids,
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
+                    props: stream.props(),
                 }
             }
         }
@@ -963,6 +936,7 @@ where
             key_display_grain,
             key_user_qm,
             key_output_effects,
+            stream.props(),
         )?
     };
     retained_frame_bytes =
@@ -1042,7 +1016,7 @@ where
     let mut shared_sequence = None;
     let mut tip_eight = Vec::new();
     let mut tip_ten = Vec::new();
-    for next_type in plan.candidate_types().skip(1) {
+    loop {
         entropy_eight.retire_completed();
         entropy_ten.retire_completed();
         if !frames.has_space() {
@@ -1076,7 +1050,11 @@ where
             }
         }
         frames.reserve()?;
-        match next_type {
+        let Some((next_candidate, unit)) = stream.candidate(obu_storage)? else {
+            break;
+        };
+        let next_candidate = &next_candidate;
+        match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
                 frame_pipeline::drain_entropy_before_barrier(
                     &mut pending_entropy,
@@ -1084,15 +1062,10 @@ where
                     admission,
                     recon_lane,
                 );
-                let (next_candidate, unit) = stream.candidate(next_type, obu_storage, false)?;
-                let next_candidate = &next_candidate;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
-                let obus = stream.obus(&unit, &mut obu_buffer)?;
-                let (sef_prefix_obus, sef_envelope) = stream.inter_envelope(
-                    obus,
-                    next_candidate,
-                    &mut next_unvalidated_following_annexb_obu,
-                )?;
+                let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
+                let (sef_prefix_obus, sef_envelope) =
+                    stream.inter_envelope(obus, next_candidate)?;
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(sef_prefix_obus, &sequence)?;
                 film_grain_slots.update_from_obus(sef_prefix_obus)?;
@@ -1190,6 +1163,7 @@ where
                     segment_ids: source.segment_ids.clone(),
                     frame_rate_numerator: output_rate.numerator,
                     frame_rate_denominator: output_rate.denominator,
+                    props: stream.props(),
                     frame: inflight::PipelineFrameSlot::completed_recycled(
                         source.wait_ready_frame()?,
                         frames,
@@ -1248,15 +1222,10 @@ where
             | ObuType::LeadingTip
             | ObuType::RegularTip
             | ObuType::BridgeFrame => {
-                let (next_candidate, unit) = stream.candidate(next_type, obu_storage, false)?;
-                let next_candidate = &next_candidate;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
-                let obus = stream.obus(&unit, &mut obu_buffer)?;
-                let (inter_prefix_obus, inter_envelope) = stream.inter_envelope(
-                    obus,
-                    next_candidate,
-                    &mut next_unvalidated_following_annexb_obu,
-                )?;
+                let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
+                let (inter_prefix_obus, inter_envelope) =
+                    stream.inter_envelope(obus, next_candidate)?;
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(inter_prefix_obus, &sequence)?;
                 film_grain_slots.update_from_obus(inter_prefix_obus)?;
@@ -1801,6 +1770,7 @@ where
                     segment_ids: products.segment_ids,
                     frame_rate_numerator: inter_frame_rate.numerator,
                     frame_rate_denominator: inter_frame_rate.denominator,
+                    props: stream.props(),
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -1875,26 +1845,16 @@ where
                     admission,
                     recon_lane,
                 );
-                let starts_new_sequence = next_type == ObuType::ClosedLoopKey;
-                let (next_candidate, unit) =
-                    stream.candidate(next_type, obu_storage, starts_new_sequence)?;
-                let next_candidate = &next_candidate;
+                let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
-                let obus = stream.obus(&unit, &mut obu_buffer)?;
+                let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
                 {
-                    let (sequence_envelope, prefix, frame) = stream.key_frame_unit(
-                        obus,
-                        next_candidate,
-                        &mut next_unvalidated_following_annexb_obu,
-                    )?;
+                    let (sequence_envelope, prefix, frame) =
+                        ivf_key_frame_unit(obus, next_candidate)?;
                     (Some(sequence_envelope), prefix, frame)
                 } else {
-                    let (prefix, frame) = stream.inter_envelope(
-                        obus,
-                        next_candidate,
-                        &mut next_unvalidated_following_annexb_obu,
-                    )?;
+                    let (prefix, frame) = stream.inter_envelope(obus, next_candidate)?;
                     let sequence_envelope = prefix
                         .iter()
                         .rev()
@@ -2060,6 +2020,7 @@ where
                     key_display_grain,
                     key_user_qm,
                     key_output_effects,
+                    stream.props(),
                 )?;
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),

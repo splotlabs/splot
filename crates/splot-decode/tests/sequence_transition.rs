@@ -223,6 +223,10 @@ fn output_limit_stops_before_the_next_sequence() {
 #[test]
 fn truncated_repeated_sequence_fails_closed() {
     let input = CROPPED_TRANSITION;
+    let mut whole = Vec::new();
+    context()
+        .decode_raw_bytes(input, DecodeOptions::default(), &mut whole)
+        .unwrap();
     let mut raw = Vec::new();
 
     let error = context()
@@ -233,6 +237,6 @@ fn truncated_repeated_sequence_fails_closed() {
         )
         .unwrap_err();
 
-    assert!(raw.is_empty());
+    assert!(raw.len() < whole.len() && whole.starts_with(&raw));
     assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }

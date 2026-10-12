@@ -79,6 +79,8 @@ pub(crate) struct PipelineFrame {
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
     pub(crate) frame_rate_numerator: u32,
     pub(crate) frame_rate_denominator: u32,
+    /// The caller data of the temporal unit that coded or showed this frame.
+    pub(crate) props: crate::DataProps,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

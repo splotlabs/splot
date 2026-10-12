@@ -133,6 +133,20 @@ impl WorkerPool {
             f()
         })
     }
+
+    /// Runs `f` on one worker of this pool and returns at once.
+    ///
+    /// `f` may call [`ready_task_scope`] and wait on pool progress like the
+    /// body of [`Self::install`]. A panic in `f` is caught and dropped, so `f`
+    /// must report its own outcome, through a drop guard for example.
+    pub fn spawn<F>(&self, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.inner.spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        });
+    }
 }
 
 /// Returns whether the calling thread belongs to a splot-owned worker pool.
@@ -327,7 +341,7 @@ pub fn current_pool_width() -> usize {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
@@ -353,6 +367,33 @@ mod tests {
     fn install_runs_closure() {
         let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
         assert_eq!(pool.install(|| 21 * 2), 42);
+    }
+
+    #[test]
+    fn spawn_runs_scoped_work_and_survives_a_panic() {
+        for threads in [1, 3] {
+            let pool = WorkerPool::new(ThreadCount::Fixed(nz(threads))).unwrap();
+            pool.spawn(|| panic!("caught by spawn"));
+            let done = Arc::new(crate::CompletionCell::new());
+            let ran = Arc::clone(&done);
+            pool.spawn(move || {
+                let tasks = AtomicUsize::new(0);
+                let scoped = ready_task_scope(|scope| {
+                    for _ in 0..8 {
+                        scope.spawn(|_| {
+                            tasks.fetch_add(1, Ordering::Relaxed);
+                        });
+                    }
+                });
+                let _ = ran.set((scoped.is_ok(), on_worker_pool(), tasks.into_inner()));
+            });
+            let mut outcome = done.get();
+            while outcome.is_none() {
+                std::thread::yield_now();
+                outcome = done.get();
+            }
+            assert_eq!(outcome, Some(&(true, true, 8)));
+        }
     }
 
     #[test]

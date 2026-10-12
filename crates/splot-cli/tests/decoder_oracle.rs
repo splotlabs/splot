@@ -15,7 +15,11 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
+use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
+use splot_decode::{
+    DataProps, DecodeContext, DecodeOptions, DecodeRuntimeConfig, Decoder, DecoderSettings,
+    Picture, PictureSamples, PlaneId, SendStatus,
+};
 use splot_parallel::ThreadCount;
 
 /// Representative one-worker and multiworker pool widths.
@@ -67,6 +71,50 @@ fn decode_raw(bytes: &[u8], threads: usize) -> splot_decode::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Decodes `bytes` through the streaming [`Decoder`], one IVF record per
+/// temporal unit, and lays the pictures out as the raw output does.
+fn decode_streaming(bytes: &[u8], threads: usize) -> splot_decode::Result<Vec<u8>> {
+    let mut decoder =
+        Decoder::new(DecoderSettings::default().with_threads(ThreadCount::from(threads)))?;
+    let mut out = Vec::new();
+    let mut reader = TemporalUnitReader::new(bytes);
+    while let Some(unit) = reader.next_unit().expect("IVF record") {
+        let StreamUnit::IvfFrame { payload, .. } = unit else {
+            continue;
+        };
+        while decoder.send_data(payload, DataProps::default())? == SendStatus::Full {
+            while let Some(picture) = decoder.get_picture()? {
+                append_raw(&picture, &mut out);
+            }
+        }
+        while let Some(picture) = decoder.get_picture()? {
+            append_raw(&picture, &mut out);
+        }
+    }
+    decoder.drain();
+    while let Some(picture) = decoder.get_picture()? {
+        append_raw(&picture, &mut out);
+    }
+    Ok(out)
+}
+
+fn append_raw(picture: &Picture, out: &mut Vec<u8>) {
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        match picture.plane(plane) {
+            Some(PictureSamples::Eight(plane)) => {
+                plane
+                    .visible_rows()
+                    .for_each(|row| out.extend_from_slice(row));
+            }
+            Some(PictureSamples::Ten(plane)) => plane
+                .visible_rows()
+                .flatten()
+                .for_each(|sample| out.extend_from_slice(&sample.to_le_bytes())),
+            None => {}
+        }
+    }
+}
+
 #[test]
 fn decoder_oracle_corpus_matches_manifest() {
     let root = repo_root();
@@ -92,6 +140,14 @@ fn decoder_oracle_corpus_matches_manifest() {
                 sha256_hex(&raw),
                 fx.avm_raw_sha256,
                 "{} != AVM oracle at {threads} threads",
+                fx.id
+            );
+            let streamed = decode_streaming(&bytes, threads)
+                .unwrap_or_else(|e| panic!("{} failed to stream at {threads} threads: {e}", fx.id));
+            assert_eq!(
+                sha256_hex(&streamed),
+                fx.avm_raw_sha256,
+                "{} streamed != AVM oracle at {threads} threads",
                 fx.id
             );
         }

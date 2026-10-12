@@ -69,6 +69,7 @@ const CRATES: &[&str] = &[
     "splot-validate",
     "splot-encode",
     "splot-cli",
+    "splot-capi",
     "xtask",
     "fuzz",
     "docs",

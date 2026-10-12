@@ -274,7 +274,7 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info
       # Keep the exclusion in sync with SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX in xtask.
       - name: Gate splot-validate line coverage (>= 90%)
-        run: cargo llvm-cov report --fail-under-lines 90 --ignore-filename-regex 'crates/splot-(core|parallel|recon|decode|encode|cli)/|(^|/)xtask/|(^|/)fuzz/'
+        run: cargo llvm-cov report --fail-under-lines 90 --ignore-filename-regex 'crates/splot-(core|parallel|recon|decode|encode|cli|capi)/|(^|/)xtask/|(^|/)fuzz/'
 
       - name: Upload lcov artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

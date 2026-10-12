@@ -17,8 +17,8 @@ default = []
 fuzzing = []
 
 # This crate owns the reviewed unsafe decoder boundary; every other workspace
-# crate retains `unsafe_code = "forbid"`. Keep the rest synchronized with the
-# workspace lint table.
+# crate but splot-capi retains `unsafe_code = "forbid"`. Keep the rest
+# synchronized with the workspace lint table.
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"

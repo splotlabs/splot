@@ -987,6 +987,7 @@ fn error_signature(error: DecodeError) -> String {
         DecodeError::Reconstruction { source } => format!("reconstruction:{source}"),
         DecodeError::ReferenceState { source } => format!("reference-state:{source}"),
         DecodeError::Input { source } => format!("input:{source}"),
+        DecodeError::State { source } => format!("state:{source}"),
         DecodeError::Output { source } => format!(
             "output:{}:{}:{}",
             source.operation(),
@@ -1036,7 +1037,10 @@ fn replanned(
     let mut scan = CandidateScan::default();
     let (mut candidates, mut continuations) = (Vec::new(), Vec::new());
     for &(bytes, frame) in units {
-        while let Some(candidate) = scan.next(bytes, frame).unwrap() {
+        while let Some(candidate) = scan
+            .next(bytes, frame, crate::DecodeLimits::default())
+            .unwrap()
+        {
             continuations.extend(tile_group_continuations(bytes, &candidate));
             candidates.push(candidate);
         }
@@ -1090,10 +1094,6 @@ fn the_decode_pass_replans_the_planned_candidates_and_continuations() {
             continuations
                 .iter()
                 .eq(plan.obus().filter(|obu| obu.role().is_frame_continuation()))
-        );
-        assert!(
-            plan.candidate_types()
-                .eq(candidates.iter().map(DecodePlannedObu::obu_type))
         );
     }
 }

@@ -108,13 +108,34 @@ pub struct DecodeStreamPlan {
     selected_layer: DecodeLayerSelection,
     input_len_bytes: u64,
     obus: Vec<DecodePlannedObu>,
-    candidate_types: Vec<u8>,
     obu_count: u64,
     frame_candidate_count: u64,
     source_warnings: Vec<DecodeSourceIssue>,
 }
 
 impl DecodeStreamPlan {
+    /// The plan the decode loop checks each candidate of one source kind
+    /// against: it bounds nothing, since units arrive one at a time.
+    pub(crate) const fn runtime(format: BitstreamFormat) -> &'static Self {
+        const fn plan(format: BitstreamFormat) -> DecodeStreamPlan {
+            DecodeStreamPlan {
+                format,
+                selected_layer: DecodeLayerSelection::BASE,
+                input_len_bytes: u64::MAX,
+                obus: Vec::new(),
+                obu_count: 0,
+                frame_candidate_count: 0,
+                source_warnings: Vec::new(),
+            }
+        }
+        static ANNEX_B: DecodeStreamPlan = plan(BitstreamFormat::AnnexB);
+        static IVF: DecodeStreamPlan = plan(BitstreamFormat::Ivf);
+        match format {
+            BitstreamFormat::AnnexB => &ANNEX_B,
+            BitstreamFormat::Ivf => &IVF,
+        }
+    }
+
     /// Source container format.
     #[must_use]
     pub const fn format(&self) -> BitstreamFormat {
@@ -155,14 +176,6 @@ impl DecodeStreamPlan {
     /// walks (AV2 § 5.2.1, § 6.18).
     pub fn frame_candidates_all(&self) -> impl Iterator<Item = &DecodePlannedObu> {
         self.obus.iter().filter(|obu| obu.role.is_frame_candidate())
-    }
-
-    /// The OBU type of each frame candidate, in source order; the decode pass
-    /// plans each candidate again when it reads the candidate's bytes.
-    pub(crate) fn candidate_types(&self) -> impl Iterator<Item = ObuType> + '_ {
-        self.candidate_types
-            .iter()
-            .map(|&raw| ObuType::from_raw(raw))
     }
 
     /// Non-fatal source/container warnings carried into the plan.
@@ -827,7 +840,6 @@ pub(crate) struct PlanBuilder {
     limits: crate::DecodeLimits,
     keep_obus: bool,
     obus: Vec<DecodePlannedObu>,
-    candidate_types: Vec<u8>,
     obu_count: u64,
     traversed_obu_count: u64,
     frame_candidate_count: u64,
@@ -848,7 +860,6 @@ impl PlanBuilder {
             limits,
             keep_obus,
             obus: Vec::new(),
-            candidate_types: Vec::new(),
             obu_count: 0,
             traversed_obu_count: 0,
             frame_candidate_count: 0,
@@ -919,9 +930,6 @@ impl PlanBuilder {
         ivf_frame: Option<DecodeIvfFrameContext>,
         role: DecodePlannedObuRole,
     ) {
-        if role.is_frame_candidate() {
-            self.candidate_types.push(envelope.header.obu_type.raw());
-        }
         if self.keep_obus {
             self.obus.push(DecodePlannedObu::new(
                 self.obu_count,
@@ -941,7 +949,6 @@ impl PlanBuilder {
             input_len_bytes: self.input_len_bytes,
             obu_count: self.obu_count,
             obus: self.obus,
-            candidate_types: self.candidate_types,
             frame_candidate_count: self.frame_candidate_count,
             source_warnings: self.source_warnings,
         }
@@ -1114,22 +1121,27 @@ impl Iterator for Replan<'_> {
 pub(crate) struct CandidateScan {
     resume: u64,
     index: u64,
+    frames: u64,
 }
 
 impl CandidateScan {
-    /// The next frame candidate in `bytes`, an IVF record (`ivf_frame`) or the
-    /// whole Annex B input, after the last candidate found.
+    /// The next frame candidate in `bytes`, one temporal unit, after the last
+    /// candidate found, counting OBUs and candidates against `limits`.
     pub(crate) fn next(
         &mut self,
         bytes: SourceBytes<'_>,
         ivf_frame: Option<DecodeIvfFrameContext>,
+        limits: crate::DecodeLimits,
     ) -> Result<Option<DecodePlannedObu>> {
         let from = self.resume.max(bytes.base());
         for planned in Replan::new(bytes, from, bytes.end(), self.index, ivf_frame) {
             let planned = planned?;
+            limits.ensure(DecodeLimitName::MaxObus, planned.index + 1)?;
             self.resume = planned.end();
             self.index = planned.index + 1;
             if planned.role.is_frame_candidate() {
+                self.frames += 1;
+                limits.ensure(DecodeLimitName::MaxFramesToDecode, self.frames)?;
                 return Ok(Some(planned));
             }
         }
@@ -1207,7 +1219,7 @@ pub(crate) fn issue_from_core_error(
     }
 }
 
-fn issue_from_ivf_error(error: &IvfError) -> DecodeSourceIssue {
+pub(crate) fn issue_from_ivf_error(error: &IvfError) -> DecodeSourceIssue {
     issue_from_ivf_source(
         DecodeSourceIssueKind::IvfContainerError,
         error.rule_id(),
@@ -1227,7 +1239,7 @@ fn issue_from_ivf_warning(warning: &IvfWarning) -> DecodeSourceIssue {
     )
 }
 
-fn issue_from_unsupported_ivf_codec(fourcc: [u8; 4]) -> DecodeSourceIssue {
+pub(crate) fn issue_from_unsupported_ivf_codec(fourcc: [u8; 4]) -> DecodeSourceIssue {
     DecodeSourceIssue {
         kind: DecodeSourceIssueKind::IvfUnsupportedCodec,
         rule_id: Some("decode/unsupported-ivf-codec"),

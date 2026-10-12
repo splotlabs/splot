@@ -11,7 +11,11 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
+use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
+use splot_decode::{
+    DataProps, DecodeContext, DecodeOptions, DecodeRuntimeConfig, Decoder, DecoderSettings,
+    SendStatus,
+};
 use splot_parallel::{FrameDelay, ThreadCount, WorkerPool};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
@@ -27,7 +31,16 @@ const EIGHT_FRAME: &[u8] = include_bytes!(
 /// The count is exact and repeatable on this path, so an increase is a
 /// regression to look at rather than a number to raise. Lowering it next to a
 /// reduction is the point of having it.
-const WARMED_DECODE_ALLOCATIONS: usize = 43;
+const WARMED_DECODE_ALLOCATIONS: usize = 41;
+
+/// The allocation requests a warmed streaming decoder makes for one more pass
+/// over the eight-frame stream's temporal units, pictures dropped as taken.
+///
+/// The pass settles at 52 to 54: a picture the caller still holds when the
+/// driver retires its frame costs the frame slot one handle allocation, and
+/// that depends on how the two threads interleave. One allocation more per
+/// frame still exceeds this bound.
+const WARMED_STREAMING_ALLOCATIONS: usize = 56;
 
 fn context(threads: usize, frame_delay: FrameDelay) -> DecodeContext {
     DecodeContext::new(
@@ -90,4 +103,51 @@ fn a_warmed_decode_holds_its_steady_allocation_count() {
         "a warmed pipelined decode must not keep growing its allocation count: \
          settled at {settled}, {later} after eight more decodes"
     );
+
+    let mut decoder = Decoder::new(
+        DecoderSettings::default()
+            .with_threads(ThreadCount::from(2usize))
+            .with_frame_delay(FrameDelay::from(2usize)),
+    )
+    .unwrap();
+    let units = units(EIGHT_FRAME);
+    for _ in 0..4 {
+        stream_once(&mut decoder, &units);
+    }
+    let region = Region::new(ALLOCATOR);
+    let pictures = stream_once(&mut decoder, &units);
+    let streamed = region.change().allocations;
+    assert_eq!(pictures, 8);
+    assert!(
+        streamed <= WARMED_STREAMING_ALLOCATIONS,
+        "one warmed streaming pass requested {streamed} allocations, \
+         over the {WARMED_STREAMING_ALLOCATIONS} this path settles at"
+    );
+}
+
+fn units(ivf: &[u8]) -> Vec<Vec<u8>> {
+    let mut reader = TemporalUnitReader::new(ivf);
+    let mut units = Vec::new();
+    while let Some(unit) = reader.next_unit().unwrap() {
+        if let StreamUnit::IvfFrame { payload, .. } = unit {
+            units.push(payload.to_vec());
+        }
+    }
+    units
+}
+
+/// Sends `units` and drops every picture as it is taken; returns the count.
+fn stream_once(decoder: &mut Decoder, units: &[Vec<u8>]) -> usize {
+    let mut pictures = 0;
+    for unit in units {
+        while decoder.send_data(unit, DataProps::default()).unwrap() == SendStatus::Full {
+            while decoder.get_picture().unwrap().is_some() {
+                pictures += 1;
+            }
+        }
+        while decoder.get_picture().unwrap().is_some() {
+            pictures += 1;
+        }
+    }
+    pictures
 }

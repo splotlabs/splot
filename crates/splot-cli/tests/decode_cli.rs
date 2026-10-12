@@ -39,8 +39,9 @@ fn local_decoder_mission_path() -> PathBuf {
         .expect("set SPLOT_LOCAL_DECODER_MISSION_IVF or HOME for the ignored local decoder mission regression")
 }
 
-fn repeated_sequence_header_obus(count: usize) -> Vec<u8> {
-    [0x01, 0x08].repeat(count)
+/// One temporal unit: a temporal delimiter, then `count - 1` padding OBUs.
+fn one_unit_of_obus(count: usize) -> Vec<u8> {
+    [[0x01, 0x08].as_slice(), &[0x01, 0x64].repeat(count - 1)].concat()
 }
 
 fn default_max_input_bytes() -> u64 {
@@ -156,7 +157,7 @@ fn decode_hash_output_format_emits_unsupported_text_without_output_path() {
         "severity: Error".to_string(),
         "spec_section: 7.1".to_string(),
         "detail_kind: unsupported_feature".to_string(),
-        "unsupported_reason: unexpected_planned_stream_shape".to_string(),
+        "unsupported_reason: unexpected_obu_order".to_string(),
         "output_format: hash".to_string(),
     ] {
         assert!(
@@ -293,10 +294,7 @@ fn decode_hash_output_format_json_emits_same_diagnostic() {
     assert_eq!(json["severity"], "Error");
     assert_eq!(json["spec_section"], "7.1");
     assert_eq!(json["detail_kind"], "unsupported_feature");
-    assert_eq!(
-        json["unsupported_reason"],
-        "unexpected_planned_stream_shape"
-    );
+    assert_eq!(json["unsupported_reason"], "unexpected_obu_order");
     assert_eq!(json["output_format"], "hash");
 }
 
@@ -877,7 +875,7 @@ fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
 #[test]
 fn decode_resource_limit_json_mode_reports_limit_values() {
     let max_obus = default_max_obus();
-    let limit_input = repeated_sequence_header_obus((max_obus + 1).try_into().unwrap());
+    let limit_input = one_unit_of_obus((max_obus + 1).try_into().unwrap());
     let input = temp_input("av2", &limit_input);
     let output = temp_output("hashes");
     let original_output = b"resource-limit output sentinel";
