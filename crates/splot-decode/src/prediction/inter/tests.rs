@@ -196,21 +196,19 @@ fn decode_fixture_with_options(
     threads: usize,
 ) -> Result<Vec<PipelineFrame>> {
     let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))?;
-    let plan = context.plan_bytes(bytes, *options).expect("plan");
     context
         .pool()
-        .install(|| decode_frames_from_plan(bytes, options, &plan))
+        .install(|| decode_frames_from_plan(bytes, options))
 }
 
 fn decode_frames_from_plan_on_pool(
     bytes: &[u8],
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
     let context = decode_context();
     context
         .pool()
-        .install(|| decode_frames_from_plan(bytes, options, plan))
+        .install(|| decode_frames_from_plan(bytes, options))
 }
 
 fn decode_frames() -> Vec<PipelineFrame> {
@@ -319,7 +317,6 @@ fn decode_inter_frame_after_core_mutation_inner(
     let key_frame = crate::pipeline::decode_key_frame(
         bytes,
         &options,
-        &plan,
         key_candidate,
         key_envelope,
         &sequence,
@@ -375,7 +372,6 @@ fn decode_inter_frame_after_core_mutation_inner(
     let mut products = super::FrameProductWriters::fresh().expect("fresh product writers");
     let walk = crate::pipeline::frame_engine::walk_frame(
         &mut super::InterDecodeScratch::default(),
-        &plan,
         inter_candidate,
         bytes.into(),
         inter_envelope,
@@ -420,7 +416,6 @@ fn parse_inter_core_for_validation_inner(
     let key_frame = crate::pipeline::decode_key_frame(
         bytes,
         &options,
-        &plan,
         key_candidate,
         key_envelope,
         &sequence,
@@ -1603,8 +1598,7 @@ fn multiref_fixture_decodes_repacked_frame_units() {
 fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
     let repacked = repack_multiref_first_inter_td_separate_from_tile_group();
     let options = DecodeOptions::default();
-    let plan = plan_fixture(&repacked, &options);
-    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options) else {
         panic!("record-leading tile group must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1620,7 +1614,7 @@ fn multiref_runtime_rejects_state_obu_before_following_inter_candidate() {
         3,
         "test fixture must retain the key plus two inter frame candidates"
     );
-    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options) else {
         panic!("extra state before a following inter candidate must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1636,7 +1630,7 @@ fn multiref_runtime_rejects_state_obu_after_inter_candidate_before_next_frame() 
         3,
         "test fixture must retain the key plus two inter frame candidates"
     );
-    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options, &plan) else {
+    let Err(error) = decode_frames_from_plan_on_pool(&repacked, &options) else {
         panic!("state after one inter candidate and before the next must fail closed");
     };
     assert_eq!(unsupported_reason(error), "unexpected_inter_obu_order");
@@ -1652,7 +1646,7 @@ fn four_frame_multiref_decodes_without_total_refs_gate() {
         4,
         "test fixture must exercise the former total frame-count gate"
     );
-    decode_frames_from_plan_on_pool(&four_frame, &options, &plan)
+    decode_frames_from_plan_on_pool(&four_frame, &options)
         .expect("fourth multiref frame should decode after widening NumTotalRefs support");
 }
 
@@ -1666,7 +1660,7 @@ fn multiref_runtime_does_not_preflight_future_ivf_records_after_decodable_fourth
         4,
         "test fixture keeps the malformed state-only IVF record after the fourth candidate"
     );
-    decode_frames_from_plan_on_pool(&future_state, &options, &plan).expect(
+    decode_frames_from_plan_on_pool(&future_state, &options).expect(
         "malformed state-only IVF record after the fourth candidate should not be preflighted",
     );
 }

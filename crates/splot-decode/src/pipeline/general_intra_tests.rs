@@ -186,10 +186,9 @@ fn decode_context() -> DecodeContext {
 fn decode_fixture(fixture: &[u8]) -> PipelineDecodedFrame {
     let options = DecodeOptions::default();
     let context = decode_context();
-    let plan = context.plan_bytes(fixture, options).expect("plan");
     context
         .pool()
-        .install(|| decode_frame_from_plan(fixture, &options, &plan))
+        .install(|| decode_frame_from_plan(fixture, &options))
         .expect("decode")
         .ready_frame()
         .expect("ready")

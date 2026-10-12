@@ -17,7 +17,6 @@ use splot_core::headers::tile_group::{
     TileGroupLayout, TileGroupStructure, TileGroupStructureOutcome, parse_tile_group_structure,
 };
 use splot_core::span::ByteOffset;
-use splot_core::stream::BitstreamFormat;
 use splot_core::types::ObuType;
 
 use super::cdf::{FrameCdfSubset, TileCdfPolicyInput};
@@ -28,7 +27,7 @@ use super::{
 use crate::bitstream::byte_stream::SourceBytes;
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
-    DecodePlannedObu, DecodeStreamPlan,
+    DecodePlannedObu,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -297,7 +296,6 @@ impl TileGroupPositionFacts {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
-    plan: &'facts DecodeStreamPlan,
     candidate: &'facts DecodePlannedObu,
     input_bytes: SourceBytes<'payload>,
     envelope: ObuEnvelope<'payload>,
@@ -312,7 +310,6 @@ impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(crate) const fn new(
-        plan: &'facts DecodeStreamPlan,
         candidate: &'facts DecodePlannedObu,
         input_bytes: SourceBytes<'payload>,
         envelope: ObuEnvelope<'payload>,
@@ -322,7 +319,6 @@ impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
         limits: DecodeLimits,
     ) -> Self {
         Self {
-            plan,
             candidate,
             input_bytes,
             envelope,
@@ -359,10 +355,6 @@ pub(crate) enum FrameCandidateTileBoundaryError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FrameCandidateTileMalformed {
-    PlanSourceKindMismatch {
-        format: BitstreamFormat,
-        source_kind: DecodeObuSourceKind,
-    },
     CandidateEnvelopeMismatch {
         field: &'static str,
     },
@@ -392,13 +384,6 @@ pub(crate) enum FrameCandidateTileMalformed {
 impl fmt::Display for FrameCandidateTileMalformed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PlanSourceKindMismatch {
-                format,
-                source_kind,
-            } => write!(
-                f,
-                "plan format {format:?} does not match candidate source kind {source_kind:?}"
-            ),
             Self::CandidateEnvelopeMismatch { field } => {
                 write!(f, "candidate/envelope mismatch for {field}")
             }
@@ -464,12 +449,7 @@ pub(crate) fn plan_derived_tile_payload_boundary_with_scratch<'payload>(
     input: &FrameCandidateTileBoundaryInput<'payload, '_>,
     scratch: &mut super::TilePayloadScratch,
 ) -> Result<DecodeTilePayloadPlan<'payload>, FrameCandidateTileBoundaryError> {
-    validate_candidate(
-        input.plan,
-        input.candidate,
-        input.input_bytes,
-        input.envelope,
-    )?;
+    validate_candidate(input.candidate, input.input_bytes, input.envelope)?;
     input.limits.ensure_mul(
         DecodeLimitName::MaxTileCount,
         u64::from(input.facts.tile_cols),
@@ -564,7 +544,6 @@ pub(crate) fn plan_derived_tile_payload_boundary_with_scratch<'payload>(
 }
 
 fn validate_candidate(
-    plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     input_bytes: SourceBytes<'_>,
     envelope: ObuEnvelope<'_>,
@@ -574,18 +553,6 @@ fn validate_candidate(
             reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
         });
     }
-    match (plan.format(), candidate.source_kind()) {
-        (BitstreamFormat::AnnexB, DecodeObuSourceKind::AnnexB)
-        | (BitstreamFormat::Ivf, DecodeObuSourceKind::Ivf) => {}
-        (format, source_kind) => {
-            return Err(FrameCandidateTileBoundaryError::Malformed(
-                FrameCandidateTileMalformed::PlanSourceKindMismatch {
-                    format,
-                    source_kind,
-                },
-            ));
-        }
-    }
     if candidate.offset() != envelope.offset {
         return mismatch("offset");
     }
@@ -594,9 +561,6 @@ fn validate_candidate(
     }
     if candidate.header() != envelope.header {
         return mismatch("header");
-    }
-    if input_bytes.end() > plan.input_len_bytes() {
-        return mismatch("input_len_bytes");
     }
 
     let payload_len = declared_payload_len(envelope)?;
@@ -609,11 +573,6 @@ fn validate_candidate(
     validate_envelope_payload_slice(input_bytes, envelope, payload_len)?;
 
     let obu_end = checked_offset_value(envelope.offset, u64::from(envelope.size))?;
-    if obu_end > plan.input_len_bytes() {
-        return Err(FrameCandidateTileBoundaryError::Malformed(
-            FrameCandidateTileMalformed::SourceRangeOutOfBounds { range: "obu" },
-        ));
-    }
 
     match candidate.source_kind() {
         DecodeObuSourceKind::AnnexB => {

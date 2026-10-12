@@ -233,7 +233,7 @@ fn multiple_tile_groups_decode_bit_exact() -> std::result::Result<(), Box<dyn st
     assert_eq!(plan.frame_candidate_count(), 1);
     let decoded = context
         .pool()
-        .install(|| decode_frame_from_plan(MULTIPLE_TILE_GROUP_FIXTURE, &options, &plan))?;
+        .install(|| decode_frame_from_plan(MULTIPLE_TILE_GROUP_FIXTURE, &options))?;
     let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame()? else {
         return Err("fixture decoded as 10-bit".into());
     };
@@ -272,7 +272,7 @@ fn empty_ivf_decodes_to_empty_frame_set() -> std::result::Result<(), Box<dyn std
     assert_eq!(plan.frame_candidate_count(), 0);
     let frames = context
         .pool()
-        .install(|| decode_frames_from_plan(&bytes, &options, &plan))?;
+        .install(|| decode_frames_from_plan(&bytes, &options))?;
     assert!(frames.is_empty());
     Ok(())
 }

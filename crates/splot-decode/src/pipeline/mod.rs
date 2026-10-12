@@ -36,7 +36,7 @@ use crate::error::{DecodeError, Result};
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
 use crate::support::pipeline_limits::checked_add;
-use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
+use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu};
 
 mod frame_lifecycle;
 pub(crate) mod frame_store;
@@ -76,9 +76,8 @@ pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
 pub(crate) fn decode_frame_from_plan(
     bytes: &[u8],
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
 ) -> Result<PipelineFrame> {
-    let mut frames = decode_frames_from_plan(bytes, options, plan)?;
+    let mut frames = decode_frames_from_plan(bytes, options)?;
     if frames.is_empty() {
         return Err(unsupported(
             "missing_decoded_frame",
@@ -92,7 +91,6 @@ pub(crate) fn decode_frame_from_plan(
 pub(crate) fn decode_frames_from_plan(
     bytes: &[u8],
     options: &DecodeOptions,
-    _plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
     let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
     decode_frames_from_plan_impl(
@@ -358,7 +356,6 @@ fn parse_inter_core_with_effects(
 pub(crate) fn decode_key_frame(
     bytes: &[u8],
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
@@ -387,7 +384,6 @@ pub(crate) fn decode_key_frame(
             0,
             bytes.into(),
             options,
-            plan,
             candidate,
             frame_envelope,
             core,
@@ -427,7 +423,6 @@ fn decode_key_frame_with_effects<'job, 'scope>(
     frame_index: usize,
     bytes: SourceBytes<'_>,
     options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     core: FrameHeaderCore,
@@ -452,7 +447,6 @@ where
             BitDepthIdc::Eight => {
                 let walk = frame_engine::walk_frame::<u8>(
                     scratch_eight,
-                    plan,
                     candidate,
                     bytes,
                     frame_envelope,
@@ -486,7 +480,6 @@ where
             BitDepthIdc::Ten => {
                 let walk = frame_engine::walk_frame::<u16>(
                     scratch_ten,
-                    plan,
                     candidate,
                     bytes,
                     frame_envelope,
@@ -676,7 +669,6 @@ where
     let ([_, sequence_envelope, key_envelope], _) = require_leading_frame_unit(leading_obus)?;
     preflight(stream.ivf_header())?;
     let frame_rate = stream.frame_rate();
-    let plan = stream.plan();
 
     let mut sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
@@ -821,7 +813,6 @@ where
                 let mut product_writers = frames.reserve_products()?;
                 let walk = frame_engine::walk_frame::<u8>(
                     decode_scratch_eight,
-                    plan,
                     key_candidate,
                     leading_unit.view(),
                     key_envelope,
@@ -874,7 +865,6 @@ where
                 let mut product_writers = frames.reserve_products()?;
                 let walk = frame_engine::walk_frame::<u16>(
                     decode_scratch_ten,
-                    plan,
                     key_candidate,
                     leading_unit.view(),
                     key_envelope,
@@ -927,7 +917,6 @@ where
             0,
             leading_unit.view(),
             options,
-            plan,
             key_candidate,
             key_envelope,
             key_core.clone(),
@@ -1394,7 +1383,6 @@ where
                             let result = frame_pipeline::schedule_entropy(
                                 inter::InterFrameStart {
                                     records,
-                                    plan,
                                     candidate: next_candidate.clone(),
                                     core: inter_core,
                                     sequence: shared,
@@ -1491,7 +1479,6 @@ where
                             let mut product_writers = frames.reserve_products()?;
                             let walk = frame_engine::walk_frame(
                                 decode_scratch_eight,
-                                plan,
                                 next_candidate,
                                 unit.view(),
                                 inter_envelope,
@@ -1614,7 +1601,6 @@ where
                             let result = frame_pipeline::schedule_entropy(
                                 inter::InterFrameStart {
                                     records,
-                                    plan,
                                     candidate: next_candidate.clone(),
                                     core: inter_core,
                                     sequence: shared,
@@ -1711,7 +1697,6 @@ where
                             let mut product_writers = frames.reserve_products()?;
                             let walk = frame_engine::walk_frame(
                                 decode_scratch_ten,
-                                plan,
                                 next_candidate,
                                 unit.view(),
                                 inter_envelope,
@@ -2011,7 +1996,6 @@ where
                     frame_index,
                     unit.view(),
                     options,
-                    plan,
                     next_candidate,
                     key_envelope,
                     key_core.clone(),
@@ -2189,7 +2173,6 @@ pub(crate) enum TileFactsKind {
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_tile_plan_with<'payload>(
-    plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'payload>,
     sequence: &SequenceHeader,
@@ -2243,7 +2226,6 @@ pub(crate) fn derive_tile_plan_with<'payload>(
             )?)
         };
         let mut input = FrameCandidateTileBoundaryInput::new(
-            plan,
             &group_candidate,
             bytes,
             group_envelope,
@@ -2384,7 +2366,6 @@ fn continuation_structure_start_bits(
 }
 
 pub(crate) fn derive_tile_plan<'payload>(
-    plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'payload>,
     sequence: &SequenceHeader,
@@ -2393,7 +2374,6 @@ pub(crate) fn derive_tile_plan<'payload>(
 ) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> {
     let mut scratch = crate::bitstream::tile_payload::TilePayloadScratch::default();
     derive_tile_plan_with(
-        plan,
         candidate,
         bytes,
         sequence,

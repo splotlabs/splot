@@ -835,13 +835,10 @@ fn malformed_sef_frame_header_is_a_malformed_source_diagnostic() {
     let (bytes, frame_index) = repack_first_sef_payload(&[]);
     let options = DecodeOptions::default();
     let context = decode_context();
-    let plan = context
-        .plan_bytes(&bytes, options)
-        .expect("plan malformed SEF");
 
     let result = context
         .pool()
-        .install(|| decode_frames_from_plan(&bytes, &options, &plan));
+        .install(|| decode_frames_from_plan(&bytes, &options));
     let Err(error) = result else {
         panic!("malformed SEF frame header decoded successfully");
     };
@@ -965,13 +962,10 @@ fn malformed_sef_trailing_bits_are_a_malformed_source_diagnostic() {
     let (bytes, frame_index) = repack_first_sef_payload(&payload.into_bytes());
     let options = DecodeOptions::default();
     let context = decode_context();
-    let plan = context
-        .plan_bytes(&bytes, options)
-        .expect("plan malformed SEF trailing bits");
 
     let result = context
         .pool()
-        .install(|| decode_frames_from_plan(&bytes, &options, &plan));
+        .install(|| decode_frames_from_plan(&bytes, &options));
     let Err(error) = result else {
         panic!("SEF with malformed trailing bits decoded successfully");
     };

@@ -114,28 +114,6 @@ pub struct DecodeStreamPlan {
 }
 
 impl DecodeStreamPlan {
-    /// The plan the decode loop checks each candidate of one source kind
-    /// against: it bounds nothing, since units arrive one at a time.
-    pub(crate) const fn runtime(format: BitstreamFormat) -> &'static Self {
-        const fn plan(format: BitstreamFormat) -> DecodeStreamPlan {
-            DecodeStreamPlan {
-                format,
-                selected_layer: DecodeLayerSelection::BASE,
-                input_len_bytes: u64::MAX,
-                obus: Vec::new(),
-                obu_count: 0,
-                frame_candidate_count: 0,
-                source_warnings: Vec::new(),
-            }
-        }
-        static ANNEX_B: DecodeStreamPlan = plan(BitstreamFormat::AnnexB);
-        static IVF: DecodeStreamPlan = plan(BitstreamFormat::Ivf);
-        match format {
-            BitstreamFormat::AnnexB => &ANNEX_B,
-            BitstreamFormat::Ivf => &IVF,
-        }
-    }
-
     /// Source container format.
     #[must_use]
     pub const fn format(&self) -> BitstreamFormat {
