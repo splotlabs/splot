@@ -880,13 +880,18 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
         .as_frame_mut()
         .map_err(|_| DeblockError::Workspace)?;
     let (y, u, v) = frame.into_planes();
-    let mut planes = [Some(y), u, v]
-        .into_iter()
-        .enumerate()
-        .map(|(plane, view)| {
-            view.zip(dimensions[plane])
-                .map(|(view, size)| (plane, view, size))
-        });
+    let views = [Some(y), u, v];
+    if views
+        .iter()
+        .zip(&dimensions)
+        .any(|(view, size)| view.is_none() && size.is_some())
+    {
+        return Err(DeblockError::Workspace);
+    }
+    let mut planes = views.into_iter().enumerate().map(|(plane, view)| {
+        view.zip(dimensions[plane])
+            .map(|(view, size)| (plane, view, size))
+    });
     let mut slots: [_; 3] = core::array::from_fn(|_| planes.next().flatten());
     let deblock_plane =
         |slot: &mut Option<(usize, splot_recon::PlaneMut<'_, T>, (usize, usize))>| {
