@@ -2092,8 +2092,8 @@ fn blend_implicit_mask_region<T: ReconSample>(
     output: &mut [T],
     output_stride: usize,
 ) -> splot_recon::Result<()> {
-    let unit_width = (motion.unit_size >> sub_x).max(1);
-    let unit_height = (motion.unit_size >> sub_y).max(1);
+    let unit_width = (motion.unit_size >> sub_x).max(4);
+    let unit_height = (motion.unit_size >> sub_y).max(4);
     let unscaled = !scaling_templates.iter().any(|scaling| scaling.is_scaled());
     for cell_y in (y..y + height).step_by(unit_height) {
         for cell_x in (x..x + width).step_by(unit_width) {

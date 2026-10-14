@@ -495,3 +495,36 @@ fn tip_motion_grids_match_per_unit_cells() {
     tip_grids_match_per_unit_cells::<u8>(BitDepth::Eight, 5);
     tip_grids_match_per_unit_cells::<u16>(BitDepth::Ten, 9);
 }
+
+#[test]
+fn chroma_implicit_mask_reads_one_motion_cell_per_four_by_four_subblock() {
+    let onscreen = MotionCell::from_refinemv([Mv::ZERO; 2]);
+    let ref1_offscreen = MotionCell::from_refinemv([Mv::ZERO, mv(512, 0)]);
+    let motion = CompoundMotionGrid {
+        unit_size: 4,
+        columns: 2,
+        cells: MotionCells::Heap(vec![onscreen, onscreen, ref1_offscreen, onscreen]),
+        fullpel_runs: false,
+        refinemv_candidates: RefinemvCandidates::None,
+    };
+    let scaling =
+        crate::prediction::inter::mv_scaling::derive_plane_scaling(0, 0, 0, 0, 1, 1, 8, 8, 8, 8);
+    let pred0 = [16 * 100; 16];
+    let pred1 = [16 * 200; 16];
+    let mut output = [0u16; 16];
+    blend_implicit_mask_region(
+        [&pred0, &pred1],
+        4,
+        [0, 0, 4, 4],
+        &motion,
+        (0, 0),
+        [scaling; 2],
+        ImplicitMaskBlend::new(BitDepth::Eight, 4, 4),
+        (1, 1),
+        &mut output,
+        4,
+    )
+    .expect("chroma blend");
+
+    assert_eq!(output, [150; 16]);
+}
