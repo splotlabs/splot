@@ -57,7 +57,7 @@ use crate::completion::CompletionCell;
 use crate::error::ParallelError;
 use crate::pool::{
     TaskScope, assist_pool_or_park, bind_installed_pool_progress, current_pool_width,
-    notify_installed_pool_progress, pool_progress_snapshot,
+    notify_installed_pool_progress, pool_progress_snapshot, wake_workers, work_snapshot,
 };
 use crate::progress::PoolProgressBindings;
 use crate::watermark::WatermarkCell;
@@ -89,8 +89,8 @@ struct Runners {
 struct DriverDone<'a>(&'a Runners);
 impl Drop for DriverDone<'_> {
     fn drop(&mut self) {
-        self.0.done.store(true, Ordering::Release);
-        notify_installed_pool_progress();
+        self.0.done.store(true, Ordering::SeqCst);
+        wake_workers(true);
     }
 }
 struct RunnerExit<'a>(&'a Runners);
@@ -102,11 +102,15 @@ impl Drop for RunnerExit<'_> {
         notify_installed_pool_progress();
     }
 }
-struct ActiveJob<'a>(&'a AtomicUsize);
+struct ActiveJob<'a>(&'a Runners);
 impl Drop for ActiveJob<'_> {
     fn drop(&mut self) {
-        if self.0.fetch_sub(1, Ordering::AcqRel) == 1 {
-            notify_installed_pool_progress();
+        if self.0.jobs.fetch_sub(1, Ordering::SeqCst) == 1 {
+            if self.0.done.load(Ordering::SeqCst) {
+                wake_workers(true);
+            } else {
+                notify_installed_pool_progress();
+            }
         }
     }
 }
@@ -276,12 +280,9 @@ struct ReadyQueue {
 impl ReadyQueue {
     fn push(&self, entry: ReadyEntry) {
         let mut entries = self.entries.lock();
-        let wake = entries.is_empty();
         entries.push(Reverse(entry));
         drop(entries);
-        if wake {
-            self.progress.notify();
-        }
+        self.progress.notify_work_one();
     }
 
     fn pop(&self) -> Option<ReadyEntry> {
@@ -541,13 +542,13 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
         'job: 'scope,
     {
         loop {
-            let snapshot = pool_progress_snapshot();
+            let snapshot = work_snapshot();
             if self.assist_ready(scope) {
                 continue;
             }
-            if self.runners.done.load(Ordering::Acquire) {
+            if self.runners.done.load(Ordering::SeqCst) {
                 let entries = self.ready.entries.lock();
-                if entries.is_empty() && self.runners.jobs.load(Ordering::Acquire) == 0 {
+                if entries.is_empty() && self.runners.jobs.load(Ordering::SeqCst) == 0 {
                     break;
                 }
             }
@@ -568,7 +569,7 @@ impl<'job, F: Task<'job>> AdmissionScheduler<'job, F> {
             self.runners.jobs.fetch_add(1, Ordering::AcqRel);
             entry
         };
-        let _active = ActiveJob(&self.runners.jobs);
+        let _active = ActiveJob(&self.runners);
         let job = self.slots.lock().take_job(entry);
         if let Some(job) = job {
             self.run_job(scope, job);

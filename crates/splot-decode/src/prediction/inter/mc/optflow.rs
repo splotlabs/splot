@@ -942,6 +942,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             .par_chunks_mut(columns)
             .enumerate()
             .try_for_each(|(row, cells)| {
+                splot_parallel::wake_idle_worker();
                 let fast = fullpel
                     && super::refinemv::tip_fullpel_cells(
                         sink,
@@ -1542,6 +1543,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
             .par_chunks_mut(row_samples)
             .enumerate()
             .try_for_each(|(cell_row, output)| {
+                splot_parallel::wake_idle_worker();
                 let mut pred_scratch = [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
                 let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
                 process_row(

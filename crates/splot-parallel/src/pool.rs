@@ -46,9 +46,12 @@ impl<'scope> TaskScope<'_, 'scope> {
         F: for<'next> Fn(&TaskScope<'next, 'scope>) + Send + Sync + 'scope,
     {
         match self.inner {
-            Some(inner) => inner.spawn_broadcast(move |inner, _| {
-                task(&TaskScope { inner: Some(inner) });
-            }),
+            Some(inner) => {
+                inner.spawn_broadcast(move |inner, _| {
+                    task(&TaskScope { inner: Some(inner) });
+                });
+                wake_workers(true);
+            }
             None => task(&TaskScope { inner: None }),
         }
     }
@@ -59,9 +62,12 @@ impl<'scope> TaskScope<'_, 'scope> {
         F: for<'next> FnOnce(&TaskScope<'next, 'scope>) + Send + 'scope,
     {
         match self.inner {
-            Some(inner) => inner.spawn_fifo(move |inner| {
-                task(&TaskScope { inner: Some(inner) });
-            }),
+            Some(inner) => {
+                inner.spawn_fifo(move |inner| {
+                    task(&TaskScope { inner: Some(inner) });
+                });
+                wake_idle_worker();
+            }
             None => task(&TaskScope { inner: None }),
         }
     }
@@ -77,7 +83,7 @@ impl WorkerPool {
     /// Returns [`ParallelError::PoolBuild`] if the Rayon pool cannot be built.
     pub fn new(thread_count: ThreadCount) -> Result<Self, ParallelError> {
         let threads = thread_count.resolve();
-        let progress = Arc::new(PoolProgressEvent::new());
+        let progress = Arc::new(PoolProgressEvent::default());
         let inner = rayon::ThreadPoolBuilder::new()
             .num_threads(threads.get())
             .thread_name(|index| format!("splot-worker-{index}"))
@@ -146,6 +152,7 @@ impl WorkerPool {
         self.inner.spawn(move || {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         });
+        self.progress.notify_work(false);
     }
 }
 
@@ -185,6 +192,7 @@ where
 pub struct PoolProgressSnapshot {
     progress: Option<Arc<PoolProgressEvent>>,
     generation: u64,
+    work: bool,
 }
 
 /// Captures the current decoder pool's progress generation.
@@ -194,12 +202,29 @@ pub struct PoolProgressSnapshot {
 /// legacy off-pool fallback in [`assist_pool_or_park`].
 #[must_use]
 pub fn pool_progress_snapshot() -> PoolProgressSnapshot {
-    let progress = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade());
-    let generation = progress.as_deref().map_or(0, PoolProgressEvent::generation);
+    snapshot(false)
+}
+
+/// Like [`pool_progress_snapshot`], for an idle queue worker that only new
+/// work should wake.
+pub(crate) fn work_snapshot() -> PoolProgressSnapshot {
+    snapshot(true)
+}
+
+fn snapshot(work: bool) -> PoolProgressSnapshot {
+    let progress = installed_progress();
+    let generation = progress
+        .as_deref()
+        .map_or(0, |progress| progress.channel(work).generation());
     PoolProgressSnapshot {
         progress,
         generation,
+        work,
     }
+}
+
+fn installed_progress() -> Option<Arc<PoolProgressEvent>> {
+    INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade())
 }
 
 /// What one [`assist_installed_pool`] attempt did.
@@ -237,7 +262,9 @@ pub(crate) fn assist_installed_pool_or_wait(snapshot: &PoolProgressSnapshot) -> 
                 if progress.has_pending_install() {
                     std::thread::yield_now();
                 } else {
-                    progress.wait_if_unchanged(snapshot.generation);
+                    progress
+                        .channel(snapshot.work)
+                        .wait_if_unchanged(snapshot.generation);
                 }
             }
         }
@@ -246,17 +273,21 @@ pub(crate) fn assist_installed_pool_or_wait(snapshot: &PoolProgressSnapshot) -> 
     assisted
 }
 
-/// Wakes one worker parked in [`assist_pool_or_park`] so it can steal the half
-/// a join has queued: Rayon's own wakeup reaches only its idle workers. The
-/// caller runs it from the first half, after Rayon has pushed the second.
-fn wake_parked_worker() {
-    if let Some(progress) = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade()) {
-        progress.notify_one();
+/// Wakes one idle worker and the parked driver so they can steal Rayon work:
+/// Rayon's own wakeup reaches only its idle workers. Call it after the work is
+/// queued, from a join's first half or a parallel iterator's leaf.
+pub fn wake_idle_worker() {
+    wake_workers(false);
+}
+
+pub(crate) fn wake_workers(all: bool) {
+    if let Some(progress) = installed_progress() {
+        progress.notify_work(all);
     }
 }
 
 pub(crate) fn notify_installed_pool_progress() {
-    if let Some(progress) = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade()) {
+    if let Some(progress) = installed_progress() {
         progress.notify();
     }
 }
@@ -319,7 +350,7 @@ where
             pool.join(
                 move || {
                     if wake {
-                        wake_parked_worker();
+                        wake_idle_worker();
                     }
                     a()
                 },
@@ -526,16 +557,22 @@ mod tests {
     }
 
     #[test]
-    fn join_each_wakes_a_worker_parked_in_pool_assist() {
+    fn join_each_wakes_a_parked_driver_or_worker() {
+        for work in [false, true] {
+            assert!(join_overlaps_a_parked_thread(work), "work waiter: {work}");
+        }
+    }
+
+    fn join_overlaps_a_parked_thread(work: bool) -> bool {
         let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
         let progress = Arc::clone(&pool.progress);
         let stop = AtomicBool::new(false);
         let second_ran = AtomicBool::new(false);
-        let overlapped = pool.install(|| {
+        pool.install(|| {
             ready_task_scope(|scope| {
                 scope.spawn(|_| {
                     while !stop.load(Ordering::Acquire) {
-                        let snapshot = pool_progress_snapshot();
+                        let snapshot = snapshot(work);
                         if !stop.load(Ordering::Acquire) {
                             assist_pool_or_park(&snapshot);
                         }
@@ -565,11 +602,11 @@ mod tests {
                 .unwrap();
                 stop.store(true, Ordering::Release);
                 progress.notify();
+                progress.notify_work(true);
                 overlapped.into_inner()
             })
             .unwrap()
-        });
-        assert!(overlapped, "the parked worker must steal the joined half");
+        })
     }
 
     #[test]
