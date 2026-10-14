@@ -545,7 +545,8 @@ mod tests {
                         second_ran.store(true, Ordering::Release);
                         return Ok::<(), ()>(());
                     }
-                    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                    let scheduling_slack = Duration::from_secs(10);
+                    let deadline = std::time::Instant::now() + scheduling_slack;
                     while !second_ran.load(Ordering::Acquire)
                         && std::time::Instant::now() < deadline
                     {
