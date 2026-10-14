@@ -7,59 +7,103 @@ use parking_lot::{Condvar, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{OnceLock, Weak};
 
-/// One decoder pool's generation and condition variable.
+/// A generation counter whose waiters sleep only while it is unchanged.
 ///
-/// The waiter reads `generation` before checking its condition and the pool.
-/// If neither made progress, it locks `state`, registers itself, and waits only
-/// while the generation still matches. A publisher advances the generation
-/// before taking `state` and notifying, so publication either changes the
-/// waiter's final check or happens after the condition-variable wait has
-/// atomically released the mutex. No notification can fall between those two
-/// cases. Completion and watermark sources retain only weak links to their
-/// pool-owned event, so observing a source cannot extend the pool's lifetime.
-#[derive(Debug)]
-pub(crate) struct PoolProgressEvent {
+/// A waiter reads `generation` before it checks its condition. To sleep, it
+/// locks `state`, registers in `waiters`, and re-reads `generation`; a
+/// notifier advances `generation` and then reads `waiters`. Both orders are
+/// sequentially consistent, so either the waiter sees the new generation or
+/// the notifier sees the waiter and notifies under `state`, which the waiter
+/// holds until its wait releases it.
+#[derive(Debug, Default)]
+pub(crate) struct EventCount {
     generation: AtomicU64,
-    pending_installs: AtomicUsize,
+    waiters: AtomicUsize,
     state: Mutex<()>,
     cond: Condvar,
     #[cfg(test)]
-    parked_waiters: AtomicUsize,
+    parked: AtomicUsize,
+}
+
+impl EventCount {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    fn notify(&self, all: bool) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if self.waiters.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        let state = self.state.lock();
+        if all {
+            self.cond.notify_all();
+        } else {
+            self.cond.notify_one();
+        }
+        drop(state);
+    }
+
+    pub(crate) fn wait_if_unchanged(&self, observed: u64) {
+        self.wait_if_unchanged_inner(observed, || {});
+    }
+
+    fn wait_if_unchanged_inner(&self, observed: u64, setup: impl FnOnce()) {
+        let mut state = self.state.lock();
+        self.waiters.fetch_add(1, Ordering::SeqCst);
+        if self.generation() == observed {
+            setup();
+            if self.generation() == observed {
+                #[cfg(test)]
+                self.parked.fetch_add(1, Ordering::Release);
+                self.cond.wait(&mut state);
+                #[cfg(test)]
+                self.parked.fetch_sub(1, Ordering::Release);
+            }
+        }
+        self.waiters.fetch_sub(1, Ordering::SeqCst);
+        drop(state);
+    }
+
+    #[cfg(test)]
+    fn parked(&self) -> usize {
+        self.parked.load(Ordering::Acquire)
+    }
+}
+
+/// One decoder pool's wake-up events.
+///
+/// The pipeline driver waits on `progress`, which every publication advances.
+/// Idle queue workers wait on `work`, which only queued work advances, and
+/// queued work also wakes the driver so it can steal. Completion and watermark
+/// sources retain only weak links to their pool-owned event, so observing a
+/// source cannot extend the pool's lifetime.
+#[derive(Debug, Default)]
+pub(crate) struct PoolProgressEvent {
+    progress: EventCount,
+    work: EventCount,
+    pending_installs: AtomicUsize,
 }
 
 impl PoolProgressEvent {
-    pub(crate) fn new() -> Self {
-        Self {
-            generation: AtomicU64::new(0),
-            pending_installs: AtomicUsize::new(0),
-            state: Mutex::new(()),
-            cond: Condvar::new(),
-            #[cfg(test)]
-            parked_waiters: AtomicUsize::new(0),
-        }
-    }
-
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Acquire)
+    /// The driver's event, or the idle queue workers' event when `work` is set.
+    pub(crate) fn channel(&self, work: bool) -> &EventCount {
+        if work { &self.work } else { &self.progress }
     }
 
     pub(crate) fn notify(&self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        let state = self.state.lock();
-        self.cond.notify_all();
-        drop(state);
+        self.progress.notify(true);
     }
 
-    pub(crate) fn notify_one(&self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        let state = self.state.lock();
-        self.cond.notify_one();
-        drop(state);
+    /// Wakes one idle queue worker, or all of them when `all` is set.
+    pub(crate) fn notify_work(&self, all: bool) {
+        self.work.notify(all);
+        self.progress.notify(true);
     }
 
     pub(crate) fn install_submitted(&self) {
         self.pending_installs.fetch_add(1, Ordering::AcqRel);
-        self.notify();
+        self.notify_work(true);
     }
 
     pub(crate) fn install_started(&self) {
@@ -71,38 +115,9 @@ impl PoolProgressEvent {
         self.pending_installs.load(Ordering::Acquire) != 0
     }
 
-    pub(crate) fn wait_if_unchanged(&self, observed: u64) {
-        self.wait_if_unchanged_inner(observed, || {});
-    }
-
-    fn wait_if_unchanged_inner(&self, observed: u64, setup: impl FnOnce()) {
-        let state = self.state.lock();
-        if self.generation() != observed {
-            return;
-        }
-        setup();
-        if self.generation() != observed {
-            return;
-        }
-        #[cfg(test)]
-        self.parked_waiters.fetch_add(1, Ordering::Release);
-        let mut state = state;
-        self.cond.wait(&mut state);
-        #[cfg(test)]
-        self.parked_waiters.fetch_sub(1, Ordering::Release);
-        drop(state);
-    }
-
     #[cfg(test)]
     pub(crate) fn parked_waiters(&self) -> usize {
-        self.parked_waiters.load(Ordering::Acquire)
-    }
-
-    #[cfg(test)]
-    fn spurious_notify(&self) {
-        let state = self.state.lock();
-        self.cond.notify_all();
-        drop(state);
+        self.progress.parked() + self.work.parked()
     }
 }
 
@@ -146,21 +161,24 @@ impl PoolProgressBindings {
         }
     }
 
-    pub(crate) fn notify(&self) {
+    fn each(&self, notify: impl Fn(&PoolProgressEvent)) {
         if let Some(progress) = self.primary.get().and_then(Weak::upgrade) {
-            progress.notify();
+            notify(&progress);
         }
+        if let Some(additional) = self.additional.get() {
+            additional
+                .lock()
+                .retain(|bound| bound.upgrade().map(|progress| notify(&progress)).is_some());
+        }
+    }
 
-        let Some(additional) = self.additional.get() else {
-            return;
-        };
-        additional.lock().retain(|bound| {
-            let Some(progress) = bound.upgrade() else {
-                return false;
-            };
-            progress.notify();
-            true
-        });
+    pub(crate) fn notify(&self) {
+        self.each(PoolProgressEvent::notify);
+    }
+
+    /// Wakes one idle queue worker of each bound pool.
+    pub(crate) fn notify_work_one(&self) {
+        self.each(|progress| progress.notify_work(false));
     }
 }
 
@@ -180,25 +198,31 @@ mod tests {
 
     use super::*;
 
-    fn wait_until_parked(event: &PoolProgressEvent, count: usize) {
-        while event.parked_waiters() < count {
+    fn wait_until_parked(event: &EventCount, count: usize) {
+        while event.parked() < count {
             thread::yield_now();
         }
     }
 
+    fn spurious_notify(event: &EventCount) {
+        let state = event.state.lock();
+        event.cond.notify_all();
+        drop(state);
+    }
+
     #[test]
     fn notification_before_wait_skips_the_park() {
-        let event = PoolProgressEvent::new();
+        let event = EventCount::default();
         let observed = event.generation();
-        event.notify();
+        event.notify(true);
         event.wait_if_unchanged(observed);
-        assert_eq!(event.parked_waiters(), 0);
+        assert_eq!(event.parked(), 0);
         assert_eq!(event.generation(), 1);
     }
 
     #[test]
     fn notification_during_wait_setup_cannot_be_lost() {
-        let event = Arc::new(PoolProgressEvent::new());
+        let event = Arc::new(EventCount::default());
         let release_publisher = Arc::new(AtomicBool::new(false));
         let publisher_event = Arc::clone(&event);
         let publisher_release = Arc::clone(&release_publisher);
@@ -206,7 +230,7 @@ mod tests {
             while !publisher_release.load(Ordering::Acquire) {
                 thread::yield_now();
             }
-            publisher_event.notify();
+            publisher_event.notify(true);
         });
         let observed = event.generation();
         event.wait_if_unchanged_inner(observed, || {
@@ -216,28 +240,28 @@ mod tests {
             }
         });
         publisher.join().expect("publisher");
-        assert_eq!(event.parked_waiters(), 0);
+        assert_eq!(event.parked(), 0);
         assert_eq!(event.generation(), 1);
     }
 
     #[test]
     fn notification_while_parked_wakes_the_waiter() {
-        let event = Arc::new(PoolProgressEvent::new());
+        let event = Arc::new(EventCount::default());
         let waiter_event = Arc::clone(&event);
         let waiter = thread::spawn(move || {
             let observed = waiter_event.generation();
             waiter_event.wait_if_unchanged(observed);
         });
         wait_until_parked(&event, 1);
-        event.notify();
+        event.notify(true);
         waiter.join().expect("waiter");
-        assert_eq!(event.parked_waiters(), 0);
+        assert_eq!(event.parked(), 0);
         assert_eq!(event.generation(), 1);
     }
 
     #[test]
     fn spurious_wake_returns_for_a_condition_recheck() {
-        let event = Arc::new(PoolProgressEvent::new());
+        let event = Arc::new(EventCount::default());
         let waiter_event = Arc::clone(&event);
         let returned = Arc::new(AtomicBool::new(false));
         let waiter_returned = Arc::clone(&returned);
@@ -247,7 +271,7 @@ mod tests {
             waiter_returned.store(true, Ordering::Release);
         });
         wait_until_parked(&event, 1);
-        event.spurious_notify();
+        spurious_notify(&event);
         waiter.join().expect("waiter");
         assert!(returned.load(Ordering::Acquire));
         assert_eq!(event.generation(), 0);
@@ -256,7 +280,7 @@ mod tests {
     #[test]
     fn repeated_wake_cycles_do_not_lose_progress() {
         const CYCLES: usize = 1_000;
-        let event = Arc::new(PoolProgressEvent::new());
+        let event = Arc::new(EventCount::default());
         let completed = Arc::new(AtomicUsize::new(0));
         let waiter_event = Arc::clone(&event);
         let waiter_completed = Arc::clone(&completed);
@@ -272,7 +296,7 @@ mod tests {
                 thread::yield_now();
             }
             wait_until_parked(&event, 1);
-            event.notify();
+            event.notify(true);
         }
         waiter.join().expect("waiter");
         assert_eq!(completed.load(Ordering::Acquire), CYCLES);
@@ -281,8 +305,8 @@ mod tests {
 
     #[test]
     fn independent_events_do_not_cross_wake() {
-        let first = Arc::new(PoolProgressEvent::new());
-        let second = Arc::new(PoolProgressEvent::new());
+        let first = Arc::new(EventCount::default());
+        let second = Arc::new(EventCount::default());
         let barrier = Arc::new(Barrier::new(3));
         let first_waiter = {
             let event = Arc::clone(&first);
@@ -305,47 +329,47 @@ mod tests {
         barrier.wait();
         wait_until_parked(&first, 1);
         wait_until_parked(&second, 1);
-        first.notify();
+        first.notify(true);
         first_waiter.join().expect("first waiter");
         assert_eq!(second.generation(), 0);
-        assert_eq!(second.parked_waiters(), 1);
-        second.notify();
+        assert_eq!(second.parked(), 1);
+        second.notify(true);
         second_waiter.join().expect("second waiter");
     }
 
     #[test]
     fn bindings_rebind_after_the_first_event_drops() {
         let bindings = PoolProgressBindings::new();
-        let first = Arc::new(PoolProgressEvent::new());
+        let first = Arc::new(PoolProgressEvent::default());
         bindings.bind(&Arc::downgrade(&first));
         assert!(bindings.additional.get().is_none());
         drop(first);
 
-        let second = Arc::new(PoolProgressEvent::new());
+        let second = Arc::new(PoolProgressEvent::default());
         bindings.bind(&Arc::downgrade(&second));
         assert!(bindings.additional.get().is_some());
         bindings.notify();
-        assert_eq!(second.generation(), 1);
+        assert_eq!(second.channel(false).generation(), 1);
     }
 
     #[test]
     fn bindings_notify_each_live_event() {
         let bindings = PoolProgressBindings::new();
-        let first = Arc::new(PoolProgressEvent::new());
-        let second = Arc::new(PoolProgressEvent::new());
+        let first = Arc::new(PoolProgressEvent::default());
+        let second = Arc::new(PoolProgressEvent::default());
         bindings.bind(&Arc::downgrade(&first));
         assert!(bindings.additional.get().is_none());
         bindings.bind(&Arc::downgrade(&second));
         assert!(bindings.additional.get().is_some());
         bindings.notify();
-        assert_eq!(first.generation(), 1);
-        assert_eq!(second.generation(), 1);
+        assert_eq!(first.channel(false).generation(), 1);
+        assert_eq!(second.channel(false).generation(), 1);
     }
 
     #[test]
     fn high_volume_publication_has_no_lost_wake() {
         const NOTIFICATIONS: usize = 50_000;
-        let event = Arc::new(PoolProgressEvent::new());
+        let event = Arc::new(EventCount::default());
         let published = Arc::new(AtomicUsize::new(0));
         let waiter_event = Arc::clone(&event);
         let waiter_published = Arc::clone(&published);
@@ -359,7 +383,7 @@ mod tests {
         });
         for value in 1..=NOTIFICATIONS {
             published.store(value, Ordering::Release);
-            event.notify();
+            event.notify(true);
         }
         waiter.join().expect("waiter");
         assert_eq!(event.generation(), NOTIFICATIONS as u64);

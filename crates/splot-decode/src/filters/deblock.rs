@@ -551,7 +551,10 @@ impl<'a> FrameDeblock<'a> {
         }
         let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
         if jobs.len() > 1 {
-            jobs.into_par_iter().try_for_each(run)?;
+            jobs.into_par_iter().try_for_each(|job| {
+                splot_parallel::wake_idle_worker();
+                run(job)
+            })?;
         } else {
             jobs.into_iter().try_for_each(run)?;
         }
@@ -866,106 +869,132 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
     let pixel_format = workspace.info().pixel_format();
-    for plane in 0..3 {
+    let mut dimensions = [None; 3];
+    for (plane, dimension) in dimensions.iter_mut().enumerate() {
         let plane_id = plane_index_to_id(plane);
-        if workspace.plane(plane_id).is_err() {
-            continue;
-        }
-        let (sub_x, sub_y) = if plane == 0 {
-            (0, 0)
-        } else {
-            (
-                usize::from(pixel_format.subsampling_x()),
-                usize::from(pixel_format.subsampling_y()),
-            )
-        };
-        let unit_width = (luma_unit_size >> sub_x).max(1);
-        let unit_height = (luma_unit_size >> sub_y).max(1);
-        let quant_delta = match plane {
-            1 => quant.delta_q_u_ac + base_uv_ac_delta_q,
-            2 => quant.delta_q_v_ac + base_uv_ac_delta_q,
-            _ => 0,
-        };
-        let (q_thr, side) = adaptive_strength(
-            q_clamped(quant.base_q_idx, quant_delta, bit_depth),
-            bit_depth,
-        );
-        let (width, height) = coded_plane_dimensions(workspace, plane_id)?;
-        let mut frame = workspace
-            .as_frame_mut()
-            .map_err(|_| DeblockError::Workspace)?;
-        let view = frame.plane_mut(plane_id).ok_or(DeblockError::Workspace)?;
-        let stride = view.stride_samples();
-        let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
-        let mut plane_ctx = PlaneCtx::new(&mut band)?;
-        let run_edge = |boundary, (max_width_neg, max_width_pos): (usize, usize)| ContiguousEdge {
-            boundary,
-            q_thr,
-            side,
-            max_width_neg: max_width_neg as u8,
-            max_width_pos: max_width_pos as u8,
-            prev_lossless: false,
-            curr_lossless: false,
-        };
-        let full_rows = height / MI_SIZE;
-        for x in (unit_width..width).step_by(unit_width) {
-            let tile_edge = tip_tile_edge(tile_starts.map(|(cols, _)| cols), x, sub_x);
-            if disable_loopfilters_across_tiles && tile_edge {
-                continue;
-            }
-            let max_widths = deblock_filter_max_width(unit_width, plane != 0, tile_edge);
-            let mut first_y = 0;
-            if full_rows > 0 && x >= GATHER_HALF && x <= width.saturating_sub(GATHER_HALF) {
-                let edge = run_edge(x, max_widths);
-                filter_contiguous_run::<T, 0>(&mut plane_ctx, edge, full_rows, bit_depth)?;
-                first_y = full_rows * MI_SIZE;
-            }
-            for y in (first_y..height).step_by(MI_SIZE) {
-                apply_tip_filter_edge(
-                    &mut plane_ctx,
-                    x,
-                    y,
-                    1,
-                    0,
-                    height.saturating_sub(y).min(MI_SIZE),
-                    q_thr,
-                    side,
-                    max_widths,
-                    bit_depth,
-                )?;
-            }
-        }
-        let full_cols = width / MI_SIZE;
-        for y in (unit_height..height).step_by(unit_height) {
-            let tile_edge = tip_tile_edge(tile_starts.map(|(_, rows)| rows), y, sub_y);
-            if disable_loopfilters_across_tiles && tile_edge {
-                continue;
-            }
-            let max_widths =
-                deblock_filter_max_width(unit_height, plane != 0, y.is_multiple_of(64 >> sub_y));
-            let mut first_x = 0;
-            if y >= GATHER_HALF && y <= height.saturating_sub(GATHER_HALF) {
-                let edge = run_edge(y * stride, max_widths);
-                filter_contiguous_run::<T, 1>(&mut plane_ctx, edge, full_cols, bit_depth)?;
-                first_x = full_cols * MI_SIZE;
-            }
-            for x in (first_x..width).step_by(MI_SIZE) {
-                apply_tip_filter_edge(
-                    &mut plane_ctx,
-                    x,
-                    y,
-                    0,
-                    1,
-                    width.saturating_sub(x).min(MI_SIZE),
-                    q_thr,
-                    side,
-                    max_widths,
-                    bit_depth,
-                )?;
-            }
+        if workspace.plane(plane_id).is_ok() {
+            *dimension = Some(coded_plane_dimensions(workspace, plane_id)?);
         }
     }
-    Ok(())
+    let frame = workspace
+        .as_frame_mut()
+        .map_err(|_| DeblockError::Workspace)?;
+    let (y, u, v) = frame.into_planes();
+    let views = [Some(y), u, v];
+    if views
+        .iter()
+        .zip(&dimensions)
+        .any(|(view, size)| view.is_none() && size.is_some())
+    {
+        return Err(DeblockError::Workspace);
+    }
+    let mut planes = views.into_iter().enumerate().map(|(plane, view)| {
+        view.zip(dimensions[plane])
+            .map(|(view, size)| (plane, view, size))
+    });
+    let mut slots: [_; 3] = core::array::from_fn(|_| planes.next().flatten());
+    let deblock_plane =
+        |slot: &mut Option<(usize, splot_recon::PlaneMut<'_, T>, (usize, usize))>| {
+            let Some((plane, view, (width, height))) = slot.as_mut() else {
+                return Ok(());
+            };
+            let plane = *plane;
+            let (width, height) = (*width, *height);
+            let (sub_x, sub_y) = if plane == 0 {
+                (0, 0)
+            } else {
+                (
+                    usize::from(pixel_format.subsampling_x()),
+                    usize::from(pixel_format.subsampling_y()),
+                )
+            };
+            let unit_width = (luma_unit_size >> sub_x).max(1);
+            let unit_height = (luma_unit_size >> sub_y).max(1);
+            let quant_delta = match plane {
+                1 => quant.delta_q_u_ac + base_uv_ac_delta_q,
+                2 => quant.delta_q_v_ac + base_uv_ac_delta_q,
+                _ => 0,
+            };
+            let (q_thr, side) = adaptive_strength(
+                q_clamped(quant.base_q_idx, quant_delta, bit_depth),
+                bit_depth,
+            );
+            let stride = view.stride_samples();
+            let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
+            let mut plane_ctx = PlaneCtx::new(&mut band)?;
+            let run_edge =
+                |boundary, (max_width_neg, max_width_pos): (usize, usize)| ContiguousEdge {
+                    boundary,
+                    q_thr,
+                    side,
+                    max_width_neg: max_width_neg as u8,
+                    max_width_pos: max_width_pos as u8,
+                    prev_lossless: false,
+                    curr_lossless: false,
+                };
+            let full_rows = height / MI_SIZE;
+            for x in (unit_width..width).step_by(unit_width) {
+                let tile_edge = tip_tile_edge(tile_starts.map(|(cols, _)| cols), x, sub_x);
+                if disable_loopfilters_across_tiles && tile_edge {
+                    continue;
+                }
+                let max_widths = deblock_filter_max_width(unit_width, plane != 0, tile_edge);
+                let mut first_y = 0;
+                if full_rows > 0 && x >= GATHER_HALF && x <= width.saturating_sub(GATHER_HALF) {
+                    let edge = run_edge(x, max_widths);
+                    filter_contiguous_run::<T, 0>(&mut plane_ctx, edge, full_rows, bit_depth)?;
+                    first_y = full_rows * MI_SIZE;
+                }
+                for y in (first_y..height).step_by(MI_SIZE) {
+                    apply_tip_filter_edge(
+                        &mut plane_ctx,
+                        x,
+                        y,
+                        1,
+                        0,
+                        height.saturating_sub(y).min(MI_SIZE),
+                        q_thr,
+                        side,
+                        max_widths,
+                        bit_depth,
+                    )?;
+                }
+            }
+            let full_cols = width / MI_SIZE;
+            for y in (unit_height..height).step_by(unit_height) {
+                let tile_edge = tip_tile_edge(tile_starts.map(|(_, rows)| rows), y, sub_y);
+                if disable_loopfilters_across_tiles && tile_edge {
+                    continue;
+                }
+                let max_widths = deblock_filter_max_width(
+                    unit_height,
+                    plane != 0,
+                    y.is_multiple_of(64 >> sub_y),
+                );
+                let mut first_x = 0;
+                if y >= GATHER_HALF && y <= height.saturating_sub(GATHER_HALF) {
+                    let edge = run_edge(y * stride, max_widths);
+                    filter_contiguous_run::<T, 1>(&mut plane_ctx, edge, full_cols, bit_depth)?;
+                    first_x = full_cols * MI_SIZE;
+                }
+                for x in (first_x..width).step_by(MI_SIZE) {
+                    apply_tip_filter_edge(
+                        &mut plane_ctx,
+                        x,
+                        y,
+                        0,
+                        1,
+                        width.saturating_sub(x).min(MI_SIZE),
+                        q_thr,
+                        side,
+                        max_widths,
+                        bit_depth,
+                    )?;
+                }
+            }
+            Ok(())
+        };
+    splot_parallel::join_each(&mut slots, &deblock_plane)
 }
 
 fn tip_tile_edge(starts: Option<&[u32]>, coordinate: usize, subsampling: usize) -> bool {

@@ -363,6 +363,7 @@ fn compute_parallel_outputs<T: ReconSample>(
         .par_chunks_mut(output_stride)
         .zip(units.par_iter_mut())
         .try_for_each(|(samples, unit)| {
+            splot_parallel::wake_idle_worker();
             let compound = prediction
                 .block_params(unit)
                 .into_compound()
