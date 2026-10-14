@@ -5679,13 +5679,13 @@ name = "Public AV2 vector corpus integration"
 category = "conformance"
 kind = "conformance"
 spec_sections = ["5.18.4.4", "7.13.2.1", "7.13.2.7", "7.14.3", "7.14.6", "7.17.2", "7.20.2", "7.23"]
-sources = ["https://github.com/EwoutH/AV2/tree/73aeca5d04c9bc47b202a3d2e66d07f9c7af4746/samples"]
+sources = ["https://github.com/EwoutH/AV2/tree/6b5210a15d015421ada90da846f4660745583a21/samples"]
 crate = "xtask"
 module = "scripts/check-external-vectors.py"
 change_id = "fetch-public-vectors"
 owner = "conformance"
 risk = "medium"
-notes = "CI fetches nine EwoutH/AV2 IVF samples at a pinned revision. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revision. The shared external runner checks complete output at 1 and 8 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external. Each sample contains 130 displayed frames despite its 600f filename."
+notes = "CI fetches sixteen EwoutH/AV2 IVF samples at a pinned revision, from 270x480 to 1920x1080, 8-bit and 10-bit. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revision. The local AVM oracle reproduces every MD5 in the upstream samples/manifest.txt. The shared external runner checks complete output at 1 and 8 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external."
 
 [feature.status]
 mapped = "done"

@@ -920,6 +920,30 @@ fn single_mv_storage_keeps_the_first_six_candidates() {
 }
 
 #[test]
+fn single_mv_storage_merges_a_duplicate_into_a_full_stack() {
+    let mut entries = FixedStack::new();
+    let mut prune_count = 0;
+    for col in 0..MAX_REF_MV_STACK_SIZE as i32 {
+        insert_mv_stack_entry(
+            &mut entries,
+            &mut prune_count,
+            Mv { row: 0, col },
+            1,
+            (-1, col),
+        );
+    }
+
+    let duplicate = Mv { row: 0, col: 1 };
+    assert_eq!(
+        insert_mv_stack_entry(&mut entries, &mut prune_count, duplicate, 1, (-1, 9)),
+        StackInsert::Updated
+    );
+
+    assert_eq!(entries.len(), MAX_REF_MV_STACK_SIZE);
+    assert_eq!(entries[1].weight, 2);
+}
+
+#[test]
 fn compound_mv_storage_keeps_the_first_six_candidates() {
     let mut entries = FixedStack::new();
     let mut prune_count = 0;

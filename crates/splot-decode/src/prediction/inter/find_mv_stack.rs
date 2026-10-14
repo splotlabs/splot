@@ -1805,9 +1805,6 @@ fn insert_mv_stack_entry(
     weight: u32,
     offsets: (i32, i32),
 ) -> StackInsert {
-    if entries.len() >= MAX_REF_MV_STACK_SIZE {
-        return StackInsert::Skipped;
-    }
     if *prune_count < MAX_PR_NUM {
         for entry in entries.iter_mut() {
             *prune_count += 1;
@@ -1877,6 +1874,9 @@ fn add_temporal_mv_sample(
     entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
 ) -> StackInsert {
+    if entries.len() >= MAX_REF_MV_STACK_SIZE {
+        return StackInsert::Skipped;
+    }
     let mv_row = block.mi_row.saturating_add(delta_row);
     let mv_col = block.mi_col.saturating_add(delta_col);
     if !grid.is_inside(mv_row, mv_col) {
