@@ -225,10 +225,11 @@ fn read_match_indices(
     num_ref_filters: usize,
     nopcw: bool,
 ) -> Result<crate::tile::InlineVec<usize, MAX_WIENER_NS_CLASSES>> {
+    let capped_ref = capped_reference_filter_count(plane, num_classes, num_ref_filters, nopcw);
     let group_counts = [
         num_classes,
-        capped_reference_filter_count(plane, num_classes, num_ref_filters, nopcw),
-        sampled_pc_wiener_filter_count(plane, num_classes, num_ref_filters, nopcw),
+        capped_ref,
+        sampled_pc_wiener_filter_count(plane, num_classes, capped_ref, nopcw),
     ];
     let mut match_indices = crate::tile::InlineVec::default();
 
@@ -614,6 +615,27 @@ mod tests {
         assert_eq!(class.subset, Some(0));
         assert_eq!(&class.coeffs[..6], &[-3, 1, 1, -3, -1, 1]);
         assert!(class.coeffs[6..].iter().all(|&coeff| coeff == 0));
+    }
+
+    #[test]
+    fn pc_wiener_group_is_sized_from_the_capped_reference_count() {
+        let view = CoreSeqRestorationView {
+            lr_pc_wiener_disabled: false,
+            ..restoration_without_pc_wiener()
+        };
+        let mut bits = Bits::default();
+        bits.bit(1); // c=0 leaves the predicted reference group.
+        bits.bit(1); // and selects the sampled PC-Wiener group.
+        bits.raw("0110"); // match index offset inside that group.
+        bits.bit(1); // merged[0]
+        let data = bits.into_bytes();
+        let parse = |num_ref_filters| {
+            let mut r = reader(&data);
+            let bank = parse_frame_wiener_ns_filter(&mut r, 0, 1, num_ref_filters, &[], view);
+            (bank.unwrap(), r.consumed_bits())
+        };
+
+        assert_eq!(parse(50), parse(47));
     }
 
     #[test]
