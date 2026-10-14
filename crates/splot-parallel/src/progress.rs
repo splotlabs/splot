@@ -50,6 +50,13 @@ impl PoolProgressEvent {
         drop(state);
     }
 
+    pub(crate) fn notify_one(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        let state = self.state.lock();
+        self.cond.notify_one();
+        drop(state);
+    }
+
     pub(crate) fn install_submitted(&self) {
         self.pending_installs.fetch_add(1, Ordering::AcqRel);
         self.notify();

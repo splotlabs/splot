@@ -246,6 +246,15 @@ pub(crate) fn assist_installed_pool_or_wait(snapshot: &PoolProgressSnapshot) -> 
     assisted
 }
 
+/// Wakes one worker parked in [`assist_pool_or_park`] so it can steal the half
+/// a join has queued: Rayon's own wakeup reaches only its idle workers. The
+/// caller runs it from the first half, after Rayon has pushed the second.
+fn wake_parked_worker() {
+    if let Some(progress) = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade()) {
+        progress.notify_one();
+    }
+}
+
 pub(crate) fn notify_installed_pool_progress() {
     if let Some(progress) = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade()) {
         progress.notify();
@@ -305,7 +314,18 @@ where
     RB: Send,
 {
     match INSTALLED_POOL.with(|installed| installed.borrow().upgrade()) {
-        Some(pool) if on_worker_pool() => pool.join(a, b),
+        Some(pool) if on_worker_pool() => {
+            let wake = pool.current_num_threads() > 1;
+            pool.join(
+                move || {
+                    if wake {
+                        wake_parked_worker();
+                    }
+                    a()
+                },
+                b,
+            )
+        }
         _ => (a(), b()),
     }
 }
@@ -503,6 +523,53 @@ mod tests {
         assert!(ran_before_assist, "the spawn runs on the spawning worker");
         assert!(still_idle, "a lone worker leaves nothing queued");
         assert!(ran.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn join_each_wakes_a_worker_parked_in_pool_assist() {
+        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
+        let progress = Arc::clone(&pool.progress);
+        let stop = AtomicBool::new(false);
+        let second_ran = AtomicBool::new(false);
+        let overlapped = pool.install(|| {
+            ready_task_scope(|scope| {
+                scope.spawn(|_| {
+                    while !stop.load(Ordering::Acquire) {
+                        let snapshot = pool_progress_snapshot();
+                        if !stop.load(Ordering::Acquire) {
+                            assist_pool_or_park(&snapshot);
+                        }
+                    }
+                });
+                let parked_by = std::time::Instant::now() + Duration::from_secs(5);
+                while progress.parked_waiters() == 0 && std::time::Instant::now() < parked_by {
+                    std::thread::yield_now();
+                }
+                let overlapped = AtomicBool::new(false);
+                let mut items = [0usize, 1];
+                join_each(&mut items, &|item: &mut usize| {
+                    if *item == 1 {
+                        second_ran.store(true, Ordering::Release);
+                        return Ok::<(), ()>(());
+                    }
+                    let scheduling_slack = Duration::from_secs(10);
+                    let deadline = std::time::Instant::now() + scheduling_slack;
+                    while !second_ran.load(Ordering::Acquire)
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::yield_now();
+                    }
+                    overlapped.store(second_ran.load(Ordering::Acquire), Ordering::Release);
+                    Ok(())
+                })
+                .unwrap();
+                stop.store(true, Ordering::Release);
+                progress.notify();
+                overlapped.into_inner()
+            })
+            .unwrap()
+        });
+        assert!(overlapped, "the parked worker must steal the joined half");
     }
 
     #[test]

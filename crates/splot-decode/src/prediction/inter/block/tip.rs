@@ -175,6 +175,20 @@ pub(super) struct TipReconstructScratch<T: ReconSample> {
     band_rects: Vec<splot_recon::PlaneRect>,
 }
 
+/// The TIP output walk's reusable state: one entry per full-width row band.
+#[derive(Debug, Default)]
+pub(super) struct TipOutputScratch<T: ReconSample> {
+    bands: Vec<TipOutputBand<T>>,
+    rects: Vec<splot_recon::PlaneRect>,
+}
+
+/// One TIP output row band's scratch and the motion records it produced.
+#[derive(Debug, Default)]
+struct TipOutputBand<T: ReconSample> {
+    scratch: TipReconstructScratch<T>,
+    records: Vec<TemporalMotionBlock>,
+}
+
 /// One published row band and the run of units that fill it.
 ///
 /// A band collects the units that share its top row, and those are consecutive
@@ -1274,11 +1288,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let mut lease = crate::support::decode_buffers::DecodeBuffers::lend_temporal(
         decode_scratch.buffers.as_deref(),
     );
-    let crate::support::decode_buffers::TemporalLease {
-        temporal,
-        records: temporal_records,
-        ..
-    } = &mut lease;
+    let crate::support::decode_buffers::TemporalLease { temporal, .. } = &mut lease;
     temporal.refresh_from_references(
         (mi_rows, mi_cols),
         current_order_hint,
@@ -1321,7 +1331,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         })?;
     let band_h = TIP_OUTPUT_BAND_LUMA_ROWS.min(height);
     let band_w = TIP_OUTPUT_BAND_LUMA_COLS.min(width);
-    let mut placed = PlacedInterBlock {
+    let placed = PlacedInterBlock {
         luma_x: 0,
         luma_y: 0,
         luma_w: band_w,
@@ -1351,58 +1361,98 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             residual: None,
         },
     };
-    let mut scratch = core::mem::take(&mut decode_scratch.tip_output);
-    temporal_records.clear();
-    let mut residual_scratch = InterResidualReconScratch::default();
-    let mut sink = mc::WorkspaceSink::Frame(&mut workspace);
-    for (band_y, band_x) in (0..height)
-        .step_by(band_h)
-        .flat_map(|y| (0..width).step_by(band_w).map(move |x| (y, x)))
-    {
-        let rows = band_h.min(height - band_y);
-        let cols = band_w.min(width - band_x);
-        placed.luma_y = band_y;
-        placed.luma_h = rows;
-        placed.chroma_luma_y = band_y;
-        placed.chroma_luma_h = rows;
-        placed.luma_x = band_x;
-        placed.luma_w = cols;
-        placed.chroma_luma_x = band_x;
-        placed.chroma_luma_w = cols;
-        let grid = motion(
-            &mut scratch,
-            temporal_records,
-            &sink,
-            &placed,
-            temporal,
-            sequence,
-            core,
-            ref_frame_idx,
-            reference,
-            offset,
-        )?;
-        super::temporal::commit_temporal_motion_blocks(&mut motion_field, temporal_records);
-        temporal_records.clear();
-        let grid = predict(
-            &mut scratch,
-            &mut residual_scratch,
-            &mut sink,
-            grid,
-            &placed,
-            &[],
-            &[],
-            temporal,
-            sequence,
-            core,
-            ref_frame_idx,
-            reference,
+    let mut output = core::mem::take(&mut decode_scratch.tip_output);
+    output.rects.clear();
+    for band_y in (0..height).step_by(band_h) {
+        output.rects.push(splot_recon::PlaneRect::new(
             0,
-            false,
-            false,
-            bit_depth,
-            offset,
-        )?;
-        retire_motion_grid(&mut scratch, grid);
+            band_y,
+            width,
+            band_h.min(height - band_y),
+        )?);
+    }
+    let band_count = output.rects.len();
+    if output.bands.len() < band_count {
+        output.bands.resize_with(band_count, TipOutputBand::default);
+    }
+    let reconstruct_band = |slot: &mut Option<(
+        splot_recon::CurrentFrameRect<'_, T>,
+        &mut TipOutputBand<T>,
+        splot_recon::PlaneRect,
+    )>|
+     -> Result<()> {
+        let Some((surface, band, rect)) = slot.as_mut() else {
+            return Ok(());
+        };
+        let mut placed = placed.clone();
+        placed.luma_y = rect.y();
+        placed.luma_h = rect.height();
+        placed.chroma_luma_y = rect.y();
+        placed.chroma_luma_h = rect.height();
+        let mut residual_scratch = InterResidualReconScratch::default();
+        let mut sink = mc::WorkspaceSink::Rect(surface);
+        for band_x in (0..width).step_by(band_w) {
+            let cols = band_w.min(width - band_x);
+            placed.luma_x = band_x;
+            placed.luma_w = cols;
+            placed.chroma_luma_x = band_x;
+            placed.chroma_luma_w = cols;
+            let grid = motion(
+                &mut band.scratch,
+                &mut band.records,
+                &sink,
+                &placed,
+                temporal,
+                sequence,
+                core,
+                ref_frame_idx,
+                reference,
+                offset,
+            )?;
+            let grid = predict(
+                &mut band.scratch,
+                &mut residual_scratch,
+                &mut sink,
+                grid,
+                &placed,
+                &[],
+                &[],
+                temporal,
+                sequence,
+                core,
+                ref_frame_idx,
+                reference,
+                0,
+                false,
+                false,
+                bit_depth,
+                offset,
+            )?;
+            retire_motion_grid(&mut band.scratch, grid);
+        }
+        Ok(())
+    };
+    let mut slots: [Option<_>; 32] = core::array::from_fn(|_| None);
+    let mut filled = 0;
+    let mut bands = output.bands.iter_mut().zip(output.rects.iter().copied());
+    workspace.for_each_rect_surface(&output.rects, |surface| {
+        let (band, rect) = bands
+            .next()
+            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+        band.records.clear();
+        slots[filled] = Some((surface, band, rect));
+        filled += 1;
+        if filled == slots.len() {
+            splot_parallel::join_each(&mut slots, &reconstruct_band)?;
+            slots.fill_with(|| None);
+            filled = 0;
+        }
+        Ok::<(), crate::DecodeError>(())
+    })?;
+    splot_parallel::join_each(&mut slots[..filled], &reconstruct_band)?;
+    for band in &mut output.bands[..band_count] {
+        super::temporal::commit_temporal_motion_blocks(&mut motion_field, &band.records);
+        band.records.clear();
     }
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
@@ -1433,7 +1483,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         )
         .map_err(|_| DecodeHeaderStateError::IncompleteTipOutput)?;
     }
-    decode_scratch.tip_output = scratch;
+    decode_scratch.tip_output = output;
     Ok((workspace.freeze()?, motion_field))
 }
 

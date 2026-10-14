@@ -204,26 +204,58 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     geometry: FrameDecodeGeometry,
     products: &mut FrameProductWriters,
 ) -> Result<InterDecodeOutput<T>> {
-    let bit_depth = geometry.info().bit_depth();
+    let (frame_cdfs, segment_ids) = tip_output_products(
+        &core, candidate, offset, sequence, options, reference, &geometry, products,
+    )?;
+    let (frame, motion_field) = reconstruct_tip_output(
+        scratch, planes, &core, sequence, reference, geometry, offset,
+    )?;
+    Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
+}
+
+/// The entropy products of a TIP output frame, which parses no blocks: the
+/// initial CDFs pass through unchanged and the segment-id map is empty. They
+/// do not depend on the frame's samples, so a caller may publish them first.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tip_output_products<T: ReconSample>(
+    core: &FrameHeaderCore,
+    candidate: &DecodePlannedObu,
+    offset: ByteOffset,
+    sequence: &SequenceHeader,
+    options: &DecodeOptions,
+    reference: &InterReferenceState<T>,
+    geometry: &FrameDecodeGeometry,
+    products: &mut FrameProductWriters,
+) -> Result<(Arc<FrameCdfSubset>, Arc<FrameSegmentIdMap>)> {
     let frame_size = geometry.frame_size();
     ensure_runtime_limits(
         options.limits(),
         frame_size.width,
         frame_size.height,
         0,
-        bit_depth,
+        geometry.info().bit_depth(),
         sequence.general.chroma_format_idc,
     )?;
-    let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
-    let (frame, motion_field) = block::tip::reconstruct_output(
-        scratch, planes, sequence, &core, reference, geometry, offset,
-    )?;
+    let frame_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?;
     products.frame_cdfs()?.reset_output_from(&frame_cdfs);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = geometry.mi_dimensions();
     products.segment_ids(mi_rows, mi_cols, false)?;
     let segment_ids = products.finish_segment_ids()?;
-    Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
+    Ok((frame_cdfs, segment_ids))
+}
+
+/// Predicts a TIP output frame's samples and its stored motion field.
+pub(crate) fn reconstruct_tip_output<T: ReconSample>(
+    scratch: &mut InterDecodeScratch<T>,
+    planes: splot_recon::FramePlaneSamples<T>,
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<T>,
+    geometry: FrameDecodeGeometry,
+    offset: ByteOffset,
+) -> Result<(DecodedFrame<T>, TemporalMotionField)> {
+    block::tip::reconstruct_output(scratch, planes, sequence, core, reference, geometry, offset)
 }
 
 #[allow(clippy::too_many_arguments)]

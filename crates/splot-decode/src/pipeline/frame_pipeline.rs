@@ -586,25 +586,35 @@ impl<T: ScheduledScratchSample + Send + 'static> ParkedTipOutput<'_, T> {
             reference,
             geometry,
         } = job;
-        match inter::decode_tip_output_frame(
-            &mut scratch,
-            planes,
+        let offset = candidate.offset();
+        let early = inter::tip_output_products(
+            &core,
             &candidate,
-            candidate.offset(),
-            core,
+            offset,
             &sequence,
             options,
             &reference,
-            geometry,
+            &geometry,
             &mut products,
-        ) {
-            Ok((frame, _, cdfs, ccso, field, segments)) => {
-                products.settle(cdfs, ccso, segments);
+        );
+        let reconstructed = early.and_then(|(cdfs, segments)| {
+            products.settle(cdfs, None, segments);
+            inter::reconstruct_tip_output(
+                &mut scratch,
+                planes,
+                &core,
+                &sequence,
+                &reference,
+                geometry,
+                offset,
+            )
+        });
+        match reconstructed {
+            Ok((frame, field)) => {
                 motion.publish(field);
                 finish.complete_frame(frame);
             }
             Err(error) => {
-                drop(products);
                 motion.fail();
                 finish.fail(error);
             }
