@@ -247,7 +247,8 @@ pub(crate) fn assist_installed_pool_or_wait(snapshot: &PoolProgressSnapshot) -> 
 }
 
 /// Wakes one worker parked in [`assist_pool_or_park`] so it can steal the half
-/// a join is about to queue: Rayon's own wakeup reaches only its idle workers.
+/// a join has queued: Rayon's own wakeup reaches only its idle workers. The
+/// caller runs it from the first half, after Rayon has pushed the second.
 fn wake_parked_worker() {
     if let Some(progress) = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade()) {
         progress.notify_one();
@@ -314,10 +315,16 @@ where
 {
     match INSTALLED_POOL.with(|installed| installed.borrow().upgrade()) {
         Some(pool) if on_worker_pool() => {
-            if pool.current_num_threads() > 1 {
-                wake_parked_worker();
-            }
-            pool.join(a, b)
+            let wake = pool.current_num_threads() > 1;
+            pool.join(
+                move || {
+                    if wake {
+                        wake_parked_worker();
+                    }
+                    a()
+                },
+                b,
+            )
         }
         _ => (a(), b()),
     }
